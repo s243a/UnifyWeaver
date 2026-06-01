@@ -3252,13 +3252,15 @@ compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
     compile_eval_arith_to_llvm(ArithCode),
     compile_copy_term_to_llvm(CopyTermCode),
     compile_term_cmp_to_llvm(TermCmpCode),
+    compile_ssp_emit_segment_to_llvm(SspCode),
     atomic_list_concat([
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
         ArithCode, '\n\n',
         CopyTermCode, '\n\n',
-        TermCmpCode
+        TermCmpCode, '\n\n',
+        SspCode
     ], LLVMCode).
 
 compile_backtrack_to_llvm(Code) :-
@@ -3479,6 +3481,7 @@ entry:
     i32 82, label %builtin_tab
     i32 83, label %builtin_put_char
     i32 84, label %builtin_put_code
+    i32 85, label %builtin_split_string
   ]
 
 builtin_is:
@@ -4136,6 +4139,165 @@ pco.write:
   %pco.n32 = trunc i64 %pco.n to i32
   call i32 @putchar(i32 %pco.n32)
   ret i1 true
+
+builtin_split_string:
+  ; M68: split_string(+String, +SepChars, +PadChars, ?SubStrings).
+  ; Any byte in SepChars acts as a single-char separator. PadChars
+  ; are stripped from the start AND end of each emitted segment.
+  ; Atoms = strings in our runtime; A1/A2/A3 must all be Atom-tagged.
+  ; Three passes: scan + count seps; per-segment extract + strip +
+  ; intern; build cons chain.
+  %ssp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ssp.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ssp.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  call void @wam_arena_ensure()
+  %ssp.t1 = extractvalue %Value %ssp.a1, 0
+  %ssp.t2 = extractvalue %Value %ssp.a2, 0
+  %ssp.t3 = extractvalue %Value %ssp.a3, 0
+  %ssp.t1_atom = icmp eq i32 %ssp.t1, 0
+  %ssp.t2_atom = icmp eq i32 %ssp.t2, 0
+  %ssp.t3_atom = icmp eq i32 %ssp.t3, 0
+  %ssp.t12_ok = and i1 %ssp.t1_atom, %ssp.t2_atom
+  %ssp.all_ok = and i1 %ssp.t12_ok, %ssp.t3_atom
+  br i1 %ssp.all_ok, label %ssp.lookup, label %ssp.fail
+ssp.fail:
+  ret i1 false
+ssp.lookup:
+  %ssp.aid1 = extractvalue %Value %ssp.a1, 1
+  %ssp.aid2 = extractvalue %Value %ssp.a2, 1
+  %ssp.aid3 = extractvalue %Value %ssp.a3, 1
+  %ssp.s_str = call i8* @wam_atom_to_string(i64 %ssp.aid1)
+  %ssp.sep_str = call i8* @wam_atom_to_string(i64 %ssp.aid2)
+  %ssp.pad_str = call i8* @wam_atom_to_string(i64 %ssp.aid3)
+  ; Measure source length.
+  br label %ssp.s_mloop
+ssp.s_mloop:
+  %ssp.s_mp = phi i8* [ %ssp.s_str, %ssp.lookup ], [ %ssp.s_mpn, %ssp.s_mstep ]
+  %ssp.s_mn = phi i64 [ 0, %ssp.lookup ], [ %ssp.s_mn1, %ssp.s_mstep ]
+  %ssp.s_mc = load i8, i8* %ssp.s_mp
+  %ssp.s_mz = icmp eq i8 %ssp.s_mc, 0
+  br i1 %ssp.s_mz, label %ssp.count_init, label %ssp.s_mstep
+ssp.s_mstep:
+  %ssp.s_mpn = getelementptr i8, i8* %ssp.s_mp, i32 1
+  %ssp.s_mn1 = add i64 %ssp.s_mn, 1
+  br label %ssp.s_mloop
+ssp.count_init:
+  ; Pass 1: count separator occurrences. parts = count + 1.
+  br label %ssp.c_loop
+ssp.c_loop:
+  %ssp.c_i = phi i64 [ 0, %ssp.count_init ], [ %ssp.c_i1, %ssp.c_after ]
+  %ssp.c_cnt = phi i32 [ 1, %ssp.count_init ], [ %ssp.c_cnt_next, %ssp.c_after ]
+  %ssp.c_done = icmp uge i64 %ssp.c_i, %ssp.s_mn
+  br i1 %ssp.c_done, label %ssp.alloc, label %ssp.c_step
+ssp.c_step:
+  %ssp.c_bp = getelementptr i8, i8* %ssp.s_str, i64 %ssp.c_i
+  %ssp.c_b = load i8, i8* %ssp.c_bp
+  ; Check if %ssp.c_b is in sep_str.
+  br label %ssp.c_in_sep
+ssp.c_in_sep:
+  %ssp.c_sp = phi i8* [ %ssp.sep_str, %ssp.c_step ], [ %ssp.c_sp_n, %ssp.c_sep_step ]
+  %ssp.c_sc = load i8, i8* %ssp.c_sp
+  %ssp.c_sc_zero = icmp eq i8 %ssp.c_sc, 0
+  br i1 %ssp.c_sc_zero, label %ssp.c_no_sep, label %ssp.c_sep_check
+ssp.c_sep_check:
+  %ssp.c_eq = icmp eq i8 %ssp.c_b, %ssp.c_sc
+  br i1 %ssp.c_eq, label %ssp.c_yes_sep, label %ssp.c_sep_step
+ssp.c_sep_step:
+  %ssp.c_sp_n = getelementptr i8, i8* %ssp.c_sp, i32 1
+  br label %ssp.c_in_sep
+ssp.c_yes_sep:
+  br label %ssp.c_after
+ssp.c_no_sep:
+  br label %ssp.c_after
+ssp.c_after:
+  %ssp.c_inc = phi i32 [ 1, %ssp.c_yes_sep ], [ 0, %ssp.c_no_sep ]
+  %ssp.c_cnt_next = add i32 %ssp.c_cnt, %ssp.c_inc
+  %ssp.c_i1 = add i64 %ssp.c_i, 1
+  br label %ssp.c_loop
+ssp.alloc:
+  %ssp.cnt64 = sext i32 %ssp.c_cnt to i64
+  %ssp.arr_bytes = shl i64 %ssp.cnt64, 4
+  %ssp.arr_mem = call i8* @wam_arena_alloc(i64 %ssp.arr_bytes)
+  %ssp.arr = bitcast i8* %ssp.arr_mem to %Value*
+  br label %ssp.f_loop
+ssp.f_loop:
+  ; Pass 2: walk source. On separator, emit segment [seg_start..i);
+  ; on end-of-string, emit final segment.
+  %ssp.f_i = phi i64 [ 0, %ssp.alloc ], [ %ssp.f_i1, %ssp.f_after ]
+  %ssp.f_start = phi i64 [ 0, %ssp.alloc ], [ %ssp.f_start_next, %ssp.f_after ]
+  %ssp.f_idx = phi i32 [ 0, %ssp.alloc ], [ %ssp.f_idx_next, %ssp.f_after ]
+  %ssp.f_done = icmp uge i64 %ssp.f_i, %ssp.s_mn
+  br i1 %ssp.f_done, label %ssp.finalize, label %ssp.f_step
+ssp.f_step:
+  %ssp.f_bp = getelementptr i8, i8* %ssp.s_str, i64 %ssp.f_i
+  %ssp.f_b = load i8, i8* %ssp.f_bp
+  br label %ssp.f_in_sep
+ssp.f_in_sep:
+  %ssp.f_sp = phi i8* [ %ssp.sep_str, %ssp.f_step ], [ %ssp.f_sp_n, %ssp.f_sep_step ]
+  %ssp.f_sc = load i8, i8* %ssp.f_sp
+  %ssp.f_sc_zero = icmp eq i8 %ssp.f_sc, 0
+  br i1 %ssp.f_sc_zero, label %ssp.f_no_sep, label %ssp.f_sep_check
+ssp.f_sep_check:
+  %ssp.f_eq = icmp eq i8 %ssp.f_b, %ssp.f_sc
+  br i1 %ssp.f_eq, label %ssp.f_emit_seg, label %ssp.f_sep_step
+ssp.f_sep_step:
+  %ssp.f_sp_n = getelementptr i8, i8* %ssp.f_sp, i32 1
+  br label %ssp.f_in_sep
+ssp.f_no_sep:
+  br label %ssp.f_after
+ssp.f_emit_seg:
+  ; Intern atom_str[start..i] with pad-strip; store at arr[idx]; reset start.
+  call void @ssp_emit_segment(%WamState* %vm, i8* %ssp.s_str, i64 %ssp.f_start, i64 %ssp.f_i, i8* %ssp.pad_str, %Value* %ssp.arr, i32 %ssp.f_idx)
+  %ssp.f_new_start = add i64 %ssp.f_i, 1
+  %ssp.f_new_idx = add i32 %ssp.f_idx, 1
+  br label %ssp.f_after
+ssp.f_after:
+  %ssp.f_start_next = phi i64 [ %ssp.f_new_start, %ssp.f_emit_seg ], [ %ssp.f_start, %ssp.f_no_sep ]
+  %ssp.f_idx_next = phi i32 [ %ssp.f_new_idx, %ssp.f_emit_seg ], [ %ssp.f_idx, %ssp.f_no_sep ]
+  %ssp.f_i1 = add i64 %ssp.f_i, 1
+  br label %ssp.f_loop
+ssp.finalize:
+  ; Emit final segment.
+  call void @ssp_emit_segment(%WamState* %vm, i8* %ssp.s_str, i64 %ssp.f_start, i64 %ssp.s_mn, i8* %ssp.pad_str, %Value* %ssp.arr, i32 %ssp.f_idx)
+  br label %ssp.build_init
+ssp.build_init:
+  %ssp.b_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %ssp.b_empty_v0 = insertvalue %Value undef, i32 0, 0
+  %ssp.b_empty_v  = insertvalue %Value %ssp.b_empty_v0, i64 %ssp.b_empty_id, 1
+  br label %ssp.b_loop
+ssp.b_loop:
+  %ssp.b_i = phi i32 [ %ssp.c_cnt, %ssp.build_init ], [ %ssp.b_i_prev, %ssp.b_step ]
+  %ssp.b_acc = phi %Value [ %ssp.b_empty_v, %ssp.build_init ], [ %ssp.b_new_cons, %ssp.b_step ]
+  %ssp.b_done = icmp sle i32 %ssp.b_i, 0
+  br i1 %ssp.b_done, label %ssp.b_bind, label %ssp.b_step
+ssp.b_step:
+  %ssp.b_i_prev = sub i32 %ssp.b_i, 1
+  %ssp.b_slot = getelementptr %Value, %Value* %ssp.arr, i32 %ssp.b_i_prev
+  %ssp.b_head = load %Value, %Value* %ssp.b_slot
+  %ssp.b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ssp.b_cp_mem = call i8* @wam_arena_alloc(i64 %ssp.b_cp_size)
+  %ssp.b_cp = bitcast i8* %ssp.b_cp_mem to %Compound*
+  %ssp.b_fn_slot = getelementptr %Compound, %Compound* %ssp.b_cp, i32 0, i32 0
+  %ssp.b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %ssp.b_fn_ptr, i8** %ssp.b_fn_slot
+  %ssp.b_ar_slot = getelementptr %Compound, %Compound* %ssp.b_cp, i32 0, i32 1
+  store i32 2, i32* %ssp.b_ar_slot
+  %ssp.b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %ssp.b_args = bitcast i8* %ssp.b_args_mem to %Value*
+  %ssp.b_args_slot = getelementptr %Compound, %Compound* %ssp.b_cp, i32 0, i32 2
+  store %Value* %ssp.b_args, %Value** %ssp.b_args_slot
+  %ssp.b_h_ptr = getelementptr %Value, %Value* %ssp.b_args, i32 0
+  store %Value %ssp.b_head, %Value* %ssp.b_h_ptr
+  %ssp.b_t_ptr = getelementptr %Value, %Value* %ssp.b_args, i32 1
+  store %Value %ssp.b_acc, %Value* %ssp.b_t_ptr
+  %ssp.b_cp_i64 = ptrtoint %Compound* %ssp.b_cp to i64
+  %ssp.b_nc0 = insertvalue %Value undef, i32 3, 0
+  %ssp.b_new_cons = insertvalue %Value %ssp.b_nc0, i64 %ssp.b_cp_i64, 1
+  br label %ssp.b_loop
+ssp.b_bind:
+  %ssp.b_raw4 = call %Value @wam_get_reg(%WamState* %vm, i32 3)
+  %ssp.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ssp.b_raw4, %Value %ssp.b_acc)
+  ret i1 %ssp.b_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -9969,6 +10131,78 @@ cmp_args_equal:
   ret i32 0
 }'.
 
+%% compile_ssp_emit_segment_to_llvm(-IR)
+%
+%  M68: emit @ssp_emit_segment(vm, src, seg_start, seg_end, pad, arr, idx)
+%  -- strips pad chars from both ends of src[seg_start..seg_end), interns
+%  the resulting substring as an Atom, and stores the Value at arr[idx].
+%  Used by builtin_split_string to emit each segment.
+compile_ssp_emit_segment_to_llvm(Code) :-
+    Code = '; M68: split_string segment emitter -- strip pad chars from both ends,
+; intern the resulting substring, and store the Atom Value into arr[idx].
+define void @ssp_emit_segment(%WamState* %vm, i8* %src, i64 %seg_start, i64 %seg_end, i8* %pad, %Value* %arr, i32 %arr_idx) {
+entry:
+  br label %trim_left
+trim_left:
+  %tl_s = phi i64 [ %seg_start, %entry ], [ %tl_s1, %tl_skip ]
+  %tl_done = icmp uge i64 %tl_s, %seg_end
+  br i1 %tl_done, label %trim_right_init, label %tl_check
+tl_check:
+  %tl_bp = getelementptr i8, i8* %src, i64 %tl_s
+  %tl_b = load i8, i8* %tl_bp
+  ; Is %tl_b in %pad?
+  br label %tl_pad_loop
+tl_pad_loop:
+  %tl_pp = phi i8* [ %pad, %tl_check ], [ %tl_pp_n, %tl_pad_step ]
+  %tl_pc = load i8, i8* %tl_pp
+  %tl_pc_zero = icmp eq i8 %tl_pc, 0
+  br i1 %tl_pc_zero, label %trim_right_init, label %tl_pad_check
+tl_pad_check:
+  %tl_eq = icmp eq i8 %tl_b, %tl_pc
+  br i1 %tl_eq, label %tl_skip, label %tl_pad_step
+tl_pad_step:
+  %tl_pp_n = getelementptr i8, i8* %tl_pp, i32 1
+  br label %tl_pad_loop
+tl_skip:
+  %tl_s1 = add i64 %tl_s, 1
+  br label %trim_left
+trim_right_init:
+  %tri_start = phi i64 [ %tl_s, %trim_left ], [ %tl_s, %tl_pad_loop ]
+  br label %trim_right
+trim_right:
+  %tr_e = phi i64 [ %seg_end, %trim_right_init ], [ %tr_e1, %tr_skip ]
+  %tr_some = icmp ugt i64 %tr_e, %tri_start
+  br i1 %tr_some, label %tr_check, label %do_intern
+tr_check:
+  %tr_e1 = sub i64 %tr_e, 1
+  %tr_bp = getelementptr i8, i8* %src, i64 %tr_e1
+  %tr_b = load i8, i8* %tr_bp
+  br label %tr_pad_loop
+tr_pad_loop:
+  %tr_pp = phi i8* [ %pad, %tr_check ], [ %tr_pp_n, %tr_pad_step ]
+  %tr_pc = load i8, i8* %tr_pp
+  %tr_pc_zero = icmp eq i8 %tr_pc, 0
+  br i1 %tr_pc_zero, label %do_intern, label %tr_pad_check
+tr_pad_check:
+  %tr_eq = icmp eq i8 %tr_b, %tr_pc
+  br i1 %tr_eq, label %tr_skip, label %tr_pad_step
+tr_pad_step:
+  %tr_pp_n = getelementptr i8, i8* %tr_pp, i32 1
+  br label %tr_pad_loop
+tr_skip:
+  br label %trim_right
+do_intern:
+  %final_end = phi i64 [ %tr_e, %trim_right ], [ %tr_e, %tr_pad_loop ]
+  %final_len = sub i64 %final_end, %tri_start
+  %final_ptr = getelementptr i8, i8* %src, i64 %tri_start
+  %final_id = call i64 @wam_intern_atom(i8* %final_ptr, i64 %final_len)
+  %atom_v0 = insertvalue %Value undef, i32 0, 0
+  %atom_v = insertvalue %Value %atom_v0, i64 %final_id, 1
+  %slot = getelementptr %Value, %Value* %arr, i32 %arr_idx
+  store %Value %atom_v, %Value* %slot
+  ret void
+}'.
+
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3 into complete runtime
 % ============================================================================
@@ -10630,6 +10864,7 @@ builtin_op_to_id('sort/2', 81).               % sort + dedup under standard term
 builtin_op_to_id('tab/1', 82).                % I/O: print N spaces.
 builtin_op_to_id('put_char/1', 83).           % I/O: print first byte of single-char atom.
 builtin_op_to_id('put_code/1', 84).           % I/O: print byte value as char.
+builtin_op_to_id('split_string/4', 85).       % split atom on any char from SepChars; strip pad chars from segments.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
