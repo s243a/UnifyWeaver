@@ -2474,7 +2474,7 @@ test_ks_compound_keys_length(_, R) :-
 :- dynamic test_ks_compound_keys_first/2.
 test_ks_compound_keys_first(_, R) :-
     keysort([foo(3)-c, foo(1)-a, foo(2)-b], [_-V|_]),
-    char_code(V, R).   % 97 ('a')
+    char_code(V, C), R is C.   % 97 ('a')
 
 :- dynamic test_sort_compound_elements/2.
 test_sort_compound_elements(_, R) :-
