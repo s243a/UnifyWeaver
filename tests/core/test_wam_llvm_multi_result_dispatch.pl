@@ -202,7 +202,7 @@ done:
     -> read_file_to_string(atom_concat(LLPath, '.llc.err'), LlcErr, []),
        format('    FAIL: llc exit=~w~n~w~n', [LlcExit, LlcErr]),
        ExitCode = -1
-    ;  format(atom(ClangCmd), 'clang ~w -o ~w 2>~w.clang.err',
+    ;  format(atom(ClangCmd), 'clang ~w -o ~w -lm 2>~w.clang.err',
            [OPath, BinPath, LLPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0

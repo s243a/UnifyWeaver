@@ -70,7 +70,7 @@
 % -----
 %   swipl -q -g run_tests -t halt tests/core/test_wam_indexing_bypass.pl
 
-:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1, python_cmd/1]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
@@ -106,7 +106,9 @@ tool_runs(Tool, Args) :-
         _, fail).
 
 dotnet_available  :- tool_runs(dotnet,  ['--version']).
-python_available  :- tool_runs(python3, ['--version']).
+% On Windows `python3` is the Microsoft Store stub (exits 49); use
+% python_cmd/1 from smoke_paths to find a runnable interpreter.
+python_available  :- python_cmd(_).
 
 bypass_root(Dir) :-
     tmp_root(Root),
@@ -325,8 +327,9 @@ write_python_project(Dir) :-
         close(Out)).
 
 run_python(Dir, ExitCode, Output) :-
+    python_cmd(Py),
     setup_call_cleanup(
-        process_create(path(python3), ['driver.py'],
+        process_create(path(Py), ['driver.py'],
             [cwd(Dir),
              stdout(pipe(Out)), stderr(pipe(Err)),
              process(Pid)]),

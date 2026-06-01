@@ -169,6 +169,7 @@ test_composed_chain_resolves_all :-
 %% =====================================================================
 
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 
 :- dynamic user:csr_probe/3.
 user:csr_probe(X, Y, Z) :- Z is X + Y.
@@ -222,17 +223,9 @@ test_csr_codegen_no_reader_without_csr_path :-
 %% Helpers
 %% =====================================================================
 
-tmp_root_candidate(Root) :-
-    member(Env, ['TMPDIR', 'TMP', 'TEMP']),
-    getenv(Env, Root),
-    Root \== ''.
-tmp_root_candidate('output').
-
-writable_tmp_root(Root) :-
-    tmp_root_candidate(Root),
-    catch(make_directory_path(Root), _, fail),
-    access_file(Root, write),
-    !.
+% writable_tmp_root/1 delegates to the shared smoke_paths helper
+% (which covers Windows %TEMP%, Termux, /tmp, etc.).
+writable_tmp_root(Root) :- tmp_root(Root).
 
 tmp_project_dir(Dir) :-
     writable_tmp_root(Root),

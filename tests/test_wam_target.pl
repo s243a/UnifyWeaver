@@ -311,6 +311,20 @@ test_wam_mixed_mode_a1_indexing :-
                   'Mixed-mode A1 indexing did not emit the expected pseudo-instruction')
     ).
 
+test_wam_items_api_bridge :-
+    Test = 'WAM: items API bridge',
+    (   wam_target:compile_predicate_to_wam(user:test_grandparent/2, [], LegacyCode),
+        wam_target:compile_predicate_to_wam_text(user:test_grandparent/2, [], TextCode),
+        wam_target:compile_predicate_to_wam_items(user:test_grandparent/2, [], Items),
+        LegacyCode == TextCode,
+        member(label("test_grandparent/2"), Items),
+        member(allocate, Items),
+        member(call("test_parent/2", "2"), Items),
+        member(execute("test_parent/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Explicit text/items APIs do not match legacy WAM output')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -324,6 +338,7 @@ run_tests :-
     test_wam_nested_put_structure,
     test_wam_compound_head,
     test_wam_module,
+    test_wam_items_api_bridge,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,

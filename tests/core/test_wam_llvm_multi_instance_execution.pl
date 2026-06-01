@@ -314,7 +314,7 @@ run_multi_test :-
     -> format('  FAIL: llc failed exit=~w, see ~w.llc.err~n', [LlcExit, LLPath]),
        ExitCode = -1
     ;  format(atom(ClangCmd),
-           'clang ~w -o ~w 2>~w.clang.err',
+           'clang ~w -o ~w -lm 2>~w.clang.err',
            [OPath, BinPath, LLPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0

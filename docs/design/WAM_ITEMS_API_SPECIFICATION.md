@@ -3,7 +3,22 @@
 The concrete shape of the structured-items API we're adding to
 `wam_target.pl`. For *why* each decision, see
 `WAM_ITEMS_API_PHILOSOPHY.md`. For per-target migration plans, see
-the per-target section in §6 below.
+the per-target section in §6 below. For target-level representation mode names,
+see `WAM_REPRESENTATION_MODES.md`.
+
+## 0. Implementation Status
+
+The first implementation step is intentionally conservative:
+
+- `compile_predicate_to_wam_text/3` is now the explicit legacy text API.
+- `compile_predicate_to_wam_items/3` is available as a bridge: it compiles text
+  through the existing generator and normalizes it with `wam_text_to_items/2`.
+- `compile_predicate_to_wam/3` still returns text by default for compatibility
+  with the existing targets. The default-output flip described below remains a
+  later migration step after more callers consume items directly.
+
+The final API shape below is still the target design; current code deliberately
+lands the low-risk bridge first.
 
 ## 1. Public API
 
@@ -180,6 +195,81 @@ my_target_recognise_line(Line, Item) :-
 The bulk of parsing (~80-90% of any target''s parser today) lives
 in the shared building blocks. Targets ship only what's unique to
 them.
+
+### 1.5 Representation modes vs runtime parser modes
+
+`output(items)` / `output(text)` is a **build-time representation choice**.
+It is independent of `runtime_parser(...)`, which controls whether a generated
+program can parse Prolog terms from text at execution time.
+
+The intended target-generator pipeline is:
+
+```text
+Prolog clauses -> compile_predicate_to_wam_items/3 -> target emitter
+```
+
+The legacy compatibility pipeline remains:
+
+```text
+Prolog clauses -> compile_predicate_to_wam_text/3 -> wam_text_to_items/2 -> target emitter
+```
+
+Targets should prefer the first pipeline for in-tree compilation. The second
+pipeline is for debug dumps, external WAM text, snapshot tests, and migration
+periods where a target has not yet been moved to direct items consumption. In
+particular, a target should not require its own compile-time text parser merely
+to consume WAM that this repository just generated.
+
+### 1.6 Custom symbolic instructions
+
+Targets may extend the standard item catalogue with custom symbolic WAM
+instructions. A custom instruction is still an item term; it is not a raw text
+line. The recommended shape is:
+
+```prolog
+custom_wam(Op, Operands, Meta)
+```
+
+where `Op` is an atom, `Operands` is a list of ordinary WAM item operands, and
+`Meta` is a list of options. `Meta` may include an execution policy:
+
+```prolog
+mode(compiled)      % default: lower directly into target source
+mode(interpreted)   % keep as an instruction dispatched by the runtime VM
+mode(jit)           % emit a stable symbolic form that a target JIT may compile later
+```
+
+Policy meaning:
+
+- `compiled` means the target emitter must know how to lower the instruction
+  into ordinary target-language code or into a sequence of standard WAM items.
+  This is the default because it keeps generated projects self-contained.
+- `interpreted` means the item is intentionally preserved in the runtime
+  instruction stream. The target runtime must have a dispatcher case for `Op`,
+  and unsupported targets must reject the item at generation time.
+- `jit` means the item is preserved with enough symbolic metadata for a runtime
+  or host-language JIT to specialize it after profiling or after seeing concrete
+  data layout. Targets without a JIT must either reject the item or downgrade it
+  through an explicit fallback such as `fallback(compiled)` or
+  `fallback(interpreted)` in `Meta`.
+
+Custom items must round-trip through the common text parser only when a target
+registers an extension recogniser/printer. Standard `wam_text_to_items/2` should
+stay strict for the core instruction set; lenient or extension-aware parsing
+belongs in the target composition layer described in §1.4.
+
+A future shared registry can make this explicit:
+
+```prolog
+%% wam_custom_instruction(+Target, +Op, +Modes, +Lowerer)
+%  Declares that Target accepts custom operation Op, supports execution policies
+%  Modes, and lowers or validates through Lowerer.
+```
+
+Until that registry exists, target-specific custom instructions should be
+clearly namespaced in `Op` (for example `llvm_profile_counter` rather than
+`profile_counter`) and covered by target tests proving unsupported modes fail
+loudly.
 
 ## 2. Item term shapes
 
@@ -482,23 +572,37 @@ Why migrate small targets first:
 
 ## 9. ISO-Sweep Interaction
 
-The C++ ISO sweep (arith compares + `succ_iso/2`) did not stay blocked on this
-refactor; it shipped against the existing text/items compatibility path. That
-means the C++ ISO implementation still carries multi-shape rewrite logic for
-`builtin_call`, `put_structure`, `call`, and `execute`.
+The C++ ISO sweep (arith compares + `succ_iso/2`) already builds structured WAM
+items natively: `wam_cpp_target.pl` calls the shared
+`iso_errors_rewrite(Config, PI, Items0, Items)` directly on its items list, so
+it never carried the per-shape text-rewrite duplication. (An earlier draft of
+this section claimed it did — that was inaccurate.)
 
-**Elixir is the first target migrated off the per-shape text rules.** Its
-`iso_errors_rewrite_line/3` now tokenizes each WAM line with the shared
+**All text-rewrite targets — Elixir, F#, Python, and Haskell — have been
+migrated off their bespoke per-line rewrites.** Each target's
+`iso_errors_rewrite_line/3` now tokenizes a WAM line with the shared
 `wam_tokenize_line/2`, recognises it to a structured item via
 `wam_recognise_instruction/2`, and applies the shared
 `iso_errors_rewrite_item/3` (exported from `core/iso_errors`) — a single
 `arg(1)`-based key swap that covers all four shapes at once. The swapped key is
 spliced back into the original line so text output stays byte-identical. The
-four duplicated `iso_errors_rewrite_parts` clauses and the local
-`iso_errors_lookup/3` are gone. This is the `swap_key_in_item/3`-style pass the
-note below anticipated, realised without yet requiring a full items-first
-emitter.
+duplicated `iso_errors_rewrite_parts` clauses and the local
+`iso_errors_lookup/3` / `iso_errors_rewrite_key/3` helpers are gone. This is the
+`swap_key_in_item/3`-style pass the note below anticipated, realised without yet
+requiring a full items-first emitter. (Elixir: PR #2559. F# + Python: PR #2570.
+Haskell: this PR.)
 
-The interaction remains important for the other targets' future migrations.
-Once a target consumes structured WAM items directly, ISO rewrites collapse to
-this same single shared pass instead of several text-shape rules per key.
+Haskell was the last and slightly different case: it had only ever rewritten
+`builtin_call` (not the four shapes) and used a three-valued mode (`iso` / `lax`
+/ `default` atoms). The shared pass broadens it to all four shapes, but since the
+only keys in the ISO/lax tables are arithmetic builtins (`is/2`, the six
+comparisons, `succ/2`) — which the WAM compiler always emits as `builtin_call` —
+the extra coverage never matches in practice and simply makes Haskell consistent.
+The `default` mode now passes through the shared rewriter's catch-all unchanged.
+
+C++ never had a text-rewrite path: `wam_cpp_target.pl` already consumes
+structured items and calls `iso_errors_rewrite/4` directly. So every WAM target
+now routes ISO rewriting through the single shared item pass. In all targets, ISO
+mode stays per-predicate — resolved by `iso_errors_mode_for(Config, PI, Mode)`,
+honouring `iso_errors_override` per `Pred/Arity`; this refactor does not change
+that.

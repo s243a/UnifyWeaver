@@ -17,6 +17,7 @@
 :- use_module(library(plunit)).
 :- use_module(library(filesex)).
 :- use_module(library(process)).
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 :- use_module('../src/unifyweaver/core/prolog_term_parser').
 :- use_module('../src/unifyweaver/targets/wam_r_target').
 
@@ -58,17 +59,9 @@ fresh_tmp_dir(Dir) :-
     ;   true
     ).
 
-parser_tmp_root(Root) :-
-    getenv('TMPDIR', EnvRoot),
-    exists_directory(EnvRoot),
-    access_file(EnvRoot, write),
-    !,
-    Root = EnvRoot.
-parser_tmp_root('/data/data/com.termux/files/usr/tmp') :-
-    exists_directory('/data/data/com.termux/files/usr/tmp'),
-    access_file('/data/data/com.termux/files/usr/tmp', write),
-    !.
-parser_tmp_root('/tmp').
+% parser_tmp_root/1 delegates to the shared smoke_paths helper
+% (which covers Windows %TEMP%, Termux, /tmp, etc.).
+parser_tmp_root(Root) :- tmp_root(Root).
 
 rscript_available :-
     catch((

@@ -160,7 +160,7 @@ exit:
         'llc -O2 -filetype=obj -relocation-model=pic ~w -o ~w 2>/dev/null',
         [LLPath, OPath]),
     shell(LlcCmd, _),
-    format(atom(ClangCmd), 'clang -O2 ~w -o ~w 2>/dev/null', [OPath, BinPath]),
+    format(atom(ClangCmd), 'clang -O2 ~w -o ~w -lm 2>/dev/null', [OPath, BinPath]),
     shell(ClangCmd, _),
     get_time(T0),
     shell(BinPath, ExitCode),

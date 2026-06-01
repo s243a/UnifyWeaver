@@ -8,7 +8,7 @@ import copy
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional, Callable, Dict, List, Tuple
+from typing import Any, Optional, Callable, Dict, List, Tuple, Union
 
 
 # -- Term representation ----------------------------------------------------
@@ -54,7 +54,12 @@ class StreamHandle:
     handle: Any
     def __deepcopy__(self, memo): return self
 
-Term = Atom | Compound | Var | Int | Float | Ref | StreamHandle
+# NB: a runtime assignment, not an annotation — `from __future__ import
+# annotations` does NOT defer it, so PEP-604 `X | Y` union syntax would
+# evaluate eagerly and raise TypeError on Python < 3.10. Use typing.Union
+# so the generated runtime imports cleanly on 3.8+ (the rest of the file
+# already targets old Python via Optional/List/Dict).
+Term = Union[Atom, Compound, Var, Int, Float, Ref, StreamHandle]
 
 # -- Atom interning cache -----------------------------------------------------
 # Ensures `make_atom("foo") is make_atom("foo")` — pointer-equality for equal

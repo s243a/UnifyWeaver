@@ -9,6 +9,8 @@
 :- module(wam_target, [
     target_info/1,
     compile_predicate_to_wam/3,          % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_text/3,     % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_items/3,    % +PredIndicator, +Options, -Items
     compile_predicate/3,                 % +PredIndicator, +Options, -WAMCode (dispatch alias)
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
@@ -21,9 +23,11 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(gensym)).
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
+:- use_module('../targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% target_info(-Info)
 target_info(info{
@@ -46,7 +50,15 @@ compile_predicate(PredArity, Options, Code) :-
     compile_predicate_to_wam(PredArity, Options, Code).
 
 %% compile_predicate_to_wam(+PredIndicator, +Options, -Code)
+%  Compatibility wrapper: returns canonical WAM text, matching the historical
+%  API. New callers that want an explicit format should use
+%  compile_predicate_to_wam_text/3 or compile_predicate_to_wam_items/3.
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code).
+
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     % Handle module qualification
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
@@ -62,12 +74,21 @@ compile_predicate_to_wam(PredIndicator, Options, Code) :-
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
     ).
 
+%% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
+%  Compile a predicate to structured WAM items. This bridge keeps the legacy
+%  text generator as the source of truth for now, then normalizes through the
+%  shared parser. A later generator pass can replace this with direct item
+%  emission without changing target-facing call sites.
+compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code),
+    wam_text_to_items(Code, Items).
+
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
 %   Compiles a list of predicates to a single WAM module using templates.
 compile_wam_module(Predicates, Options, Code) :-
     maplist({Options}/[PI, PredCode]>> (
-        compile_predicate_to_wam(PI, Options, PredCode)
+        compile_predicate_to_wam_text(PI, Options, PredCode)
     ), Predicates, PredCodes),
     
     atomic_list_concat(PredCodes, '\n\n', AllPredsCode),
@@ -94,6 +115,22 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     (   option(inline_bagof_setof(true), Options)
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
+    ),
+    % M10: \+ G inlines to (G -> fail ; true) by default. Opt out
+    % with inline_not_as_failure(false) -- builds a builtin_call
+    % \+/1 instead, which the runtime must metacall.
+    (   option(inline_not_as_failure(false), Options)
+    ->  b_setval(wam_inline_not, false)
+    ;   b_setval(wam_inline_not, true)
+    ),
+    % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
+    % instead of the legacy cut_ite. Targets that opt in (currently
+    % LLVM) implement the new instructions properly; others keep the
+    % cut_ite pattern. Default off so existing C++/Go/Lua/etc. paths
+    % don''t see new opcodes they don''t parse.
+    (   option(ite_use_y_level(true), Options)
+    ->  b_setval(wam_ite_use_y_level, true)
+    ;   b_setval(wam_ite_use_y_level, false)
     ),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
@@ -771,6 +808,12 @@ goals_contain_call_or_aggregate(Goals) :-
 wam_inline_bagof_setof_enabled :-
     catch(b_getval(wam_inline_bagof_setof, true), _, fail).
 
+wam_inline_not_enabled :-
+    catch(b_getval(wam_inline_not, true), _, fail).
+
+wam_ite_use_y_level_enabled :-
+    catch(b_getval(wam_ite_use_y_level, true), _, fail).
+
 is_builtin_goal(is).
 is_builtin_goal(=).
 is_builtin_goal(\=).
@@ -791,6 +834,11 @@ is_builtin_goal(length).
 is_builtin_goal(is_list).
 is_builtin_goal(append).
 is_builtin_goal((\+)).
+is_builtin_goal(atom_length).
+is_builtin_goal(atom_codes).
+is_builtin_goal(atom_chars).
+is_builtin_goal(char_code).
+is_builtin_goal(between).
 
 %% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
 %  For permanent-variable detection, expand aggregate_all/findall/
@@ -1150,6 +1198,21 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % Negation-as-failure: \+ G. Rewrite to ((G, !, fail) ; true) so
+    % the existing disjunction compiler handles the bookkeeping.
+    % `!/0` cuts to the env frame''s cut_barrier (set by allocate to
+    % the cpn at clause entry), wiping the outer disjunction''s
+    % choice point AND any inner CPs that the condition''s multi-
+    % clause calls may have left behind -- exactly the cleanup that
+    % a proper \+ needs. `fail` then propagates up. The alternate
+    % `(G -> fail ; true)` rewrite goes through `cut_ite` which is
+    % a soft cut and only pops one CP -- it gets the wrong CP when
+    % G pushes its own choice points.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                      V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail
@@ -1597,26 +1660,49 @@ flatten_conjunction(Goal, [Goal]).
 %  implementation and just fails.
 compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
-    % Flatten condition into a goal list
+    ( wam_ite_use_y_level_enabled
+    -> % M17: allocate a fresh permanent Y for the cut barrier.
+       % get_level Y_n snapshots cp_count BEFORE try_me_else; cut Y_n
+       % at the commit site sets cp_count = Y_n. Together they cut
+       % the ITE choice point AND any inner CPs the condition''s
+       % multi-clause calls left behind -- the naive cut_ite (which
+       % decrements cp_count by 1) silently picked the wrong CP in
+       % that case.
+       %
+       % allocate_var falls back to X if no y_alloc reservation
+       % exists for the var; X regs are caller-saved and the inner
+       % call would clobber the snapshot before cut reads it. Reserve
+       % a fresh Y at the top so allocate_var picks it up.
+       V0 = vmap(Bindings0, XCount0),
+       max_yi_index(Bindings0, 0, MaxY),
+       NextY is MaxY + 1,
+       format(atom(BarrierReg), "Y~w", [NextY]),
+       gensym('$ite_barrier_', BarrierVar),
+       V0a = vmap([b(BarrierVar, BarrierReg)|Bindings0], XCount0)
+    ;  V0a = V0,
+       BarrierReg = none
+    ),
     flatten_conjunction(CondGoal, CondGoals),
-    compile_inner_call_goals(CondGoals, V0, V1, CondCode),
+    compile_inner_call_goals(CondGoals, V0a, V1, CondCode),
     % Then and Else can each be themselves a nested if-then-else --
     % compile_ite_branch recurses on those forms. Else starts from
-    % V0 since backtrack restores to before the condition.
+    % V0a since backtrack restores to before the condition (but the
+    % barrier var is already allocated so its slot is reserved).
     compile_ite_branch(ThenGoal, V1, V2, ThenCode),
-    compile_ite_branch(ElseGoal, V0, V3, ElseCode),
-    % Use the wider variable map as output
+    compile_ite_branch(ElseGoal, V0a, V3, ElseCode),
     (   V2 = V3 -> Vf = V2
-    ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
+    ;   Vf = V2
     ),
-    % Emit: try_me_else ElseLabel / Cond / !/0 / Then / jump ContLabel
-    %        ElseLabel: trust_me / Else / ContLabel:
-    % Use cut_ite (soft cut) instead of !/0 — pops only the if-then-else
-    % CP, preserving aggregate frames and outer choice points.
-    % ContLabel marks the continuation after both branches.
-    format(string(Code),
-        "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
-        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
+    ( BarrierReg == none
+    -> format(string(Code),
+          "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [ElseLabel, CondCode, ThenCode, ContLabel,
+           ElseLabel, ElseCode, ContLabel])
+    ;  format(string(Code),
+          "    get_level ~w~n    try_me_else ~w~n~w~n    cut ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [BarrierReg, ElseLabel, CondCode, BarrierReg, ThenCode,
+           ContLabel, ElseLabel, ElseCode, ContLabel])
+    ).
 
 %% compile_ite_branch(+Branch, +V0, -Vf, -Code) is det.
 %  Compile a Then- or Else-branch of an if-then-else. If the branch
@@ -1950,6 +2036,9 @@ is_builtin_pred(unifiable, 3).      % non-binding unification + bindings list
 is_builtin_pred(plus, 3).           % bidirectional integer addition
 is_builtin_pred(delete, 3).         % remove all matching elements
 is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
+is_builtin_pred(intersection, 3).   % set intersection: elements in both
+is_builtin_pred(union, 3).          % set union: A1 ++ (A2 minus A1)
+is_builtin_pred(list_to_set, 2).    % dedupe list (first-occurrence order).
 is_builtin_pred(must_be, 2).        % type check with type_error throw
 is_builtin_pred(string_chars, 2).   % alias for atom_chars/2 (atoms = strings).
 is_builtin_pred(string_codes, 2).   % alias for atom_codes/2.
@@ -2022,6 +2111,10 @@ is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
 is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
+is_builtin_pred(atom_concat, 3).  % atom_concat(+A1, +A2, -A12) -- forward concat.
+is_builtin_pred(sub_atom, 5).     % sub_atom(+A, +B, +L, ?After, ?Sub) -- deterministic extraction.
+is_builtin_pred(atom_number, 2).  % atom_number(?A, ?N) -- integer mode only.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 % retract/1 is nondeterministic — dispatched via the Call/Execute
@@ -2041,7 +2134,15 @@ is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 is_builtin_pred(char_type, 2).    % char classification + case conv.
 is_builtin_pred(upcase_atom, 2).  % whole-atom case conversion: upper.
 is_builtin_pred(downcase_atom, 2).% whole-atom case conversion: lower.
+is_builtin_pred(nth0, 3).         % nth0(+Index, +List, ?Elem) -- 0-indexed.
+is_builtin_pred(nth1, 3).         % nth1(+Index, +List, ?Elem) -- 1-indexed.
+is_builtin_pred(last, 2).         % last(+List, ?Elem).
+is_builtin_pred(memberchk, 2).    % memberchk(?Elem, +List) -- deterministic membership.
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
+is_builtin_pred(sum_list, 2).     % sum_list(+List, ?Sum) -- integer sum.
+is_builtin_pred(sumlist, 2).      % alias of sum_list.
+is_builtin_pred(max_list, 2).     % max_list(+List, ?Max) -- empty fails.
+is_builtin_pred(min_list, 2).     % min_list(+List, ?Min) -- empty fails.
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.
@@ -2095,7 +2196,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  quote_wam_constant(Arg, ArgStr),
         format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
-    ;   is_list_term(Arg)
+    ;   is_list_term(Arg),
+        proper_list(Arg, _)
     ->  Arg = [H|T],
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V2),
@@ -2635,8 +2737,14 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
-proper_list(T, []) :- T == [], !.
-proper_list([H|T], [H|R]) :- proper_list(T, R).
+proper_list(T, Items) :-
+    nonvar(T),
+    proper_list_(T, Items).
+
+proper_list_(T, []) :- T == [], !.
+proper_list_([H|T], [H|R]) :-
+    nonvar(T),
+    proper_list_(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %

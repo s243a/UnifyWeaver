@@ -4,6 +4,17 @@ This document defines the target-runtime contract for parsing Prolog terms from
 text. It is separate from the build-time WAM items parser used by target
 generators.
 
+Do not conflate these layers:
+
+- `output(items)` / `output(text)` selects the build-time representation that
+  target generators consume from the WAM compiler.
+- `runtime_parser(...)` selects whether generated target code can parse Prolog
+  terms from text while the program is running.
+
+A target can and should migrate to build-time items mode even if it has no
+runtime parser. Conversely, a target may expose a runtime parser while still
+using the legacy text-to-items migration path internally.
+
 ## Canonical Source
 
 The portable parser source is:

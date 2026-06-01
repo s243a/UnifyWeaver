@@ -1,24 +1,22 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-28
+Status date: 2026-05-29
 
-Base verified locally:
+Latest branch verification:
 
-- `main` at `9f805888` (`Merge pull request #2566 from s243a/feat/wam-c-direct-io-csr`)
+- `feat/wam-c-native-kernel-float-output` based on `main` at `7e4b70d5`
+  (`Merge pull request #2582 from s243a/feat/wam-haskell-iso-items-rewrite`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `swipl -q -g run_tests -t halt tests/core/test_cost_model.pl`
-- `python3 tests/test_benchmark_target_matrix.py`
-- `python3 tests/test_wam_c_lowered_helper_scale_regression.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py tests/test_wam_c_lowered_helper_scale_regression.py`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev,10x --target-sets c-wam-lowered-helper --repetitions 1 --baseline-target c-wam-lowered-helper-interpreted`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated`
+- `swipl -q -t halt -s examples/benchmark/generate_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated --run-timeout-seconds 180`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-accumulated-runtime-cost`
+- `feat/wam-c-native-kernel-float-output`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -78,9 +76,10 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `transitive_distance3` native kernel | Done | C shared-kernel detector accepts `transitive_distance3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_parent_distance4` native kernel | Done | C shared-kernel detector accepts `transitive_parent_distance4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes |
 | `transitive_step_parent_distance5` native kernel | Done | C shared-kernel detector accepts `transitive_step_parent_distance5`, emits detected setup, registers a native arity-5 foreign handler, and covers direct plus detected-project executable smokes |
-| `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over integer weighted edges |
-| `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over integer weighted and direct-distance edges |
-| Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.066-0.069s with output parity versus Prolog at 0.204s |
+| `weighted_shortest_path3` native kernel | Done | C shared-kernel detector accepts `weighted_shortest_path3`, emits detected setup, registers a native arity-3 foreign handler, and covers direct plus detected-project executable smokes over weighted edges |
+| `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over weighted and direct-distance edges |
+| Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.065-0.071s with output parity versus Prolog at 0.202s |
+| Native weighted-kernel float output | Done | C runtime has `VAL_FLOAT`, numeric unification, double weighted/direct edge storage, and executable weighted/A* smokes for fractional 1.5 results while preserving exact-integer outputs as `VAL_INT` |
 
 ## Current C Target Baseline
 
@@ -109,7 +108,8 @@ The C target is now a credible small WAM backend:
   `transitive_distance3`, `transitive_parent_distance4`, and
   `transitive_step_parent_distance5` handlers over an in-memory edge table,
   plus `weighted_shortest_path3` and `astar_shortest_path4` over in-memory
-  integer weighted edges.
+  weighted edges with exact-integer results kept as `VAL_INT` and fractional
+  results returned as `VAL_FLOAT`.
 - Supports loading category-parent facts from TSV through a small
   `WamFactSource` interface.
 - Supports collecting all integer hop results for native `category_ancestor/4`
@@ -154,7 +154,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
 | Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
-| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, integer-weighted shortest path, and integer A* shortest path; remaining parity gaps are broader integration details. |
+| Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
@@ -166,28 +166,29 @@ missing important target features; `Missing` = no comparable C path yet.
 
 ## Recommended Next Branches
 
-### 1. `feat/wam-c-native-kernel-float-output`
+### Completed: `feat/wam-c-native-kernel-float-output`
 
 Goal: close the output-type parity gap for weighted/A* native kernels by adding
 a C runtime representation for floating-point results.
 
-Scope:
+Evidence:
 
-- Add a `VAL_FLOAT` or equivalent runtime value representation.
-- Extend foreign-handler unification and smoke assertions for weighted/A*
-  results that are not exact integers.
-- Keep benchmark integration separate unless the value representation itself
-  proves stable.
+- `VAL_FLOAT`, `val_float`, and `val_number_from_double` are available in
+  the C runtime.
+- Weighted and direct-distance edges store `double` weights.
+- Weighted shortest path and A* emit exact integers as `VAL_INT` and fractional
+  weights as `VAL_FLOAT`.
+- Executable smokes cover fractional weighted and A* results.
 
 Reason:
 
 - The accumulated effective-distance runtime blocker is resolved at `10x`; the
   dominant cost was repeated full-edge scans in ancestor traversal, not WAM
   dispatch or native-kernel call overhead.
-- Weighted/A* native kernels currently cover integer results, while Haskell and
-  Rust have broader numeric-result surfaces.
+- Weighted/A* native kernels previously covered only integer results, while
+  Haskell and Rust had broader numeric-result surfaces.
 
-### 2. `investigate/wam-c-larger-artifact-layouts`
+### 1. `investigate/wam-c-larger-artifact-layouts`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
 layouts remain the right defaults at larger category scales.
@@ -393,7 +394,8 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `feat/wam-c-native-kernel-float-output` unless the next round of
-work is explicitly benchmark-scale focused. The accumulated runtime
+Proceed with `investigate/wam-c-larger-artifact-layouts` unless the next round
+of work is explicitly generated-program parity focused. The accumulated runtime
 investigation found and fixed the dominant `10x` cost: repeated full-edge scans
-inside recursive ancestor traversal.
+inside recursive ancestor traversal, and the weighted/A* native kernels now
+preserve fractional results.

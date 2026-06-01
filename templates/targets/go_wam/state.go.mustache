@@ -66,6 +66,10 @@ type ChoicePoint struct {
 	ForeignResults   []Value
 	MemberTail       Value
 	SelectResults    []SelectSolution
+	BetweenActive    bool
+	BetweenCurrent   int64
+	BetweenHigh      int64
+	BetweenReg       int
 }
 
 type EnvFrame struct {
@@ -1305,6 +1309,35 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, &Integer{Val: bInt.Val - 1})
 		}
 		return false
+	case "between/3":
+		lo, ok1 := vm.deref(arg1).(*Integer)
+		hi, ok2 := vm.deref(arg2).(*Integer)
+		if !ok1 || !ok2 || lo.Val > hi.Val {
+			return false
+		}
+		v := vm.deref(arg3)
+		if n, ok := v.(*Integer); ok {
+			return n.Val >= lo.Val && n.Val <= hi.Val
+		}
+		if !isUnbound(v) {
+			return false
+		}
+		if lo.Val < hi.Val {
+			vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+				ResumePC:       vm.PC + 1,
+				CP:             vm.CP,
+				E:              vm.E,
+				StackLen:       len(vm.Stack),
+				SavedRegs:      vm.snapshotAllRegs(),
+				HeapTop:        vm.HeapLen,
+				TrailMark:      vm.TrailLen,
+				BetweenActive:  true,
+				BetweenCurrent: lo.Val + 1,
+				BetweenHigh:    hi.Val,
+				BetweenReg:     2,
+			})
+		}
+		return vm.Unify(arg3, &Integer{Val: lo.Val})
 	case "atom_number/2":
 		atomVal := vm.deref(arg1)
 		numberVal := vm.deref(arg2)
@@ -1748,6 +1781,74 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			}
 		}
 		return vm.Unify(arg3, &List{Elements: kept})
+	case "subtract/3":
+		left, okLeft := vm.listToSlice(arg1)
+		right, okRight := vm.listToSlice(arg2)
+		if !okLeft || !okRight {
+			return false
+		}
+		result := make([]Value, 0, len(left))
+		for _, item := range left {
+			candidate := vm.deref(item)
+			remove := false
+			for _, other := range right {
+				if valueEquals(candidate, vm.deref(other)) {
+					remove = true
+					break
+				}
+			}
+			if !remove {
+				result = append(result, item)
+			}
+		}
+		return vm.Unify(arg3, &List{Elements: result})
+	case "list_to_set/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		result := make([]Value, 0, len(items))
+		for _, item := range items {
+			candidate := vm.deref(item)
+			found := false
+			for _, existing := range result {
+				if valueEquals(vm.deref(existing), candidate) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				result = append(result, candidate)
+			}
+		}
+		return vm.Unify(arg2, &List{Elements: result})
+	case "permutation/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		d2 := vm.deref(arg2)
+		if isUnbound(d2) {
+			return vm.Unify(arg2, &List{Elements: append([]Value(nil), items...)})
+		}
+		other, ok := vm.listToSlice(arg2)
+		if !ok || len(items) != len(other) {
+			return false
+		}
+		left := append([]Value(nil), items...)
+		right := append([]Value(nil), other...)
+		sort.SliceStable(left, func(i, j int) bool {
+			return compareValues(vm.deref(left[i]), vm.deref(left[j])) < 0
+		})
+		sort.SliceStable(right, func(i, j int) bool {
+			return compareValues(vm.deref(right[i]), vm.deref(right[j])) < 0
+		})
+		for i := range left {
+			if compareValues(vm.deref(left[i]), vm.deref(right[i])) != 0 {
+				return false
+			}
+		}
+		return true
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
@@ -1816,6 +1917,54 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			items = append(items, &Integer{Val: n})
 		}
 		return vm.Unify(arg3, &List{Elements: items})
+	case "sum_list/2", "min_list/2", "max_list/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		if op != "sum_list/2" && len(items) == 0 {
+			return false
+		}
+		allInts := true
+		var intAcc int64
+		var floatAcc float64
+		if op == "sum_list/2" {
+			for _, item := range items {
+				switch n := vm.deref(item).(type) {
+				case *Integer:
+					intAcc += n.Val
+					floatAcc += float64(n.Val)
+				case *Float:
+					allInts = false
+					floatAcc += n.Val
+				default:
+					return false
+				}
+			}
+		} else {
+			for idx, item := range items {
+				switch n := vm.deref(item).(type) {
+				case *Integer:
+					if idx == 0 || (op == "min_list/2" && n.Val < intAcc) || (op == "max_list/2" && n.Val > intAcc) {
+						intAcc = n.Val
+					}
+					if idx == 0 || (op == "min_list/2" && float64(n.Val) < floatAcc) || (op == "max_list/2" && float64(n.Val) > floatAcc) {
+						floatAcc = float64(n.Val)
+					}
+				case *Float:
+					allInts = false
+					if idx == 0 || (op == "min_list/2" && n.Val < floatAcc) || (op == "max_list/2" && n.Val > floatAcc) {
+						floatAcc = n.Val
+					}
+				default:
+					return false
+				}
+			}
+		}
+		if allInts {
+			return vm.Unify(arg2, &Integer{Val: intAcc})
+		}
+		return vm.Unify(arg2, &Float{Val: floatAcc})
 	case "sort/2", "msort/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
@@ -2154,6 +2303,36 @@ func (vm *WamState) backtrack() bool {
                 vm.ChoicePoints = vm.ChoicePoints[:topIdx]
             }
             if !vm.applySelectSolution(solution) {
+                continue
+            }
+            vm.PC = resumePC
+            return true
+        }
+        return vm.backtrack()
+    }
+    if cp.BetweenActive {
+        for cp.BetweenCurrent <= cp.BetweenHigh {
+            vm.unwindTrailTo(cp.TrailMark)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            if cp.HeapTop <= vm.HeapLen {
+                vm.heapTrimTo(cp.HeapTop)
+            }
+            vm.PC = cp.ResumePC
+            vm.CP = cp.CP
+            vm.E = cp.E
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            n := cp.BetweenCurrent
+            cp.BetweenCurrent++
+            resumePC := cp.ResumePC
+            if cp.BetweenCurrent > cp.BetweenHigh {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            }
+            if !vm.Unify(vm.getReg(cp.BetweenReg), &Integer{Val: n}) {
                 continue
             }
             vm.PC = resumePC
