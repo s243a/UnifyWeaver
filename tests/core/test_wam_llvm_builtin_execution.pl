@@ -2314,6 +2314,76 @@ test_ks_mixed_num_keys(_, R) :-
     keysort([2-a, 1.5-b, 1-c, 2.5-d], [K-_|_]),
     R is K.   % 1
 
+% M63: sort/2 -- standard term order with dedup.
+
+:- dynamic test_sort_int_unique/2.
+test_sort_int_unique(_, R) :-
+    sort([3, 1, 2], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_int_first/2.
+test_sort_int_first(_, R) :-
+    sort([5, 2, 8, 1, 3], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_int_last/2.
+test_sort_int_last(_, R) :-
+    sort([5, 2, 8, 1, 3], L),
+    last(L, E),
+    R is E.   % 8
+
+:- dynamic test_sort_dedup/2.
+test_sort_dedup(_, R) :-
+    sort([3, 1, 2, 1, 3, 2], L),
+    length(L, N),
+    R is N.   % 3 (dedup removes duplicates)
+
+:- dynamic test_sort_all_same/2.
+test_sort_all_same(_, R) :-
+    sort([7, 7, 7, 7], L),
+    length(L, N),
+    R is N.   % 1
+
+:- dynamic test_sort_empty/2.
+test_sort_empty(_, R) :-
+    sort([], L),
+    length(L, N),
+    R is N + 23.   % 23
+
+:- dynamic test_sort_singleton/2.
+test_sort_singleton(_, R) :-
+    sort([42], [E]),
+    R is E.   % 42
+
+:- dynamic test_sort_atom_keys/2.
+test_sort_atom_keys(_, R) :-
+    sort([banana, apple, cherry], [F|_]),
+    atom_length(F, L),
+    R is L.   % 5 (apple)
+
+:- dynamic test_sort_atom_dedup/2.
+test_sort_atom_dedup(_, R) :-
+    sort([b, a, c, a, b], L),
+    length(L, N),
+    R is N.   % 3
+
+:- dynamic test_sort_float/2.
+test_sort_float(_, R) :-
+    sort([3.5, 1.5, 2.5], [F|_]),
+    R is truncate(F * 10).   % 15
+
+:- dynamic test_sort_mixed_num/2.
+test_sort_mixed_num(_, R) :-
+    sort([3, 1.5, 2, 1], [F|_]),
+    R is F.   % 1
+
+:- dynamic test_sort_already_sorted/2.
+test_sort_already_sorted(_, R) :-
+    sort([1, 2, 3, 4, 5], L),
+    length(L, N),
+    R is N.   % 5 (no dedup, already sorted)
+
 % M20: transcendentals -- sin, cos, tan, log, exp. All lower to LLVM
 % intrinsics that the M18 -lm rollout already links. Verified via
 % truncate(... * scale) so the shell exit code can carry an integer
@@ -3744,6 +3814,31 @@ test_all :-
                    test_ks_float_keys, 0, 15),
        run_test_r0('keysort mixed num keys first -> 1',
                    test_ks_mixed_num_keys, 0, 1),
+       format('--- M63 sort/2 (standard order + dedup) ---~n'),
+       run_test_r0('sort([3,1,2]) length -> 3',
+                   test_sort_int_unique, 0, 3),
+       run_test_r0('sort([5,2,8,1,3]) first -> 1',
+                   test_sort_int_first, 0, 1),
+       run_test_r0('sort([5,2,8,1,3]) last -> 8',
+                   test_sort_int_last, 0, 8),
+       run_test_r0('sort([3,1,2,1,3,2]) dedup length -> 3',
+                   test_sort_dedup, 0, 3),
+       run_test_r0('sort([7,7,7,7]) length -> 1',
+                   test_sort_all_same, 0, 1),
+       run_test_r0('sort([]) + 23 -> 23',
+                   test_sort_empty, 0, 23),
+       run_test_r0('sort([42], [E]) -> 42',
+                   test_sort_singleton, 0, 42),
+       run_test_r0('sort atom keys first length -> 5 (apple)',
+                   test_sort_atom_keys, 0, 5),
+       run_test_r0('sort atom dedup length -> 3',
+                   test_sort_atom_dedup, 0, 3),
+       run_test_r0('sort float first*10 -> 15',
+                   test_sort_float, 0, 15),
+       run_test_r0('sort mixed num first -> 1',
+                   test_sort_mixed_num, 0, 1),
+       run_test_r0('sort already-sorted length -> 5',
+                   test_sort_already_sorted, 0, 5),
        format('--- M20 transcendentals -- sin / cos / tan / log / exp ---~n'),
        run_test_r0('truncate(sin(22/7/2) * 100) -> ~99',
                    test_sin_pi_half, 0, 99),
