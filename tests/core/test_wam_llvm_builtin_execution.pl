@@ -2452,6 +2452,47 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M69: @</2 @=</2 @>/2 @>=/2 standard-order comparison operators.
+
+:- dynamic test_at_lt_yes/2.
+test_at_lt_yes(_, R) :- ( 1 @< 2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_lt_no/2.
+test_at_lt_no(_, R) :- ( 5 @< 2 -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_at_lt_eq/2.
+test_at_lt_eq(_, R) :- ( 3 @< 3 -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_at_le_yes/2.
+test_at_le_yes(_, R) :- ( 1 @=< 2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_le_eq/2.
+test_at_le_eq(_, R) :- ( 3 @=< 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_le_no/2.
+test_at_le_no(_, R) :- ( 5 @=< 2 -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_at_gt_yes/2.
+test_at_gt_yes(_, R) :- ( 5 @> 2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_gt_no/2.
+test_at_gt_no(_, R) :- ( 1 @> 2 -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_at_ge_yes/2.
+test_at_ge_yes(_, R) :- ( 5 @>= 2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_ge_eq/2.
+test_at_ge_eq(_, R) :- ( 3 @>= 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_at_atom/2.
+test_at_atom(_, R) :- ( apple @< banana -> R is 1 ; R is 0 ).   % 1 (alpha order)
+
+:- dynamic test_at_cross_cat/2.
+test_at_cross_cat(_, R) :- ( 42 @< foo -> R is 1 ; R is 0 ).   % 1 (numbers < atoms)
+
+:- dynamic test_at_compound/2.
+test_at_compound(_, R) :- ( foo(1) @< foo(2) -> R is 1 ; R is 0 ).   % 1
+
 % M68: split_string/4 -- per-char separators + pad-strip on segments.
 
 :- dynamic test_ss_simple/2.
@@ -4045,6 +4086,33 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M69 standard-order comparison operators ---~n'),
+       run_test_r0('1 @< 2 -> 1',
+                   test_at_lt_yes, 0, 1),
+       run_test_r0('5 @< 2 -> 0',
+                   test_at_lt_no, 0, 0),
+       run_test_r0('3 @< 3 -> 0',
+                   test_at_lt_eq, 0, 0),
+       run_test_r0('1 @=< 2 -> 1',
+                   test_at_le_yes, 0, 1),
+       run_test_r0('3 @=< 3 -> 1',
+                   test_at_le_eq, 0, 1),
+       run_test_r0('5 @=< 2 -> 0',
+                   test_at_le_no, 0, 0),
+       run_test_r0('5 @> 2 -> 1',
+                   test_at_gt_yes, 0, 1),
+       run_test_r0('1 @> 2 -> 0',
+                   test_at_gt_no, 0, 0),
+       run_test_r0('5 @>= 2 -> 1',
+                   test_at_ge_yes, 0, 1),
+       run_test_r0('3 @>= 3 -> 1',
+                   test_at_ge_eq, 0, 1),
+       run_test_r0('apple @< banana -> 1',
+                   test_at_atom, 0, 1),
+       run_test_r0('42 @< foo cross-cat -> 1',
+                   test_at_cross_cat, 0, 1),
+       run_test_r0('foo(1) @< foo(2) -> 1',
+                   test_at_compound, 0, 1),
        format('--- M68 split_string/4 ---~n'),
        run_test_r0('split_string(\'a,b,c\', \',\', \'\') length -> 3',
                    test_ss_simple, 0, 3),

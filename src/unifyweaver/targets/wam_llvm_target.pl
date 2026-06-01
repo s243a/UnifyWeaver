@@ -3482,6 +3482,10 @@ entry:
     i32 83, label %builtin_put_char
     i32 84, label %builtin_put_code
     i32 85, label %builtin_split_string
+    i32 86, label %builtin_at_lt
+    i32 87, label %builtin_at_le
+    i32 88, label %builtin_at_gt
+    i32 89, label %builtin_at_ge
   ]
 
 builtin_is:
@@ -4298,6 +4302,38 @@ ssp.b_bind:
   %ssp.b_raw4 = call %Value @wam_get_reg(%WamState* %vm, i32 3)
   %ssp.b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ssp.b_raw4, %Value %ssp.b_acc)
   ret i1 %ssp.b_ok
+
+builtin_at_lt:
+  ; M69: @</2 -- standard term order strictly less than.
+  %atlt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %atlt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %atlt.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %atlt.a1, %Value %atlt.a2)
+  %atlt.ok = icmp slt i32 %atlt.r, 0
+  ret i1 %atlt.ok
+
+builtin_at_le:
+  ; M69: @=</2 -- standard term order less or equal.
+  %atle.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %atle.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %atle.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %atle.a1, %Value %atle.a2)
+  %atle.ok = icmp sle i32 %atle.r, 0
+  ret i1 %atle.ok
+
+builtin_at_gt:
+  ; M69: @>/2 -- standard term order strictly greater than.
+  %atgt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %atgt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %atgt.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %atgt.a1, %Value %atgt.a2)
+  %atgt.ok = icmp sgt i32 %atgt.r, 0
+  ret i1 %atgt.ok
+
+builtin_at_ge:
+  ; M69: @>=/2 -- standard term order greater or equal.
+  %atge.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %atge.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %atge.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %atge.a1, %Value %atge.a2)
+  %atge.ok = icmp sge i32 %atge.r, 0
+  ret i1 %atge.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10865,6 +10901,10 @@ builtin_op_to_id('tab/1', 82).                % I/O: print N spaces.
 builtin_op_to_id('put_char/1', 83).           % I/O: print first byte of single-char atom.
 builtin_op_to_id('put_code/1', 84).           % I/O: print byte value as char.
 builtin_op_to_id('split_string/4', 85).       % split atom on any char from SepChars; strip pad chars from segments.
+builtin_op_to_id('@</2', 86).                 % standard order: less than.
+builtin_op_to_id('@=</2', 87).                % standard order: less or equal.
+builtin_op_to_id('@>/2', 88).                 % standard order: greater than.
+builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
