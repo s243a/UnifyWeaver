@@ -77,39 +77,65 @@ impl<S: LookupSource> CachedLookup<S> {
     }
 }
 
+/// (B) Per-thread L1 result cache, layered in front of the sharded L2.
+/// Fixed-capacity, collision-overwrite eviction (a key maps to one slot
+/// by `key & MASK`; a colliding key overwrites it). Bounded and
+/// lock-free: hot-ancestor hits never touch the shared L2 mutex. Mirrors
+/// F#'s ThreadLocal L1 / Haskell's per-HEC array. NOT a full preload —
+/// capacity is fixed regardless of graph size, so it scales.
+const L1_BITS: usize = 16;
+const L1_SIZE: usize = 1 << L1_BITS; // 65536 slots/thread (~few MB)
+const L1_MASK: usize = L1_SIZE - 1;
+
+thread_local! {
+    static L1_CACHE: std::cell::RefCell<Vec<Option<(i32, Vec<i32>)>>> =
+        std::cell::RefCell::new(vec![None; L1_SIZE]);
+}
+
 impl<S: LookupSource> LookupSource for CachedLookup<S> {
     fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {
         self.inner.lookup_key_for_atom(atom)
     }
 
     fn lookup_parents(&self, key: i32) -> Vec<i32> {
-        // Fast path: cache hit. Clone the cached Vec under the lock and
-        // return it. (Vec<i32> clones are cheap — ~2-3 ints per key on
-        // average for our graph workload.)
-        {
-            let shard = self.shard_for(key).lock().unwrap();
-            if let Some(vs) = shard.map.get(&key) {
-                return vs.clone();
-            }
+        let idx = (key as u32 as usize) & L1_MASK;
+        // L1 fast path: per-thread, lock-free.
+        if let Some(hit) = L1_CACHE.with(|c| match &c.borrow()[idx] {
+            Some((k, v)) if *k == key => Some(v.clone()),
+            _ => None,
+        }) {
+            return hit;
         }
-        // Slow path: cache miss. Fetch from inner without holding the
-        // shard lock (the cursor read may take µs and we don't want to
-        // serialise other shards on it).
-        let vs = self.inner.lookup_parents(key);
-        // Re-acquire, insert with FIFO eviction if at cap.
-        {
-            let mut shard = self.shard_for(key).lock().unwrap();
-            if !shard.map.contains_key(&key) {
-                if shard.map.len() >= self.cap_per_shard {
-                    if let Some(evict_key) = shard.order.first().copied() {
-                        shard.order.remove(0);
-                        shard.map.remove(&evict_key);
+        // L2 fast path: shared sharded cache hit. Clone the cached Vec
+        // under the lock. (Vec<i32> clones are cheap — ~2-3 ints/key.)
+        let vs = {
+            let cached = {
+                let shard = self.shard_for(key).lock().unwrap();
+                shard.map.get(&key).cloned()
+            };
+            match cached {
+                Some(vs) => vs,
+                None => {
+                    // Miss: fetch from inner without holding the shard
+                    // lock, then re-acquire and insert (FIFO eviction).
+                    let vs = self.inner.lookup_parents(key);
+                    let mut shard = self.shard_for(key).lock().unwrap();
+                    if !shard.map.contains_key(&key) {
+                        if shard.map.len() >= self.cap_per_shard {
+                            if let Some(evict_key) = shard.order.first().copied() {
+                                shard.order.remove(0);
+                                shard.map.remove(&evict_key);
+                            }
+                        }
+                        shard.map.insert(key, vs.clone());
+                        shard.order.push(key);
                     }
+                    vs
                 }
-                shard.map.insert(key, vs.clone());
-                shard.order.push(key);
             }
-        }
+        };
+        // Populate L1 (collision-overwrite).
+        L1_CACHE.with(|c| c.borrow_mut()[idx] = Some((key, vs.clone())));
         vs
     }
 
@@ -287,6 +313,18 @@ pub struct WamState {
     /// Populated by `register_lazy_lookup` when `lmdb_materialisation(lazy)`
     /// is set; consumed by the `lazy_lmdb_lookup` foreign-native-kind handler.
     pub lazy_lookups: HashMap<String, Arc<dyn LookupSource>>,
+    /// Direct integer maps for the lazy/cached edge path, precomputed once
+    /// at setup so the hot kernel lookup (`edge_parents`) is pure-integer
+    /// — no per-call WAM-atom→string→LMDB-int→string→WAM-atom round-trip.
+    /// `wam_to_lmdb`: WAM intern id → LMDB int key (for the lookup key).
+    /// `lmdb_to_wam`: LMDB int → WAM intern id (for mapping results back).
+    pub wam_to_lmdb: HashMap<u32, i32>,
+    pub lmdb_to_wam: HashMap<i32, u32>,
+    /// Reachable demand set (LMDB int ids) for the lazy/cached edge path.
+    /// Eager only materialises edges whose parent is in this set; the lazy
+    /// path must filter identically or the kernel over-explores
+    /// non-reachable ancestor branches. Empty = no filter (eager/other).
+    pub demand_set: HashSet<i32>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -333,6 +371,9 @@ impl WamState {
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
             lazy_lookups: HashMap::new(),
+            wam_to_lmdb: HashMap::new(),
+            lmdb_to_wam: HashMap::new(),
+            demand_set: HashSet::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -504,6 +545,26 @@ impl WamState {
         self.lazy_lookups.insert(pred.to_string(), source);
     }
 
+    /// Precompute the WAM-atom-id ↔ LMDB-int maps from the s2i intern
+    /// table, so `edge_parents`' lazy path is pure-integer. Interns every
+    /// s2i atom (so each has a WAM id) and records both directions. Call
+    /// once at setup, after `register_lazy_lookup`.
+    pub fn build_lazy_int_maps(&mut self, s2i: &HashMap<String, i32>) {
+        self.wam_to_lmdb.reserve(s2i.len());
+        self.lmdb_to_wam.reserve(s2i.len());
+        for (atom, &lmdb_int) in s2i {
+            let wam_id = self.intern_atom(atom);
+            self.wam_to_lmdb.insert(wam_id, lmdb_int);
+            self.lmdb_to_wam.insert(lmdb_int, wam_id);
+        }
+    }
+
+    /// Set the reachable demand set (LMDB int ids) used to prune the
+    /// lazy/cached edge path to the same edges eager materialises.
+    pub fn set_demand_set(&mut self, demand: HashSet<i32>) {
+        self.demand_set = demand;
+    }
+
     /// Fetch a lazy edge-lookup backend by "name/arity".
     pub fn lazy_lookup(&self, pred: &str) -> Option<Arc<dyn LookupSource>> {
         self.lazy_lookups.get(pred).cloned()
@@ -518,19 +579,30 @@ impl WamState {
     /// is constructed by appending "/2" (the convention for edge
     /// predicates).
     pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
-        // Lazy path: round-trip through the LMDB intern table.
+        // Lazy path: pure-integer via the precomputed WAM↔LMDB int maps
+        // (built once by build_lazy_int_maps). No per-call string alloc,
+        // string clone, or string-hashed lookup — that round-trip was the
+        // ~445× gap vs the eager integer path at simplewiki scale.
         let lazy_key = format!("{}/2", edge_pred);
         if let Some(source) = self.lazy_lookups.get(&lazy_key) {
-            if let Some(atom_str) = self.atom_deintern.get(cat_id as usize).cloned() {
-                if let Some(int_key) = source.lookup_key_for_atom(&atom_str) {
-                    let parent_ints = source.lookup_parents(int_key);
-                    return parent_ints.iter().filter_map(|pid| {
-                        source.atom_for_key(*pid).and_then(|s| self.atom_intern.get(&s).copied())
-                    }).collect();
+            let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
+                // Lazy registered but this atom isn't in s2i; treat as miss.
+                return Vec::new();
+            };
+            let parent_ints = source.lookup_parents(int_key);
+            let mut out = Vec::with_capacity(parent_ints.len());
+            for pid in parent_ints {
+                // Demand-set pruning: eager only materialises edges whose
+                // parent is reachable; the lazy path must match or the
+                // kernel over-explores non-reachable ancestor branches.
+                if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
+                    continue;
+                }
+                if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
+                    out.push(wam);
                 }
             }
-            // Lazy registered but the key isn't in s2i / deintern; treat as miss.
-            return Vec::new();
+            return out;
         }
         // Eager fallback.
         self.ffi_facts

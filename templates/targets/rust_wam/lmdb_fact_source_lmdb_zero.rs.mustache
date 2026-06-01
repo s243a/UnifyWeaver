@@ -31,10 +31,30 @@ use lmdb_zero as lmdb;
 #[derive(Clone)]
 pub struct LmdbFactSource {
     pub env: Arc<lmdb::Environment>,
+    /// Leaked `'static` view of the same Environment. Lets each worker
+    /// thread cache a long-lived read transaction (see READ_TXN) without
+    /// a self-referential struct or `unsafe`. One env per process for the
+    /// bench; the handle lives for the whole run.
+    env_static: &'static lmdb::Environment,
     pub s2i: Arc<lmdb::Database<'static>>,
     pub i2s: Arc<lmdb::Database<'static>>,
     pub category_parent: Arc<lmdb::Database<'static>>,
     pub category_child: Arc<lmdb::Database<'static>>,
+}
+
+thread_local! {
+    /// Per-thread reused read transaction (cursor/txn-reuse port of
+    /// Haskell's DupsortCursorCache). A single long-lived read snapshot
+    /// per worker eliminates `mdb_txn_begin` — and its contention on
+    /// LMDB's reader-lock table under Rayon parallelism — on every
+    /// `lookup_via_dupsort` call. The workload is read-only (no writers),
+    /// so a long-lived snapshot is safe; the txn is dropped at thread
+    /// exit (acceptable for a batch bench, matching the Haskell design's
+    /// "cursors leak at shutdown" note). Cursors are still opened per
+    /// call (cheap relative to txn begin); caching them too is a further
+    /// step if profiling shows cursor-open dominating.
+    static READ_TXN: std::cell::RefCell<Option<lmdb::ReadTransaction<'static>>> =
+        std::cell::RefCell::new(None);
 }
 
 impl LmdbFactSource {
@@ -44,9 +64,21 @@ impl LmdbFactSource {
         let env = unsafe {
             let mut builder = lmdb::EnvBuilder::new()?;
             builder.set_maxdbs(16)?;
-            builder.open(lmdb_path, lmdb::open::Flags::empty(), 0o600)?
+            // NOTLS: decouple read transactions from thread-local reader
+            // slots. Required because a worker thread now holds a cached
+            // read txn (READ_TXN) for the kernel's parent lookups while
+            // setup-phase reads (load_s2i/i2s, reachable_to_root) open
+            // their own short-lived read txns — without NOTLS LMDB allows
+            // only one read txn per thread and returns MDB_BAD_RSLOT.
+            builder.open(lmdb_path, lmdb::open::NOTLS, 0o600)?
         };
         let env = Arc::new(env);
+        // Leak one &'static handle to the same Environment so per-thread
+        // read transactions (READ_TXN) can be cached safely. Box::leak is
+        // safe; the leaked Arc lives for the process (intended).
+        let leaked: &'static Arc<lmdb::Environment> =
+            Box::leak(Box::new(Arc::clone(&env)));
+        let env_static: &'static lmdb::Environment = leaked;
 
         let open_dup = |name: &str| -> Result<Arc<lmdb::Database<'static>>, lmdb::Error> {
             let db = lmdb::Database::open(
@@ -63,6 +95,7 @@ impl LmdbFactSource {
             category_parent: open_dup("category_parent")?,
             category_child: open_dup("category_child")?,
             env,
+            env_static,
         })
     }
 
@@ -121,25 +154,34 @@ impl LmdbFactSource {
         db: &lmdb::Database<'static>,
         key_id: i32,
     ) -> Result<Vec<i32>, lmdb::Error> {
-        let txn = lmdb::ReadTransaction::new(&*self.env)?;
-        let access = txn.access();
-        let mut cursor = txn.cursor(db)?;
         let key_bytes = key_id.to_le_bytes();
-
-        let mut out = Vec::new();
-        match cursor.seek_k::<[u8], [u8]>(&access, &key_bytes) {
-            Ok(_) => {
-                // seek_k positions at first dup for key; iterate all dups.
-                let v = cursor.get_current::<[u8], [u8]>(&access)?.1;
-                out.push(decode_i32(v));
-                while let Ok((_, v)) = cursor.next_dup::<[u8], [u8]>(&access) {
-                    out.push(decode_i32(v));
-                }
+        let env_static = self.env_static;
+        // Reuse this thread's read transaction (open it lazily on first
+        // use). A fresh cursor is opened per call from the cached txn.
+        READ_TXN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(lmdb::ReadTransaction::new(env_static)?);
             }
-            Err(lmdb::Error::Code(lmdb_zero::error::NOTFOUND)) => {}
-            Err(e) => return Err(e),
-        }
-        Ok(out)
+            let txn = slot.as_ref().unwrap();
+            let access = txn.access();
+            let mut cursor = txn.cursor(db)?;
+
+            let mut out = Vec::new();
+            match cursor.seek_k::<[u8], [u8]>(&access, &key_bytes) {
+                Ok(_) => {
+                    // seek_k positions at first dup for key; iterate all dups.
+                    let v = cursor.get_current::<[u8], [u8]>(&access)?.1;
+                    out.push(decode_i32(v));
+                    while let Ok((_, v)) = cursor.next_dup::<[u8], [u8]>(&access) {
+                        out.push(decode_i32(v));
+                    }
+                }
+                Err(lmdb::Error::Code(lmdb_zero::error::NOTFOUND)) => {}
+                Err(e) => return Err(e),
+            }
+            Ok(out)
+        })
     }
 
     /// Cursor-based demand-set BFS — R2 of the Rust-LMDB arc.
