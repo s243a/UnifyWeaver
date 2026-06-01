@@ -4438,4 +4438,78 @@ All byte-identical-verified; codegen tests green.
 - **Reproducible fixture builder**: the Articles-subgraph extraction was
   a throwaway script; promote to a checked-in fixture tool.
 
+## Phase X appendix #16: cross-target lazy-with-cache — Rust `cached` vs Haskell `resident_cursor` (2026-05-31)
+
+First apples-to-apples cross-target comparison of the two lazy-with-cache
+LMDB paths on the **identical** graph: Rust `lmdb_materialisation(cached)`
+(on-demand LMDB + per-thread L1 + sharded L2) vs Haskell `resident_cursor`
+(cursor demand BFS + sharded L2).
+
+### Setup (identical logical graph, both targets)
+
+Closed Articles-rooted simplewiki subgraph (correct-mode ingest):
+**79,375 nodes / 189,831 edges / 38,628 seeds**, root = `Category:Articles`.
+The Haskell fixture was built from the *same* edge TSV via
+`ingest_resident_lmdb_fixture.py` (dense-from-zero atom ids; Articles → id
+118; s2i/i2s/category_parent/category_child dupsort). Both runs single-
+threaded, max_depth=10, same seeds.
+
+**Semantic equivalence verified**: both emit `tuple_count = 38,555`,
+`seed_count = 38,628`, `demand_set_size = 79,375` — same computation,
+different runtime.
+
+### Result (median of repeated runs; noisy box — see caveats)
+
+| target / mode | per-query | total (full 38,628-seed sweep) |
+| --- | ---: | ---: |
+| Haskell `resident_cursor` (-N1) | ~0.15 ms | ~5.6 s (load ~0.25 s + query ~5.1 s) |
+| Rust `cached` (serial) | ~0.50 ms | ~19.5 s (load ~0.08 s + query ~19.2 s) |
+
+**Haskell lazy-with-cache is ~3× faster than Rust single-threaded** on the
+identical workload, both per-query and total.
+
+`-N2`/`-N4` did **not** help Haskell on this box (totals rose to ~9 s) — the
+parMap GC-pressure regression from appendix #6, aggravated by the 5 GB RAM
+limit. Rust's seed loop is serial (no `par_iter` yet).
+
+### Interpretation: the gap is the KERNEL, not the LMDB access
+
+Both targets did the same path-enumeration over the same graph with
+99.99%-hit caches, so the LMDB/cache access layer is not the differentiator.
+The difference is the `category_ancestor` kernel itself:
+
+- **Haskell's kernel is heavily optimised**: accumulator-passing rewrite
+  (#207), IntSet-backed visited set (#191–195, O(log N) `\+ member`), fused
+  step instructions.
+- **Rust's `collect_native_category_ancestor_hops` is naive**: per-path
+  `visited: Vec<u32>` with linear `visited.contains()` scans (O(path) per
+  node), plus the `edge_parents` `wam↔lmdb` int-map indirection on every
+  edge.
+
+Actionable finding: **Rust's LMDB lazy/cached *access* is fine (appendix
+#15); the remaining ~3× vs Haskell is the un-optimised Rust ancestor
+kernel.** Porting the Haskell kernel optimisations (set-based visited
+instead of linear Vec scan; accumulator-passing) is the Rust follow-up —
+orthogonal to the materialisation mode.
+
+### Caveats (perf-skepticism)
+
+- **Noisy**: 5 GB box under memory pressure; Haskell -N1 totals ranged
+  4.8–7.1 s across trials. The ~3× gap is robust to the noise; exact
+  multiples are not.
+- **Haskell `WAM_SEED_LIMIT` did not truncate** here (all runs processed
+  38,628 seeds) — only the full-sweep comparison is clean; a per-seed-count
+  crossover vs Rust was not obtained.
+- Single fixture / scale (simplewiki Articles subgraph). No enwiki.
+- Different internal id spaces (Rust page_id vs Haskell dense) — irrelevant
+  to timing; each reads its own fixture.
+
+### Build note (toolchain)
+
+The Haskell `lmdb` package is no longer in the current Hackage index
+(`cabal build`/`cabal update` → `unknown package: lmdb`); the cached
+`lmdb-0.2.5` tarball was unpacked locally and added via a `cabal.project`
+`packages:` entry, then built with `cabal new-build` (v2; bare `cabal build`
+on cabal 2.4 is legacy-v1 and ignores `cabal.project`).
+
 
