@@ -2459,7 +2459,7 @@ test_cmp_lists_diff(_, R) :-
 test_ks_compound_keys_first(_, R) :-
     % Compound keys: sort by functor/args. foo(1) < foo(2) < foo(3).
     keysort([foo(3)-c, foo(1)-a, foo(2)-b], [_-V|_]),
-    R is V + 96.   % 97 ("a")
+    char_code(V, R).   % 97 ('a')
 
 :- dynamic test_ks_compound_keys_arity/2.
 test_ks_compound_keys_arity(_, R) :-
@@ -2477,7 +2477,7 @@ test_sort_compound_elements(_, R) :-
 :- dynamic test_sort_compound_dedup/2.
 test_sort_compound_dedup(_, R) :-
     % value_equals does structural compound equality (functor +
-    ; arity + recursive args), so two foo(1) entries dedup.
+    % arity + recursive args), so two foo(1) entries dedup.
     sort([foo(2), foo(1), foo(3), foo(1)], L),
     length(L, N),
     R is N.   % 3
