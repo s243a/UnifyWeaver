@@ -209,6 +209,45 @@ test(shared_wam_parser_keeps_lua_extensions) :-
     assertion(Labels == ["  [\"p/0\"] = 1"]),
     assertion(Instrs == ["I.ArgInstr(1, 201, 103)", 'I.Proceed()']).
 
+test(lua_interpreter_uses_items_ir_policy) :-
+    once(source_file(wam_lua_target:write_wam_lua_project(_, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "wam_lua_emit_ir_mode(Options, EmitMode, IrMode)"),
+    sub_string(Content, _, _, _, "wam_ir_mode(wam_lua, EmitMode, Options, IrMode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [], WamCode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamCode)"),
+    !.
+
+test(lua_generated_predicate_allows_text_ir_override) :-
+    unique_lua_tmp_dir('tmp_lua_text_ir_override', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1], [wam_ir(wam_text)], TmpDir),
+        ( directory_file_path(TmpDir, 'lua/generated_program.lua', Program),
+          read_file_to_string(Program, Code, []),
+          assertion(sub_string(Code, _, _, _, 'I.GetConstant(V.Atom(')),
+          assertion(sub_string(Code, _, _, _, '["wam_lua_fact/1"] = 1'))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_generated_predicate_rejects_direct_target_ir,
+     [throws(error(domain_error(wam_lua_ir_mode, direct_target), _))]) :-
+    unique_lua_tmp_dir('tmp_lua_direct_ir_err', TmpDir),
+    call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1],
+                              [wam_ir(direct_target)],
+                              TmpDir),
+        (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)).
+
+test(lua_generated_predicate_rejects_native_items_until_available,
+     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+    unique_lua_tmp_dir('tmp_lua_native_ir_err', TmpDir),
+    call_cleanup(
+        write_wam_lua_project([user:wam_lua_fact/1],
+                              [wam_ir(wam_items_native)],
+                              TmpDir),
+        (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)).
+
 test(lua_parity_guard) :-
     read_file_to_string('templates/targets/lua_wam/runtime.lua.mustache', Runtime, []),
     read_file_to_string('tests/test_wam_lua_generator.pl', Tests, []),

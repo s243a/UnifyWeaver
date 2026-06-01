@@ -114,6 +114,10 @@ test(recognise_builtin_call) :-
     wam_recognise_instruction(["builtin_call", "is/2", "2"], I),
     assertion(I == builtin_call("is/2", "2")).
 
+test(recognise_arg_instruction) :-
+    wam_recognise_instruction(["arg", "1", "Y1", "X3"], I),
+    assertion(I == arg("1", "Y1", "X3")).
+
 test(recognise_numeric_and_nil_instructions) :-
     Pairs = [
         ["get_float", "3.5", "A1"]-get_float("3.5", "A1"),
