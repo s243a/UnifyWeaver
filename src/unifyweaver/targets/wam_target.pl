@@ -1193,6 +1193,14 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         wam_inline_not_enabled
     ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
                       V0, HasEnv, Vf, Code)
+    % M71: forall(Cond, Action) inlines to \+ (Cond, \+ Action) --
+    % the standard rewrite. Falls into the \+ rewrite above for both
+    % the outer and inner negations.
+    ;   nonvar(Goal),
+        Goal = forall(ForallCond, ForallAction),
+        wam_inline_not_enabled
+    ->  compile_goals([\+ (ForallCond, \+ ForallAction) | Rest],
+                      V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail

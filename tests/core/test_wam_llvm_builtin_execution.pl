@@ -2452,6 +2452,38 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M71: forall/2 -- compile-time rewrite to \+ (Cond, \+ Action).
+
+:- dynamic positive/1.
+positive(1).
+positive(2).
+positive(3).
+
+:- dynamic small/1.
+small(1).
+small(2).
+small(3).
+small(4).
+small(5).
+
+:- dynamic test_forall_all_pos/2.
+test_forall_all_pos(_, R) :-
+    ( forall(positive(X), X > 0) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_forall_one_fails/2.
+test_forall_one_fails(_, R) :-
+    ( forall(positive(X), X > 1) -> R is 1 ; R is 0 ).   % 0 (1 fails)
+
+:- dynamic test_forall_subset/2.
+test_forall_subset(_, R) :-
+    % Every X in positive/1 is also in small/1.
+    ( forall(positive(X), small(X)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_forall_empty/2.
+test_forall_empty(_, R) :-
+    % No solutions for false_pred -> forall vacuously true.
+    ( forall(member(X, []), X > 0) -> R is 1 ; R is 0 ).   % 1
+
 % M70: msort/2 + aggregate_all(set, ...) migrated to @wam_term_cmp.
 % Integer-only sorting unchanged; atom sorting now alphabetical (was
 % previously by intern atom_id which is allocation order).
@@ -4115,6 +4147,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M71 forall/2 (compile-time \\+ (Cond, \\+ Action) rewrite) ---~n'),
+       run_test_r0('forall(positive(X), X > 0) -> 1',
+                   test_forall_all_pos + [positive/1], 0, 1),
+       run_test_r0('forall(positive(X), X > 1) -> 0 (1 fails)',
+                   test_forall_one_fails + [positive/1], 0, 0),
+       run_test_r0('forall(positive(X), small(X)) subset -> 1',
+                   test_forall_subset + [positive/1, small/1], 0, 1),
+       run_test_r0('forall over empty solutions -> 1 (vacuous)',
+                   test_forall_empty, 0, 1),
        format('--- M70 msort/2 + setof migrated to @wam_term_cmp ---~n'),
        run_test_r0('msort([d,b,a,c]) first -> 97 (a)',
                    test_msort_atoms_alpha, 0, 97),
