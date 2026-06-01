@@ -1336,6 +1336,9 @@
 (defn valid-char-code? [value]
   (and (integer? value) (not (neg? value)) (<= value 65535)))
 
+(defn char-code-count-term [state code]
+  (normalize-literal-term (:intern-context state) (str code)))
+
 (defn apply-char-code-solution [state]
   (let [char-value (deref-value (:bindings state)
                                 (or (reg-get-raw state "A1") ::unbound))
@@ -1345,7 +1348,10 @@
         code (code-point-value state code-value)]
     (cond
       (some? char-text)
-      (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+      (let [char-code (int (first char-text))
+            [ok unified-state] (if (logic-var? code-value)
+                                 (unify-values state code-value (char-code-count-term state char-code))
+                                 [(= code char-code) state])]
         (if ok
           (advance unified-state)
           (backtrack state)))
@@ -1400,7 +1406,10 @@
             code (code-point-value state code-value)]
         (cond
           (some? char-text)
-          (let [[ok unified-state] (unify-values state code-value (int (first char-text)))]
+          (let [char-code (int (first char-text))
+                [ok unified-state] (if (logic-var? code-value)
+                                     (unify-values state code-value (char-code-count-term state char-code))
+                                     [(= code char-code) state])]
             (if ok
               (advance unified-state)
               (backtrack state)))

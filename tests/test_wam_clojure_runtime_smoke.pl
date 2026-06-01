@@ -208,12 +208,16 @@
 :- dynamic user:wam_char_code_reverse/0.
 :- dynamic user:wam_char_code_forward/0.
 :- dynamic user:wam_char_code_forward_mismatch/0.
+:- dynamic user:wam_char_code_forward_unify/0.
+:- dynamic user:wam_char_code_forward_unify_mismatch/0.
 :- dynamic user:wam_char_code_bad_char/0.
 :- dynamic user:wam_char_code_unbound_pair/1.
 :- dynamic user:wam_char_type_alpha/0.
 :- dynamic user:wam_char_type_digit/0.
 :- dynamic user:wam_char_type_space/0.
 :- dynamic user:wam_char_type_code_forward/0.
+:- dynamic user:wam_char_type_code_forward_unify/0.
+:- dynamic user:wam_char_type_code_forward_unify_mismatch/0.
 :- dynamic user:wam_char_type_code_reverse/0.
 :- dynamic user:wam_char_type_code_mismatch/0.
 :- dynamic user:wam_char_type_lower_fail/0.
@@ -494,12 +498,16 @@ user:wam_char_code_guard(C, N) :- char_code(C, N).
 user:wam_char_code_reverse :- char_code(C, 65), C = 'A'.
 user:wam_char_code_forward :- char_code(a, N), N =:= 97.
 user:wam_char_code_forward_mismatch :- char_code(a, N), N =:= 98.
+user:wam_char_code_forward_unify :- char_code(a, N), N = 97.
+user:wam_char_code_forward_unify_mismatch :- char_code(a, N), N = 98.
 user:wam_char_code_bad_char :- char_code(ab, _).
 user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_arg(N), char_code(C, N).
 user:wam_char_type_alpha :- char_type(a, alpha).
 user:wam_char_type_digit :- char_code(C, 0'5), char_type(C, digit), char_type(C, alnum).
 user:wam_char_type_space :- char_code(C, 32), char_type(C, space), char_type(C, whitespace).
 user:wam_char_type_code_forward :- char_type('A', code(C)), C =:= 65.
+user:wam_char_type_code_forward_unify :- char_type('A', code(C)), C = 65.
+user:wam_char_type_code_forward_unify_mismatch :- char_type('A', code(C)), C = 66.
 user:wam_char_type_code_reverse :- char_type(C, code(97)), C = a.
 user:wam_char_type_code_mismatch :- char_type('A', code(66)).
 user:wam_char_type_lower_fail :- char_type('A', lower).
@@ -785,12 +793,16 @@ run_smoke :-
           user:wam_char_code_reverse/0,
           user:wam_char_code_forward/0,
           user:wam_char_code_forward_mismatch/0,
+          user:wam_char_code_forward_unify/0,
+          user:wam_char_code_forward_unify_mismatch/0,
           user:wam_char_code_bad_char/0,
           user:wam_char_code_unbound_pair/1,
           user:wam_char_type_alpha/0,
           user:wam_char_type_digit/0,
           user:wam_char_type_space/0,
           user:wam_char_type_code_forward/0,
+          user:wam_char_type_code_forward_unify/0,
+          user:wam_char_type_code_forward_unify_mismatch/0,
           user:wam_char_type_code_reverse/0,
           user:wam_char_type_code_mismatch/0,
           user:wam_char_type_lower_fail/0,
@@ -1252,12 +1264,16 @@ smoke_cases([
     case('wam_char_code_reverse/0', no_args, "true"),
     case('wam_char_code_forward/0', no_args, "true"),
     case('wam_char_code_forward_mismatch/0', no_args, "false"),
+    case('wam_char_code_forward_unify/0', no_args, "true"),
+    case('wam_char_code_forward_unify_mismatch/0', no_args, "false"),
     case('wam_char_code_bad_char/0', no_args, "false"),
     case('wam_char_code_unbound_pair/1', a, "false"),
     case('wam_char_type_alpha/0', no_args, "true"),
     case('wam_char_type_digit/0', no_args, "true"),
     case('wam_char_type_space/0', no_args, "true"),
     case('wam_char_type_code_forward/0', no_args, "true"),
+    case('wam_char_type_code_forward_unify/0', no_args, "true"),
+    case('wam_char_type_code_forward_unify_mismatch/0', no_args, "false"),
     case('wam_char_type_code_reverse/0', no_args, "true"),
     case('wam_char_type_code_mismatch/0', no_args, "false"),
     case('wam_char_type_lower_fail/0', no_args, "false"),
