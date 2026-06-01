@@ -2452,6 +2452,44 @@ test_cmp_lists_diff(_, R) :-
     char_code(O, C),
     R is C.   % '<'
 
+% M66: tab/1, put_char/1, put_code/1 -- small I/O builtins.
+
+:- dynamic test_tab_3/2.
+test_tab_3(_, R) :- ( tab(3) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tab_zero/2.
+test_tab_zero(_, R) :- ( tab(0) -> R is 1 ; R is 0 ).   % 1 (no output, succeeds)
+
+:- dynamic test_tab_neg/2.
+test_tab_neg(_, R) :- ( tab(-1) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_tab_not_int/2.
+test_tab_not_int(_, R) :- ( tab(hello) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_put_char_basic/2.
+test_put_char_basic(_, R) :- ( put_char(a) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_put_char_digit/2.
+test_put_char_digit(_, R) :- ( put_char('5') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_put_char_multi/2.
+test_put_char_multi(_, R) :- ( put_char(abc) -> R is 1 ; R is 0 ).   % 0 (not single-char)
+
+:- dynamic test_put_char_int/2.
+test_put_char_int(_, R) :- ( put_char(7) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_put_code_basic/2.
+test_put_code_basic(_, R) :- ( put_code(65) -> R is 1 ; R is 0 ).   % 1 (prints 'A')
+
+:- dynamic test_put_code_low/2.
+test_put_code_low(_, R) :- ( put_code(10) -> R is 1 ; R is 0 ).   % 1 (newline)
+
+:- dynamic test_put_code_neg/2.
+test_put_code_neg(_, R) :- ( put_code(-1) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_put_code_oob/2.
+test_put_code_oob(_, R) :- ( put_code(300) -> R is 1 ; R is 0 ).   % 0
+
 % M65: keysort/2 + sort/2 migrated to @wam_term_cmp.
 % Compound key / element behavioral tests deferred -- there''s a
 % pre-existing emit bug where literal lists of compound terms in
@@ -3916,6 +3954,31 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M66 tab/1 + put_char/1 + put_code/1 ---~n'),
+       run_test_r0('tab(3) -> 1',
+                   test_tab_3, 0, 1),
+       run_test_r0('tab(0) -> 1',
+                   test_tab_zero, 0, 1),
+       run_test_r0('tab(-1) -> 0',
+                   test_tab_neg, 0, 0),
+       run_test_r0('tab(hello) -> 0',
+                   test_tab_not_int, 0, 0),
+       run_test_r0('put_char(a) -> 1',
+                   test_put_char_basic, 0, 1),
+       run_test_r0('put_char(\'5\') -> 1',
+                   test_put_char_digit, 0, 1),
+       run_test_r0('put_char(abc) -> 0',
+                   test_put_char_multi, 0, 0),
+       run_test_r0('put_char(7) -> 0',
+                   test_put_char_int, 0, 0),
+       run_test_r0('put_code(65) -> 1',
+                   test_put_code_basic, 0, 1),
+       run_test_r0('put_code(10) -> 1',
+                   test_put_code_low, 0, 1),
+       run_test_r0('put_code(-1) -> 0',
+                   test_put_code_neg, 0, 0),
+       run_test_r0('put_code(300) -> 0',
+                   test_put_code_oob, 0, 0),
        format('--- M64 compare/3 Compound terms (recursive via helper) ---~n'),
        run_test_r0('compare(O, foo(1,2), foo(1,2)) -> 61 (=)',
                    test_cmp_compound_eq, 0, 61),
