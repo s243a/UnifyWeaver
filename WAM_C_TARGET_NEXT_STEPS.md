@@ -1,22 +1,21 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-29
+Status date: 2026-05-31
 
 Latest branch verification:
 
-- `feat/wam-c-native-kernel-float-output` based on `main` at `7e4b70d5`
-  (`Merge pull request #2582 from s243a/feat/wam-haskell-iso-items-rewrite`)
-- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `investigate/wam-c-larger-artifact-layouts` based on `main` at `982c82f0`
+  (`Merge pull request #2652 from s243a/feat/wam-c-native-kernel-float-output`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `swipl -q -g run_tests -t halt tests/core/test_cost_model.pl`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py tests/test_wam_c_lowered_helper_scale_regression.py`
-- `swipl -q -t halt -s examples/benchmark/generate_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --targets prolog-accumulated,c-wam-accumulated,c-wam-accumulated-no-kernels,c-wam-accumulated-lmdb,c-wam-accumulated-no-kernels-lmdb --repetitions 1 --baseline-target prolog-accumulated --run-timeout-seconds 180`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
+- `python3 tests/test_benchmark_target_matrix.py`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
 - `git diff --check`
 
 Active branch:
 
-- `feat/wam-c-native-kernel-float-output`
+- `investigate/wam-c-larger-artifact-layouts`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -158,8 +157,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
 | Lowered/native helper functions | Partial/Done | Done | Done | C has constant fact-only native helpers, planner metadata, interpreted-vs-lowered matrix wiring, body-call helpers, filtered-fact helpers, comparison-filter helpers, rejection metadata, repeated-variable filter hardening, empty-result rejection metadata, and projected body-call helper expansion. |
 | FactSource abstraction | Partial | Partial/less central | Done | C has TSV category-parent loading; generalize beyond category edges as needed. |
-| LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts and generated effective-distance LMDB wiring; larger artifact layout support remains. |
-| Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB `kernels_on`/`kernels_off`; next gap is larger artifact layouts. |
+| LMDB-backed facts | Partial/Done | Not primary | Done | C has optional eager LMDB loading for UTF-8 key/value category-parent facts, generated effective-distance LMDB wiring, and a matrix path for LMDB-offset reverse CSR row lookup. |
+| Effective-distance benchmark harness | Partial/Done | Done | Done | C is wired into the shared matrix for TSV and LMDB parent-only targets plus bounded child-search scan, sorted-array CSR, buffered-pread-drop CSR, and LMDB-offset CSR layout targets. |
 | Classic-program e2e suite | Partial/Done | Partial/Done | Partial/Done | C now covers generated Fibonacci-style recursion with arithmetic; add Ackermann-style depth only if routine runtime stays acceptable. |
 | Memory lifecycle | Partial/Done | Runtime-managed | Runtime-managed | C has ASAN lifecycle smoke coverage for repeated setup, indexed clauses, fact-source loading, native kernel dispatch, and repeated top-level calls. |
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
@@ -188,22 +187,40 @@ Reason:
 - Weighted/A* native kernels previously covered only integer results, while
   Haskell and Rust had broader numeric-result surfaces.
 
-### 1. `investigate/wam-c-larger-artifact-layouts`
+### Active: `investigate/wam-c-larger-artifact-layouts`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
 layouts remain the right defaults at larger category scales.
 
-Scope:
+Implemented so far:
 
-- Reuse the existing effective-distance matrix before adding new benchmark
-  surfaces.
-- Compare TSV, LMDB, CSR, and direct-I/O CSR modes where the current generator
-  can already emit them.
-- Keep any in-memory compressed CSR work out of this branch unless measurement
-  shows the current layout is the limiting factor.
+- Reused the existing effective-distance matrix instead of adding a separate
+  benchmark script.
+- Added WAM-C generator layout profiles for bounded child search over loaded
+  parent facts, sorted-array reverse CSR, buffered-pread-drop reverse CSR, and
+  LMDB-offset reverse CSR.
+- Added `c-wam-child-search-layouts` for scan-vs-CSR smoke comparisons and
+  `c-wam-child-csr-layouts` for larger CSR-only comparisons.
+- Compile-only matrix rows now report WAM-C artifact byte sizes for TSV, LMDB,
+  CSR index/values, and LMDB-offset stores.
+- `dev` layout smoke shows output parity across scan, sorted-array CSR,
+  buffered-pread-drop CSR, and LMDB-offset CSR; runtimes were about
+  `0.130-0.145s` for the four variants.
+- `10x` CSR compile-only smoke builds all three CSR layouts in about
+  `0.735-0.811s`; the generated parent TSV is `167,698` bytes, the reverse
+  CSR index is `22,528` bytes, reverse CSR values are `15,728` bytes, and the
+  LMDB-offset store adds `77,824` bytes.
 
-Status: recommended after the runtime-cost investigation, or sooner if a
-concrete generated benchmark requires float output.
+Open measurement:
+
+- `10x` child-search layout runs are not a routine local gate even with a small
+  child-expansion cap; run them only as an explicit longer benchmark window.
+- Use compile-only rows for routine larger-scale artifact-size comparisons,
+  then schedule runtime rows separately for scales where child-search query
+  execution is acceptable.
+- Parent-only TSV and LMDB targets remain the priority memory structures for
+  current effective-distance workloads. Reverse CSR targets are now available
+  for future child-path variants and artifact-layout measurements.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -394,8 +411,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Proceed with `investigate/wam-c-larger-artifact-layouts` unless the next round
-of work is explicitly generated-program parity focused. The accumulated runtime
-investigation found and fixed the dominant `10x` cost: repeated full-edge scans
-inside recursive ancestor traversal, and the weighted/A* native kernels now
-preserve fractional results.
+Use `c-wam-child-search-layouts` at `dev` as the fast correctness gate and
+`c-wam-child-csr-layouts` in compile-only mode for routine larger-scale
+artifact-size comparisons. Run full child-search runtime rows only in explicit
+longer benchmark windows, and do not promote in-memory compressed CSR work
+until those measurements show that the current file-backed CSR layout is the
+limiting factor.

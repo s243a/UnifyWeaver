@@ -20,7 +20,14 @@
 %%
 %% Usage:
 %%   swipl -q -s examples/benchmark/generate_wam_c_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb]
+%%       <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb] [layout_profile]
+%%
+%% Layout profiles:
+%%   parent_only                - parent-path query only (default)
+%%   child_scan                 - bounded child search over the loaded parent facts
+%%   child_csr_sorted           - bounded child search using sorted-array reverse CSR
+%%   child_csr_buffered_drop    - sorted-array reverse CSR with buffered pread/drop
+%%   child_csr_lmdb_offset      - reverse CSR values plus LMDB row-offset lookup
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -31,6 +38,11 @@ main :-
     current_prolog_flag(argv, Argv),
     (   Argv == []
     ->  true
+    ;   Argv = [FactsPath, OutputDir, KernelModeAtom, FactStorageAtom, LayoutProfileAtom]
+    ->  parse_layout_profile(LayoutProfileAtom, LayoutProfileOptions),
+        generate(FactsPath, OutputDir, KernelModeAtom,
+                 [fact_storage(FactStorageAtom)|LayoutProfileOptions]),
+        halt(0)
     ;   Argv = [FactsPath, OutputDir, KernelModeAtom, FactStorageAtom]
     ->  generate(FactsPath, OutputDir, KernelModeAtom, FactStorageAtom),
         halt(0)
@@ -41,7 +53,7 @@ main :-
     ->  generate(FactsPath, OutputDir, kernels_on),
         halt(0)
     ;   format(user_error,
-               'Usage: ... -- <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb]~n',
+               'Usage: ... -- <facts.pl> <output-dir> [kernels_on|kernels_off] [facts_tsv|facts_lmdb] [layout_profile]~n',
                []),
         halt(1)
     ).
@@ -145,6 +157,53 @@ parse_fact_storage(Atom, Mode) :-
     parse_fact_storage(String, Mode), !.
 parse_fact_storage(Atom, _) :-
     throw(error(domain_error(wam_c_fact_storage, Atom), _)).
+
+parse_layout_profile(parent_only, []).
+parse_layout_profile(child_scan, Options) :-
+    child_search_layout_options(Options).
+parse_layout_profile(child_csr_sorted, Options) :-
+    child_search_layout_options(ChildOptions),
+    append(ChildOptions,
+           [reverse_index(csr([index_backend(sorted_array),
+                               io_policy(buffered_pread)]))],
+           Options).
+parse_layout_profile(child_csr_buffered_drop, Options) :-
+    child_search_layout_options(ChildOptions),
+    append(ChildOptions,
+           [reverse_index(csr([index_backend(sorted_array),
+                               io_policy(buffered_pread_drop)]))],
+           Options).
+parse_layout_profile(child_csr_lmdb_offset, Options) :-
+    child_search_layout_options(ChildOptions),
+    append(ChildOptions,
+           [reverse_index(csr([index_backend(lmdb_offset),
+                               io_policy(buffered_pread)]))],
+           Options).
+parse_layout_profile("parent_only", Options) :-
+    parse_layout_profile(parent_only, Options).
+parse_layout_profile("child_scan", Options) :-
+    parse_layout_profile(child_scan, Options).
+parse_layout_profile("child_csr_sorted", Options) :-
+    parse_layout_profile(child_csr_sorted, Options).
+parse_layout_profile("child_csr_buffered_drop", Options) :-
+    parse_layout_profile(child_csr_buffered_drop, Options).
+parse_layout_profile("child_csr_lmdb_offset", Options) :-
+    parse_layout_profile(child_csr_lmdb_offset, Options).
+parse_layout_profile(Atom, Options) :-
+    atom(Atom),
+    atom_string(Atom, String),
+    parse_layout_profile(String, Options), !.
+parse_layout_profile(Atom, _) :-
+    throw(error(domain_error(wam_c_layout_profile, Atom), _)).
+
+child_search_layout_options([
+    child_search(bounded),
+    max_child_expansions(8),
+    child_search_depth(1),
+    parent_step_cost(1.0),
+    child_step_cost(2.0),
+    child_search_budget(1.0e100)
+]).
 
 parse_child_search_options(Options, ChildSearch) :-
     is_list(Options),
