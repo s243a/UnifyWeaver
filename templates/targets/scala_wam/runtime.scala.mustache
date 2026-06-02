@@ -1282,7 +1282,7 @@ object WamRuntime {
 
       // --- Builtins ---
 
-      case BuiltinCall(pred, _) => pred match {
+      case BuiltinCall(pred, builtinArity) => pred match {
         case "=/2" =>
           val a = deref(s.bindings, s.regs(1))
           val b = deref(s.bindings, s.regs(2))
@@ -1452,7 +1452,17 @@ object WamRuntime {
           }
 
         case _ =>
-          backtrack(s)
+          // Extended builtins (atom_codes, atom_length, ground, atomic,
+          // sort, msort, bagof, setof, write, nl, between, format, succ,
+          // atom_concat, sub_atom, call/N) are implemented in
+          // interceptedExecuteBuiltin. The WAM compiler emits them as
+          // `builtin_call <name>/<arity>`, so route the unhandled cases
+          // there (withReturn = true → advance to the next instruction on
+          // success) before treating it as an unknown builtin and failing.
+          val slash = pred.lastIndexOf('/')
+          val bname = if (slash >= 0) pred.substring(0, slash) else pred
+          if (!interceptedExecuteBuiltin(s, program, bname, builtinArity, withReturn = true))
+            backtrack(s)
       }
 
       // --- Foreign ---
