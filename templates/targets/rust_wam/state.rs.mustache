@@ -382,6 +382,21 @@ pub struct WamState {
     pub aggregate_return_pc: usize,
 }
 
+/// Resolved edge accessor. The category-edge predicate is a CONSTANT for a
+/// whole query, so it is resolved ONCE (`resolve_edge_accessor`) and the
+/// handle threaded through the recursion — instead of re-`format!`-ing and
+/// re-hashing the constant key `"<pred>/2"` on every one of the ~64M kernel
+/// edge lookups. This is the interning principle applied to the predicate
+/// name: resolve once, then per-call work is pure integer access.
+pub enum EdgeAccessor<'a> {
+    /// Eager: borrow the materialised `ffi_facts` adjacency (int -> ints).
+    Eager(&'a HashMap<u32, Vec<u32>>),
+    /// Lazy/cached: borrow the registered on-demand lookup source.
+    Lazy(&'a Arc<dyn LookupSource>),
+    /// Predicate not registered in either path.
+    Empty,
+}
+
 impl WamState {
     /// Create a new WAM state with the given code and labels.
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
@@ -617,38 +632,56 @@ impl WamState {
     /// "/arity" suffix) as stored in ffi_facts; the lazy lookup key
     /// is constructed by appending "/2" (the convention for edge
     /// predicates).
-    pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
-        // Lazy path: pure-integer via the precomputed WAM↔LMDB int maps
-        // (built once by build_lazy_int_maps). No per-call string alloc,
-        // string clone, or string-hashed lookup — that round-trip was the
-        // ~445× gap vs the eager integer path at simplewiki scale.
+    /// Resolve the (constant) edge predicate to a borrowed accessor ONCE,
+    /// before the kernel recursion. Does the single `format!` + string-hash
+    /// per query instead of per call. Lazy/cached takes priority over the
+    /// eager `ffi_facts` fallback, matching the old `edge_parents` order.
+    pub fn resolve_edge_accessor<'a>(&'a self, edge_pred: &str) -> EdgeAccessor<'a> {
         let lazy_key = format!("{}/2", edge_pred);
         if let Some(source) = self.lazy_lookups.get(&lazy_key) {
-            let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
-                // Lazy registered but this atom isn't in s2i; treat as miss.
-                return Vec::new();
-            };
-            let parent_ints = source.lookup_parents(int_key);
-            let mut out = Vec::with_capacity(parent_ints.len());
-            for pid in parent_ints {
-                // Demand-set pruning: eager only materialises edges whose
-                // parent is reachable; the lazy path must match or the
-                // kernel over-explores non-reachable ancestor branches.
-                if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
-                    continue;
-                }
-                if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
-                    out.push(wam);
-                }
-            }
-            return out;
+            EdgeAccessor::Lazy(source)
+        } else if let Some(table) = self.ffi_facts.get(edge_pred) {
+            EdgeAccessor::Eager(table)
+        } else {
+            EdgeAccessor::Empty
         }
-        // Eager fallback.
-        self.ffi_facts
-            .get(edge_pred)
-            .and_then(|table| table.get(&cat_id))
-            .cloned()
-            .unwrap_or_default()
+    }
+
+    /// Per-call edge lookup against a pre-resolved accessor — pure-integer,
+    /// no string work. Used by the category_ancestor kernel hot path.
+    pub fn edge_parents_via(&self, cat_id: u32, acc: &EdgeAccessor) -> Vec<u32> {
+        match acc {
+            EdgeAccessor::Eager(table) => {
+                table.get(&cat_id).cloned().unwrap_or_default()
+            }
+            EdgeAccessor::Lazy(source) => {
+                let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
+                    return Vec::new();
+                };
+                let parent_ints = source.lookup_parents(int_key);
+                let mut out = Vec::with_capacity(parent_ints.len());
+                for pid in parent_ints {
+                    // Demand-set pruning: eager only materialises edges whose
+                    // parent is reachable; the lazy path must match or the
+                    // kernel over-explores non-reachable ancestor branches.
+                    if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
+                        continue;
+                    }
+                    if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
+                        out.push(wam);
+                    }
+                }
+                out
+            }
+            EdgeAccessor::Empty => Vec::new(),
+        }
+    }
+
+    /// Back-compat single-shot lookup (resolve + dispatch). Kept for callers
+    /// off the hot path; the kernel uses resolve_edge_accessor + edge_parents_via.
+    pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
+        let acc = self.resolve_edge_accessor(edge_pred);
+        self.edge_parents_via(cat_id, &acc)
     }
 
     /// Dereference an Unbound variable through the binding table.

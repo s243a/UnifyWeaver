@@ -1894,14 +1894,19 @@ test_r7_lazy_lmdb_lookup_handler_arm :-
     ;   fail_test(Test, 'execute_foreign_predicate is missing the lazy_lmdb_lookup arm or its key calls')
     ).
 
-%% R7: native category_ancestor routes through edge_parents (lazy_lookups-aware).
+%% R7: native category_ancestor routes through the resolved edge accessor
+%% (lazy_lookups-aware), resolving the constant predicate ONCE rather than
+%% re-hashing it per call (interning principle).
 test_r7_native_category_ancestor_uses_edge_parents :-
-    Test = 'WAM-Rust R7: native category_ancestor uses edge_parents (not raw ffi_facts)',
+    Test = 'WAM-Rust R7: native category_ancestor uses resolved edge accessor (not per-call ffi_facts string lookup)',
     (   wam_rust_target:compile_collect_native_category_ancestor_to_rust(Code),
-        sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
+        % Hot path consults the pre-resolved accessor, not a per-call
+        % string-keyed map lookup.
+        sub_string(Code, _, _, _, "self.edge_parents_via(cat_id, acc)"),
+        \+ sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
         \+ sub_string(Code, _, _, _, "self.ffi_facts.get(edge_pred)")
     ->  pass(Test)
-    ;   fail_test(Test, 'collect_native_category_ancestor_hops still reads ffi_facts directly; should call edge_parents')
+    ;   fail_test(Test, 'kernel should call edge_parents_via(cat_id, acc) against the resolved accessor, not a per-call predicate lookup')
     ).
 
 %% Regression: rust_val_literal must strip outer quotes from atom tokens

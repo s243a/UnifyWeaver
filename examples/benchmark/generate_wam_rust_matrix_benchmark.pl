@@ -763,12 +763,16 @@ fn main() {
             let root_id = vm.intern_atom(&root);
             let mut visited_ids = vec![cat_id];
             let mut hops = Vec::new();
+            // Resolve the constant edge predicate once per seed (not per
+            // recursive call) — the interning principle applied to the
+            // predicate name.
+            let acc = vm.resolve_edge_accessor("category_parent");
             vm.collect_native_category_ancestor_hops(
                 cat_id,
                 root_id,
                 &mut visited_ids,
                 max_depth_limit,
-                "category_parent",
+                &acc,
                 0,
                 &mut hops,
             );
@@ -1389,12 +1393,16 @@ fn main() {
             let root_id = vm.intern_atom(&root);
             let mut visited_ids = vec![cat_id];
             let mut hops = Vec::new();
+            // Resolve the constant edge predicate once per seed (not per
+            // recursive call) — the interning principle applied to the
+            // predicate name.
+            let acc = vm.resolve_edge_accessor("category_parent");
             vm.collect_native_category_ancestor_hops(
                 cat_id,
                 root_id,
                 &mut visited_ids,
                 max_depth_limit,
-                "category_parent",
+                &acc,
                 0,
                 &mut hops,
             );

@@ -1409,7 +1409,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     }
                 }).collect();
                 let mut hops: Vec<i64> = Vec::new();
-                self.collect_native_category_ancestor_hops(cat_id, root_id, &mut visited_ids, max_depth, &edge_pred, 0, &mut hops);
+                let acc = self.resolve_edge_accessor(&edge_pred);
+                self.collect_native_category_ancestor_hops(cat_id, root_id, &mut visited_ids, max_depth, &acc, 0, &mut hops);
                 if hops.is_empty() {
                     return false;
                 }
@@ -1856,7 +1857,7 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         root_id: u32,
         visited: &mut Vec<u32>,
         max_depth: usize,
-        edge_pred: &str,
+        acc: &EdgeAccessor,
         depth: i64,
         out: &mut Vec<i64>,
     ) {
@@ -1873,7 +1874,7 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         // with visited.len() == L the old code yielded L (push 1 + L-1
         // increments) and this yields depth + 1 == L, in the same DFS
         // emission order.
-        let parents = self.edge_parents(cat_id, edge_pred);
+        let parents = self.edge_parents_via(cat_id, acc);
         let root_seen = visited.contains(&root_id);
         if !root_seen {
             if parents.contains(&root_id) {
@@ -1895,7 +1896,7 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
                 continue;
             }
             visited.push(*parent_id);
-            self.collect_native_category_ancestor_hops(*parent_id, root_id, visited, max_depth, edge_pred, depth + 1, out);
+            self.collect_native_category_ancestor_hops(*parent_id, root_id, visited, max_depth, acc, depth + 1, out);
             visited.pop();
         }
     }'.
