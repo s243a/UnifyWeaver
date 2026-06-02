@@ -84,7 +84,7 @@
     vm.build_lazy_int_maps(&s2i);
     // Prune the lazy edge path to the reachable demand set, matching the
     // eager materialisation's edge filter (avoids 220× over-exploration).
-    vm.set_demand_set(reachable_ids.clone());
+    vm.set_demand_set(&reachable_ids);
     setup_foreign_predicates(&mut vm);
 {{default}}
     // Cached: lazy with a sharded bounded cache layered in front.
@@ -144,6 +144,6 @@
     vm.build_lazy_int_maps(&s2i);
     // Prune the lazy edge path to the reachable demand set, matching the
     // eager materialisation's edge filter (avoids 220× over-exploration).
-    vm.set_demand_set(reachable_ids.clone());
+    vm.set_demand_set(&reachable_ids);
     setup_foreign_predicates(&mut vm);
 {{/match}}
