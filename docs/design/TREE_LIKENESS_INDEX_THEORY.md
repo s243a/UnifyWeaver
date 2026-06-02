@@ -693,6 +693,20 @@ design note.
 
 ### 3.5 Symmetric DAGs have high TLI under any directional metric
 
+**What TLI measures, precisely.** Before stating the conjecture,
+worth emphasising what TLI actually captures: it is the
+contribution of *shorter-via-child paths* to the metric value.
+In a multi-parent DAG, the shortest $v \to r$ path can include
+child hops — if some descendant of $v$ has a shorter parent
+chain to root, then the route
+$v \to \mathrm{child} \to \cdots \to r$ via that descendant is
+shorter than any pure-parent route from $v$. Tree-search misses
+these. Low TLI means: *either* such shorter-via-child paths
+don't exist, *or* the metric weighting crushes them to
+negligibility. The simplewiki TLI of 0.02% means one of these
+holds in practice; symmetric DAGs (below) are constructed so
+that neither does.
+
 **Conjecture 3.5 (Falsification target).** Let $G$ be a directed
 graph where, in calibration,
 $\mathbb{E}[d_c^2] \approx \mathbb{E}[d_p^2]$ (symmetric DAG, no
@@ -1190,6 +1204,125 @@ a property of graph-distribution-tail behaviour, sharpening
 Conjecture 3.6 into a quantitative statement about which graph
 regimes can safely drop the routing correction without
 re-checking.
+
+### 5.7 Weighting as expected-average over admissible paths
+
+The weight formula
+$w(p) = D^{-N(p)} \cdot (b_{\text{eff}} \cdot D)^{-M(p)}$
+isn't an arbitrary parameter choice — it's the unique exponential
+weighting that gives $d_{\text{wPow}}$ the interpretation of an
+**expected average over paths within the length budget**.
+
+**The intuition.** When we explore a node, we expect $D$ new
+parent-direction paths and $b_{\text{eff}} \cdot D$ effective
+new child-direction paths on average per step. If we want each
+"explored path" to contribute its share to the average (not be
+double-counted by virtue of having many siblings), each parent
+hop should be weighted by $1/D$ and each child hop by
+$1/(b_{\text{eff}} \cdot D)$. The product
+$D^{-N} (b_{\text{eff}} \cdot D)^{-M}$ then reflects the
+*expected number of paths arriving at the given $(N, M)$ shape* —
+and weighting by its reciprocal makes the sum effectively an
+expectation rather than a count.
+
+**Formal consequence (under exact calibration $b_{\text{eff}} \cdot D = b'$).**
+Under Lemma 2.1, the number of paths at level $(N, M)$ is
+$\approx D^N (b')^M$. Multiplying by the weight gives
+$D^N (b')^M \cdot D^{-N} (b')^{-M} = 1$, so each $(N, M)$
+shape contributes a total weight $\approx 1$ to the metric sum.
+The double sum
+$\sum_{N, M} 1 \cdot (h+1)^{-n} = \sum_{h \ge h_{\min}} (\text{shape count at } h) \cdot (h+1)^{-n}$
+makes $d_{\text{wPow}}$ the *expected* $(h+1)^{-n}$ over the
+distribution that puts equal probability on each accessible
+$(N, M)$ shape.
+
+In short: the metric is approximately the *expected
+short-distance metric over all paths within the length budget*,
+where the implicit probability distribution treats each
+path-shape class as a priori equally likely (and within-shape
+paths are uniform). Per §3.6.1, this is the maximum-entropy
+prior over shape classes.
+
+**Why weighting is *necessary* on effectively-infinite graphs.**
+On graphs too large to fully enumerate, the unweighted average
+of $(h+1)^{-n}$ over paths would be dominated by the exponential
+profusion of deep paths, regardless of their information content.
+Concretely on an effectively-infinite tree:
+
+- Number of paths at depth $h$: $\sim D^h$ (exponential in $h$).
+- Unweighted "average" of $(h+1)^{-n}$: dominated by largest $h$,
+  collapses toward $0$ as the graph extends.
+- Weighted by $D^{-h}$: per-depth contribution $(h+1)^{-n}$,
+  total $\sum_h (h+1)^{-n} = \zeta(n) - $ (finite head correction)
+  — well-defined.
+
+The weight $D^{-N} (b_{\text{eff}} \cdot D)^{-M}$ is *the unique
+exponential weighting* (up to constants) that cancels the
+exponential growth and leaves polynomial-decay length factor in
+control. Alternative weightings either diverge or collapse.
+
+**Alternative graph regimes.** Some graphs have sub-exponential
+path-count growth (e.g. bottleneck topologies, or trees where
+branching decreases with depth). On these, the unweighted
+average is well-defined and the exponential weighting is
+over-correction. These graphs are rare in practice; most
+natural graphs of interest (Wikipedia categories, citation
+networks, dependency graphs, scale-free in general) have
+exponential path-count growth, where the weighting is
+*structurally required* for the metric to be defined.
+
+### 5.8 Convergence on effectively-infinite graphs
+
+We distinguish three categories of graphs for the purposes of
+TLI applicability:
+
+| Category | Example | Computational reach |
+|---|---|---|
+| **Materially finite, fully reachable** | Simplewiki topical (~80k nodes) | All paths within reasonable $B$ enumerable |
+| **Effectively infinite** | Enwiki (10M+ pages), boolean-equivalent expression graphs, code-refactoring DAGs | Finite but you never reach the bottom; bounded neighbourhood is all you ever observe |
+| **Materially infinite** | Pure mathematical infinite trees | Doesn't exist as data; only in formal proofs |
+
+**Most of our theory targets the middle category.** The
+convergence condition $b_{\text{eff}} \cdot D > b'$ (Theorem 2.3)
+is what makes the metric well-defined on effectively-infinite
+graphs:
+
+- **Without convergence:** the metric value depends on where you
+  truncate. Increasing $B$ keeps changing the answer, so there
+  is no principled budget at which to certify.
+- **With convergence:** the metric *saturates* to a $B$-independent
+  value at some "natural depth" of the graph. Increasing $B$
+  beyond that adds path-count growth, but the weighting crushes
+  the new contributions. There exists a finite $B^*$ such that
+  $d_{\text{wPow}}(B) \approx d_{\text{wPow}}(B^*)$ for all
+  $B \ge B^*$ within practical precision.
+
+This is the actual practical promise: the convergence condition
+isn't about mathematical infinity. It's about graphs large enough
+you'll never see the bottom but still need a stable answer.
+
+**Algorithmically-generated graphs as a test case.** Boolean-
+equivalent expression graphs are a clean example of an
+effectively-infinite, lazy-generated graph: nodes are expressions
+equivalent (under some chosen equivalence) to a fixed formula,
+edges are single applications of a transformation rule (De
+Morgan, distributivity, etc.). Any non-trivial starting
+expression has more boolean-equivalent forms than can ever be
+materialised, so you only ever explore a bounded neighbourhood
+on demand. The kernel can be pointed at such a generator
+without modification — the convergence condition is what makes
+the resulting metric well-defined.
+
+We note this as a natural test case for Conjecture 3.5
+(symmetric DAG falsification): boolean transformations are
+near-bidirectional, so $b_{\text{eff}}$ on such graphs should be
+close to $1$, putting them firmly in the "convergence fails"
+regime. A direct measurement would either confirm or refute
+Conjecture 3.5 cleanly, without Wikipedia-specific topology
+surprises.
+
+(Detailed exploration deferred — this section names the
+direction; implementation and experiments remain future work.)
 
 ## 6. References
 
