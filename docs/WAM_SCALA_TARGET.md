@@ -145,14 +145,14 @@ write_wam_scala_project([user:tc/2, user:edge/2],
     [ package('demo.tc'), kernel_dispatch(true) ], '/tmp/tc').
 ```
 
-Currently implemented: **`transitive_closure2`** and
-**`transitive_distance3`** (BFS shortest-path distance, binding the
-distance register). The remaining five kinds the detector recognises
-(`category_ancestor`, `weighted_shortest_path3`,
-`transitive_parent_distance4`, `astar_shortest_path4`,
-`transitive_step_parent_distance5`) follow the same pattern and are
-slated as follow-ups; until then those predicates fall back to ordinary
-WAM compilation (correct, just not accelerated).
+Currently implemented: **`transitive_closure2`**,
+**`transitive_distance3`** (BFS shortest-path distance), and
+**`transitive_parent_distance4`** (target + immediate predecessor on the
+shortest path + distance). The remaining four kinds the detector
+recognises (`category_ancestor`, `weighted_shortest_path3`,
+`astar_shortest_path4`, `transitive_step_parent_distance5`) follow the
+same pattern and are slated as follow-ups; until then those predicates
+fall back to ordinary WAM compilation (correct, just not accelerated).
 
 The distance kernel returns the **shortest** path length per reachable
 node (matching the Haskell/Rust/Elixir kernels). The Prolog source

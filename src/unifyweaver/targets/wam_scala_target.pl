@@ -805,7 +805,8 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
 % edge relation through WamRuntime.collectBinarySolutions/2, so it works
 % whether the edges are WAM-compiled facts or a declarative fact source.
 %
-% Currently implemented kernel kinds: transitive_closure2, transitive_distance3.
+% Currently implemented kernel kinds: transitive_closure2, transitive_distance3,
+% transitive_parent_distance4.
 % The remaining six (category_ancestor, transitive_distance3,
 % weighted_shortest_path3, transitive_parent_distance4,
 % astar_shortest_path4, transitive_step_parent_distance5) follow the same
@@ -885,6 +886,20 @@ emit_scala_kernel_handler(recursive_kernel(transitive_distance3, _Pred/3, Config
     scala_string_literal(EdgeKey, EdgeKeyLit),
     format(string(Code),
 "new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            dist(nb) = d + 1\n            queue.enqueue((nb, d + 1))\n          }\n        }\n        val sols = dist.toVector.map { case (t, dd) => Map(2 -> t, 3 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% transitive_parent_distance4: pd(Start, Target, Parent, Distance). BFS over
+% the edge relation; each reachable node (excluding the source) is a
+% solution binding register 2 = target, register 3 = the immediate
+% predecessor on the BFS shortest path, and register 4 = the distance.
+% Matches the Haskell/Rust/Elixir kernels (shortest path only; see the
+% transitive_distance3 note on path-length divergence).
+emit_scala_kernel_handler(recursive_kernel(transitive_parent_distance4, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        // node -> (parent-on-shortest-path, distance)\n        val info = scala.collection.mutable.LinkedHashMap[WamTerm, (WamTerm, Int)]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            info(nb) = (node, d + 1)\n            queue.enqueue((nb, d + 1))\n          }\n        }\n        val sols = info.toVector.map { case (t, (p, dd)) => Map(2 -> t, 3 -> p, 4 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [EdgeKeyLit]).
 
 % ============================================================================
