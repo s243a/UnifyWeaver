@@ -1396,11 +1396,10 @@ e2e_term_inspection_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end: list / atom library builtins.
-% length/2 and append/3 dispatch via builtin_call; atom_codes/2,
-% atom_chars/2, atom_length/2, atom_concat/3, reverse/2 and last/2
-% dispatch via the runtime's call_library fallback when the WAM-emitted
-% Execute / Call hits a missing label. Auto-skips when Rscript is not
-% on PATH.
+% length/2 and append/3 dispatch via builtin_call. The remaining
+% list/atom stdlib predicates can arrive as either BuiltinCall or as
+% Execute / Call fallback; both route through the runtime's
+% call_library table. Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(list_atom_builtins_e2e_rscript) :-
     once((

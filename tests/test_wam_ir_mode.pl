@@ -13,11 +13,17 @@ test(python_lowered_defaults_to_text) :-
     wam_ir_mode(wam_python, lowered, [], Mode),
     assertion(Mode == wam_text).
 
-test(lua_and_r_interpreter_defaults_to_items_bridge) :-
+test(lua_r_and_elixir_interpreter_default_to_items_bridge) :-
     wam_ir_mode(wam_lua, interpreter, [], LuaMode),
     wam_ir_mode(wam_r, interpreter, [], RMode),
+    wam_ir_mode(wam_elixir, interpreter, [], ElixirMode),
     assertion(LuaMode == wam_items_bridge),
-    assertion(RMode == wam_items_bridge).
+    assertion(RMode == wam_items_bridge),
+    assertion(ElixirMode == wam_items_bridge).
+
+test(elixir_lowered_defaults_to_text) :-
+    wam_ir_mode(wam_elixir, lowered, [], Mode),
+    assertion(Mode == wam_text).
 
 test(unknown_target_defaults_to_text) :-
     wam_ir_mode(wam_unknown, interpreter, [], Mode),

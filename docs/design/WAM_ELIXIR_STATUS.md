@@ -57,7 +57,7 @@ Companion docs:
 - Explicit `*_iso/N` forms always throw structured ISO errors.
 - Explicit `*_lax/N` forms always preserve lax/fail-style behavior.
 
-The rewrite is text-level at project-write time (see `iso_errors_rewrite_text/4` in `wam_elixir_target.pl`). Items-level dispatch is deferred — the lowered emitter parses WAM line-by-line and has no items intermediate. Adding one would be the Items API refactor (`WAM_ITEMS_API_SPECIFICATION.md`).
+The rewrite is text-level at project-write time (see `iso_errors_rewrite_text/4` in `wam_elixir_target.pl`). Interpreter-mode predicate modules now parse the rewritten text through the shared WAM-items bridge before emitting Elixir instruction tuples. The lowered emitter still parses WAM line-by-line and has no items intermediate; moving that path to items remains the larger Items API refactor (`WAM_ITEMS_API_SPECIFICATION.md`).
 
 **Aggregates.** `findall/3`, `bagof/3`, `setof/3`, `aggregate_all(Template, Goal, Result)` with all spec-compliant templates (`bag`, `set`, `count`, `sum`, `max`, `min`). Both compiled-inline (`begin_aggregate`/`end_aggregate`) and meta-call dispatch (`execute findall/3` etc.) paths work. Full ISO witness-group backtracking for `bagof/setof` — free-variable bindings are grouped and iterable via `{:agg_next_group, ...}` choice-point frames. The `^/2` existential quantifier is supported.
 
@@ -101,7 +101,7 @@ These choices are load-bearing and worth understanding before working on the tar
 
 **Side-stack catcher frames.** `catch/3` snapshots regs/y_regs/stack/trail-mark/cp-count into `state.catcher_frames`. `throw/1` raises `{:wam_throw, term, heap, heap_len}` as a BEAM throw — bundling the heap is critical for compound thrown terms (deep_copy creates cells in a state that gets discarded before the throw fires).
 
-**ISO error rewriting is text-level.** `iso_errors_rewrite_text/4` recognizes `builtin_call`/`put_structure`/`call`/`execute` line shapes and substitutes keys per the predicate's ISO mode. No items intermediate.
+**ISO error rewriting is text-level.** `iso_errors_rewrite_text/4` recognizes `builtin_call`/`put_structure`/`call`/`execute` line shapes and substitutes keys per the predicate's ISO mode. Interpreter mode then converts the rewritten text to shared WAM items; lowered mode still consumes the rewritten text directly.
 
 ## Deferred Work
 
@@ -114,7 +114,7 @@ In rough priority order:
 5. ~~**switch_on_term + switch_on_constant_fallthrough**~~ — DONE (PR #2535). All WAM indexed dispatch instructions lowered. fibonacci and ackermann now pass.
 6. **IEEE-754 lax float-divide** — BEAM raises on `1.0/0.0`. Would need atom sentinels (`:inf`, `:nan`) plumbed through the lax arithmetic path.
 7. **BEAM-native catch (Option B from PHILOSOPHY §5)** — only if perf measurements show the side-stack walk dominates. Current bench does not exercise it.
-8. **Items API for the lowered emitter** — would let ISO-error rewriting move from text-level to items-level. Cross-cutting; not Elixir-specific.
+8. **Items API for the lowered emitter** — interpreter mode now uses the shared items bridge after text rewrite; the lowered emitter still needs an items-level path before ISO rewriting can move fully out of text. Cross-cutting; not Elixir-specific.
 
 ## Lessons Learned
 
