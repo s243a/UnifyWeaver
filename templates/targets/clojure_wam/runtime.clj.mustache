@@ -652,7 +652,7 @@
       (subs key 0 slash)
       key)))
 
-(declare parse-number-text atom-text)
+(declare parse-number-text atom-text fresh-var list->term)
 
 (defn functor-read-pair [state value]
   (let [value* (deref-value (:bindings state) value)
@@ -681,6 +681,25 @@
 
 (defn functor-arity-term [state arity]
   (normalize-literal-term (:intern-context state) (str arity)))
+
+(defn compound-name-text [state value]
+  (when (atom-term? value)
+    (atom-text state value)))
+
+(defn fresh-compound-args [state arity]
+  (loop [s state
+         remaining arity
+         args []]
+    (if (zero? remaining)
+      [s args]
+      (let [[fresh s*] (fresh-var s)]
+        (recur s* (dec remaining) (conj args fresh))))))
+
+(defn build-compound-term [state name-text args]
+  (let [functor-key (str name-text "/" (count args))
+        [ctx* functor-id] (intern-atom (:intern-context state) functor-key)
+        state* (assoc state :intern-context ctx*)]
+    [state* (structure-term (atom-term functor-id) args)]))
 
 (defn apply-functor-solution [state]
   (let [term (deref-value (:bindings state)
@@ -725,6 +744,77 @@
         (if ok
           (advance next-state)
           (backtrack state)))
+      (backtrack state))))
+
+(defn apply-compound-name-arity-solution [state]
+  (let [raw-term (or (reg-get-raw state "A1") ::unbound)
+        term (deref-value (:bindings state) raw-term)
+        name-out (deref-value (:bindings state)
+                              (or (reg-get-raw state "A2") ::unbound))
+        arity-out (deref-value (:bindings state)
+                               (or (reg-get-raw state "A3") ::unbound))]
+    (cond
+      (structure-term? term)
+      (let [key (functor-key (:intern-context state) (:functor term))
+            name (normalize-literal-atom (:intern-context state) (functor-name-from-key key))
+            arity (count (:args term))
+            [ok-name name-state] (unify-values state name-out name)]
+        (if ok-name
+          (let [[ok-arity arity-state] (if (logic-var? arity-out)
+                                         (unify-values name-state arity-out (functor-arity-term state arity))
+                                         [(= (functor-arity-value state arity-out) arity) name-state])]
+            (if ok-arity
+              (advance arity-state)
+              (backtrack state)))
+          (backtrack state)))
+
+      (logic-var? term)
+      (let [name-text (compound-name-text state name-out)
+            arity (functor-arity-value state arity-out)]
+        (if (and (string? name-text) (integer? arity) (not (neg? arity)))
+          (let [[args-state args] (fresh-compound-args state arity)
+                [compound-state built] (build-compound-term args-state name-text args)
+                [ok next-state] (unify-values compound-state raw-term built)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state)))
+
+      :else
+      (backtrack state))))
+
+(defn apply-compound-name-arguments-solution [state]
+  (let [raw-term (or (reg-get-raw state "A1") ::unbound)
+        term (deref-value (:bindings state) raw-term)
+        name-out (deref-value (:bindings state)
+                              (or (reg-get-raw state "A2") ::unbound))
+        args-out (deref-value (:bindings state)
+                              (or (reg-get-raw state "A3") ::unbound))]
+    (cond
+      (structure-term? term)
+      (let [key (functor-key (:intern-context state) (:functor term))
+            name (normalize-literal-atom (:intern-context state) (functor-name-from-key key))
+            args-list (list->term (:intern-context state) (:args term))
+            [ok-name name-state] (unify-values state name-out name)]
+        (if ok-name
+          (let [[ok-args args-state] (unify-values name-state args-out args-list)]
+            (if ok-args
+              (advance args-state)
+              (backtrack state)))
+          (backtrack state)))
+
+      (logic-var? term)
+      (let [name-text (compound-name-text state name-out)
+            args (proper-list-items state args-out)]
+        (if (and (string? name-text) (some? args))
+          (let [[compound-state built] (build-compound-term state name-text args)
+                [ok next-state] (unify-values compound-state raw-term built)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))
+          (backtrack state)))
+
+      :else
       (backtrack state))))
 
 (declare apply-member-solution)
@@ -2426,6 +2516,12 @@
 
           "arg/3"
           (apply-arg-solution state)
+
+          "compound_name_arity/3"
+          (apply-compound-name-arity-solution state)
+
+          "compound_name_arguments/3"
+          (apply-compound-name-arguments-solution state)
 
           "=../2"
           (apply-univ-solution state)

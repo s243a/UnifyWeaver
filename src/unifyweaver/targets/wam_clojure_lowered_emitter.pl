@@ -444,6 +444,14 @@ clojure_direct_builtin("arg/3", "3").
 clojure_direct_builtin("arg/3", 3).
 clojure_direct_builtin('arg/3', "3").
 clojure_direct_builtin('arg/3', 3).
+clojure_direct_builtin("compound_name_arity/3", "3").
+clojure_direct_builtin("compound_name_arity/3", 3).
+clojure_direct_builtin('compound_name_arity/3', "3").
+clojure_direct_builtin('compound_name_arity/3', 3).
+clojure_direct_builtin("compound_name_arguments/3", "3").
+clojure_direct_builtin("compound_name_arguments/3", 3).
+clojure_direct_builtin('compound_name_arguments/3', "3").
+clojure_direct_builtin('compound_name_arguments/3', 3).
 clojure_direct_builtin("=../2", "2").
 clojure_direct_builtin("=../2", 2).
 clojure_direct_builtin('=../2', "2").
@@ -847,6 +855,16 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "arg/3" ; Op == 'arg/3'),
     !,
     format(atom(Expr), '(runtime/apply-arg-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compound_name_arity/3" ; Op == 'compound_name_arity/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-compound-name-arity-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compound_name_arguments/3" ; Op == 'compound_name_arguments/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-compound-name-arguments-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "=../2" ; Op == '=../2'),
