@@ -2702,4 +2702,23 @@ object WamRuntime {
         out.toVector
     }
   }
+
+  /** Walk a WAM cons list ("[|]"/2 cells terminated by "[]") into a Vector
+   *  of its elements. Improper tails and non-list terms yield whatever
+   *  prefix was proper. Used by graph kernels to read an input list
+   *  argument (e.g. category_ancestor's `visited`). */
+  def wamListToVector(program: WamProgram, term: WamTerm): Vector[WamTerm] = {
+    val consId = program.internTable.lookupId("[|]")
+    val out = mutable.ArrayBuffer.empty[WamTerm]
+    var cur = term
+    var continue = true
+    while (continue) {
+      cur match {
+        case Struct(f, 2, args) if f == consId =>
+          out += args(0); cur = args(1)
+        case _ => continue = false
+      }
+    }
+    out.toVector
+  }
 }
