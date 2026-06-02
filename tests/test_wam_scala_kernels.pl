@@ -85,6 +85,22 @@ user:kwedge(c, d, 3.0).
 user:kwsp(X, Y, W) :- kwedge(X, Y, W).
 user:kwsp(X, Y, T) :- kwedge(X, Z, W1), kwsp(Z, Y, R), T is R + W1.
 
+% astar_shortest_path4: goal-directed A* over the same float-weighted chain,
+% with a heuristic oracle (khdist/3) and Minkowski dimensionality. The plain
+% interpreter ignores the heuristic/dim (they're kernel config) and just sums
+% weights, so on this single-path chain interpreter and kernel agree.
+:- dynamic user:khdist/3.
+:- dynamic user:kastar/4.
+:- dynamic user:direct_dist_pred/1.
+:- dynamic user:dimensionality/1.
+user:direct_dist_pred(khdist/3).
+user:dimensionality(5).
+user:khdist(a, d, 5.0).
+user:khdist(b, d, 4.0).
+user:khdist(c, d, 3.0).
+user:kastar(X, Y, _, W) :- kwedge(X, Y, W).
+user:kastar(X, Y, Dim, T) :- kwedge(X, Z, W1), kastar(Z, Y, Dim, R), T is R + W1.
+
 % ============================================================
 % Structural suite (always runs)
 % ============================================================
@@ -133,6 +149,15 @@ test(detects_weighted_shortest_path3) :-
     assertion(Kernel = recursive_kernel(weighted_shortest_path3, kwsp/3, _)),
     Kernel = recursive_kernel(_, _, Cfg),
     assertion(memberchk(edge_pred(kwedge/3), Cfg)).
+
+test(detects_astar_shortest_path4) :-
+    collect_clauses(kastar, 4, Clauses),
+    detect_recursive_kernel(kastar, 4, Clauses, Kernel),
+    assertion(Kernel = recursive_kernel(astar_shortest_path4, kastar/4, _)),
+    Kernel = recursive_kernel(_, _, Cfg),
+    assertion(memberchk(edge_pred(kwedge/3), Cfg)),
+    assertion(memberchk(direct_dist_pred(khdist/3), Cfg)),
+    assertion(memberchk(dimensionality(5), Cfg)).
 
 % Kernel mode: ktc becomes a CallForeign stub backed by a native BFS
 % handler; the edge relation stays WAM-compiled.
@@ -240,6 +265,26 @@ test(weighted_shortest_path_kernel_emits_handler_and_stub) :-
         delete_directory_and_contents(Dir)
     )).
 
+% astar_shortest_path4 kernel mode: kastar becomes a CallForeign stub backed
+% by a native A* handler reading both the weighted edges and the heuristic
+% oracle (khdist/3); both relations stay WAM-compiled.
+test(astar_kernel_emits_handler_and_stub) :-
+    once((
+        ktmp('tmp_scala_kna', Dir),
+        write_wam_scala_project(
+            [user:kastar/4, user:kwedge/3, user:khdist/3],
+            [ package('ka.core'), runtime_package('ka.core'),
+              module_name('ka'), kernel_dispatch(true) ],
+            Dir),
+        kprogram_source(Dir, 'ka.core', Src),
+        assertion(sub_string(Src, _, _, _, "CallForeign(\"kastar\", 4)")),
+        assertion(sub_string(Src, _, _, _, "collectTernarySolutions(sharedProgram, \"kwedge/3\")")),
+        assertion(sub_string(Src, _, _, _, "collectTernarySolutions(sharedProgram, \"khdist/3\")")),
+        assertion(sub_string(Src, _, _, _, "def heuristic")),
+        assertion(sub_string(Src, _, _, _, "\"kwedge/3\" ->")),
+        delete_directory_and_contents(Dir)
+    )).
+
 % Without kernel_dispatch, behaviour is unchanged: ktc is WAM-compiled,
 % no foreign handler synthesized.
 test(default_mode_no_kernel) :-
@@ -343,6 +388,20 @@ test(weighted_shortest_path_parity,
     ksame(Run, 'kwsp/3', [b,d,'5.0'], "true"),
     ksame(Run, 'kwsp/3', [a,c,'2.0'], "false"),
     ksame(Run, 'kwsp/3', [a,d,'5.0'], "false").
+
+% astar_shortest_path4: goal-directed A* over the float-weighted chain. Single
+% path per target, so kernel (A* shortest) and interpreter (weighted sum) agree.
+% khdist/3 is included so the kernel's heuristic-oracle enumeration resolves.
+test(astar_parity,
+     [setup(kbuild_both([user:kastar/4, user:kwedge/3, user:khdist/3],
+                        'gen.kastar', Run)),
+      cleanup(kcleanup(Run))]) :-
+    ksame(Run, 'kastar/4', [a,b,'5','1.0'], "true"),
+    ksame(Run, 'kastar/4', [a,c,'5','3.0'], "true"),
+    ksame(Run, 'kastar/4', [a,d,'5','6.0'], "true"),
+    ksame(Run, 'kastar/4', [b,d,'5','5.0'], "true"),
+    ksame(Run, 'kastar/4', [a,d,'5','5.0'], "false"),
+    ksame(Run, 'kastar/4', [a,c,'5','2.0'], "false").
 
 :- end_tests(wam_scala_kernels_runtime).
 
