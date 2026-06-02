@@ -19,11 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `transitive_distance3` (BFS shortest-path distance),
   `transitive_parent_distance4` (target + immediate predecessor + distance),
   `transitive_step_parent_distance5` (target + first hop + parent +
-  distance), and `category_ancestor` (depth-bounded ancestor search with a
+  distance), `category_ancestor` (depth-bounded ancestor search with a
   visited list, `max_depth` from config; parses the visited list via a new
-  `WamRuntime.wamListToVector/2` helper); the other two
-  (`weighted_shortest_path3`, `astar_shortest_path4`) fall back to ordinary
-  WAM compilation until ported.
+  `WamRuntime.wamListToVector/2` helper), and `weighted_shortest_path3`
+  (Dijkstra over a ternary weighted edge relation via a new
+  `WamRuntime.collectTernarySolutions/2` enumerator; binds the shortest
+  total weight as a float); the last kind (`astar_shortest_path4`) falls
+  back to ordinary WAM compilation until ported.
   `tests/test_wam_scala_kernels.pl` has structural tests plus gated runtime
   tests asserting kernel-mode and interpreter-mode results are identical
   and correct.

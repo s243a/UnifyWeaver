@@ -2721,4 +2721,40 @@ object WamRuntime {
     }
     out.toVector
   }
+
+  /** Enumerate every solution of a ternary predicate `predKey` (e.g. a
+   *  weighted edge relation "edge/3") with all three arguments unbound at
+   *  entry, returning the (arg1, arg2, arg3) triples. Ternary analogue of
+   *  collectBinarySolutions; used by the weighted-path / A* kernels to read
+   *  a weighted adjacency relation. */
+  def collectTernarySolutions(program: WamProgram, predKey: String): Vector[(WamTerm, WamTerm, WamTerm)] = {
+    program.dispatch.get(predKey) match {
+      case None => Vector.empty
+      case Some(startPc) =>
+        val out = mutable.ArrayBuffer.empty[(WamTerm, WamTerm, WamTerm)]
+        val s = newState(startPc, Array.empty[WamTerm])
+        s.regs(1) = freshVar(s)
+        s.regs(2) = freshVar(s)
+        s.regs(3) = freshVar(s)
+        var live = run(s, program)
+        var guard = 0
+        val maxSolutions = 5000000
+        while (live && guard < maxSolutions) {
+          out += ((deepDeref(s, s.regs(1)), deepDeref(s, s.regs(2)), deepDeref(s, s.regs(3))))
+          guard += 1
+          backtrack(s)
+          if (s.status == Failed) live = false
+          else live = run(s, program)
+        }
+        out.toVector
+    }
+  }
+
+  /** Numeric value of an IntTerm/FloatTerm as a Double (0.0 otherwise).
+   *  Used by weighted graph kernels to read edge weights. */
+  def numericWeight(t: WamTerm): Double = t match {
+    case IntTerm(n)   => n.toDouble
+    case FloatTerm(d) => d
+    case _            => 0.0
+  }
 }
