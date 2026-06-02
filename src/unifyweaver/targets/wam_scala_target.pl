@@ -807,7 +807,7 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
 %
 % Currently implemented kernel kinds: transitive_closure2, transitive_distance3,
 % transitive_parent_distance4, transitive_step_parent_distance5,
-% category_ancestor.
+% category_ancestor, weighted_shortest_path3.
 % The remaining six (category_ancestor, transitive_distance3,
 % weighted_shortest_path3, transitive_parent_distance4,
 % astar_shortest_path4, transitive_step_parent_distance5) follow the same
@@ -936,6 +936,23 @@ emit_scala_kernel_handler(recursive_kernel(category_ancestor, _Pred/4, ConfigOps
     format(string(Code),
 "new ForeignHandler {\n      private val maxDepth: Int = ~w\n      private lazy val parents: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val cat = args(0)\n        val root = args(1)\n        val init = WamRuntime.wamListToVector(sharedProgram, args(3)).toSet\n        val hits = scala.collection.mutable.ArrayBuffer.empty[Int]\n        def go(acc: Int, c: WamTerm, depth: Int, visited: Set[WamTerm]): Unit = {\n          val ps = parents.getOrElse(c, Vector.empty)\n          val hop = acc + 1\n          for (p <- ps if p == root) hits += hop\n          if (depth < maxDepth)\n            for (mid <- ps if !visited.contains(mid))\n              go(hop, mid, depth + 1, visited + mid)\n        }\n        go(0, cat, init.size, init)\n        val sols = hits.toVector.map(h => Map(3 -> (IntTerm(h): WamTerm)))\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [MaxDepth, EdgeKeyLit]).
+
+% weighted_shortest_path3: wsp(Start, Target, Weight). Dijkstra over a ternary
+% weighted edge relation edge(From, To, W); each reachable node (excluding the
+% source) is a solution binding register 2 = target and register 3 = the
+% shortest total weight as a FloatTerm. Weights are read as Double (the
+% register contract is output(3, float)), so use float-valued edge weights for
+% the interpreter and kernel to agree exactly. Mirrors the Haskell/Rust/Elixir
+% Dijkstra kernel (shortest weight only; like the distance kernels it returns
+% one solution per node, so it agrees with the interpreter on graphs where
+% each target has a single path).
+emit_scala_kernel_handler(recursive_kernel(weighted_shortest_path3, _Pred/3, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    format(atom(EdgeKey), '~w/3', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((0.0, source))\n        val out = scala.collection.mutable.LinkedHashMap[WamTerm, Double]()\n        while (pq.nonEmpty) {\n          val (cost, node) = pq.dequeue()\n          val best = dist.getOrElse(node, Double.PositiveInfinity)\n          if (cost <= best) {\n            if (node != source && !out.contains(node)) out(node) = cost\n            for ((nxt, w) <- adj.getOrElse(node, Vector.empty)) {\n              val nc = cost + w\n              if (nc < dist.getOrElse(nxt, Double.PositiveInfinity)) {\n                dist(nxt) = nc\n                pq.enqueue((nc, nxt))\n              }\n            }\n          }\n        }\n        val sols = out.toVector.map { case (t, c) => Map(2 -> (t: WamTerm), 3 -> (FloatTerm(c): WamTerm)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
 
 % ============================================================================
 % FACT BACKEND SEAM (Phase S7)
