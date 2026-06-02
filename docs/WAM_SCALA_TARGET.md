@@ -83,6 +83,46 @@ calling file.
 | `scala_foreign_handlers([handler(P/A, "<scala expr>"), ...])` | Inline Scala source for each foreign handler. |
 | `scala_fact_sources([source(P/A, Spec), ...])` | Declarative fact-source — auto-expands to `foreign_predicates` + `scala_foreign_handlers` + `intern_atoms`. See below. |
 | `intern_atoms([atom1, atom2, ...])` | Pre-intern atoms whose runtime identity matters but which don't appear in any compiled WAM body. |
+| `emit_mode(Mode)` | Code-generation mode. `interpreter` (default) — every predicate runs in the step-loop interpreter. `functions` — every lowerable predicate *also* gets a native Scala fast-path function. `mixed([P/A, ...])` — only the listed predicates are lowered. See [Lowered functions](#lowered-functions-emit_mode). |
+
+You can also set the mode globally without touching `Options` by asserting
+`user:wam_scala_emit_mode(functions).` before generating.
+
+### Lowered functions (`emit_mode`)
+
+In the default `interpreter` mode the generated program is a pure
+stepping WAM: every predicate is dispatched through `WamRuntime.step`.
+`emit_mode(functions)` brings the Scala target to parity with the
+Haskell / Rust / C++ / F# / Go / Clojure targets, all of which ship a
+per-predicate **lowered emitter**
+([wam_scala_lowered_emitter.pl](../src/unifyweaver/targets/wam_scala_lowered_emitter.pl)).
+
+For every lowerable predicate the codegen emits a native Scala function
+`lowered_<pred>_<arity>(s, program): Boolean` that runs the predicate's
+deterministic clause 1 directly — simple register operations are inlined
+as in-place mutations of the mutable `WamState`; failure-capable head
+unification and structure ops delegate to small `lo*` helpers on
+`WamRuntime`; deterministic builtins (`=/2`, `is/2`, the arithmetic
+comparisons, type checks, `!/0`) route through `loBuiltin`. The generated
+`loweredEntries` map registers an entry wrapper per predicate; `runEntry`
+tries the fast path first and **falls back to a fresh interpreter run
+when clause 1 misses**, so results are identical to the pure interpreter
+for any boolean query (a lowered `true` is always a real solution; a
+lowered `false` defers to the complete step loop, preserving
+first-argument indexing, clause 2+, and backtracking into
+nondeterministic sub-goals).
+
+```prolog
+write_wam_scala_project([user:ancestor/2],
+    [ package('demo.anc'), emit_mode(functions) ], '/tmp/anc').
+```
+
+A predicate is lowered only if its clause 1 is deterministic (no
+`try_me_else` / `retry_me_else` / `trust_me` inside the clause body) and
+every clause-1 instruction is supported; predicates whose clause 1 uses a
+nondeterministic builtin (`member/2`, `between/3`, `sort/2`, `findall/3`,
+…) stay in the interpreter. This mirrors the deterministic-clause-1
+contract of the Rust and Clojure lowered emitters.
 
 ### Fact-source spec forms
 
@@ -161,6 +201,12 @@ Two test suites live in [tests/](../tests/):
   — same gating; runs full Prolog programs (list reverse, naive
   reverse, Ackermann, Fibonacci) end-to-end and verifies known
   answers.
+- [test_wam_scala_lowered_emitter.pl](../tests/test_wam_scala_lowered_emitter.pl)
+  — structural tests for `emit_mode` resolution, predicate
+  partitioning and the generated lowered functions (always run) plus
+  gated runtime *parity* tests that compile the same predicates in both
+  `interpreter` and `functions` mode and assert identical, correct
+  results.
 
 Run them:
 

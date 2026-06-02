@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Scala target: per-predicate lowered emitter** — brings the Scala
+  hybrid WAM to parity with the Haskell/Rust/C++/F#/Go/Clojure targets,
+  all of which already shipped a `wam_*_lowered_emitter.pl`.
+  - New `src/unifyweaver/targets/wam_scala_lowered_emitter.pl` emits a
+    native Scala `lowered_<pred>_<arity>(s, program): Boolean` function
+    per lowerable predicate (deterministic clause 1; simple register ops
+    inlined, structure/unify ops via new `lo*` `WamRuntime` helpers,
+    deterministic builtins via `loBuiltin`).
+  - New `emit_mode(Mode)` option on `write_wam_scala_project/3`
+    (`interpreter` default / `functions` / `mixed([P/A,...])`), plus a
+    global `user:wam_scala_emit_mode/1` hook. The generated
+    `loweredEntries` map + `runEntry` try the fast path and fall back to a
+    fresh interpreter run on a clause-1 miss, so results are identical to
+    the pure interpreter for any boolean query.
+  - New `tests/test_wam_scala_lowered_emitter.pl` — structural tests
+    (always run) plus gated runtime parity tests that compile the same
+    predicates in both modes and assert identical, correct results.
+  - Fixed first-argument indexing instructions that were silently
+    degrading to `Raw(...)` stubs and breaking the interpreter for some
+    predicate shapes, now handled (matching the F#/C/C++/R targets):
+    `switch_on_constant_fallthrough` (mixed fact+rule predicates such as
+    the factorial/Ackermann/Fibonacci base cases) reuses the
+    `SwitchOnConstant` instruction; `switch_on_term_a2` /
+    `switch_on_constant_a2` (+`_fallthrough`) second-argument indexing
+    (e.g. `member/2`) dispatch on the correct register via a new `reg`
+    field on the `SwitchOnConstant` / `SwitchOnTerm` runtime instructions
+    (defaulting to 1, so A1-indexed codegen is unchanged).
 - **Client-Server Phase 8: Service Tracing** - OpenTelemetry-compatible distributed tracing
   - `tracing(Bool)` option to enable distributed tracing
   - Trace exporters: `otlp`, `jaeger`, `zipkin`, `datadog`, `console`, `none`

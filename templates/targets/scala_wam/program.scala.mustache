@@ -68,6 +68,30 @@ object GeneratedProgram {
 {{wrappers}}
 
   // ----------------------------------------------------------
+  // Lowered per-predicate fast-path functions (emit_mode functions/mixed)
+  // ----------------------------------------------------------
+  // Empty in interpreter mode. Each function bypasses the step-loop
+  // dispatch for its predicate's deterministic clause 1, falling back to
+  // the interpreter for clause 2+ / nondeterministic continuations.
+{{lowered_functions}}
+
+  // loweredEntries maps "pred/arity" -> an entry function that builds a
+  // fresh state at the predicate's start PC and runs the lowered fast path.
+  // Empty when emit_mode is interpreter, so runEntry just delegates to the
+  // interpreter and behaviour is identical to the non-lowered build.
+  val loweredEntries: Map[String, (WamProgram, Array[WamTerm]) => Boolean] = Map(
+{{lowered_entries}}
+  )
+
+  /** Run a top-level query, preferring the lowered fast path when one is
+   *  registered for `key`, otherwise the step-loop interpreter. */
+  def runEntry(key: String, startPc: Int, args: Array[WamTerm]): Boolean =
+    loweredEntries.get(key) match {
+      case Some(f) => f(sharedProgram, args)
+      case None    => WamRuntime.runPredicate(sharedProgram, startPc, args)
+    }
+
+  // ----------------------------------------------------------
   // Main entrypoint
   // ----------------------------------------------------------
 
@@ -104,7 +128,7 @@ object GeneratedProgram {
                     println(s"unknown:$key")
                   case Some(startPc) =>
                     val argRegs = rest.map(parseArg).toArray
-                    val ok = WamRuntime.runPredicate(sharedProgram, startPc, argRegs)
+                    val ok = runEntry(key, startPc, argRegs)
                     println(ok)
                 }
               case _ =>
@@ -130,14 +154,14 @@ object GeneratedProgram {
             val warmup = math.min(50, math.max(1, n / 20))
             var i = 0
             while (i < warmup) {
-              WamRuntime.runPredicate(sharedProgram, startPc, argTerms.clone())
+              runEntry(key, startPc, argTerms.clone())
               i += 1
             }
             val t0 = System.nanoTime()
             var last = false
             i = 0
             while (i < n) {
-              last = WamRuntime.runPredicate(sharedProgram, startPc, argTerms.clone())
+              last = runEntry(key, startPc, argTerms.clone())
               i += 1
             }
             val elapsed = (System.nanoTime() - t0) / 1.0e9
@@ -150,7 +174,7 @@ object GeneratedProgram {
             sys.exit(1)
           case Some(startPc) =>
             val argRegs = rest.map(parseArg).toArray
-            val result  = WamRuntime.runPredicate(sharedProgram, startPc, argRegs)
+            val result  = runEntry(key, startPc, argRegs)
             println(result)
         }
       case _ =>

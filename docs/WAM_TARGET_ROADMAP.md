@@ -106,7 +106,7 @@ on a specific architectural question.
 | **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter | FactSource facade (ETS/SQLite/TSV); no memory-mapped | none | LMDB integration (high-value for >100k); hot-path graph kernels |
 | **Haskell** | how to make materialisation cheap at scale | broad WAM, parMap parallel | dual: WAM-instr + emitter | LMDB key/value (memory-mapped under the hood); raw-pointer interface abandoned due to crashes | parMap rdeepseq | calibrate fork-min-cost like Elixir; investigate cost-aware probing |
 | **C#** | SQL/LINQ-as-substrate; the optimisation-inspiration target | broadest aggregate/join/negation coverage | LINQ pipeline (not WAM-shaped); split into `csharp_target` + `csharp_query_target` + `csharp_native_target` | source-mode sweeps measure cost; memory-mapped file in flight | n/a (LINQ-inspired lineage) | continue source-mode benchmark sweep; tighten cost model |
-| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | WAM-instruction lowering only; no `wam_scala_lowered_emitter.pl`; step-loop interpreter | 3 backends (inline / file CSV / grouped TSV); auto-inline ≤128 rows | none | add per-predicate native fast-path emitter (single biggest gap); port classics to other targets to validate generalisation |
+| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | dual: WAM-instr + per-predicate emitter (`wam_scala_lowered_emitter.pl`, `emit_mode(functions)`) — clause-1 fast path with interpreter fallback | 3 backends (inline / file CSV / grouped TSV); auto-inline ≤128 rows | none | hot-path graph kernels; LMDB sidecar (Phase S8); benchmark the lowered path against Elixir/Haskell |
 | **Clojure** | LMDB JNI integration as a first-class data tier | deterministic-prefix lowering; sequential-only tests | dual: WAM-instr + emitter (deterministic prefix only — no `switch_on_constant` lowering yet) | LMDB only (production-grade JNI loader, delay-wrapped) + cache policies (memoize / shared / two_level) | none | extend lowered emitter to non-deterministic prefixes; add parallelism gates |
 | **Rust** | hand-tuned FFI kernel route | deterministic only in lowered emitter | dual: WAM-instr + emitter (deterministic only) | absent (no FactSource facade); FFI kernels are ad-hoc | effective-distance matrix FFI kernel (concrete demonstration of kernel-based lowering wins) | port the kernel pattern to other targets; add layout policies / FactSource generalisation |
 | **F#** | Haskell-shaped target on the .NET runtime | mirrors Haskell coverage | dual: WAM-instr + emitter | none documented | TPL Parallel.map mentioned, no gating | follow Haskell's LMDB lessons + Elixir's cost-gate calibration |
@@ -146,11 +146,13 @@ haven't yet hit the kernel-or-LMDB inflection point.
    C# explore the LINQ side of the design space while WAM targets
    explore the bytecode side, and we can compare results.
 
-4. **Scala is the breadth-anchor and the dual-mode-emitter outlier.**
-   The classics suite (n-queens, Ackermann, Fibonacci) is the most
-   valuable generalisation test bed in the repo. Scala lacks the
-   per-predicate native fast-path emitter; adding one would let it
-   benchmark against Elixir/Haskell on the same basis.
+4. **Scala is the breadth-anchor.** The classics suite (n-queens,
+   Ackermann, Fibonacci) is the most valuable generalisation test bed in
+   the repo. Scala now has a per-predicate native fast-path emitter
+   (`wam_scala_lowered_emitter.pl`, opt-in via `emit_mode(functions)`),
+   closing the dual-mode-emitter gap and letting it benchmark against
+   Elixir/Haskell on the same basis. The next levers are hot-path graph
+   kernels and an LMDB sidecar.
 
    PR #1827 ports the **discipline** (subprocess invocation +
    true/false verification) to Elixir as a starter classic-programs

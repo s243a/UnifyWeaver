@@ -173,7 +173,10 @@ case class UnifyConstant(value: WamTerm)                extends Instruction
 // Choice
 case object TrustMe                                     extends Instruction
 // First-argument indexing
-case class SwitchOnConstant(cases: Array[SwitchCase])   extends Instruction
+// `reg` selects the indexed argument register: 1 for the A1-indexed
+// forms (switch_on_constant), 2 for the A2-indexed forms
+// (switch_on_constant_a2). Defaults to 1 so existing codegen is unchanged.
+case class SwitchOnConstant(cases: Array[SwitchCase], reg: Int = 1) extends Instruction
 // Type-based first-arg discrimination. Emitted when a predicate's
 // clauses mix const, list, and compound first args. Each TermSwitch*
 // case carries a target label resolved to a PC by resolveInstructions.
@@ -185,7 +188,8 @@ final case class TermSwitchStruct(functorId: Int, arity: Int, label: String, tar
 case class SwitchOnTerm(constCases:  Array[TermSwitchConst],
                         structCases: Array[TermSwitchStruct],
                         listLabel:   String,
-                        listTargetPc: Int = -1) extends Instruction
+                        listTargetPc: Int = -1,
+                        reg: Int = 1) extends Instruction
 // Builtins and foreign
 case class BuiltinCall(pred: String, arity: Int)        extends Instruction
 case class CallForeign(pred: String, arity: Int)        extends Instruction
@@ -566,13 +570,13 @@ object WamRuntime {
       case Try(lbl)              => labels.get(lbl).map(TryPc(_)).getOrElse(Try(lbl))
       case Retry(lbl)            => labels.get(lbl).map(RetryPc(_)).getOrElse(Retry(lbl))
       case Trust(lbl)            => labels.get(lbl).map(TrustPc(_)).getOrElse(Trust(lbl))
-      case SwitchOnConstant(cases) =>
+      case SwitchOnConstant(cases, reg) =>
         val resolved = cases.map { sc =>
           if (sc.label == "default") sc  // default = fallthrough (targetPc stays -1) or resolved below
           else labels.get(sc.label).map(pc => sc.copy(targetPc = pc)).getOrElse(sc)
         }
-        SwitchOnConstant(resolved)
-      case SwitchOnTerm(consts, structs, listLabel, _) =>
+        SwitchOnConstant(resolved, reg)
+      case SwitchOnTerm(consts, structs, listLabel, _, reg) =>
         val rConsts  = consts.map { c =>
           if (c.label == "default") c
           else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
@@ -582,7 +586,7 @@ object WamRuntime {
           else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
         }
         val rListPc  = labels.getOrElse(listLabel, -1)
-        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc)
+        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc, reg)
       case other => other
     }
 
@@ -926,8 +930,8 @@ object WamRuntime {
   // First-argument indexing
   // ----------------------------------------------------------
 
-  def switchTarget(s: WamState, cases: Array[SwitchCase]): Unit = {
-    val key = deref(s.bindings, s.regs(1))
+  def switchTarget(s: WamState, cases: Array[SwitchCase], reg: Int = 1): Unit = {
+    val key = deref(s.bindings, s.regs(reg))
     // Find every case (including "default"-labeled ones) whose value
     // matches the key. The WAM compiler emits a "default"-labeled case
     // for every value whose first matching clause sits at the head of
@@ -1238,11 +1242,12 @@ object WamRuntime {
 
       // --- Indexing ---
 
-      case SwitchOnConstant(cases) =>
-        switchTarget(s, cases)
+      case SwitchOnConstant(cases, reg) =>
+        switchTarget(s, cases, reg)
 
-      case SwitchOnTerm(consts, structs, _listLabel, listPc) =>
-        // Type-discriminating dispatch on regs(1):
+      case SwitchOnTerm(consts, structs, _listLabel, listPc, switchReg) =>
+        // Type-discriminating dispatch on regs(switchReg) (1 for A1-indexed
+        // forms, 2 for the _a2 forms):
         //   * Ref       → fall through (variable: any clause may match)
         //   * Atom/Int/Float → look up in const cases
         //   * Cons cell ([|]/2) → jump to listPc if set, else fall through
@@ -1250,7 +1255,7 @@ object WamRuntime {
         // "default" labels mean "fall through to the try_me_else chain
         // at pc + 1" — i.e. the WAM compiler is saying "I don't have a
         // single direct clause; let the chain enumerate".
-        val v = deref(s.bindings, s.regs(1))
+        val v = deref(s.bindings, s.regs(switchReg))
         v match {
           case Ref(_) =>
             s.pc += 1
@@ -2464,5 +2469,193 @@ object WamRuntime {
   def runPredicate(program: WamProgram, startPc: Int, argRegs: Array[WamTerm]): Boolean = {
     val s = newState(startPc, argRegs)
     run(s, program)
+  }
+
+  // ==========================================================
+  // Lowered fast-path primitives (Layer B′)
+  // ==========================================================
+  // Helper methods invoked by the per-predicate functions emitted by
+  // wam_scala_lowered_emitter.pl (emit_mode functions / mixed). Each one
+  // performs the forward semantics of the corresponding `step` case but
+  // returns a Boolean instead of calling `backtrack` — the lowered
+  // function decides what to do on failure. No method here advances
+  // `s.pc`; the lowered function controls its own straight-line flow.
+
+  /** get_constant: bind an unbound register or unify against its value. */
+  def loGetConstant(s: WamState, value: WamTerm, reg: Int): Boolean = {
+    val current = deref(s.bindings, s.regs(reg))
+    if (current == null) { s.regs(reg) = value; true }
+    else unify(s, current, value)
+  }
+
+  /** get_value: unify two registers' dereferenced values. */
+  def loGetValue(s: WamState, varReg: Int, argReg: Int): Boolean =
+    unify(s, deref(s.bindings, getReg(s, varReg)), deref(s.bindings, s.regs(argReg)))
+
+  /** get_structure: read-mode against a matching Struct, write-mode against
+   *  an unbound Ref. Arity is supplied by codegen (no peek-ahead needed). */
+  def loGetStructure(s: WamState, program: WamProgram, functorId: Int, reg: Int, arity: Int): Boolean = {
+    deref(s.bindings, s.regs(reg)) match {
+      case Struct(f, _, args) if f == functorId =>
+        s.unifyMode = true; s.unifyQueue = args.toList; true
+      case Ref(_) =>
+        s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+        s.unifyMode = false; true
+      case _ => false
+    }
+  }
+
+  /** get_list: read-mode against a cons Struct, write-mode against a Ref. */
+  def loGetList(s: WamState, program: WamProgram, reg: Int, consId: Int): Boolean = {
+    deref(s.bindings, s.regs(reg)) match {
+      case Struct(f, 2, args) if f == consId =>
+        s.unifyMode = true; s.unifyQueue = args.toList; true
+      case Ref(_) =>
+        s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
+        s.unifyMode = false; true
+      case _ => false
+    }
+  }
+
+  /** unify_variable: read-mode pops the queue into reg; write-mode appends
+   *  a fresh var to the active build frame. */
+  def loUnifyVariable(s: WamState, reg: Int): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest => setReg(s, reg, item); s.unifyQueue = rest; true
+    } else {
+      val v = freshVar(s); setReg(s, reg, v); appendBuildArg(s, v); true
+    }
+  }
+
+  /** unify_value: read-mode unifies reg with the queue head; write-mode
+   *  appends reg's value to the build frame. */
+  def loUnifyValue(s: WamState, reg: Int): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest =>
+        val ok = unify(s, deref(s.bindings, getReg(s, reg)), item)
+        s.unifyQueue = rest; ok
+    } else {
+      appendBuildArg(s, deref(s.bindings, getReg(s, reg))); true
+    }
+  }
+
+  /** unify_constant: read-mode unifies the queue head with the constant;
+   *  write-mode appends the constant to the build frame. */
+  def loUnifyConstant(s: WamState, value: WamTerm): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest =>
+        val ok = unify(s, deref(s.bindings, item), value)
+        s.unifyQueue = rest; ok
+    } else {
+      appendBuildArg(s, value); true
+    }
+  }
+
+  /** set_variable: fresh var into reg + build frame (always succeeds). */
+  def loSetVariable(s: WamState, reg: Int): Boolean = {
+    val v = freshVar(s); setReg(s, reg, v); appendBuildArg(s, v); true
+  }
+
+  /** set_value: reg's value appended to the build frame. */
+  def loSetValue(s: WamState, reg: Int): Boolean = {
+    appendBuildArg(s, deref(s.bindings, getReg(s, reg))); true
+  }
+
+  /** set_constant: constant appended to the build frame. */
+  def loSetConstant(s: WamState, value: WamTerm): Boolean = {
+    appendBuildArg(s, value); true
+  }
+
+  /** put_structure: open a new struct build frame (write mode). */
+  def loPutStructure(s: WamState, functorId: Int, reg: Int, sArity: Int): Unit =
+    s.buildStack = BuildFrame(reg, functorId, sArity, Nil) :: s.buildStack
+
+  /** put_list: open a new cons build frame (write mode). */
+  def loPutList(s: WamState, reg: Int, consId: Int): Unit =
+    s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
+
+  /** allocate: push an environment frame, set the cut barrier. */
+  def loAllocate(s: WamState): Unit = {
+    val frame = EnvFrame(new Array[WamTerm](100))
+    var i = 201
+    while (i < 300) { if (s.regs(i) != null) frame.savedRegs(i - 200) = s.regs(i); i += 1 }
+    s.envStack = frame :: s.envStack
+    s.cutBar = s.choicePoints.length
+  }
+
+  /** deallocate: pop the top environment frame. */
+  def loDeallocate(s: WamState): Unit =
+    s.envStack = s.envStack.drop(1)
+
+  /** Deterministic builtins. Returns success/failure without backtracking.
+   *  Only the operators the lowered emitter whitelists reach here. */
+  def loBuiltin(s: WamState, program: WamProgram, pred: String): Boolean = {
+    def cmp(op: (Num, Num) => Boolean): Boolean =
+      (evalArith(s, program, s.regs(1)), evalArith(s, program, s.regs(2))) match {
+        case (Some(a), Some(b)) => op(a, b)
+        case _                  => false
+      }
+    pred match {
+      case "=/2"    => unify(s, deref(s.bindings, s.regs(1)), deref(s.bindings, s.regs(2)))
+      case "true/0" => true
+      case "fail/0" => false
+      case "!/0" =>
+        val len = s.choicePoints.length
+        if (len > s.cutBar) s.choicePoints.remove(s.cutBar, len - s.cutBar)
+        true
+      case "is/2" =>
+        evalArith(s, program, s.regs(2)) match {
+          case Some(n) => unify(s, s.regs(1), numToTerm(n))
+          case None    => false
+        }
+      case "=:=/2"  => cmp(numEq)
+      case "=\\=/2" => cmp((a, b) => !numEq(a, b))
+      case "</2"    => cmp(numLt)
+      case ">/2"    => cmp((a, b) => numLt(b, a))
+      case "=</2"   => cmp((a, b) => !numLt(b, a))
+      case ">=/2"   => cmp((a, b) => !numLt(a, b))
+      case "var/1"     => deref(s.bindings, s.regs(1)) match { case Ref(_) => true; case _ => false }
+      case "nonvar/1"  => deref(s.bindings, s.regs(1)) match { case Ref(_) => false; case _ => true }
+      case "atom/1"    => deref(s.bindings, s.regs(1)) match { case Atom(_) => true; case _ => false }
+      case "integer/1" => deref(s.bindings, s.regs(1)) match { case IntTerm(_) => true; case _ => false }
+      case "float/1"   => deref(s.bindings, s.regs(1)) match { case FloatTerm(_) => true; case _ => false }
+      case "number/1"  => deref(s.bindings, s.regs(1)) match { case IntTerm(_) | FloatTerm(_) => true; case _ => false }
+      case "atomic/1"  => deref(s.bindings, s.regs(1)) match { case Atom(_) | IntTerm(_) | FloatTerm(_) => true; case _ => false }
+      case _ => false
+    }
+  }
+
+  /** call: run a sub-predicate to its first solution, then continue the
+   *  lowered body. Resolves through dispatch, so it transparently handles
+   *  foreign-predicate stubs too. Deterministic-prefix semantics: only the
+   *  first solution is taken (matches the Rust/Clojure lowered contract). */
+  def loCall(s: WamState, program: WamProgram, name: String, arity: Int): Boolean = {
+    program.dispatch.get(s"$name/$arity") match {
+      case None => false
+      case Some(pc) =>
+        val savedCS = s.callStack
+        s.callStack = Nil
+        s.pc = pc
+        s.status = Running
+        val ok = run(s, program)
+        s.callStack = savedCS
+        s.status = Running
+        ok
+    }
+  }
+
+  /** execute: tail call into a sub-predicate; its result is this clause's
+   *  result. */
+  def loExecute(s: WamState, program: WamProgram, name: String, arity: Int): Boolean = {
+    program.dispatch.get(s"$name/$arity") match {
+      case None => false
+      case Some(pc) =>
+        s.pc = pc
+        s.status = Running
+        run(s, program)
+    }
   }
 }
