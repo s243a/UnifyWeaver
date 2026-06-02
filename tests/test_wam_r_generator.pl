@@ -81,6 +81,53 @@ test(project_layout) :-
 % Test 3: generated program seeds the intern table and emits the
 %         instruction array body
 % ------------------------------------------------------------------
+test(r_interpreter_uses_items_ir_policy) :-
+    once(source_file(wam_r_target:write_wam_r_project(_, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "wam_r_emit_ir_mode(Options, EmitMode, IrMode)"),
+    sub_string(Content, _, _, _, "wam_ir_mode(wam_r, EmitMode, Options, IrMode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(Pred, [], Items)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(Pred, [], WamCode)"),
+    !.
+
+test(r_generated_predicate_allows_text_ir_override) :-
+    once((
+        unique_r_tmp_dir('tmp_r_text_ir_override', TmpDir),
+        write_wam_r_project(
+            [user:wam_r_fact/1],
+            [wam_ir(wam_text)],
+            TmpDir),
+        directory_file_path(TmpDir, 'R/generated_program.R', Program),
+        read_file_to_string(Program, Code, []),
+        assertion(sub_string(Code, _, _, _, 'GetConstant(Atom(')),
+        assertion(sub_string(Code, _, _, _, '"wam_r_fact/1" =')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(r_generated_predicate_rejects_direct_target_ir,
+     [throws(error(domain_error(wam_r_ir_mode, direct_target), _))]) :-
+    unique_r_tmp_dir('tmp_r_direct_ir_err', TmpDir),
+    call_cleanup(
+        write_wam_r_project([user:wam_r_fact/1],
+                            [wam_ir(direct_target)],
+                            TmpDir),
+        (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)).
+
+test(r_generated_predicate_rejects_native_items_until_available,
+     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+    unique_r_tmp_dir('tmp_r_native_ir_err', TmpDir),
+    call_cleanup(
+        write_wam_r_project([user:wam_r_fact/1],
+                            [wam_ir(wam_items_native)],
+                            TmpDir),
+        (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true)).
+
+test(r_items_bridge_marks_ite_choice_points) :-
+    Items = [label("p/0"), try_me_else("L_else"), cut_ite,
+             label("L_else"), fail],
+    once(wam_r_target:wam_code_to_r_data(Items, [], Instrs, _Labels, _Entries)),
+    assertion(Instrs == ["TryMeElseIte(\"L_else\")", 'CutIte()', "Raw(\"fail\")"]).
+
 test(intern_and_instructions) :-
     once((
         unique_r_tmp_dir('tmp_r_instrs', TmpDir),
