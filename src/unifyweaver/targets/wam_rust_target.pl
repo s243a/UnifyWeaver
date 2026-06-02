@@ -1402,14 +1402,14 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 let cat_id = self.intern_atom(&cat);
                 let root_id = self.intern_atom(&root);
-                let visited_ids: Vec<u32> = visited.iter().filter_map(|item| {
+                let mut visited_ids: Vec<u32> = visited.iter().filter_map(|item| {
                     match self.deref_var(item) {
                         Value::Atom(s) => Some(self.intern_atom(&s)),
                         _ => None,
                     }
                 }).collect();
                 let mut hops: Vec<i64> = Vec::new();
-                self.collect_native_category_ancestor_hops(cat_id, root_id, &visited_ids, max_depth, &edge_pred, &mut hops);
+                self.collect_native_category_ancestor_hops(cat_id, root_id, &mut visited_ids, max_depth, &edge_pred, 0, &mut hops);
                 if hops.is_empty() {
                     return false;
                 }
@@ -1854,19 +1854,30 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         &self,
         cat_id: u32,
         root_id: u32,
-        visited: &[u32],
+        visited: &mut Vec<u32>,
         max_depth: usize,
         edge_pred: &str,
+        depth: i64,
         out: &mut Vec<i64>,
     ) {
         // R7: route through self.edge_parents so lazy_lookups is
         // consulted before ffi_facts. This keeps the kernels_on
         // native path working under lmdb_materialisation(lazy).
+        //
+        // Accumulator-passing (ported from the Haskell kernel, perf-log
+        // #16/#207): thread the hop count DOWN as `depth` and emit the
+        // final distance (depth + 1) when the root is reached, instead of
+        // pushing 1 and incrementing every emitted result on the way back
+        // up. Eliminates the O(sum-of-path-depths) re-increment pass
+        // (~57M ops at simplewiki). Output is byte-identical: at a level
+        // with visited.len() == L the old code yielded L (push 1 + L-1
+        // increments) and this yields depth + 1 == L, in the same DFS
+        // emission order.
         let parents = self.edge_parents(cat_id, edge_pred);
         let root_seen = visited.contains(&root_id);
         if !root_seen {
             if parents.contains(&root_id) {
-                out.push(1);
+                out.push(depth + 1);
             }
         }
 
@@ -1874,18 +1885,18 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
             return;
         }
 
+        // Single reused `visited` Vec with DFS push/pop instead of a fresh
+        // per-branch allocation (was ~64M Vec allocs at simplewiki). The
+        // path-so-far is restored by pop() on the way back up, so contents
+        // at every level are identical to the old `[parent | visited]`
+        // copy — output is byte-identical.
         for parent_id in &parents {
             if visited.contains(parent_id) {
                 continue;
             }
-            let mut next_visited: Vec<u32> = Vec::with_capacity(visited.len() + 1);
-            next_visited.push(*parent_id);
-            next_visited.extend_from_slice(visited);
-            let before = out.len();
-            self.collect_native_category_ancestor_hops(*parent_id, root_id, &next_visited, max_depth, edge_pred, out);
-            for hop in out.iter_mut().skip(before) {
-                *hop += 1;
-            }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_hops(*parent_id, root_id, visited, max_depth, edge_pred, depth + 1, out);
+            visited.pop();
         }
     }'.
 
