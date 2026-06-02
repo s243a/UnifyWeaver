@@ -16,9 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its adjacency map from the kernel's edge relation via a new
   `WamRuntime.collectBinarySolutions/2` enumerator (works for WAM facts
   and fact sources alike). Kernel kinds implemented: `transitive_closure2`,
-  `transitive_distance3` (BFS shortest-path distance), and
-  `transitive_parent_distance4` (target + immediate predecessor + distance);
-  the other four fall back to ordinary WAM compilation until ported.
+  `transitive_distance3` (BFS shortest-path distance),
+  `transitive_parent_distance4` (target + immediate predecessor + distance),
+  and `transitive_step_parent_distance5` (target + first hop + parent +
+  distance); the other three fall back to ordinary WAM compilation until
+  ported.
   `tests/test_wam_scala_kernels.pl` has structural tests plus gated runtime
   tests asserting kernel-mode and interpreter-mode results are identical
   and correct.

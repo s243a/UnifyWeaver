@@ -53,6 +53,11 @@ user:ktd(X, Y, D) :- kedge(X, Z), ktd(Z, Y, D1), D is D1 + 1.
 user:kpd(X, Y, X, 1) :- kedge(X, Y).
 user:kpd(X, Y, P, D) :- kedge(X, Z), kpd(Z, Y, P, D1), D is D1 + 1.
 
+% transitive_step_parent_distance5: target + first hop + parent + distance.
+:- dynamic user:ksp/5.
+user:ksp(X, Y, Y, X, 1) :- kedge(X, Y).
+user:ksp(X, Y, Z, P, D) :- kedge(X, Z), ksp(Z, Y, _, P, D1), D is D1 + 1.
+
 % ============================================================
 % Structural suite (always runs)
 % ============================================================
@@ -77,6 +82,13 @@ test(detects_transitive_parent_distance4) :-
     collect_clauses(kpd, 4, Clauses),
     detect_recursive_kernel(kpd, 4, Clauses, Kernel),
     assertion(Kernel = recursive_kernel(transitive_parent_distance4, kpd/4, _)),
+    Kernel = recursive_kernel(_, _, Cfg),
+    assertion(memberchk(edge_pred(kedge/2), Cfg)).
+
+test(detects_transitive_step_parent_distance5) :-
+    collect_clauses(ksp, 5, Clauses),
+    detect_recursive_kernel(ksp, 5, Clauses, Kernel),
+    assertion(Kernel = recursive_kernel(transitive_step_parent_distance5, ksp/5, _)),
     Kernel = recursive_kernel(_, _, Cfg),
     assertion(memberchk(edge_pred(kedge/2), Cfg)).
 
@@ -128,6 +140,23 @@ test(parent_distance_kernel_emits_handler_and_stub) :-
         kprogram_source(Dir, 'kp.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"kpd\", 4)")),
         assertion(sub_string(Src, _, _, _, "4 -> IntTerm")),
+        assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
+        delete_directory_and_contents(Dir)
+    )).
+
+% transitive_step_parent_distance5 kernel mode: ksp becomes a CallForeign
+% stub backed by a native BFS handler binding target/step/parent/distance.
+test(step_parent_distance_kernel_emits_handler_and_stub) :-
+    once((
+        ktmp('tmp_scala_kns', Dir),
+        write_wam_scala_project(
+            [user:ksp/5, user:kedge/2],
+            [ package('ks.core'), runtime_package('ks.core'),
+              module_name('ks'), kernel_dispatch(true) ],
+            Dir),
+        kprogram_source(Dir, 'ks.core', Src),
+        assertion(sub_string(Src, _, _, _, "CallForeign(\"ksp\", 5)")),
+        assertion(sub_string(Src, _, _, _, "5 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
     )).
@@ -195,6 +224,18 @@ test(transitive_parent_distance_parity,
     ksame(Run, 'kpd/4', [b,d,c,'2'], "true"),
     ksame(Run, 'kpd/4', [a,d,b,'3'], "false"),
     ksame(Run, 'kpd/4', [a,c,a,'2'], "false").
+
+% transitive_step_parent_distance5: (target, first-hop, parent, distance).
+test(transitive_step_parent_distance_parity,
+     [setup(kbuild_both([user:ksp/5, user:kedge/2], 'gen.ksp', Run)),
+      cleanup(kcleanup(Run))]) :-
+    ksame(Run, 'ksp/5', [a,b,b,a,'1'], "true"),
+    ksame(Run, 'ksp/5', [a,c,b,b,'2'], "true"),
+    ksame(Run, 'ksp/5', [a,d,b,c,'3'], "true"),
+    ksame(Run, 'ksp/5', [a,f,e,e,'2'], "true"),
+    ksame(Run, 'ksp/5', [b,d,c,c,'2'], "true"),
+    ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
+    ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
 
 :- end_tests(wam_scala_kernels_runtime).
 
