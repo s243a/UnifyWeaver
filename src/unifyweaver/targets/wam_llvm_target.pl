@@ -1454,7 +1454,8 @@ declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
-declare i64 @time(i64*)'
+declare i64 @time(i64*)
+declare i32 @stat(i8*, i8*)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3488,6 +3489,8 @@ entry:
     i32 88, label %builtin_at_gt
     i32 89, label %builtin_at_ge
     i32 90, label %builtin_get_time
+    i32 91, label %builtin_exists_file
+    i32 92, label %builtin_exists_directory
   ]
 
 builtin_is:
@@ -4350,6 +4353,65 @@ builtin_get_time:
   %gt.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gt.raw1, %Value %gt.v)
   ret i1 %gt.ok
+
+builtin_exists_file:
+  ; M73: exists_file(+Path) -- Path is an atom; succeeds iff stat
+  ; returns 0 AND the resulting st_mode field has the regular-file
+  ; bits set. Linux glibc lays st_mode at offset 24 of struct stat
+  ; (i32, after st_dev + st_ino). Allocate 256 bytes to comfortably
+  ; cover any 64-bit glibc layout.
+  %xf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %xf.t1 = extractvalue %Value %xf.a1, 0
+  %xf.is_atom = icmp eq i32 %xf.t1, 0
+  br i1 %xf.is_atom, label %xf.go, label %xf.fail
+xf.fail:
+  ret i1 false
+xf.go:
+  %xf.aid = extractvalue %Value %xf.a1, 1
+  %xf.path = call i8* @wam_atom_to_string(i64 %xf.aid)
+  %xf.path_null = icmp eq i8* %xf.path, null
+  br i1 %xf.path_null, label %xf.fail, label %xf.stat
+xf.stat:
+  %xf.buf = alloca [256 x i8]
+  %xf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %xf.buf, i32 0, i32 0
+  %xf.ret = call i32 @stat(i8* %xf.path, i8* %xf.buf_ptr)
+  %xf.stat_ok = icmp eq i32 %xf.ret, 0
+  br i1 %xf.stat_ok, label %xf.check_mode, label %xf.fail
+xf.check_mode:
+  %xf.mode_ptr_i8 = getelementptr i8, i8* %xf.buf_ptr, i64 24
+  %xf.mode_ptr = bitcast i8* %xf.mode_ptr_i8 to i32*
+  %xf.mode = load i32, i32* %xf.mode_ptr
+  %xf.type_bits = and i32 %xf.mode, 61440  ; S_IFMT = 0o170000
+  %xf.is_reg = icmp eq i32 %xf.type_bits, 32768  ; S_IFREG = 0o100000
+  ret i1 %xf.is_reg
+
+builtin_exists_directory:
+  ; M73: exists_directory(+Path) -- same as exists_file but checks
+  ; the directory bits.
+  %xd.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %xd.t1 = extractvalue %Value %xd.a1, 0
+  %xd.is_atom = icmp eq i32 %xd.t1, 0
+  br i1 %xd.is_atom, label %xd.go, label %xd.fail
+xd.fail:
+  ret i1 false
+xd.go:
+  %xd.aid = extractvalue %Value %xd.a1, 1
+  %xd.path = call i8* @wam_atom_to_string(i64 %xd.aid)
+  %xd.path_null = icmp eq i8* %xd.path, null
+  br i1 %xd.path_null, label %xd.fail, label %xd.stat
+xd.stat:
+  %xd.buf = alloca [256 x i8]
+  %xd.buf_ptr = getelementptr [256 x i8], [256 x i8]* %xd.buf, i32 0, i32 0
+  %xd.ret = call i32 @stat(i8* %xd.path, i8* %xd.buf_ptr)
+  %xd.stat_ok = icmp eq i32 %xd.ret, 0
+  br i1 %xd.stat_ok, label %xd.check_mode, label %xd.fail
+xd.check_mode:
+  %xd.mode_ptr_i8 = getelementptr i8, i8* %xd.buf_ptr, i64 24
+  %xd.mode_ptr = bitcast i8* %xd.mode_ptr_i8 to i32*
+  %xd.mode = load i32, i32* %xd.mode_ptr
+  %xd.type_bits = and i32 %xd.mode, 61440  ; S_IFMT
+  %xd.is_dir = icmp eq i32 %xd.type_bits, 16384  ; S_IFDIR = 0o040000
+  ret i1 %xd.is_dir
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10922,6 +10984,8 @@ builtin_op_to_id('@=</2', 87).                % standard order: less or equal.
 builtin_op_to_id('@>/2', 88).                 % standard order: greater than.
 builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal.
 builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
+builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular file.
+builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
