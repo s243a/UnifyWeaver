@@ -135,7 +135,11 @@
 :- dynamic user:wam_copy_term_sharing_fail/0.
 :- dynamic user:wam_copy_term_independent_ok/0.
 :- dynamic user:wam_functor_guard/3.
+:- dynamic user:wam_functor_arity_unify/0.
+:- dynamic user:wam_functor_arity_unify_mismatch/0.
 :- dynamic user:wam_arg_guard/3.
+:- dynamic user:wam_arg_numeric_arg_unify/0.
+:- dynamic user:wam_arg_numeric_arg_unify_mismatch/0.
 :- dynamic user:wam_univ_guard/2.
 :- dynamic user:wam_univ_decompose_struct/0.
 :- dynamic user:wam_univ_decompose_atom/0.
@@ -431,7 +435,11 @@ user:wam_copy_term_guard(A, B) :- copy_term(A, B).
 user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
 user:wam_functor_guard(Term, Name, Arity) :- functor(Term, Name, Arity).
+user:wam_functor_arity_unify :- functor(f(a,b), f, Arity), Arity = 2.
+user:wam_functor_arity_unify_mismatch :- functor(f(a,b), f, Arity), Arity = 1.
 user:wam_arg_guard(Index, Term, Arg) :- arg(Index, Term, Arg).
+user:wam_arg_numeric_arg_unify :- arg(1, f(42), Arg), Arg = 42.
+user:wam_arg_numeric_arg_unify_mismatch :- arg(1, f(42), Arg), Arg = 43.
 user:wam_univ_guard(Term, List) :- Term =.. List.
 user:wam_univ_decompose_struct :- f(a, b) =.. [f, a, b].
 user:wam_univ_decompose_atom :- a =.. [a].
@@ -732,7 +740,11 @@ run_smoke :-
           user:wam_copy_term_sharing_fail/0,
           user:wam_copy_term_independent_ok/0,
           user:wam_functor_guard/3,
+          user:wam_functor_arity_unify/0,
+          user:wam_functor_arity_unify_mismatch/0,
           user:wam_arg_guard/3,
+          user:wam_arg_numeric_arg_unify/0,
+          user:wam_arg_numeric_arg_unify_mismatch/0,
           user:wam_univ_guard/2,
           user:wam_univ_decompose_struct/0,
           user:wam_univ_decompose_atom/0,
@@ -1189,11 +1201,15 @@ smoke_cases([
     case('wam_functor_guard/3', args('f(a)', a, 1), "false"),
     case('wam_functor_guard/3', args(a, a, 0), "true"),
     case('wam_functor_guard/3', args(42, 42, 0), "true"),
+    case('wam_functor_arity_unify/0', no_args, "true"),
+    case('wam_functor_arity_unify_mismatch/0', no_args, "false"),
     case('wam_arg_guard/3', args(1, 'f(a,b)', a), "true"),
     case('wam_arg_guard/3', args(2, 'f(a,b)', b), "true"),
     case('wam_arg_guard/3', args(1, '[a,b]', a), "true"),
     case('wam_arg_guard/3', args(3, 'f(a,b)', a), "false"),
     case('wam_arg_guard/3', args(1, a, a), "false"),
+    case('wam_arg_numeric_arg_unify/0', no_args, "true"),
+    case('wam_arg_numeric_arg_unify_mismatch/0', no_args, "false"),
     case('wam_univ_guard/2', args('f(a,b)', '[f,a,b]'), "true"),
     case('wam_univ_guard/2', args(a, '[a]'), "true"),
     case('wam_univ_guard/2', args(42, '[42]'), "true"),
