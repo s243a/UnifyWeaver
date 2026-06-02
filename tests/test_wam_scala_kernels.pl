@@ -280,21 +280,21 @@ test(transitive_step_parent_distance_parity,
     ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
     ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
 
-% category_ancestor: the recursive clause (length/2 + cut + \+ + recursion)
-% exceeds what the plain step-loop interpreter currently runs correctly, so
-% we assert the KERNEL's results against SWI-Prolog ground truth rather than
-% interpreter parity. This is exactly the case the native kernel exists for:
-% the depth-bounded ancestor search that the cross-target effective_distance
-% benchmark relies on. Parent chain c1 -> c2 -> c3 -> c4, max_depth 10.
-test(category_ancestor_kernel_correct,
-     [setup(kbuild_kernel([user:kca/4, user:kcat_parent/2], 'gen.kca', Run)),
-      cleanup(kcleanup_k(Run))]) :-
-    kassert_kernel(Run, 'kca/4', [c1,c2,'1','[]'], "true"),
-    kassert_kernel(Run, 'kca/4', [c1,c3,'2','[]'], "true"),
-    kassert_kernel(Run, 'kca/4', [c1,c4,'3','[]'], "true"),
-    kassert_kernel(Run, 'kca/4', [c2,c4,'2','[]'], "true"),
-    kassert_kernel(Run, 'kca/4', [c1,c4,'2','[]'], "false"),
-    kassert_kernel(Run, 'kca/4', [c1,c2,'2','[]'], "false").
+% category_ancestor: depth-bounded ancestor search. The recursive clause
+% reads max_depth/1 at runtime, so max_depth/1 is included in the predicate
+% list (otherwise the interpreter's max_depth/1 call has no dispatch target).
+% With it compiled, interpreter and kernel modes agree and both match SWI
+% ground truth. Parent chain c1 -> c2 -> c3 -> c4, max_depth 10.
+test(category_ancestor_parity,
+     [setup(kbuild_both([user:kca/4, user:kcat_parent/2, user:max_depth/1],
+                        'gen.kca', Run)),
+      cleanup(kcleanup(Run))]) :-
+    ksame(Run, 'kca/4', [c1,c2,'1','[]'], "true"),
+    ksame(Run, 'kca/4', [c1,c3,'2','[]'], "true"),
+    ksame(Run, 'kca/4', [c1,c4,'3','[]'], "true"),
+    ksame(Run, 'kca/4', [c2,c4,'2','[]'], "true"),
+    ksame(Run, 'kca/4', [c1,c4,'2','[]'], "false"),
+    ksame(Run, 'kca/4', [c1,c2,'2','[]'], "false").
 
 :- end_tests(wam_scala_kernels_runtime).
 
@@ -351,27 +351,6 @@ ksame(run(ItDir, KnDir, ItPkg, KnPkg), PredKey, Args, Expected) :-
 
 kcleanup(run(ItDir, KnDir, _, _)) :-
     ignore(delete_directory_and_contents(ItDir)),
-    ignore(delete_directory_and_contents(KnDir)).
-
-%% kbuild_kernel(+Preds, +PkgBase, -run_k(KnDir, KnPkg))
-%  Builds only the kernel-mode project (used where the plain interpreter
-%  cannot run the predicate, so results are checked against ground truth).
-kbuild_kernel(Preds, PkgBase, run_k(KnDir, KnPkg)) :-
-    format(atom(KnPkg), '~w.kn.core', [PkgBase]),
-    ktmp('tmp_scala_konly', KnDir),
-    write_wam_scala_project(Preds,
-        [package(KnPkg), runtime_package(KnPkg), module_name('konly'),
-         kernel_dispatch(true)], KnDir),
-    kcompile(KnDir).
-
-kassert_kernel(run_k(KnDir, KnPkg), PredKey, Args, Expected) :-
-    krun(KnDir, KnPkg, PredKey, Args, Out),
-    (   Out == Expected
-    ->  true
-    ;   throw(error(kernel_wrong(PredKey, Args, expected(Expected), got(Out)), _))
-    ).
-
-kcleanup_k(run_k(KnDir, _)) :-
     ignore(delete_directory_and_contents(KnDir)).
 
 kcompile(Dir) :-

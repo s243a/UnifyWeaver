@@ -156,12 +156,15 @@ recognises (`weighted_shortest_path3`, `astar_shortest_path4`) follow the
 same pattern and are slated as follow-ups; until then those predicates
 fall back to ordinary WAM compilation (correct, just not accelerated).
 
-> Note: `category_ancestor`'s recursive clause (`length/2` + cut + `\+` +
-> recursion) exceeds what the plain step-loop interpreter currently runs
-> correctly, so it should be run with `kernel_dispatch(true)` — which is
-> precisely the depth-bounded search the cross-target `effective_distance`
-> benchmark relies on. The native kernel's results are verified against
-> SWI-Prolog ground truth.
+> Note: `category_ancestor` reads `max_depth/1` at runtime (via the
+> recursive clause's `max_depth(M)` goal), so when running it through the
+> *interpreter* be sure to include `max_depth/1` in the predicate list
+> passed to `write_wam_scala_project/3` — otherwise the `max_depth/1` call
+> has no dispatch target and the recursive clause silently fails. The
+> native kernel bakes `max_depth` in from the kernel config, so it does
+> not depend on `max_depth/1` being compiled. With `max_depth/1` compiled,
+> interpreter and kernel modes agree, and both match SWI-Prolog ground
+> truth (verified in the test suite).
 
 The distance kernel returns the **shortest** path length per reachable
 node (matching the Haskell/Rust/Elixir kernels). The Prolog source
