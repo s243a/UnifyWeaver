@@ -20,7 +20,17 @@
 :- module(wam_scala_target, [
     compile_wam_predicate_to_scala/4,  % +Pred/Arity, +WamCode, +Options, -ScalaCode
     write_wam_scala_project/3,         % +Predicates, +Options, +ProjectDir
-    scala_foreign_predicate/3          % +Pred, +Arity, +Options
+    scala_foreign_predicate/3,         % +Pred, +Arity, +Options
+    % --- Hooks for the lowered emitter (wam_scala_lowered_emitter.pl) ---
+    % These expose the codegen-time atom interning / register / constant /
+    % functor helpers so the lowered emitter produces atom IDs and register
+    % indices that match the shared instruction array exactly.
+    scala_lowered_constant_term/2,     % +ConstTokenStr, -ScalaTermLiteral
+    scala_lowered_functor_arity/3,     % +FunctorTokenStr, -Name, -Arity
+    scala_lowered_reg_index/2,         % +RegNameStr, -IntIndex
+    scala_lowered_intern_atom/2,       % +AtomStr, -IntId
+    scala_resolve_emit_mode/2,         % +Options, -Mode
+    scala_partition_predicates/4       % +Mode, +Predicates, -Interp, -Lowered
 ]).
 
 :- use_module(library(lists)).
@@ -95,6 +105,20 @@ reg_to_int(Reg, Int) :-
     ;   Prefix == 'Y' -> Int is Num + 200
     ;   Int = 0
     ).
+
+% ============================================================================
+% LOWERED-EMITTER HOOKS
+% ============================================================================
+% Thin, exported wrappers around the codegen-time interning / register /
+% constant / functor helpers, so wam_scala_lowered_emitter.pl produces atom
+% IDs and register indices that match the shared instruction array.  They
+% MUST be called within the same intern-table session as the main program
+% emission (see compile_predicates_for_project/6) so the IDs line up.
+
+scala_lowered_reg_index(RegStr, Int)      :- reg_to_int(RegStr, Int).
+scala_lowered_constant_term(CStr, Term)   :- constant_to_scala_term(CStr, Term).
+scala_lowered_functor_arity(FStr, N, A)   :- parse_functor_arity(FStr, N, A).
+scala_lowered_intern_atom(AtomStr, Id)    :- intern_scala_atom(AtomStr, Id).
 
 % ============================================================================
 % WAM LINE → SCALA INSTRUCTION LITERAL
@@ -331,6 +355,17 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(Array(~w))', [CasesStr]).
 
+% switch_on_constant_fallthrough is shape-compatible with switch_on_constant:
+% both match A1 against the listed constants and jump to the matching label
+% on a hit. The runtime's switchTarget already falls through to pc+1 on a
+% miss (or to a "default"-labelled case with targetPc = -1), which is exactly
+% fall-through semantics — so we reuse the SwitchOnConstant instruction.
+% Mirrors wam_fsharp_target.pl. Without this the instruction degraded to a
+% Raw(...) stub and broke first-argument-indexed predicates (e.g. the
+% mixed fact+rule shape of factorial/Ackermann/Fibonacci base cases).
+wam_parts_to_scala(["switch_on_constant_fallthrough" | Cases], Lit) :-
+    wam_parts_to_scala(["switch_on_constant" | Cases], Lit).
+
 % --- Switch on term (type-based dispatch) ---
 % First-arg type indexing emitted by the WAM compiler when a predicate
 % mixes constant, list, and compound first-arg shapes. Format:
@@ -341,7 +376,25 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
 % `<functor>/<arity>:<label>`. ListLabel routes any cons cell ([|]/2).
 wam_parts_to_scala(["switch_on_term" | Rest], Lit) :-
     parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
-    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit).
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, 1, Lit).
+
+% A2-indexed variants. The WAM compiler emits the `_a2` family when it
+% indexes on the second argument (e.g. member/2's list arg). Same case
+% layout; only the indexed register differs (regs(2) instead of regs(1)).
+% Without these the instructions degraded to Raw(...) stubs and broke the
+% interpreter for A2-indexed predicates. Mirrors the F#/C/C++ targets.
+wam_parts_to_scala(["switch_on_term_a2" | Rest], Lit) :-
+    parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, 2, Lit).
+
+wam_parts_to_scala(["switch_on_constant_a2" | Cases], Lit) :-
+    normalize_switch_case_tokens(Cases, NormalizedCases),
+    parse_switch_cases(NormalizedCases, CaseLits),
+    atomic_list_concat(CaseLits, ', ', CasesStr),
+    format(string(Lit), 'SwitchOnConstant(Array(~w), 2)', [CasesStr]).
+
+wam_parts_to_scala(["switch_on_constant_a2_fallthrough" | Cases], Lit) :-
+    wam_parts_to_scala(["switch_on_constant_a2" | Cases], Lit).
 
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
@@ -492,14 +545,24 @@ split_at_first_colon(Token, Before, After) :-
     B1 is B + 1,
     sub_string(Token, B1, _, 0, After).
 
-format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
+%% format_switch_on_term_lit(+ConstCases, +StructCases, +ListLabel, +Reg, -Lit)
+%  Reg selects the indexed argument register (1 for switch_on_term, 2 for
+%  switch_on_term_a2). The Scala SwitchOnTerm case class defaults reg to 1,
+%  so for Reg==1 we omit it (keeping output identical to the pre-A2 codegen)
+%  and for Reg==2 we pass it as a named argument.
+format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Reg, Lit) :-
     maplist(const_case_lit, ConstCases, ConstLits),
     atomic_list_concat(ConstLits, ', ', ConstStr),
     maplist(struct_case_lit, StructCases, StructLits),
     atomic_list_concat(StructLits, ', ', StructStr),
-    format(string(Lit),
-           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
-           [ConstStr, StructStr, ListLabel]).
+    (   Reg =:= 1
+    ->  format(string(Lit),
+               'SwitchOnTerm(Array(~w), Array(~w), "~w")',
+               [ConstStr, StructStr, ListLabel])
+    ;   format(string(Lit),
+               'SwitchOnTerm(Array(~w), Array(~w), "~w", reg = ~w)',
+               [ConstStr, StructStr, ListLabel, Reg])
+    ).
 
 const_case_lit(case(ValueLit, Label), Lit) :-
     format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
@@ -655,9 +718,12 @@ emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     maplist([N, Arg]>>(format(string(Arg), 'a~w', [N])), ArgNums, ArgNames),
     atomic_list_concat(ArgNames, ', ', ArgNameStr),
     scala_pred_name(Pred, ScalaName),
+    % Route through runEntry so a lowered fast path (when present) is used;
+    % runEntry falls back to runPredicate at StartPc otherwise. Behaviour is
+    % identical in interpreter mode (loweredEntries is empty).
     format(string(Code),
-           '  def ~w(~w): Boolean =\n    WamRuntime.runPredicate(sharedProgram, ~w, Array(~w))\n',
-           [ScalaName, ArgDeclStr, StartPc, ArgNameStr]).
+           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array(~w))\n',
+           [ScalaName, ArgDeclStr, Pred, Arity, StartPc, ArgNameStr]).
 
 %% scala_pred_name(+PrologName, -ScalaName)
 %  Converts a Prolog predicate atom to a Scala camelCase identifier.
@@ -902,6 +968,11 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     % --- Compile all predicates ---
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode),
+    % --- Lowered per-predicate fast-path functions (emit_mode functions/mixed).
+    %     Runs in the SAME intern-table session as the compile above so atom
+    %     IDs match the shared instruction array. Must precede emit_scala_intern_table/1
+    %     so any atom it interns is captured in the emitted seed array. --
+    scala_generate_lowered(Predicates, Options, LoweredFunctionsBody, LoweredEntriesBody),
     % --- Intern table ---
     emit_scala_intern_table(IdToStringStr),
     % --- Format instruction array body ---
@@ -922,7 +993,8 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     write_program_source(ProjectDir, Pkg, RPkg,
                          InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr,
-                         ForeignHandlersBody).
+                         ForeignHandlersBody,
+                         LoweredFunctionsBody, LoweredEntriesBody).
 
 write_build_sbt(ProjectDir, ModName) :-
     find_template('templates/targets/scala_wam/build.sbt.mustache', Template),
@@ -949,7 +1021,8 @@ write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
 write_program_source(ProjectDir, Package, RuntimePkg,
                      InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr,
-                     ForeignHandlersBody) :-
+                     ForeignHandlersBody,
+                     LoweredFunctionsBody, LoweredEntriesBody) :-
     find_template('templates/targets/scala_wam/program.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -961,11 +1034,109 @@ write_program_source(ProjectDir, Package, RuntimePkg,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
-          'foreign_handlers'=ForeignHandlersBody
+          'foreign_handlers'=ForeignHandlersBody,
+          'lowered_functions'=LoweredFunctionsBody,
+          'lowered_entries'=LoweredEntriesBody
         ], Content),
     scala_source_path(ProjectDir, Package, 'GeneratedProgram', Path),
     make_directory_path_for(Path),
     write_file(Path, Content).
+
+% ============================================================================
+% EMIT MODE + LOWERED-FUNCTION GENERATION
+% ============================================================================
+% Mirrors the dual-mode lowering seam in the F#/Rust/Haskell targets.
+%   emit_mode(interpreter)  — default; all predicates run in the step loop.
+%   emit_mode(functions)    — every lowerable predicate also gets a native
+%                             Scala fast-path function tried before the loop.
+%   emit_mode(mixed([P/A])) — only the listed predicates are lowered.
+% Resolution order: Options, then user:wam_scala_emit_mode/1, then default.
+
+:- multifile user:wam_scala_emit_mode/1.
+
+%% scala_resolve_emit_mode(+Options, -Mode)
+scala_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M0), Options)
+    ->  scala_validate_emit_mode(M0, Mode)
+    ;   catch(user:wam_scala_emit_mode(M1), _, fail)
+    ->  scala_validate_emit_mode(M1, Mode)
+    ;   Mode = interpreter
+    ).
+
+scala_validate_emit_mode(interpreter, interpreter) :- !.
+scala_validate_emit_mode(functions,   functions)   :- !.
+scala_validate_emit_mode(mixed(L),    mixed(L))    :- is_list(L), !.
+scala_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_scala_emit_mode, Other),
+                scala_resolve_emit_mode/2)).
+
+%% scala_partition_predicates(+Mode, +Predicates, -Interpreted, -Lowered)
+scala_partition_predicates(interpreter, Predicates, Predicates, []) :- !.
+scala_partition_predicates(functions, Predicates, Interp, Lowered) :- !,
+    scala_partition_try_lower(Predicates, Interp, Lowered).
+scala_partition_predicates(mixed(Hot), Predicates, Interp, Lowered) :- !,
+    scala_partition_mixed(Predicates, Hot, Interp, Lowered).
+
+scala_partition_try_lower([], [], []).
+scala_partition_try_lower([P|Rest], Interp, Lowered) :-
+    (   scala_predicate_is_lowerable(P)
+    ->  Lowered = [P|LR], scala_partition_try_lower(Rest, Interp, LR)
+    ;   Interp = [P|IR], scala_partition_try_lower(Rest, IR, Lowered)
+    ).
+
+scala_partition_mixed([], _, [], []).
+scala_partition_mixed([P|Rest], Hot, Interp, Lowered) :-
+    (   scala_indicator_in_list(P, Hot),
+        scala_predicate_is_lowerable(P)
+    ->  Lowered = [P|LR], scala_partition_mixed(Rest, Hot, Interp, LR)
+    ;   Interp = [P|IR], scala_partition_mixed(Rest, Hot, IR, Lowered)
+    ).
+
+scala_indicator_in_list(P, L) :- memberchk(P, L), !.
+scala_indicator_in_list(_:Pred/Arity, L) :- memberchk(Pred/Arity, L), !.
+
+scala_predicate_is_lowerable(P) :-
+    catch(scala_predicate_wamcode(P, WamCode), _, fail),
+    catch(wam_scala_lowerable(P, WamCode, _), _, fail).
+
+scala_predicate_wamcode(user:Pred/Arity, WamCode) :- !,
+    compile_predicate_to_wam(Pred/Arity, [], WamCode).
+scala_predicate_wamcode(Module:Pred/Arity, WamCode) :- !,
+    compile_predicate_to_wam(Module:Pred/Arity, [], WamCode).
+scala_predicate_wamcode(Pred/Arity, WamCode) :-
+    compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+%% scala_generate_lowered(+Predicates, +Options, -FunctionsBody, -EntriesBody)
+%  Produces the Scala source for the lowered functions and the
+%  loweredEntries Map body. Empty strings in interpreter mode so the
+%  generated program is byte-identical to the pre-lowering output.
+scala_generate_lowered(Predicates, Options, FunctionsBody, EntriesBody) :-
+    scala_resolve_emit_mode(Options, Mode),
+    (   Mode == interpreter
+    ->  FunctionsBody = "", EntriesBody = ""
+    ;   scala_partition_predicates(Mode, Predicates, _Interp, Lowered0),
+        exclude(scala_pred_is_foreign(Options), Lowered0, Lowered),
+        scala_lower_each(Lowered, FuncCodes, Entries),
+        atomic_list_concat(FuncCodes, '\n', FunctionsBody),
+        atomic_list_concat(Entries, ',\n', EntriesBody)
+    ).
+
+scala_pred_is_foreign(Options, P) :-
+    ( P = _:Pred/Arity -> true ; P = Pred/Arity ),
+    scala_foreign_predicate(Pred, Arity, Options).
+
+scala_lower_each([], [], []).
+scala_lower_each([P|Rest], [Code|Cs], [Entry|Es]) :-
+    scala_predicate_wamcode(P, WamCode),
+    lower_predicate_to_scala(P, WamCode, [], lowered(PredKey, FuncName, Code)),
+    % Entry wrapper: try the lowered clause-1 fast path; on failure fall
+    % back to a fresh interpreter run of the same predicate. This keeps
+    % results identical to the pure interpreter (a lowered `false` defers
+    % to the complete step loop) while taking the fast path on success.
+    format(string(Entry),
+        '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
+        [PredKey, PredKey, FuncName]),
+    scala_lower_each(Rest, Cs, Es).
 
 % ============================================================================
 % HELPERS
@@ -1002,3 +1173,15 @@ find_template(RelPath, Template) :-
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).
+
+% ============================================================================
+% LOWERED EMITTER WIRING
+% ============================================================================
+% Loaded last so that, when wam_scala_lowered_emitter.pl re-imports the
+% scala_lowered_* hook predicates from this module, they are already defined.
+% The dependency is mutual (the emitter uses our hooks; we use its
+% lower_predicate_to_scala/4 + wam_scala_lowerable/3), so load order matters.
+:- use_module('../targets/wam_scala_lowered_emitter', [
+       wam_scala_lowerable/3,
+       lower_predicate_to_scala/4
+   ]).
