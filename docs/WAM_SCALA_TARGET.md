@@ -145,12 +145,21 @@ write_wam_scala_project([user:tc/2, user:edge/2],
     [ package('demo.tc'), kernel_dispatch(true) ], '/tmp/tc').
 ```
 
-Currently implemented: **`transitive_closure2`**. The remaining six kinds
-the detector recognises (`category_ancestor`, `transitive_distance3`,
-`weighted_shortest_path3`, `transitive_parent_distance4`,
-`astar_shortest_path4`, `transitive_step_parent_distance5`) follow the
-same pattern and are slated as follow-ups; until then those predicates
-fall back to ordinary WAM compilation (correct, just not accelerated).
+Currently implemented: **`transitive_closure2`** and
+**`transitive_distance3`** (BFS shortest-path distance, binding the
+distance register). The remaining five kinds the detector recognises
+(`category_ancestor`, `weighted_shortest_path3`,
+`transitive_parent_distance4`, `astar_shortest_path4`,
+`transitive_step_parent_distance5`) follow the same pattern and are
+slated as follow-ups; until then those predicates fall back to ordinary
+WAM compilation (correct, just not accelerated).
+
+The distance kernel returns the **shortest** path length per reachable
+node (matching the Haskell/Rust/Elixir kernels). The Prolog source
+enumerates one solution per path, so kernel and interpreter agree on
+graphs where each reachable node has a single path length (trees / DAGs
+without length-divergent alternate paths); on graphs with multiple path
+lengths to the same node the kernel reports only the shortest.
 
 ### Fact-source spec forms
 
