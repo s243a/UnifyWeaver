@@ -58,6 +58,22 @@ user:kpd(X, Y, P, D) :- kedge(X, Z), kpd(Z, Y, P, D1), D is D1 + 1.
 user:ksp(X, Y, Y, X, 1) :- kedge(X, Y).
 user:ksp(X, Y, Z, P, D) :- kedge(X, Z), ksp(Z, Y, _, P, D1), D is D1 + 1.
 
+% category_ancestor: depth-bounded ancestor search with a visited list over
+% a separate parent relation. Parent chain c1 -> c2 -> c3 -> c4.
+:- dynamic user:kcat_parent/2.
+:- dynamic user:kca/4.
+:- dynamic user:max_depth/1.
+user:max_depth(10).
+user:kcat_parent(c1, c2).
+user:kcat_parent(c2, c3).
+user:kcat_parent(c3, c4).
+user:kca(Cat, Parent, 1, Visited) :-
+    kcat_parent(Cat, Parent), \+ member(Parent, Visited).
+user:kca(Cat, Anc, Hops, Visited) :-
+    max_depth(M), length(Visited, D), D < M, !,
+    kcat_parent(Cat, Mid), \+ member(Mid, Visited),
+    kca(Mid, Anc, H1, [Mid|Visited]), Hops is H1 + 1.
+
 % ============================================================
 % Structural suite (always runs)
 % ============================================================
@@ -91,6 +107,14 @@ test(detects_transitive_step_parent_distance5) :-
     assertion(Kernel = recursive_kernel(transitive_step_parent_distance5, ksp/5, _)),
     Kernel = recursive_kernel(_, _, Cfg),
     assertion(memberchk(edge_pred(kedge/2), Cfg)).
+
+test(detects_category_ancestor) :-
+    collect_clauses(kca, 4, Clauses),
+    detect_recursive_kernel(kca, 4, Clauses, Kernel),
+    assertion(Kernel = recursive_kernel(category_ancestor, kca/4, _)),
+    Kernel = recursive_kernel(_, _, Cfg),
+    assertion(memberchk(edge_pred(kcat_parent/2), Cfg)),
+    assertion(memberchk(max_depth(10), Cfg)).
 
 % Kernel mode: ktc becomes a CallForeign stub backed by a native BFS
 % handler; the edge relation stays WAM-compiled.
@@ -158,6 +182,25 @@ test(step_parent_distance_kernel_emits_handler_and_stub) :-
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ksp\", 5)")),
         assertion(sub_string(Src, _, _, _, "5 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
+        delete_directory_and_contents(Dir)
+    )).
+
+% category_ancestor kernel mode: kca becomes a CallForeign stub backed by a
+% depth-bounded DFS handler (max_depth baked in, visited list parsed via
+% wamListToVector); the parent relation stays WAM-compiled.
+test(category_ancestor_kernel_emits_handler_and_stub) :-
+    once((
+        ktmp('tmp_scala_knc', Dir),
+        write_wam_scala_project(
+            [user:kca/4, user:kcat_parent/2],
+            [ package('kc.core'), runtime_package('kc.core'),
+              module_name('kc'), kernel_dispatch(true) ],
+            Dir),
+        kprogram_source(Dir, 'kc.core', Src),
+        assertion(sub_string(Src, _, _, _, "CallForeign(\"kca\", 4)")),
+        assertion(sub_string(Src, _, _, _, "maxDepth: Int = 10")),
+        assertion(sub_string(Src, _, _, _, "wamListToVector")),
+        assertion(sub_string(Src, _, _, _, "\"kcat_parent/2\" ->")),
         delete_directory_and_contents(Dir)
     )).
 
@@ -237,6 +280,22 @@ test(transitive_step_parent_distance_parity,
     ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
     ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
 
+% category_ancestor: the recursive clause (length/2 + cut + \+ + recursion)
+% exceeds what the plain step-loop interpreter currently runs correctly, so
+% we assert the KERNEL's results against SWI-Prolog ground truth rather than
+% interpreter parity. This is exactly the case the native kernel exists for:
+% the depth-bounded ancestor search that the cross-target effective_distance
+% benchmark relies on. Parent chain c1 -> c2 -> c3 -> c4, max_depth 10.
+test(category_ancestor_kernel_correct,
+     [setup(kbuild_kernel([user:kca/4, user:kcat_parent/2], 'gen.kca', Run)),
+      cleanup(kcleanup_k(Run))]) :-
+    kassert_kernel(Run, 'kca/4', [c1,c2,'1','[]'], "true"),
+    kassert_kernel(Run, 'kca/4', [c1,c3,'2','[]'], "true"),
+    kassert_kernel(Run, 'kca/4', [c1,c4,'3','[]'], "true"),
+    kassert_kernel(Run, 'kca/4', [c2,c4,'2','[]'], "true"),
+    kassert_kernel(Run, 'kca/4', [c1,c4,'2','[]'], "false"),
+    kassert_kernel(Run, 'kca/4', [c1,c2,'2','[]'], "false").
+
 :- end_tests(wam_scala_kernels_runtime).
 
 % ============================================================
@@ -292,6 +351,27 @@ ksame(run(ItDir, KnDir, ItPkg, KnPkg), PredKey, Args, Expected) :-
 
 kcleanup(run(ItDir, KnDir, _, _)) :-
     ignore(delete_directory_and_contents(ItDir)),
+    ignore(delete_directory_and_contents(KnDir)).
+
+%% kbuild_kernel(+Preds, +PkgBase, -run_k(KnDir, KnPkg))
+%  Builds only the kernel-mode project (used where the plain interpreter
+%  cannot run the predicate, so results are checked against ground truth).
+kbuild_kernel(Preds, PkgBase, run_k(KnDir, KnPkg)) :-
+    format(atom(KnPkg), '~w.kn.core', [PkgBase]),
+    ktmp('tmp_scala_konly', KnDir),
+    write_wam_scala_project(Preds,
+        [package(KnPkg), runtime_package(KnPkg), module_name('konly'),
+         kernel_dispatch(true)], KnDir),
+    kcompile(KnDir).
+
+kassert_kernel(run_k(KnDir, KnPkg), PredKey, Args, Expected) :-
+    krun(KnDir, KnPkg, PredKey, Args, Out),
+    (   Out == Expected
+    ->  true
+    ;   throw(error(kernel_wrong(PredKey, Args, expected(Expected), got(Out)), _))
+    ).
+
+kcleanup_k(run_k(KnDir, _)) :-
     ignore(delete_directory_and_contents(KnDir)).
 
 kcompile(Dir) :-

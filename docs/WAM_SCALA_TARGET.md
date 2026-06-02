@@ -148,12 +148,20 @@ write_wam_scala_project([user:tc/2, user:edge/2],
 Currently implemented: **`transitive_closure2`**,
 **`transitive_distance3`** (BFS shortest-path distance),
 **`transitive_parent_distance4`** (target + immediate predecessor on the
-shortest path + distance), and **`transitive_step_parent_distance5`**
-(target + first hop from source + immediate predecessor + distance). The
-remaining three kinds the detector recognises (`category_ancestor`,
-`weighted_shortest_path3`, `astar_shortest_path4`) follow the same
-pattern and are slated as follow-ups; until then those predicates fall
-back to ordinary WAM compilation (correct, just not accelerated).
+shortest path + distance), **`transitive_step_parent_distance5`**
+(target + first hop from source + immediate predecessor + distance), and
+**`category_ancestor`** (depth-bounded ancestor search with a visited
+list; config carries `max_depth`). The remaining two kinds the detector
+recognises (`weighted_shortest_path3`, `astar_shortest_path4`) follow the
+same pattern and are slated as follow-ups; until then those predicates
+fall back to ordinary WAM compilation (correct, just not accelerated).
+
+> Note: `category_ancestor`'s recursive clause (`length/2` + cut + `\+` +
+> recursion) exceeds what the plain step-loop interpreter currently runs
+> correctly, so it should be run with `kernel_dispatch(true)` — which is
+> precisely the depth-bounded search the cross-target `effective_distance`
+> benchmark relies on. The native kernel's results are verified against
+> SWI-Prolog ground truth.
 
 The distance kernel returns the **shortest** path length per reachable
 node (matching the Haskell/Rust/Elixir kernels). The Prolog source

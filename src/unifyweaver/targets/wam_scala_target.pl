@@ -806,7 +806,8 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
 % whether the edges are WAM-compiled facts or a declarative fact source.
 %
 % Currently implemented kernel kinds: transitive_closure2, transitive_distance3,
-% transitive_parent_distance4, transitive_step_parent_distance5.
+% transitive_parent_distance4, transitive_step_parent_distance5,
+% category_ancestor.
 % The remaining six (category_ancestor, transitive_distance3,
 % weighted_shortest_path3, transitive_parent_distance4,
 % astar_shortest_path4, transitive_step_parent_distance5) follow the same
@@ -916,6 +917,25 @@ emit_scala_kernel_handler(recursive_kernel(transitive_step_parent_distance5, _Pr
     format(string(Code),
 "new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        // node -> (first-hop-from-source, parent-on-shortest-path, distance)\n        val info = scala.collection.mutable.LinkedHashMap[WamTerm, (WamTerm, WamTerm, Int)]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        // queue entries: (node, first-hop-step, distance)\n        val queue = scala.collection.mutable.Queue[(WamTerm, WamTerm, Int)]((source, source, 0))\n        while (queue.nonEmpty) {\n          val (node, step, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            val nbStep = if (node == source) nb else step\n            info(nb) = (nbStep, node, d + 1)\n            queue.enqueue((nb, nbStep, d + 1))\n          }\n        }\n        val sols = info.toVector.map { case (t, (st, p, dd)) => Map(2 -> t, 3 -> st, 4 -> p, 5 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [EdgeKeyLit]).
+
+% category_ancestor: ca(Cat, Root, Hops, Visited). Depth-bounded DFS up the
+% parent (edge) relation, returning one Hops solution per acyclic path from
+% Cat to Root within max_depth, skipping nodes already in Visited (cycle
+% break). Inputs: register 1 = cat, register 2 = root, register 4 = visited
+% list; output: register 3 = hop count. max_depth is baked in from the
+% kernel config. Mirrors the Haskell/Rust/Elixir reference (the base hop
+% check is depth-unguarded; only the recursive descent is bounded, so the
+% deepest hop found is max_depth + 1). Returns all paths' hop counts, so it
+% agrees with the interpreter (no shortest-only collapsing).
+emit_scala_kernel_handler(recursive_kernel(category_ancestor, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    member(max_depth(MaxDepth), ConfigOps),
+    integer(MaxDepth),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private val maxDepth: Int = ~w\n      private lazy val parents: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val cat = args(0)\n        val root = args(1)\n        val init = WamRuntime.wamListToVector(sharedProgram, args(3)).toSet\n        val hits = scala.collection.mutable.ArrayBuffer.empty[Int]\n        def go(acc: Int, c: WamTerm, depth: Int, visited: Set[WamTerm]): Unit = {\n          val ps = parents.getOrElse(c, Vector.empty)\n          val hop = acc + 1\n          for (p <- ps if p == root) hits += hop\n          if (depth < maxDepth)\n            for (mid <- ps if !visited.contains(mid))\n              go(hop, mid, depth + 1, visited + mid)\n        }\n        go(0, cat, init.size, init)\n        val sols = hits.toVector.map(h => Map(3 -> (IntTerm(h): WamTerm)))\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [MaxDepth, EdgeKeyLit]).
 
 % ============================================================================
 % FACT BACKEND SEAM (Phase S7)
