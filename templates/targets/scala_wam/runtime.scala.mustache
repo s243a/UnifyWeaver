@@ -2658,4 +2658,38 @@ object WamRuntime {
         run(s, program)
     }
   }
+
+  // ==========================================================
+  // Graph-kernel support
+  // ==========================================================
+
+  /** Enumerate every solution of a binary predicate `predKey` (e.g.
+   *  "edge/2") with both arguments unbound at entry, returning the
+   *  (arg1, arg2) pairs.  Runs in a fresh state and drives the existing
+   *  choice-point machinery (so it works for WAM-compiled facts, rule
+   *  predicates, and foreign fact-sources alike).  Used by the native
+   *  graph kernels emitted by wam_scala_target.pl to build an adjacency
+   *  map from the kernel's edge relation. */
+  def collectBinarySolutions(program: WamProgram, predKey: String): Vector[(WamTerm, WamTerm)] = {
+    program.dispatch.get(predKey) match {
+      case None => Vector.empty
+      case Some(startPc) =>
+        val out = mutable.ArrayBuffer.empty[(WamTerm, WamTerm)]
+        val s = newState(startPc, Array.empty[WamTerm])
+        // Two fresh unbound argument registers.
+        s.regs(1) = freshVar(s)
+        s.regs(2) = freshVar(s)
+        var live = run(s, program)
+        var guard = 0
+        val maxSolutions = 5000000  // safety bound against runaway enumeration
+        while (live && guard < maxSolutions) {
+          out += ((deepDeref(s, s.regs(1)), deepDeref(s, s.regs(2))))
+          guard += 1
+          backtrack(s)
+          if (s.status == Failed) live = false
+          else live = run(s, program)
+        }
+        out.toVector
+    }
+  }
 }

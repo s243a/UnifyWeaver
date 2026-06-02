@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Scala target: hot-path graph kernels (opt-in `kernel_dispatch(true)`)** —
+  brings Scala onto the Rust/Haskell/Elixir/Go native-kernel route. The
+  shared recursive-kernel detector runs over the predicates; a matching
+  predicate is replaced by a synthesized Scala `ForeignHandler` that does
+  the traversal natively, bypassing the WAM step loop. The handler builds
+  its adjacency map from the kernel's edge relation via a new
+  `WamRuntime.collectBinarySolutions/2` enumerator (works for WAM facts
+  and fact sources alike). First kernel kind implemented:
+  `transitive_closure2` (the other six fall back to ordinary WAM
+  compilation until ported). New `tests/test_wam_scala_kernels.pl` with
+  structural tests plus a gated runtime test asserting kernel-mode and
+  interpreter-mode transitive-closure results are identical and correct.
 - **WAM Scala target: per-predicate lowered emitter** — brings the Scala
   hybrid WAM to parity with the Haskell/Rust/C++/F#/Go/Clojure targets,
   all of which already shipped a `wam_*_lowered_emitter.pl`.
