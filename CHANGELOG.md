@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Scala target: execution-mode benchmark** — new
+  `tests/benchmarks/wam_scala_mode_bench.pl` compares the interpreter,
+  lowered (`emit_mode(functions)`), and kernel (`kernel_dispatch(true)`)
+  modes on a transitive-closure workload via the generated program's
+  `--bench` inner-loop mode. Results + interpretation in
+  `benchmarks/wam_scala_mode_bench.md`: the native graph kernel runs deep
+  reachability ~4× faster at chain depth 100 and ~9× at depth 300 (the win
+  grows with depth), with fixed setup overhead on trivial/shallow queries;
+  the lowered emitter is roughly neutral for recursion-heavy predicates
+  (its benefit is largest for single-clause inline-deterministic ones).
 - **WAM Scala target: hot-path graph kernels (opt-in `kernel_dispatch(true)`)** —
   brings Scala onto the Rust/Haskell/Elixir/Go native-kernel route. The
   shared recursive-kernel detector runs over the predicates; a matching

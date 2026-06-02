@@ -277,6 +277,24 @@ SCALA_SMOKE_TESTS=1 swipl -g 'use_module(library(plunit)),consult("tests/test_wa
 
 ## Benchmark
 
+### Execution modes (interpreter vs lowered vs kernel)
+
+[`tests/benchmarks/wam_scala_mode_bench.pl`](../tests/benchmarks/wam_scala_mode_bench.pl)
+compares the three execution modes on a transitive-closure workload and
+prints per-iteration time + speedup vs the interpreter:
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_scala_mode_bench.pl -- 300 2000
+```
+
+Headline result: the native graph kernel is **~4× at chain depth 100 and
+~9× at depth 300** on deep reachability (the win grows with depth), while
+`emit_mode(functions)` is roughly neutral for this recursion-heavy
+predicate. Full numbers and interpretation:
+[benchmarks/wam_scala_mode_bench.md](../benchmarks/wam_scala_mode_bench.md).
+
+### Fact-source backends
+
 A synthetic three-way bench compares the WAM-compiled, inline-tuple,
 and file-backed fact-source paths on a chain of `c0 → c1 → … → cN`:
 
