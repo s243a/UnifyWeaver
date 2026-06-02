@@ -32,10 +32,8 @@ of vertices (which is the case for Wikipedia category graphs).
 
 What we *do* require is a parent/child decomposition: for each
 non-root $v$, define
-$$
-\mathrm{parents}(v) \subseteq V, \quad
-\mathrm{children}(v) \subseteq V
-$$
+$$\mathrm{parents}(v) \subseteq V, \quad
+\mathrm{children}(v) \subseteq V$$
 as the sets of nodes connected to $v$ by an in-edge or out-edge
 respectively, in the categorisation interpretation. The
 distinction between "parent direction" and "child direction" is
@@ -82,17 +80,13 @@ Following the design note's §2.0 notation, let:
   context; $b_{\text{eff}}$ is the canonical asymmetry quantity.
 
 The path weight is
-$$
-w(p) = D^{-N(p)} \cdot (b_{\text{eff}} \cdot D)^{-M(p)}
-$$
+$$w(p) = D^{-N(p)} \cdot (b_{\text{eff}} \cdot D)^{-M(p)}$$
 and the **directionally-weighted power-mean metric** with exponent
 $n$ is
-$$
-d_{\text{wPow}}(v; B, cc) = \left(
+$$d_{\text{wPow}}(v; B, cc) = \left(
 \frac{\sum_{p \in \mathcal{P}(v; B, cc)} w(p) \cdot (h(p)+1)^{-n}}
      {\sum_{p \in \mathcal{P}(v; B, cc)} w(p)}
-\right)^{-1/n}
-$$
+\right)^{-1/n}$$
 where $\mathcal{P}(v; B, cc)$ is the set of paths from $v$ to $r$
 with cost at most $B$ when each parent hop costs $1$ and each
 child hop costs $cc$. We typically use $n = 2$ in experiments.
@@ -107,11 +101,9 @@ $b_{\text{eff}}$.
 ### 0.4 Path-count growth
 
 For a node $v$ reachable to $r$ within budget $B$, define
-$$
-\#\text{paths}(v; N, M; B) :=
+$$\mathrm{paths}(v; N, M; B) :=
 \bigl|\{p : v \to r,\ p \text{ has } N \text{ parent hops}
-              \text{ and } M \text{ child hops, cost} \le B\}\bigr|
-$$
+              \text{ and } M \text{ child hops, cost} \le B\}\bigr|$$
 At any fixed budget $B$ and child-step cost $cc > 0$, the maximum
 admissible $M$ is finite ($\lfloor B/cc \rfloor$), so a literal
 $M \to \infty$ limit does not exist. We instead define $b'$ as
@@ -119,11 +111,9 @@ the **asymptotic per-child-hop path-count growth rate** under
 the homogeneity assumption: there exists a constant $b' \ge 1$
 and a node-dependent constant $C(v) > 0$ such that, for $M$ in
 the range admissible at $(B, cc)$,
-$$
-\mathbb{E}_{v \sim Q}\bigl[\#\text{paths}(v; \cdot, M; B)\bigr]
-\approx C \cdot (b')^M
-$$
-where $\#\text{paths}(v; \cdot, M; B)$ denotes summation over $N$
+$$\mathbb{E}_{v \sim Q}\bigl[\mathrm{paths}(v; \cdot, M; B)\bigr]
+\approx C \cdot (b')^M$$
+where $\mathrm{paths}(v; \cdot, M; B)$ denotes summation over $N$
 and the approximation holds up to a multiplicative
 $(1 + o(1))$ factor uniformly in $M$.
 
@@ -141,12 +131,9 @@ of decreasing $cc$ values that admit successively more child
 hops. For two adjacent values $cc_1 > cc_2$ with
 $M_{\max}(B, cc_1) = m_1$ and $M_{\max}(B, cc_2) = m_2 > m_1$,
 under homogeneity
-$$
-\frac{\text{total } \#\text{paths at } (B, cc_2)}
-     {\text{total } \#\text{paths at } (B, cc_1)}
+$$\frac{\mathrm{paths_{total}}(B, cc_2)}{\mathrm{paths_{total}}(B, cc_1)}
 \;\approx\;
-\frac{\sum_{M=0}^{m_2} (b')^M}{\sum_{M=0}^{m_1} (b')^M}
-$$
+\frac{\sum_{M=0}^{m_2} (b')^M}{\sum_{M=0}^{m_1} (b')^M}$$
 so taking the geometric mean over transitions where
 $m_{k+1} - m_k = 1$ recovers $b'$ directly. For larger
 $M$ increments, the appropriate root corrects for the number
@@ -169,12 +156,10 @@ $b' \approx 11$ on simplewiki topical core.
 
 The **tree-likeness index** of the tuple $(G, \mu, Q, B)$ where
 $\mu$ is the directionally-weighted metric is
-$$
-\mathrm{TLI}(G, \mu, Q, B) :=
+$$\mathrm{TLI}(G, \mu, Q, B) :=
 \frac{\bigl|\mathbb{E}_{v \sim Q}\bigl[d_{\text{wPow}}(v; B, \infty)\bigr] -
             \mathbb{E}_{v \sim Q}\bigl[d_{\text{wPow}}(v; B, 0^+)\bigr]\bigr|}
-     {\mathbb{E}_{v \sim Q}\bigl[d_{\text{wPow}}(v; B, 0^+)\bigr]}
-$$
+     {\mathbb{E}_{v \sim Q}\bigl[d_{\text{wPow}}(v; B, 0^+)\bigr]}$$
 i.e. the relative drift of the mean metric value as the child-step
 cost ranges from infinity (tree-search, $M = 0$ only) to
 $0^+$ (full DAG search, all $M$ admitted within budget).
@@ -212,7 +197,7 @@ $(G, Q, B)$ is *statistically homogeneous* if there exist
 constants $D, b' \ge 1$ such that, uniformly over $v$ in the
 support of the marginal distribution $Q$:
 
-(H1) $\mathbb{E}\bigl[\#\mathrm{children}(v)\bigr] = D$
+(H1) $\mathbb{E}\bigl[|\mathrm{children}(v)|\bigr] = D$
 (within multiplicative factor $1 + o(1)$);
 
 (H2) The path-count growth in §0.4 has the same $b'$ at every
@@ -262,9 +247,7 @@ $\mathbf{w} = (w_1, \dots, w_n)$ — where edge $(i,j)$ is present
 with probability $w_i w_j / \sum_k w_k$ — and average degree
 $\langle k \rangle = \mathbb{E}[w] > 1$, the average shortest-path
 length between random node pairs satisfies
-$$
-L \sim \frac{\log n}{\log \tilde{d}}
-$$
+$$L \sim \frac{\log n}{\log \tilde{d}}$$
 as $n \to \infty$, where $\tilde{d} = \mathbb{E}[w^2] / \mathbb{E}[w]$
 is the *expected size-biased degree* (the average degree of a
 random endpoint of a random edge).
@@ -343,10 +326,8 @@ $\{d_1, \dots, d_n\}$ believed to follow a power-law tail
 $P(k) \propto k^{-\gamma}$ for $k \ge d_{\min}$:
 
 1. For each candidate $d_{\min}$, compute the continuous MLE
-$$
-\hat\gamma(d_{\min}) = 1 + n_{\ge d_{\min}} \biggm/
-\sum_{d_i \ge d_{\min}} \log(d_i / d_{\min})
-$$
+$$\hat\gamma(d_{\min}) = 1 + n_{\ge d_{\min}} \biggm/
+\sum_{d_i \ge d_{\min}} \log(d_i / d_{\min})$$
 2. Compute the Kolmogorov-Smirnov distance between the empirical
    tail CDF and the fitted power-law tail CDF
 3. Select the $d_{\min}$ that minimises KS distance
@@ -367,9 +348,7 @@ ultra-small-world consequences from this fit.
 **Lemma (Feld, 1991).** For a graph with finite degree
 distribution $P(k)$, the expected degree of a node reached by
 following a random edge is
-$$
-\tilde{d} := \frac{\mathbb{E}[k^2]}{\mathbb{E}[k]} \ge \mathbb{E}[k]
-$$
+$$\tilde{d} := \frac{\mathbb{E}[k^2]}{\mathbb{E}[k]} \ge \mathbb{E}[k]$$
 with equality iff degrees are constant. The quantity $\tilde{d}$
 is the *size-biased mean* or **Chung-Lu effective degree** (cf.
 §1.1).
@@ -380,16 +359,12 @@ do", *American Journal of Sociology* 96(6): 1464–1477 (1991).
 **Relevance to TLI: $b_{\text{eff}}$ is the ratio of Chung-Lu
 effective degrees.** Applying the size-biased mean separately to
 the child and parent edge populations gives
-$$
-\tilde{d}_c = \frac{\mathbb{E}[d_c^2]}{\mathbb{E}[d_c]}, \qquad
-\tilde{d}_p = \frac{\mathbb{E}[d_p^2]}{\mathbb{E}[d_p]}
-$$
+$$\tilde{d}_c = \frac{\mathbb{E}[d_c^2]}{\mathbb{E}[d_c]}, \qquad
+\tilde{d}_p = \frac{\mathbb{E}[d_p^2]}{\mathbb{E}[d_p]}$$
 and our calibrated branching asymmetry is exactly the ratio
-$$
-b_{\text{eff}}
+$$b_{\text{eff}}
 = \frac{\mathbb{E}[d_c^2]/\mathbb{E}[d_c]}{\mathbb{E}[d_p^2]/\mathbb{E}[d_p]}
-= \frac{\tilde{d}_c}{\tilde{d}_p}
-$$
+= \frac{\tilde{d}_c}{\tilde{d}_p}$$
 i.e. the Chung-Lu effective degree in the child direction divided
 by the Chung-Lu effective degree in the parent direction. **Low
 TLI thus has a clean interpretation: the child-direction
@@ -410,9 +385,7 @@ $n = (D^{L+1} - 1)/(D - 1)$ nodes:
 
 - Depth-to-root: $L = \log_D(n(D - 1) + 1) \approx \log_D n$
 - Average pair distance: for uniform-random distinct nodes $u, v$,
-$$
-\mathbb{E}_{u,v}[d(u,v)] \approx 2L - \frac{2D}{D-1} \approx 2 \log_D n
-$$
+$$\mathbb{E}_{u,v}[d(u,v)] \approx 2L - \frac{2D}{D-1} \approx 2 \log_D n$$
 with the constant offset $2D/(D-1)$ converging to $2$ as
 $D \to \infty$ (large branching makes LCAs shallow).
 
@@ -432,7 +405,7 @@ average pair distance", which we compare against
 small-world and ultra-small-world distance scalings. The lemma
 is *not* used to argue $\mathrm{TLI} = 0$ for trees — that
 follows trivially from the definition (a tree has no cross-edge
-paths, so $\#\text{paths}(v; N, M; B) = 0$ for all $M \ge 1$,
+paths, so $\mathrm{paths}(v; N, M; B) = 0$ for all $M \ge 1$,
 hence $d_{\text{wPow}}$ does not depend on $cc$ and TLI = 0
 identically).
 
@@ -447,15 +420,11 @@ conjecture (§3.1); they are building blocks supporting it.
 **Lemma 2.1.** Suppose $(G, Q, B)$ is statistically homogeneous in
 the sense of Definition 0.6. Then for any node $v$ in the support
 of $Q$,
-$$
-\#\text{paths}(v; N, M; B) \approx D^N \cdot (b')^M
-$$
+$$\mathrm{paths}(v; N, M; B) \approx D^N \cdot (b')^M$$
 as $N, M$ range over admissible hop counts within budget $B$,
 where the approximation holds up to a multiplicative
 $(1 + o(1))$ factor. Consequently,
-$$
-\mathbb{E}_{v \sim Q}\bigl[\#\text{paths}(v; N, M; B)\bigr] \approx D^N \cdot (b')^M
-$$
+$$\mathbb{E}_{v \sim Q}\bigl[\mathrm{paths}(v; N, M; B)\bigr] \approx D^N \cdot (b')^M$$
 with the same asymptotic factor.
 
 **Proof.** Condition (H2) of Definition 0.6 fixes the asymptotic
@@ -478,19 +447,15 @@ $D \approx 7.34$ and $b' \approx 11$.
 
 **Proposition 2.2.** Under Definition 0.6 homogeneity with
 calibration $b_{\text{eff}} \cdot D = b'$,
-$$
-w(p) \cdot \#\text{paths}\bigl(\cdot;\ N(p), M(p);\ B\bigr) \approx 1
-$$
+$$w(p) \cdot \mathrm{paths}\bigl(\cdot;\ N(p), M(p);\ B\bigr) \approx 1$$
 for all paths $p$, i.e. the weight formula is precisely a
 path-count normaliser.
 
 **Proof.** Direct substitution:
-$$
-w(p) = D^{-N(p)} (b_{\text{eff}} \cdot D)^{-M(p)}
-     = D^{-N(p)} (b')^{-M(p)}
-$$
+$$w(p) = D^{-N(p)} (b_{\text{eff}} \cdot D)^{-M(p)}
+     = D^{-N(p)} (b')^{-M(p)}$$
 By Lemma 2.1,
-$\#\text{paths}(N, M) \approx D^N (b')^M$, so the product is
+$\mathrm{paths}(N, M) \approx D^N (b')^M$, so the product is
 $1$ up to the $(1+o(1))$ factor. $\square$
 
 This is the formal statement of design note §5.6's "weights as
@@ -511,34 +476,24 @@ not equal it exactly.
 0.6) with growth constants $D$ and $b'$, and the metric is
 calibrated with $b_{\text{eff}} \cdot D > b'$. Define the
 **convergence ratio**
-$$
-r := \frac{b'}{b_{\text{eff}} \cdot D} \in [0, 1)
-$$
+$$r := \frac{b'}{b_{\text{eff}} \cdot D} \in [0, 1)$$
 Let
-$$
-S_M := \sum_{p:\ M(p) = M} w(p) \cdot (h(p)+1)^{-n}, \qquad
-W_M := \sum_{p:\ M(p) = M} w(p)
-$$
+$$S_M := \sum_{p:\ M(p) = M} w(p) \cdot (h(p)+1)^{-n}, \qquad
+W_M := \sum_{p:\ M(p) = M} w(p)$$
 be the M-level *numerator* and *denominator* contribution sums
 to $d_{\text{wPow}}^{-n}$. Then both ratios are bounded by the
 same geometric series:
-$$
-\frac{\sum_{M \ge 1} S_M}{S_0} \le \frac{r}{1 - r}, \qquad
-\frac{\sum_{M \ge 1} W_M}{W_0} \le \frac{r}{1 - r}
-$$
+$$\frac{\sum_{M \ge 1} S_M}{S_0} \le \frac{r}{1 - r}, \qquad
+\frac{\sum_{M \ge 1} W_M}{W_0} \le \frac{r}{1 - r}$$
 
 **Proof.** By Lemma 2.1, the number of paths at level $(N, M)$
 is $D^N (b')^M$. Each carries weight
-$$
-w(p) = D^{-N} \cdot (b_{\text{eff}} \cdot D)^{-M}
-$$
+$$w(p) = D^{-N} \cdot (b_{\text{eff}} \cdot D)^{-M}$$
 Multiplying path count by weight, the $D^{\pm N}$ factors cancel:
-$$
-D^N (b')^M \cdot D^{-N} (b_{\text{eff}} \cdot D)^{-M}
+$$D^N (b')^M \cdot D^{-N} (b_{\text{eff}} \cdot D)^{-M}
 \;=\; \frac{(b')^M}{(b_{\text{eff}} \cdot D)^M}
 \;=\; \left(\frac{b'}{b_{\text{eff}} \cdot D}\right)^M
-\;=\; r^M
-$$
+\;=\; r^M$$
 i.e. the weighted path count at level $(N, M)$ is $r^M$ for every
 $N$, with the length factor $(h+1)^{-n}$ multiplying for the
 numerator and $1$ for the denominator.
@@ -626,9 +581,7 @@ constants $D(G, Q)$, $b'(G, Q, B)$, $b_{\text{eff}}(G, Q)$.
 $b_{\text{eff}}(G, Q) \cdot D(G, Q) > b'(G, Q, B)$.
 
 Then
-$$
-\mathrm{TLI}(G, \mu, Q, B) \le \psi\!\left(\frac{b'}{b_{\text{eff}} \cdot D}\right)
-$$
+$$\mathrm{TLI}(G, \mu, Q, B) \le \psi\!\left(\frac{b'}{b_{\text{eff}} \cdot D}\right)$$
 
 In words: under homogeneity, the TLI is bounded by a function
 of the convergence ratio $r = b'/(b_{\text{eff}} \cdot D)$.
@@ -893,10 +846,8 @@ empirically TLI is ~0.02% — a factor of ~1000 gap.
 
 Since $d_{\text{wPow}} = (N/W)^{-1/n}$ is a *ratio*, the first-
 order TLI estimate is
-$$
-\mathrm{TLI} \approx \frac{1}{n}
-\bigl|\Delta\log N - \Delta\log W\bigr|
-$$
+$$\mathrm{TLI} \approx \frac{1}{n}
+\bigl|\Delta\log N - \Delta\log W\bigr|$$
 where $\Delta\log N \approx \sum_{k \ge 1} r^k L_k / L_0$ and
 $\Delta\log W \approx \sum_{k \ge 1} r^k R_k / R_0$.
 
@@ -921,13 +872,11 @@ be 1), but not the full cancellation that pure $r^2$ scaling
 would require.
 
 **Predicted first-order TLI on simplewiki:**
-$$
-\mathrm{TLI}_{\text{1st-order}} \approx \frac{1}{n} \left|
+$$\mathrm{TLI}_{\text{1st-order}} \approx \frac{1}{n} \left|
 r \cdot 0.048 + r^2 \cdot 0.057 \right|
 \approx \frac{1}{2} \left| 0.157 \cdot 0.048 + 0.0246 \cdot 0.057 \right|
 \approx \frac{1}{2} \cdot 0.00889
-\approx 0.44\%
-$$
+\approx 0.44\%$$
 
 So:
 - Contribution-sum bound (Theorem 2.3): $r/(1-r) \approx 18.6\%$
