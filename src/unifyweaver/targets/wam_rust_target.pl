@@ -3064,11 +3064,15 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     ;   UseLmdbZero = false, UseHeed = false
     ),
 
-    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed)
+    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed).
+    % parallel(true) promotes rayon from an optional dep to a hard dep so the
+    % generated bench can call par_iter without a --features flag.
+    option(parallel(UseRayon), Options, false),
     render_named_template(rust_wam_cargo,
         [module_name=ModuleName,
          use_lmdb_zero=UseLmdbZero,
-         use_heed=UseHeed],
+         use_heed=UseHeed,
+         use_rayon=UseRayon],
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),

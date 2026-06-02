@@ -695,7 +695,8 @@ name = "wam_lib"
 path = "src/lib.rs"
 
 [dependencies]
-{{#use_lmdb_zero}}lmdb-zero = "0.4"
+{{#use_rayon}}rayon = "1"
+{{/use_rayon}}{{#use_lmdb_zero}}lmdb-zero = "0.4"
 {{/use_lmdb_zero}}{{#use_heed}}heed = "0.20"
 {{/use_heed}}').
 

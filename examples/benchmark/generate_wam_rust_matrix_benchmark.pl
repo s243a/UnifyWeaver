@@ -278,6 +278,7 @@ use wam_lib::shared_wam_program;
 use wam_lib::instructions::Instruction;
 use wam_lib::state::WamState;
 use wam_lib::value::Value;
+use rayon::prelude::*;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
@@ -754,33 +755,77 @@ fn main() {
     let mut total_backtracks = 0u64;
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
 
-    for cat in &seed_cats {
-        vm.reset_query();
-        vm.step_limit = step_limit;
-        let mut weight_sum = 0.0f64;
-        if vm.foreign_predicates.contains("category_ancestor/4") {
-            let cat_id = vm.intern_atom(cat);
-            let root_id = vm.intern_atom(&root);
-            let mut visited_ids = vec![cat_id];
-            let mut hops = Vec::new();
-            // Resolve the constant edge predicate once per seed (not per
-            // recursive call) — the interning principle applied to the
-            // predicate name.
-            let acc = vm.resolve_edge_accessor("category_parent");
-            vm.collect_native_category_ancestor_hops(
-                cat_id,
-                root_id,
-                &mut visited_ids,
-                max_depth_limit,
-                &acc,
-                0,
-                &mut hops,
-            );
-            for hop in hops.iter().take(10001) {
-                let distance = (*hop as f64) + 1.0;
-                weight_sum += distance.powf(-n);
+    // Seed-level parallelism. The native category_ancestor kernel is &self
+    // (read-only over eager ffi_facts, or the Send+Sync lazy/cached
+    // LookupSource whose LMDB reads use a per-worker thread-local txn), so
+    // each seed query is independent and runs on its own Rayon worker.
+    // WAM_THREADS pins the pool size for -jN scaling sweeps; unset = all cores
+    // (Rayon also honours RAYON_NUM_THREADS).
+    if let Ok(t) = std::env::var("WAM_THREADS") {
+        if let Ok(nthreads) = t.parse::<usize>() {
+            if nthreads > 0 {
+                let _ = rayon::ThreadPoolBuilder::new()
+                    .num_threads(nthreads)
+                    .build_global();
             }
-        } else {
+        }
+    }
+    if vm.foreign_predicates.contains("category_ancestor/4") {
+        // Pre-resolve every seed + the root to interned ids serially
+        // (intern_atom is &mut self), then resolve the constant edge
+        // accessor once. After this point vm is only borrowed &self, so the
+        // par_iter below can share it across workers.
+        let root_id = vm.intern_atom(&root);
+        let seed_ids: Vec<(String, u32)> = seed_cats
+            .iter()
+            .map(|cat| {
+                let id = vm.intern_atom(cat);
+                (cat.clone(), id)
+            })
+            .collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let vm_ref = &vm;
+        let acc_ref = &acc;
+        let exponent = n;
+        let depth_limit = max_depth_limit;
+        let results: Vec<(String, f64)> = seed_ids
+            .par_iter()
+            .filter_map(|(cat, cat_id)| {
+                let mut visited_ids = vec![*cat_id];
+                let mut hops = Vec::new();
+                vm_ref.collect_native_category_ancestor_hops(
+                    *cat_id,
+                    root_id,
+                    &mut visited_ids,
+                    depth_limit,
+                    acc_ref,
+                    0,
+                    &mut hops,
+                );
+                let mut weight_sum = 0.0f64;
+                for hop in hops.iter().take(10001) {
+                    let distance = (*hop as f64) + 1.0;
+                    weight_sum += distance.powf(-exponent);
+                }
+                if weight_sum > 0.0 {
+                    Some((cat.clone(), weight_sum))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (cat, weight_sum) in results {
+            seed_weight_sums.insert(cat, weight_sum);
+        }
+        // The native kernel runs outside the WAM step loop, so it neither
+        // steps nor backtracks the VM; total_steps/total_backtracks stay 0.
+    } else {
+        // WAM-fallback path: mutates vm per seed (reset_query / run /
+        // backtrack), so it stays serial.
+        for cat in &seed_cats {
+            vm.reset_query();
+            vm.step_limit = step_limit;
+            let mut weight_sum = 0.0f64;
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
@@ -816,11 +861,11 @@ fn main() {
                     break;
                 }
             }
-        }
-        total_steps += vm.step_count;
-        total_backtracks += vm.backtrack_count;
-        if weight_sum > 0.0 {
-            seed_weight_sums.insert(cat.clone(), weight_sum);
+            total_steps += vm.step_count;
+            total_backtracks += vm.backtrack_count;
+            if weight_sum > 0.0 {
+                seed_weight_sums.insert(cat.clone(), weight_sum);
+            }
         }
     }
     let query_ms = query_start.elapsed().as_millis();
@@ -881,6 +926,7 @@ use wam_lib::instructions::Instruction;
 use wam_lib::state::WamState;
 use wam_lib::value::Value;
 use wam_lib::lmdb_fact_source::LmdbFactSource;
+use rayon::prelude::*;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
@@ -1384,33 +1430,77 @@ fn main() {
     let mut total_backtracks = 0u64;
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
 
-    for cat in &seed_cats {
-        vm.reset_query();
-        vm.step_limit = step_limit;
-        let mut weight_sum = 0.0f64;
-        if vm.foreign_predicates.contains("category_ancestor/4") {
-            let cat_id = vm.intern_atom(cat);
-            let root_id = vm.intern_atom(&root);
-            let mut visited_ids = vec![cat_id];
-            let mut hops = Vec::new();
-            // Resolve the constant edge predicate once per seed (not per
-            // recursive call) — the interning principle applied to the
-            // predicate name.
-            let acc = vm.resolve_edge_accessor("category_parent");
-            vm.collect_native_category_ancestor_hops(
-                cat_id,
-                root_id,
-                &mut visited_ids,
-                max_depth_limit,
-                &acc,
-                0,
-                &mut hops,
-            );
-            for hop in hops.iter().take(10001) {
-                let distance = (*hop as f64) + 1.0;
-                weight_sum += distance.powf(-n);
+    // Seed-level parallelism. The native category_ancestor kernel is &self
+    // (read-only over eager ffi_facts, or the Send+Sync lazy/cached
+    // LookupSource whose LMDB reads use a per-worker thread-local txn), so
+    // each seed query is independent and runs on its own Rayon worker.
+    // WAM_THREADS pins the pool size for -jN scaling sweeps; unset = all cores
+    // (Rayon also honours RAYON_NUM_THREADS).
+    if let Ok(t) = std::env::var("WAM_THREADS") {
+        if let Ok(nthreads) = t.parse::<usize>() {
+            if nthreads > 0 {
+                let _ = rayon::ThreadPoolBuilder::new()
+                    .num_threads(nthreads)
+                    .build_global();
             }
-        } else {
+        }
+    }
+    if vm.foreign_predicates.contains("category_ancestor/4") {
+        // Pre-resolve every seed + the root to interned ids serially
+        // (intern_atom is &mut self), then resolve the constant edge
+        // accessor once. After this point vm is only borrowed &self, so the
+        // par_iter below can share it across workers.
+        let root_id = vm.intern_atom(&root);
+        let seed_ids: Vec<(String, u32)> = seed_cats
+            .iter()
+            .map(|cat| {
+                let id = vm.intern_atom(cat);
+                (cat.clone(), id)
+            })
+            .collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let vm_ref = &vm;
+        let acc_ref = &acc;
+        let exponent = n;
+        let depth_limit = max_depth_limit;
+        let results: Vec<(String, f64)> = seed_ids
+            .par_iter()
+            .filter_map(|(cat, cat_id)| {
+                let mut visited_ids = vec![*cat_id];
+                let mut hops = Vec::new();
+                vm_ref.collect_native_category_ancestor_hops(
+                    *cat_id,
+                    root_id,
+                    &mut visited_ids,
+                    depth_limit,
+                    acc_ref,
+                    0,
+                    &mut hops,
+                );
+                let mut weight_sum = 0.0f64;
+                for hop in hops.iter().take(10001) {
+                    let distance = (*hop as f64) + 1.0;
+                    weight_sum += distance.powf(-exponent);
+                }
+                if weight_sum > 0.0 {
+                    Some((cat.clone(), weight_sum))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (cat, weight_sum) in results {
+            seed_weight_sums.insert(cat, weight_sum);
+        }
+        // The native kernel runs outside the WAM step loop, so it neither
+        // steps nor backtracks the VM; total_steps/total_backtracks stay 0.
+    } else {
+        // WAM-fallback path: mutates vm per seed (reset_query / run /
+        // backtrack), so it stays serial.
+        for cat in &seed_cats {
+            vm.reset_query();
+            vm.step_limit = step_limit;
+            let mut weight_sum = 0.0f64;
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
@@ -1446,11 +1536,11 @@ fn main() {
                     break;
                 }
             }
-        }
-        total_steps += vm.step_count;
-        total_backtracks += vm.backtrack_count;
-        if weight_sum > 0.0 {
-            seed_weight_sums.insert(cat.clone(), weight_sum);
+            total_steps += vm.step_count;
+            total_backtracks += vm.backtrack_count;
+            if weight_sum > 0.0 {
+                seed_weight_sums.insert(cat.clone(), weight_sum);
+            }
         }
     }
     let query_ms = query_start.elapsed().as_millis();
