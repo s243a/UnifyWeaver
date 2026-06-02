@@ -2,6 +2,42 @@
 // Date: {{date}}
 
 use std::collections::{HashMap, HashSet};
+
+/// Fast non-cryptographic hasher (FxHash-style) for the hot integer-keyed
+/// maps on the category_ancestor kernel path. Interning already turns atoms
+/// into dense ints; this keeps each of the ~64M+ per-query lookups off the
+/// std default SipHash (DoS-resistant but ~5-10x slower for int keys).
+/// Not collision-DoS-resistant — fine for batch graph workloads.
+#[derive(Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        for &b in bytes {
+            self.hash = (self.hash.rotate_left(5) ^ (b as u64)).wrapping_mul(K);
+        }
+    }
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.hash = (self.hash.rotate_left(5) ^ (i as u64)).wrapping_mul(K);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.hash = (self.hash.rotate_left(5) ^ i).wrapping_mul(K);
+    }
+}
+pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
+pub type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
+pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
 use std::sync::{Arc, Mutex};
 use crate::value::Value;
 use crate::instructions::Instruction;
@@ -49,7 +85,7 @@ pub struct CachedLookup<S: LookupSource> {
 }
 
 struct CacheShard {
-    map: HashMap<i32, Vec<i32>>,
+    map: FxMap<i32, Vec<i32>>,
     /// Insertion order, for FIFO eviction once the shard hits cap.
     order: Vec<i32>,
 }
@@ -63,7 +99,7 @@ impl<S: LookupSource> CachedLookup<S> {
         let cap_per_shard = (capacity / num_shards).max(1);
         let shards = (0..num_shards)
             .map(|_| Mutex::new(CacheShard {
-                map: HashMap::with_capacity(cap_per_shard),
+                map: FxMap::with_capacity_and_hasher(cap_per_shard, Default::default()),
                 order: Vec::with_capacity(cap_per_shard),
             }))
             .collect();
@@ -318,13 +354,13 @@ pub struct WamState {
     /// — no per-call WAM-atom→string→LMDB-int→string→WAM-atom round-trip.
     /// `wam_to_lmdb`: WAM intern id → LMDB int key (for the lookup key).
     /// `lmdb_to_wam`: LMDB int → WAM intern id (for mapping results back).
-    pub wam_to_lmdb: HashMap<u32, i32>,
-    pub lmdb_to_wam: HashMap<i32, u32>,
+    pub wam_to_lmdb: FxMap<u32, i32>,
+    pub lmdb_to_wam: FxMap<i32, u32>,
     /// Reachable demand set (LMDB int ids) for the lazy/cached edge path.
     /// Eager only materialises edges whose parent is in this set; the lazy
     /// path must filter identically or the kernel over-explores
     /// non-reachable ancestor branches. Empty = no filter (eager/other).
-    pub demand_set: HashSet<i32>,
+    pub demand_set: FxSet<i32>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -344,6 +380,21 @@ pub struct WamState {
     pub aggregate_acc: Vec<Value>,
     /// Return PC stored by end_aggregate for aggregate-frame finalization.
     pub aggregate_return_pc: usize,
+}
+
+/// Resolved edge accessor. The category-edge predicate is a CONSTANT for a
+/// whole query, so it is resolved ONCE (`resolve_edge_accessor`) and the
+/// handle threaded through the recursion — instead of re-`format!`-ing and
+/// re-hashing the constant key `"<pred>/2"` on every one of the ~64M kernel
+/// edge lookups. This is the interning principle applied to the predicate
+/// name: resolve once, then per-call work is pure integer access.
+pub enum EdgeAccessor<'a> {
+    /// Eager: borrow the materialised `ffi_facts` adjacency (int -> ints).
+    Eager(&'a HashMap<u32, Vec<u32>>),
+    /// Lazy/cached: borrow the registered on-demand lookup source.
+    Lazy(&'a Arc<dyn LookupSource>),
+    /// Predicate not registered in either path.
+    Empty,
 }
 
 impl WamState {
@@ -371,9 +422,9 @@ impl WamState {
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
             lazy_lookups: HashMap::new(),
-            wam_to_lmdb: HashMap::new(),
-            lmdb_to_wam: HashMap::new(),
-            demand_set: HashSet::new(),
+            wam_to_lmdb: FxMap::default(),
+            lmdb_to_wam: FxMap::default(),
+            demand_set: FxSet::default(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -561,8 +612,11 @@ impl WamState {
 
     /// Set the reachable demand set (LMDB int ids) used to prune the
     /// lazy/cached edge path to the same edges eager materialises.
-    pub fn set_demand_set(&mut self, demand: HashSet<i32>) {
-        self.demand_set = demand;
+    pub fn set_demand_set(&mut self, demand: &HashSet<i32>) {
+        // reachable_to_root returns a std HashSet; collect into the
+        // FxHash-backed demand_set so the hot `contains` on the kernel
+        // path avoids SipHash.
+        self.demand_set = demand.iter().copied().collect();
     }
 
     /// Fetch a lazy edge-lookup backend by "name/arity".
@@ -578,38 +632,56 @@ impl WamState {
     /// "/arity" suffix) as stored in ffi_facts; the lazy lookup key
     /// is constructed by appending "/2" (the convention for edge
     /// predicates).
-    pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
-        // Lazy path: pure-integer via the precomputed WAM↔LMDB int maps
-        // (built once by build_lazy_int_maps). No per-call string alloc,
-        // string clone, or string-hashed lookup — that round-trip was the
-        // ~445× gap vs the eager integer path at simplewiki scale.
+    /// Resolve the (constant) edge predicate to a borrowed accessor ONCE,
+    /// before the kernel recursion. Does the single `format!` + string-hash
+    /// per query instead of per call. Lazy/cached takes priority over the
+    /// eager `ffi_facts` fallback, matching the old `edge_parents` order.
+    pub fn resolve_edge_accessor<'a>(&'a self, edge_pred: &str) -> EdgeAccessor<'a> {
         let lazy_key = format!("{}/2", edge_pred);
         if let Some(source) = self.lazy_lookups.get(&lazy_key) {
-            let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
-                // Lazy registered but this atom isn't in s2i; treat as miss.
-                return Vec::new();
-            };
-            let parent_ints = source.lookup_parents(int_key);
-            let mut out = Vec::with_capacity(parent_ints.len());
-            for pid in parent_ints {
-                // Demand-set pruning: eager only materialises edges whose
-                // parent is reachable; the lazy path must match or the
-                // kernel over-explores non-reachable ancestor branches.
-                if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
-                    continue;
-                }
-                if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
-                    out.push(wam);
-                }
-            }
-            return out;
+            EdgeAccessor::Lazy(source)
+        } else if let Some(table) = self.ffi_facts.get(edge_pred) {
+            EdgeAccessor::Eager(table)
+        } else {
+            EdgeAccessor::Empty
         }
-        // Eager fallback.
-        self.ffi_facts
-            .get(edge_pred)
-            .and_then(|table| table.get(&cat_id))
-            .cloned()
-            .unwrap_or_default()
+    }
+
+    /// Per-call edge lookup against a pre-resolved accessor — pure-integer,
+    /// no string work. Used by the category_ancestor kernel hot path.
+    pub fn edge_parents_via(&self, cat_id: u32, acc: &EdgeAccessor) -> Vec<u32> {
+        match acc {
+            EdgeAccessor::Eager(table) => {
+                table.get(&cat_id).cloned().unwrap_or_default()
+            }
+            EdgeAccessor::Lazy(source) => {
+                let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
+                    return Vec::new();
+                };
+                let parent_ints = source.lookup_parents(int_key);
+                let mut out = Vec::with_capacity(parent_ints.len());
+                for pid in parent_ints {
+                    // Demand-set pruning: eager only materialises edges whose
+                    // parent is reachable; the lazy path must match or the
+                    // kernel over-explores non-reachable ancestor branches.
+                    if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
+                        continue;
+                    }
+                    if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
+                        out.push(wam);
+                    }
+                }
+                out
+            }
+            EdgeAccessor::Empty => Vec::new(),
+        }
+    }
+
+    /// Back-compat single-shot lookup (resolve + dispatch). Kept for callers
+    /// off the hot path; the kernel uses resolve_edge_accessor + edge_parents_via.
+    pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
+        let acc = self.resolve_edge_accessor(edge_pred);
+        self.edge_parents_via(cat_id, &acc)
     }
 
     /// Dereference an Unbound variable through the binding table.
