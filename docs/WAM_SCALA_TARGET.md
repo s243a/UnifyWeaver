@@ -84,6 +84,7 @@ calling file.
 | `scala_fact_sources([source(P/A, Spec), ...])` | Declarative fact-source — auto-expands to `foreign_predicates` + `scala_foreign_handlers` + `intern_atoms`. See below. |
 | `intern_atoms([atom1, atom2, ...])` | Pre-intern atoms whose runtime identity matters but which don't appear in any compiled WAM body. |
 | `emit_mode(Mode)` | Code-generation mode. `interpreter` (default) — every predicate runs in the step-loop interpreter. `functions` — every lowerable predicate *also* gets a native Scala fast-path function. `mixed([P/A, ...])` — only the listed predicates are lowered. See [Lowered functions](#lowered-functions-emit_mode). |
+| `kernel_dispatch(true)` | Opt-in hot-path graph kernels. Predicates matching a recognised recursive graph shape are replaced by a native Scala traversal handler that bypasses the WAM loop. See [Graph kernels](#graph-kernels-kernel_dispatch). |
 
 You can also set the mode globally without touching `Options` by asserting
 `user:wam_scala_emit_mode(functions).` before generating.
@@ -123,6 +124,33 @@ every clause-1 instruction is supported; predicates whose clause 1 uses a
 nondeterministic builtin (`member/2`, `between/3`, `sort/2`, `findall/3`,
 …) stay in the interpreter. This mirrors the deterministic-clause-1
 contract of the Rust and Clojure lowered emitters.
+
+### Graph kernels (`kernel_dispatch`)
+
+`kernel_dispatch(true)` brings the Scala target onto the
+Rust/Haskell/Elixir/Go **hot-path kernel** route. When set, the codegen
+runs the shared recursive-kernel detector
+([recursive_kernel_detection.pl](../src/unifyweaver/core/recursive_kernel_detection.pl))
+over the predicates; any predicate matching a recognised graph shape is
+replaced by a synthesized Scala `ForeignHandler` that performs the
+traversal natively, bypassing the WAM step loop entirely. The handler
+builds its adjacency map by enumerating the kernel's edge relation
+through `WamRuntime.collectBinarySolutions/2`, so it works whether the
+edges are WAM-compiled facts or a declarative fact source.
+
+```prolog
+% tc/2 is detected as transitive_closure2 and lowered to a native BFS handler;
+% edge/2 stays WAM-compiled and supplies the adjacency.
+write_wam_scala_project([user:tc/2, user:edge/2],
+    [ package('demo.tc'), kernel_dispatch(true) ], '/tmp/tc').
+```
+
+Currently implemented: **`transitive_closure2`**. The remaining six kinds
+the detector recognises (`category_ancestor`, `transitive_distance3`,
+`weighted_shortest_path3`, `transitive_parent_distance4`,
+`astar_shortest_path4`, `transitive_step_parent_distance5`) follow the
+same pattern and are slated as follow-ups; until then those predicates
+fall back to ordinary WAM compilation (correct, just not accelerated).
 
 ### Fact-source spec forms
 

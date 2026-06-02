@@ -39,6 +39,8 @@
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../core/recursive_kernel_detection',
+              [detect_recursive_kernel/4, kernel_config/2]).
 
 % ============================================================================
 % ATOM INTERNING TABLE (compile-time)
@@ -791,6 +793,85 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
     format(string(Entry), '    "~w/~w" -> ~w', [Pred, Arity, HandlerCode]).
 
 % ============================================================================
+% HOT-PATH GRAPH KERNELS
+% ============================================================================
+% Opt-in (kernel_dispatch(true)) native lowering of recursive graph
+% predicates, bringing the Scala target to parity with the
+% Rust/Haskell/Elixir/Go kernel route. A predicate matching one of the
+% shapes recognised by core/recursive_kernel_detection.pl is replaced by a
+% synthesized Scala ForeignHandler that performs the traversal natively
+% (bypassing the WAM step loop), reusing the existing foreign-predicate
+% seam. The handler builds its adjacency map by enumerating the kernel's
+% edge relation through WamRuntime.collectBinarySolutions/2, so it works
+% whether the edges are WAM-compiled facts or a declarative fact source.
+%
+% Currently implemented kernel kinds: transitive_closure2.
+% The remaining six (category_ancestor, transitive_distance3,
+% weighted_shortest_path3, transitive_parent_distance4,
+% astar_shortest_path4, transitive_step_parent_distance5) follow the same
+% pattern and are slated as follow-ups.
+
+%% expand_kernels_in_options(+Predicates, +Options0, -Options) is det.
+%  When kernel_dispatch(true) is set, detect kernels among Predicates and
+%  fold the implementable ones into foreign_predicates + scala_foreign_handlers
+%  (union with any user-supplied entries). Otherwise a no-op.
+expand_kernels_in_options(Predicates, Options0, Options) :-
+    (   option(kernel_dispatch(true), Options0)
+    ->  detect_scala_kernels(Predicates, Kernels),
+        findall(P/A-Code,
+                ( member(_Key-Kernel, Kernels),
+                  kernel_predicate_indicator(Kernel, P/A),
+                  emit_scala_kernel_handler(Kernel, Code)
+                ),
+                KernelPairs),
+        (   KernelPairs == []
+        ->  Options = Options0
+        ;   findall(KP, member(KP-_, KernelPairs), KernelPreds),
+            findall(handler(KP, C), member(KP-C, KernelPairs), KernelHandlers),
+            option(foreign_predicates(FPs0), Options0, []),
+            option(scala_foreign_handlers(FHs0), Options0, []),
+            list_union(FPs0, KernelPreds, FPsAll),
+            list_union(FHs0, KernelHandlers, FHsAll),
+            replace_option(foreign_predicates, FPsAll, Options0, O1),
+            replace_option(scala_foreign_handlers, FHsAll, O1, Options)
+        )
+    ;   Options = Options0
+    ).
+
+%% detect_scala_kernels(+Predicates, -Kernels)
+%  Kernels = list of "pred/arity"-recursive_kernel(...) pairs. Mirrors the
+%  Rust/Elixir detect_kernels/2.
+detect_scala_kernels([], []).
+detect_scala_kernels([PI|Rest], Kernels) :-
+    ( PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        catch(detect_recursive_kernel(Pred, Arity, Clauses, Kernel), _, fail)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key-Kernel | RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_scala_kernels(Rest, RestKernels).
+
+kernel_predicate_indicator(recursive_kernel(_, Pred/Arity, _), Pred/Arity).
+
+%% emit_scala_kernel_handler(+Kernel, -ScalaHandlerCode) is semidet.
+%  Synthesizes the Scala ForeignHandler source for a detected kernel.
+%  Fails for kernel kinds not yet implemented (so they fall back to the
+%  ordinary WAM compilation path and remain correct, just not accelerated).
+emit_scala_kernel_handler(recursive_kernel(transitive_closure2, _Pred/2, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    % BFS from arg(0) over the edge relation; every node reachable in >=1
+    % step is a solution binding register 2. Adjacency is built once
+    % (lazy val) from collectBinarySolutions so repeated queries reuse it.
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val visited = scala.collection.mutable.LinkedHashSet[WamTerm]()\n        val queue = scala.collection.mutable.Queue[WamTerm](source)\n        while (queue.nonEmpty) {\n          val node = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !visited.contains(nb)) {\n            visited += nb\n            queue.enqueue(nb)\n          }\n        }\n        val sols = visited.toVector.map(t => Map(2 -> t))\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% ============================================================================
 % FACT BACKEND SEAM (Phase S7)
 % ============================================================================
 % A FactSource is a declarative way to provide fact-shaped data to a
@@ -957,7 +1038,12 @@ replace_option(Key, Value, Options0, [NewEntry | Cleaned]) :-
 %  expand into equivalent foreign_predicates + scala_foreign_handlers +
 %  intern_atoms entries, so the rest of the pipeline doesn't need to know
 %  about fact sources as a distinct concept.
-write_wam_scala_project(Predicates, Options0, ProjectDir) :-
+write_wam_scala_project(Predicates, Options1, ProjectDir) :-
+    % Expand auto-detected graph kernels (opt-in: kernel_dispatch(true))
+    % into foreign_predicates + scala_foreign_handlers entries, then expand
+    % declarative fact sources. Both run before compilation so the rest of
+    % the pipeline treats kernels/fact-sources as ordinary foreign preds.
+    expand_kernels_in_options(Predicates, Options1, Options0),
     expand_fact_sources_in_options(Options0, Options),
     make_directory_path(ProjectDir),
     % --- build.sbt ---
