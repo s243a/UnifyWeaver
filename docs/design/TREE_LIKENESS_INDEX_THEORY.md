@@ -754,6 +754,77 @@ substantially increases TLI), the routing correction stays but
 its theoretical role becomes "calibration-error band-aid for an
 unmodelled effect" rather than "principled factor."
 
+#### 3.6.1 Bayesian interpretation of the routing correction
+
+The directionality observation from Conjecture 3.6 has a cleaner
+statement in Bayesian language. The metric
+$d_{\text{wPow}} = (\sum w(p)\,(h+1)^{-n} / \sum w(p))^{-1/n}$
+is a power-mean over paths weighted by $w(p)$. Standard Bayesian
+reading: $w(p)$ encodes the *prior probability* that path $p$
+represents the "true" route from $v$ to root.
+
+**Without $\rho$.** The weight $w(p) \propto 1/\mathrm{paths}(N, M)$
+encodes a *uniform prior over path shapes*: each topology
+$(N, M)$ is equally likely a priori, and the length factor
+$(h+1)^{-n}$ then sorts paths by shortness within and across
+shapes.
+
+**With $\rho < 1$.** The weight becomes
+$w(p) \propto 1/(\mathrm{paths}(N, M) \cdot \rho^M)$. The factor
+$1/\rho^M > 1$ upweights $M$-hop child paths by $(1/\rho)^M$.
+Two equivalent restatements of this prior shift:
+
+- **Prior on branching:** $\rho < 1$ shifts the prior on the
+  expected per-child-hop branching down from $b_{\text{eff}} \cdot D$
+  to $b_{\text{eff}} \cdot \rho \cdot D$. Less branching expected
+  means each branch carries more information.
+- **Prior on paths:** Each individual $M$-child-hop path is *a
+  priori more likely* to be informative, by factor $(1/\rho)^M$.
+
+Both formulations describe the same operation: $\rho < 1$ pulls
+the prior toward "child paths are highly informative."
+
+**The Bayesian critique.** The TLI measurement is itself the
+data on which the prior would be updated. Empirically (design
+note §4), child paths contribute negligibly to $d_{\text{wPow}}$
+— TLI ≈ 0.02% on simplewiki Physics-rooted. So **the prior shift
+contradicts the data**: ρ pushes prior probability mass toward
+paths the data shows are uninformative.
+
+Two consequences:
+
+1. **Theorem 2.3 bound interpretation.** Under exact calibration
+   ($b_{\text{eff}} \cdot D = b'$), the no-$\rho$ metric satisfies
+   Proposition 2.2: $w(p) \cdot \mathrm{paths}(N, M) \approx 1$,
+   the prior is the maximum-entropy choice given path-count
+   structure. Adding $\rho < 1$ moves us off this maximum-entropy
+   point in a direction the data does not justify.
+2. **Convergence ratio direction.** Multiplying $b_{\text{eff}}$
+   by $\rho < 1$ deflates $b_{\text{eff}} \cdot D$, which
+   *increases* the convergence ratio $r = b'/(b_{\text{eff}} \cdot \rho \cdot D)$
+   and *loosens* the Theorem 2.3 bound. So the prior shift not
+   only contradicts the data but also degrades the theoretical
+   bound.
+
+**Refined Conjecture 3.6 (Bayesian form).** Under homogeneity
+(Definition 0.6), the routing correction $\rho$ encodes a prior
+shift toward "child paths informative" that is empirically
+refuted by the very TLI measurement that includes it. Dropping
+$\rho$ aligns prior with data and tightens the Theorem 2.3
+bound. Outside homogeneity, $\rho$ is one possible heuristic
+compensation among many — but the principled fix is topical
+scoping at ingest, not a per-step weighting change.
+
+**Task #14 design implication.** Beyond measuring TLI under both
+compositions, the experiment should also report *per-pair*
+$d_{\text{wPow}}$ values. A finding of "aggregate TLI passes
+under both, per-pair distributions are indistinguishable" is the
+strongest possible confirmation that $\rho$ was operationally
+benign but theoretically obscuring. A finding of "per-pair
+values differ materially even though aggregate passes" would
+indicate $\rho$ is encoding *some* real structure (not necessarily
+what it claims) and a deeper investigation is warranted.
+
 ## 4. Empirical status
 
 For each conjecture, we summarise the empirical evidence
@@ -997,6 +1068,70 @@ expander — fast-mixing, with quickly-growing neighbourhood
 sizes. Is rapid path-count growth (large $b'$) equivalent to
 poor spectral gap, and is this why ultra-small-world graphs
 (Cohen-Havlin) defeat TLI even under topical scoping?
+
+### 5.6 Regime classification: when does $\rho$ exceed $D$'s buffer?
+
+The buffer condition for the routing correction to remain
+within the convergence inequality is
+$\rho > r = b' / (b_{\text{eff}} \cdot D)$. This sub-section
+asks: in what graph regimes does this condition hold, and at
+what regime does it break?
+
+**The tree-like limit.** For an idealised tree-like graph (one
+parent per node, $D$ children per node):
+
+- $b' \approx D$ (each child hop multiplies paths by ~$D$)
+- $b_{\text{eff}} = D / 1 = D$ (children direction has $D$-fold
+  size-biased branching, parents have $1$)
+- $r = b' / (b_{\text{eff}} \cdot D) = D / D^2 = 1/D$
+
+So $r \to 1/D$ in the tree limit, and the buffer condition
+becomes $\rho > 1/D$ — easily satisfied for any moderate $D$
+(simplewiki has $D = 7.3$, $1/D = 0.137$, observed $\rho = 0.384$
+clears this).
+
+**Regime sketch.** As $\gamma$ (the degree-distribution power-law
+exponent) decreases from $\infty$ (tame regime) to $2$
+(degenerate regime), $b'$ and $b_{\text{eff}}$ both shift but at
+different rates:
+
+| Regime | $\gamma$ | $b'$ scaling | $b_{\text{eff}}$ scaling | $r$ behaviour | Buffer for $\rho$ |
+|---|---|---|---|---|---|
+| Tree-like / tame | $> 3$ | $\approx D$ | $\approx D / K_p$ | $\approx K_p / D$ | wide (any $\rho > 0$ likely safe) |
+| Wikipedia-like | $2.4$–$3$ | $\sim 10 \cdot D$ | calibrated similar to $b'$ | $\sim 0.1$–$0.2$ | moderate |
+| Ultra-small-world | $2 < \gamma < 3$ | diverges with $N$ (hub-mediated) | diverges with $N$ (size-biased) | race; can $\to 1$ | shrinks |
+| Degenerate | $\le 2$ | diverges fastest | diverges | $\to 1$ | none |
+
+**Hand-waving heuristic.** In the ultra-small-world regime, hubs
+dominate path counts in both numerator-friendly and
+denominator-friendly ways. $b'$ grows faster than $b_{\text{eff}}$
+because the path count is mediated by hub traversal (exponential
+in hub count), while $b_{\text{eff}}$ is a size-biased moment
+ratio (polynomial in degree statistics). The race favours $b'$,
+pushing $r$ upward. Below some critical $\gamma_*$ (somewhere
+between $2$ and $3$, depending on $N$), the inequality
+$b_{\text{eff}} \cdot D > b'$ fails even before considering
+$\rho$, and the property cannot hold at all.
+
+**The empirical Wikipedia case.** Global Wikipedia has
+$\gamma \approx 2.41$, which would place it in the ultra-small-
+world danger zone if homogeneous — but the global graph is
+*not* homogeneous (Definition 0.6 violated). The topical core
+likely has $\gamma > 3$ (less hub-driven), placing it in the
+tree-like regime where the buffer is wide. Task #15 (random-
+pair BFS distance measurement) will partially confirm this by
+locating the topical core in the $\{tree-like, small-world,
+ultra-small\}$ classification.
+
+**Open question.** What is $\gamma_*$? For a homogeneous graph
+with degree exponent $\gamma$ and finite size $N$, derive the
+$(b', b_{\text{eff}}, D)$ scaling and identify the $\gamma$ at
+which $r \to 1$ (convergence breaks) and the $\gamma$ at which
+$\rho > r$ becomes restrictive (buffer disappears). This would
+characterise the *region of applicability* of TLI as a property
+of graph-distribution-tail behaviour, sharpening Conjecture 3.6
+into a quantitative statement about which graph regimes can
+safely drop the routing correction.
 
 ## 6. References
 
