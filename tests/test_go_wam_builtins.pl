@@ -13,6 +13,7 @@
 :- dynamic user:test_delete_builtin/0.
 :- dynamic user:test_subtract_builtin/0.
 :- dynamic user:test_intersection_builtin/0.
+:- dynamic user:test_union_builtin/0.
 :- dynamic user:test_permutation_builtin/0.
 :- dynamic user:test_reverse_builtin/0.
 :- dynamic user:test_last_builtin/0.
@@ -148,6 +149,30 @@ test(builtins_execution) :-
                 AllKept = [a,b,c],
                 \+ intersection([a|b], [a], _),
                 \+ intersection([a,b], [a|b], _)
+            )),
+          assertz(user:test_union_builtin :-
+            (   union([a,b,c], [b,d,e], R),
+                R = [a,b,c,d,e],
+                union([a,a,b], [c], DupesKept),
+                DupesKept = [a,a,b,c],
+                union([], [x,y], EmptyLeft),
+                EmptyLeft = [x,y],
+                union([x,y], [], EmptyRight),
+                EmptyRight = [x,y],
+                union([], [], BothEmpty),
+                BothEmpty = [],
+                union([1,2,3], [2,4], Overlap),
+                Overlap = [1,2,3,4],
+                union([1,2,3], [1,2,3], Identical),
+                Identical = [1,2,3],
+                union([1,2,3,4], [3,4,5,6], U),
+                intersection([1,2,3,4], [3,4,5,6], I),
+                length(U, NU),
+                length(I, NI),
+                Total is NU + NI,
+                Total =:= 8,
+                \+ union([a|b], [a], _),
+                \+ union([a,b], [a|b], _)
             )),
           assertz(user:test_permutation_builtin :-
             (   permutation([a,b,c], [c,a,b]),
@@ -550,6 +575,7 @@ test(builtins_execution) :-
           retractall(user:test_delete_builtin),
           retractall(user:test_subtract_builtin),
           retractall(user:test_intersection_builtin),
+          retractall(user:test_union_builtin),
           retractall(user:test_permutation_builtin),
           retractall(user:test_reverse_builtin),
           retractall(user:test_last_builtin),
@@ -586,7 +612,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -623,6 +649,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "delete/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "subtract/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "intersection/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "union/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "permutation/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "reverse/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "last/2"')),
@@ -746,6 +773,14 @@ func main() {
 		fmt.Println("INTERSECTION_SUCCESS")
 	} else {
 		fmt.Println("INTERSECTION_FAILURE")
+	}
+
+	unionVM := wam.NewWamState(wam.Test_union_builtinCode, wam.Test_union_builtinLabels)
+	unionVM.PC = wam.Test_union_builtinStartPC
+	if unionVM.Run() {
+		fmt.Println("UNION_SUCCESS")
+	} else {
+		fmt.Println("UNION_FAILURE")
 	}
 
 	permutationVM := wam.NewWamState(wam.Test_permutation_builtinCode, wam.Test_permutation_builtinLabels)
@@ -1021,6 +1056,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "DELETE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUBTRACT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "INTERSECTION_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "UNION_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "PERMUTATION_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "REVERSE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LAST_SUCCESS")),
