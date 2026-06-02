@@ -60,12 +60,13 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
-    split_into_segments(Lines, 1, Segments),
+    split_into_segments(Lines, 1, Segments0),
+    clause_body_segments(Segments0, ClauseSegments),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
     option(module_name(ModName), Options, 'WamPredLow'),
     camel_case(ModName, CamelMod),
-    classify_predicate(Pred/Arity, Segments, Options, Info),
+    classify_predicate(Pred/Arity, ClauseSegments, Options, Info),
     format_fact_shape_comment(Info, ShapeComment),
     Info = fact_shape_info(_, _, _, Layout),
     (   Layout = external_source(_)
@@ -75,12 +76,12 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     ->  render_external_source_module(CamelMod, CamelPred, PredStr, Arity,
                                       ShapeComment, Layout, Code)
     ;   Layout = inline_data(_),
-        catch(extract_facts(Segments, Arity, FactsLiteral), _, fail),
-        choose_index(Segments, Arity, Options, IndexResult)
+        catch(extract_facts(ClauseSegments, Arity, FactsLiteral), _, fail),
+        choose_index(ClauseSegments, Arity, Options, IndexResult)
     ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
                                   ShapeComment, FactsLiteral, IndexResult, Code)
     ;   render_compiled_module(CamelMod, CamelPred, Pred/Arity, PredStr,
-                               ShapeComment, Segments, Labels, Options, Code)
+                               ShapeComment, Segments0, Labels, Options, Code)
     ).
 
 %% choose_index(+Segments, +Arity, +Options, -IndexResult)
@@ -395,24 +396,50 @@ escape_elixir_string(In, Out) :-
 
 %% classify_predicate(+PredIndicator, +Segments, +Options, -Info)
 %  Info is the term `fact_shape_info(NClauses, FactOnly, FirstArg, Layout)`.
-classify_predicate(Pred/Arity, Segments, Options, Info) :-
+classify_predicate(Pred/Arity, Segments0, Options, Info) :-
+    clause_body_segments(Segments0, Segments),
     clause_count(Segments, NClauses),
     fact_only(Segments, FactOnly),
     first_arg_groundness(Segments, Arity, FirstArg),
     pick_layout(Pred/Arity, NClauses, FactOnly, Options, Layout),
     Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
 
+%% clause_body_segments(+Segments0, -Segments) is det.
+%  Keep actual clause-body segments and drop WAM indexing / choice-chain
+%  scaffolding segments. Newer WAM output can insert retry/trust-only labels
+%  between fact body labels; counting those as clauses broke Phase-A layout
+%  classification and inline-data extraction.
+clause_body_segments(Segments0, Segments) :-
+    include(clause_body_segment, Segments0, Segments).
+
+clause_body_segment(_Name-Instrs) :-
+    member(_PC-Instr, Instrs),
+    \+ classifier_scaffold_instr(Instr),
+    !.
+
+classifier_scaffold_instr(try_me_else(_)).
+classifier_scaffold_instr(retry_me_else(_)).
+classifier_scaffold_instr(trust_me).
+classifier_scaffold_instr(switch_on_constant(_)).
+classifier_scaffold_instr(switch_on_constant_a2(_)).
+classifier_scaffold_instr(switch_on_constant_fallthrough(_)).
+classifier_scaffold_instr(switch_on_constant_a2_fallthrough(_)).
+classifier_scaffold_instr(switch_on_structure(_)).
+classifier_scaffold_instr(switch_on_structure_a2(_)).
+classifier_scaffold_instr(switch_on_term(_)).
+classifier_scaffold_instr(switch_on_term_a2(_)).
+
 %% clause_count(+Segments, -N)
-%  Each top-level segment corresponds to one clause (or the predicate
-%  header segment, which is still per-clause since the WAM emitter
-%  synthesises one segment per clause). CPS sub-segments (`_kN`) are
-%  generated later and never appear in this list.
-clause_count(Segments, N) :-
+%  Counts semantic clause-body segments. Raw split_into_segments/3 output may
+%  include indexing / choice-chain scaffolding labels; those are ignored.
+clause_count(Segments0, N) :-
+    clause_body_segments(Segments0, Segments),
     length(Segments, N).
 
 %% fact_only(+Segments, -Bool)
-%  `true` iff no clause has a body-level call.
-fact_only(Segments, true) :-
+%  `true` iff no semantic clause has a body-level call.
+fact_only(Segments0, true) :-
+    clause_body_segments(Segments0, Segments),
     forall(member(_-Instrs, Segments),
            forall(member(_-Instr, Instrs),
                   \+ is_body_call_instr(Instr))), !.
@@ -427,8 +454,9 @@ is_body_call_instr(builtin_call(_, _)).
 %  `mixed`. Determined by which head-unification instruction binds A1
 %  in each clause.
 first_arg_groundness(_Segments, 0, none) :- !.
-first_arg_groundness(Segments, Arity, Status) :-
+first_arg_groundness(Segments0, Arity, Status) :-
     Arity > 0,
+    clause_body_segments(Segments0, Segments),
     maplist(clause_arg1_type, Segments, Types),
     combine_groundness(Types, Status).
 
@@ -585,7 +613,8 @@ tier2_purity_eligible(Pred, Arity, Cert) :-
 %% extract_facts(+Segments, +Arity, -ElixirLiteral)
 %  ElixirLiteral is a string like "[\n    {\"a\", \"b\"},\n    ...\n  ]"
 %  suitable for dropping into a module attribute.
-extract_facts(Segments, Arity, ElixirLiteral) :-
+extract_facts(Segments0, Arity, ElixirLiteral) :-
+    clause_body_segments(Segments0, Segments),
     maplist(extract_clause_tuple(Arity), Segments, TupleLiterals),
     (   TupleLiterals = []
     ->  ElixirLiteral = '[]'
@@ -614,11 +643,19 @@ extract_arg_value(Instrs, Slot, ElixirVal) :-
     ).
 
 %% elixir_string_literal(+RawString, -Literal)
-%  Wraps the raw WAM operand in double quotes, escaping backslashes and
-%  embedded double-quotes so the result is a valid Elixir string.
+%  Format a WAM constant token as an Elixir string. Quoted WAM atoms are
+%  unquoted by wam_classify_constant_token/2 first, so atoms containing
+%  separators round-trip through inline fact extraction.
 elixir_string_literal(C, Literal) :-
-    (   atom(C) -> atom_string(C, CStr) ; CStr = C ),
-    string_chars(CStr, Chars),
+    wam_classify_constant_token(C, Class),
+    (   Class = atom(Value)
+    ->  true
+    ;   Class = integer(N)
+    ->  number_string(N, Value)
+    ;   Class = float(F)
+    ->  number_string(F, Value)
+    ),
+    string_chars(Value, Chars),
     maplist(escape_elixir_char, Chars, NestedChars),
     append(NestedChars, EscapedChars),
     string_chars(Escaped, EscapedChars),
@@ -642,8 +679,9 @@ escape_elixir_char(C, [C]).
 %  IndexResult is `indexed(MapLiteral)` when a first-arg index applies;
 %  `no_index` if any clause has a variable (or otherwise non-ground)
 %  arg1 that we cannot use as a map key.
-extract_arg1_index(Segments, Arity, IndexResult) :-
+extract_arg1_index(Segments0, Arity, IndexResult) :-
     Arity >= 1,
+    clause_body_segments(Segments0, Segments),
     maplist(extract_clause_arg1(Arity), Segments, KeyTuplePairs),
     (   all_pairs_have_ground_key(KeyTuplePairs)
     ->  group_and_render_index(KeyTuplePairs, MapLiteral),
