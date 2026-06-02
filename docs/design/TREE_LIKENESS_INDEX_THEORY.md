@@ -701,11 +701,28 @@ child hops — if some descendant of $v$ has a shorter parent
 chain to root, then the route
 $v \to \mathrm{child} \to \cdots \to r$ via that descendant is
 shorter than any pure-parent route from $v$. Tree-search misses
-these. Low TLI means: *either* such shorter-via-child paths
-don't exist, *or* the metric weighting crushes them to
-negligibility. The simplewiki TLI of 0.02% means one of these
-holds in practice; symmetric DAGs (below) are constructed so
-that neither does.
+these.
+
+Low TLI arises from two distinct mechanisms, which can operate
+separately or together:
+
+1. **No shorter-via-child paths exist.** The pure-tree case:
+   tree-search by construction finds the shortest path. $\mathrm{TLI} = 0$
+   identically — no child-using paths are admissible (or none
+   shorter than the carrot path).
+2. **They exist but are crushed by weighting.** The
+   simplewiki-topical case: shorter-via-child paths *can* exist
+   structurally, but the calibrated weight
+   $w(p) \cdot (h+1)^{-n}$ assigns them such small total weight
+   that they barely move the metric. $\mathrm{TLI}$ is small
+   but typically non-zero.
+
+Conjecture 3.5 (below) specifically targets the *failure* of
+mechanism (2): symmetric DAGs are constructed so that the
+weighting cannot crush child-using paths sufficiently. The
+graph may not be a tree (mechanism 1 may also fail), but the
+load-bearing claim is that *weighting alone cannot save TLI*
+under symmetric calibration.
 
 **Conjecture 3.5 (Falsification target).** Let $G$ be a directed
 graph where, in calibration,
@@ -812,6 +829,19 @@ i.e. claims "actually there is less branching than the moment
 scan suggests, so each individual child path should be trusted
 more."
 
+**Bridging the two restatements.** Branching deflation and
+path upweighting are not separate effects — they are the same
+operation viewed from either side of Proposition 2.2. The
+weight $w(p)$ approximately equals $1/\mathrm{paths}(v;\ N, M;\ B)$
+under exact calibration, and $\mathrm{paths}(v;\ N, M;\ B) \approx D^N (b_{\text{eff}} \cdot D)^M$
+in our notation. Changing the expected branching from
+$b_{\text{eff}} \cdot D$ to $b_{\text{eff}} \cdot \rho \cdot D$
+*directly changes* the predicted path count and therefore the
+weight per path — by exactly the factor $(1/\rho)^M$ that the
+"path upweighting" restatement names. The two ways of saying
+$\rho$ does something are the same statement read in opposite
+directions of the path-count-normalisation equality.
+
 **The Bayesian critique — qualified.** The TLI measurement
 itself is the data on which the prior would be updated.
 Empirically (design note §4), child paths contribute negligibly
@@ -832,10 +862,11 @@ distinction between the two cases:
   moment-scan estimate of $b_{\text{eff}}$ and the empirical
   $b'$. The direction of the residual error is uncontrolled
   but bounded.
-- **With $\rho$:** the prior shift is order-unity (factor 2.6×
-  per child hop on simplewiki) and in a *specifically
-  identifiable* direction — toward "child paths informative" —
-  that the data refutes.
+- **With $\rho$:** the prior shift is order-unity (factor
+  $1/\rho \approx 1/0.384 \approx 2.6\times$ per child hop on
+  simplewiki, using the measured $\rho$ from design note §4.5)
+  and in a *specifically identifiable* direction — toward
+  "child paths informative" — that the data refutes.
 
 So both compositions have a prior-vs-data mismatch, but $\rho$'s
 mismatch is *much larger* and *systematically miscalibrated*,
@@ -860,6 +891,11 @@ Theorem 2.3 bound in the process. Outside homogeneity, $\rho$
 is one possible heuristic compensation among many — but the
 principled fix is topical scoping at ingest, not a per-step
 weighting change.
+
+(See §5.7 for the path-count-normaliser interpretation derived
+from the other direction — the structural necessity of the
+weight formula on effectively-infinite graphs, complementary to
+this Bayesian critique.)
 
 **Task #14 design implication.** Beyond measuring TLI under both
 compositions, the experiment should also report *per-pair*
@@ -1138,9 +1174,13 @@ $K_p := \mathbb{E}[d_p]$ is the mean parent in-degree.
 (every node has exactly one parent, $D$ children):
 
 - $b' \approx D$ (each child hop multiplies paths by ~$D$)
-- $b_{\text{eff}} = D \cdot \mathbb{E}[d_p] / \mathbb{E}[d_c] \cdot \ldots$
-  — under "single parent, $D$ children" this evaluates to
-  $b_{\text{eff}} = D / K_p$ where $K_p = 1$, so $b_{\text{eff}} = D$
+- $b_{\text{eff}} \approx D / K_p$ — the *regular-graph
+  approximation* where $\mathbb{E}[d_c^2] \approx D^2$ and
+  $\mathbb{E}[d_p^2] \approx K_p^2$. For the strict tree case
+  $K_p = 1$ and $b_{\text{eff}} = D$. Note this approximation
+  *does not generalise* to heavy-tailed degree distributions
+  where second moments dominate; see §5.5 row of the regime
+  table for the scale-free case.
 - $r = b' / (b_{\text{eff}} \cdot D) = D / D^2 = 1/D$
 
 So $r \to 1/D$ in the tree limit, and the buffer condition for
@@ -1151,15 +1191,21 @@ $\rho = 0.384$ clears this).
 **Regime sketch.** As $\gamma$ (the child-degree power-law
 exponent under homogeneity) decreases from $\infty$ (tame) to
 $2$ (degenerate), $b'$ and $b_{\text{eff}}$ both shift but at
-different rates:
+different rates. The boundary at $\gamma = 3$ matters because
+it is the *Chung-Lu / Cohen-Havlin phase transition*: above it,
+second-moment quantities like $\mathbb{E}[d_c^2]$ are finite
+(network distances scale as $\log n / \log \tilde{d}$, see §1.1
+and §1.3); at and below it, second moments diverge with $n$,
+distances drop to $\log \log n$, and the size-biased degree
+$\tilde{d}$ explodes.
 
 | Regime | $\gamma$ | $b'$ scaling | $b_{\text{eff}}$ scaling | $r$ behaviour | Buffer for $\rho$ |
 |---|---|---|---|---|---|
-| Tree-like / tame | $> 3$ | $\approx D$ | $\approx D / K_p$ | $\approx K_p / D$ | wide |
+| Tree-like / tame | $> 3$ | $\approx D$ | $\approx D / K_p$ (regular-graph approx) | $\approx K_p / D$ | wide |
 | Wikipedia topical | $\sim 3$ (TBD, task #15) | $b' \approx 1.5 \cdot D$ (empirical) | $\approx 1.3 \cdot D$ (empirical) | $\approx 0.15$ | moderate ($\rho = 0.384$ is ~2.5× buffer) |
 | Wikipedia global (not homogeneous) | $\approx 2.4$ globally | hub-mediated, unstable | inflated by hubs | n/a — Definition 0.6 violated | n/a |
-| Ultra-small-world (homogeneous, $2 < \gamma < 3$) | $2 < \gamma < 3$ | diverges with $N$ (hub-mediated) | diverges with $N$ (size-biased) | race; can $\to 1$ | shrinks with $N$ |
-| Degenerate | $\le 2$ | diverges fastest | diverges | $\to 1$ | none |
+| Ultra-small-world (homogeneous, $2 < \gamma < 3$) | $2 < \gamma < 3$ | diverges with $N$ (hub-mediated) | diverges with $N$ (size-biased) | race; can $\to 1$ (especially as $\gamma \to 2^+$) | shrinks with $N$ |
+| Degenerate | $\le 2$ | diverges fastest (mean degree diverges) | diverges | $\to 1$ | none |
 
 (Simplewiki numerics: $b' \approx 11$, $D \approx 7.34$, so
 $b'/D \approx 1.5$, not the rough "~10" I had in an earlier
@@ -1207,6 +1253,12 @@ re-checking.
 
 ### 5.7 Weighting as expected-average over admissible paths
 
+(Complementary view to §3.6.1's Bayesian framing: §3.6.1
+critiques the *prior* the weight formula encodes; this section
+argues for the *necessity* of that exponential form on
+effectively-infinite graphs. Both invoke Proposition 2.2; the
+two together justify the weight formula's specific structure.)
+
 The weight formula
 $w(p) = D^{-N(p)} \cdot (b_{\text{eff}} \cdot D)^{-M(p)}$
 isn't an arbitrary parameter choice — it's the unique exponential
@@ -1226,7 +1278,8 @@ and weighting by its reciprocal makes the sum effectively an
 expectation rather than a count.
 
 **Formal consequence (under exact calibration $b_{\text{eff}} \cdot D = b'$).**
-Under Lemma 2.1, the number of paths at level $(N, M)$ is
+Under Lemma 2.1 and Proposition 2.2's exact-calibration
+assumption, the number of paths at level $(N, M)$ is
 $\approx D^N (b')^M$. Multiplying by the weight gives
 $D^N (b')^M \cdot D^{-N} (b')^{-M} = 1$, so each $(N, M)$
 shape contributes a total weight $\approx 1$ to the metric sum.
@@ -1234,7 +1287,31 @@ The double sum
 $\sum_{N, M} 1 \cdot (h+1)^{-n} = \sum_{h \ge h_{\min}} (\text{shape count at } h) \cdot (h+1)^{-n}$
 makes $d_{\text{wPow}}$ the *expected* $(h+1)^{-n}$ over the
 distribution that puts equal probability on each accessible
-$(N, M)$ shape.
+$(N, M)$ shape. (Empirically $b_{\text{eff}} \cdot D / b' \approx 1.15$
+on simplewiki, so this is an approximate equality within ~15% —
+see §2.2's caveat.)
+
+**A natural name: information-theoretic average.** The metric
+combines two information-theoretic ingredients:
+
+1. A *maximum-entropy prior* over path shapes — the least
+   informative prior consistent with the constraint that
+   path-count growth determines shape multiplicity. This is the
+   path-count-normaliser weighting.
+2. A *length-factor* $(h+1)^{-n}$ that down-weights long paths,
+   acting analogously to a Boltzmann factor in statistical
+   mechanics — longer paths "cost more" and contribute less.
+
+The combined object is an *expectation under a maximum-entropy
+prior with data-driven length-cost weighting*. "Information-
+theoretic average" captures this naturally: the metric is the
+average value of the length-factor under a prior that is least
+informative about path shapes and yet length-aware. In
+statistical-mechanics language, $d_{\text{wPow}}^{-n}$ is
+proportional to a partition-function-like normalisation of the
+length-factor, and $d_{\text{wPow}}$ is the corresponding
+"characteristic length." (We do not formalise this analogy
+further here; it is offered as intuition.)
 
 In short: the metric is approximately the *expected
 short-distance metric over all paths within the length budget*,
@@ -1285,15 +1362,18 @@ TLI applicability:
 **Most of our theory targets the middle category.** The
 convergence condition $b_{\text{eff}} \cdot D > b'$ (Theorem 2.3)
 is what makes the metric well-defined on effectively-infinite
-graphs:
+graphs, **under the homogeneity precondition of Definition 0.6**.
+The saturation claim below assumes uniformity over the support
+of $Q$; for inhomogeneous graphs see §0.6 and §5.6.
 
 - **Without convergence:** the metric value depends on where you
   truncate. Increasing $B$ keeps changing the answer, so there
   is no principled budget at which to certify.
-- **With convergence:** the metric *saturates* to a $B$-independent
-  value at some "natural depth" of the graph. Increasing $B$
-  beyond that adds path-count growth, but the weighting crushes
-  the new contributions. There exists a finite $B^*$ such that
+- **With convergence (under homogeneity):** the metric
+  *saturates* to a $B$-independent value at some "natural depth"
+  of the graph. Increasing $B$ beyond that adds path-count
+  growth, but the weighting crushes the new contributions. There
+  exists a finite $B^*$ such that
   $d_{\text{wPow}}(B) \approx d_{\text{wPow}}(B^*)$ for all
   $B \ge B^*$ within practical precision.
 
@@ -1301,25 +1381,35 @@ This is the actual practical promise: the convergence condition
 isn't about mathematical infinity. It's about graphs large enough
 you'll never see the bottom but still need a stable answer.
 
-**Algorithmically-generated graphs as a test case.** Boolean-
-equivalent expression graphs are a clean example of an
-effectively-infinite, lazy-generated graph: nodes are expressions
-equivalent (under some chosen equivalence) to a fixed formula,
-edges are single applications of a transformation rule (De
-Morgan, distributivity, etc.). Any non-trivial starting
-expression has more boolean-equivalent forms than can ever be
-materialised, so you only ever explore a bounded neighbourhood
-on demand. The kernel can be pointed at such a generator
-without modification — the convergence condition is what makes
-the resulting metric well-defined.
+**Algorithmically-generated graphs as a test case and as an
+application domain.** Boolean-equivalent expression graphs are a
+clean example of an effectively-infinite, lazy-generated graph:
+nodes are expressions equivalent (under some chosen equivalence)
+to a fixed formula, edges are single applications of a
+transformation rule (De Morgan, distributivity, etc.). Any
+non-trivial starting expression has more boolean-equivalent
+forms than can ever be materialised, so you only ever explore a
+bounded neighbourhood on demand. The kernel can be pointed at
+such a generator without modification — the convergence
+condition is what makes the resulting metric well-defined.
 
-We note this as a natural test case for Conjecture 3.5
-(symmetric DAG falsification): boolean transformations are
-near-bidirectional, so $b_{\text{eff}}$ on such graphs should be
-close to $1$, putting them firmly in the "convergence fails"
-regime. A direct measurement would either confirm or refute
-Conjecture 3.5 cleanly, without Wikipedia-specific topology
-surprises.
+Two uses:
+
+1. **As a falsification target for Conjecture 3.5:** boolean
+   transformations are near-bidirectional, so $b_{\text{eff}}$
+   on such graphs should be close to $1$, putting them firmly
+   in the "convergence fails" regime. A direct measurement would
+   either confirm or refute Conjecture 3.5 cleanly, without
+   Wikipedia-specific topology surprises.
+2. **As an application domain in its own right.** Once
+   convergence behaviour is understood, the kernel and TLI
+   framework apply to any effectively-infinite graph the user
+   cares about: code-refactoring DAGs (program equivalence under
+   refactorings), theorem-proving graphs (formulas equivalent
+   under inference rules), term-rewriting systems, lambda
+   calculus reduction graphs. Each of these is a natural target
+   for a "is this expression similar to that one under the
+   structural metric?" query.
 
 (Detailed exploration deferred — this section names the
 direction; implementation and experiments remain future work.)
