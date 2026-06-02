@@ -15,12 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the traversal natively, bypassing the WAM step loop. The handler builds
   its adjacency map from the kernel's edge relation via a new
   `WamRuntime.collectBinarySolutions/2` enumerator (works for WAM facts
-  and fact sources alike). Kernel kinds implemented: `transitive_closure2`
-  and `transitive_distance3` (BFS shortest-path distance, binding the
-  distance register); the other five fall back to ordinary WAM
-  compilation until ported. `tests/test_wam_scala_kernels.pl` has
-  structural tests plus gated runtime tests asserting kernel-mode and
-  interpreter-mode results are identical and correct.
+  and fact sources alike). Kernel kinds implemented: `transitive_closure2`,
+  `transitive_distance3` (BFS shortest-path distance), and
+  `transitive_parent_distance4` (target + immediate predecessor + distance);
+  the other four fall back to ordinary WAM compilation until ported.
+  `tests/test_wam_scala_kernels.pl` has structural tests plus gated runtime
+  tests asserting kernel-mode and interpreter-mode results are identical
+  and correct.
 - **WAM Scala target: per-predicate lowered emitter** — brings the Scala
   hybrid WAM to parity with the Haskell/Rust/C++/F#/Go/Clojure targets,
   all of which already shipped a `wam_*_lowered_emitter.pl`.
