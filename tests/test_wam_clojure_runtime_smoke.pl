@@ -140,6 +140,15 @@
 :- dynamic user:wam_arg_guard/3.
 :- dynamic user:wam_arg_numeric_arg_unify/0.
 :- dynamic user:wam_arg_numeric_arg_unify_mismatch/0.
+:- dynamic user:wam_compound_name_arity_guard/3.
+:- dynamic user:wam_compound_name_arity_decompose/0.
+:- dynamic user:wam_compound_name_arity_compose/0.
+:- dynamic user:wam_compound_name_arity_compose_zero/0.
+:- dynamic user:wam_compound_name_arity_mismatch/0.
+:- dynamic user:wam_compound_name_arguments_guard/3.
+:- dynamic user:wam_compound_name_arguments_decompose/0.
+:- dynamic user:wam_compound_name_arguments_compose/0.
+:- dynamic user:wam_compound_name_arguments_mismatch/0.
 :- dynamic user:wam_univ_guard/2.
 :- dynamic user:wam_univ_decompose_struct/0.
 :- dynamic user:wam_univ_decompose_atom/0.
@@ -440,6 +449,15 @@ user:wam_functor_arity_unify_mismatch :- functor(f(a,b), f, Arity), Arity = 1.
 user:wam_arg_guard(Index, Term, Arg) :- arg(Index, Term, Arg).
 user:wam_arg_numeric_arg_unify :- arg(1, f(42), Arg), Arg = 42.
 user:wam_arg_numeric_arg_unify_mismatch :- arg(1, f(42), Arg), Arg = 43.
+user:wam_compound_name_arity_guard(Term, Name, Arity) :- compound_name_arity(Term, Name, Arity).
+user:wam_compound_name_arity_decompose :- compound_name_arity(f(a,b), Name, Arity), Name = f, Arity = 2.
+user:wam_compound_name_arity_compose :- compound_name_arity(Term, f, 2), Term = f(_,_).
+user:wam_compound_name_arity_compose_zero :- compound_name_arity(_Term, f, 0).
+user:wam_compound_name_arity_mismatch :- compound_name_arity(f(a,b), f, 1).
+user:wam_compound_name_arguments_guard(Term, Name, Args) :- compound_name_arguments(Term, Name, Args).
+user:wam_compound_name_arguments_decompose :- compound_name_arguments(f(a,42), Name, Args), Name = f, Args = [a,42].
+user:wam_compound_name_arguments_compose :- compound_name_arguments(Term, f, [a,42]), Term = f(a,42).
+user:wam_compound_name_arguments_mismatch :- compound_name_arguments(f(a,42), f, [a,43]).
 user:wam_univ_guard(Term, List) :- Term =.. List.
 user:wam_univ_decompose_struct :- f(a, b) =.. [f, a, b].
 user:wam_univ_decompose_atom :- a =.. [a].
@@ -745,6 +763,15 @@ run_smoke :-
           user:wam_arg_guard/3,
           user:wam_arg_numeric_arg_unify/0,
           user:wam_arg_numeric_arg_unify_mismatch/0,
+          user:wam_compound_name_arity_guard/3,
+          user:wam_compound_name_arity_decompose/0,
+          user:wam_compound_name_arity_compose/0,
+          user:wam_compound_name_arity_compose_zero/0,
+          user:wam_compound_name_arity_mismatch/0,
+          user:wam_compound_name_arguments_guard/3,
+          user:wam_compound_name_arguments_decompose/0,
+          user:wam_compound_name_arguments_compose/0,
+          user:wam_compound_name_arguments_mismatch/0,
           user:wam_univ_guard/2,
           user:wam_univ_decompose_struct/0,
           user:wam_univ_decompose_atom/0,
@@ -950,6 +977,7 @@ run_smoke :-
     assert_lowered_copy_term_builtin_emitted(TmpDir),
     assert_lowered_functor_builtin_emitted(TmpDir),
     assert_lowered_arg_builtin_emitted(TmpDir),
+    assert_lowered_compound_name_builtin_emitted(TmpDir),
     assert_lowered_univ_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
@@ -1210,6 +1238,16 @@ smoke_cases([
     case('wam_arg_guard/3', args(1, a, a), "false"),
     case('wam_arg_numeric_arg_unify/0', no_args, "true"),
     case('wam_arg_numeric_arg_unify_mismatch/0', no_args, "false"),
+    case('wam_compound_name_arity_guard/3', args('f(a,b)', f, 2), "true"),
+    case('wam_compound_name_arity_guard/3', args(a, a, 0), "false"),
+    case('wam_compound_name_arity_decompose/0', no_args, "true"),
+    case('wam_compound_name_arity_compose/0', no_args, "true"),
+    case('wam_compound_name_arity_compose_zero/0', no_args, "true"),
+    case('wam_compound_name_arity_mismatch/0', no_args, "false"),
+    case('wam_compound_name_arguments_guard/3', args('f(a,b)', f, '[a,b]'), "true"),
+    case('wam_compound_name_arguments_decompose/0', no_args, "true"),
+    case('wam_compound_name_arguments_compose/0', no_args, "true"),
+    case('wam_compound_name_arguments_mismatch/0', no_args, "false"),
     case('wam_univ_guard/2', args('f(a,b)', '[f,a,b]'), "true"),
     case('wam_univ_guard/2', args(a, '[a]'), "true"),
     case('wam_univ_guard/2', args(42, '[42]'), "true"),
@@ -1693,6 +1731,14 @@ assert_lowered_arg_builtin_emitted(ProjectDir) :-
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-arg-guard-3"),
     has(CoreCode, "runtime/apply-arg-solution").
+
+assert_lowered_compound_name_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-compound-name-arity-guard-3"),
+    has(CoreCode, "defn lowered-wam-compound-name-arguments-guard-3"),
+    has(CoreCode, "runtime/apply-compound-name-arity-solution"),
+    has(CoreCode, "runtime/apply-compound-name-arguments-solution").
 
 assert_lowered_univ_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
