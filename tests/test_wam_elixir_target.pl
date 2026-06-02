@@ -192,6 +192,89 @@ elixir_test_tmp_dir(Name, TmpDir) :-
     catch(delete_directory_and_contents(TmpDir), _, true),
     make_directory_path(TmpDir).
 
+test_elixir_interpreter_uses_items_ir_policy_source :-
+    Test = 'WAM-Elixir: interpreter mode uses shared items IR policy',
+    (   once(source_file(wam_elixir_target:write_wam_elixir_project(_, _, _), Path)),
+        read_file_to_string(Path, Content, []),
+        sub_string(Content, _, _, _, 'wam_elixir_emit_ir_mode(Options, Mode, IrMode)'),
+        sub_string(Content, _, _, _, 'wam_ir_mode(wam_elixir, EmitMode, Options, IrMode)'),
+        sub_string(Content, _, _, _, 'elixir_interpreter_wam_code(RewrittenWamCode, IrMode'),
+        sub_string(Content, _, _, _, 'wam_text_to_items(WamText, Items)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'items IR policy wiring missing from source')
+    ).
+
+test_elixir_items_adapter_accepts_shared_items :-
+    Test = 'WAM-Elixir: shared WAM items convert to instruction literals',
+    Items = [label("demo/1"), put_constant("foo", "A1"),
+             call("other/0", "0"), proceed],
+    (   wam_elixir_target:wam_code_to_elixir_instructions(Items, Instrs, Labels),
+        sub_string(Instrs, _, _, _, '{:put_constant, "foo", 1}'),
+        sub_string(Instrs, _, _, _, '{:call, "other/0", 0}'),
+        sub_string(Instrs, _, _, _, ':proceed'),
+        sub_string(Labels, _, _, _, '"demo/1" => 1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'items adapter did not emit expected Elixir literals')
+    ).
+
+test_elixir_generated_predicate_allows_text_ir_override :-
+    Test = 'WAM-Elixir: generated predicate allows wam_text IR override',
+    WamCode = 'elixir_text_ir/1:
+  put_constant foo, A1
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_text_ir', TmpDir),
+        (   write_wam_elixir_project([elixir_text_ir/1-WamCode],
+                                    [wam_ir(wam_text)], TmpDir),
+            directory_file_path(TmpDir, 'lib', LibDir),
+            directory_file_path(LibDir, 'elixir_text_ir.ex', PredPath),
+            read_file_to_string(PredPath, Code, []),
+            (   sub_string(Code, _, _, _, '{:put_constant, "foo", 1}')
+            ->  pass(Test)
+            ;   fail_test(Test, 'text IR override did not emit predicate code')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_elixir_generated_predicate_rejects_direct_target_ir :-
+    Test = 'WAM-Elixir: generated predicate rejects direct_target IR',
+    WamCode = 'elixir_direct_ir/0:
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_direct_ir', TmpDir),
+        (   catch((write_wam_elixir_project([elixir_direct_ir/0-WamCode],
+                                            [wam_ir(direct_target)], TmpDir),
+                   Caught = false),
+                  error(domain_error(wam_elixir_ir_mode, direct_target), _),
+                  Caught = true),
+            (   Caught == true
+            ->  pass(Test)
+            ;   fail_test(Test, 'expected direct_target IR domain_error')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_elixir_generated_predicate_rejects_native_items_until_available :-
+    Test = 'WAM-Elixir: generated predicate rejects wam_items_native IR',
+    WamCode = 'elixir_native_ir/0:
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_native_ir', TmpDir),
+        (   catch((write_wam_elixir_project([elixir_native_ir/0-WamCode],
+                                            [wam_ir(wam_items_native)], TmpDir),
+                   Caught = false),
+                  error(existence_error(wam_ir_mode, wam_items_native), _),
+                  Caught = true),
+            (   Caught == true
+            ->  pass(Test)
+            ;   fail_test(Test, 'expected wam_items_native existence_error')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
 test_instruction_count :-
     Test = 'WAM-Elixir: instruction arm count',
     (   findall(N, wam_elixir_case(N, _), Cases),
@@ -3242,6 +3325,11 @@ run_tests :-
     test_runtime_parser_compiled_request_errors,
     test_runtime_parser_none_rejects_parser_dependent_builtin,
     test_runtime_parser_none_allows_term_to_atom_forward,
+    test_elixir_interpreter_uses_items_ir_policy_source,
+    test_elixir_items_adapter_accepts_shared_items,
+    test_elixir_generated_predicate_allows_text_ir_override,
+    test_elixir_generated_predicate_rejects_direct_target_ir,
+    test_elixir_generated_predicate_rejects_native_items_until_available,
     test_instruction_count,
     test_head_unification_instructions,
     test_body_construction_instructions,

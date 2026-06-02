@@ -4888,6 +4888,12 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L), t_v$args[[i]]))
   }
 
+  # Some stdlib predicates are emitted as BuiltinCall by the WAM
+  # compiler, while older paths reached them through Call/Execute label
+  # fallback. Keep both shapes routed through the same library table.
+  lib <- WamRuntime$call_library(program, state, pred, arity)
+  if (!is.null(lib)) return(isTRUE(lib))
+
   # Unknown builtin -> failure (matches WAM convention).
   FALSE
 }
@@ -4909,7 +4915,7 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
 
 WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
-  key <- paste0(pred, "/", arity)
+  key <- if (grepl("/[0-9]+$", pred)) pred else paste0(pred, "/", arity)
 
   # ----- ^/2 existential scope -----
   # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat

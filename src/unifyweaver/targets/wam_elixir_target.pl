@@ -39,6 +39,7 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_ir_mode', [wam_ir_mode/4]).
 :- use_module('../core/iso_errors',
               [ iso_errors_resolve_options/2,
                 iso_errors_load_config/2,
@@ -51,7 +52,8 @@
               ]).
 :- use_module('wam_text_parser',
               [ wam_tokenize_line/2,
-                wam_recognise_instruction/2
+                wam_recognise_instruction/2,
+                wam_text_to_items/2
               ]).
 :- use_module('../targets/wam_elixir_utils', [camel_case/2]).
 :- use_module('../core/recursive_kernel_detection',
@@ -70,6 +72,21 @@ wam_elixir_resolve_emit_mode(Options, Mode) :-
     (   option(emit_mode(M), Options)
     ->  Mode = M
     ;   Mode = interpreter
+    ).
+
+%% wam_elixir_emit_ir_mode(+Options, +EmitMode, -IrMode) is det.
+%  Elixir interpreter mode can consume shared WAM items through the bridge.
+%  Lowered mode remains text-backed because its classifiers and emitter still
+%  analyse WAM text directly.
+wam_elixir_emit_ir_mode(Options, EmitMode, IrMode) :-
+    wam_ir_mode(wam_elixir, EmitMode, Options, IrMode),
+    (   IrMode == direct_target
+    ->  throw(error(domain_error(wam_elixir_ir_mode, direct_target),
+                    wam_elixir_emit_ir_mode/3))
+    ;   IrMode == wam_items_native
+    ->  throw(error(existence_error(wam_ir_mode, wam_items_native),
+                    wam_elixir_emit_ir_mode/3))
+    ;   true
     ).
 
 % ============================================================================
@@ -4974,6 +4991,13 @@ end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
 %  Two-pass: pass 1 collects labels → PC map; pass 2 emits instructions
 %  with label references pre-resolved to integer PCs where possible.
 wam_code_to_elixir_instructions(WamCode, InstrLiterals, LabelLiterals) :-
+    is_list(WamCode),
+    !,
+    collect_item_labels_pass(WamCode, 1, LabelsList),
+    wam_items_to_elixir(WamCode, 1, LabelsList, InstrParts, LabelParts),
+    atomic_list_concat(InstrParts, '\n', InstrLiterals),
+    atomic_list_concat(LabelParts, ', ', LabelLiterals).
+wam_code_to_elixir_instructions(WamCode, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels_pass(Lines, 1, LabelsList),
@@ -5014,6 +5038,100 @@ wam_lines_to_elixir([Line|Rest], PC, LabelsList, Instrs, Labels) :-
             Instrs = [InstrEntry|RestInstrs],
             wam_lines_to_elixir(Rest, NPC, LabelsList, RestInstrs, Labels)
         )
+    ).
+
+collect_item_labels_pass([], _, []).
+collect_item_labels_pass([label(LabelName)|Rest], PC, [LabelName-PC|Labels]) :-
+    !,
+    collect_item_labels_pass(Rest, PC, Labels).
+collect_item_labels_pass([_|Rest], PC, Labels) :-
+    NPC is PC + 1,
+    collect_item_labels_pass(Rest, NPC, Labels).
+
+wam_items_to_elixir([], _, _, [], []).
+wam_items_to_elixir([label(LabelName)|Rest], PC, LabelsList, Instrs, Labels) :-
+    !,
+    format(string(LabelInsert), '"~w" => ~w', [LabelName, PC]),
+    Labels = [LabelInsert|RestLabels],
+    wam_items_to_elixir(Rest, PC, LabelsList, Instrs, RestLabels).
+wam_items_to_elixir([Item|Rest], PC, LabelsList, [InstrEntry|RestInstrs], Labels) :-
+    wam_item_parts(Item, Parts),
+    wam_line_to_elixir_instr(Parts, LabelsList, ElixirInstr),
+    format(string(InstrEntry), '      ~w,', [ElixirInstr]),
+    NPC is PC + 1,
+    wam_items_to_elixir(Rest, NPC, LabelsList, RestInstrs, Labels).
+
+wam_item_parts(get_constant(C, Ai), ["get_constant", C, Ai]).
+wam_item_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
+wam_item_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
+wam_item_parts(get_structure(F, Ai), ["get_structure", F, Ai]).
+wam_item_parts(get_list(Ai), ["get_list", Ai]).
+wam_item_parts(get_nil(Ai), ["get_nil", Ai]).
+wam_item_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
+wam_item_parts(get_float(F, Ai), ["get_float", F, Ai]).
+wam_item_parts(unify_variable(Xn), ["unify_variable", Xn]).
+wam_item_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_parts(unify_constant(C), ["unify_constant", C]).
+wam_item_parts(unify_nil, ["unify_nil"]).
+wam_item_parts(unify_void(N), ["unify_void", N]).
+wam_item_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
+wam_item_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_parts(put_unsafe_value(Yn, Ai), ["put_unsafe_value", Yn, Ai]).
+wam_item_parts(put_constant(C, Ai), ["put_constant", C, Ai]).
+wam_item_parts(put_nil(Ai), ["put_nil", Ai]).
+wam_item_parts(put_integer(N, Ai), ["put_integer", N, Ai]).
+wam_item_parts(put_float(F, Ai), ["put_float", F, Ai]).
+wam_item_parts(put_structure(F, Ai), ["put_structure", F, Ai]).
+wam_item_parts(put_list(Ai), ["put_list", Ai]).
+wam_item_parts(set_variable(Xn), ["set_variable", Xn]).
+wam_item_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_parts(set_local_value(Xn), ["set_local_value", Xn]).
+wam_item_parts(set_constant(C), ["set_constant", C]).
+wam_item_parts(set_nil, ["set_nil"]).
+wam_item_parts(set_integer(N), ["set_integer", N]).
+wam_item_parts(set_void(N), ["set_void", N]).
+wam_item_parts(call(P, N), ["call", P, N]).
+wam_item_parts(execute(P), ["execute", P]).
+wam_item_parts(proceed, ["proceed"]).
+wam_item_parts(fail, ["fail"]).
+wam_item_parts(allocate, ["allocate"]).
+wam_item_parts(deallocate, ["deallocate"]).
+wam_item_parts(builtin_call(Op, Ar), ["builtin_call", Op, Ar]).
+wam_item_parts(call_foreign(Pred, Ar), ["call_foreign", Pred, Ar]).
+wam_item_parts(arg(N, Reg, OutReg), ["arg", N, Reg, OutReg]).
+wam_item_parts(try_me_else(L), ["try_me_else", L]).
+wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
+wam_item_parts(trust_me, ["trust_me"]).
+wam_item_parts(try(L), ["try", L]).
+wam_item_parts(retry(L), ["retry", L]).
+wam_item_parts(trust(L), ["trust", L]).
+wam_item_parts(jump(L), ["jump", L]).
+wam_item_parts(cut_ite, ["cut_ite"]).
+wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
+wam_item_parts(begin_aggregate(K, V, R, W), ["begin_aggregate", K, V, R, W]).
+wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
+wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).
+wam_item_parts(switch_on_constant_fallthrough(Es), ["switch_on_constant_fallthrough"|Es]).
+wam_item_parts(switch_on_constant_a2(Es), ["switch_on_constant_a2"|Es]).
+wam_item_parts(switch_on_constant_a2_fallthrough(Es), ["switch_on_constant_a2_fallthrough"|Es]).
+wam_item_parts(switch_on_structure(Es), ["switch_on_structure"|Es]).
+wam_item_parts(switch_on_structure_a2(Es), ["switch_on_structure_a2"|Es]).
+wam_item_parts(switch_on_term(Ts), ["switch_on_term"|Ts]).
+wam_item_parts(switch_on_term_a2(Ts), ["switch_on_term_a2"|Ts]).
+wam_item_parts(Item, Parts) :-
+    Item =.. [Name|Args],
+    atom_string(Name, NameStr),
+    maplist(wam_item_arg_string, Args, ArgStrs),
+    Parts = [NameStr|ArgStrs].
+
+wam_item_arg_string(Value, Str) :-
+    (   string(Value)
+    ->  Str = Value
+    ;   atom(Value)
+    ->  atom_string(Value, Str)
+    ;   number(Value)
+    ->  number_string(Value, Str)
+    ;   term_string(Value, Str)
     ).
 
 %% resolve_label(+LabelStr, +LabelsList, -Resolved)
@@ -5127,6 +5245,7 @@ wam_line_to_elixir_instr(Parts, _, Instr) :-
 write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     wam_elixir_resolve_emit_mode(Options, Mode),
+    wam_elixir_emit_ir_mode(Options, Mode, IrMode),
     wam_target_runtime_parser(wam_elixir, Options, RuntimeParserMode),
     validate_elixir_runtime_parser_mode(Predicates, RuntimeParserMode),
     Options1 = [runtime_parser_mode(RuntimeParserMode)|Options],
@@ -5142,7 +5261,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     setup_call_cleanup(
         atom_interning_setup(Options1),
         do_write_wam_elixir_project(Predicates, Options1, ProjectDir,
-                                     Mode, ModuleName, LibDir),
+                                     Mode, IrMode, ModuleName, LibDir),
         atom_interning_cleanup(Options1)
     ).
 
@@ -6239,8 +6358,13 @@ atom_interning_cleanup(Options) :-
     ;   true
     ).
 
+elixir_interpreter_wam_code(WamText, wam_text, WamText) :- !.
+elixir_interpreter_wam_code(WamText, wam_items_bridge, Items) :-
+    wam_text_to_items(WamText, Items).
+
+
 do_write_wam_elixir_project(Predicates, Options, ProjectDir,
-                             Mode, ModuleName, LibDir) :-
+                             Mode, IrMode, ModuleName, LibDir) :-
     % PR #4: resolve ISO config + warn on multi-module bare overrides
     % BEFORE per-predicate compilation, then thread the per-PI
     % rewrite into the predicate emit loop below.
@@ -6284,8 +6408,10 @@ do_write_wam_elixir_project(Predicates, Options, ProjectDir,
                 ;   (   Mode == lowered
                     ->  lower_predicate_to_elixir(Pred/Arity,
                             RewrittenWamCode, Options, PredCode)
-                    ;   compile_wam_predicate_to_elixir(Pred/Arity,
-                            RewrittenWamCode, Options, PredCode)
+                    ;   elixir_interpreter_wam_code(RewrittenWamCode, IrMode,
+                            InterpreterWamCode),
+                        compile_wam_predicate_to_elixir(Pred/Arity,
+                            InterpreterWamCode, Options, PredCode)
                     )
                 )
             ),

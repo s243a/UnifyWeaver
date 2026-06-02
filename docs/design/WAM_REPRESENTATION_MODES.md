@@ -42,14 +42,18 @@ conservative:
 - Lua lowered/functions mode: `wam_text`
 - R interpreter mode: `wam_items_bridge`
 - R lowered/functions mode: `wam_text`
+- Elixir interpreter mode: `wam_items_bridge`
+- Elixir lowered mode: `wam_text`
 - Unknown WAM targets: `wam_text`
 
 WAM-specific targets may reject `direct_target`; callers should use the ordinary
 non-WAM target when they want direct target-native code.
 
-Lua and R follow the same partial migration shape as Python: interpreter-mode
-generated predicates consume common WAM items through the bridge, while lowered
-emission keeps the text path because lowerability analysis and target-specific
-classifiers still work over tokenized WAM text. R additionally keeps WAM text for
-fact-shape classification and recursive-kernel detection even when the emitted
-instruction array comes from bridged WAM items.
+Lua, R, and Elixir follow the same partial migration shape as Python:
+interpreter-mode generated predicates consume common WAM items through the
+bridge, while lowered emission keeps the text path because lowerability analysis
+and target-specific classifiers still work over tokenized WAM text. R
+additionally keeps WAM text for fact-shape classification and recursive-kernel
+detection even when the emitted instruction array comes from bridged WAM items.
+Elixir keeps its ISO-error rewrite as a text-level pre-pass, then parses the
+rewritten text to shared WAM items for interpreter-mode predicate modules.

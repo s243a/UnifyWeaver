@@ -55,7 +55,7 @@ wam_ir_mode_uses_wam(wam_items_native).
 wam_ir_mode_skips_text(wam_items_native).
 wam_ir_mode_skips_text(direct_target).
 
-% Conservative current defaults. Interpreter-mode Python, Lua, and R already
+% Conservative current defaults. Interpreter-mode Python, Lua, R, and Elixir
 % consume the common items bridge; their lowered paths still need WAM text for
 % analyzers, fact classifiers, kernel detectors, and lowered emitters.
 wam_ir_mode_default(wam_python, interpreter, wam_items_bridge) :- !.
@@ -64,5 +64,7 @@ wam_ir_mode_default(wam_python, functions, wam_text) :- !.
 wam_ir_mode_default(wam_python, mixed(_), wam_text) :- !.
 wam_ir_mode_default(wam_lua, interpreter, wam_items_bridge) :- !.
 wam_ir_mode_default(wam_r, interpreter, wam_items_bridge) :- !.
+wam_ir_mode_default(wam_elixir, interpreter, wam_items_bridge) :- !.
+wam_ir_mode_default(wam_elixir, lowered, wam_text) :- !.
 wam_ir_mode_default(_, direct_target, direct_target) :- !.
 wam_ir_mode_default(_, _, wam_text).
