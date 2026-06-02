@@ -24,8 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WamRuntime.wamListToVector/2` helper), and `weighted_shortest_path3`
   (Dijkstra over a ternary weighted edge relation via a new
   `WamRuntime.collectTernarySolutions/2` enumerator; binds the shortest
-  total weight as a float); the last kind (`astar_shortest_path4`) falls
-  back to ordinary WAM compilation until ported.
+  total weight as a float), and `astar_shortest_path4` (goal-directed A*
+  over the ternary weighted edges with a heuristic oracle
+  (`direct_dist_pred`) and Minkowski dimensionality `f = g^D + h^D`; binds
+  the shortest distance as a float). **All seven recognised kernel kinds
+  are now implemented**, bringing Scala to full graph-kernel parity with
+  the Rust/Haskell/Elixir/Go targets.
   `tests/test_wam_scala_kernels.pl` has structural tests plus gated runtime
   tests asserting kernel-mode and interpreter-mode results are identical
   and correct.

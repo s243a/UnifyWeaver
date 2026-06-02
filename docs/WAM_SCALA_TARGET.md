@@ -145,23 +145,26 @@ write_wam_scala_project([user:tc/2, user:edge/2],
     [ package('demo.tc'), kernel_dispatch(true) ], '/tmp/tc').
 ```
 
-Currently implemented: **`transitive_closure2`**,
-**`transitive_distance3`** (BFS shortest-path distance),
-**`transitive_parent_distance4`** (target + immediate predecessor on the
-shortest path + distance), **`transitive_step_parent_distance5`**
-(target + first hop from source + immediate predecessor + distance),
-**`category_ancestor`** (depth-bounded ancestor search with a visited
-list; config carries `max_depth`), and **`weighted_shortest_path3`**
-(Dijkstra over a ternary weighted edge relation; binds the shortest total
-weight as a float). The last kind the detector recognises
-(`astar_shortest_path4`) follows the same pattern and is slated as a
-follow-up; until then it falls back to ordinary WAM compilation (correct,
-just not accelerated).
+**All seven** kernel kinds the detector recognises are implemented:
+**`transitive_closure2`**, **`transitive_distance3`** (BFS shortest-path
+distance), **`transitive_parent_distance4`** (target + immediate
+predecessor on the shortest path + distance),
+**`transitive_step_parent_distance5`** (target + first hop from source +
+immediate predecessor + distance), **`category_ancestor`** (depth-bounded
+ancestor search with a visited list; config carries `max_depth`),
+**`weighted_shortest_path3`** (Dijkstra over a ternary weighted edge
+relation; binds the shortest total weight as a float), and
+**`astar_shortest_path4`** (goal-directed A* over a ternary weighted edge
+relation with a heuristic oracle (`direct_dist_pred`) and Minkowski
+dimensionality `f = g^D + h^D`; binds the shortest distance as a float).
 
-> `weighted_shortest_path3` reads edge weights as `Double` and binds the
-> result weight as a `FloatTerm` (the register contract is `output(3,
-> float)`), so use float-valued edge weights for the interpreter and
-> kernel to agree exactly.
+> The weighted kernels (`weighted_shortest_path3`, `astar_shortest_path4`)
+> read edge weights as `Double` and bind the result weight as a
+> `FloatTerm` (the register contract is float), so use float-valued edge
+> weights for the interpreter and kernel to agree exactly.
+> `astar_shortest_path4` also needs its heuristic-oracle predicate
+> (`direct_dist_pred`) included in the predicate list so the kernel can
+> enumerate it at runtime.
 
 > Note: `category_ancestor` reads `max_depth/1` at runtime (via the
 > recursive clause's `max_depth(M)` goal), so when running it through the

@@ -807,7 +807,8 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
 %
 % Currently implemented kernel kinds: transitive_closure2, transitive_distance3,
 % transitive_parent_distance4, transitive_step_parent_distance5,
-% category_ancestor, weighted_shortest_path3.
+% category_ancestor, weighted_shortest_path3, astar_shortest_path4
+% (all seven recognised kinds).
 % The remaining six (category_ancestor, transitive_distance3,
 % weighted_shortest_path3, transitive_parent_distance4,
 % astar_shortest_path4, transitive_step_parent_distance5) follow the same
@@ -953,6 +954,28 @@ emit_scala_kernel_handler(recursive_kernel(weighted_shortest_path3, _Pred/3, Con
     format(string(Code),
 "new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((0.0, source))\n        val out = scala.collection.mutable.LinkedHashMap[WamTerm, Double]()\n        while (pq.nonEmpty) {\n          val (cost, node) = pq.dequeue()\n          val best = dist.getOrElse(node, Double.PositiveInfinity)\n          if (cost <= best) {\n            if (node != source && !out.contains(node)) out(node) = cost\n            for ((nxt, w) <- adj.getOrElse(node, Vector.empty)) {\n              val nc = cost + w\n              if (nc < dist.getOrElse(nxt, Double.PositiveInfinity)) {\n                dist(nxt) = nc\n                pq.enqueue((nc, nxt))\n              }\n            }\n          }\n        }\n        val sols = out.toVector.map { case (t, c) => Map(2 -> (t: WamTerm), 3 -> (FloatTerm(c): WamTerm)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [EdgeKeyLit]).
+
+% astar_shortest_path4: astar(Source, Target, Dim, Dist). Goal-directed A*
+% over a ternary weighted edge relation, using a heuristic oracle
+% (direct_dist_pred(Node, Target, H), falling back to the edges themselves).
+% Priority f(n) = g(n)^D + h(n)^D where D is the Minkowski dimensionality
+% taken from register 3 at runtime (config value baked in as the fallback).
+% Inputs: register 1 = source, register 2 = bound target, register 3 = dim;
+% output: register 4 = the shortest-path distance as a FloatTerm (at most one
+% solution). Mirrors the Haskell/Rust/Elixir A* kernel. Float weights so
+% interpreter and kernel agree exactly (see weighted_shortest_path3 note).
+emit_scala_kernel_handler(recursive_kernel(astar_shortest_path4, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    member(direct_dist_pred(DistPred/DistArity), ConfigOps),
+    member(dimensionality(ConfigDim), ConfigOps),
+    integer(ConfigDim),
+    format(atom(EdgeKey), '~w/3', [EdgePred]),
+    format(atom(DistKey), '~w/~w', [DistPred, DistArity]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    scala_string_literal(DistKey, DistKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private val configDim: Double = ~w.0\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      private lazy val heur: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val target = args(1)\n        val dim = args(2) match { case IntTerm(n) => n.toDouble; case FloatTerm(d) => d; case _ => configDim }\n        def heuristic(node: WamTerm): Double =\n          heur.getOrElse(node, Vector.empty).collectFirst { case (t, h) if t == target => h }.getOrElse(0.0)\n        val g = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((math.pow(0.0, dim) + math.pow(heuristic(source), dim), source))\n        var result: Option[Double] = None\n        while (pq.nonEmpty && result.isEmpty) {\n          val (_f, node) = pq.dequeue()\n          if (node == target) result = g.get(node)\n          else {\n            val gn = g.getOrElse(node, Double.PositiveInfinity)\n            for ((nxt, w) <- adj.getOrElse(node, Vector.empty)) {\n              val newG = gn + w\n              if (newG < g.getOrElse(nxt, Double.PositiveInfinity)) {\n                g(nxt) = newG\n                pq.enqueue((math.pow(newG, dim) + math.pow(heuristic(nxt), dim), nxt))\n              }\n            }\n          }\n        }\n        result match {\n          case Some(d) => ForeignMulti(Vector(Map(4 -> (FloatTerm(d): WamTerm))))\n          case None    => ForeignFail\n        }\n      }\n    }",
+           [ConfigDim, EdgeKeyLit, DistKeyLit]).
 
 % ============================================================================
 % FACT BACKEND SEAM (Phase S7)
