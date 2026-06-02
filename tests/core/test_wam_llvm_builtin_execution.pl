@@ -2459,6 +2459,34 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M73: exists_file/1 + exists_directory/1 -- stat-based fs checks.
+
+:- dynamic test_xf_real/2.
+test_xf_real(_, R) :-
+    ( exists_file('/etc/hostname') -> R is 1 ; R is 0 ).   % 1 (Linux)
+
+:- dynamic test_xf_missing/2.
+test_xf_missing(_, R) :-
+    ( exists_file('/nonexistent/path/qqq') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_xf_directory_no/2.
+test_xf_directory_no(_, R) :-
+    % exists_file should fail on a directory.
+    ( exists_file('/etc') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_xd_real/2.
+test_xd_real(_, R) :-
+    ( exists_directory('/etc') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_xd_file_no/2.
+test_xd_file_no(_, R) :-
+    % exists_directory should fail on a regular file.
+    ( exists_directory('/etc/hostname') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_xd_missing/2.
+test_xd_missing(_, R) :-
+    ( exists_directory('/nonexistent/path') -> R is 1 ; R is 0 ).   % 0
+
 % M72: get_time/1 -- wall-clock seconds since the epoch as Float.
 
 :- dynamic test_get_time_succeeds/2.
@@ -4177,6 +4205,19 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M73 exists_file/1 + exists_directory/1 ---~n'),
+       run_test_r0('exists_file(/etc/hostname) -> 1',
+                   test_xf_real, 0, 1),
+       run_test_r0('exists_file(/nonexistent/...) -> 0',
+                   test_xf_missing, 0, 0),
+       run_test_r0('exists_file(/etc) directory -> 0',
+                   test_xf_directory_no, 0, 0),
+       run_test_r0('exists_directory(/etc) -> 1',
+                   test_xd_real, 0, 1),
+       run_test_r0('exists_directory(/etc/hostname) file -> 0',
+                   test_xd_file_no, 0, 0),
+       run_test_r0('exists_directory(/nonexistent/...) -> 0',
+                   test_xd_missing, 0, 0),
        format('--- M72 get_time/1 ---~n'),
        run_test_r0('get_time(_) succeeds -> 1',
                    test_get_time_succeeds, 0, 1),
