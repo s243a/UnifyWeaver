@@ -43,6 +43,11 @@ user:kedge(e, f).
 user:ktc(X, Y) :- kedge(X, Y).
 user:ktc(X, Y) :- kedge(X, Z), ktc(Z, Y).
 
+% transitive_distance3: shortest-path distance over the same edges.
+:- dynamic user:ktd/3.
+user:ktd(X, Y, 1) :- kedge(X, Y).
+user:ktd(X, Y, D) :- kedge(X, Z), ktd(Z, Y, D1), D is D1 + 1.
+
 % ============================================================
 % Structural suite (always runs)
 % ============================================================
@@ -53,6 +58,13 @@ test(detects_transitive_closure2) :-
     collect_clauses(ktc, 2, Clauses),
     detect_recursive_kernel(ktc, 2, Clauses, Kernel),
     assertion(Kernel = recursive_kernel(transitive_closure2, ktc/2, _)),
+    Kernel = recursive_kernel(_, _, Cfg),
+    assertion(memberchk(edge_pred(kedge/2), Cfg)).
+
+test(detects_transitive_distance3) :-
+    collect_clauses(ktd, 3, Clauses),
+    detect_recursive_kernel(ktd, 3, Clauses, Kernel),
+    assertion(Kernel = recursive_kernel(transitive_distance3, ktd/3, _)),
     Kernel = recursive_kernel(_, _, Cfg),
     assertion(memberchk(edge_pred(kedge/2), Cfg)).
 
@@ -70,6 +82,23 @@ test(kernel_mode_emits_handler_and_stub) :-
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ktc\", 2)")),
         assertion(sub_string(Src, _, _, _, "collectBinarySolutions(sharedProgram, \"kedge/2\")")),
         % edge predicate is still compiled (has a dispatch entry, not foreign).
+        assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
+        delete_directory_and_contents(Dir)
+    )).
+
+% transitive_distance3 kernel mode: ktd becomes a CallForeign stub backed
+% by a native BFS-with-distance handler that binds register 3 (distance).
+test(distance_kernel_emits_handler_and_stub) :-
+    once((
+        ktmp('tmp_scala_knd', Dir),
+        write_wam_scala_project(
+            [user:ktd/3, user:kedge/2],
+            [ package('kd.core'), runtime_package('kd.core'),
+              module_name('kd'), kernel_dispatch(true) ],
+            Dir),
+        kprogram_source(Dir, 'kd.core', Src),
+        assertion(sub_string(Src, _, _, _, "CallForeign(\"ktd\", 3)")),
+        assertion(sub_string(Src, _, _, _, "3 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
     )).
@@ -111,6 +140,20 @@ test(transitive_closure_parity,
     ksame(Run, 'ktc/2', [b,a], "false"),
     ksame(Run, 'ktc/2', [e,d], "false"),
     ksame(Run, 'ktc/2', [c,f], "false").
+
+% transitive_distance3: tree graph so each reachable node has a single
+% path length, hence kernel (shortest distance) and interpreter agree.
+test(transitive_distance_parity,
+     [setup(kbuild_both([user:ktd/3, user:kedge/2], 'gen.ktd', Run)),
+      cleanup(kcleanup(Run))]) :-
+    ksame(Run, 'ktd/3', [a,b,'1'], "true"),
+    ksame(Run, 'ktd/3', [a,c,'2'], "true"),
+    ksame(Run, 'ktd/3', [a,d,'3'], "true"),
+    ksame(Run, 'ktd/3', [a,e,'1'], "true"),
+    ksame(Run, 'ktd/3', [a,f,'2'], "true"),
+    ksame(Run, 'ktd/3', [b,d,'2'], "true"),
+    ksame(Run, 'ktd/3', [a,d,'2'], "false"),
+    ksame(Run, 'ktd/3', [a,c,'3'], "false").
 
 :- end_tests(wam_scala_kernels_runtime).
 
