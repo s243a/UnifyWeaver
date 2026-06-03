@@ -371,6 +371,43 @@ that the search wasn't actually traversing. **With proper subgraph
 scoping the routing correction becomes unnecessary**: the topical
 b_eff = 9.59 already matches empirical without it.
 
+### 4.6 Geometric-vs-metric decoupling (task #15, 2026-06-02)
+
+Direct measurement of mean undirected pair distance in the
+Articles topical subgraph: **7.30** (1000 random pairs,
+restricted to in-subgraph paths). This matches the standard
+small-world prediction `log(N)/log(D) ≈ 7.09` within 3%. The
+topical core is **geometrically small-world**, not tree-like
+(tree prediction would be ~14) and not ultra-small-world
+(log log N ≈ 2.4).
+
+Yet **TLI ≈ 0.02% (per §4.1)** — the metric is tree-like on the
+same graph.
+
+**These two regime classifications coexist**: a graph that is
+geometrically small-world (abundant cross-paths,
+`L ≈ log(N)`) is metrically tree-like (those cross-paths
+contribute negligibly to `d_wPow` after weighting). The metric
+weighting `(1/(b_eff·D))^M` does the work that the geometry
+doesn't — crushing M ≥ 1 path contributions to negligibility
+despite their geometric abundance.
+
+This is the cleanest empirical evidence to date for the theory
+doc's central claim that geometric tree-shape is not required for
+metric-tree-likeness; calibration honesty on a homogeneous
+subgraph is what matters.
+
+**Admin-shortcut effect.** When BFS is allowed to leak through
+parent edges that exit the Articles subtree, mean pair distance
+drops from 7.30 to 3.92 — a factor-2 shortcut effect from admin-
+hub routing. This is the geometric-side analogue of §4.5's
+calibration-side inhomogeneity finding. 27% of parent edges from
+reachable nodes point outside the Articles subtree.
+
+See `docs/reports/topical_geometric_regime_simplewiki.md` for the
+full measurement methodology, regime fit table, and reproducibility
+instructions.
+
 ## 5. Open questions
 
 ### 5.1 Sufficient conditions
