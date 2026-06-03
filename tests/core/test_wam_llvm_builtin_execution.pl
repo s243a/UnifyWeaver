@@ -2459,6 +2459,45 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M75: rename_file/2 + delete_directory/1 -- libc rename + rmdir.
+
+:- dynamic test_rnf_basic/2.
+test_rnf_basic(_, R) :-
+    % Make a directory we can write a sentinel file into, rename it,
+    % then check both old-name absence and new-name presence. Pre-clean
+    % via best-effort delete (ignored if missing).
+    ( delete_directory('/tmp/uw_m75_rnf_dst') ; true ),
+    ( delete_directory('/tmp/uw_m75_rnf_src') ; true ),
+    make_directory('/tmp/uw_m75_rnf_src'),
+    rename_file('/tmp/uw_m75_rnf_src', '/tmp/uw_m75_rnf_dst'),
+    exists_directory('/tmp/uw_m75_rnf_dst'),
+    \+ exists_directory('/tmp/uw_m75_rnf_src'),
+    R is 1.   % 1
+
+:- dynamic test_rnf_fail_missing/2.
+test_rnf_fail_missing(_, R) :-
+    % Source doesn''t exist -> ENOENT.
+    ( rename_file('/nonexistent/source/foo', '/tmp/uw_m75_target') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ddr_basic/2.
+test_ddr_basic(_, R) :-
+    % Roundtrip: create then delete, verify gone.
+    ( delete_directory('/tmp/uw_m75_ddr_test') ; true ),
+    make_directory('/tmp/uw_m75_ddr_test'),
+    delete_directory('/tmp/uw_m75_ddr_test'),
+    \+ exists_directory('/tmp/uw_m75_ddr_test'),
+    R is 1.   % 1
+
+:- dynamic test_ddr_fail_missing/2.
+test_ddr_fail_missing(_, R) :-
+    % Path doesn''t exist -> ENOENT.
+    ( delete_directory('/nonexistent/dir/qqq') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ddr_fail_file/2.
+test_ddr_fail_file(_, R) :-
+    % rmdir() refuses non-directories (ENOTDIR).
+    ( delete_directory('/etc/hostname') -> R is 1 ; R is 0 ).   % 0
+
 % M74: delete_file/1 + make_directory/1 -- libc unlink + mkdir.
 
 :- dynamic test_mkd_basic/2.
@@ -4235,6 +4274,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M75 rename_file/2 + delete_directory/1 ---~n'),
+       run_test_r0('rename_file(src, dst) roundtrip -> 1',
+                   test_rnf_basic, 0, 1),
+       run_test_r0('rename_file(/nonexistent, ...) -> 0',
+                   test_rnf_fail_missing, 0, 0),
+       run_test_r0('delete_directory roundtrip -> 1',
+                   test_ddr_basic, 0, 1),
+       run_test_r0('delete_directory(/nonexistent/...) -> 0',
+                   test_ddr_fail_missing, 0, 0),
+       run_test_r0('delete_directory(/etc/hostname) file -> 0',
+                   test_ddr_fail_file, 0, 0),
        format('--- M74 delete_file/1 + make_directory/1 ---~n'),
        run_test_r0('make_directory + exists_directory roundtrip -> 1',
                    test_mkd_basic, 0, 1),

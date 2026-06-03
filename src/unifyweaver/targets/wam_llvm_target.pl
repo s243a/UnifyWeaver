@@ -1457,7 +1457,9 @@ declare i32 @putchar(i32)
 declare i64 @time(i64*)
 declare i32 @stat(i8*, i8*)
 declare i32 @unlink(i8*)
-declare i32 @mkdir(i8*, i32)'
+declare i32 @mkdir(i8*, i32)
+declare i32 @rename(i8*, i8*)
+declare i32 @rmdir(i8*)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3495,6 +3497,8 @@ entry:
     i32 92, label %builtin_exists_directory
     i32 93, label %builtin_delete_file
     i32 94, label %builtin_make_directory
+    i32 95, label %builtin_rename_file
+    i32 96, label %builtin_delete_directory
   ]
 
 builtin_is:
@@ -4455,6 +4459,54 @@ mkd.mkdir:
   %mkd.ret = call i32 @mkdir(i8* %mkd.path, i32 493)
   %mkd.ok = icmp eq i32 %mkd.ret, 0
   ret i1 %mkd.ok
+
+builtin_rename_file:
+  ; M75: rename_file(+Old, +New) -- both atoms. Calls libc
+  ; rename(old, new); succeeds iff rename returns 0.
+  %rnf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rnf.t1 = extractvalue %Value %rnf.a1, 0
+  %rnf.a1_atom = icmp eq i32 %rnf.t1, 0
+  br i1 %rnf.a1_atom, label %rnf.chk2, label %rnf.fail
+rnf.fail:
+  ret i1 false
+rnf.chk2:
+  %rnf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rnf.t2 = extractvalue %Value %rnf.a2, 0
+  %rnf.a2_atom = icmp eq i32 %rnf.t2, 0
+  br i1 %rnf.a2_atom, label %rnf.go, label %rnf.fail
+rnf.go:
+  %rnf.aid1 = extractvalue %Value %rnf.a1, 1
+  %rnf.old = call i8* @wam_atom_to_string(i64 %rnf.aid1)
+  %rnf.old_null = icmp eq i8* %rnf.old, null
+  br i1 %rnf.old_null, label %rnf.fail, label %rnf.go2
+rnf.go2:
+  %rnf.aid2 = extractvalue %Value %rnf.a2, 1
+  %rnf.new = call i8* @wam_atom_to_string(i64 %rnf.aid2)
+  %rnf.new_null = icmp eq i8* %rnf.new, null
+  br i1 %rnf.new_null, label %rnf.fail, label %rnf.do
+rnf.do:
+  %rnf.ret = call i32 @rename(i8* %rnf.old, i8* %rnf.new)
+  %rnf.ok = icmp eq i32 %rnf.ret, 0
+  ret i1 %rnf.ok
+
+builtin_delete_directory:
+  ; M75: delete_directory(+Path) -- atom Path. Calls libc rmdir(path);
+  ; succeeds iff rmdir returns 0 (target was an empty directory).
+  %ddr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ddr.t1 = extractvalue %Value %ddr.a1, 0
+  %ddr.is_atom = icmp eq i32 %ddr.t1, 0
+  br i1 %ddr.is_atom, label %ddr.go, label %ddr.fail
+ddr.fail:
+  ret i1 false
+ddr.go:
+  %ddr.aid = extractvalue %Value %ddr.a1, 1
+  %ddr.path = call i8* @wam_atom_to_string(i64 %ddr.aid)
+  %ddr.path_null = icmp eq i8* %ddr.path, null
+  br i1 %ddr.path_null, label %ddr.fail, label %ddr.rmdir
+ddr.rmdir:
+  %ddr.ret = call i32 @rmdir(i8* %ddr.path)
+  %ddr.ok = icmp eq i32 %ddr.ret, 0
+  ret i1 %ddr.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11031,6 +11083,8 @@ builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular fil
 builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
 builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
 builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
+builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
+builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

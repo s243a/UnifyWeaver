@@ -2067,6 +2067,8 @@ is_builtin_pred(exists_directory, 1).   % exists_directory(+Path).
 is_builtin_pred(directory_files, 2).    % directory_files(+Dir, -Files).
 is_builtin_pred(make_directory, 1).     % make_directory(+Path).
 is_builtin_pred(delete_file, 1).        % delete_file(+Path).
+is_builtin_pred(rename_file, 2).        % rename_file(+Old, +New).
+is_builtin_pred(delete_directory, 1).   % delete_directory(+Path).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
