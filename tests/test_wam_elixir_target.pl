@@ -2397,7 +2397,7 @@ test_findall_substrate_emits_aggregate_collect :-
         % values pass through unchanged, compound heap structures
         % become self-contained {:struct, ...} tuples that survive
         % backtrack's heap-rewind.
-        sub_string(S, _, _, _, 'raw = Map.get(state.regs, value_reg)'),
+        sub_string(S, _, _, _, 'raw = get_reg_raw(state, value_reg)'),
         sub_string(S, _, _, _, 'val = deep_copy_value(state, raw)'),
         % Must prepend (O(1)) to the nearest aggregate frame's accum.
         sub_string(S, _, _, _, '[val | prior]'),
