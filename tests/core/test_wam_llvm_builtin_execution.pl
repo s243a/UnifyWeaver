@@ -2472,8 +2472,8 @@ test_mkd_basic(_, R) :-
 
 :- dynamic test_mkd_fail_perm/2.
 test_mkd_fail_perm(_, R) :-
-    % /etc is not writable for normal users.
-    ( make_directory('/etc/uw_m74_protected_dir') -> R is 1 ; R is 0 ).   % 0
+    % /sys is locked down (EPERM/EROFS) even for root in typical containers.
+    ( make_directory('/sys/uw_m74_protected_dir') -> R is 1 ; R is 0 ).   % 0
 
 :- dynamic test_mkd_fail_parent/2.
 test_mkd_fail_parent(_, R) :-
@@ -4238,7 +4238,7 @@ test_all :-
        format('--- M74 delete_file/1 + make_directory/1 ---~n'),
        run_test_r0('make_directory + exists_directory roundtrip -> 1',
                    test_mkd_basic, 0, 1),
-       run_test_r0('make_directory(/etc/...) no permission -> 0',
+       run_test_r0('make_directory(/sys/...) no permission -> 0',
                    test_mkd_fail_perm, 0, 0),
        run_test_r0('make_directory(/nonexistent/...) missing parent -> 0',
                    test_mkd_fail_parent, 0, 0),
