@@ -298,6 +298,7 @@ struct WamState {
     double bidirectional_child_step_cost;
     double bidirectional_cost_budget;
     WamReverseCsrArtifact *bidirectional_child_csr;
+    void *bidirectional_min_distance_cache;
     WamCategoryIdEntry *category_ids;
     int category_id_count;
     int category_id_cap;

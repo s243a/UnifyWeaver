@@ -2341,6 +2341,8 @@ compile_wam_helpers_to_c(_Options, CCode) :-
 #include <limits.h>
 #include <unistd.h>
 
+static void wam_bidirectional_distance_cache_clear(WamState *state);
+
 void wam_state_init(WamState *state) {
     memset(state, 0, sizeof(WamState));
     state->H_cap = WAM_INITIAL_CAP;
@@ -2377,6 +2379,7 @@ void wam_free_state(WamState *state) {
     free(state->TR_array);
     free(state->B_array);
     free(state->E_array);
+    wam_bidirectional_distance_cache_clear(state);
     free(state->category_edges);
     free(state->category_edges_by_child);
     free(state->category_ids);
@@ -2677,6 +2680,7 @@ void wam_register_category_parent(WamState *state, const char *child, const char
     state->category_edges[state->category_edge_count].parent = wam_intern_atom(state, parent);
     state->category_edge_count++;
     state->category_child_index_dirty = true;
+    wam_bidirectional_distance_cache_clear(state);
 }
 
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent) {
@@ -2966,6 +2970,7 @@ void wam_register_category_id(WamState *state, const char *atom, int id) {
     for (int i = 0; i < state->category_id_count; i++) {
         if (strcmp(state->category_ids[i].atom, interned) == 0) {
             state->category_ids[i].id = id;
+            wam_bidirectional_distance_cache_clear(state);
             return;
         }
     }
@@ -2976,10 +2981,12 @@ void wam_register_category_id(WamState *state, const char *atom, int id) {
     state->category_ids[state->category_id_count].atom = interned;
     state->category_ids[state->category_id_count].id = id;
     state->category_id_count++;
+    wam_bidirectional_distance_cache_clear(state);
 }
 
 void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact) {
     state->bidirectional_child_csr = artifact;
+    wam_bidirectional_distance_cache_clear(state);
 }
 
 static int32_t wam_read_i32_le(const unsigned char *p) {
@@ -3518,6 +3525,12 @@ typedef struct {
     int count;
 } WamBidirectionalDistanceMap;
 
+typedef struct WamBidirectionalDistanceCacheEntry {
+    const char *root;
+    WamBidirectionalDistanceMap distances;
+    struct WamBidirectionalDistanceCacheEntry *next;
+} WamBidirectionalDistanceCacheEntry;
+
 typedef struct {
     const char **items;
     int count;
@@ -3747,6 +3760,47 @@ static bool wam_bidirectional_build_min_distances(WamState *state,
 
     wam_bidirectional_atom_queue_close(&queue);
     return true;
+}
+
+static void wam_bidirectional_distance_cache_clear(WamState *state) {
+    WamBidirectionalDistanceCacheEntry *entry =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    while (entry) {
+        WamBidirectionalDistanceCacheEntry *next = entry->next;
+        wam_bidirectional_distance_map_close(&entry->distances);
+        free(entry);
+        entry = next;
+    }
+    state->bidirectional_min_distance_cache = NULL;
+}
+
+static WamBidirectionalDistanceMap *wam_bidirectional_get_min_distances(
+        WamState *state,
+        const char *root) {
+    WamBidirectionalDistanceCacheEntry *entry =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    while (entry) {
+        if (strcmp(entry->root, root) == 0) {
+            return &entry->distances;
+        }
+        entry = entry->next;
+    }
+
+    WamBidirectionalDistanceCacheEntry *new_entry =
+        calloc(1, sizeof(WamBidirectionalDistanceCacheEntry));
+    if (!new_entry) return NULL;
+    new_entry->root = wam_intern_atom(state, root);
+    wam_bidirectional_distance_map_init(&new_entry->distances);
+    if (!wam_bidirectional_build_min_distances(
+            state, new_entry->root, &new_entry->distances)) {
+        wam_bidirectional_distance_map_close(&new_entry->distances);
+        free(new_entry);
+        return NULL;
+    }
+    new_entry->next =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    state->bidirectional_min_distance_cache = new_entry;
+    return &new_entry->distances;
 }
 
 static bool wam_bidirectional_can_reach_root_within_budget(
@@ -4037,10 +4091,9 @@ bool wam_collect_bidirectional_ancestor_hops(WamState *state,
         return wam_bidirectional_ancestor_results_push(results, 0, 0, 0);
     }
 
-    WamBidirectionalDistanceMap min_distances;
-    wam_bidirectional_distance_map_init(&min_distances);
-    if (!wam_bidirectional_build_min_distances(state, root, &min_distances)) {
-        wam_bidirectional_distance_map_close(&min_distances);
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) {
         return false;
     }
 
@@ -4048,8 +4101,7 @@ bool wam_collect_bidirectional_ancestor_hops(WamState *state,
     int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
     bool ok = wam_bidirectional_ancestor_dfs(state, cat, root, 0, max_depth,
                                              visited, visited_len, 0, 0, 0.0,
-                                             &min_distances, results);
-    wam_bidirectional_distance_map_close(&min_distances);
+                                             min_distances, results);
     return ok;
 }
 
