@@ -53,6 +53,14 @@ Environment knobs:
 | `CONFORMANCE_PROGRAMS=member,fib`  | limit which programs run |
 | `CONFORMANCE_SAMPLE=N`             | random N queries per program |
 | `CONFORMANCE_SEED=N`               | seed the sampler (reproducible) |
+| `UW_SMOKE_TMPDIR`, `TMPDIR`, `$PREFIX/tmp` | writable temp-root selection via `tests/helpers/smoke_paths.pl` |
+| `SCALA_MAVEN_ROOT` | optional root for Scala runtime jars when running generated Scala classes via `java -cp` |
+
+Scala builds still use `scalac`, but the harness runs generated Scala
+classes via `java -cp` when Scala 3 runtime jars are discoverable. This
+avoids Scala-CLI/JNA launcher failures on native Termux while preserving
+the legacy `scala -classpath ...` fallback for environments without a
+local Scala maven cache.
 
 Suggested CI tiers:
 
