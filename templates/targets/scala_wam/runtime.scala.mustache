@@ -267,7 +267,7 @@ final class LmdbFactSource(
   // 1 GiB, which is ample for typical fact relations.
   val mapSize: Long = 1073741824L
 ) {
-  require(arity == 2, "LmdbFactSource currently only supports arity=2")
+  require(arity >= 2, "LmdbFactSource requires arity >= 2")
 
   // Resolve lmdbjava classes via Class.forName so the runtime
   // compiles without lmdbjava on the classpath. Same indirection the
@@ -459,15 +459,28 @@ final class LmdbFactSource(
     case _            => None
   }
 
-  /** Build the bindings map for an arity-2 (key, value) pair. The
-   *  WAM register convention is reg1 = arg1, reg2 = arg2 for foreign
-   *  calls. Strings are interned (mutable intern table absorbs them
-   *  on first sight). */
-  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] =
-    Map(
-      1 -> (Atom(internTable.intern(key)): WamTerm),
-      2 -> (Atom(internTable.intern(value)): WamTerm)
-    )
+  /** Build the bindings map for one stored row. The LMDB key holds arg1;
+   *  the value holds args 2..N joined by a tab (`\t`), so for the arity-2
+   *  case the value is just arg2 (no tab) and this degenerates to the
+   *  original behaviour. The WAM register convention is reg_i = arg_i for
+   *  foreign calls. All parts are interned as atoms (the mutable intern
+   *  table absorbs them on first sight); numeric round-tripping therefore
+   *  uses the string form. */
+  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] = {
+    val b = scala.collection.mutable.Map[Int, WamTerm](1 -> (Atom(internTable.intern(key)): WamTerm))
+    if (arity <= 2) {
+      b(2) = Atom(internTable.intern(value))
+    } else {
+      // split with limit -1 so trailing empty fields are preserved
+      val parts = value.split("\t", -1)
+      var i = 0
+      while (i < parts.length && (i + 2) <= arity) {
+        b(i + 2) = Atom(internTable.intern(parts(i)))
+        i += 1
+      }
+    }
+    b.toMap
+  }
 }
 
 // ============================================================
