@@ -4656,12 +4656,40 @@ sides — the workloads match.
   16384.
 - ~~Give the kernel an L2~~ — already wired (`lmdbL2EdgeLookup`); the original
   premise was mistaken.
-- **The real lever**: skip / lazy-load the intern table in `int_atom_seeds_lmdb`
-  mode (it is int-keyed end-to-end here, so the 3.78M-entry table is dead
-  weight). Dropping it would cut RSS by ~3 GB, free page cache, and likely turn
-  the -N4 regression into real scaling. Larger Main.hs change with cross-mode
-  regression risk; deferred.
-- Re-run on a box with RAM headroom to separate the parallel-GC regression from
-  page-cache thrash.
+- **The real lever — DONE (631a7b8d)**: `lmdb_skip_intern_table(true)` skips
+  `loadInternTableFromLmdb` in `int_atom_seeds_lmdb` mode and falls back to
+  `compileTimeAtomTable` (all `extractDouble` needs; the table is int-keyed
+  end-to-end). Wired into matrix-bench `resident_cursor`. Result below.
+- Re-run on a box with RAM headroom to separate the residual parallel-GC
+  regression from page-cache thrash.
+
+### Result with the intern-table lever applied (2026-06-02)
+
+Same enwiki Articles fixture, `lmdb_skip_intern_table(true)`. Byte-stable
+`tuple_count=796,694`.
+
+| metric | before | after | Δ |
+| --- | ---: | ---: | --- |
+| load_ms          |  19,112 |     181 | 105× (no 3.78M-entry table load) |
+| query_ms -N1     | 270,039 | 210,969 | 1.28× faster |
+| query_ms -N4     | 427,151 | 236,480 | 1.81× faster |
+| RSS              | 3.79 GB | 3.20 GB | −0.6 GB |
+
+Cross-target, query_ms:
+
+| | -N1/-j1 | -N4/-j4 | scaling |
+| --- | ---: | ---: | ---: |
+| Rust `cached`                          | 135,587 | 37,707 | **3.60×** |
+| Haskell `resident_cursor` + skip-intern | 210,969 | 236,480 | **0.89× (mild regress)** |
+
+**Verdict**: the lever is a real Haskell win (1.3–1.8× faster, 105× faster
+load) and shrinks the -N4 parallel regression from 1.58× to 1.12× slowdown —
+but Haskell still does **not** positively scale at -N4. The residual cause is
+GHC parallel GC (RSS still 3.2 GB / 5 GB; the intern table was only ~0.6 GB of
+it — the rest is the 796k-node demand-set IntSet, the L2 array, and -A64M×4 HEC
+nurseries). Rust still wins on both absolute single-thread (135 vs 211 ms-k)
+and scaling (3.60× vs 0.89×). The honest conclusion: on this memory-constrained
+box, Rust's compact footprint lets seed-parallelism scale where Haskell's
+parallel GC cannot — the language runtimes, not the algorithm, decide it here.
 
 
