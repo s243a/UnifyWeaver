@@ -261,9 +261,13 @@ final class LmdbFactSource(
   val dbName: String = "",
   val arity: Int = 2,
   val dupsort: Boolean = false,
-  internTable: InternTable
+  internTable: InternTable,
+  // Maximum LMDB map size in bytes (virtual; not eagerly allocated). Must
+  // be >= the size the env was created with by the writer. Defaults to
+  // 1 GiB, which is ample for typical fact relations.
+  val mapSize: Long = 1073741824L
 ) {
-  require(arity == 2, "LmdbFactSource currently only supports arity=2")
+  require(arity >= 2, "LmdbFactSource requires arity >= 2")
 
   // Resolve lmdbjava classes via Class.forName so the runtime
   // compiles without lmdbjava on the classpath. Same indirection the
@@ -283,8 +287,20 @@ final class LmdbFactSource(
 
   private def openEnv(): AnyRef = {
     val builder = envClass.getMethod("create").invoke(null)
-    val openMethod = builder.getClass.getMethod("open", classOf[java.io.File])
-    openMethod.invoke(builder, new java.io.File(envPath)).asInstanceOf[AnyRef]
+    // lmdbjava (0.9.x) requires the map size to be set before open; it is
+    // the maximum virtual size of the memory map (not eagerly allocated).
+    // Must be >= the size the writer created the env with.
+    builder.getClass.getMethod("setMapSize", java.lang.Long.TYPE)
+           .invoke(builder, java.lang.Long.valueOf(mapSize))
+    builder.getClass.getMethod("setMaxReaders", java.lang.Integer.TYPE)
+           .invoke(builder, java.lang.Integer.valueOf(126))
+    // Env.Builder.open(File, EnvFlags...) — pass an empty EnvFlags array so
+    // the path is treated as a directory containing data.mdb/lock.mdb.
+    val envFlagsClass = lmdbClass("EnvFlags")
+    val emptyEnvFlags = java.lang.reflect.Array.newInstance(envFlagsClass, 0)
+    val openMethod = builder.getClass.getMethod("open",
+      classOf[java.io.File], emptyEnvFlags.getClass)
+    openMethod.invoke(builder, new java.io.File(envPath), emptyEnvFlags).asInstanceOf[AnyRef]
   }
 
   private def openDbi(envInst: AnyRef): AnyRef = {
@@ -298,8 +314,11 @@ final class LmdbFactSource(
       } else {
         java.lang.reflect.Array.newInstance(flagsClass, 0).asInstanceOf[AnyRef]
       }
+    // An empty dbName means the unnamed/default database (lmdbjava takes a
+    // null name for it); a non-empty name opens that named DBI.
+    val nameArg: String = if (dbName == null || dbName.isEmpty) null else dbName
     val openDbi = envClass.getMethod("openDbi", classOf[String], flagArrType)
-    openDbi.invoke(envInst, dbName, flagsArr).asInstanceOf[AnyRef]
+    openDbi.invoke(envInst, nameArg, flagsArr).asInstanceOf[AnyRef]
   }
 
   /** Full scan via cursor first/next. Used when the caller wants
@@ -329,11 +348,11 @@ final class LmdbFactSource(
         try cursorSeekAndCollectDupSort(cursor, keyStr)
         finally closeCursor(cursor)
       } else {
-        // Unique key path — Txn.get is the safe single-shot lookup.
+        // Unique key path — Dbi.get(txn, key) is the safe single-shot lookup.
         val keyBuf = bufferFromString(keyStr)
-        val getMethod = txnClass.getMethod("get",
-          dbiClass, classOf[java.nio.ByteBuffer])
-        val valBuf = getMethod.invoke(txn, dbi, keyBuf)
+        // Dbi.get(Txn, T): the T parameter erases to Object at runtime.
+        val getMethod = dbiClass.getMethod("get", txnClass, classOf[Object])
+        val valBuf = getMethod.invoke(dbi, txn, keyBuf)
         if (valBuf == null) Seq.empty
         else Seq(tupleToBindings(keyStr, bufferToString(valBuf.asInstanceOf[java.nio.ByteBuffer])))
       }
@@ -392,7 +411,7 @@ final class LmdbFactSource(
 
   private def cursorSeekAndCollectDupSort(cursor: AnyRef, key: String): Seq[Map[Int, WamTerm]] = {
     val keyBuf = bufferFromString(key)
-    val getM = cursorClass.getMethod("get", classOf[java.nio.ByteBuffer], seekOpClass)
+    val getM = cursorClass.getMethod("get", classOf[Object], seekOpClass)
     val mdbSet     = seekOpClass.getField("MDB_SET").get(null)
     val mdbNextDup = seekOpClass.getField("MDB_NEXT_DUP").get(null)
     val keyM = cursorClass.getMethod("key")
@@ -440,15 +459,28 @@ final class LmdbFactSource(
     case _            => None
   }
 
-  /** Build the bindings map for an arity-2 (key, value) pair. The
-   *  WAM register convention is reg1 = arg1, reg2 = arg2 for foreign
-   *  calls. Strings are interned (mutable intern table absorbs them
-   *  on first sight). */
-  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] =
-    Map(
-      1 -> (Atom(internTable.intern(key)): WamTerm),
-      2 -> (Atom(internTable.intern(value)): WamTerm)
-    )
+  /** Build the bindings map for one stored row. The LMDB key holds arg1;
+   *  the value holds args 2..N joined by a tab (`\t`), so for the arity-2
+   *  case the value is just arg2 (no tab) and this degenerates to the
+   *  original behaviour. The WAM register convention is reg_i = arg_i for
+   *  foreign calls. All parts are interned as atoms (the mutable intern
+   *  table absorbs them on first sight); numeric round-tripping therefore
+   *  uses the string form. */
+  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] = {
+    val b = scala.collection.mutable.Map[Int, WamTerm](1 -> (Atom(internTable.intern(key)): WamTerm))
+    if (arity <= 2) {
+      b(2) = Atom(internTable.intern(value))
+    } else {
+      // split with limit -1 so trailing empty fields are preserved
+      val parts = value.split("\t", -1)
+      var i = 0
+      while (i < parts.length && (i + 2) <= arity) {
+        b(i + 2) = Atom(internTable.intern(parts(i)))
+        i += 1
+      }
+    }
+    b.toMap
+  }
 }
 
 // ============================================================

@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Scala target: arity-N LMDB fact sources.** The `lmdb(...)`
+  fact-source backend, previously arity-2 only, now supports any arity
+  ≥ 2: the LMDB key holds arg1 and the value holds args 2..N tab-joined,
+  which `LmdbFactSource` splits back into registers 2..N (arity-2 is the
+  no-tab degenerate case, unchanged). The codegen handler clause and the
+  runtime drop the arity-2 restriction. `tests/test_wam_scala_lmdb_runtime_smoke.pl`
+  gains a gated arity-3 end-to-end test (seed `k → a<TAB>b` → query the
+  triple).
+
+### Fixed
+- **WAM Scala target: LMDB fact source now actually works (Phase S8).**
+  The arity-2 `lmdb(...)` fact-source adaptor and its runtime test had
+  never been able to run; validating them end-to-end (with `lmdbjava`
+  0.9.0) surfaced and fixed several latent bugs:
+  - `write_runtime_source/3` placed `WamRuntime` in the program's
+    `package` but `GeneratedProgram` imports it from `runtime_package` —
+    so whenever the two differ, including the **default options**
+    (`…core` vs `…runtime`), the generated project failed to compile.
+    All prior tests happened to pass the same package for both, hiding it.
+    Now placed in `runtime_package`.
+  - The LMDB runtime test's gate (`getenv('SCALA_LMDB_TESTS', "1")`) could
+    never be true (`getenv/2` yields an atom, never the string `"1"`), so
+    the test was permanently skipped. Gate now keys on the variable's
+    presence.
+  - `LmdbFactSource` reflection was written against a different lmdbjava
+    API: fixed `Env.Builder.open(File, EnvFlags…)` + `setMapSize`/
+    `setMaxReaders`, `Dbi.get(Txn, key)` (was `Txn.get`), `Cursor.get`,
+    generic-erasure parameter types (`Object`, not `ByteBuffer`), and
+    default/unnamed-DB handling; added a configurable `mapSize` (default
+    1 GiB). The end-to-end LMDB smoke test (seed → read → query) now
+    passes.
+  - Documented the JDK 16+ module flags lmdbjava requires
+    (`--add-opens java.base/java.nio` and
+    `--add-exports java.base/sun.nio.ch`).
+
+### Added
 - **WAM Scala target: execution-mode benchmark** — new
   `tests/benchmarks/wam_scala_mode_bench.pl` compares the interpreter,
   lowered (`emit_mode(functions)`), and kernel (`kernel_dispatch(true)`)

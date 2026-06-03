@@ -1063,7 +1063,8 @@ fact_source_spec_to_handler_code(2, grouped_by_first(Path), Code) :-
     format(string(Code),
            "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if internTable.isInRange(id) => Some(internTable.stringOf(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [PathLit]).
-fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
+fact_source_spec_to_handler_code(Arity, lmdb(SpecOpts), Code) :-
+    integer(Arity), Arity >= 2,
     !,
     is_list(SpecOpts),
     option(env_path(EnvPath), SpecOpts),
@@ -1078,10 +1079,12 @@ fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
     % LmdbFactSource (constructed at handler-instance init) and
     % dispatches to lookupByArg1 if arg1 is ground, streamAll
     % otherwise. Same shape as the Elixir adaptor's open/3 +
-    % lookup_by_arg1/3 + stream_all/2 callback split.
+    % lookup_by_arg1/3 + stream_all/2 callback split. For arity > 2 the
+    % LMDB value holds args 2..N tab-joined; LmdbFactSource splits them
+    % back out into registers 2..N.
     format(string(Code),
-           "new ForeignHandler {\n      private val source: LmdbFactSource = new LmdbFactSource(\n        envPath = ~w,\n        dbName  = ~w,\n        arity   = 2,\n        dupsort = ~w,\n        internTable = internTable\n      )\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = args(0) match {\n          case Atom(_) | IntTerm(_) | FloatTerm(_) => source.lookupByArg1(args(0))\n          case _                                   => source.streamAll()\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
-           [EnvPathLit, DbNameLit, DupsortLit]).
+           "new ForeignHandler {\n      private val source: LmdbFactSource = new LmdbFactSource(\n        envPath = ~w,\n        dbName  = ~w,\n        arity   = ~w,\n        dupsort = ~w,\n        internTable = internTable\n      )\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = args(0) match {\n          case Atom(_) | IntTerm(_) | FloatTerm(_) => source.lookupByArg1(args(0))\n          case _                                   => source.streamAll()\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EnvPathLit, DbNameLit, Arity, DupsortLit]).
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
 %  The solutions Seq is hoisted to a `val` on the anonymous class so it
@@ -1202,11 +1205,17 @@ write_build_properties(ProjectDir) :-
     directory_file_path(ProjDir, 'build.properties', Path),
     write_file(Path, Content).
 
-write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
+% WamRuntime is placed in the runtime_package, which GeneratedProgram imports
+% (`import <runtime_package>.WamRuntime._`). Previously this used Package
+% (the program's package) and ignored RuntimePkg, so whenever the two
+% differed — including the DEFAULT options (core vs runtime) — the generated
+% program failed to compile ("value runtime is not a member of ..."). All the
+% smoke/kernel tests happened to pass the same package for both, hiding it.
+write_runtime_source(ProjectDir, _Package, RuntimePkg) :-
     find_template('templates/targets/scala_wam/runtime.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
-    render_template(Template, ['package'=Package, 'date'=DateStr], Content),
-    scala_source_path(ProjectDir, Package, 'WamRuntime', Path),
+    render_template(Template, ['package'=RuntimePkg, 'date'=DateStr], Content),
+    scala_source_path(ProjectDir, RuntimePkg, 'WamRuntime', Path),
     make_directory_path_for(Path),
     write_file(Path, Content).
 
