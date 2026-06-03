@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cross-target audit: WAM first-argument-indexing instruction handlers**
+  (`docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`). After fixing the Scala
+  `switch_on_*_a2` / `_fallthrough` gap, audited all WAM targets for the
+  same gap and — crucially — quantified the *actual* correctness impact:
+  first-arg indexing is an optimization, so a target that **drops** an
+  unhandled switch instruction (Python/Go/Rust/R/Lua) stays correct (just
+  unoptimised; confirmed by running `member/2` on the Python target),
+  while only targets whose catch-all emits a **harmful** instruction
+  (haskell → `Proceed`, elixir main path → `:fail`, wat → `allocate`,
+  jvm → `ldc`) actually mis-execute indexed predicates. The doc gives the
+  coverage matrix, the drop-vs-harmful classification with file:line
+  evidence, and a prioritised fix plan (harmful-catch-all targets first).
 - **WAM Scala target: arity-N LMDB fact sources.** The `lmdb(...)`
   fact-source backend, previously arity-2 only, now supports any arity
   ≥ 2: the LMDB key holds arg1 and the value holds args 2..N tab-joined,
