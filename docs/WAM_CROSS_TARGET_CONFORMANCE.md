@@ -89,10 +89,73 @@ it unexpectedly matches). `ct_skip/2` = do not even build, because
 
 ## Adding more backends
 
-Targets with real toolchains that are not yet wired up (haskell, rust,
-go, cpp, c, fsharp, lua, r, clojure, llvm) each already have a
-`write_wam_<target>_project/3` and a per-target runtime test
-demonstrating how to compile+run. Wiring one in = a `ct_build/ct_run/
-ct_teardown` adapter mirroring the Scala (direct-arg) or Elixir/WAT
-(0-arity wrapper) shape, plus a `conformance_target/1` line and a
-toolchain probe.
+Each remaining backend already has a `write_wam_<target>_project/3` and a
+per-target runtime test showing how to compile+run. Wiring one in is a
+`ct_build/4` + `ct_run/5` + `ct_teardown/2` adapter, a
+`conformance_target/1` (+ `ct_default_target/1`) entry, and a
+`ct_toolchain/2` probe.
+
+### The invocation style is the hard part
+
+Scala and Elixir were cheap to add because each ships a **query driver**
+that takes `<predkey> <args>` (scala) or runs a named predicate
+(elixir's `run_classic.exs`). The remaining native backends do **not**:
+`write_wam_<target>_project/3` emits a *library* exporting one boolean
+function per predicate (e.g. Rust/Go/C/C++ `fn pred(args) -> bool`), or a
+runtime you drive by label (Haskell's
+`run :: WamContext -> WamState -> Maybe WamState`). So each needs a
+**hand-written driver** that turns "does `pred(args)` hold?" into
+true/false — and that driver is itself a piece of code with its own
+correctness pitfalls. Budget per-backend *investigation*, not a quick
+loop.
+
+Project-gen + run contract per backend (toolchains present in the audit
+env: ghc/cabal, cargo, go, g++/clang, gcc):
+
+| Backend | Project-gen | Toolchain | What it produces | Driver you must supply |
+|---|---|---|---|---|
+| haskell | `write_wam_haskell_project/3` (opts `module_name`, `use_hashmap(false)`) | cabal | `Main.hs`/`WamRuntime.hs`/`Predicates.hs` (exports `allCode`, `allLabels`, `compileTimeAtomTable`, `mkContext`); `run` is by-label | Replace `Main.hs` with a driver: `mkContext allCode allLabels` (+ `wcInternTable=compileTimeAtomTable`, `wcLoweredPredicates=Lowered.loweredPredicates`), `emptyState{wsPC=lookup key allLabels}`, `run ctx s0` → Just/Nothing. `cabal run -v0 <exe> -- <key>`. |
+| rust | `write_wam_rust_project/3` | cargo | `lib.rs` exporting `pub fn <pred>(..) -> bool` | a `main.rs`/bin that calls the wrapper fn and prints |
+| go | `write_wam_go_project/3` (`package_name`, `parallel`) | go | lib exporting `func Pred(..) bool` (or `main.go` if `package_name=main`) | a `main` that calls the wrapper fn |
+| cpp | `write_wam_cpp_project/3` | g++/clang++ | `generated.cpp/.hpp` with per-pred methods | a `main.cpp` calling the method |
+| c | `write_wam_c_project/3` | gcc/clang | `wam_runtime.c`/`lib.c` + `wam_run_predicate(state,"pred/arity",..)` | a `main.c` calling `wam_run_predicate` |
+
+For all of them the **0-arity wrapper** shape (as used by Elixir/WAT)
+generalises: synthesise `ctw_N :- pred(args).`, compile it with the
+program, and have the driver ask whether `ctw_N` succeeds.
+
+### Prototype finding: Haskell (not landed)
+
+A throwaway Haskell adapter was prototyped. The driver above **compiles
+and runs**, and discriminates correctly on arithmetic (`fib(10,55)`→true,
+`fib(10,54)`→false, `ack` true/false both right). But via realistic
+wrapper invocation it reports many wrong answers — including
+**`cbi_eq(foo)`→false**, i.e. `foo = foo` is false. That is trivially
+impossible for a correct backend, so the minimal driver almost certainly
+has an **atom-interning mismatch** (atoms built in the wrapper don't
+intern to the same ids as atoms in the clause bodies, so unification
+spuriously fails). The Haskell adapter was therefore **not committed** —
+a backend adapter on top of an untrustworthy driver would produce
+meaningless xfails.
+
+Open questions a future Haskell adapter must resolve first:
+- Wire the driver's intern table exactly as the generated `Main.hs` does
+  (it extends `compileTimeAtomTable` with runtime atoms via
+  `internAtom`); `mkContext`'s default table is likely not what the
+  compiled code expects.
+- Re-confirm `member/2` on the **heap-cons** list path. The PR #2708
+  Haskell indexing fix was validated by injecting the list as a `VList`
+  straight into a register; realistic programs build the list as a heap
+  cons cell. Whether `member(z,[a,b,c])` is correct on that path was not
+  established here (the interning bug masks it). This is worth checking
+  independently of the harness.
+
+### Cross-cutting observation
+
+The divergences the harness has found so far cluster around **matching /
+unifying heap-built compound terms**: WAT (read-mode structure unify
+unimplemented), Elixir (constructed list vs ground compound head arg),
+and the suspected Haskell path all live here. If that turns out to be one
+shared weakness in the lowering rather than N independent backend bugs,
+fixing it once would move several backends toward conformance at the same
+time — a higher-leverage option than wiring up adapters one by one.
