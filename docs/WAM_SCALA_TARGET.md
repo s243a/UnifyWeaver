@@ -330,18 +330,22 @@ generated handler re-reads the CSV on every call.
   be in the intern table (immutable `WamProgram.internTable`).
 - No `assert/retract`, `format/2`, `write/1`, `read/1`, or other
   side-effecting builtins.
-- LMDB-backed sidecar fact sources are supported for **arity-2**
-  relations via `scala_fact_sources([source(P/2, lmdb([env_path(...),
-  dbi(...), dupsort(...)]))])` (see below). Higher arities still fall
-  back to inline/CSV sources.
+- LMDB-backed sidecar fact sources are supported for **any arity ≥ 2**
+  via `scala_fact_sources([source(P/N, lmdb([env_path(...), dbi(...),
+  dupsort(...)]))])` (see below).
 - Float arithmetic is `Double` only; rationals and bigints aren't
   supported.
 
 ## LMDB fact sources (Phase S8)
 
-Arity-2 fact relations can be backed by a memory-mapped LMDB database
-instead of inline tuples or CSV — the materialisation answer for large
-relations (>100k facts), mirroring the Haskell/Clojure targets.
+Fact relations of **any arity ≥ 2** can be backed by a memory-mapped
+LMDB database instead of inline tuples or CSV — the materialisation
+answer for large relations (>100k facts), mirroring the Haskell/Clojure
+targets. The LMDB key holds the first argument; the value holds the
+remaining arguments joined by a tab (`\t`), which `LmdbFactSource`
+splits back out into registers 2..N. For the common arity-2 (edge)
+relation the value is simply arg2. Use `dupsort(true)` for
+multiple-valued keys (the cursor walks all values for a key).
 
 ```prolog
 write_wam_scala_project([user:edge/2],

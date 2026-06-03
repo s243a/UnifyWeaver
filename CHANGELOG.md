@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **WAM Scala target: arity-N LMDB fact sources.** The `lmdb(...)`
+  fact-source backend, previously arity-2 only, now supports any arity
+  ≥ 2: the LMDB key holds arg1 and the value holds args 2..N tab-joined,
+  which `LmdbFactSource` splits back into registers 2..N (arity-2 is the
+  no-tab degenerate case, unchanged). The codegen handler clause and the
+  runtime drop the arity-2 restriction. `tests/test_wam_scala_lmdb_runtime_smoke.pl`
+  gains a gated arity-3 end-to-end test (seed `k → a<TAB>b` → query the
+  triple).
+
 ### Fixed
 - **WAM Scala target: LMDB fact source now actually works (Phase S8).**
   The arity-2 `lmdb(...)` fact-source adaptor and its runtime test had
