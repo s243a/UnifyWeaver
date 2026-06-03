@@ -4512,4 +4512,144 @@ The Haskell `lmdb` package is no longer in the current Hackage index
 `packages:` entry, then built with `cabal new-build` (v2; bare `cabal build`
 on cabal 2.4 is legacy-v1 and ignores `cabal.project`).
 
+## Phase R appendix #17: Rust seed-level Rayon parallelism — scaling on the enwiki Articles subgraph (2026-06-01)
+
+Appendices #15/#16 established single-thread parity (Rust `cached` ≈ Haskell
+`resident_cursor`). This appendix parallelises the Rust `category_ancestor`
+matrix bench across seeds and measures core-scaling.
+
+### Implementation
+
+The native `category_ancestor` kernel is `&self` — read-only over the eager
+`ffi_facts` adjacency, or over the `Send + Sync` lazy/cached `LookupSource`
+whose LMDB reads use a **per-worker thread-local read txn** (env opened
+`NOTLS`, leaked `'static` handle; the cache is sharded `Mutex<CacheShard>`).
+So each seed query is independent. The serial seed loop in both matrix-bench
+mains (TSV + LMDB) was replaced with a Rayon `par_iter` over **pre-interned**
+seed ids, sharing `&vm` and the once-resolved `EdgeAccessor` across workers.
+The WAM-fallback path (mutates `vm` per seed) stays serial.
+
+- `WAM_THREADS` pins the pool (`build_global`); unset = all cores
+  (`RAYON_NUM_THREADS` also honoured).
+- `parallel(true)` promotes `rayon` from an optional dep to a hard dep in the
+  generated `Cargo.toml`.
+- The whole stack was already parallel-ready from the cursor-reuse work
+  (`WamState: Send + Sync`, NOTLS txns, sharded cache); this was wiring only.
+
+### Setup
+
+Closed Articles-rooted **enwiki** subgraph, rebuilt from the existing
+`enwiki_cats` resident LMDB (9.93M edges) by BFS-ing the subtree of the
+densest root (`id=97688913`, the `Main_topic_classifications`-style hub) down
+`category_child` to depth 10, then using the **subtree categories themselves
+as seeds** so every seed traverses to the root. 796,695 seeds. Builder:
+`data/benchmark/build_articles_subgraph.py` (untracked). Box: 8 cores / 5 GB.
+Mode: `lmdb_materialisation(cached)`. `max_depth=10`.
+
+### Result (warm page-cache; `query_ms` = the parallel seed loop only)
+
+| threads | query_ms | speedup | tuple_count |
+| ---: | ---: | ---: | ---: |
+| 1 | 135,587 | 1.00× | 796,693 |
+| 4 |  37,707 | **3.60×** | 796,693 |
+| 8 |  35,680 | 3.80× | 796,693 |
+
+Byte-stable output (`tuple_count=796,693`) across every thread count —
+correctness holds at scale. ~3.6× at 4 threads (90% efficiency), plateauing
+by 8 (LMDB-cursor + cache-shard contention is memory-bandwidth bound past 4).
+The serial `load_ms` (~9 s: page-cache warm + reachable BFS + int-map build)
+is the Amdahl tail; with load included, total scales ~3.1× at j4.
+
+Smaller fixtures for reference: 100k_cats cached ~1.6× at j4 (72→45 ms — too
+small, thread overhead dominates); simplewiki Articles subgraph (14,680 seeds)
+~1.7× at j4 (19→11 ms — shallow tree-like graph, ~20 ms query). Clean scaling
+needs the enwiki-scale query (seconds), confirming the long-standing finding
+that seed-level parallelism needs enough per-seed work (cf. intra-query
+parallelism docs / Haskell appendix #4).
+
+### Caveats (perf-skepticism)
+
+- Single trial per thread count at enwiki scale (each j1 run is ~145 s). The
+  `-j1` baseline was re-measured **warm** (after the cold sweep) so it is
+  comparable to the warm `-j4`/`-j8` — the cold sweep had shown a misleading
+  2.07× at j2 partly from `load_ms` page-cache warming across sequential runs.
+- Not yet a cross-target parallel comparison: Haskell `resident_cursor` was
+  **not** run on this identical enwiki Articles fixture. Haskell's earlier
+  ~1.73× at `-N4` (appendix #6, GC-bound `parMap`) was on a different
+  closure/scale; a head-to-head on `data/benchmark/enwiki_articles` is the
+  natural next step before claiming Rust parallelises "better".
+
+## Phase X appendix #18: cross-target parallel scaling — Rust `cached` vs Haskell `resident_cursor` on the enwiki Articles subgraph (2026-06-02)
+
+The head-to-head appendix #17 called for: Haskell `resident_cursor` run on the
+**identical** enwiki Articles fixture (same 796,695 seeds, root 97688913,
+demand set, graph) as the Rust seed-parallel sweep.
+
+### Setup
+
+- Fixture: `data/benchmark/enwiki_articles_hs` (builder
+  `data/benchmark/build_haskell_enwiki_fixture.py`). Reuses the same Phase-1
+  LMDB as Rust (`enwiki_cats/lmdb_resident`, 9.93M edges) via symlink;
+  `seed_ids.txt` = the 796,695 subtree ids, `root_ids.txt` = 97688913.
+- The Haskell `int_atom_seeds_lmdb` loader requires an `article_category`
+  sub-db (Rust keeps it as a TSV), so one was added **in-place** to the shared
+  LMDB (additive; Rust ignores it).
+- Generated `seeded functions kernels_on resident_cursor`, GHC 8.6.5,
+  `-O2 -threaded`, `-A64M`. Box: 8 cores / 5 GB.
+- **Required patch to run at all at -N4**: the generated env opener
+  (`openLmdbInternEnvReadonly`) sets `maxreaders 126`; at -N4 the parallel
+  cursor lookups exceed it → `MDB_READERS_FULL`. Bumped to 16384 in the
+  generated source to proceed (the template still ships 126 — see follow-up).
+
+### Result (query_ms; single trial; identical workload both sides)
+
+| target / mode | -N1 / -j1 | -N4 / -j4 | scaling | RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Rust `cached`            | 135,587 | 37,707 | **3.60× faster** | — |
+| Haskell `resident_cursor`| 270,039 | 427,151 | **1.58× SLOWER** | 3.79 GB |
+
+`seed_count=796,695`, `tuple_count=796,694`, `demand_set_size=796,695` on both
+sides — the workloads match.
+
+### Findings
+
+1. **Single-thread**: Rust `cached` (135.6 s) is ~2× faster than Haskell
+   `resident_cursor` (270 s) at enwiki scale. (Appendix #16 found them close at
+   *simplewiki* scale, which fits in RAM; the gap opens at enwiki.)
+2. **Parallelism**: Rust scales 3.60× at 4 threads; Haskell **regresses** —
+   -N4 is 1.58× *slower* than -N1. This is the documented parMap/GC regression
+   (appendix #6), now confirmed at enwiki scale and aggravated by (a) 3.79 GB
+   RSS against a 5 GB ceiling → GHC parallel-GC has no headroom, and (b) LMDB
+   reader-slot contention. Haskell's -N4 run was I/O-bound (wall 7m51s but only
+   1m08s user) — the 9.4 GB LMDB thrashes the page cache under random cursor
+   reads, whereas Rust's bounded sharded L2 keeps the working set resident and
+   CPU-bound.
+3. **Net** at -N4: Rust 37.7 s vs Haskell 427 s (~11×). This is the *combination*
+   of Rust's better single-thread caching AND Haskell's negative scaling — not
+   a pure "Rust's Rayon beats Haskell's parMap" microcomparison.
+
+### Caveats (perf-skepticism)
+
+- Single trial per config (each Haskell run is 5–8 min). Magnitudes, not exact
+  multiples.
+- **Caching-regime asymmetry**: Rust `cached` caches the kernel's edge lookups
+  in a bounded L2; Haskell `resident_cursor` hits LMDB per edge (its L2 serves
+  the demand BFS). This is a real difference between the *modes as implemented*,
+  and it dominates the absolute gap. Haskell has no in-RAM option at this scale
+  (the non-cursor resident mode caps at 5M edges; enwiki has 9.93M).
+- **Memory pressure is a first-order factor**: 3.79 GB RSS / 5 GB. On a larger
+  box GHC's parallel GC would likely not regress as hard; the negative scaling
+  is partly environmental.
+- Had to bump `maxreaders` to run -N4 — the shipped Haskell template caps at
+  126 and cannot run this fixture at -N4 unmodified.
+
+### Follow-ups (Haskell-side, NOT in the Rust parallelism PR)
+
+- Raise `maxreaders` (and/or pool/limit concurrent read txns) in
+  `lmdb_fact_source.hs.mustache` so resident_cursor runs at -N≥4 at scale.
+- Give the Haskell kernel edge lookups an L2 like Rust's `cached`, to put the
+  two targets in the same caching regime for a clean parallelism-only compare.
+- Re-run on a box with RAM headroom to separate the parallel-GC regression from
+  memory pressure.
+
 
