@@ -496,6 +496,9 @@ wam_go_direct_builtin("sort/2", 2, 'sort/2').
 wam_go_direct_builtin(msort/2, 2, 'msort/2').
 wam_go_direct_builtin('msort/2', 2, 'msort/2').
 wam_go_direct_builtin("msort/2", 2, 'msort/2').
+wam_go_direct_builtin(keysort/2, 2, 'keysort/2').
+wam_go_direct_builtin('keysort/2', 2, 'keysort/2').
+wam_go_direct_builtin("keysort/2", 2, 'keysort/2').
 wam_go_direct_builtin('@</2', 2, '@</2').
 wam_go_direct_builtin("@</2", 2, '@</2').
 wam_go_direct_builtin('@=</2', 2, '@=</2').
