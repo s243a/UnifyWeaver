@@ -87,10 +87,11 @@ emitter (not the token-parser predicates several targets also define).
 | elixir (lowered emitter) | Y | Y | Y | Y | Y | — | full coverage |
 | fsharp | Y | Y | Y | Y | N | `Proceed` stub | covers the common set |
 | **scala** (fixed) | Y | Y | Y | Y | N | `Raw` (now unreachable for these) | fixed |
-| haskell | N | Y | N | N | N | `-- UNKNOWN` + **`Proceed`** | **HARMFUL** |
-| elixir (main path) | N | N | N | N | N | `{:raw,…}` → step `_ -> :fail` | **HARMFUL** |
-| wat | N | Y | N | N | N | rewrite to **`allocate`** (+stderr) | **HARMFUL (suspect)** |
-| jvm | N | N | N | N | N | `ldc "<text>"` (operand-stack push) | **HARMFUL (suspect)** |
+| **haskell** (fixed) | Y | Y | Y | Y | Y | `Proceed` (now unreachable for these) | **was HARMFUL — fixed + runtime-validated** |
+| elixir (interpreter mode) | N | N | N | N | N | `{:raw,…}` → step `_ -> :fail` | **non-functional legacy path (see below)** |
+| elixir (lowered — real path) | Y | Y | Y | Y | Y | — | full coverage; member runtime-correct |
+| **wat** (switch fix) | Y | Y | Y | Y* | Y | `allocate` (now unreachable for these) | switch fix landed; blocked by separate read-mode-unify gap (see below) |
+| jvm | N | N | N | N | N | `ldc "<text>"` (operand-stack push) | **HARMFUL (suspect; no assembler toolchain to validate)** |
 | rust | N | Y | N | N | N | `/* unknown */` (drop) | safe; missed opt |
 | go | N | N | N | N | N | `// TODO` (drop) | safe; missed opt |
 | python | N | N | N | N | N | `# SKIP` (drop) | safe; missed opt (confirmed) |
@@ -99,15 +100,74 @@ emitter (not the token-parser predicates several targets also define).
 | clojure | N | N | N | N | N | `{:op :raw}` stub | depends on step-loop `:raw` |
 | llvm | N | Y | N | partial(nop) | N | `; TODO` (switch is design-nop) | safe (chain preserved) |
 
+`*` WAT `term_a2`: handled by emitting an empty fall-through term header
+(register 1), not full A2 type-dispatch — correct, just unindexed (its
+operand format differs from the A1 `switch_on_term` parser).
+
 `switch_on_structure_a2` (all-compound A2 index) is unhandled even by the
 fixed Scala reference and by F#; it is rare and the accepted baseline
-tolerates it via the chain.
+tolerates it via the chain. (C++, Haskell, and WAT now handle it.)
 
-(The catch-alls of note, with file:line:
-- `wam_haskell_target.pl:6594` — `-- UNKNOWN: ~w` + `Proceed`
-- `wam_elixir_target.pl:5236` — line emitter `{:raw, "~w"}`; step-loop
-  default `wam_elixir_target.pl:107` — `_ -> :fail`
-- `wam_wat_target.pl:1388` — unrecognized instruction → `allocate` (+stderr)
+## Runtime validation (toolchains installed)
+
+The four harmful-flagged targets were investigated with their real
+toolchains (GHC/cabal, Elixir/Erlang, wabt + node). Results refine the
+triage above:
+
+- **Haskell — confirmed harmful, fixed, validated.** Generated `member/2`
+  to a cabal project and ran it. *Before:* `member(z,[a,b,c]) = true`
+  (the `Proceed` catch-all returned from the predicate immediately, so
+  any first-arg-indexed predicate succeeded unconditionally). *After*
+  adding handlers for the `_fallthrough` / `term`/`structure` variants
+  (empty `SwitchOnConstant` falls through to the clause chain):
+  `member(a/c,…) = true`, `member(z,…) = false` — correct. No new test
+  regressions (the 5 pre-existing failures are unrelated:
+  async/unsafe imports, F1 fact classification).
+
+- **Elixir — the "harmful" path is a non-functional legacy mode; the
+  real path is correct.** The `:raw → :fail` catch-all lives in
+  `emit_mode(interpreter)`, but interpreter mode is **not** the path any
+  caller uses: every example, benchmark, and test passes
+  `emit_mode(lowered)`, and interpreter mode is additionally
+  non-compilable — it emits invalid module names
+  (`defmodule WamPred.em`, a lowercase alias segment) and lacks emitter
+  handlers for core instructions (`get_list`, `get_nil`, bare
+  `allocate`), so a list predicate never even reaches a switch. The
+  canonical **lowered** emitter has full switch coverage; the classic
+  suite (50 tests, incl. `em_no_match → "false"`) passes, confirming
+  `member` is runtime-correct on the real path. No fix applied — the
+  matrix's earlier "elixir (main path) HARMFUL" row was misleading;
+  reclassified as a non-functional legacy mode.
+
+- **WAT — switch fix landed, but the actual blocker is a separate,
+  deeper gap.** `switch_on_term_a2` did fall to the `allocate` catch-all;
+  the switch fix removes that (parity with the other targets). *However,
+  this produces no observable change for `member` yet,* because WAT's
+  runtime **read-mode structure/list argument unification is
+  unimplemented**: the read-mode branches of
+  `unify_variable`/`unify_value`/`unify_constant` are nops that advance
+  PC without walking the matched structure's args (there is no
+  S-register). So `get_structure`/`get_list` match only the *functor*,
+  and element mismatches go undetected — `member(a,[b]) = true` and
+  `s2(x,k(3)) = true` (a pure-structure case with no switch involved,
+  proving the gap is independent of indexing). Fixing this needs an
+  S-register + heap-walking read-mode unify; flagged for follow-up.
+  Existing WAT suite unchanged by the switch fix (49 pass / 8
+  pre-existing env-path failures).
+
+- **JVM — not validated.** No JVM-bytecode assembler is packaged
+  (krakatau unavailable), and the JVM tests are emit-and-grep only, so
+  the `ldc` catch-all could not be runtime-confirmed. Remains suspect.
+
+(The catch-alls of note, with file:line. Haskell's and WAT's are now
+unreachable for the indexing variants — handlers were added above them.)
+- `wam_haskell_target.pl:6623` — `-- UNKNOWN: ~w` + `Proceed`
+  (now unreachable for the switch variants)
+- `wam_elixir_target.pl:5238` — interpreter-mode line emitter
+  `{:raw, "~w"}`; step-loop default `wam_elixir_target.pl:107` —
+  `_ -> :fail` (legacy mode only)
+- `wam_wat_target.pl:1421` — unrecognized instruction → `allocate`
+  (+stderr) (now unreachable for the switch variants)
 - `wam_jvm_target.pl:664` — `ldc "<text>"`
 - drop-style: `wam_python_target.pl:1681` `# SKIP`,
   `wam_go_target.pl:1297` `// TODO`, `wam_rust_target.pl:2837`
@@ -117,21 +177,37 @@ tolerates it via the chain.
 
 ## Recommended action
 
-Ranked by *correctness* impact (not raw coverage):
+Ranked by *correctness* impact (not raw coverage). **Status updated
+after runtime validation — see "Runtime validation" above.**
 
-1. **Harmful-catch-all targets — real correctness bugs.** Fix
-   **haskell** (catch-all emits `Proceed`, which skips the predicate
-   body), **elixir main path** (`:raw` → `:fail`), and verify
-   **wat** (`allocate`) and **jvm** (`ldc`). Two safe options per target:
+1. **Harmful-catch-all targets.**
+   - **haskell — DONE.** Handlers added (empty `SwitchOnConstant` falls
+     through to the chain); `member/2` runtime-validated correct.
+   - **elixir — NO ACTION NEEDED.** The `:raw → :fail` catch-all is only
+     in the non-functional `interpreter` legacy mode (invalid module
+     names, missing core handlers, used by nothing). The real `lowered`
+     path has full coverage and is runtime-correct.
+   - **wat — switch fix DONE; deeper blocker remains.** The four switch
+     variants no longer expand to `allocate`. But `member/2` still
+     returns wrong answers because **read-mode structure/list argument
+     unification is unimplemented** (`unify_*` read-mode branches are
+     nops; no S-register). That is the real fix for WAT and is a
+     separate, larger runtime change — **highest-value WAT follow-up.**
+   - **jvm — still suspect, unvalidated.** No bytecode assembler
+     available; needs a maintainer with a JVM-asm toolchain (or a
+     krakatau install) to confirm the `ldc` catch-all and apply the same
+     minimal-drop / full-handler fix.
+
+   Two safe options per target (when fixing the catch-all):
    - **Minimal:** make the catch-all *drop* the instruction
      (correctness-safe, like Python/Go/Rust) instead of emitting a
      harmful one — restores correctness, keeps the (already-absent)
      indexing as a follow-up.
    - **Full:** add proper `const_ft` / `const_a2` / `const_a2_ft` /
-     `term_a2` handlers, mirroring the C++ / F# / Scala implementations
-     (for the constant family, the `_fallthrough` variant is
-     shape-compatible with the plain variant and can delegate to it;
-     `term_a2` / `const_a2` need A2-register dispatch).
+     `term_a2` handlers, mirroring the C++ / F# / Scala / Haskell
+     implementations (for the constant family, the `_fallthrough`
+     variant is shape-compatible with the plain variant and can delegate
+     to it; `term_a2` / `const_a2` need A2-register dispatch).
    Each fix should be validated by running a first-argument-indexed
    predicate (`member/2`, or a mixed fact+rule like factorial) against
    that target's toolchain.
@@ -147,6 +223,10 @@ Ranked by *correctness* impact (not raw coverage):
 
 ## Reference implementations
 
+- **Haskell** — `src/unifyweaver/targets/wam_haskell_target.pl`
+  (constant `_fallthrough` variants reuse `switch_on_constant`'s
+  translation; `term`/`structure` variants emit an empty
+  `SwitchOnConstant` that falls through to the clause chain).
 - **Scala** — `src/unifyweaver/targets/wam_scala_target.pl`
   (`switch_on_constant_fallthrough` reuses `switch_on_constant`;
   `switch_on_term_a2` / `switch_on_constant_a2(_fallthrough)` dispatch on
@@ -157,9 +237,10 @@ Ranked by *correctness* impact (not raw coverage):
 
 ## Toolchain note
 
-Validating per-target fixes requires the respective toolchain. In the
-audit environment, Rust, Go, Python, Node, Java, and Scala were available
-(Python confirmed drop-safe); GHC, Elixir, Lua, R, a wasm runtime, and a
-JVM-bytecode assembler were not, so the harmful-catch-all targets
-(haskell/elixir/wat/jvm) could not be runtime-validated here and are
-flagged for follow-up by maintainers who can run them.
+Validating per-target fixes requires the respective toolchain. The
+follow-up pass installed **GHC/cabal, Elixir/Erlang, and wabt + node**,
+which let haskell, elixir, and wat be runtime-validated (see "Runtime
+validation"). A **JVM-bytecode assembler** was still unavailable
+(krakatau not packaged), so jvm remains the only flagged target not yet
+runtime-confirmed. Rust, Go, Python, Node, Java, and Scala were available
+from the original audit (Python confirmed drop-safe).
