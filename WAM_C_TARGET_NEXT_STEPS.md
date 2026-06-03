@@ -396,7 +396,10 @@ Implemented so far:
   harness that builds optional reverse-CSR artifacts from benchmark TSVs,
   loads parent edges and category IDs into `WamState`, and times
   `wam_collect_bidirectional_ancestor_hops` over sampled category/root queries
-  without generating the full effective-distance WAM-C facts program.
+  without generating the full effective-distance WAM-C facts program. The
+  output now splits setup into parent TSV loading, parent-edge registration,
+  category-ID loading, query TSV loading, reverse-CSR artifact loading, CSR
+  attachment, and kernel registration.
 
 Evidence:
 
@@ -426,23 +429,30 @@ Evidence:
   rows: the large-scale blocker is currently generated WAM-C project creation,
   not query execution.
 - Narrow runtime evidence bypassing full WAM-C project generation: at `10k`,
-  `100` warm-cache sampled queries over one root took `9,934.551ms` with scan
-  child expansion and `8,574.770ms` with sorted-array CSR. Both modes produced
-  `17,047` total path results and the same checksum.
+  `100` warm-cache sampled queries over one root took `8,905.525ms` with
+  sorted-array CSR and produced `17,047` total path results. Runtime setup was
+  `213.149ms`, split into `7.322ms` parent TSV load, `7.269ms` parent-edge
+  registration, `198.187ms` category-ID load, `0.053ms` query TSV load, and
+  `0.256ms` reverse-CSR load.
 - The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
   sampled queries, and one sampled root completed without full source
-  generation. Runtime setup/loading took `20,500.072ms`, the measured query
-  loop took `0.342ms`, artifact build took `0.098s`, and the run produced
-  `10` path results. This shifts the immediate large-scale concern from WAM-C
-  generation to runtime setup/loading of parent edges and category IDs.
+  generation. Runtime setup/loading took `23,647.238ms`, split into
+  `297.197ms` parent TSV load, `613.616ms` parent-edge registration,
+  `22,734.748ms` category-ID load, `0.027ms` query TSV load, and `1.424ms`
+  reverse-CSR load. The measured query loop took `0.348ms`, artifact build
+  took `0.106s`, and the run produced `10` path results. This shifts the
+  immediate large-scale concern from WAM-C generation and CSR storage to
+  category-ID setup.
 - A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
-  `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path results.
+  `setup_ms=0.201`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
+  results.
 
 Open measurement:
 
-- Split the narrow runner's setup phase into parent-edge loading, category-ID
-  loading, CSR attachment, and query sampling so the `50k_cats` `20.5s` setup
-  cost can be attributed precisely.
+- Replace the linear `wam_register_category_id`/`wam_lookup_category_id`
+  category table scans with an indexed or bulk-loaded path, then rerun the
+  narrow runner at `10k` and `50k_cats`. The current `50k_cats` split shows
+  category-ID loading accounts for about `22.7s` of `23.6s` setup.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -640,10 +650,11 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use the narrow bidirectional-kernel runner to split and reduce runtime setup
-costs at `50k_cats`/`100k_cats`: parent-edge loading, category-ID registration,
-CSR attachment, and query sampling should be reported separately before adding
-another storage mode. Keep
+Reduce runtime setup costs at `50k_cats`/`100k_cats` by indexing or bulk-loading
+WAM-C category IDs before adding another child-edge storage mode. The narrow
+bidirectional-kernel runner now attributes setup precisely, and its `50k_cats`
+row shows category-ID loading dominates while parent-edge and reverse-CSR setup
+are already comparatively small. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

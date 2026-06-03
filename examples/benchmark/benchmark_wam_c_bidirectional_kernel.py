@@ -169,14 +169,25 @@ static int load_category_ids(WamState *state, const char *path) {
     return 1;
 }
 
-static int load_parent_edges(WamState *state, const char *path) {
+static int load_parent_edges_timed(WamState *state,
+                                   const char *path,
+                                   double *tsv_load_ms,
+                                   double *register_ms) {
     WamFactSource source;
     wam_fact_source_init(&source);
+    struct timespec start;
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     if (!wam_fact_source_load_tsv(state, &source, path)) {
         wam_fact_source_close(&source);
         return 0;
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    *tsv_load_ms = elapsed_ms(start, end);
+    clock_gettime(CLOCK_MONOTONIC, &start);
     int ok = wam_register_category_parent_fact_source(state, &source) ? 1 : 0;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    *register_ms = elapsed_ms(start, end);
     wam_fact_source_close(&source);
     return ok;
 }
@@ -268,27 +279,63 @@ int main(int argc, char **argv) {
     QueryList queries;
     memset(&queries, 0, sizeof(QueryList));
 
+    double parent_edge_tsv_load_ms = 0.0;
+    double parent_edge_register_ms = 0.0;
+    double category_id_load_ms = 0.0;
+    double query_load_ms = 0.0;
+    double reverse_csr_load_ms = 0.0;
+    double csr_attach_ms = 0.0;
+    double kernel_register_ms = 0.0;
+    struct timespec phase_start;
+    struct timespec phase_end;
+
     int attached_artifact = 0;
-    if (!load_parent_edges(&state, parent_tsv) ||
-        !load_category_ids(&state, ids_tsv) ||
-        !read_queries(queries_path, &queries)) {
+    if (!load_parent_edges_timed(
+            &state, parent_tsv, &parent_edge_tsv_load_ms, &parent_edge_register_ms)) {
         close_queries(&queries);
         wam_reverse_csr_close(&artifact);
         wam_free_state(&state);
         return 4;
     }
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+    if (!load_category_ids(&state, ids_tsv)) {
+        close_queries(&queries);
+        wam_reverse_csr_close(&artifact);
+        wam_free_state(&state);
+        return 4;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    category_id_load_ms = elapsed_ms(phase_start, phase_end);
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+    if (!read_queries(queries_path, &queries)) {
+        close_queries(&queries);
+        wam_reverse_csr_close(&artifact);
+        wam_free_state(&state);
+        return 4;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    query_load_ms = elapsed_ms(phase_start, phase_end);
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
     if (!load_artifact(&artifact, mode, index_path, values_path, offset_env_path)) {
         close_queries(&queries);
         wam_reverse_csr_close(&artifact);
         wam_free_state(&state);
         return 5;
     }
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    reverse_csr_load_ms = elapsed_ms(phase_start, phase_end);
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
     if (strcmp(mode, "scan") != 0) {
         wam_attach_bidirectional_child_csr(&state, &artifact);
         attached_artifact = 1;
     }
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    csr_attach_ms = elapsed_ms(phase_start, phase_end);
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
     wam_register_bidirectional_ancestor_kernel(
         &state, "bidirectional_ancestor/5", max_depth, parent_cost, child_cost, budget);
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    kernel_register_ms = elapsed_ms(phase_start, phase_end);
 
     clock_gettime(CLOCK_MONOTONIC, &setup_end);
     double setup_ms = elapsed_ms(setup_start, setup_end);
@@ -305,7 +352,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("iteration\telapsed_ms\tsetup_ms\ttotal_results\tchecksum\n");
+    printf("iteration\telapsed_ms\tsetup_ms\tparent_edge_tsv_load_ms\tparent_edge_register_ms\tcategory_id_load_ms\tquery_load_ms\treverse_csr_load_ms\tcsr_attach_ms\tkernel_register_ms\ttotal_results\tchecksum\n");
     for (int it = 0; it < iterations; it++) {
         struct timespec start;
         struct timespec end;
@@ -318,8 +365,11 @@ int main(int argc, char **argv) {
             return 7;
         }
         clock_gettime(CLOCK_MONOTONIC, &end);
-        printf("%d\t%.6f\t%.6f\t%lld\t%lld\n",
-               it + 1, elapsed_ms(start, end), setup_ms, total_results, checksum);
+        printf("%d\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%lld\t%lld\n",
+               it + 1, elapsed_ms(start, end), setup_ms,
+               parent_edge_tsv_load_ms, parent_edge_register_ms,
+               category_id_load_ms, query_load_ms, reverse_csr_load_ms,
+               csr_attach_ms, kernel_register_ms, total_results, checksum);
     }
 
     close_queries(&queries);
@@ -329,6 +379,21 @@ int main(int argc, char **argv) {
     return 0;
 }
 """
+
+
+@dataclass(frozen=True)
+class HarnessResult:
+    times: list[float]
+    setup_ms: float
+    parent_edge_tsv_load_ms: float
+    parent_edge_register_ms: float
+    category_id_load_ms: float
+    query_load_ms: float
+    reverse_csr_load_ms: float
+    csr_attach_ms: float
+    kernel_register_ms: float
+    total_results: int
+    checksum: int
 
 
 @dataclass(frozen=True)
@@ -346,6 +411,13 @@ class KernelRow:
     child_step_cost: float
     budget: float
     setup_ms: float
+    parent_edge_tsv_load_ms: float
+    parent_edge_register_ms: float
+    category_id_load_ms: float
+    query_load_ms: float
+    reverse_csr_load_ms: float
+    csr_attach_ms: float
+    kernel_register_ms: float
     median_ms: float
     min_ms: float
     max_ms: float
@@ -353,6 +425,7 @@ class KernelRow:
     total_results: int
     checksum: int
     harness_compile_s: float
+    query_sample_s: float
     artifact_build_s: float
     reverse_csr_index_bytes: int
     reverse_csr_values_bytes: int
@@ -522,7 +595,7 @@ def build_scale_inputs(
     sample_roots: int,
     sample_queries: int,
     seed: int,
-) -> tuple[dict[str, Path], dict[str, float], Path, Path, Path, int, int, int]:
+) -> tuple[dict[str, Path], dict[str, float], Path, Path, Path, int, int, int, float]:
     scale_dir = BENCH_DIR / scale
     category_parent_path = scale_dir / "category_parent.tsv"
     if not category_parent_path.exists():
@@ -533,7 +606,9 @@ def build_scale_inputs(
     root_categories = read_tsv_column(scale_dir / "root_categories.tsv")
     ids = category_id_map(category_parents, article_categories, root_categories)
     roots = selected_roots(root_categories, sample_roots, seed)
+    query_sample_started = time.perf_counter()
     queries = sampled_queries(article_categories, category_parents, roots, sample_queries, seed + 1)
+    query_sample_s = time.perf_counter() - query_sample_started
 
     scale_root = out_root / scale
     scale_root.mkdir(parents=True, exist_ok=True)
@@ -567,6 +642,7 @@ def build_scale_inputs(
         len(category_parents),
         len(ids),
         len(set(root for _category, root in queries)),
+        query_sample_s,
     )
 
 
@@ -583,7 +659,7 @@ def run_harness(
     parent_step_cost: float,
     child_step_cost: float,
     budget: float,
-) -> tuple[list[float], float, int, int]:
+) -> HarnessResult:
     command = [
         str(binary),
         mode,
@@ -607,20 +683,72 @@ def run_harness(
             f"with status {result.returncode}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
-    expected_header = ["iteration", "elapsed_ms", "setup_ms", "total_results", "checksum"]
+    expected_header = [
+        "iteration",
+        "elapsed_ms",
+        "setup_ms",
+        "parent_edge_tsv_load_ms",
+        "parent_edge_register_ms",
+        "category_id_load_ms",
+        "query_load_ms",
+        "reverse_csr_load_ms",
+        "csr_attach_ms",
+        "kernel_register_ms",
+        "total_results",
+        "checksum",
+    ]
     if not lines or lines[0].split("\t") != expected_header:
         raise RuntimeError(f"unexpected harness output:\n{result.stdout}")
     times: list[float] = []
     setup_ms = 0.0
+    parent_edge_tsv_load_ms = 0.0
+    parent_edge_register_ms = 0.0
+    category_id_load_ms = 0.0
+    query_load_ms = 0.0
+    reverse_csr_load_ms = 0.0
+    csr_attach_ms = 0.0
+    kernel_register_ms = 0.0
     total_results = 0
     checksum = 0
     for line in lines[1:]:
-        _iteration, elapsed_ms, setup_ms_text, total_results_text, checksum_text = line.split("\t")
+        (
+            _iteration,
+            elapsed_ms,
+            setup_ms_text,
+            parent_edge_tsv_load_ms_text,
+            parent_edge_register_ms_text,
+            category_id_load_ms_text,
+            query_load_ms_text,
+            reverse_csr_load_ms_text,
+            csr_attach_ms_text,
+            kernel_register_ms_text,
+            total_results_text,
+            checksum_text,
+        ) = line.split("\t")
         times.append(float(elapsed_ms))
         setup_ms = float(setup_ms_text)
+        parent_edge_tsv_load_ms = float(parent_edge_tsv_load_ms_text)
+        parent_edge_register_ms = float(parent_edge_register_ms_text)
+        category_id_load_ms = float(category_id_load_ms_text)
+        query_load_ms = float(query_load_ms_text)
+        reverse_csr_load_ms = float(reverse_csr_load_ms_text)
+        csr_attach_ms = float(csr_attach_ms_text)
+        kernel_register_ms = float(kernel_register_ms_text)
         total_results = int(total_results_text)
         checksum = int(checksum_text)
-    return times, setup_ms, total_results, checksum
+    return HarnessResult(
+        times=times,
+        setup_ms=setup_ms,
+        parent_edge_tsv_load_ms=parent_edge_tsv_load_ms,
+        parent_edge_register_ms=parent_edge_register_ms,
+        category_id_load_ms=category_id_load_ms,
+        query_load_ms=query_load_ms,
+        reverse_csr_load_ms=reverse_csr_load_ms,
+        csr_attach_ms=csr_attach_ms,
+        kernel_register_ms=kernel_register_ms,
+        total_results=total_results,
+        checksum=checksum,
+    )
 
 
 def benchmark_scale(
@@ -648,6 +776,7 @@ def benchmark_scale(
         parent_edge_count,
         category_count,
         distinct_roots,
+        query_sample_s,
     ) = build_scale_inputs(scale, artifact_root, modes, sample_roots, sample_queries, seed)
     empty_artifact_dir = artifact_root / scale / "scan"
     empty_artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -657,7 +786,7 @@ def benchmark_scale(
     for mode in modes:
         backend = MODE_BACKENDS[mode]
         artifact_dir = empty_artifact_dir if backend is None else artifact_dirs[backend]
-        times, setup_ms, total_results, checksum = run_harness(
+        harness_result = run_harness(
             harness_binary,
             mode,
             artifact_dir,
@@ -672,10 +801,12 @@ def benchmark_scale(
             budget,
         )
         if expected_checksum is None:
-            expected_checksum = checksum
-        elif checksum != expected_checksum:
-            raise RuntimeError(f"checksum mismatch for mode {mode}: {checksum} != {expected_checksum}")
-        median_ms = statistics.median(times)
+            expected_checksum = harness_result.checksum
+        elif harness_result.checksum != expected_checksum:
+            raise RuntimeError(
+                f"checksum mismatch for mode {mode}: {harness_result.checksum} != {expected_checksum}"
+            )
+        median_ms = statistics.median(harness_result.times)
         rows.append(
             KernelRow(
                 scale=scale,
@@ -690,14 +821,22 @@ def benchmark_scale(
                 parent_step_cost=parent_step_cost,
                 child_step_cost=child_step_cost,
                 budget=budget,
-                setup_ms=setup_ms,
+                setup_ms=harness_result.setup_ms,
+                parent_edge_tsv_load_ms=harness_result.parent_edge_tsv_load_ms,
+                parent_edge_register_ms=harness_result.parent_edge_register_ms,
+                category_id_load_ms=harness_result.category_id_load_ms,
+                query_load_ms=harness_result.query_load_ms,
+                reverse_csr_load_ms=harness_result.reverse_csr_load_ms,
+                csr_attach_ms=harness_result.csr_attach_ms,
+                kernel_register_ms=harness_result.kernel_register_ms,
                 median_ms=median_ms,
-                min_ms=min(times),
-                max_ms=max(times),
+                min_ms=min(harness_result.times),
+                max_ms=max(harness_result.times),
                 query_us_per_query=(median_ms * 1000.0) / max(sample_queries, 1),
-                total_results=total_results,
-                checksum=checksum,
+                total_results=harness_result.total_results,
+                checksum=harness_result.checksum,
                 harness_compile_s=harness_compile_s,
+                query_sample_s=query_sample_s,
                 artifact_build_s=artifact_build_s[mode],
                 reverse_csr_index_bytes=file_tree_size_bytes(artifact_dir / "category_child.csr.idx"),
                 reverse_csr_values_bytes=file_tree_size_bytes(artifact_dir / "category_child.csr.val"),
@@ -722,6 +861,13 @@ def print_rows(rows: list[KernelRow]) -> None:
         "child_step_cost",
         "budget",
         "setup_ms",
+        "parent_edge_tsv_load_ms",
+        "parent_edge_register_ms",
+        "category_id_load_ms",
+        "query_load_ms",
+        "reverse_csr_load_ms",
+        "csr_attach_ms",
+        "kernel_register_ms",
         "median_ms",
         "min_ms",
         "max_ms",
@@ -729,6 +875,7 @@ def print_rows(rows: list[KernelRow]) -> None:
         "total_results",
         "checksum",
         "harness_compile_s",
+        "query_sample_s",
         "artifact_build_s",
         "reverse_csr_index_bytes",
         "reverse_csr_values_bytes",
@@ -752,6 +899,13 @@ def print_rows(rows: list[KernelRow]) -> None:
                     f"{row.child_step_cost:g}",
                     f"{row.budget:g}",
                     f"{row.setup_ms:.6f}",
+                    f"{row.parent_edge_tsv_load_ms:.6f}",
+                    f"{row.parent_edge_register_ms:.6f}",
+                    f"{row.category_id_load_ms:.6f}",
+                    f"{row.query_load_ms:.6f}",
+                    f"{row.reverse_csr_load_ms:.6f}",
+                    f"{row.csr_attach_ms:.6f}",
+                    f"{row.kernel_register_ms:.6f}",
                     f"{row.median_ms:.6f}",
                     f"{row.min_ms:.6f}",
                     f"{row.max_ms:.6f}",
@@ -759,6 +913,7 @@ def print_rows(rows: list[KernelRow]) -> None:
                     str(row.total_results),
                     str(row.checksum),
                     f"{row.harness_compile_s:.3f}",
+                    f"{row.query_sample_s:.3f}",
                     f"{row.artifact_build_s:.3f}",
                     str(row.reverse_csr_index_bytes),
                     str(row.reverse_csr_values_bytes),
