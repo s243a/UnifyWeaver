@@ -6555,6 +6555,33 @@ wam_instr_to_haskell(["switch_on_constant_a2"|Entries], Hs) :-
     parse_switch_entries(Entries, HsPairs),
     atomic_list_concat(HsPairs, ', ', PairsStr),
     format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
+% First-argument-indexing variants that previously fell through to the
+% catch-all and emitted `Proceed` — which returns from the predicate
+% immediately, so first-arg-indexed predicates (e.g. member/2, which emits
+% switch_on_term_a2) succeeded unconditionally. Indexing is an optimization:
+% each switch is followed by the try_me_else/retry/trust chain, which alone
+% yields correct results, and SwitchOnConstantPc already falls through to
+% that chain on a miss.
+%   - The constant fallthrough variants are shape-compatible with
+%     switch_on_constant (the `default` label is dropped at resolve, leaving
+%     the table to fall through), so translate them the same way.
+wam_instr_to_haskell(["switch_on_constant_fallthrough"|Entries], Hs) :-
+    parse_switch_entries(Entries, HsPairs),
+    atomic_list_concat(HsPairs, ', ', PairsStr),
+    format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
+wam_instr_to_haskell(["switch_on_constant_a2_fallthrough"|Entries], Hs) :-
+    parse_switch_entries(Entries, HsPairs),
+    atomic_list_concat(HsPairs, ', ', PairsStr),
+    format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
+%   - The type/structure indexing variants (switch_on_term[_a2],
+%     switch_on_structure[_a2]) carry non-constant entries and index on A2,
+%     so translating them to an A1 SwitchOnConstant could mis-route. Emit an
+%     EMPTY SwitchOnConstant, which always falls through to the try_me_else
+%     chain — correct, just unindexed.
+wam_instr_to_haskell(["switch_on_term"|_], 'SwitchOnConstant (Map.fromList [])').
+wam_instr_to_haskell(["switch_on_term_a2"|_], 'SwitchOnConstant (Map.fromList [])').
+wam_instr_to_haskell(["switch_on_structure"|_], 'SwitchOnConstant (Map.fromList [])').
+wam_instr_to_haskell(["switch_on_structure_a2"|_], 'SwitchOnConstant (Map.fromList [])').
 wam_instr_to_haskell(["begin_aggregate", Type, ValReg, ResReg], Hs) :-
     clean_comma(Type, CT), clean_comma(ValReg, CV), clean_comma(ResReg, CR),
     reg_name_to_int(CV, VI), reg_name_to_int(CR, RI),
