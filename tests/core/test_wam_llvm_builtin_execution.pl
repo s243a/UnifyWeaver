@@ -2459,6 +2459,36 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M74: delete_file/1 + make_directory/1 -- libc unlink + mkdir.
+
+:- dynamic test_mkd_basic/2.
+test_mkd_basic(_, R) :-
+    % Disjunction: either makes it new or finds it already there.
+    ( make_directory('/tmp/uw_m74_test')
+    ; exists_directory('/tmp/uw_m74_test')
+    ),
+    exists_directory('/tmp/uw_m74_test'),
+    R is 1.   % 1
+
+:- dynamic test_mkd_fail_perm/2.
+test_mkd_fail_perm(_, R) :-
+    % /sys is locked down (EPERM/EROFS) even for root in typical containers.
+    ( make_directory('/sys/uw_m74_protected_dir') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mkd_fail_parent/2.
+test_mkd_fail_parent(_, R) :-
+    % Parent doesn''t exist; mkdir fails with ENOENT.
+    ( make_directory('/nonexistent/foo/bar') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_df_fail_missing/2.
+test_df_fail_missing(_, R) :-
+    ( delete_file('/nonexistent/file/qqq') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_df_dir_no/2.
+test_df_dir_no(_, R) :-
+    % unlink() refuses directories (EISDIR).
+    ( delete_file('/tmp') -> R is 1 ; R is 0 ).   % 0
+
 % M73: exists_file/1 + exists_directory/1 -- stat-based fs checks.
 
 :- dynamic test_xf_real/2.
@@ -4205,6 +4235,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M74 delete_file/1 + make_directory/1 ---~n'),
+       run_test_r0('make_directory + exists_directory roundtrip -> 1',
+                   test_mkd_basic, 0, 1),
+       run_test_r0('make_directory(/sys/...) no permission -> 0',
+                   test_mkd_fail_perm, 0, 0),
+       run_test_r0('make_directory(/nonexistent/...) missing parent -> 0',
+                   test_mkd_fail_parent, 0, 0),
+       run_test_r0('delete_file(/nonexistent/file) -> 0',
+                   test_df_fail_missing, 0, 0),
+       run_test_r0('delete_file(/tmp) directory -> 0',
+                   test_df_dir_no, 0, 0),
        format('--- M73 exists_file/1 + exists_directory/1 ---~n'),
        run_test_r0('exists_file(/etc/hostname) -> 1',
                    test_xf_real, 0, 1),

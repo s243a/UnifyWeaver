@@ -1455,7 +1455,9 @@ declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
 declare i64 @time(i64*)
-declare i32 @stat(i8*, i8*)'
+declare i32 @stat(i8*, i8*)
+declare i32 @unlink(i8*)
+declare i32 @mkdir(i8*, i32)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3491,6 +3493,8 @@ entry:
     i32 90, label %builtin_get_time
     i32 91, label %builtin_exists_file
     i32 92, label %builtin_exists_directory
+    i32 93, label %builtin_delete_file
+    i32 94, label %builtin_make_directory
   ]
 
 builtin_is:
@@ -4412,6 +4416,45 @@ xd.check_mode:
   %xd.type_bits = and i32 %xd.mode, 61440  ; S_IFMT
   %xd.is_dir = icmp eq i32 %xd.type_bits, 16384  ; S_IFDIR = 0o040000
   ret i1 %xd.is_dir
+
+builtin_delete_file:
+  ; M74: delete_file(+Path) -- atom Path. Calls libc unlink(path);
+  ; succeeds iff unlink returns 0.
+  %df.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %df.t1 = extractvalue %Value %df.a1, 0
+  %df.is_atom = icmp eq i32 %df.t1, 0
+  br i1 %df.is_atom, label %df.go, label %df.fail
+df.fail:
+  ret i1 false
+df.go:
+  %df.aid = extractvalue %Value %df.a1, 1
+  %df.path = call i8* @wam_atom_to_string(i64 %df.aid)
+  %df.path_null = icmp eq i8* %df.path, null
+  br i1 %df.path_null, label %df.fail, label %df.unlink
+df.unlink:
+  %df.ret = call i32 @unlink(i8* %df.path)
+  %df.ok = icmp eq i32 %df.ret, 0
+  ret i1 %df.ok
+
+builtin_make_directory:
+  ; M74: make_directory(+Path) -- atom Path. Calls libc mkdir(path,
+  ; 0o755); succeeds iff mkdir returns 0. (0o755 = 493 decimal --
+  ; rwxr-xr-x, the conventional ``mkdir'' default; subject to umask.)
+  %mkd.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mkd.t1 = extractvalue %Value %mkd.a1, 0
+  %mkd.is_atom = icmp eq i32 %mkd.t1, 0
+  br i1 %mkd.is_atom, label %mkd.go, label %mkd.fail
+mkd.fail:
+  ret i1 false
+mkd.go:
+  %mkd.aid = extractvalue %Value %mkd.a1, 1
+  %mkd.path = call i8* @wam_atom_to_string(i64 %mkd.aid)
+  %mkd.path_null = icmp eq i8* %mkd.path, null
+  br i1 %mkd.path_null, label %mkd.fail, label %mkd.mkdir
+mkd.mkdir:
+  %mkd.ret = call i32 @mkdir(i8* %mkd.path, i32 493)
+  %mkd.ok = icmp eq i32 %mkd.ret, 0
+  ret i1 %mkd.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10986,6 +11029,8 @@ builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal
 builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
 builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular file.
 builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
+builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
+builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
