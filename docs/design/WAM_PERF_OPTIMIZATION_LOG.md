@@ -4632,24 +4632,36 @@ sides — the workloads match.
 
 - Single trial per config (each Haskell run is 5–8 min). Magnitudes, not exact
   multiples.
-- **Caching-regime asymmetry**: Rust `cached` caches the kernel's edge lookups
-  in a bounded L2; Haskell `resident_cursor` hits LMDB per edge (its L2 serves
-  the demand BFS). This is a real difference between the *modes as implemented*,
-  and it dominates the absolute gap. Haskell has no in-RAM option at this scale
-  (the non-cursor resident mode caps at 5M edges; enwiki has 9.93M).
-- **Memory pressure is a first-order factor**: 3.79 GB RSS / 5 GB. On a larger
-  box GHC's parallel GC would likely not regress as hard; the negative scaling
-  is partly environmental.
-- Had to bump `maxreaders` to run -N4 — the shipped Haskell template caps at
-  126 and cannot run this fixture at -N4 unmodified.
+- **CORRECTION (2026-06-02)**: an earlier draft of this caveat claimed the
+  Haskell kernel "hits LMDB per edge (its L2 serves the demand BFS)". That is
+  WRONG. In `resident_cursor` + `lmdb_cache_mode(sharded)`, `openLmdbEdgeLookup`
+  returns `lmdbL2EdgeLookup` — the kernel's `cpEdgeLookup` **does** go through
+  the sharded lock-free L2 (same role as Rust `cached`'s L2). The two targets
+  are NOT in different cache regimes; the gap is elsewhere (below).
+- **Memory pressure is the first-order factor**: Haskell RSS is 3.79 GB / 5 GB,
+  almost entirely the **3.78M-entry intern table** (`loadInternTableFromLmdb`,
+  forced strict) loaded at startup. That starves the OS page cache of the 9.4 GB
+  LMDB → random cursor reads thrash to disk (the -N4 run was I/O-bound: 7m51s
+  wall vs 1m08s user), and at -N4 GHC's parallel GC has no heap headroom → the
+  regression. Rust's compact int maps leave far more page cache. Crucially, in
+  `int_atom_seeds_lmdb` mode the output is **int-keyed** (raw ids, not
+  de-interned names), so the intern table is loaded but barely used — making it
+  the prime fairness/perf lever (see follow-ups).
+- Had to bump `maxreaders` (126→16384) to run -N4 — **now fixed in the template**
+  (commit ac661ea6).
 
 ### Follow-ups (Haskell-side, NOT in the Rust parallelism PR)
 
-- Raise `maxreaders` (and/or pool/limit concurrent read txns) in
-  `lmdb_fact_source.hs.mustache` so resident_cursor runs at -N≥4 at scale.
-- Give the Haskell kernel edge lookups an L2 like Rust's `cached`, to put the
-  two targets in the same caching regime for a clean parallelism-only compare.
+- ~~Raise `maxreaders`~~ — DONE (ac661ea6): `openLmdbInternEnvReadonly` now sets
+  16384.
+- ~~Give the kernel an L2~~ — already wired (`lmdbL2EdgeLookup`); the original
+  premise was mistaken.
+- **The real lever**: skip / lazy-load the intern table in `int_atom_seeds_lmdb`
+  mode (it is int-keyed end-to-end here, so the 3.78M-entry table is dead
+  weight). Dropping it would cut RSS by ~3 GB, free page cache, and likely turn
+  the -N4 regression into real scaling. Larger Main.hs change with cross-mode
+  regression risk; deferred.
 - Re-run on a box with RAM headroom to separate the parallel-GC regression from
-  memory pressure.
+  page-cache thrash.
 
 
