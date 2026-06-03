@@ -9,12 +9,17 @@ Latest branch verification:
   s243a/investigate/wam-c-root-distance-cache`)
 - `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py tests/test_wam_c_child_search_runtime_sweep.py`
 - `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py tests/test_benchmark_target_matrix.py`
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_bidirectional_kernel.py tests/test_wam_c_bidirectional_kernel_benchmark.py`
 - `python3 tests/test_wam_c_child_search_runtime_sweep.py`
 - `python3 tests/test_benchmark_target_matrix.py`
+- `python3 tests/test_wam_c_bidirectional_kernel_benchmark.py`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --dry-run --scales 10k --include-parent-only`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10k --include-parent-only --run-timeout-seconds 120`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10k --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
 - `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 50k_cats --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 10k --modes scan,sorted_array --sample-queries 100 --sample-roots 1 --iterations 1 --warmups 1`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 50k_cats --modes sorted_array --sample-queries 10 --sample-roots 1 --iterations 1 --warmups 1`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales dev --modes lmdb_offset --sample-queries 3 --sample-roots 1 --iterations 1 --warmups 0`
 - `git diff --check`
 
 Active branch:
@@ -387,6 +392,11 @@ Implemented so far:
   timings in their message field, so large generated builds can be attributed
   to Prolog generation, LMDB seeding, reverse-CSR offset seeding, or C
   compilation.
+- Added `benchmark_wam_c_bidirectional_kernel.py`, a narrow WAM-C runtime
+  harness that builds optional reverse-CSR artifacts from benchmark TSVs,
+  loads parent edges and category IDs into `WamState`, and times
+  `wam_collect_bidirectional_ancestor_hops` over sampled category/root queries
+  without generating the full effective-distance WAM-C facts program.
 
 Evidence:
 
@@ -415,14 +425,27 @@ Evidence:
   several minutes. The compile-only phase split above explains the missing
   rows: the large-scale blocker is currently generated WAM-C project creation,
   not query execution.
+- Narrow runtime evidence bypassing full WAM-C project generation: at `10k`,
+  `100` warm-cache sampled queries over one root took `9,934.551ms` with scan
+  child expansion and `8,574.770ms` with sorted-array CSR. Both modes produced
+  `17,047` total path results and the same checksum.
+- The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
+  sampled queries, and one sampled root completed without full source
+  generation. Runtime setup/loading took `20,500.072ms`, the measured query
+  loop took `0.342ms`, artifact build took `0.098s`, and the run produced
+  `10` path results. This shifts the immediate large-scale concern from WAM-C
+  generation to runtime setup/loading of parent edges and category IDs.
+- A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
+  `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path results.
 
 Open measurement:
 
-- Reduce or bypass full WAM-C project generation for large child-search
-  measurements. The next benchmark slice should separate reusable artifact
-  staging from generated C source emission, or add a smaller generated runner
-  that can execute against prebuilt TSV/CSR artifacts without materializing the
-  full facts program.
+- Split the narrow runner's setup phase into parent-edge loading, category-ID
+  loading, CSR attachment, and query sampling so the `50k_cats` `20.5s` setup
+  cost can be attributed precisely.
+- Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
+  copying every parent edge into `WamState` when the hot query path uses the
+  sorted child CSR plus parent-child index.
 - Compare observed root-cache entry counts against the worst-case
   `341,087,344` entry bound before adding persisted `min_distance(root,node)`.
   Persisted distance maps still need to be justified by the cost analyzer
@@ -617,10 +640,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Focus on reducing WAM-C generation cost for large child-search measurements:
-either separate reusable artifact staging from generated C source emission, or
-add a small generated runner that can execute against prebuilt TSV/CSR
-artifacts. Keep
+Use the narrow bidirectional-kernel runner to split and reduce runtime setup
+costs at `50k_cats`/`100k_cats`: parent-edge loading, category-ID registration,
+CSR attachment, and query sampling should be reported separately before adding
+another storage mode. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
