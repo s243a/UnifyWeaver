@@ -1376,6 +1376,38 @@ wam_parts_to_instr(["switch_on_structure"|Rest], Result) :- !,
 wam_parts_to_instr(["switch_on_term"|Rest], Result) :- !,
     parse_term_entries(Rest, ConstEntries, StructEntries),
     build_switch_term_instrs(0, ConstEntries, StructEntries, Result).
+%% First-argument-indexing variants that previously fell through to the
+%% `allocate` catch-all below. That was a CORRECTNESS bug, not just a
+%% missed optimization: `allocate` pushes an env frame, corrupting the
+%% stack/PC discipline so first-arg-indexed predicates (e.g. member/2,
+%% which emits switch_on_term_a2) succeeded unconditionally —
+%% member(z,[a,b,c]) returned true. Indexing is an optimization: each
+%% switch is immediately followed by the try_me_else/retry/trust clause
+%% chain, which alone yields correct results.
+%%   - The constant `_fallthrough` variants share switch_on_constant's
+%%     `key:label` entry format, and `_a2` selects register 1, so they
+%%     get the same real O(N) linear-scan indexing.
+wam_parts_to_instr(["switch_on_constant_fallthrough"|Rest], Result) :- !,
+    parse_switch_entries(Rest, Entries),
+    build_switch_instrs(0, Entries, Result).
+wam_parts_to_instr(["switch_on_constant_a2_fallthrough"|Rest], Result) :- !,
+    parse_switch_entries(Rest, Entries),
+    build_switch_instrs(1, Entries, Result).
+%%   - switch_on_structure_a2 shares switch_on_structure's `F/A:label`
+%%     format; register 1 (A2) dispatch.
+wam_parts_to_instr(["switch_on_structure_a2"|Rest], Result) :- !,
+    parse_struct_entries(Rest, Entries),
+    build_switch_struct_instrs(1, Entries, Result).
+%%   - switch_on_term_a2 uses the count-prefixed
+%%     `<CLen> <C..> <SLen> <S..> <ListLabel>` operand format (distinct
+%%     from the `constant:`/`structure:` form parse_term_entries reads),
+%%     so we don't reconstruct its indexed table here. Emit an EMPTY
+%%     term header on register 1: switch_on_term_hdr with const_count=0
+%%     and struct_count=0 always falls through to the try_me_else chain
+%%     (see the runtime $switch_on_term_hdr handler) — correct, just
+%%     unindexed.
+wam_parts_to_instr(["switch_on_term_a2"|_],
+                   multi([switch_on_term_hdr(1, 0, 0)])) :- !.
 
 wam_parts_to_instr(["begin_aggregate", Type, ValReg, ResReg],
                    begin_aggregate(CType, CValReg, CResReg)) :-
