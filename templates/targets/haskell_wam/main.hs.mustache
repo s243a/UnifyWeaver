@@ -142,7 +142,16 @@ main = do
     -- See docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md.
     let lmdbInternDir = factsDir ++ "/lmdb"
     internEnv <- openLmdbInternEnvReadonly lmdbInternDir
+{{^lmdb_skip_intern_table}}
     !lmdbInternTable <- loadInternTableFromLmdb internEnv "s2i" "i2s"
+{{/lmdb_skip_intern_table}}
+{{#lmdb_skip_intern_table}}
+    -- appendix #18 lever: in int_atom_seeds(lmdb) mode the seeds, edges, and
+    -- output are int-keyed (iAtom = id; results printed as raw ids), so the
+    -- s2i/i2s intern table is dead weight — ~3.78M entries / ~3.8 GB RSS at
+    -- enwiki that starves the OS page cache of the LMDB. Skip the load;
+    -- fullInternTable falls back to compileTimeAtomTable below.
+{{/lmdb_skip_intern_table}}
     !lmdbArticleCategories <- loadArticleCategoriesFromLmdb internEnv "article_category"
 {{^demand_bfs_mode_cursor}}
     -- in_memory demand-BFS mode: pre-load the full child->parent
@@ -207,9 +216,19 @@ main = do
     -- Int-atom-seeds(lmdb) mode: the intern table comes from LMDB
     -- (s2i / i2s sub-dbs) — already loaded into lmdbInternTable above.
     -- iAtom is identity since seed/edge IDs are pre-interned int32.
+{{^lmdb_skip_intern_table}}
     let !fullInternTable = lmdbInternTable
         iAtom :: Int -> Int
         iAtom = id
+{{/lmdb_skip_intern_table}}
+{{#lmdb_skip_intern_table}}
+    -- intern-table skipped (see above): the only consumer is extractDouble,
+    -- which needs the WAM program's own atoms — those live in
+    -- compileTimeAtomTable. Category-node ids never flow through it as atoms.
+    let !fullInternTable = compileTimeAtomTable
+        iAtom :: Int -> Int
+        iAtom = id
+{{/lmdb_skip_intern_table}}
 {{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 

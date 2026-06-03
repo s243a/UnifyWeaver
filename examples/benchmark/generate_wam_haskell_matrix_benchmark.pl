@@ -148,7 +148,11 @@ parse_lmdb_mode(resident_cursor, [
     lmdb_layout(dupsort),
     int_atom_seeds(lmdb),
     demand_bfs_mode(cursor),
-    lmdb_cache_mode(sharded)
+    lmdb_cache_mode(sharded),
+    %% appendix #18 lever: the kernel is int-keyed end-to-end and output is
+    %% int ids, so the s2i/i2s intern table is dead weight (~3.8 GB RSS at
+    %% enwiki, starving the page cache). Skip it so resident_cursor scales.
+    lmdb_skip_intern_table(true)
 ]).
 %% resident_auto: same dupsort/intern setup as resident*, but defers
 %% the cursor-vs-in-memory choice to cost_model.pl via
