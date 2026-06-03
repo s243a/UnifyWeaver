@@ -4,20 +4,18 @@ Status date: 2026-06-02
 
 Latest branch verification:
 
-- `investigate/wam-c-root-distance-cache` based on `main` at `32a74aee`
-  (`Merge pull request #2705 from
-  s243a/investigate/wam-c-child-search-root-distance-pruning`)
-- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales dev --include-parent-only`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10x --include-parent-only --run-timeout-seconds 60`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 1k --include-parent-only --run-timeout-seconds 60`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 5k --include-parent-only --run-timeout-seconds 60`
+- `investigate/wam-c-child-search-scale-ceiling` based on `main` at `a05c8fa3`
+  (`Merge pull request #2707 from
+  s243a/investigate/wam-c-root-distance-cache`)
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --dry-run --scales 10k --include-parent-only`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10k --include-parent-only --run-timeout-seconds 120`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-root-distance-cache`
+- `investigate/wam-c-child-search-scale-ceiling`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -317,7 +315,7 @@ Branch conclusion before cache follow-up:
 - The CSR path is now fast enough to be useful at `10x`; the next scalability
   question is query policy and repeated-root reuse, not raw CSR lookup cost.
 
-### Active: `investigate/wam-c-root-distance-cache`
+### Completed Investigation: `investigate/wam-c-root-distance-cache`
 
 Goal: reuse root-distance calibration across repeated effective-distance
 queries that share the same root, without adding a preprocessing artifact yet.
@@ -363,6 +361,54 @@ Open measurement:
   made a default.
 - The next scalability check should run larger child-search sweeps and compare
   root-cache memory growth against the number of distinct roots.
+
+### Active: `investigate/wam-c-child-search-scale-ceiling`
+
+Goal: find the next full-generated WAM-C child-search scale ceiling after
+root-distance cache reuse, while reporting enough cache-input shape data to
+decide whether persisted min-distance artifacts need cost-planner support.
+
+Implemented so far:
+
+- `benchmark_wam_c_child_search_runtime_sweep.py` now appends
+  `wam_c_child_search_cache_inputs` rows for each requested scale. The row
+  reports root count, distinct category IDs, parent-edge rows,
+  article-category rows, maximum root-cache maps, and the worst-case
+  `roots * category_ids` distance-entry upper bound.
+- Added `--skip-cache-input-summary` for callers that need the wrapper to emit
+  only matrix rows.
+- Added focused unit coverage for the cache-input summary calculation on a
+  tiny fixture with multiple roots, parent edges, and article-category rows.
+
+Evidence:
+
+- `10k` runtime sweep with parent-only comparison and a `120s` per-invocation
+  timeout completed. Parent-only WAM-C emitted `5,192` rows in `6.058s`, while
+  all child-search layouts agreed on `5,262` rows. Sorted-array CSR completed
+  in `6.503s`, buffered-pread-drop CSR in `6.327s`, LMDB-offset CSR in
+  `6.708s`, and scan fallback in `8.133s`.
+- The same `10k` run reported
+  `roots=1 category_ids=8247 parent_edges=25227 article_category_rows=10326 max_cache_maps=1 max_distance_entries_upper_bound=8247`.
+- `50k_cats` and `100k_cats` currently share the same category-parent graph
+  shape for this cache calculation:
+  `roots=4054 category_ids=84136 parent_edges=196900 max_cache_maps=4054 max_distance_entries_upper_bound=341087344`.
+  Their article-category rows differ: `50k_cats` has `50,000`, and
+  `100k_cats` has `84,136`.
+- A constrained full-generated `50k_cats` matrix attempt over
+  `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
+  several minutes. Treat this as inconclusive scale evidence, not as a target
+  timeout row; generation and compilation need separate timing before the
+  query-runtime ceiling can be isolated.
+
+Open measurement:
+
+- Add phase-split timing or a compile-only workflow for generated WAM-C
+  child-search targets at `50k_cats` and `100k_cats`, so the ceiling can be
+  attributed to input staging, C generation, compilation, or query runtime.
+- Compare observed root-cache entry counts against the worst-case
+  `341,087,344` entry bound before adding persisted `min_distance(root,node)`.
+  Persisted distance maps still need to be justified by the cost analyzer
+  because they add preprocessing, storage, and invalidation work.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -553,8 +599,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use `benchmark_wam_c_child_search_runtime_sweep.py` beyond `5k` to find the
-next child-search ceiling now that root-distance maps are reused per root. Keep
+Add phase timing for generated WAM-C child-search matrix rows, or a focused
+compile-only path for `c-wam-accumulated-child-csr`, before rerunning
+`50k_cats`/`100k_cats` full queries. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
