@@ -1202,11 +1202,17 @@ write_build_properties(ProjectDir) :-
     directory_file_path(ProjDir, 'build.properties', Path),
     write_file(Path, Content).
 
-write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
+% WamRuntime is placed in the runtime_package, which GeneratedProgram imports
+% (`import <runtime_package>.WamRuntime._`). Previously this used Package
+% (the program's package) and ignored RuntimePkg, so whenever the two
+% differed — including the DEFAULT options (core vs runtime) — the generated
+% program failed to compile ("value runtime is not a member of ..."). All the
+% smoke/kernel tests happened to pass the same package for both, hiding it.
+write_runtime_source(ProjectDir, _Package, RuntimePkg) :-
     find_template('templates/targets/scala_wam/runtime.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
-    render_template(Template, ['package'=Package, 'date'=DateStr], Content),
-    scala_source_path(ProjectDir, Package, 'WamRuntime', Path),
+    render_template(Template, ['package'=RuntimePkg, 'date'=DateStr], Content),
+    scala_source_path(ProjectDir, RuntimePkg, 'WamRuntime', Path),
     make_directory_path_for(Path),
     write_file(Path, Content).
 

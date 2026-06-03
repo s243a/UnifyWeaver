@@ -48,8 +48,12 @@ user:wam_pair_lmdb(_, _).
 % ============================================================
 
 %% scala_lmdb_available/0 - true if all preconditions hold.
+%  Opt-in via SCALA_LMDB_TESTS being set (to any value); requires scalac on
+%  PATH and LMDBJAVA_CLASSPATH pointing at the lmdbjava JARs. Note getenv/2
+%  unifies the value as an *atom*, so we must not compare it to the string
+%  "1" (that never matches) — presence of the variable is the opt-in signal.
 scala_lmdb_available :-
-    getenv('SCALA_LMDB_TESTS', "1"),
+    getenv('SCALA_LMDB_TESTS', _),
     scalac_on_path,
     getenv('LMDBJAVA_CLASSPATH', _).
 
@@ -132,7 +136,7 @@ write_lmdb_seeder_source(ProjectDir) :-
         Path),
     file_directory_name(Path, Dir),
     make_directory_path(Dir),
-    SeederSrc = "package generated.wam_scala_lmdb_smoke.core\n\nimport java.io.File\nimport java.nio.ByteBuffer\nimport java.nio.charset.StandardCharsets\n\n// Standalone seeder - uses lmdbjava directly (no FactSource\n// indirection) to populate a small LMDB env with three known\n// (key, value) pairs. Run once before the WAM project queries.\nobject LmdbSeeder {\n  def main(args: Array[String]): Unit = {\n    val envPath = args(0)\n    val envDir = new File(envPath)\n    envDir.mkdirs()\n    val envClass = Class.forName(\"org.lmdbjava.Env\")\n    val builder = envClass.getMethod(\"create\").invoke(null)\n    // setMapSize(1L << 20) - 1 MiB, ample for three rows.\n    val setMapSize = builder.getClass.getMethod(\"setMapSize\", java.lang.Long.TYPE)\n    setMapSize.invoke(builder, java.lang.Long.valueOf(1L << 20))\n    val openMethod = builder.getClass.getMethod(\"open\", classOf[File])\n    val env = openMethod.invoke(builder, envDir)\n    val flagsClass = Class.forName(\"org.lmdbjava.DbiFlags\")\n    val mdbCreate = flagsClass.getField(\"MDB_CREATE\").get(null)\n    val flagArr = java.lang.reflect.Array.newInstance(flagsClass, 1)\n    java.lang.reflect.Array.set(flagArr, 0, mdbCreate)\n    val openDbi = envClass.getMethod(\"openDbi\", classOf[String], flagArr.getClass)\n    val dbi = openDbi.invoke(env, \"\", flagArr)\n    val txnWrite = envClass.getMethod(\"txnWrite\")\n    val txn = txnWrite.invoke(env)\n    try {\n      val putMethod = dbi.getClass.getMethod(\"put\",\n        Class.forName(\"org.lmdbjava.Txn\"),\n        classOf[ByteBuffer], classOf[ByteBuffer])\n      def put(k: String, v: String): Unit = {\n        val kb = utf8(k); val vb = utf8(v)\n        putMethod.invoke(dbi, txn, kb, vb)\n      }\n      put(\"alpha\",   \"bravo\")\n      put(\"charlie\", \"delta\")\n      put(\"echo\",    \"foxtrot\")\n      val commit = txn.getClass.getMethod(\"commit\")\n      commit.invoke(txn)\n    } finally {\n      val close = txn.getClass.getMethod(\"close\")\n      close.invoke(txn)\n    }\n    val envClose = envClass.getMethod(\"close\")\n    envClose.invoke(env)\n  }\n  private def utf8(s: String): ByteBuffer = {\n    val bytes = s.getBytes(StandardCharsets.UTF_8)\n    val buf = ByteBuffer.allocateDirect(bytes.length)\n    buf.put(bytes)\n    buf.flip()\n    buf\n  }\n}\n",
+    SeederSrc = "package generated.wam_scala_lmdb_smoke.core\n\nimport java.io.File\nimport java.nio.ByteBuffer\nimport java.nio.charset.StandardCharsets\n\n// Standalone seeder - uses lmdbjava directly (no FactSource\n// indirection) to populate the default (unnamed) LMDB database with\n// three known (key, value) pairs via auto-txn Dbi.put(key, value).\n// Map size matches LmdbFactSource's default so the reader can open it.\nobject LmdbSeeder {\n  def main(args: Array[String]): Unit = {\n    val envPath = args(0)\n    val envDir = new File(envPath)\n    envDir.mkdirs()\n    val envClass = Class.forName(\"org.lmdbjava.Env\")\n    val builder = envClass.getMethod(\"create\").invoke(null)\n    builder.getClass.getMethod(\"setMapSize\", java.lang.Long.TYPE)\n           .invoke(builder, java.lang.Long.valueOf(1L << 30))\n    val envFlagsClass = Class.forName(\"org.lmdbjava.EnvFlags\")\n    val emptyEnvFlags = java.lang.reflect.Array.newInstance(envFlagsClass, 0)\n    val openMethod = builder.getClass.getMethod(\"open\", classOf[File], emptyEnvFlags.getClass)\n    val env = openMethod.invoke(builder, envDir, emptyEnvFlags)\n    val dbiFlagsClass = Class.forName(\"org.lmdbjava.DbiFlags\")\n    val emptyDbiFlags = java.lang.reflect.Array.newInstance(dbiFlagsClass, 0)\n    val openDbi = envClass.getMethod(\"openDbi\", classOf[String], emptyDbiFlags.getClass)\n    val dbi = openDbi.invoke(env, null, emptyDbiFlags)\n    val putMethod = dbi.getClass.getMethod(\"put\", classOf[Object], classOf[Object])\n    def put(k: String, v: String): Unit = { putMethod.invoke(dbi, utf8(k), utf8(v)); () }\n    put(\"alpha\",   \"bravo\")\n    put(\"charlie\", \"delta\")\n    put(\"echo\",    \"foxtrot\")\n    val envClose = envClass.getMethod(\"close\")\n    envClose.invoke(env)\n  }\n  private def utf8(s: String): ByteBuffer = {\n    val bytes = s.getBytes(StandardCharsets.UTF_8)\n    val buf = ByteBuffer.allocateDirect(bytes.length)\n    buf.put(bytes)\n    buf.flip()\n    buf\n  }\n}\n",
     setup_call_cleanup(
         open(Path, write, Stream),
         write(Stream, SeederSrc),
@@ -182,7 +186,9 @@ seed_lmdb_env(ProjectDir, EnvPath) :-
     getenv('LMDBJAVA_CLASSPATH', LmdbCp),
     format(atom(FullCp), '~w:~w', [ClassDir, LmdbCp]),
     process_create(path(scala),
-                   ['-classpath', FullCp,
+                   ['-J--add-opens=java.base/java.nio=ALL-UNNAMED',
+                    '-J--add-exports=java.base/sun.nio.ch=ALL-UNNAMED',
+                    '-classpath', FullCp,
                     'generated.wam_scala_lmdb_smoke.core.LmdbSeeder',
                     EnvPath],
                    [cwd(AbsProjectDir),
@@ -209,7 +215,11 @@ verify_lmdb(ProjectDir, PredKey, Args, Expected) :-
     maplist([A, S]>>atom_string(A, S), Args, ArgStrs),
     getenv('LMDBJAVA_CLASSPATH', LmdbCp),
     format(atom(FullCp), '~w:~w', [ClassDir, LmdbCp]),
-    append(['-classpath', FullCp,
+    % lmdbjava's ByteBufferProxy reflects on java.nio.Buffer.address, which
+    % JDK 16+ strong-encapsulates; --add-opens grants the access.
+    append(['-J--add-opens=java.base/java.nio=ALL-UNNAMED',
+                    '-J--add-exports=java.base/sun.nio.ch=ALL-UNNAMED',
+            '-classpath', FullCp,
             'generated.wam_scala_lmdb_smoke.core.GeneratedProgram',
             PredStr], ArgStrs, ProcArgs),
     process_create(path(scala), ProcArgs,

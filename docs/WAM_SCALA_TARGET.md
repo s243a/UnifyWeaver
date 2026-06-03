@@ -330,9 +330,53 @@ generated handler re-reads the CSV on every call.
   be in the intern table (immutable `WamProgram.internTable`).
 - No `assert/retract`, `format/2`, `write/1`, `read/1`, or other
   side-effecting builtins.
-- LMDB-backed sidecar fact sources are not yet implemented (Phase S8).
+- LMDB-backed sidecar fact sources are supported for **arity-2**
+  relations via `scala_fact_sources([source(P/2, lmdb([env_path(...),
+  dbi(...), dupsort(...)]))])` (see below). Higher arities still fall
+  back to inline/CSV sources.
 - Float arithmetic is `Double` only; rationals and bigints aren't
   supported.
+
+## LMDB fact sources (Phase S8)
+
+Arity-2 fact relations can be backed by a memory-mapped LMDB database
+instead of inline tuples or CSV — the materialisation answer for large
+relations (>100k facts), mirroring the Haskell/Clojure targets.
+
+```prolog
+write_wam_scala_project([user:edge/2],
+    [ package('demo.g'),
+      scala_fact_sources([
+        source(edge/2, lmdb([ env_path('/path/to/lmdb_env'),
+                              dbi(''),            % '' = default/unnamed DB
+                              dupsort(false) ])) % true for multi-value keys
+      ]) ],
+    '/tmp/g').
+```
+
+The generated `LmdbFactSource` resolves `org.lmdbjava` classes
+**reflectively** (`Class.forName`), so the runtime compiles without
+lmdbjava on the classpath — you only need it when an LMDB source is
+actually used. A ground first argument probes by key (`Dbi.get`, or a
+dupsort cursor walk); an unbound first argument streams the whole
+relation.
+
+**Running on JDK 16+:** lmdbjava's optimal `ByteBufferProxy` uses
+internal JDK APIs, so the generated program must be launched with two
+module flags (pass them via `scala -J…`, `java …`, or sbt
+`javaOptions`):
+
+```
+--add-opens   java.base/java.nio=ALL-UNNAMED
+--add-exports java.base/sun.nio.ch=ALL-UNNAMED
+```
+
+The `LmdbFactSource` map size defaults to 1 GiB (virtual; not eagerly
+allocated) and must be ≥ the size the writer created the env with.
+
+The end-to-end protocol contract (seed → read → query) is exercised by
+[test_wam_scala_lmdb_runtime_smoke.pl](../tests/test_wam_scala_lmdb_runtime_smoke.pl),
+gated on `SCALA_LMDB_TESTS` + `LMDBJAVA_CLASSPATH` (the lmdbjava JARs).
 
 ## Contributing
 
