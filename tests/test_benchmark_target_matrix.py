@@ -19,6 +19,7 @@ from benchmark_effective_distance_matrix import (  # noqa: E402
     build_wam_c_effective_distance,
     compile_only_result,
     wam_c_artifact_size_message,
+    wam_c_phase_timing_message,
     kernel_pair_delta_rows,
     parse_args,
     print_kernel_pair_deltas,
@@ -286,6 +287,47 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         generator_command = run_command_mock.call_args_list[0].args[0]
         self.assertEqual(generator_command[-1], "child_csr_sorted")
 
+    def test_c_child_csr_layout_build_records_phase_timings(self) -> None:
+        with patch("benchmark_effective_distance_matrix.require_file") as require_file_mock, \
+             patch("benchmark_effective_distance_matrix.run_command") as run_command_mock, \
+             patch("benchmark_effective_distance_matrix.time.perf_counter") as perf_mock, \
+             patch.object(Path, "exists", return_value=False):
+            require_file_mock.return_value = ROOT / "data" / "benchmark" / "dev" / "facts.pl"
+            run_command_mock.return_value = subprocess.CompletedProcess(
+                args=["wam-c-benchmark"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+            perf_mock.side_effect = [1.0, 1.25, 2.0, 4.5]
+            phase_timings: dict[str, float] = {}
+
+            build_wam_c_effective_distance(
+                ROOT / "output" / "matrix-test",
+                "dev",
+                "kernels_on",
+                "facts_tsv",
+                "child_csr_sorted",
+                phase_timings=phase_timings,
+            )
+
+        self.assertAlmostEqual(phase_timings["generate"], 0.25)
+        self.assertAlmostEqual(phase_timings["compile"], 2.5)
+
+    def test_wam_c_phase_timing_message_uses_stable_order(self) -> None:
+        message = wam_c_phase_timing_message(
+            {
+                "compile": 2.5,
+                "generate": 0.25,
+                "reverse_csr_offset_lmdb_seed": 0.125,
+            }
+        )
+
+        self.assertEqual(
+            message,
+            "generate_s=0.250 reverse_csr_offset_lmdb_seed_s=0.125 compile_s=2.500",
+        )
+
     def test_wam_c_artifact_size_message_reports_generated_layout_files(self) -> None:
         project_dir = (
             ROOT
@@ -305,8 +347,11 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
                 ROOT / "output" / "matrix-test",
                 "dev",
                 "c-wam-accumulated-child-csr",
+                {"generate": 0.25, "compile": 2.5},
             )
 
+        self.assertIn("generate_s=0.250", message)
+        self.assertIn("compile_s=2.500", message)
         self.assertIn("category_parent_tsv_bytes=100", message)
         self.assertIn("reverse_csr_index_bytes=32", message)
         self.assertIn("reverse_csr_values_bytes=64", message)

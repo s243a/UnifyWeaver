@@ -8,9 +8,13 @@ Latest branch verification:
   (`Merge pull request #2707 from
   s243a/investigate/wam-c-root-distance-cache`)
 - `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py tests/test_benchmark_target_matrix.py`
 - `python3 tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 tests/test_benchmark_target_matrix.py`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --dry-run --scales 10k --include-parent-only`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10k --include-parent-only --run-timeout-seconds 120`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10k --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 50k_cats --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
 - `git diff --check`
 
 Active branch:
@@ -379,6 +383,10 @@ Implemented so far:
   only matrix rows.
 - Added focused unit coverage for the cache-input summary calculation on a
   tiny fixture with multiple roots, parent edges, and article-category rows.
+- WAM-C effective-distance matrix compile-only rows now include build phase
+  timings in their message field, so large generated builds can be attributed
+  to Prolog generation, LMDB seeding, reverse-CSR offset seeding, or C
+  compilation.
 
 Evidence:
 
@@ -394,17 +402,27 @@ Evidence:
   `roots=4054 category_ids=84136 parent_edges=196900 max_cache_maps=4054 max_distance_entries_upper_bound=341087344`.
   Their article-category rows differ: `50k_cats` has `50,000`, and
   `100k_cats` has `84,136`.
+- `10k` compile-only for `c-wam-accumulated-child-csr` took `6.750s`,
+  split into `generate_s=6.051` and `compile_s=0.699`. Artifact bytes were
+  `category_parent_tsv_bytes=1266946`, `reverse_csr_index_bytes=118672`, and
+  `reverse_csr_values_bytes=100908`.
+- `50k_cats` compile-only for `c-wam-accumulated-child-csr` took `437.955s`,
+  split into `generate_s=428.912` and `compile_s=9.042`. Artifact bytes were
+  `category_parent_tsv_bytes=10126909`, `reverse_csr_index_bytes=678752`, and
+  `reverse_csr_values_bytes=787600`.
 - A constrained full-generated `50k_cats` matrix attempt over
   `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
-  several minutes. Treat this as inconclusive scale evidence, not as a target
-  timeout row; generation and compilation need separate timing before the
-  query-runtime ceiling can be isolated.
+  several minutes. The compile-only phase split above explains the missing
+  rows: the large-scale blocker is currently generated WAM-C project creation,
+  not query execution.
 
 Open measurement:
 
-- Add phase-split timing or a compile-only workflow for generated WAM-C
-  child-search targets at `50k_cats` and `100k_cats`, so the ceiling can be
-  attributed to input staging, C generation, compilation, or query runtime.
+- Reduce or bypass full WAM-C project generation for large child-search
+  measurements. The next benchmark slice should separate reusable artifact
+  staging from generated C source emission, or add a smaller generated runner
+  that can execute against prebuilt TSV/CSR artifacts without materializing the
+  full facts program.
 - Compare observed root-cache entry counts against the worst-case
   `341,087,344` entry bound before adding persisted `min_distance(root,node)`.
   Persisted distance maps still need to be justified by the cost analyzer
@@ -599,9 +617,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Add phase timing for generated WAM-C child-search matrix rows, or a focused
-compile-only path for `c-wam-accumulated-child-csr`, before rerunning
-`50k_cats`/`100k_cats` full queries. Keep
+Focus on reducing WAM-C generation cost for large child-search measurements:
+either separate reusable artifact staging from generated C source emission, or
+add a small generated runner that can execute against prebuilt TSV/CSR
+artifacts. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

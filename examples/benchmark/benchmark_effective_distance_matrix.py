@@ -77,6 +77,14 @@ DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
 RUST_MATRIX_EXE = "wam_rust_matrix_bench"
 SCALA_EFFECTIVE_DISTANCE_MAIN = "generated.wam_scala_effective_distance.core.EffectiveDistanceRunner"
+WAM_C_PHASE_ORDER = [
+    "generate",
+    "parent_lmdb_compile",
+    "parent_lmdb_seed",
+    "reverse_csr_offset_lmdb_compile",
+    "reverse_csr_offset_lmdb_seed",
+    "compile",
+]
 
 
 def default_scales_csv() -> str:
@@ -279,12 +287,30 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     return [str(project_dir / "hybrid_ed_bench_go")]
 
 
+def timed_run_command(
+    phase_timings: dict[str, float] | None,
+    phase: str,
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if phase_timings is None:
+        return run_command(command, cwd=cwd, env=env)
+    started = time.perf_counter()
+    try:
+        return run_command(command, cwd=cwd, env=env)
+    finally:
+        phase_timings[phase] = time.perf_counter() - started
+
+
 def build_wam_c_effective_distance(
     root: Path,
     scale: str,
     kernel_mode: str,
     fact_storage: str = "facts_tsv",
     layout_profile: str = "parent_only",
+    phase_timings: dict[str, float] | None = None,
 ) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
     project_dir = root / f"wam_c_{kernel_mode}_{fact_storage}_{layout_profile}" / scale
@@ -302,7 +328,7 @@ def build_wam_c_effective_distance(
     ]
     if layout_profile != "parent_only":
         generator_command.append(layout_profile)
-    run_command(generator_command, cwd=ROOT)
+    timed_run_command(phase_timings, "generate", generator_command, cwd=ROOT)
     runtime_path = project_dir / "wam_runtime.c"
     lib_path = project_dir / "lib.c"
     main_path = project_dir / "main.c"
@@ -313,7 +339,9 @@ def build_wam_c_effective_distance(
     if fact_storage == "facts_lmdb":
         seeder_path = project_dir / "seed_category_parent_lmdb.c"
         seeder_binary = project_dir / "seed_category_parent_lmdb"
-        run_command(
+        timed_run_command(
+            phase_timings,
+            "parent_lmdb_compile",
             [
                 "gcc",
                 *compile_flags,
@@ -324,14 +352,16 @@ def build_wam_c_effective_distance(
             ],
             cwd=ROOT,
         )
-        run_command([str(seeder_binary)], cwd=project_dir)
+        timed_run_command(phase_timings, "parent_lmdb_seed", [str(seeder_binary)], cwd=project_dir)
         uses_lmdb_runtime = True
     elif fact_storage != "facts_tsv":
         raise ValueError(f"unknown WAM-C fact storage mode: {fact_storage}")
     reverse_csr_offset_seeder_path = project_dir / "seed_category_child_csr_offsets_lmdb.c"
     if reverse_csr_offset_seeder_path.exists():
         reverse_csr_offset_seeder_binary = project_dir / "seed_category_child_csr_offsets_lmdb"
-        run_command(
+        timed_run_command(
+            phase_timings,
+            "reverse_csr_offset_lmdb_compile",
             [
                 "gcc",
                 *compile_flags,
@@ -342,12 +372,19 @@ def build_wam_c_effective_distance(
             ],
             cwd=ROOT,
         )
-        run_command([str(reverse_csr_offset_seeder_binary)], cwd=project_dir)
+        timed_run_command(
+            phase_timings,
+            "reverse_csr_offset_lmdb_seed",
+            [str(reverse_csr_offset_seeder_binary)],
+            cwd=project_dir,
+        )
         uses_lmdb_runtime = True
     if uses_lmdb_runtime:
         compile_flags.append("-DWAM_C_ENABLE_LMDB")
         link_flags.append("-llmdb")
-    run_command(
+    timed_run_command(
+        phase_timings,
+        "compile",
         [
             "gcc",
             *compile_flags,
@@ -862,6 +899,14 @@ def file_tree_size_bytes(path: Path) -> int:
     return 0
 
 
+def wam_c_phase_timing_message(phase_timings: dict[str, float] | None) -> str:
+    if not phase_timings:
+        return ""
+    ordered = [phase for phase in WAM_C_PHASE_ORDER if phase in phase_timings]
+    extras = sorted(phase for phase in phase_timings if phase not in WAM_C_PHASE_ORDER)
+    return " ".join(f"{phase}_s={phase_timings[phase]:.3f}" for phase in [*ordered, *extras])
+
+
 def wam_c_project_dir(root: Path, scale: str, target: str) -> Path | None:
     profiles = {
         "c-wam-accumulated": ("kernels_on", "facts_tsv", "parent_only"),
@@ -884,10 +929,19 @@ def wam_c_project_dir(root: Path, scale: str, target: str) -> Path | None:
     return root / f"wam_c_{kernel_mode}_{fact_storage}_{layout_profile}" / scale
 
 
-def wam_c_artifact_size_message(root: Path, scale: str, target: str) -> str:
+def wam_c_artifact_size_message(
+    root: Path,
+    scale: str,
+    target: str,
+    phase_timings: dict[str, float] | None = None,
+) -> str:
     project_dir = wam_c_project_dir(root, scale, target)
     if project_dir is None:
         return ""
+    details = []
+    phase_message = wam_c_phase_timing_message(phase_timings)
+    if phase_message:
+        details.append(phase_message)
     artifacts = [
         ("category_parent_tsv", project_dir / "category_parent.tsv"),
         ("category_parent_lmdb", project_dir / "category_parent.lmdb"),
@@ -900,9 +954,10 @@ def wam_c_artifact_size_message(root: Path, scale: str, target: str) -> str:
         size = file_tree_size_bytes(path)
         if size > 0:
             parts.append(f"{label}_bytes={size}")
-    if not parts:
+    details.extend(parts)
+    if not details:
         return "generated/built but not executed"
-    return "generated/built but not executed; " + " ".join(parts)
+    return "generated/built but not executed; " + " ".join(details)
 
 
 def failed_result(
@@ -1113,6 +1168,7 @@ def main() -> int:
         results: list[RunResult] = []
         for scale in scales:
             for target in targets:
+                phase_timings: dict[str, float] = {}
                 build_started = time.perf_counter()
                 if target == "prolog-seeded":
                     command = build_prolog_effective_distance(temp_root, scale, "seeded")
@@ -1131,28 +1187,56 @@ def main() -> int:
                 elif target == "go-wam-accumulated-no-kernels":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
                 elif target == "c-wam-accumulated":
-                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_on")
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", phase_timings=phase_timings
+                    )
                 elif target == "c-wam-accumulated-no-kernels":
-                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_off")
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_off", phase_timings=phase_timings
+                    )
                 elif target == "c-wam-accumulated-lmdb":
-                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_on", "facts_lmdb")
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_on", "facts_lmdb", phase_timings=phase_timings
+                    )
                 elif target == "c-wam-accumulated-no-kernels-lmdb":
-                    command = build_wam_c_effective_distance(temp_root, scale, "kernels_off", "facts_lmdb")
+                    command = build_wam_c_effective_distance(
+                        temp_root, scale, "kernels_off", "facts_lmdb", phase_timings=phase_timings
+                    )
                 elif target == "c-wam-accumulated-child-scan":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", "facts_tsv", "child_scan"
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        "facts_tsv",
+                        "child_scan",
+                        phase_timings=phase_timings,
                     )
                 elif target == "c-wam-accumulated-child-csr":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_sorted"
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        "facts_tsv",
+                        "child_csr_sorted",
+                        phase_timings=phase_timings,
                     )
                 elif target == "c-wam-accumulated-child-csr-drop":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_buffered_drop"
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        "facts_tsv",
+                        "child_csr_buffered_drop",
+                        phase_timings=phase_timings,
                     )
                 elif target == "c-wam-accumulated-child-csr-lmdb-offset":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", "facts_tsv", "child_csr_lmdb_offset"
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        "facts_tsv",
+                        "child_csr_lmdb_offset",
+                        phase_timings=phase_timings,
                     )
                 elif target == "c-wam-lowered-helper":
                     command = build_wam_c_lowered_helper_benchmark(temp_root, scale, "lowered")
@@ -1202,7 +1286,7 @@ def main() -> int:
                     command = commands[target]
                 build_seconds = time.perf_counter() - build_started
                 if target in compile_only_targets:
-                    message = wam_c_artifact_size_message(temp_root, scale, target)
+                    message = wam_c_artifact_size_message(temp_root, scale, target, phase_timings)
                     results.append(compile_only_result(target, scale, build_seconds, message))
                     continue
                 results.append(
