@@ -3511,6 +3511,258 @@ static bool wam_category_id_to_atom(WamState *state, int id, const char **atom_o
     return false;
 }
 
+typedef struct {
+    const char **keys;
+    int *distances;
+    int capacity;
+    int count;
+} WamBidirectionalDistanceMap;
+
+typedef struct {
+    const char **items;
+    int count;
+    int cap;
+} WamBidirectionalAtomQueue;
+
+static uint64_t wam_bidirectional_atom_hash(const char *atom) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)atom;
+    while (*p) {
+        h ^= (uint64_t)(*p++);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void wam_bidirectional_distance_map_init(WamBidirectionalDistanceMap *map) {
+    memset(map, 0, sizeof(WamBidirectionalDistanceMap));
+}
+
+static void wam_bidirectional_distance_map_close(WamBidirectionalDistanceMap *map) {
+    free(map->keys);
+    free(map->distances);
+    memset(map, 0, sizeof(WamBidirectionalDistanceMap));
+}
+
+static int wam_bidirectional_distance_map_slot(const char **keys,
+                                               int capacity,
+                                               const char *key,
+                                               bool *present) {
+    uint64_t h = wam_bidirectional_atom_hash(key);
+    int mask = capacity - 1;
+    int slot = (int)(h & (uint64_t)mask);
+    while (keys[slot]) {
+        if (strcmp(keys[slot], key) == 0) {
+            *present = true;
+            return slot;
+        }
+        slot = (slot + 1) & mask;
+    }
+    *present = false;
+    return slot;
+}
+
+static bool wam_bidirectional_distance_map_reserve(WamBidirectionalDistanceMap *map,
+                                                   int min_capacity) {
+    if (min_capacity < WAM_INITIAL_CAP) min_capacity = WAM_INITIAL_CAP;
+    if (map->capacity >= min_capacity) return true;
+
+    int new_capacity = map->capacity ? map->capacity : WAM_INITIAL_CAP;
+    while (new_capacity < min_capacity) {
+        if (new_capacity > INT_MAX / 2) return false;
+        new_capacity *= 2;
+    }
+
+    const char **new_keys = calloc((size_t)new_capacity, sizeof(const char *));
+    int *new_distances = malloc(sizeof(int) * (size_t)new_capacity);
+    if (!new_keys || !new_distances) {
+        free(new_keys);
+        free(new_distances);
+        return false;
+    }
+
+    for (int i = 0; i < map->capacity; i++) {
+        if (!map->keys[i]) continue;
+        bool present = false;
+        int slot = wam_bidirectional_distance_map_slot(
+            new_keys, new_capacity, map->keys[i], &present);
+        new_keys[slot] = map->keys[i];
+        new_distances[slot] = map->distances[i];
+    }
+
+    free(map->keys);
+    free(map->distances);
+    map->keys = new_keys;
+    map->distances = new_distances;
+    map->capacity = new_capacity;
+    return true;
+}
+
+static bool wam_bidirectional_distance_map_get(WamBidirectionalDistanceMap *map,
+                                               const char *key,
+                                               int *distance_out) {
+    if (map->capacity == 0) return false;
+    bool present = false;
+    int slot = wam_bidirectional_distance_map_slot(
+        map->keys, map->capacity, key, &present);
+    if (!present) return false;
+    *distance_out = map->distances[slot];
+    return true;
+}
+
+static bool wam_bidirectional_distance_map_put_if_absent(
+        WamBidirectionalDistanceMap *map,
+        const char *key,
+        int distance,
+        bool *inserted) {
+    if (map->capacity == 0 || map->count >= map->capacity / 2) {
+        int next_capacity = WAM_INITIAL_CAP;
+        if (map->capacity) {
+            if (map->capacity > INT_MAX / 2) return false;
+            next_capacity = map->capacity * 2;
+        }
+        if (!wam_bidirectional_distance_map_reserve(map, next_capacity)) return false;
+    }
+
+    bool present = false;
+    int slot = wam_bidirectional_distance_map_slot(
+        map->keys, map->capacity, key, &present);
+    if (present) {
+        *inserted = false;
+        return true;
+    }
+    map->keys[slot] = key;
+    map->distances[slot] = distance;
+    map->count++;
+    *inserted = true;
+    return true;
+}
+
+static void wam_bidirectional_atom_queue_init(WamBidirectionalAtomQueue *queue) {
+    memset(queue, 0, sizeof(WamBidirectionalAtomQueue));
+}
+
+static void wam_bidirectional_atom_queue_close(WamBidirectionalAtomQueue *queue) {
+    free(queue->items);
+    memset(queue, 0, sizeof(WamBidirectionalAtomQueue));
+}
+
+static bool wam_bidirectional_atom_queue_push(WamBidirectionalAtomQueue *queue,
+                                              const char *atom) {
+    if (queue->count >= queue->cap) {
+        int next_cap = WAM_INITIAL_CAP;
+        if (queue->cap) {
+            if (queue->cap > INT_MAX / 2) return false;
+            next_cap = queue->cap * 2;
+        }
+        const char **items = realloc(queue->items,
+                                     sizeof(const char *) * (size_t)next_cap);
+        if (!items) return false;
+        queue->items = items;
+        queue->cap = next_cap;
+    }
+    queue->items[queue->count++] = atom;
+    return true;
+}
+
+static bool wam_bidirectional_build_min_distances(WamState *state,
+                                                  const char *root,
+                                                  WamBidirectionalDistanceMap *map) {
+    WamBidirectionalAtomQueue queue;
+    wam_bidirectional_atom_queue_init(&queue);
+
+    bool inserted = false;
+    if (!wam_bidirectional_distance_map_put_if_absent(map, root, 0, &inserted) ||
+        !wam_bidirectional_atom_queue_push(&queue, root)) {
+        wam_bidirectional_atom_queue_close(&queue);
+        return false;
+    }
+
+    for (int head = 0; head < queue.count; head++) {
+        const char *node = queue.items[head];
+        int distance = 0;
+        if (!wam_bidirectional_distance_map_get(map, node, &distance)) continue;
+        int next_distance = distance + 1;
+
+        if (state->bidirectional_child_csr) {
+            int parent_id = 0;
+            if (!wam_category_atom_to_id(state, node, &parent_id)) continue;
+            int child_count = wam_reverse_csr_lookup_children(
+                state->bidirectional_child_csr, parent_id, NULL, 0);
+            if (child_count < 0) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            if (child_count == 0) continue;
+            int *child_ids = malloc(sizeof(int) * (size_t)child_count);
+            if (!child_ids) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            int read_count = wam_reverse_csr_lookup_children(
+                state->bidirectional_child_csr, parent_id, child_ids, child_count);
+            if (read_count < 0) {
+                free(child_ids);
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            int limit = read_count < child_count ? read_count : child_count;
+            for (int i = 0; i < limit; i++) {
+                const char *child = NULL;
+                if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+                bool child_inserted = false;
+                if (!wam_bidirectional_distance_map_put_if_absent(
+                        map, child, next_distance, &child_inserted)) {
+                    free(child_ids);
+                    wam_bidirectional_atom_queue_close(&queue);
+                    return false;
+                }
+                if (child_inserted &&
+                    !wam_bidirectional_atom_queue_push(&queue, child)) {
+                    free(child_ids);
+                    wam_bidirectional_atom_queue_close(&queue);
+                    return false;
+                }
+            }
+            free(child_ids);
+            continue;
+        }
+
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->parent, node) != 0) continue;
+            bool child_inserted = false;
+            if (!wam_bidirectional_distance_map_put_if_absent(
+                    map, edge->child, next_distance, &child_inserted)) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            if (child_inserted &&
+                !wam_bidirectional_atom_queue_push(&queue, edge->child)) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+        }
+    }
+
+    wam_bidirectional_atom_queue_close(&queue);
+    return true;
+}
+
+static bool wam_bidirectional_can_reach_root_within_budget(
+        WamBidirectionalDistanceMap *min_distances,
+        const char *node,
+        double next_cost,
+        double parent_cost,
+        double budget) {
+    int min_parent_hops = 0;
+    if (!wam_bidirectional_distance_map_get(
+            min_distances, node, &min_parent_hops)) {
+        return false;
+    }
+    return next_cost + ((double)min_parent_hops * parent_cost) <= budget;
+}
+
 static bool wam_category_ancestor_dfs(WamState *state,
                                       const char *cat,
                                       const char *root,
@@ -3607,6 +3859,7 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
                                            int parent_hops,
                                            int child_hops,
                                            double cost,
+                                           WamBidirectionalDistanceMap *min_distances,
                                            WamBidirectionalAncestorResults *results);
 
 static bool wam_bidirectional_ancestor_step_child(
@@ -3620,13 +3873,19 @@ static bool wam_bidirectional_ancestor_step_child(
         int parent_hops,
         int child_hops,
         double cost,
+        double parent_cost,
         double child_cost,
         double budget,
+        WamBidirectionalDistanceMap *min_distances,
         WamBidirectionalAncestorResults *results,
         bool *found) {
     if (wam_visited_array_contains(visited, visited_len, child)) return true;
     double next_cost = cost + child_cost;
     if (next_cost > budget) return true;
+    if (!wam_bidirectional_can_reach_root_within_budget(
+            min_distances, child, next_cost, parent_cost, budget)) {
+        return true;
+    }
     int next_child_hops = child_hops + 1;
     if (strcmp(child, root) == 0) {
         if (!wam_bidirectional_ancestor_results_push(
@@ -3643,7 +3902,7 @@ static bool wam_bidirectional_ancestor_step_child(
                                        depth + 1, max_depth,
                                        visited, visited_len + 1,
                                        parent_hops, next_child_hops,
-                                       next_cost, results)) {
+                                       next_cost, min_distances, results)) {
         *found = true;
     }
     return true;
@@ -3660,8 +3919,10 @@ static bool wam_bidirectional_ancestor_expand_children(
         int parent_hops,
         int child_hops,
         double cost,
+        double parent_cost,
         double child_cost,
         double budget,
+        WamBidirectionalDistanceMap *min_distances,
         WamBidirectionalAncestorResults *results,
         bool *found) {
     if (state->bidirectional_child_csr) {
@@ -3677,8 +3938,8 @@ static bool wam_bidirectional_ancestor_expand_children(
             if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
             if (!wam_bidirectional_ancestor_step_child(
                     state, child, root, depth, max_depth, visited, visited_len,
-                    parent_hops, child_hops, cost, child_cost, budget,
-                    results, found)) {
+                    parent_hops, child_hops, cost, parent_cost, child_cost,
+                    budget, min_distances, results, found)) {
                 return false;
             }
         }
@@ -3690,8 +3951,8 @@ static bool wam_bidirectional_ancestor_expand_children(
         if (strcmp(edge->parent, node) != 0) continue;
         if (!wam_bidirectional_ancestor_step_child(
                 state, edge->child, root, depth, max_depth, visited, visited_len,
-                parent_hops, child_hops, cost, child_cost, budget,
-                results, found)) {
+                parent_hops, child_hops, cost, parent_cost, child_cost,
+                budget, min_distances, results, found)) {
             return false;
         }
     }
@@ -3708,6 +3969,7 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
                                            int parent_hops,
                                            int child_hops,
                                            double cost,
+                                           WamBidirectionalDistanceMap *min_distances,
                                            WamBidirectionalAncestorResults *results) {
     bool found = false;
     double parent_cost = state->bidirectional_parent_step_cost > 0.0
@@ -3728,6 +3990,10 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         double next_cost = cost + parent_cost;
         if (next_cost > budget) continue;
+        if (!wam_bidirectional_can_reach_root_within_budget(
+                min_distances, edge->parent, next_cost, parent_cost, budget)) {
+            continue;
+        }
         int next_parent_hops = parent_hops + 1;
         if (strcmp(edge->parent, root) == 0) {
             if (!wam_bidirectional_ancestor_results_push(
@@ -3744,15 +4010,15 @@ static bool wam_bidirectional_ancestor_dfs(WamState *state,
                                            depth + 1, max_depth,
                                            visited, visited_len + 1,
                                            next_parent_hops, child_hops,
-                                           next_cost, results)) {
+                                           next_cost, min_distances, results)) {
             found = true;
         }
     }
 
     if (!wam_bidirectional_ancestor_expand_children(
             state, node, root, depth, max_depth, visited, visited_len,
-            parent_hops, child_hops, cost, child_cost, budget,
-            results, &found)) {
+            parent_hops, child_hops, cost, parent_cost, child_cost, budget,
+            min_distances, results, &found)) {
         return false;
     }
 
@@ -3771,11 +4037,20 @@ bool wam_collect_bidirectional_ancestor_hops(WamState *state,
         return wam_bidirectional_ancestor_results_push(results, 0, 0, 0);
     }
 
+    WamBidirectionalDistanceMap min_distances;
+    wam_bidirectional_distance_map_init(&min_distances);
+    if (!wam_bidirectional_build_min_distances(state, root, &min_distances)) {
+        wam_bidirectional_distance_map_close(&min_distances);
+        return false;
+    }
+
     visited[visited_len++] = cat;
     int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
-    return wam_bidirectional_ancestor_dfs(state, cat, root, 0, max_depth,
-                                          visited, visited_len, 0, 0, 0.0,
-                                          results);
+    bool ok = wam_bidirectional_ancestor_dfs(state, cat, root, 0, max_depth,
+                                             visited, visited_len, 0, 0, 0.0,
+                                             &min_distances, results);
+    wam_bidirectional_distance_map_close(&min_distances);
+    return ok;
 }
 
 static bool wam_unify_bidirectional_ancestor_result(

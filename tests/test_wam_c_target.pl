@@ -271,6 +271,9 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
         sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
         sub_string(S, _, _, _, 'void wam_register_category_id'),
+        sub_string(S, _, _, _, 'WamBidirectionalDistanceMap'),
+        sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
+        sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
     ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
@@ -1839,9 +1842,11 @@ run_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     write_binary_file(IndexPath, [
-        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0,
+        40,0,0,0, 1,0,0,0,0,0,0,0, 1,0,0,0
     ]),
     write_binary_file(ValuesPath, [
+        30,0,0,0,
         30,0,0,0
     ]),
     wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode),
@@ -1879,9 +1884,11 @@ run_reverse_index_setup_executable_smoke :-
            [SetupCode, PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     write_binary_file(IndexPath, [
-        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0,
+        40,0,0,0, 1,0,0,0,0,0,0,0, 1,0,0,0
     ]),
     write_binary_file(ValuesPath, [
+        30,0,0,0,
         30,0,0,0
     ]),
     wam_c_reverse_index_setup_smoke_main(MainCode),
