@@ -201,8 +201,8 @@ child_search_layout_options([
     max_child_expansions(8),
     child_search_depth(1),
     parent_step_cost(1.0),
-    child_step_cost(2.0),
-    child_search_budget(1.0e100)
+    child_step_cost(3.0),
+    child_search_budget(10.0)
 ]).
 
 parse_child_search_options(Options, ChildSearch) :-
@@ -215,8 +215,8 @@ parse_child_search_options(Options, ChildSearch) :-
     option_or_default(max_child_expansions, Options, 0, MaxChildren),
     option_or_default(child_search_depth, Options, 1, ChildDepth),
     option_or_default(parent_step_cost, Options, 1.0, ParentCost),
-    option_or_default(child_step_cost, Options, 1.0, ChildCost),
-    option_or_default(child_search_budget, Options, 1.0e100, Budget),
+    option_or_default(child_step_cost, Options, 3.0, ChildCost),
+    option_or_default(child_search_budget, Options, 10.0, Budget),
     validate_nonnegative_int(max_child_expansions, MaxChildren),
     validate_nonnegative_int(child_search_depth, ChildDepth),
     validate_positive_number(parent_step_cost, ParentCost),

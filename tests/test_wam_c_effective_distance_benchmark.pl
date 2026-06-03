@@ -96,7 +96,7 @@ test_generate_and_run_bounded_child_search :-
         compile_generated_project(OutputDir, facts_tsv),
         run_generated_project(OutputDir, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
     ->  pass(Test)
     ;   fail_test(Test, 'bounded child search runner output mismatch')
     ).
@@ -121,6 +121,7 @@ test_child_search_uses_bidirectional_kernel :-
         sub_string(Lib, _, _, _, 'WAM-compiled predicate: bidirectional_ancestor/5'),
         sub_string(Main, _, _, _, 'setup_bidirectional_ancestor_5(&state);'),
         sub_string(Main, _, _, _, 'wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5"'),
+        sub_string(Main, _, _, _, 'wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5", 10, 1.0, 3.0, 10.0);'),
         sub_string(Main, _, _, _, 'wam_collect_bidirectional_ancestor_hops(state, &bidir)'),
         sub_string(Main, _, _, _, 'path->child_hops <= 0')
     ->  pass(Test)
@@ -162,7 +163,7 @@ test_child_search_builds_reverse_csr :-
         compile_generated_project(OutputDir, facts_tsv),
         run_generated_project(OutputDir, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
     ->  pass(Test)
     ;   fail_test(Test, 'reverse_index csr child-search output mismatch')
     ).
@@ -190,7 +191,7 @@ test_child_search_builds_pread_drop_reverse_csr :-
         sub_string(Lib, _, _, _, 'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val")'),
         compile_generated_project(OutputDir, facts_tsv),
         run_generated_project(OutputDir, Output),
-        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
     ->  pass(Test)
     ;   fail_test(Test, 'buffered_pread_drop reverse_index csr output mismatch')
     ).
@@ -232,7 +233,7 @@ test_child_search_builds_lmdb_offset_reverse_csr :-
         (   lmdb_toolchain_available
         ->  compile_generated_project(OutputDir, facts_tsv),
             run_generated_project(OutputDir, Output),
-            sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+            sub_string(Output, _, _, _, "article_a\troot\t5.000000")
         ;   true
         )
     ->  pass(Test)
@@ -310,7 +311,7 @@ test_generate_and_run_bounded_child_search_kernels_off :-
         compile_generated_project(OutputDir, facts_tsv),
         run_generated_project(OutputDir, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
     ->  pass(Test)
     ;   fail_test(Test, 'kernels_off child search runner output mismatch')
     ).

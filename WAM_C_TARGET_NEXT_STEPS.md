@@ -1,24 +1,21 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-31
+Status date: 2026-06-02
 
 Latest branch verification:
 
-- `investigate/wam-c-child-csr-scale-sweep` based on `main` at `05de16c8`
-  (`Merge pull request #2662 from s243a/investigate/wam-c-larger-artifact-layouts`)
+- `investigate/wam-c-child-search-root-distance-pruning` based on `main` at
+  `e9ce608f` (`Merge pull request #2697 from
+  s243a/investigate/wam-c-child-search-runtime-sweep`)
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
-- `python3 tests/test_benchmark_target_matrix.py`
-- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py tests/test_wam_c_child_csr_scale_sweep.py`
-- `python3 tests/test_wam_c_child_csr_scale_sweep.py`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
-- `python3 examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales dev --include-parent-only`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10x --include-parent-only --run-timeout-seconds 60`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-child-csr-scale-sweep`
+- `investigate/wam-c-child-search-root-distance-pruning`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -190,7 +187,7 @@ Reason:
 - Weighted/A* native kernels previously covered only integer results, while
   Haskell and Rust had broader numeric-result surfaces.
 
-### Active: `investigate/wam-c-child-search-runtime-sweep`
+### Completed Investigation: `investigate/wam-c-child-search-runtime-sweep`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
 layouts remain the right defaults at larger category scales, without forcing
@@ -263,19 +260,60 @@ Implemented so far:
   bounded child expansion query shape, not reverse CSR lookup itself, is the
   blocker beyond smoke scale.
 
-Open measurement:
+Branch conclusion before pruning follow-up:
 
-- Use compile-only rows for routine generated-project comparisons through
-  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, and
-  use the WAM-C CSR lookup microbenchmark when choosing sorted-array versus
-  LMDB-offset file-backed layouts. Schedule full child-search runtime rows
-  only for `dev` unless the query shape or expansion policy changes.
-- The next child-search improvement should focus on pruning/query policy, not
-  on in-memory CSR. The file-backed sorted-array lookup is already cheap in the
-  narrow runtime benchmark.
+- The sweep showed full child-search runtime rows should stay smoke-scale until
+  query pruning changed.
+- The next child-search improvement needed to focus on pruning/query policy,
+  not in-memory CSR. The file-backed sorted-array lookup was already cheap in
+  the narrow runtime benchmark.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
+
+### Active: `investigate/wam-c-child-search-root-distance-pruning`
+
+Goal: bring WAM-C child-search pruning closer to the F# and Haskell hybrid WAM
+kernels by adding the root-distance lower bound that makes bounded child path
+exploration viable beyond smoke scale.
+
+Implemented so far:
+
+- Added a per-query `WamBidirectionalDistanceMap` to the generated C runtime.
+  It is built by BFS from the requested root over child edges, using the
+  attached reverse CSR artifact when available and falling back to the loaded
+  parent-edge table when no CSR is attached.
+- Parent and child frontier candidates now require
+  `next_cost + min_parent_hops_to_root * parent_step_cost <= budget`. Missing
+  min-distance entries are pruned, matching the F#/Haskell behavior for nodes
+  that cannot route back to the requested root.
+- Changed bounded child-search generator defaults from effectively unbounded
+  child exploration to `parent_step_cost(1.0)`, `child_step_cost(3.0)`, and
+  `child_search_budget(10.0)`. Explicit options still override these values.
+- Updated CSR smokes so reverse CSR fixtures contain both the expansion row and
+  the root-descendant row required by root-distance calibration.
+
+Evidence:
+
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `dev` runtime sweep: parent-only and all child-search layouts now agree on
+  `19` rows; child CSR, pread/drop CSR, LMDB-offset CSR, and scan complete in
+  roughly `0.004-0.005s`.
+- `10x` runtime sweep with a `60s` timeout: sorted-array CSR completes in
+  `1.460s`, pread/drop CSR in `1.449s`, LMDB-offset CSR in `1.479s`, and
+  scan fallback in `4.100s`. The prior child-search timeout is gone, and all
+  child-search layouts agree on `187` rows. Parent-only remains faster
+  (`0.066s`) and emits `183` rows, so the output mismatch is expected when
+  child paths are enabled.
+
+Open measurement:
+
+- The min-distance map is intentionally per-query for now. If repeated roots
+  dominate a workload, add a root-keyed cache or generated warmup path before
+  pushing child search to larger English Wikipedia category workloads.
+- The CSR path is now fast enough to be useful at `10x`; the next scalability
+  question is query policy and repeated-root reuse, not raw CSR lookup cost.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -466,13 +504,11 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
-generated-project artifact comparisons through `10k`, and use
-`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only --scales
-50k_cats,100k_cats` for large category-graph artifact bytes. Use
-`benchmark_wam_c_reverse_csr_lookup.py` for narrow WAM-C runtime lookup costs.
-Use `benchmark_wam_c_child_search_runtime_sweep.py` only for smoke-scale
-end-to-end child-search runs until the expansion policy is narrowed. The current
-evidence supports keeping sorted-array file-backed CSR as the first child-lookup
-layout, deferring in-memory compressed CSR, and next improving child-search
-pruning/cost policy before spending more effort on storage layout.
+Use `benchmark_wam_c_child_search_runtime_sweep.py` as the routine child-search
+runtime check through `10x`, now that root-distance pruning removes the previous
+timeout. Keep `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for
+large category-graph artifact bytes, and use
+`benchmark_wam_c_reverse_csr_lookup.py` only when changing CSR lookup storage.
+The next useful C child-search work is repeated-root reuse for the per-query
+min-distance map, followed by a larger-scale runtime sweep before considering
+in-memory compressed CSR.
