@@ -363,7 +363,25 @@ The generated `LmdbFactSource` resolves `org.lmdbjava` classes
 lmdbjava on the classpath — you only need it when an LMDB source is
 actually used. A ground first argument probes by key (`Dbi.get`, or a
 dupsort cursor walk); an unbound first argument streams the whole
-relation.
+relation (cursor scan).
+
+### LMDB-backed graph kernels
+
+`kernel_dispatch(true)` and an LMDB-backed edge relation compose: a
+detected graph kernel (e.g. `transitive_closure2`) builds its adjacency
+by enumerating the edge predicate through `collectBinarySolutions`, which
+runs whatever backs that predicate — including an `LmdbFactSource`. So a
+native BFS/Dijkstra/A\* kernel can run directly over edges materialised
+in LMDB, the intended large-graph path (>100k facts):
+
+```prolog
+write_wam_scala_project([user:tc/2, user:edge/2],
+    [ kernel_dispatch(true),
+      scala_fact_sources([
+        source(edge/2, lmdb([ env_path('/path/to/lmdb_env'),
+                              dbi(''), dupsort(true) ])) ]) ],
+    '/tmp/g').
+```
 
 **Running on JDK 16+:** lmdbjava's optimal `ByteBufferProxy` uses
 internal JDK APIs, so the generated program must be launched with two
