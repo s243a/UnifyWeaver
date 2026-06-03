@@ -4,18 +4,20 @@ Status date: 2026-06-02
 
 Latest branch verification:
 
-- `investigate/wam-c-child-search-root-distance-pruning` based on `main` at
-  `e9ce608f` (`Merge pull request #2697 from
-  s243a/investigate/wam-c-child-search-runtime-sweep`)
+- `investigate/wam-c-root-distance-cache` based on `main` at `32a74aee`
+  (`Merge pull request #2705 from
+  s243a/investigate/wam-c-child-search-root-distance-pruning`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales dev --include-parent-only`
 - `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10x --include-parent-only --run-timeout-seconds 60`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 1k --include-parent-only --run-timeout-seconds 60`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 5k --include-parent-only --run-timeout-seconds 60`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-child-search-root-distance-pruning`
+- `investigate/wam-c-root-distance-cache`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -271,7 +273,7 @@ Branch conclusion before pruning follow-up:
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
 
-### Active: `investigate/wam-c-child-search-root-distance-pruning`
+### Completed Investigation: `investigate/wam-c-child-search-root-distance-pruning`
 
 Goal: bring WAM-C child-search pruning closer to the F# and Haskell hybrid WAM
 kernels by adding the root-distance lower bound that makes bounded child path
@@ -307,13 +309,60 @@ Evidence:
   (`0.066s`) and emits `183` rows, so the output mismatch is expected when
   child paths are enabled.
 
-Open measurement:
+Branch conclusion before cache follow-up:
 
-- The min-distance map is intentionally per-query for now. If repeated roots
-  dominate a workload, add a root-keyed cache or generated warmup path before
-  pushing child search to larger English Wikipedia category workloads.
+- The min-distance map was intentionally per-query in this branch. The next
+  useful follow-up was root-keyed cache reuse because effective-distance runs
+  query the same roots repeatedly.
 - The CSR path is now fast enough to be useful at `10x`; the next scalability
   question is query policy and repeated-root reuse, not raw CSR lookup cost.
+
+### Active: `investigate/wam-c-root-distance-cache`
+
+Goal: reuse root-distance calibration across repeated effective-distance
+queries that share the same root, without adding a preprocessing artifact yet.
+
+Implemented so far:
+
+- Added an opaque `bidirectional_min_distance_cache` pointer to `WamState`.
+- The generated C runtime now keeps a root-keyed linked list of
+  `WamBidirectionalDistanceMap` entries. `wam_collect_bidirectional_ancestor_hops`
+  reuses an existing root map when possible and builds a new one only on a
+  cache miss.
+- Cache entries are freed by `wam_free_state` and invalidated when category
+  parent facts, category IDs, or the attached child CSR artifact change.
+- Executable smokes assert that a successful bidirectional query populates the
+  cache and that fact/CSR mutations clear it.
+
+Evidence:
+
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `dev` runtime sweep: all layouts still agree on `19` rows; child-search
+  layouts complete in roughly `0.004-0.005s`.
+- `10x` runtime sweep with a `60s` timeout: sorted-array CSR completes in
+  `0.110s`, pread/drop CSR in `0.101s`, LMDB-offset CSR in `0.102s`, and scan
+  fallback in `0.128s`. This is down from about `1.45s` for CSR and `4.10s`
+  for scan after root-distance pruning but before root-cache reuse.
+- `1k` runtime sweep with a `60s` timeout: parent-only and all child-search
+  layouts agree on `580` rows; sorted-array CSR completes in `0.584s`,
+  pread/drop CSR in `0.598s`, LMDB-offset CSR in `0.567s`, and scan fallback
+  in `0.708s`.
+- `5k` runtime sweep with a `60s` timeout: parent-only and all child-search
+  layouts agree on `3,224` rows; sorted-array CSR completes in `2.992s`,
+  pread/drop CSR in `3.185s`, LMDB-offset CSR in `3.394s`, and scan fallback
+  in `3.679s`.
+
+Open measurement:
+
+- Root-distance maps can now be reused within a generated query run, but they
+  are still runtime-local. Persisting `min_distance(root,node)` in LMDB or a
+  compact artifact could reduce cold-start work for workloads with stable roots,
+  but it adds preprocessing time, storage, invalidation complexity, and planner
+  surface area. That option should be gated by the cost analyzer rather than
+  made a default.
+- The next scalability check should run larger child-search sweeps and compare
+  root-cache memory growth against the number of distinct roots.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -504,11 +553,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use `benchmark_wam_c_child_search_runtime_sweep.py` as the routine child-search
-runtime check through `10x`, now that root-distance pruning removes the previous
-timeout. Keep `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for
-large category-graph artifact bytes, and use
-`benchmark_wam_c_reverse_csr_lookup.py` only when changing CSR lookup storage.
-The next useful C child-search work is repeated-root reuse for the per-query
-min-distance map, followed by a larger-scale runtime sweep before considering
-in-memory compressed CSR.
+Use `benchmark_wam_c_child_search_runtime_sweep.py` beyond `5k` to find the
+next child-search ceiling now that root-distance maps are reused per root. Keep
+`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
+category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
+only when changing CSR lookup storage. Do not persist root-distance maps to
+LMDB or a separate artifact by default; add that only behind a cost-analyzer
+decision that can justify the extra preprocessing and invalidation surface.

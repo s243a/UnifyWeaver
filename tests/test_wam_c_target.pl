@@ -272,8 +272,11 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
         sub_string(S, _, _, _, 'void wam_register_category_id'),
         sub_string(S, _, _, _, 'WamBidirectionalDistanceMap'),
+        sub_string(S, _, _, _, 'WamBidirectionalDistanceCacheEntry'),
         sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
+        sub_string(S, _, _, _, 'wam_bidirectional_get_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
+        sub_string(S, _, _, _, 'bidirectional_min_distance_cache'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
     ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
@@ -3239,6 +3242,15 @@ int main(void) {
         wam_free_state(&state);
         return 10;
     }
+    if (state.bidirectional_min_distance_cache == NULL) {
+        wam_free_state(&state);
+        return 11;
+    }
+    wam_register_category_parent(&state, "fresh_child", "root");
+    if (state.bidirectional_min_distance_cache != NULL) {
+        wam_free_state(&state);
+        return 12;
+    }
 
     wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
                                                4, 1.0, 2.0, 2.5);
@@ -3303,8 +3315,18 @@ int main(void) {
         wam_free_state(&state);
         return 10;
     }
+    if (state.bidirectional_min_distance_cache == NULL) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 11;
+    }
 
     wam_attach_bidirectional_child_csr(&state, NULL);
+    if (state.bidirectional_min_distance_cache != NULL) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 12;
+    }
     WamValue fallback_args[5] = {
         val_atom("orphan"),
         val_atom("root"),
