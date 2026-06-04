@@ -1469,7 +1469,8 @@ declare i32 @chdir(i8*)
 declare i32 @getpid()
 declare double @asin(double)
 declare double @acos(double)
-declare double @atan(double)'
+declare double @atan(double)
+declare double @atan2(double, double)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -10060,8 +10061,25 @@ ev_div_f_go:
 
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
-  %nb_is_m = icmp eq i8 %fn0, 109
-  br i1 %nb_is_m, label %ev_nb_second, label %ev_zero
+  ; atan2 -- functor name starts with ``a`` (M81).
+  switch i8 %fn0, label %ev_zero [
+    i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
+    i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
+  ]
+ev_nb_a_second:
+  ; M81: only atan2 starts with ``a'' in the binary path. Verify the
+  ; second byte is ``t'' so a stray ``a''-prefixed binary name
+  ; doesn''t pretend to be atan2.
+  %nba.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nba.fn1 = load i8, i8* %nba.fn1_ptr
+  %nba.is_t = icmp eq i8 %nba.fn1, 116
+  br i1 %nba.is_t, label %ev_atan2, label %ev_zero
+ev_atan2:
+  %a2.a_d = call double @value_to_double(%Value %a)
+  %a2.b_d = call double @value_to_double(%Value %b)
+  %a2.r = call double @atan2(double %a2.a_d, double %a2.b_d)
+  %a2.v = call %Value @value_float(double %a2.r)
+  ret %Value %a2.v
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_fn1 = load i8, i8* %nb_fn1_ptr
