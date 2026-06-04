@@ -45,6 +45,7 @@
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 :- use_module(library(random)).
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 :- use_module('wam_conformance_fixtures').
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/targets/wam_scala_target').
@@ -121,11 +122,19 @@ ct_skip(wat, reverse).
 % Toolchain probes
 % ============================================================
 
-ct_toolchain(scala,  [scalac, scala]).
+ct_toolchain(scala,  [scalac]).
 ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 
+ct_available(scala) :-
+    ct_enabled(scala),
+    exe_on_path(scalac),
+    (   exe_on_path(java), scala_runtime_jars(_)
+    ;   exe_on_path(scala)
+    ),
+    !.
 ct_available(Target) :-
+    Target \= scala,
     ct_enabled(Target),
     ct_toolchain(Target, Exes),
     forall(member(E, Exes), exe_on_path(E)).
@@ -264,7 +273,9 @@ bool_of_string(S, B) :-
 
 ct_tmp_dir(Prefix, Dir) :-
     get_time(T), Stamp is floor(T * 1000000),
-    format(atom(Dir), '/tmp/~w_~w', [Prefix, Stamp]),
+    tmp_root(Root),
+    format(atom(Base), '~w_~w', [Prefix, Stamp]),
+    directory_file_path(Root, Base, Dir),
     make_directory_path(Dir).
 
 cleanup_dir(Dir) :-
@@ -282,6 +293,14 @@ run_proc_out(Exe, Args, Cwd, Exit, OutStr) :-
     process_create(path(Exe), Args,
                    [cwd(Cwd), stdout(pipe(Out)), stderr(null), process(Pid)]),
     read_string(Out, _, OutStr), close(Out), process_wait(Pid, exit(Exit)).
+
+run_proc_out_err(Exe, Args, Cwd, Exit, OutStr, ErrStr) :-
+    process_create(path(Exe), Args,
+                   [cwd(Cwd), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, OutStr),
+    read_string(Err, _, ErrStr),
+    close(Out), close(Err),
+    process_wait(Pid, exit(Exit)).
 
 %% Wrapper synthesis (elixir / wat). One ground 0-arity wrapper per
 %  query, asserted into user as `ctw_N :- pred(Args).`. The global
@@ -330,10 +349,54 @@ ct_run(scala, scala_ctx(Dir), PredKey, Args, Bool) :-
     atom_string(PredKey, PredStr),
     maplist(render_arg, Args, ArgAtoms),
     maplist([X,S]>>atom_string(X,S), ArgAtoms, ArgStrs),
-    append(['-classpath', ClassDir,
-            'generated.wam_ct.core.GeneratedProgram', PredStr], ArgStrs, ProcArgs),
-    run_proc_out(scala, ProcArgs, Abs, _Exit, OutStr),
-    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+    scala_run_command(ClassDir, 'generated.wam_ct.core.GeneratedProgram', PredStr,
+                      ArgStrs, Exe, ProcArgs),
+    run_proc_out_err(Exe, ProcArgs, Abs, Exit, OutStr, ErrStr),
+    (   Exit =:= 0
+    ->  normalize_space(string(Out), OutStr), bool_of_string(Out, Bool)
+    ;   throw(scala_run_failed(Exit, PredKey, Args, ErrStr))
+    ).
+
+scala_run_command(ClassDir, MainClass, PredStr, ArgStrs, java, ProcArgs) :-
+    scala_runtime_classpath(ClassDir, ClassPath),
+    !,
+    append(['-cp', ClassPath, MainClass, PredStr], ArgStrs, ProcArgs).
+scala_run_command(ClassDir, MainClass, PredStr, ArgStrs, scala, ProcArgs) :-
+    append(['-classpath', ClassDir, MainClass, PredStr], ArgStrs, ProcArgs).
+
+scala_runtime_classpath(ClassDir, ClassPath) :-
+    scala_runtime_jars(Jars),
+    path_list_separator(Sep),
+    atomic_list_concat([ClassDir|Jars], Sep, ClassPath).
+
+scala_runtime_jars(Jars) :-
+    findall(Jar, scala_runtime_jar(Jar), Jars0),
+    sort(Jars0, Jars),
+    Jars \= [].
+
+path_list_separator(';') :- current_prolog_flag(windows, true), !.
+path_list_separator(':').
+
+scala_runtime_jar(Jar) :-
+    scala_lang_maven_root(Root),
+    member(Artifact, ['scala-library', 'scala3-library_3', 'tasty-core_3']),
+    directory_file_path(Root, Artifact, ArtifactDir),
+    exists_directory(ArtifactDir),
+    directory_member(ArtifactDir, Rel,
+                     [extensions([jar]), recursive(true)]),
+    directory_file_path(ArtifactDir, Rel, Jar).
+
+scala_lang_maven_root(Root) :-
+    getenv('SCALA_MAVEN_ROOT', Raw),
+    Raw \== '',
+    exists_directory(Raw),
+    !,
+    Root = Raw.
+scala_lang_maven_root(Root) :-
+    getenv('PREFIX', Prefix),
+    Prefix \== '',
+    directory_file_path(Prefix, 'opt/scala/maven2/org/scala-lang', Root),
+    exists_directory(Root).
 
 ct_teardown(scala, scala_ctx(Dir)) :- cleanup_dir(Dir).
 
