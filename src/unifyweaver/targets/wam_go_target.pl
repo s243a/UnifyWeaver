@@ -172,28 +172,14 @@ var _ = fmt.Sprintf
     ;   true
     ),
 
-    % Generate main.go with RunParallel when parallel(true)
-    (   option(parallel(true), Options)
-    ->  (   PackageName == main
-        ->  format(atom(MainContent),
-'package main
-
-import "fmt"
-
-func main() {
-	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
-	seeds := [][]Value{
-		{&Atom{Name: "query"}},
-	}
-	results := RunParallel(ctx, seeds, 0)
-	for i, res := range results {
-		if res != nil {
-			fmt.Printf("Seed %%d: %%v\\n", i, res)
-		}
-	}
-}
-', [])
-        ;   format(atom(MainContent),
+    % Generate main.go benchmark harness from template (when package is main)
+    (   PackageName == main
+    ->  read_template_file('templates/targets/go_wam/main_bench.go.mustache', MainTemplate),
+        render_template(MainTemplate, [package_name=PackageName], MainContent),
+        directory_file_path(ProjectDir, 'main.go', MainPath),
+        write_file(MainPath, MainContent)
+    ;   option(parallel(true), Options)
+    ->  format(atom(MainContent),
 'package main
 
 import (
@@ -213,8 +199,7 @@ func main() {
 		}
 	}
 }
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName])
-        ),
+', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
@@ -1844,6 +1829,17 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
             vm.PC = pc
             return true
         }
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            if vm.executeForeignPredicate(i.Pred, i.Arity) {
+                vm.PC = vm.CP
+                return true
+            }
+            return false
+        }
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            vm.PC = vm.CP
+            return true
+        }
         return false').
 
 wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
@@ -1891,7 +1887,10 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
-        return false').
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            return vm.executeForeignPredicate(i.Pred, 0)
+        }
+        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
         return true').
