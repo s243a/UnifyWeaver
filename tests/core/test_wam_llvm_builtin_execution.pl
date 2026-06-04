@@ -2459,6 +2459,31 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M85: bitwise /\ (AND), \/ (OR), \ (unary NOT).
+
+:- dynamic test_band_basic/2.
+test_band_basic(_, R) :-
+    R is 12 /\ 10.   % 8 (1100 AND 1010 = 1000)
+
+:- dynamic test_band_byte/2.
+test_band_byte(_, R) :-
+    R is 0xFF /\ 0x0F.   % 15 (mask low nibble)
+
+:- dynamic test_bor_basic/2.
+test_bor_basic(_, R) :-
+    R is 5 \/ 3.   % 7 (101 OR 011 = 111)
+
+:- dynamic test_bor_combine/2.
+test_bor_combine(_, R) :-
+    % Combine bit flags: 1 | 2 | 4 | 8 | 16 = 31.
+    R is 1 \/ 2 \/ 4 \/ 8 \/ 16.   % 31
+
+:- dynamic test_bnot_byte/2.
+test_bnot_byte(_, R) :-
+    % \(0) = -1; low 8 bits = 0xFF = 255.
+    X is \0,
+    R is X /\ 0xFF.   % 255
+
 % M84: integer bitshifts -- << / >>.
 
 :- dynamic test_shl_basic/2.
@@ -4540,6 +4565,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M85 bitwise /\\ \\/ \\ ---~n'),
+       run_test_r0('12 /\\ 10 -> 8',
+                   test_band_basic, 0, 8),
+       run_test_r0('0xFF /\\ 0x0F -> 15',
+                   test_band_byte, 0, 15),
+       run_test_r0('5 \\/ 3 -> 7',
+                   test_bor_basic, 0, 7),
+       run_test_r0('1\\/2\\/4\\/8\\/16 -> 31',
+                   test_bor_combine, 0, 31),
+       run_test_r0('\\0 /\\ 0xFF -> 255',
+                   test_bnot_byte, 0, 255),
        format('--- M84 integer bitshifts << / >> ---~n'),
        run_test_r0('1 << 4 -> 16',
                    test_shl_basic, 0, 16),
