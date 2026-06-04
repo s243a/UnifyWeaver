@@ -9948,6 +9948,8 @@ ev_eval_binary:
     i8 45, label %ev_sub
     i8 42, label %ev_mul_or_pow
     i8 47, label %ev_div
+    i8 60, label %ev_shl_check    ; ''<'' -> << (M84)
+    i8 62, label %ev_shr_check    ; ''>'' -> >> (M84)
   ]
 
 ev_add:
@@ -10091,6 +10093,37 @@ ev_div_f_go:
   %div_r_d = fdiv double %div_a_d, %div_b_d
   %div_v_f = call %Value @value_float(double %div_r_d)
   ret %Value %div_v_f
+
+ev_shl_check:
+  ; M84: << is the only ``<''-prefix binary arith op. Verify the
+  ; second byte is also ``<'' (60) so a stray ``<=''/``<+''/etc.
+  ; doesn''t fall through to ev_shl.
+  %shl.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shl.fn1 = load i8, i8* %shl.fn1_ptr
+  %shl.is_lt = icmp eq i8 %shl.fn1, 60
+  br i1 %shl.is_lt, label %ev_shl, label %ev_zero
+ev_shl:
+  ; Integer-only logical left shift on i64 payloads.
+  %shl.a_i = extractvalue %Value %a, 1
+  %shl.b_i = extractvalue %Value %b, 1
+  %shl.r = shl i64 %shl.a_i, %shl.b_i
+  %shl.v = call %Value @value_integer(i64 %shl.r)
+  ret %Value %shl.v
+
+ev_shr_check:
+  ; M84: >> via second-byte verify, mirroring ev_shl_check.
+  %shr.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shr.fn1 = load i8, i8* %shr.fn1_ptr
+  %shr.is_gt = icmp eq i8 %shr.fn1, 62
+  br i1 %shr.is_gt, label %ev_shr, label %ev_zero
+ev_shr:
+  ; Integer arithmetic right shift (sign-preserving). Prolog
+  ; integers are signed, so ashr matches the host semantics.
+  %shr.a_i = extractvalue %Value %a, 1
+  %shr.b_i = extractvalue %Value %b, 1
+  %shr.r = ashr i64 %shr.a_i, %shr.b_i
+  %shr.v = call %Value @value_integer(i64 %shr.r)
+  ret %Value %shr.v
 
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.

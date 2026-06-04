@@ -2459,6 +2459,29 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M84: integer bitshifts -- << / >>.
+
+:- dynamic test_shl_basic/2.
+test_shl_basic(_, R) :-
+    R is 1 << 4.   % 16
+
+:- dynamic test_shl_byte_top/2.
+test_shl_byte_top(_, R) :-
+    R is 1 << 7.   % 128
+
+:- dynamic test_shl_31_3/2.
+test_shl_31_3(_, R) :-
+    R is 31 << 3.   % 248 (31 * 8)
+
+:- dynamic test_shr_basic/2.
+test_shr_basic(_, R) :-
+    R is 240 >> 4.   % 15
+
+:- dynamic test_shr_round/2.
+test_shr_round(_, R) :-
+    % (1 << 8) >> 4 = 256 >> 4 = 16.
+    R is 256 >> 4.   % 16
+
 % M83: pi/e atom constants + xor/2 integer bitwise.
 
 :- dynamic test_pi_50/2.
@@ -4517,6 +4540,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M84 integer bitshifts << / >> ---~n'),
+       run_test_r0('1 << 4 -> 16',
+                   test_shl_basic, 0, 16),
+       run_test_r0('1 << 7 -> 128',
+                   test_shl_byte_top, 0, 128),
+       run_test_r0('31 << 3 -> 248',
+                   test_shl_31_3, 0, 248),
+       run_test_r0('240 >> 4 -> 15',
+                   test_shr_basic, 0, 15),
+       run_test_r0('256 >> 4 -> 16',
+                   test_shr_round, 0, 16),
        format('--- M83 pi/e constants + xor/2 ---~n'),
        run_test_r0('truncate(pi * 50) -> 157',
                    test_pi_50, 0, 157),
