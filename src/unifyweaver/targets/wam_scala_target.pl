@@ -1370,13 +1370,22 @@ write_file(Path, Content) :-
     ).
 
 %% find_template(+RelPath, -Template) is det.
-%  Locates a template file relative to the UnifyWeaver project root.
+%  Locates a template file relative to the UnifyWeaver project root,
+%  derived from THIS module's source location so it works regardless of
+%  the current working directory. The previous version called
+%  source_file(wam_scala_target, _) -- a bare module atom, which is a
+%  predicate Head (wam_scala_target/0, undefined), so the lookup failed
+%  and silently fell back to the cwd-relative path. It also walked up
+%  only three directories (to .../src), not four (the repo root). Both
+%  meant templates were found ONLY when the cwd was the repo root (e.g.
+%  the conformance harness, cwd=tests/, could not build Scala at all).
 find_template(RelPath, Template) :-
-    (   source_file(wam_scala_target, SrcFile)
-    ->  file_directory_name(SrcFile, SrcDir),
-        file_directory_name(SrcDir, TargetsDir),
-        file_directory_name(TargetsDir, UnifyWeaverDir),
-        atomic_list_concat([UnifyWeaverDir, '/', RelPath], AbsPath)
+    (   source_file(find_template(_, _), SrcFile)
+    ->  file_directory_name(SrcFile, SrcDir),        % .../src/unifyweaver/targets
+        file_directory_name(SrcDir, UWDir),          % .../src/unifyweaver
+        file_directory_name(UWDir, SrcRoot),         % .../src
+        file_directory_name(SrcRoot, ProjectRoot),   % .../  (repo root)
+        atomic_list_concat([ProjectRoot, '/', RelPath], AbsPath)
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).
