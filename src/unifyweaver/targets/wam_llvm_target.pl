@@ -10062,9 +10062,13 @@ ev_div_f_go:
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
   ; atan2 -- functor name starts with ``a`` (M81).
+  ; gcd -- functor name starts with ``g`` (M82).
+  ; log/2 -- functor name starts with ``l`` (M82).
   switch i8 %fn0, label %ev_zero [
     i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
     i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
+    i8 103, label %ev_gcd         ; ''g'' -> gcd
+    i8 108, label %ev_log2        ; ''l'' -> log/2
   ]
 ev_nb_a_second:
   ; M81: only atan2 starts with ``a'' in the binary path. Verify the
@@ -10080,6 +10084,44 @@ ev_atan2:
   %a2.r = call double @atan2(double %a2.a_d, double %a2.b_d)
   %a2.v = call %Value @value_float(double %a2.r)
   ret %Value %a2.v
+
+ev_gcd:
+  ; M82: gcd(A, B) -- integer-only. Iterative Euclid on i64 with
+  ; abs() of both args so negative inputs still produce a positive
+  ; gcd (matching SWI semantics). gcd(0, 0) is defined as 0.
+  %gcd.a_i = extractvalue %Value %a, 1
+  %gcd.b_i = extractvalue %Value %b, 1
+  %gcd.a_neg = icmp slt i64 %gcd.a_i, 0
+  %gcd.a_op = sub i64 0, %gcd.a_i
+  %gcd.a_abs = select i1 %gcd.a_neg, i64 %gcd.a_op, i64 %gcd.a_i
+  %gcd.b_neg = icmp slt i64 %gcd.b_i, 0
+  %gcd.b_op = sub i64 0, %gcd.b_i
+  %gcd.b_abs = select i1 %gcd.b_neg, i64 %gcd.b_op, i64 %gcd.b_i
+  br label %gcd.loop
+gcd.loop:
+  %gcd.x = phi i64 [ %gcd.a_abs, %ev_gcd ], [ %gcd.y, %gcd.step ]
+  %gcd.y = phi i64 [ %gcd.b_abs, %ev_gcd ], [ %gcd.r, %gcd.step ]
+  %gcd.y_zero = icmp eq i64 %gcd.y, 0
+  br i1 %gcd.y_zero, label %gcd.done, label %gcd.step
+gcd.step:
+  %gcd.r = srem i64 %gcd.x, %gcd.y
+  br label %gcd.loop
+gcd.done:
+  %gcd.v = call %Value @value_integer(i64 %gcd.x)
+  ret %Value %gcd.v
+
+ev_log2:
+  ; M82: log(Base, X) -- change-of-base via log(X)/log(Base).
+  ; Always Float; matches the existing log/1 (natural log) when
+  ; Base == e.
+  %lg2.base_d = call double @value_to_double(%Value %a)
+  %lg2.x_d = call double @value_to_double(%Value %b)
+  %lg2.lnb = call double @llvm.log.f64(double %lg2.base_d)
+  %lg2.lnx = call double @llvm.log.f64(double %lg2.x_d)
+  %lg2.r = fdiv double %lg2.lnx, %lg2.lnb
+  %lg2.v = call %Value @value_float(double %lg2.r)
+  ret %Value %lg2.v
+
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_fn1 = load i8, i8* %nb_fn1_ptr
