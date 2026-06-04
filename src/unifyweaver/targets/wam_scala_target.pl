@@ -714,7 +714,10 @@ is_pred_label(PredKey, Entry) :-
 %  Generates a def wrapper that calls runPredicate with the right start PC.
 emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     % Build argument list: a1: WamTerm, a2: WamTerm, ...
-    numlist(1, Arity, ArgNums),
+    % numlist/3 fails when Low > High, so guard the 0-arity case (e.g.
+    % `p :- 3 > 2.`): without this the wrapper — and the whole project
+    % write — silently fails for any 0-arity predicate.
+    (   Arity >= 1 -> numlist(1, Arity, ArgNums) ; ArgNums = [] ),
     maplist([N, Arg]>>(format(string(Arg), 'a~w: WamTerm', [N])), ArgNums, ArgDecls),
     atomic_list_concat(ArgDecls, ', ', ArgDeclStr),
     maplist([N, Arg]>>(format(string(Arg), 'a~w', [N])), ArgNums, ArgNames),
@@ -723,8 +726,11 @@ emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     % Route through runEntry so a lowered fast path (when present) is used;
     % runEntry falls back to runPredicate at StartPc otherwise. Behaviour is
     % identical in interpreter mode (loweredEntries is empty).
+    % Array[WamTerm](...) is typed explicitly so the 0-arg case emits a
+    % well-typed empty array (`Array()` alone infers Array[Nothing] and
+    % won't match runEntry's Array[WamTerm] parameter).
     format(string(Code),
-           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array(~w))\n',
+           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array[WamTerm](~w))\n',
            [ScalaName, ArgDeclStr, Pred, Arity, StartPc, ArgNameStr]).
 
 %% scala_pred_name(+PrologName, -ScalaName)
