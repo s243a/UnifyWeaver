@@ -76,10 +76,11 @@ ct_default_target(elixir).
 :- discontiguous ct_build/4.
 :- discontiguous ct_run/5.
 :- discontiguous ct_teardown/2.
-%% ct_xfail/2 may legitimately have zero clauses (every target/program is
-%% now conformant). Declare it dynamic so calls fail cleanly instead of
-%% raising existence_error when no xfail entries remain.
+%% ct_xfail/2 and ct_skip/2 may legitimately have zero clauses (every
+%% target/program is now conformant). Declare them dynamic so calls fail
+%% cleanly instead of raising existence_error when no entries remain.
 :- dynamic ct_xfail/2.
+:- dynamic ct_skip/2.
 
 %% ct_xfail(Target, ProgramName)
 %  (Target, program) pairs known to diverge from the shared spec.
@@ -165,15 +166,19 @@ ct_default_target(elixir).
 %  Stronger than xfail: do NOT even build/run this (target, program).
 %  Used when *generation itself* is unusable, not just the answer.
 %
-%  WAT append/reverse: the WAT generator loops re-emitting millions of
-%  "unrecognized instruction" warnings on recursive list-BUILDING
-%  predicates (put_list/unify_* on a constructed tail), so the project
-%  takes minutes and gigabytes of log to write. (member is fine — it only
-%  matches an input list — so it stays as an xfail demonstrating the
-%  read-mode divergence.) This is a separate WAT codegen bug from the
-%  read-mode-unify gap; both are flagged for follow-up.
-ct_skip(wat, append).
-ct_skip(wat, reverse).
+%  WAT append/reverse USED to be skipped: the parser had no working clause
+%  for the `switch_on_term` first-arg index that list-recursive predicates
+%  emit (its `parse_term_entries` expected an old operand format), so it
+%  fell to the `unrecognized instruction -> allocate` fallback and either
+%  looped on warnings or silently failed to generate. Fixed by emitting an
+%  empty (unindexed) switch_on_term header on register 0 -- the try_me_else
+%  chain alone is correct -- mirroring switch_on_term_a2. With generation
+%  working, the output-list unification then needed the same fix as the
+%  read path: $unify_regs did only SHALLOW (tag+payload) equality, so a
+%  constructed cons (tag-3 [|]/2) would not match an already-ground list
+%  cell (tag-4) and append/reverse returned false on correct answers. It
+%  is now recursive and cons-aware ($unify_addrs). Both are conformant;
+%  the skips are removed.
 
 % ============================================================
 % Toolchain probes
