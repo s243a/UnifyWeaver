@@ -1474,6 +1474,7 @@ declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
 declare i32 @getpid()
 declare i32 @usleep(i32)
+declare i32 @gethostname(i8*, i64)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3526,6 +3527,7 @@ entry:
     i32 103, label %builtin_working_directory
     i32 104, label %builtin_getpid
     i32 105, label %builtin_sleep
+    i32 106, label %builtin_gethostname
   ]
 
 builtin_is:
@@ -4827,6 +4829,34 @@ slp.do_sleep:
   %slp.us32 = trunc i64 %slp.us to i32
   call i32 @usleep(i32 %slp.us32)
   ret i1 true
+
+builtin_gethostname:
+  ; M88: gethostname(?Name) -- unifies Name with the host name from
+  ; libc gethostname() as an atom. 256-byte stack buffer is more
+  ; than enough for HOST_NAME_MAX (typically 64 on Linux). Fails
+  ; if gethostname returns non-zero (truncation, errno set).
+  %ghn.buf = alloca [256 x i8]
+  %ghn.buf_ptr = getelementptr [256 x i8], [256 x i8]* %ghn.buf, i32 0, i32 0
+  %ghn.ret = call i32 @gethostname(i8* %ghn.buf_ptr, i64 256)
+  %ghn.ok_call = icmp eq i32 %ghn.ret, 0
+  br i1 %ghn.ok_call, label %ghn.intern, label %ghn.fail
+ghn.fail:
+  ret i1 false
+ghn.intern:
+  ; Copy the buffer into the arena, intern, build atom Value.
+  %ghn.len = call i64 @strlen(i8* %ghn.buf_ptr)
+  call void @wam_arena_ensure()
+  %ghn.bufsize = add i64 %ghn.len, 1
+  %ghn.arena = call i8* @wam_arena_alloc(i64 %ghn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ghn.arena, i8* %ghn.buf_ptr, i64 %ghn.len, i1 false)
+  %ghn.term = getelementptr i8, i8* %ghn.arena, i64 %ghn.len
+  store i8 0, i8* %ghn.term
+  %ghn.aid = call i64 @wam_intern_atom(i8* %ghn.arena, i64 %ghn.len)
+  %ghn.v0 = insertvalue %Value undef, i32 0, 0
+  %ghn.v = insertvalue %Value %ghn.v0, i64 %ghn.aid, 1
+  %ghn.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ghn.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ghn.raw1, %Value %ghn.v)
+  ret i1 %ghn.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11082,19 +11112,23 @@ wam_instruction_to_llvm_literal(Instr, Lit) :-
 
 %% emit_functor_string_globals(-IR)
 %  Emits LLVM global constants for functor names collected during WAM
-%  compilation (by put_structure instructions). Each functor "name" becomes
-%  @.fn_name = private constant [N x i8] c"name\00". Byte content is
-%  emitted as per-byte hex escapes (\NN) so functor names containing
-%  ``\'' (e.g. ``/\\'' bitwise-AND, ``\\/'' bitwise-OR) survive LLVM IR
-%  parsing -- a raw ``\\'' would collide with the ``\\00'' null terminator
-%  and produce a [4 x i8] instead of the declared [3 x i8].
+%  compilation (by put_structure instructions). Each functor ``name'' becomes
+%  @.fn_name = private constant [N x i8] c"name\00".
+%
+%  M85: bytes that interact with the trailing ``\00'' null terminator
+%  in LLVM IR string syntax (``\'' and ``"'') are escaped to ``\NN''
+%  per-byte hex. Other bytes are left raw, since string_codes /
+%  maplist / append over every character of every functor string adds
+%  up to a lot of intermediate-list allocation when the same emit
+%  runs hundreds of times in one swipl session (M88 OOM tripped over
+%  this at ~580 modules in).
 emit_functor_string_globals(IR) :-
     findall(GlobalDef,
         ( functor_string_global(NameStr, Len),
           sanitize_functor_for_llvm(NameStr, SaneName),
-          llvm_ir_hex_string(NameStr, HexContent),
+          llvm_ir_string_content(NameStr, SafeContent),
           format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
-              [SaneName, Len, HexContent])
+              [SaneName, Len, SafeContent])
         ),
         Defs),
     ( Defs == []
@@ -11102,21 +11136,36 @@ emit_functor_string_globals(IR) :-
     ;  atomic_list_concat(Defs, '\n', IR)
     ).
 
-%% llvm_ir_hex_string(+Str, -HexEscaped)
-%  Re-encode every byte of Str as an LLVM IR hex escape ``\NN'' so the
-%  result can be dropped between c"..." quotes without any character
-%  needing further escaping.
-llvm_ir_hex_string(Str, Hex) :-
-    string_codes(Str, Codes),
-    maplist(byte_to_hex_escape, Codes, EscapedLists),
-    append(EscapedLists, AllCodes),
-    string_codes(Hex, AllCodes).
+%% llvm_ir_string_content(+Str, -Safe)
+%  Wrap Str so it can be dropped between c"..." quotes in LLVM IR.
+%  Fast path: if the input is pure printable ASCII with no ``\'' or
+%  ``"'', it''s already safe -- return as-is. Slow path: escape
+%  problem bytes (and any non-printable ones) to ``\NN'' hex.
+llvm_ir_string_content(Str, Safe) :-
+    ( name_needs_llvm_escape(Str)
+    -> string_codes(Str, Codes),
+       phrase(escape_ir_bytes(Codes), SafeCodes),
+       string_codes(Safe, SafeCodes)
+    ;  Safe = Str
+    ).
 
-byte_to_hex_escape(Byte, [0'\\, H, L]) :-
-    Hi is (Byte >> 4) /\ 0xF,
-    Lo is Byte /\ 0xF,
-    hex_digit(Hi, H),
-    hex_digit(Lo, L).
+name_needs_llvm_escape(Str) :-
+    string_codes(Str, Codes),
+    member(C, Codes),
+    ( C < 32 ; C > 126 ; C =:= 0'\\ ; C =:= 0'" ),
+    !.
+
+escape_ir_bytes([]) --> [].
+escape_ir_bytes([C|Cs]) -->
+    ( { C >= 32, C =< 126, C =\= 0'\\, C =\= 0'" }
+    -> [C]
+    ;  { Hi is (C >> 4) /\ 0xF,
+         Lo is C /\ 0xF,
+         hex_digit(Hi, H),
+         hex_digit(Lo, L) },
+       [0'\\, H, L]
+    ),
+    escape_ir_bytes(Cs).
 
 %% emit_atom_string_globals(-IR)
 %
@@ -11639,6 +11688,7 @@ builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXIT
 builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
 builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
 builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
+builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
