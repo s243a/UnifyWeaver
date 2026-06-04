@@ -51,6 +51,8 @@
 :- use_module('../src/unifyweaver/targets/wam_scala_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
+:- use_module('../src/unifyweaver/targets/wam_haskell_target',
+              [write_wam_haskell_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -59,11 +61,14 @@
 conformance_target(scala).
 conformance_target(elixir).
 conformance_target(wat).
+conformance_target(haskell).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT is wired up but NOT a default: its backend currently diverges on
-%  most list/arithmetic programs (see ct_xfail/ct_skip below), so it is
-%  opt-in via CONFORMANCE_TARGETS=wat while those backend bugs are fixed.
+%  WAT and Haskell are wired up but NOT defaults: their backends still
+%  diverge on list programs (see ct_xfail/ct_skip below), and a Haskell
+%  build is a cabal compile per program (slow for CI). Both are opt-in
+%  via CONFORMANCE_TARGETS=wat / =haskell while the backend bugs are
+%  fixed.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -78,14 +83,15 @@ ct_default_target(elixir).
 %  match (xpass) is logged so the entry can be retired once the gap is
 %  fixed.
 %
-%  WAT member/append/reverse: WAT's runtime read-mode structure/list
-%  argument unification is unimplemented (unify_* read-mode branches are
-%  nops; no S-register), so get_structure/get_list match only the
-%  functor and element mismatches go undetected. See
-%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md.
+%  WAT member: WAT's runtime read-mode structure/list argument
+%  unification is unimplemented (unify_* read-mode branches are nops; no
+%  S-register), so get_structure/get_list match only the functor and
+%  element mismatches go undetected. See
+%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md. (append/reverse hit the same
+%  gap conceptually, but are ct_skip'd below — they never build — so
+%  they are NOT also xfail'd here: ct_skip is checked first and would
+%  shadow the xfail, leaving dead cruft.)
 ct_xfail(wat, member).
-ct_xfail(wat, append).
-ct_xfail(wat, reverse).
 %  WAT fib: is/2 with an already-bound LHS doesn't verify the computed
 %  value — cfib(10,54) returns true though fib(10)=55 (the result is
 %  stored over the bound arg instead of being unified/checked).
@@ -93,6 +99,50 @@ ct_xfail(wat, fib).
 %  WAT builtins: cbi_arith uses // (integer div) and mod, which the WAT
 %  backend does not evaluate correctly (returns false). cmp/eq are fine.
 ct_xfail(wat, builtins).
+
+%  (Elixir append/reverse used to be xfail here: a freshly-constructed
+%  list ("./2", from put_list) would not unify against an already-GROUND
+%  list compound ("[|]/2", from put_structure) in a clause head, so
+%  capp([a],[b],[a,b]) returned false while capp([a],[b],X), X=[a,b]
+%  succeeded. Root cause: unify/3's compound clause demanded identical
+%  functor names, never applying the ./2 <-> [|]/2 cons-cell aliasing
+%  that the get_structure match path already used. Fixed in
+%  wam_elixir_target.pl; both programs are now conformant and the xfails
+%  are removed.)
+
+%  Haskell builtins. The conformance driver
+%  (tests/fixtures/haskell_conformance_driver.hs) runs a 0-arity wrapper
+%  whose atoms are baked into the compiled instruction stream, which
+%  removed the atom-interning mismatch that sank the earlier throwaway
+%  driver (fib/ack discriminate correctly).
+%
+%  member/append/reverse USED to be xfail here, all failing on heap-built
+%  cons lists. Root causes (now fixed in wam_haskell_target.pl):
+%   1. unifyVal/unifyValues did NO structural unification (identity +
+%      var-binding only) — added a shared structural unifyTerms.
+%   2. the cons functor "[|]/2" interned to its own id, distinct from
+%      atomDot — intern_struct_functor/2 now folds every cons spelling
+%      onto atomDot (the ./2-vs-[|]/2 class, same as the Elixir bug).
+%   3. GetValue had its own inline unify bypassing the above — now routed
+%      through unifyVal.
+%   4. THE multi-element bug: building [a|X] with X a set_variable tail
+%      placeholder emitted VList [a, X] (X as a 2nd ELEMENT) instead of a
+%      cons cell, and put_structure filling X did not bind the embedded
+%      var. addToBuilder now emits Str atomDot [hd, tl] for a partial
+%      tail and binds the placeholder var on finalize. This fixed member,
+%      append, AND reverse on lists of any length; the xfails are removed.
+%
+%  builtins USED to be xfail (=/2 and //,mod). Both fixed in
+%  wam_haskell_target.pl:
+%   - // (interns as "///2") and / ("//2") evaluated to Nothing because
+%     the arity-stripper used takeWhile (/= '/'), which truncates any
+%     operator that contains '/'. Replaced with bareArithOp, which strips
+%     only a trailing /<digits>. (cbi_arith's 17//5 + 17 mod 5 now folds.)
+%   - =/2 is emitted by the compiler as BuiltinCall "=/2" but had no
+%     handler, so it fell to the default branch and always failed
+%     (cbi_eq(foo) -> false). Added a handler routing through unifyVal.
+%  fib/ack already passed, so +/-/comparison and is/2 bound-LHS checking
+%  were fine; with these two fixes the Haskell adapter is fully green.
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
@@ -115,6 +165,7 @@ ct_skip(wat, reverse).
 ct_toolchain(scala,  [scalac]).
 ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
+ct_toolchain(haskell, [ghc, cabal]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -469,3 +520,52 @@ WebAssembly.instantiate(buf,imports).then(({instance})=>{\n\c
   console.log(fn());\n\c
 }).catch(e=>{console.log('TRAP');process.exit(2);});\n",
     open(HarnessJs, write, S), write(S, Src), close(S).
+
+% ============================================================
+% Adapter: Haskell  (0-arity wrapper via `cabal run <key>`)
+%
+% write_wam_haskell_project/3 compiles predicate INDICATORS itself
+% (unlike elixir, which takes WAM pairs), so this mirrors the WAT
+% adapter shape. The driver (haskell_conformance_driver.hs) runs one
+% wrapper key and prints true/false. Crucially it wires the context
+% with compileTimeAtomTable and runs a 0-arity wrapper whose atoms are
+% all baked into the compiled instruction stream — so there is NO
+% runtime atom parsing and hence none of the atom-interning mismatch
+% that sank the earlier throwaway driver.
+%
+% The build is a cabal compile (done once in ct_build); ct_run then
+% `cabal run`s per query (fast, no recompile). Opt-in only.
+% ============================================================
+
+ct_build(haskell, Preds, Queries, haskell_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_haskell', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_haskell_project(AllPreds,
+        [no_kernels(true), module_name('uw-hs-ct'), use_hashmap(false)], Dir),
+    classic_haskell_driver(DriverSrc),
+    directory_file_path(Dir, 'src/Main.hs', DriverDst),
+    copy_file(DriverSrc, DriverDst),
+    run_proc(cabal, ['build'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(haskell_build_failed(BExit, BErr)) ).
+
+ct_run(haskell, haskell_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    absolute_file_name(Dir, Abs),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(cabal, ['run', '-v0', 'uw-hs-ct', '--', KeyStr], Abs, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(haskell, haskell_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+qualify_user(_M:N/A, user:N/A) :- !.
+qualify_user(N/A, user:N/A).
+
+:- ( prolog_load_context(directory, Dir),
+     directory_file_path(Dir, 'fixtures/haskell_conformance_driver.hs', P),
+     assertz(classic_haskell_driver_fact(P))
+   ; true ).
+classic_haskell_driver(P) :- classic_haskell_driver_fact(P).

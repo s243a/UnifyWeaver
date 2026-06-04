@@ -440,6 +440,10 @@ clojure_direct_builtin("term_variables/2", "2").
 clojure_direct_builtin("term_variables/2", 2).
 clojure_direct_builtin('term_variables/2', "2").
 clojure_direct_builtin('term_variables/2', 2).
+clojure_direct_builtin("variant/2", "2").
+clojure_direct_builtin("variant/2", 2).
+clojure_direct_builtin('variant/2', "2").
+clojure_direct_builtin('variant/2', 2).
 clojure_direct_builtin("functor/3", "3").
 clojure_direct_builtin("functor/3", 3).
 clojure_direct_builtin('functor/3', "3").
@@ -854,6 +858,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "term_variables/2" ; Op == 'term_variables/2'),
     !,
     format(atom(Expr), '(runtime/apply-term-variables-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "variant/2" ; Op == 'variant/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-variant-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "functor/3" ; Op == 'functor/3'),

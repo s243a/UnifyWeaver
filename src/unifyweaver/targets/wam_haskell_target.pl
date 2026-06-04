@@ -145,6 +145,25 @@ intern_atom(AtomStr, Id) :-
         assertz(atom_intern_next(Next1))
     ).
 
+%% intern_struct_functor(+FunctorStr, -Id) is det.
+%  Intern a get_structure/put_structure functor, normalising the list
+%  cons functor to atomDot (".", id 3). The WAM stream names a cons cell
+%  "[|]/2" (occasionally "./2"), while get_list/put_list use atomDot —
+%  so a put_structure cons (Str "[|]/2") and a put_list cons (VList /
+%  Str atomDot) end up with different functor ids and never match or
+%  unify. Folding every cons spelling onto atomDot gives lists ONE
+%  representation. Accepts either the bare functor ("[|]", ".") or the
+%  name/arity form ("[|]/2", "./2").
+intern_struct_functor(FunctorStr, Id) :-
+    (   is_cons_functor(FunctorStr)
+    ->  intern_atom(".", Id)
+    ;   intern_atom(FunctorStr, Id)
+    ).
+
+is_cons_functor(F) :-
+    ( atom(F) -> atom_string(F, S) ; F = S ),
+    memberchk(S, ["[|]", "[|]/2", ".", "./2"]).
+
 %% emit_atom_table_haskell(-Code) is det.
 %  Emits the compile-time atom table as Haskell code.
 emit_atom_table_haskell(Code) :-
@@ -1854,22 +1873,55 @@ copyTermArgs !c !m (x : xs) =
       (xs1, c2, m2) = copyTermArgs c1 m1 xs
   in (x1 : xs1, c2, m2)
 
--- | Unify two values, binding unbound variables.
+-- | Bind an unbound variable, trailing its previous value.
+bindUnbound :: Int -> Value -> WamState -> WamState
+bindUnbound vid v s =
+  s { wsBindings = IM.insert vid v (wsBindings s)
+    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+    , wsTrailLen = wsTrailLen s + 1
+    }
+
+-- | PC-neutral structural unification. Recurses into compound terms
+-- (Str / VList), binding and trailing unbound subterms, so a freshly
+-- constructed list unifies with an already-ground one. A cons cell may
+-- appear as VList or as Str atomDot (codegen normalises the [|]/2
+-- functor to atomDot), and [] as Atom atomNil or VList []; all denote
+-- the same list structure.
+unifyTerms :: Value -> Value -> WamState -> Maybe WamState
+unifyTerms x y s =
+  unifyDeref (derefVar (wsBindings s) x) (derefVar (wsBindings s) y) s
+
+unifyDeref :: Value -> Value -> WamState -> Maybe WamState
+unifyDeref a b s | a == b = Just s
+unifyDeref (Unbound vid) v s = Just (bindUnbound vid v s)
+unifyDeref v (Unbound vid) s = Just (bindUnbound vid v s)
+unifyDeref (Str f1 a1) (Str f2 a2) s
+  | f1 == f2 && length a1 == length a2 = unifyArgList a1 a2 s
+unifyDeref (VList xs) (VList ys) s
+  | length xs == length ys = unifyArgList xs ys s
+unifyDeref (VList (x : xs)) (Str f [h, t]) s
+  | f == atomDot = unifyTerms x h s >>= unifyTerms (listTailVal xs) t
+unifyDeref (Str f [h, t]) (VList (x : xs)) s
+  | f == atomDot = unifyTerms h x s >>= unifyTerms t (listTailVal xs)
+unifyDeref (VList []) (Atom n) s | n == atomNil = Just s
+unifyDeref (Atom n) (VList []) s | n == atomNil = Just s
+unifyDeref _ _ _ = Nothing
+
+unifyArgList :: [Value] -> [Value] -> WamState -> Maybe WamState
+unifyArgList [] [] s = Just s
+unifyArgList (x : xs) (y : ys) s = unifyTerms x y s >>= unifyArgList xs ys
+unifyArgList _ _ _ = Nothing
+
+listTailVal :: [Value] -> Value
+listTailVal [] = Atom atomNil
+listTailVal xs = VList xs
+
+-- | Unify two values, binding unbound variables; advances PC on success
+-- (head-match contract). Delegates to the PC-neutral unifyTerms.
 unifyVal :: Value -> Value -> WamState -> Maybe WamState
-unifyVal (Unbound vid) val s =
-  Just (s { wsPC = wsPC s + 1
-          , wsBindings = IM.insert vid val (wsBindings s)
-          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-          , wsTrailLen = wsTrailLen s + 1
-          })
-unifyVal val (Unbound vid) s =
-  Just (s { wsPC = wsPC s + 1
-          , wsBindings = IM.insert vid val (wsBindings s)
-          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-          , wsTrailLen = wsTrailLen s + 1
-          })
-unifyVal a b s | a == b = Just (s { wsPC = wsPC s + 1 })
-               | otherwise = Nothing'.
+unifyVal a b s = case unifyTerms a b s of
+  Just s2 -> Just (s2 { wsPC = wsPC s + 1 })
+  Nothing -> Nothing'.
 
 % ============================================================================
 % PHASE 3: Step Function + Run Loop
@@ -1900,28 +1952,15 @@ step !ctx s (GetVariable xn ai) =
     Nothing -> Nothing
 
 step !ctx s (GetValue xn ai) =
-  let va = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
-      vx = getReg xn s
-  in case (va, vx) of
-    (Just a, Just x) | a == x -> Just (s { wsPC = wsPC s + 1 })
-    (Just (Unbound vid), Just x) ->
-      Just (s { wsPC = wsPC s + 1
-              , wsRegs = IM.insert ai x (wsRegs s)
-              , wsBindings = IM.insert vid x (wsBindings s)
-              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-              , wsTrailLen = wsTrailLen s + 1
-              })
-    -- Symmetric case: xn (X-register) holds the unbound side, ai
-    -- holds the bound value. Used by the =../2 / functor/3 compose
-    -- lowering, which emits get_value T_reg, TermReg where T_reg is
-    -- the fresh output and TermReg is the freshly-constructed Str.
-    -- Unification is symmetric, so bind the xn vid to a.
-    (Just a, Just (Unbound vid)) ->
-      Just (s { wsPC = wsPC s + 1
-              , wsBindings = IM.insert vid a (wsBindings s)
-              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-              , wsTrailLen = wsTrailLen s + 1
-              })
+  -- Full structural unification of the register value against the
+  -- X-register, via unifyVal (which advances PC on success). The old
+  -- inline version only matched identity / unbound-binding, so a
+  -- structurally-equal-but-differently-represented compound (e.g. a
+  -- constructed list vs an already-ground one) fell through to Nothing
+  -- -- the append/reverse base-case bug.
+  case (IM.lookup ai (wsRegs s), getReg xn s) of
+    (Just a, Just x) ->
+      unifyVal (derefVar (wsBindings s) a) (derefVar (wsBindings s) x) s
     _ -> Nothing
 
 step !ctx s (PutConstant c ai) =
@@ -2289,6 +2328,17 @@ step !ctx s (BuiltinCall "is/2" _) =
                  , wsTrailLen = wsTrailLen s + 1
                  })
     (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- =/2 is term unification (the compiler emits it as a BuiltinCall rather
+-- than inline get/put instructions). Route through unifyVal so it handles
+-- constants, var binding, and full structural unification of compounds
+-- (and advances PC on success). Without this it fell to the default
+-- BuiltinCall branch and always failed (cbi_eq(foo) -> false).
+step !ctx s (BuiltinCall "=/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b) ->
+      unifyVal (derefVar (wsBindings s) a) (derefVar (wsBindings s) b) s
     _ -> Nothing
 
 step !ctx s (BuiltinCall "length/2" _) =
@@ -4033,6 +4083,20 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ;   IntAtomSeeds = false,
         IntAtomSeedsLmdb = false
     ),
+    % lmdb_skip_intern_table(true): in int_atom_seeds(lmdb) mode the seeds,
+    % edges, and output are all int-keyed (iAtom = id, results printed as raw
+    % ids), so the s2i/i2s intern table is dead weight — at enwiki scale it is
+    % ~3.78M entries / ~3.8 GB RSS that starves the OS page cache of the LMDB
+    % (see WAM_PERF_OPTIMIZATION_LOG.md appendix #18). When set, skip the
+    % loadInternTableFromLmdb call and use compileTimeAtomTable (the WAM
+    % program's own atoms, all extractDouble needs). Only valid with
+    % int_atom_seeds(lmdb); default false preserves de-interning for any
+    % consumer that prints category names.
+    (   IntAtomSeedsLmdb == true,
+        option(lmdb_skip_intern_table(true), Options)
+    ->  LmdbSkipInternTable = true
+    ;   LmdbSkipInternTable = false
+    ),
     % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
     % by the workload or overridden by tests) so the generated FFI kernel
     % uses the same depth bound SWI-Prolog would. Defaults to 10 to match
@@ -4087,6 +4151,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , has_csr=HasCsr
         , int_atom_seeds=IntAtomSeeds
         , int_atom_seeds_lmdb=IntAtomSeedsLmdb
+        , lmdb_skip_intern_table=LmdbSkipInternTable
         , demand_bfs_mode_cursor=DemandBfsModeCursor
         , max_depth=MaxDepth
         , dimension_n=DimN
@@ -5029,6 +5094,18 @@ isoMetaBuiltinArity pred = case pred of
 
 -- | Evaluate arithmetic expression. InternTable needed for reverse
 -- lookup of atom strings (numeric atom parsing, operator names).
+-- Strip a trailing "/<arity>" from a functor name (e.g. "+/2" -> "+",
+-- "mod/2" -> "mod"). Must NOT use takeWhile (/= ''/''): operators that
+-- contain ''/'' themselves -- "//" (interns as "///2") and "/" ("//2") --
+-- would be truncated to "", making integer div and float div evaluate to
+-- Nothing and silently failing the whole `is/2` goal.
+bareArithOp :: String -> String
+bareArithOp name =
+  case break (== ''/'') (reverse name) of
+    (revArity, ''/'' : revHead)
+      | not (null revArity) && all (`elem` "0123456789") revArity -> reverse revHead
+    _ -> name
+
 evalArith :: InternTable -> IM.IntMap Value -> Value -> Maybe Double
 evalArith _ _ (Integer n) = Just (fromIntegral n)
 evalArith _ _ (Float f) = Just f
@@ -5037,7 +5114,7 @@ evalArith tbl _ (Atom aid) = case reads (lookupAtom tbl aid) of
   _ -> Nothing
 evalArith tbl bindings (Str opId [a]) = do
   va <- evalArith tbl bindings (derefVar bindings a)
-  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
+  let bareOp = bareArithOp (lookupAtom tbl opId)
   case bareOp of
     "-" -> Just (negate va)
     "abs" -> Just (abs va)
@@ -5045,7 +5122,7 @@ evalArith tbl bindings (Str opId [a]) = do
 evalArith tbl bindings (Str opId [a, b]) = do
   va <- evalArith tbl bindings (derefVar bindings a)
   vb <- evalArith tbl bindings (derefVar bindings b)
-  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
+  let bareOp = bareArithOp (lookupAtom tbl opId)
   case bareOp of
     "+" -> Just (va + vb)
     "-" -> Just (va - vb)
@@ -5098,10 +5175,20 @@ addToBuilder val s = case wsBuilder s of
     -- but only when finalizing — args grows from 0 to arity, max arity is small.
     let args'' = val : args
     in if length args'' == arity
-       then Just (s { wsPC = wsPC s + 1
-                    , wsRegs = IM.insert ai (Str fn (reverse args'')) (wsRegs s)
-                    , wsBuilder = NoBuilder
-                    })
+       then let term = Str fn (reverse args'')
+                -- Outer-first construction (set_variable Xn for a tail,
+                -- then put_structure Xn to fill it) leaves that var
+                -- embedded in the outer term. Finalising into register ai
+                -- must ALSO bind the var ai currently holds, or the outer
+                -- term keeps an unbound tail -- the multi-element list bug
+                -- that made reverse/append wrong on lists of length >= 2.
+                sBound = case IM.lookup ai (wsRegs s) of
+                  Just (Unbound vid) -> bindUnbound vid term s
+                  _ -> s
+            in Just (sBound { wsPC = wsPC s + 1
+                            , wsRegs = IM.insert ai term (wsRegs sBound)
+                            , wsBuilder = NoBuilder
+                            })
        else Just (s { wsPC = wsPC s + 1
                     , wsBuilder = BuildStruct fn ai arity args''
                     })
@@ -5113,9 +5200,20 @@ addToBuilder val s = case wsBuilder s of
                 list = case tl of
                   VList items -> VList (hd : items)
                   Atom aid | aid == atomNil -> VList [hd]
-                  _           -> VList [hd, tl]
-            in Just (s { wsPC = wsPC s + 1
-                       , wsRegs = IM.insert ai list (wsRegs s)
+                  -- A variable / partial tail (set_variable placeholder for
+                  -- outer-first construction) is the REST of the list, not an
+                  -- element. VList [hd, tl] would wrongly make it a 2-element
+                  -- list [hd, tl]; emit a proper cons cell so the tail splices
+                  -- in once bound (the [a|X], X=[b] => [a,b] case).
+                  _           -> Str atomDot [hd, tl]
+                -- Same placeholder-var binding as BuildStruct: a list built
+                -- into a register that holds a set_variable placeholder must
+                -- bind that var so an enclosing term sees the list.
+                sBound = case IM.lookup ai (wsRegs s) of
+                  Just (Unbound vid) -> bindUnbound vid list s
+                  _ -> s
+            in Just (sBound { wsPC = wsPC s + 1
+                       , wsRegs = IM.insert ai list (wsRegs sBound)
                        , wsBuilder = NoBuilder
                        })
        else Just (s { wsPC = wsPC s + 1
@@ -5192,18 +5290,12 @@ popBuilderStack s = case wsBuilderStack s of
   [] -> s { wsBuilder = NoBuilder }
 
 -- | Unify two values. Returns updated state on success, Nothing on failure.
+-- Full structural unification, PC-neutral (the read-mode callers advance
+-- PC themselves). Delegates to the shared unifyTerms defined alongside
+-- unifyVal, so head-matching and read-mode unify share one implementation
+-- that handles compound terms and the VList / Str-atomDot cons forms.
 unifyValues :: Value -> Value -> WamState -> Maybe WamState
-unifyValues v1 v2 s
-  | v1 == v2 = Just s
-unifyValues (Unbound vid) v2 s =
-  Just (s { wsBindings = IM.insert vid v2 (wsBindings s)
-          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-          , wsTrailLen = wsTrailLen s + 1 })
-unifyValues v1 (Unbound vid) s =
-  Just (s { wsBindings = IM.insert vid v1 (wsBindings s)
-          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-          , wsTrailLen = wsTrailLen s + 1 })
-unifyValues _ _ _ = Nothing
+unifyValues = unifyTerms
 
 -- | Lookup a label in the label map (now in WamContext).
 lookupLabel :: String -> WamContext -> Int
@@ -6476,7 +6568,7 @@ wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
-    intern_atom(CFN, FnId),
+    intern_struct_functor(CFN, FnId),
     format(string(Hs), 'PutStructure ~w ~w ~w', [FnId, AiI, Arity]).
 wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
     clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
@@ -6594,7 +6686,7 @@ wam_instr_to_haskell(["get_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
-    intern_atom(CFN, FnId),
+    intern_struct_functor(CFN, FnId),
     format(string(Hs), 'GetStructure ~w ~w ~w', [FnId, AiI, Arity]).
 wam_instr_to_haskell(["get_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),

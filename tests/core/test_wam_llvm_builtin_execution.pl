@@ -2459,6 +2459,338 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M89: cpu_time/1 -- process CPU time via clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
+
+:- dynamic test_cpu_nonneg/2.
+test_cpu_nonneg(_, R) :-
+    % A freshly-started process always has cpu_time >= 0.
+    cpu_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cpu_monotonic/2.
+test_cpu_monotonic(_, R) :-
+    % CPU time is monotonically non-decreasing within a process.
+    cpu_time(T0),
+    cpu_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cpu_under_wall/2.
+test_cpu_under_wall(_, R) :-
+    % CPU time accrued during a sleep should be much less than the
+    % wall-clock elapsed time -- sleeping doesn''t consume CPU.
+    % 50ms sleep => wall ~0.05s, CPU should be < 0.04s.
+    cpu_time(C0),
+    get_time(W0),
+    sleep(0.05),
+    cpu_time(C1),
+    get_time(W1),
+    CpuDiff is C1 - C0,
+    WallDiff is W1 - W0,
+    ( CpuDiff < WallDiff -> R is 1 ; R is 0 ).   % 1
+
+% M88: gethostname/1 -- libc gethostname() wrapper.
+
+:- dynamic test_ghn_nonempty/2.
+test_ghn_nonempty(_, R) :-
+    gethostname(H),
+    atom_length(H, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ghn_stable/2.
+test_ghn_stable(_, R) :-
+    % Two gethostname calls in the same process must return the
+    % same atom (host name doesn''t change mid-run).
+    gethostname(H1),
+    gethostname(H2),
+    ( H1 == H2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ghn_not_empty_atom/2.
+test_ghn_not_empty_atom(_, R) :-
+    % Hostname should not be the empty atom.
+    gethostname(H),
+    ( H \== '' -> R is 1 ; R is 0 ).   % 1
+
+% M87: get_time/1 upgraded to nanosecond precision (clock_gettime).
+
+:- dynamic test_gt87_short_sleep/2.
+test_gt87_short_sleep(_, R) :-
+    % Now that get_time has sub-second resolution, a 50ms sleep is
+    % observable. Both bounds:
+    %   Diff >= 0.04 -- sleep actually waited.
+    %   Diff <  0.5  -- whole-second resolution would have produced
+    %                   either 0 or >= 1, never something in [0.04, 0.5).
+    get_time(T0),
+    sleep(0.05),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.04, Diff < 0.5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gt87_ms_count/2.
+test_gt87_ms_count(_, R) :-
+    % truncate((T1 - T0) * 1000) should land in roughly [40, 200] for
+    % a 50ms sleep. Just verify >= 40 here -- the upper bound is
+    % machine-dependent.
+    get_time(T0),
+    sleep(0.05),
+    get_time(T1),
+    Ms is truncate((T1 - T0) * 1000),
+    ( Ms >= 40 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gt87_fractional/2.
+test_gt87_fractional(_, R) :-
+    % Verify there''s actually a non-integer part in the value. For a
+    % nanosecond-resolution clock the fractional part is essentially
+    % never zero. Use floor() (M18) and subtract; if the diff is
+    % strictly > 0.0 the clock has sub-second precision.
+    get_time(T),
+    Whole is floor(T),
+    Frac is T - Whole,
+    ( Frac > 0.0 -> R is 1 ; R is 0 ).   % 1
+
+% M86: sleep/1 -- libc usleep wrapper.
+
+:- dynamic test_sleep_zero/2.
+test_sleep_zero(_, R) :-
+    sleep(0),
+    R is 1.   % 1
+
+:- dynamic test_sleep_float_zero/2.
+test_sleep_float_zero(_, R) :-
+    sleep(0.0),
+    R is 1.   % 1
+
+:- dynamic test_sleep_tiny/2.
+test_sleep_tiny(_, R) :-
+    % 1ms is the floor we use for ``definitely returned'' tests; any
+    % usleep call should at least cycle through the kernel and return.
+    sleep(0.001),
+    R is 1.   % 1
+
+:- dynamic test_sleep_elapsed_float/2.
+test_sleep_elapsed_float(_, R) :-
+    % M88: tightened from sleep(1.0) -> sleep(0.05) now that M87
+    % gave get_time/1 nanosecond resolution. 50ms wait with a 40ms
+    % floor for slow CI machines.
+    get_time(T0),
+    sleep(0.05),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.04 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sleep_elapsed_int/2.
+test_sleep_elapsed_int(_, R) :-
+    % Integer-arg branch needs a whole number of seconds; keep
+    % sleep(1) here with the original 0.5s floor.
+    get_time(T0),
+    sleep(1),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.5 -> R is 1 ; R is 0 ).   % 1
+
+% M85: bitwise /\ (AND), \/ (OR), \ (unary NOT).
+
+:- dynamic test_band_basic/2.
+test_band_basic(_, R) :-
+    R is 12 /\ 10.   % 8 (1100 AND 1010 = 1000)
+
+:- dynamic test_band_byte/2.
+test_band_byte(_, R) :-
+    R is 0xFF /\ 0x0F.   % 15 (mask low nibble)
+
+:- dynamic test_bor_basic/2.
+test_bor_basic(_, R) :-
+    R is 5 \/ 3.   % 7 (101 OR 011 = 111)
+
+:- dynamic test_bor_combine/2.
+test_bor_combine(_, R) :-
+    % Combine bit flags: 1 | 2 | 4 | 8 | 16 = 31.
+    R is 1 \/ 2 \/ 4 \/ 8 \/ 16.   % 31
+
+:- dynamic test_bnot_byte/2.
+test_bnot_byte(_, R) :-
+    % \(0) = -1; low 8 bits = 0xFF = 255.
+    X is \0,
+    R is X /\ 0xFF.   % 255
+
+% M84: integer bitshifts -- << / >>.
+
+:- dynamic test_shl_basic/2.
+test_shl_basic(_, R) :-
+    R is 1 << 4.   % 16
+
+:- dynamic test_shl_byte_top/2.
+test_shl_byte_top(_, R) :-
+    R is 1 << 7.   % 128
+
+:- dynamic test_shl_31_3/2.
+test_shl_31_3(_, R) :-
+    R is 31 << 3.   % 248 (31 * 8)
+
+:- dynamic test_shr_basic/2.
+test_shr_basic(_, R) :-
+    R is 240 >> 4.   % 15
+
+:- dynamic test_shr_round/2.
+test_shr_round(_, R) :-
+    % (1 << 8) >> 4 = 256 >> 4 = 16.
+    R is 256 >> 4.   % 16
+
+% M83: pi/e atom constants + xor/2 integer bitwise.
+
+:- dynamic test_pi_50/2.
+test_pi_50(_, R) :-
+    % pi * 50 ~ 157.08; truncate -> 157 (fits in 0..255).
+    X is pi,
+    R is truncate(X * 50).   % 157
+
+:- dynamic test_pi_gt3/2.
+test_pi_gt3(_, R) :-
+    X is pi,
+    ( X > 3.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_e_90/2.
+test_e_90(_, R) :-
+    % e * 90 ~ 244.65; truncate -> 244.
+    X is e,
+    R is truncate(X * 90).   % 244
+
+:- dynamic test_xor_small/2.
+test_xor_small(_, R) :-
+    % 5 = 0b101; 3 = 0b011; xor = 0b110 = 6.
+    R is xor(5, 3).   % 6
+
+:- dynamic test_xor_byte/2.
+test_xor_byte(_, R) :-
+    % 0xFF xor 0x0F = 0xF0 = 240.
+    R is xor(255, 15).   % 240
+
+% M82: gcd/2 (Integer Euclidean) + log/2 (Float log with base).
+
+:- dynamic test_gcd_basic/2.
+test_gcd_basic(_, R) :-
+    R is gcd(12, 18).   % 6
+
+:- dynamic test_gcd_coprime/2.
+test_gcd_coprime(_, R) :-
+    R is gcd(7, 5).   % 1
+
+:- dynamic test_gcd_with_zero/2.
+test_gcd_with_zero(_, R) :-
+    % gcd(0, n) = n -- Euclid terminates on the first iteration.
+    R is gcd(0, 5).   % 5
+
+:- dynamic test_log2_eight/2.
+test_log2_eight(_, R) :-
+    % log(2, 8) = 3 (since 2^3 = 8). Use floats to force the
+    % named-binary path; integer literals go through int eval which
+    % doesn''t recognize ``log''.
+    X is log(2.0, 8.0),
+    R is truncate(X).   % 3
+
+:- dynamic test_log10_hundred/2.
+test_log10_hundred(_, R) :-
+    X is log(10.0, 100.0),
+    R is truncate(X).   % 2
+
+% M81: atan2/2 -- binary inverse tangent (4-quadrant).
+
+:- dynamic test_atan2_xaxis/2.
+test_atan2_xaxis(_, R) :-
+    % atan2(0, 1) -- positive x-axis -- is 0.
+    X is atan2(0.0, 1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_atan2_diag/2.
+test_atan2_diag(_, R) :-
+    % atan2(1, 1) = pi/4 ~ 0.7854; *200 truncated -> 157.
+    X is atan2(1.0, 1.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_yaxis/2.
+test_atan2_yaxis(_, R) :-
+    % atan2(1, 0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is atan2(1.0, 0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan2_diag_scaled/2.
+test_atan2_diag_scaled(_, R) :-
+    % atan2 only cares about the ratio: (2,2) is the same angle as (1,1).
+    X is atan2(2.0, 2.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_pi/2.
+test_atan2_pi(_, R) :-
+    % atan2(0, -1) = pi ~ 3.14159; *50 truncated -> 157.
+    X is atan2(0.0, -1.0),
+    R is truncate(X * 50).   % 157
+
+% M80: inverse trig -- asin/1, acos/1, atan/1 via libm.
+
+:- dynamic test_asin_zero/2.
+test_asin_zero(_, R) :-
+    X is asin(0.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_asin_one/2.
+test_asin_one(_, R) :-
+    % asin(1) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is asin(1.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_acos_one/2.
+test_acos_one(_, R) :-
+    X is acos(1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_acos_zero/2.
+test_acos_zero(_, R) :-
+    % acos(0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is acos(0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan_one/2.
+test_atan_one(_, R) :-
+    % atan(1) = pi/4 ~ 0.7854; *200 truncated -> 157 (same as
+    % asin(1.0)/acos(0.0)). Cannot use *400 because OS exit codes
+    % are 8-bit and 314 mod 256 = 58.
+    X is atan(1.0),
+    R is truncate(X * 200).   % 157
+
+% M79: working_directory/2 + getpid/1 -- libc getcwd/chdir/getpid.
+
+:- dynamic test_wd_query/2.
+test_wd_query(_, R) :-
+    % Query mode: working_directory(D, D) -- after the call D is
+    % bound to CWD; no chdir happens. CWD should not be empty.
+    working_directory(D, D),
+    atom_length(D, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_chdir/2.
+test_wd_chdir(_, R) :-
+    % Save current CWD, chdir to /tmp, read CWD again, restore.
+    working_directory(Old, '/tmp'),
+    working_directory(New, New),
+    working_directory(_, Old),
+    ( New == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_fail/2.
+test_wd_fail(_, R) :-
+    % chdir to a non-existent directory must fail (ENOENT).
+    ( working_directory(_, '/nonexistent/uw_m79_dir') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_getpid_pos/2.
+test_getpid_pos(_, R) :-
+    getpid(P),
+    ( P > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_getpid_stable/2.
+test_getpid_stable(_, R) :-
+    % Two getpid calls in the same process should return the same value.
+    getpid(P1),
+    getpid(P2),
+    ( P1 =:= P2 -> R is 1 ; R is 0 ).   % 1
+
 % M78: shell/1 + shell/2 -- libc system() process spawn.
 
 :- dynamic test_sh1_true/2.
@@ -3442,6 +3774,12 @@ miss:
     catch(delete_file(OPath), _, true),
     catch(delete_file(BinPath), _, true),
     clear_llvm_foreign_kernel_specs,
+    % M88: 600+ run_test invocations in one swipl session accumulate
+    % large IR-string intermediates on the global stack; tripped a 4GB
+    % stack-limit OOM around test_write_rem. Force a GC + trim of
+    % stack/heap between tests to keep memory bounded.
+    garbage_collect,
+    trim_stacks,
     assertion(ExitCode =:= Expected).
 
 % Runner for is/2 predicates: result ends up in A1 (reg 0) due to WAM register layout.
@@ -3530,6 +3868,12 @@ miss:
     catch(delete_file(OPath), _, true),
     catch(delete_file(BinPath), _, true),
     clear_llvm_foreign_kernel_specs,
+    % M88: 600+ run_test invocations in one swipl session accumulate
+    % large IR-string intermediates on the global stack; tripped a 4GB
+    % stack-limit OOM around test_write_rem. Force a GC + trim of
+    % stack/heap between tests to keep memory bounded.
+    garbage_collect,
+    trim_stacks,
     assertion(ExitCode =:= Expected).
 
 test_all :-
@@ -4361,6 +4705,115 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M89 cpu_time/1 ---~n'),
+       run_test_r0('cpu_time(T), T >= 0.0 -> 1',
+                   test_cpu_nonneg, 0, 1),
+       run_test_r0('cpu_time monotonic across calls -> 1',
+                   test_cpu_monotonic, 0, 1),
+       run_test_r0('cpu_time accrued < wall during sleep -> 1',
+                   test_cpu_under_wall, 0, 1),
+       format('--- M88 gethostname/1 ---~n'),
+       run_test_r0('gethostname(H), length(H) > 0 -> 1',
+                   test_ghn_nonempty, 0, 1),
+       run_test_r0('gethostname stable across calls -> 1',
+                   test_ghn_stable, 0, 1),
+       run_test_r0('gethostname \\= empty atom -> 1',
+                   test_ghn_not_empty_atom, 0, 1),
+       format('--- M87 get_time/1 nanosecond precision ---~n'),
+       run_test_r0('sleep(0.05) elapsed in [0.04, 0.5) -> 1',
+                   test_gt87_short_sleep, 0, 1),
+       run_test_r0('sleep(0.05) ms_count >= 40 -> 1',
+                   test_gt87_ms_count, 0, 1),
+       run_test_r0('get_time(T), T - floor(T) > 0.0 -> 1',
+                   test_gt87_fractional, 0, 1),
+       format('--- M86 sleep/1 ---~n'),
+       run_test_r0('sleep(0) -> 1',
+                   test_sleep_zero, 0, 1),
+       run_test_r0('sleep(0.0) -> 1',
+                   test_sleep_float_zero, 0, 1),
+       run_test_r0('sleep(0.001) -> 1',
+                   test_sleep_tiny, 0, 1),
+       run_test_r0('sleep(0.05) elapsed >= 0.04 -> 1 (M87 tightened)',
+                   test_sleep_elapsed_float, 0, 1),
+       run_test_r0('sleep(1) elapsed >= 0.5 -> 1',
+                   test_sleep_elapsed_int, 0, 1),
+       format('--- M85 bitwise /\\ \\/ \\ ---~n'),
+       run_test_r0('12 /\\ 10 -> 8',
+                   test_band_basic, 0, 8),
+       run_test_r0('0xFF /\\ 0x0F -> 15',
+                   test_band_byte, 0, 15),
+       run_test_r0('5 \\/ 3 -> 7',
+                   test_bor_basic, 0, 7),
+       run_test_r0('1\\/2\\/4\\/8\\/16 -> 31',
+                   test_bor_combine, 0, 31),
+       run_test_r0('\\0 /\\ 0xFF -> 255',
+                   test_bnot_byte, 0, 255),
+       format('--- M84 integer bitshifts << / >> ---~n'),
+       run_test_r0('1 << 4 -> 16',
+                   test_shl_basic, 0, 16),
+       run_test_r0('1 << 7 -> 128',
+                   test_shl_byte_top, 0, 128),
+       run_test_r0('31 << 3 -> 248',
+                   test_shl_31_3, 0, 248),
+       run_test_r0('240 >> 4 -> 15',
+                   test_shr_basic, 0, 15),
+       run_test_r0('256 >> 4 -> 16',
+                   test_shr_round, 0, 16),
+       format('--- M83 pi/e constants + xor/2 ---~n'),
+       run_test_r0('truncate(pi * 50) -> 157',
+                   test_pi_50, 0, 157),
+       run_test_r0('pi > 3.0 -> 1',
+                   test_pi_gt3, 0, 1),
+       run_test_r0('truncate(e * 90) -> 244',
+                   test_e_90, 0, 244),
+       run_test_r0('xor(5, 3) -> 6',
+                   test_xor_small, 0, 6),
+       run_test_r0('xor(255, 15) -> 240',
+                   test_xor_byte, 0, 240),
+       format('--- M82 gcd/2 + log/2 binary arith ---~n'),
+       run_test_r0('gcd(12, 18) -> 6',
+                   test_gcd_basic, 0, 6),
+       run_test_r0('gcd(7, 5) -> 1 (coprime)',
+                   test_gcd_coprime, 0, 1),
+       run_test_r0('gcd(0, 5) -> 5',
+                   test_gcd_with_zero, 0, 5),
+       run_test_r0('truncate(log(2.0, 8.0)) -> 3',
+                   test_log2_eight, 0, 3),
+       run_test_r0('truncate(log(10.0, 100.0)) -> 2',
+                   test_log10_hundred, 0, 2),
+       format('--- M81 atan2/2 binary inverse tangent ---~n'),
+       run_test_r0('atan2(0,1) -> 0 (x-axis)',
+                   test_atan2_xaxis, 0, 0),
+       run_test_r0('atan2(1,1) * 200 -> 157 (~ pi/4)',
+                   test_atan2_diag, 0, 157),
+       run_test_r0('atan2(1,0) * 100 -> 157 (~ pi/2)',
+                   test_atan2_yaxis, 0, 157),
+       run_test_r0('atan2(2,2) * 200 -> 157 (ratio only)',
+                   test_atan2_diag_scaled, 0, 157),
+       run_test_r0('atan2(0,-1) * 50 -> 157 (~ pi)',
+                   test_atan2_pi, 0, 157),
+       format('--- M80 inverse trig -- asin/1, acos/1, atan/1 ---~n'),
+       run_test_r0('truncate(asin(0.0) * 100) -> 0',
+                   test_asin_zero, 0, 0),
+       run_test_r0('truncate(asin(1.0) * 100) -> 157 (~ pi/2)',
+                   test_asin_one, 0, 157),
+       run_test_r0('truncate(acos(1.0) * 100) -> 0',
+                   test_acos_one, 0, 0),
+       run_test_r0('truncate(acos(0.0) * 100) -> 157 (~ pi/2)',
+                   test_acos_zero, 0, 157),
+       run_test_r0('truncate(atan(1.0) * 200) -> 157 (~ pi/2)',
+                   test_atan_one, 0, 157),
+       format('--- M79 working_directory/2 + getpid/1 ---~n'),
+       run_test_r0('working_directory(D, D) query -> 1',
+                   test_wd_query, 0, 1),
+       run_test_r0('working_directory chdir/restore roundtrip -> 1',
+                   test_wd_chdir, 0, 1),
+       run_test_r0('working_directory chdir to /nonexistent -> 0',
+                   test_wd_fail, 0, 0),
+       run_test_r0('getpid(P), P > 0 -> 1',
+                   test_getpid_pos, 0, 1),
+       run_test_r0('getpid stable across calls -> 1',
+                   test_getpid_stable, 0, 1),
        format('--- M78 shell/1 + shell/2 ---~n'),
        run_test_r0('shell(true) -> 1',
                    test_sh1_true, 0, 1),

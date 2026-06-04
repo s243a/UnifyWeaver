@@ -1240,6 +1240,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     register_functor_string("ground"),
     register_functor_string("list"),
     register_functor_string("boolean"),
+    % M83: arithmetic atom constants. ``X is pi'' and ``X is e''
+    % resolve to Float(pi) and Float(e) in eval_arith_value via
+    % strcmp against these registered names.
+    register_functor_string("pi"),
+    register_functor_string("e"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -1455,6 +1460,7 @@ declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
 declare i64 @time(i64*)
+declare i32 @clock_gettime(i32, i8*)
 declare i32 @stat(i8*, i8*)
 declare i32 @unlink(i8*)
 declare i32 @mkdir(i8*, i32)
@@ -1463,7 +1469,16 @@ declare i32 @rmdir(i8*)
 declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
 declare i64 @strlen(i8*)
-declare i32 @system(i8*)'
+declare i32 @system(i8*)
+declare i8* @getcwd(i8*, i64)
+declare i32 @chdir(i8*)
+declare i32 @getpid()
+declare i32 @usleep(i32)
+declare i32 @gethostname(i8*, i64)
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3509,6 +3524,11 @@ entry:
     i32 100, label %builtin_setenv
     i32 101, label %builtin_shell1
     i32 102, label %builtin_shell2
+    i32 103, label %builtin_working_directory
+    i32 104, label %builtin_getpid
+    i32 105, label %builtin_sleep
+    i32 106, label %builtin_gethostname
+    i32 107, label %builtin_cpu_time
   ]
 
 builtin_is:
@@ -4359,12 +4379,24 @@ builtin_at_ge:
   ret i1 %atge.ok
 
 builtin_get_time:
-  ; M72: get_time(?Time) -- wall-clock seconds since the epoch, as
-  ; Float. Calls libc time(NULL) so resolution is whole-second;
-  ; gettimeofday / clock_gettime can replace this for sub-second
-  ; precision in a follow-up. Unifies A1 with the resulting Float.
-  %gt.t_i64 = call i64 @time(i64* null)
-  %gt.t_d = sitofp i64 %gt.t_i64 to double
+  ; M72/M87: get_time(?Time) -- wall-clock seconds since the epoch
+  ; as Float. M87 upgrades the resolution from whole-second (libc
+  ; time()) to nanosecond via clock_gettime(CLOCK_REALTIME, &ts).
+  ; struct timespec on x86-64 Linux glibc is { i64 tv_sec; i64
+  ; tv_nsec } -- 16 bytes -- so a stack alloca of [16 x i8] is
+  ; enough. CLOCK_REALTIME has numeric value 0.
+  %gt.ts_buf = alloca [16 x i8]
+  %gt.ts_ptr = getelementptr [16 x i8], [16 x i8]* %gt.ts_buf, i32 0, i32 0
+  %gt.cg_ret = call i32 @clock_gettime(i32 0, i8* %gt.ts_ptr)
+  %gt.sec_ptr = bitcast i8* %gt.ts_ptr to i64*
+  %gt.sec = load i64, i64* %gt.sec_ptr
+  %gt.nsec_ptr_i8 = getelementptr i8, i8* %gt.ts_ptr, i64 8
+  %gt.nsec_ptr = bitcast i8* %gt.nsec_ptr_i8 to i64*
+  %gt.nsec = load i64, i64* %gt.nsec_ptr
+  %gt.sec_d = sitofp i64 %gt.sec to double
+  %gt.nsec_d = sitofp i64 %gt.nsec to double
+  %gt.frac = fdiv double %gt.nsec_d, 1.000000e+09
+  %gt.t_d = fadd double %gt.sec_d, %gt.frac
   %gt.t_bits = bitcast double %gt.t_d to i64
   %gt.v0 = insertvalue %Value undef, i32 2, 0
   %gt.v = insertvalue %Value %gt.v0, i64 %gt.t_bits, 1
@@ -4705,6 +4737,151 @@ sh2.run:
   %sh2.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %sh2.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sh2.raw2, %Value %sh2.v)
   ret i1 %sh2.ok
+
+builtin_working_directory:
+  ; M79: working_directory(?Old, ?New) -- unifies Old with the
+  ; current CWD read via getcwd. If New is an atom, chdir to
+  ; that path; if New is unbound, it gets unified with Old as
+  ; well (the canonical ``query mode'' for working_directory(D,D)).
+  ; 4096-byte stack buffer covers PATH_MAX on Linux.
+  %wd.buf = alloca [4096 x i8]
+  %wd.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %wd.buf, i32 0, i32 0
+  %wd.got = call i8* @getcwd(i8* %wd.buf_ptr, i64 4096)
+  %wd.got_null = icmp eq i8* %wd.got, null
+  br i1 %wd.got_null, label %wd.fail, label %wd.intern
+wd.fail:
+  ret i1 false
+wd.intern:
+  ; Copy the cwd string into the arena, intern, build atom Value.
+  %wd.len = call i64 @strlen(i8* %wd.buf_ptr)
+  call void @wam_arena_ensure()
+  %wd.bufsize = add i64 %wd.len, 1
+  %wd.arena = call i8* @wam_arena_alloc(i64 %wd.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %wd.arena, i8* %wd.buf_ptr, i64 %wd.len, i1 false)
+  %wd.term = getelementptr i8, i8* %wd.arena, i64 %wd.len
+  store i8 0, i8* %wd.term
+  %wd.aid = call i64 @wam_intern_atom(i8* %wd.arena, i64 %wd.len)
+  %wd.v0 = insertvalue %Value undef, i32 0, 0
+  %wd.cwd_v = insertvalue %Value %wd.v0, i64 %wd.aid, 1
+  %wd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wd.u1 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw1, %Value %wd.cwd_v)
+  br i1 %wd.u1, label %wd.chk_new, label %wd.fail
+wd.chk_new:
+  ; Inspect New (reg 1, deref). Atom -> chdir; anything else
+  ; (typically an unbound var) -> unify it with CWD, no chdir.
+  %wd.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wd.t2 = extractvalue %Value %wd.a2, 0
+  %wd.is_atom = icmp eq i32 %wd.t2, 0
+  br i1 %wd.is_atom, label %wd.chdir, label %wd.unify_new
+wd.unify_new:
+  %wd.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %wd.u2 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw2, %Value %wd.cwd_v)
+  ret i1 %wd.u2
+wd.chdir:
+  %wd.aid2 = extractvalue %Value %wd.a2, 1
+  %wd.path = call i8* @wam_atom_to_string(i64 %wd.aid2)
+  %wd.path_null = icmp eq i8* %wd.path, null
+  br i1 %wd.path_null, label %wd.fail, label %wd.dochdir
+wd.dochdir:
+  %wd.ret = call i32 @chdir(i8* %wd.path)
+  %wd.ok = icmp eq i32 %wd.ret, 0
+  ret i1 %wd.ok
+
+builtin_getpid:
+  ; M79: getpid(?Pid) -- unifies Pid with the process id from
+  ; libc getpid() as Integer. Always succeeds (getpid cannot fail).
+  %gp.pid = call i32 @getpid()
+  %gp.pid64 = sext i32 %gp.pid to i64
+  %gp.v = call %Value @value_integer(i64 %gp.pid64)
+  %gp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gp.raw1, %Value %gp.v)
+  ret i1 %gp.ok
+
+builtin_sleep:
+  ; M86: sleep(+Seconds) -- accepts Integer or Float seconds and
+  ; calls libc usleep(microseconds). usleep takes i32, so very
+  ; long sleeps (more than ~71 minutes) silently truncate; for
+  ; typical usage this is fine. Returns success unconditionally
+  ; once the call returns (any signal that woke usleep early
+  ; still counts as a successful sleep). Prefix ``slp.'' to avoid
+  ; the ``sl.'' collision with builtin_sum_list (M42).
+  %slp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %slp.t1 = extractvalue %Value %slp.a1, 0
+  %slp.is_int = icmp eq i32 %slp.t1, 1
+  %slp.is_float = icmp eq i32 %slp.t1, 2
+  %slp.is_num = or i1 %slp.is_int, %slp.is_float
+  br i1 %slp.is_num, label %slp.dispatch, label %slp.fail
+slp.fail:
+  ret i1 false
+slp.dispatch:
+  br i1 %slp.is_float, label %slp.from_float, label %slp.from_int
+slp.from_int:
+  %slp.sec_i = extractvalue %Value %slp.a1, 1
+  %slp.us_int = mul i64 %slp.sec_i, 1000000
+  br label %slp.do_sleep
+slp.from_float:
+  %slp.sec_bits = extractvalue %Value %slp.a1, 1
+  %slp.sec_d = bitcast i64 %slp.sec_bits to double
+  %slp.us_d = fmul double %slp.sec_d, 1.000000e+06
+  %slp.us_flt = fptosi double %slp.us_d to i64
+  br label %slp.do_sleep
+slp.do_sleep:
+  %slp.us = phi i64 [ %slp.us_int, %slp.from_int ], [ %slp.us_flt, %slp.from_float ]
+  %slp.us32 = trunc i64 %slp.us to i32
+  call i32 @usleep(i32 %slp.us32)
+  ret i1 true
+
+builtin_gethostname:
+  ; M88: gethostname(?Name) -- unifies Name with the host name from
+  ; libc gethostname() as an atom. 256-byte stack buffer is more
+  ; than enough for HOST_NAME_MAX (typically 64 on Linux). Fails
+  ; if gethostname returns non-zero (truncation, errno set).
+  %ghn.buf = alloca [256 x i8]
+  %ghn.buf_ptr = getelementptr [256 x i8], [256 x i8]* %ghn.buf, i32 0, i32 0
+  %ghn.ret = call i32 @gethostname(i8* %ghn.buf_ptr, i64 256)
+  %ghn.ok_call = icmp eq i32 %ghn.ret, 0
+  br i1 %ghn.ok_call, label %ghn.intern, label %ghn.fail
+ghn.fail:
+  ret i1 false
+ghn.intern:
+  ; Copy the buffer into the arena, intern, build atom Value.
+  %ghn.len = call i64 @strlen(i8* %ghn.buf_ptr)
+  call void @wam_arena_ensure()
+  %ghn.bufsize = add i64 %ghn.len, 1
+  %ghn.arena = call i8* @wam_arena_alloc(i64 %ghn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ghn.arena, i8* %ghn.buf_ptr, i64 %ghn.len, i1 false)
+  %ghn.term = getelementptr i8, i8* %ghn.arena, i64 %ghn.len
+  store i8 0, i8* %ghn.term
+  %ghn.aid = call i64 @wam_intern_atom(i8* %ghn.arena, i64 %ghn.len)
+  %ghn.v0 = insertvalue %Value undef, i32 0, 0
+  %ghn.v = insertvalue %Value %ghn.v0, i64 %ghn.aid, 1
+  %ghn.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ghn.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ghn.raw1, %Value %ghn.v)
+  ret i1 %ghn.uok
+
+builtin_cpu_time:
+  ; M89: cpu_time(?Time) -- process CPU time in seconds as Float, via
+  ; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts). Same struct timespec
+  ; layout as M87 get_time; only the clock id differs (CLOCK_REALTIME=0
+  ; vs CLOCK_PROCESS_CPUTIME_ID=2 on Linux glibc).
+  %cpu.ts_buf = alloca [16 x i8]
+  %cpu.ts_ptr = getelementptr [16 x i8], [16 x i8]* %cpu.ts_buf, i32 0, i32 0
+  %cpu.cg_ret = call i32 @clock_gettime(i32 2, i8* %cpu.ts_ptr)
+  %cpu.sec_ptr = bitcast i8* %cpu.ts_ptr to i64*
+  %cpu.sec = load i64, i64* %cpu.sec_ptr
+  %cpu.nsec_ptr_i8 = getelementptr i8, i8* %cpu.ts_ptr, i64 8
+  %cpu.nsec_ptr = bitcast i8* %cpu.nsec_ptr_i8 to i64*
+  %cpu.nsec = load i64, i64* %cpu.nsec_ptr
+  %cpu.sec_d = sitofp i64 %cpu.sec to double
+  %cpu.nsec_d = sitofp i64 %cpu.nsec to double
+  %cpu.frac = fdiv double %cpu.nsec_d, 1.000000e+09
+  %cpu.t_d = fadd double %cpu.sec_d, %cpu.frac
+  %cpu.t_bits = bitcast double %cpu.t_d to i64
+  %cpu.v0 = insertvalue %Value undef, i32 2, 0
+  %cpu.v = insertvalue %Value %cpu.v0, i64 %cpu.t_bits, 1
+  %cpu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cpu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cpu.raw1, %Value %cpu.v)
+  ret i1 %cpu.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -9809,6 +9986,7 @@ entry:
   %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
   %tag = extractvalue %Value %expr, 0
   switch i32 %tag, label %ev_zero [
+    i32 0, label %ev_atom_const
     i32 1, label %ev_atomic_in
     i32 2, label %ev_atomic_in
     i32 3, label %ev_compound
@@ -9816,6 +9994,33 @@ entry:
 
 ev_atomic_in:
   ret %Value %expr
+
+ev_atom_const:
+  ; M83: arithmetic atom constants. Currently pi and e; failable
+  ; otherwise. Resolve the atom''s name to a C string, then strcmp
+  ; against the registered functor strings.
+  %atc.aid = extractvalue %Value %expr, 1
+  %atc.str = call i8* @wam_atom_to_string(i64 %atc.aid)
+  %atc.null = icmp eq i8* %atc.str, null
+  br i1 %atc.null, label %ev_zero, label %atc.try_pi
+atc.try_pi:
+  %atc.fn_pi = getelementptr [3 x i8], [3 x i8]* @.fn_pi, i32 0, i32 0
+  %atc.cmp_pi = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_pi)
+  %atc.is_pi = icmp eq i32 %atc.cmp_pi, 0
+  br i1 %atc.is_pi, label %atc.ret_pi, label %atc.try_e
+atc.ret_pi:
+  ; pi as IEEE 754 double = 0x400921FB54442D18 (3.141592653589793).
+  %atc.pi_v = call %Value @value_float(double 0x400921FB54442D18)
+  ret %Value %atc.pi_v
+atc.try_e:
+  %atc.fn_e = getelementptr [2 x i8], [2 x i8]* @.fn_e, i32 0, i32 0
+  %atc.cmp_e = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_e)
+  %atc.is_e = icmp eq i32 %atc.cmp_e, 0
+  br i1 %atc.is_e, label %atc.ret_e, label %ev_zero
+atc.ret_e:
+  ; e as IEEE 754 double = 0x4005BF0A8B145769 (2.718281828459045).
+  %atc.e_v = call %Value @value_float(double 0x4005BF0A8B145769)
+  ret %Value %atc.e_v
 
 ev_compound:
   %cp_bits = extractvalue %Value %expr, 1
@@ -9847,6 +10052,9 @@ ev_eval_binary:
     i8 45, label %ev_sub
     i8 42, label %ev_mul_or_pow
     i8 47, label %ev_div
+    i8 60, label %ev_shl_check    ; ''<'' -> << (M84)
+    i8 62, label %ev_shr_check    ; ''>'' -> >> (M84)
+    i8 92, label %ev_bor_check    ; ''\\'' -> \\/ (M85)
   ]
 
 ev_add:
@@ -9965,6 +10173,20 @@ ev_pow_pos_finish:
   ret %Value %pow_pos_v
 
 ev_div:
+  ; M85: second-byte check disambiguates ``/'' (division) from
+  ; ``/\\'' (bitwise AND). ``/\\'' has fn_ptr[1] = ''\\'' (92).
+  %div.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %div.fn1 = load i8, i8* %div.fn1_ptr
+  %div.is_band = icmp eq i8 %div.fn1, 92
+  br i1 %div.is_band, label %ev_band, label %ev_div_normal
+ev_band:
+  ; M85: /\\ -- integer bitwise AND.
+  %band.a_i = extractvalue %Value %a, 1
+  %band.b_i = extractvalue %Value %b, 1
+  %band.r = and i64 %band.a_i, %band.b_i
+  %band.v = call %Value @value_integer(i64 %band.r)
+  ret %Value %band.v
+ev_div_normal:
   ; Prolog ``/``: int/int that divides exactly stays int; otherwise
   ; the result is float.
   br i1 %either_float, label %ev_div_f, label %ev_div_i_check
@@ -9991,10 +10213,129 @@ ev_div_f_go:
   %div_v_f = call %Value @value_float(double %div_r_d)
   ret %Value %div_v_f
 
+ev_shl_check:
+  ; M84: << is the only ``<''-prefix binary arith op. Verify the
+  ; second byte is also ``<'' (60) so a stray ``<=''/``<+''/etc.
+  ; doesn''t fall through to ev_shl.
+  %shl.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shl.fn1 = load i8, i8* %shl.fn1_ptr
+  %shl.is_lt = icmp eq i8 %shl.fn1, 60
+  br i1 %shl.is_lt, label %ev_shl, label %ev_zero
+ev_shl:
+  ; Integer-only logical left shift on i64 payloads.
+  %shl.a_i = extractvalue %Value %a, 1
+  %shl.b_i = extractvalue %Value %b, 1
+  %shl.r = shl i64 %shl.a_i, %shl.b_i
+  %shl.v = call %Value @value_integer(i64 %shl.r)
+  ret %Value %shl.v
+
+ev_shr_check:
+  ; M84: >> via second-byte verify, mirroring ev_shl_check.
+  %shr.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shr.fn1 = load i8, i8* %shr.fn1_ptr
+  %shr.is_gt = icmp eq i8 %shr.fn1, 62
+  br i1 %shr.is_gt, label %ev_shr, label %ev_zero
+ev_shr:
+  ; Integer arithmetic right shift (sign-preserving). Prolog
+  ; integers are signed, so ashr matches the host semantics.
+  %shr.a_i = extractvalue %Value %a, 1
+  %shr.b_i = extractvalue %Value %b, 1
+  %shr.r = ashr i64 %shr.a_i, %shr.b_i
+  %shr.v = call %Value @value_integer(i64 %shr.r)
+  ret %Value %shr.v
+
+ev_bor_check:
+  ; M85: ``\\'' (92) is the first byte of binary ``\\/'' (bitwise OR).
+  ; Verify the second byte is ``/'' (47); fail otherwise (the only
+  ; other ``\\''-prefix binary in standard Prolog arithmetic would
+  ; be ``\\='' or ``\\=='' which are unification/equality, not
+  ; arith).
+  %bor.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %bor.fn1 = load i8, i8* %bor.fn1_ptr
+  %bor.is_slash = icmp eq i8 %bor.fn1, 47
+  br i1 %bor.is_slash, label %ev_bor, label %ev_zero
+ev_bor:
+  %bor.a_i = extractvalue %Value %a, 1
+  %bor.b_i = extractvalue %Value %b, 1
+  %bor.r = or i64 %bor.a_i, %bor.b_i
+  %bor.v = call %Value @value_integer(i64 %bor.r)
+  ret %Value %bor.v
+
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
-  %nb_is_m = icmp eq i8 %fn0, 109
-  br i1 %nb_is_m, label %ev_nb_second, label %ev_zero
+  ; atan2 -- functor name starts with ``a`` (M81).
+  ; gcd -- functor name starts with ``g`` (M82).
+  ; log/2 -- functor name starts with ``l`` (M82).
+  ; xor -- functor name starts with ``x`` (M83, integer bitwise).
+  switch i8 %fn0, label %ev_zero [
+    i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
+    i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
+    i8 103, label %ev_gcd         ; ''g'' -> gcd
+    i8 108, label %ev_log2        ; ''l'' -> log/2
+    i8 120, label %ev_xor         ; ''x'' -> xor
+  ]
+ev_nb_a_second:
+  ; M81: only atan2 starts with ``a'' in the binary path. Verify the
+  ; second byte is ``t'' so a stray ``a''-prefixed binary name
+  ; doesn''t pretend to be atan2.
+  %nba.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nba.fn1 = load i8, i8* %nba.fn1_ptr
+  %nba.is_t = icmp eq i8 %nba.fn1, 116
+  br i1 %nba.is_t, label %ev_atan2, label %ev_zero
+ev_atan2:
+  %a2.a_d = call double @value_to_double(%Value %a)
+  %a2.b_d = call double @value_to_double(%Value %b)
+  %a2.r = call double @atan2(double %a2.a_d, double %a2.b_d)
+  %a2.v = call %Value @value_float(double %a2.r)
+  ret %Value %a2.v
+
+ev_gcd:
+  ; M82: gcd(A, B) -- integer-only. Iterative Euclid on i64 with
+  ; abs() of both args so negative inputs still produce a positive
+  ; gcd (matching SWI semantics). gcd(0, 0) is defined as 0.
+  %gcd.a_i = extractvalue %Value %a, 1
+  %gcd.b_i = extractvalue %Value %b, 1
+  %gcd.a_neg = icmp slt i64 %gcd.a_i, 0
+  %gcd.a_op = sub i64 0, %gcd.a_i
+  %gcd.a_abs = select i1 %gcd.a_neg, i64 %gcd.a_op, i64 %gcd.a_i
+  %gcd.b_neg = icmp slt i64 %gcd.b_i, 0
+  %gcd.b_op = sub i64 0, %gcd.b_i
+  %gcd.b_abs = select i1 %gcd.b_neg, i64 %gcd.b_op, i64 %gcd.b_i
+  br label %gcd.loop
+gcd.loop:
+  %gcd.x = phi i64 [ %gcd.a_abs, %ev_gcd ], [ %gcd.y, %gcd.step ]
+  %gcd.y = phi i64 [ %gcd.b_abs, %ev_gcd ], [ %gcd.r, %gcd.step ]
+  %gcd.y_zero = icmp eq i64 %gcd.y, 0
+  br i1 %gcd.y_zero, label %gcd.done, label %gcd.step
+gcd.step:
+  %gcd.r = srem i64 %gcd.x, %gcd.y
+  br label %gcd.loop
+gcd.done:
+  %gcd.v = call %Value @value_integer(i64 %gcd.x)
+  ret %Value %gcd.v
+
+ev_log2:
+  ; M82: log(Base, X) -- change-of-base via log(X)/log(Base).
+  ; Always Float; matches the existing log/1 (natural log) when
+  ; Base == e.
+  %lg2.base_d = call double @value_to_double(%Value %a)
+  %lg2.x_d = call double @value_to_double(%Value %b)
+  %lg2.lnb = call double @llvm.log.f64(double %lg2.base_d)
+  %lg2.lnx = call double @llvm.log.f64(double %lg2.x_d)
+  %lg2.r = fdiv double %lg2.lnx, %lg2.lnb
+  %lg2.v = call %Value @value_float(double %lg2.r)
+  ret %Value %lg2.v
+
+ev_xor:
+  ; M83: xor(A, B) -- integer-only bitwise XOR. Reads payloads as
+  ; i64 directly; passing a Float silently XORs its bit pattern,
+  ; consistent with the gcd treatment.
+  %xor.a_i = extractvalue %Value %a, 1
+  %xor.b_i = extractvalue %Value %b, 1
+  %xor.r = xor i64 %xor.a_i, %xor.b_i
+  %xor.v = call %Value @value_integer(i64 %xor.r)
+  ret %Value %xor.v
+
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_fn1 = load i8, i8* %nb_fn1_ptr
@@ -10061,7 +10402,7 @@ ev_eval_unary:
   ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
     i8 45,  label %ev_neg       ; ''-''
-    i8 97,  label %ev_abs       ; ''a''
+    i8 97,  label %ev_a_disambig ; ''a'' -> abs | asin | acos | atan
     i8 114, label %ev_round     ; ''r''
     i8 102, label %ev_floor     ; ''f''
     i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
@@ -10069,6 +10410,7 @@ ev_eval_unary:
     i8 116, label %ev_trunc_tan ; ''t'' -> truncate | tan
     i8 108, label %ev_log       ; ''l''
     i8 101, label %ev_exp       ; ''e''
+    i8 92,  label %ev_bnot      ; ''\\'' -> unary bitwise NOT (M85)
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -10096,6 +10438,45 @@ ev_abs_f:
   %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
+
+; M80: second-byte dispatch for ''a''-prefix unary functions.
+; ``abs'' alone keeps the original ev_abs path; asin / acos / atan
+; route to libm and always return Float.
+ev_a_disambig:
+  %ad.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %ad.fn1 = load i8, i8* %ad.fn1_ptr
+  switch i8 %ad.fn1, label %ev_zero [
+    i8 98,  label %ev_abs   ; ''b'' -> abs
+    i8 115, label %ev_asin  ; ''s'' -> asin
+    i8 99,  label %ev_acos  ; ''c'' -> acos
+    i8 116, label %ev_atan  ; ''t'' -> atan
+  ]
+
+ev_asin:
+  %asin_d = call double @value_to_double(%Value %u)
+  %asin_r = call double @asin(double %asin_d)
+  %asin_v = call %Value @value_float(double %asin_r)
+  ret %Value %asin_v
+
+ev_acos:
+  %acos_d = call double @value_to_double(%Value %u)
+  %acos_r = call double @acos(double %acos_d)
+  %acos_v = call %Value @value_float(double %acos_r)
+  ret %Value %acos_v
+
+ev_atan:
+  %atan_d = call double @value_to_double(%Value %u)
+  %atan_r = call double @atan(double %atan_d)
+  %atan_v = call %Value @value_float(double %atan_r)
+  ret %Value %atan_v
+
+ev_bnot:
+  ; M85: unary ``\\'' -- integer bitwise NOT. xor with all-ones is
+  ; the LLVM idiom (no dedicated ``not'' instruction).
+  %bnot.u_i = extractvalue %Value %u, 1
+  %bnot.r = xor i64 %bnot.u_i, -1
+  %bnot.v = call %Value @value_integer(i64 %bnot.r)
+  ret %Value %bnot.v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
 ; double, apply the LLVM intrinsic, return Integer (Prolog''s
@@ -10756,20 +11137,60 @@ wam_instruction_to_llvm_literal(Instr, Lit) :-
 
 %% emit_functor_string_globals(-IR)
 %  Emits LLVM global constants for functor names collected during WAM
-%  compilation (by put_structure instructions). Each functor "name" becomes
+%  compilation (by put_structure instructions). Each functor ``name'' becomes
 %  @.fn_name = private constant [N x i8] c"name\00".
+%
+%  M85: bytes that interact with the trailing ``\00'' null terminator
+%  in LLVM IR string syntax (``\'' and ``"'') are escaped to ``\NN''
+%  per-byte hex. Other bytes are left raw, since string_codes /
+%  maplist / append over every character of every functor string adds
+%  up to a lot of intermediate-list allocation when the same emit
+%  runs hundreds of times in one swipl session (M88 OOM tripped over
+%  this at ~580 modules in).
 emit_functor_string_globals(IR) :-
     findall(GlobalDef,
         ( functor_string_global(NameStr, Len),
           sanitize_functor_for_llvm(NameStr, SaneName),
+          llvm_ir_string_content(NameStr, SafeContent),
           format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
-              [SaneName, Len, NameStr])
+              [SaneName, Len, SafeContent])
         ),
         Defs),
     ( Defs == []
     -> IR = ''
     ;  atomic_list_concat(Defs, '\n', IR)
     ).
+
+%% llvm_ir_string_content(+Str, -Safe)
+%  Wrap Str so it can be dropped between c"..." quotes in LLVM IR.
+%  Fast path: if the input is pure printable ASCII with no ``\'' or
+%  ``"'', it''s already safe -- return as-is. Slow path: escape
+%  problem bytes (and any non-printable ones) to ``\NN'' hex.
+llvm_ir_string_content(Str, Safe) :-
+    ( name_needs_llvm_escape(Str)
+    -> string_codes(Str, Codes),
+       phrase(escape_ir_bytes(Codes), SafeCodes),
+       string_codes(Safe, SafeCodes)
+    ;  Safe = Str
+    ).
+
+name_needs_llvm_escape(Str) :-
+    string_codes(Str, Codes),
+    member(C, Codes),
+    ( C < 32 ; C > 126 ; C =:= 0'\\ ; C =:= 0'" ),
+    !.
+
+escape_ir_bytes([]) --> [].
+escape_ir_bytes([C|Cs]) -->
+    ( { C >= 32, C =< 126, C =\= 0'\\, C =\= 0'" }
+    -> [C]
+    ;  { Hi is (C >> 4) /\ 0xF,
+         Lo is C /\ 0xF,
+         hex_digit(Hi, H),
+         hex_digit(Lo, L) },
+       [0'\\, H, L]
+    ),
+    escape_ir_bytes(Cs).
 
 %% emit_atom_string_globals(-IR)
 %
@@ -11289,6 +11710,11 @@ builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value 
 builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
 builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
 builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
+builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
+builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
+builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
+builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
+builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

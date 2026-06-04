@@ -70,29 +70,58 @@ Suggested CI tiers:
 - **full / nightly or pre-merge:** no sampling — every program, every
   query, every available backend.
 
+Because random sampling is nondeterministic, a real divergence can pass
+one push and fail the next, which is confusing for whoever's bisecting.
+CI should **log the `CONFORMANCE_SEED` it used** (and set one explicitly)
+so any failure is reproducible from the recorded seed.
+
 ## Known divergences (tracked as `ct_xfail/2`)
 
 The harness is green today; the divergences below are tolerated and
 logged (an unexpected pass is logged as `XPASS` so the entry can be
 retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact — **Scala passes the whole spec**, which is the reference.
+artifact. The oracle is the hand-specified expected-results table in
+`wam_conformance_fixtures.pl` (standard Prolog semantics), not any
+backend's output; among the backends, **Scala is the reference
+implementation** — it passes the whole spec. The table below is the full
+set of tracked divergences (it matches the `ct_xfail/2` / `ct_skip/2`
+facts in the harness); WAT conforms only on `ack`, and `elixir` and
+`scala` pass the whole spec.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
-| wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
+| wat | fib | xfail | `is/2` with an already-bound LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
+| wat | builtins | xfail | `cbi_arith` uses `//` (integer div) and `mod`, which the WAT backend does not evaluate correctly (returns false). The comparison (`cbi_cmp`) and unification (`cbi_eq`) families are fine. |
+| wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
+| ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. The runtime also aliases native Elixir `[]` with WAM `"[]"` for direct list inputs. Now conformant; xfails removed. |
+| ~~haskell~~ | ~~member, append, reverse~~ | **fixed** | All three failed on heap-built cons lists. Four root causes, now fixed in `wam_haskell_target.pl`: (1) `unifyVal`/`unifyValues` did **no** structural unification — added a shared `unifyTerms`; (2) the cons functor `"[|]/2"` interned to its own id, distinct from `atomDot` — `intern_struct_functor/2` folds every cons spelling onto `atomDot` (the `./2`-vs-`[|]/2` class, same as the Elixir bug); (3) `GetValue` had its own inline unify bypassing the above — now routed through `unifyVal`; (4) **the multi-element bug** — building `[a\|X]` with `X` a `set_variable` tail placeholder emitted `VList [a, X]` (`X` as a 2nd *element*) and `put_structure` filling `X` did not bind the embedded var, so `addToBuilder` now emits a `Str atomDot [hd, tl]` cons cell for a partial tail and binds the placeholder var on finalize. Fixes lists of any length; xfails removed. |
+| haskell | builtins | xfail | `=/2` of two identical atoms returns false (`cbi_eq(foo)`), and `//`/`mod` evaluate incorrectly (`cbi_arith`). `fib`/`ack` pass, so `+`/`-`/comparison and `is/2` bound-LHS checking are fine — isolated builtin bugs, not the list path. |
+
+(Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable.
+*generation itself* is unusable. (`append`/`reverse` on WAT are `ct_skip`
+only — they are never built; the formerly-shadowing `ct_xfail` facts have
+been removed.)
 
-### Other backend issue surfaced (not xfail)
+### Other backend issue surfaced
 
-- **Scala loops compiling 0-arity predicates with comparison-only
-  bodies** (e.g. `p :- 3 > 2.`). The harness sidesteps this by (a) giving
-  Scala direct args rather than 0-arity wrappers, and (b) phrasing the
-  `builtins` comparison fixture as a 1-arity predicate. Worth fixing in
-  the Scala backend separately.
+- **Scala 0-arity predicates with comparison-only bodies** (e.g.
+  `p :- 3 > 2.`) — **fixed.** Two independent gaps: (1)
+  `emit_scala_wrapper/4` called `numlist(1, 0, _)`, which *fails* when
+  `Low > High`, silently failing the whole project write for any 0-arity
+  predicate; and (2) the CLI driver's single-query / `--queries` dispatch
+  required at least one argument (`rest.nonEmpty`), so even a compiled
+  0-arity predicate could not be invoked. Now the wrapper guards the
+  empty-arg case (and emits a typed `Array[WamTerm]()`), and dispatch
+  keys on `key.contains("/")` so a lone `pred/0` runs with no args.
+  Covered by `tests/test_wam_scala_classic_programs.pl`
+  (`zero_arity_comparison`). The harness still gives Scala direct args
+  rather than 0-arity wrappers (for list-arg passing), and the `builtins`
+  comparison fixture stays 1-arity — that workaround is no longer
+  *required*, just retained.
 
 ## Adding more backends
 
@@ -131,37 +160,68 @@ For all of them the **0-arity wrapper** shape (as used by Elixir/WAT)
 generalises: synthesise `ctw_N :- pred(args).`, compile it with the
 program, and have the driver ask whether `ctw_N` succeeds.
 
-### Prototype finding: Haskell (not landed)
+### Haskell adapter — landed, with the interning bug solved
 
-A throwaway Haskell adapter was prototyped. The driver above **compiles
-and runs**, and discriminates correctly on arithmetic (`fib(10,55)`→true,
-`fib(10,54)`→false, `ack` true/false both right). But via realistic
-wrapper invocation it reports many wrong answers — including
-**`cbi_eq(foo)`→false**, i.e. `foo = foo` is false. That is trivially
-impossible for a correct backend, so the minimal driver almost certainly
-has an **atom-interning mismatch** (atoms built in the wrapper don't
-intern to the same ids as atoms in the clause bodies, so unification
-spuriously fails). The Haskell adapter was therefore **not committed** —
-a backend adapter on top of an untrustworthy driver would produce
-meaningless xfails.
+The earlier throwaway Haskell driver reported impossible answers —
+notably **`cbi_eq(foo)`→false** (`foo = foo` false) — an **atom-interning
+mismatch**: a driver that parsed query atoms at *runtime* interned them to
+different ids than the same atoms compiled into the clause bodies, so
+unification spuriously failed. The committed driver
+(`tests/fixtures/haskell_conformance_driver.hs`) sidesteps this entirely:
+it runs a **0-arity wrapper** (`ctw_N :- pred(args).`) whose atoms are all
+baked into the compiled instruction stream, so there is **no runtime atom
+parsing** — and it wires `wcInternTable = compileTimeAtomTable`. Proof it
+discriminates correctly: `fib` and `ack` (true and false cases) pass.
 
-Open questions a future Haskell adapter must resolve first:
-- Wire the driver's intern table exactly as the generated `Main.hs` does
-  (it extends `compileTimeAtomTable` with runtime atoms via
-  `internAtom`); `mkContext`'s default table is likely not what the
-  compiled code expects.
-- Re-confirm `member/2` on the **heap-cons** list path. The PR #2708
-  Haskell indexing fix was validated by injecting the list as a `VList`
-  straight into a register; realistic programs build the list as a heap
-  cons cell. Whether `member(z,[a,b,c])` is correct on that path was not
-  established here (the interning bug masks it). This is worth checking
-  independently of the harness.
+That unmasked the **real** backend bugs. `member`, `append`, and
+`reverse` are **now fixed** (see the table) — the chain was: no structural
+unification, the `"[|]/2"`-vs-`atomDot` cons split, a `GetValue` inline
+unify that bypassed both, and the multi-element construction bug (a
+`set_variable` tail placeholder emitted as a `VList` *element* and never
+bound when `put_structure` filled it). The PR #2708 first-arg indexing fix
+had only been validated with the list injected as a `VList` in a register;
+the harness exercised the realistic **heap-cons** path and surfaced all of
+this. Validated with no regressions across the Haskell suites (target
+codegen, lowered phases 1–4, dispatch ghc smoke, st_regs e2e, iso, csr).
 
-### Cross-cutting observation
+Still open (own PR): the `builtins` `=/2` / `//` / `mod` gaps — isolated
+builtin bugs, unrelated to the list path.
 
-The divergences the harness has found so far cluster around **matching /
-unifying heap-built compound terms**: WAT read-mode structure unify is
-still unimplemented, and the suspected Haskell path may live there too.
-Elixir's earlier constructed-list-vs-ground-head mismatch was fixed by
-treating native `[]` and WAM `"[]"` as equivalent empty-list constants in
-runtime matching, lowered switch dispatch, and unification.
+### Cross-cutting observation (investigated)
+
+The divergences the harness has found cluster around **matching /
+unifying heap-built compound terms** — WAT (read-mode structure unify),
+Elixir (constructed list vs ground compound head arg), the suspected
+Haskell path. The open question was whether this is *one* shared lowering
+weakness or *N* independent backend bugs.
+
+**It is not a shared lowering bug.** The WAM lowering
+(`wam_target.pl:compile_head_arguments/5` + `compile_unify_arguments/5`)
+emits `get_structure`/`get_list`/`unify_*` identically for every backend,
+and **Scala consumes that same stream and passes the whole spec** — so
+the instruction stream is sound. The failures live in each backend's
+*runtime* implementation of the read-mode unify protocol, and they are
+distinct:
+
+- **Elixir** — a self-contained `unify/3` bug (cons-functor `./2`↔`[|]/2`
+  aliasing missing on the structural-unify path). Fixed in this pass; one
+  clause, ~6 lines. The runtime also aliases native `[]` with WAM `"[]"`
+  so direct Elixir-list inputs and heap-built WAM lists agree.
+  `append`/`reverse` now conformant.
+- **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
+  nops and there is no S-register / argument queue. This is a real
+  runtime feature to build, not a one-line fix.
+- **Haskell** — **fixed** (`member`/`append`/`reverse`). It was the same
+  `./2`-vs-`[|]/2` cons-aliasing class as Elixir, but with three more
+  layers: no structural unification at all, a `GetValue` inline-unify
+  bypass, and a multi-element construction bug (`set_variable` tail
+  placeholders emitted as `VList` elements, never bound on `put_structure`
+  finalize). So Haskell needed real compound unification *plus* a
+  cons-cell representation fix for partial tails — more than the Elixir
+  one-liner, but the same root family. `=/2`/`//`/`mod` remain (separate
+  builtin bugs).
+
+So the leverage is per-backend after all, but the harness did its job:
+it pinned each divergence to a specific runtime — made the Elixir one a
+quick, verified fix, and turned the Haskell "interning bug" from a
+guess into a precise, now-unmasked list of runtime gaps.
