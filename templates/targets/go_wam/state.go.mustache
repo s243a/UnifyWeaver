@@ -3,6 +3,7 @@ package {{package_name}}
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1238,6 +1239,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		fmt.Print(strings.Repeat(" ", int(count.Val)))
 		return true
+	case "getenv/2":
+		name, ok := vm.deref(arg1).(*Atom)
+		if !ok {
+			return false
+		}
+		value, ok := os.LookupEnv(name.Name)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, internAtom(value))
+	case "setenv/2":
+		name, okName := vm.deref(arg1).(*Atom)
+		value, okValue := vm.deref(arg2).(*Atom)
+		if !okName || !okValue {
+			return false
+		}
+		return os.Setenv(name.Name, value.Name) == nil
 	case "true/0":
 		return true
 	case "fail/0":
