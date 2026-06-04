@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `nl/0`, `tab/1` | `write/1`, `display/1`, `nl/0`; R/C++ also cover `tab/1` | Present for current baseline plus tab output |
+| IO | `write/1`, `display/1`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; R/C++ also cover `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus tab output and bounded environment access |
 
 ## Immediate Findings
 
@@ -126,6 +126,10 @@ current cross-target builtin/runtime baseline.
   nonnegative space output, zero-width success, negative integer failure,
   unbound argument failure, and non-integer failure, matching the R/C++
   basic I/O polish surface.
+- `getenv/2` and `setenv/2` are now covered by the generated Go WAM builtin
+  E2E test for missing environment lookup failure, set/get, overwrite, empty
+  value handling, and unbound argument failure, matching the bounded LLVM
+  environment surface.
 - Bidirectional `succ/2` is now covered by the generated Go WAM builtin E2E
   test for forward binding, reverse binding, matching integer pairs, mismatch
   failure, negative predecessor failure, non-positive successor failure, and
