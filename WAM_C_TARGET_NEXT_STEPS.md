@@ -478,6 +478,14 @@ Evidence:
   same one-row output: scan fallback took `query_ms=4988.927`, sorted CSR took
   `query_ms=1439.475`, buffered-drop CSR took `query_ms=1433.230`, and
   LMDB-offset CSR took `query_ms=1334.566`.
+- A result-capped `50k_cats` child-search run without article/root sampling
+  reached `50` result rows after `72,977` generated queries. The CSR storage
+  variants produced matching output hashes: sorted CSR took `query_ms=11731.611`,
+  buffered-drop CSR took `query_ms=11319.778`, and LMDB-offset CSR took
+  `query_ms=10540.272`. The first standalone sorted-CSR result-capped run
+  measured `query_ms=10407.918`, so this comparison is enough to show the
+  remaining full-matrix cost is per-query traversal volume, not CSR storage
+  disagreement.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -729,10 +737,11 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use generated-runner sampling or explicit article/root name filters to compare
-more representative `50k_cats` query sets before attempting another full matrix
-run. The first sampled query set confirms child-CSR variants agree and scan
-fallback is much slower, but it only found one child-search row. Keep
+Do not attempt another full `50k_cats` generated matrix until there is a plan
+for reducing the `ARTICLE_COUNT * ROOT_COUNT` traversal volume. Result-capped
+and sampled runs now confirm child-CSR variants agree; the next useful work is
+to measure or reduce per-query WAM/path collection cost for result-bearing
+queries. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
