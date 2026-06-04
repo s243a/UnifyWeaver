@@ -413,6 +413,10 @@ Implemented so far:
   as large benchmark datasets intern tens of thousands of category atoms,
   avoiding long chains in the old fixed 512-bucket table without inflating each
   stack-allocated `WamState`.
+- WAM-C effective-distance reverse-CSR generation now builds an assoc from the
+  category-ID map before converting category-parent edges to parent/child ID
+  pairs. This removes the previous repeated `memberchk/2` scan over all
+  category IDs for each edge.
 
 Evidence:
 
@@ -428,14 +432,18 @@ Evidence:
   `roots=4054 category_ids=84136 parent_edges=196900 max_cache_maps=4054 max_distance_entries_upper_bound=341087344`.
   Their article-category rows differ: `50k_cats` has `50,000`, and
   `100k_cats` has `84,136`.
-- `10k` compile-only for `c-wam-accumulated-child-csr` took `6.750s`,
-  split into `generate_s=6.051` and `compile_s=0.699`. Artifact bytes were
-  `category_parent_tsv_bytes=1266946`, `reverse_csr_index_bytes=118672`, and
-  `reverse_csr_values_bytes=100908`.
-- `50k_cats` compile-only for `c-wam-accumulated-child-csr` took `437.955s`,
-  split into `generate_s=428.912` and `compile_s=9.042`. Artifact bytes were
-  `category_parent_tsv_bytes=10126909`, `reverse_csr_index_bytes=678752`, and
-  `reverse_csr_values_bytes=787600`.
+- Before assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `6.750s`, split into
+  `generate_s=6.051` and `compile_s=0.699`. `50k_cats` compile-only took
+  `437.955s`, split into `generate_s=428.912` and `compile_s=9.042`.
+- After assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `2.032s`, split into
+  `generate_s=1.128` and `compile_s=0.904`. `50k_cats` compile-only took
+  `17.796s`, split into `generate_s=8.760` and `compile_s=9.036`. Artifact
+  bytes stayed the same: `10k` has `category_parent_tsv_bytes=1266946`,
+  `reverse_csr_index_bytes=118672`, and `reverse_csr_values_bytes=100908`;
+  `50k_cats` has `category_parent_tsv_bytes=10126909`,
+  `reverse_csr_index_bytes=678752`, and `reverse_csr_values_bytes=787600`.
 - A constrained full-generated `50k_cats` matrix attempt over
   `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
   several minutes. The compile-only phase split above explains the missing
@@ -489,10 +497,10 @@ Evidence:
 Open measurement:
 
 - Runtime setup is no longer the large `50k_cats` ceiling in the narrow
-  runner: parent TSV load is about `65.6ms`, category-ID load is about
-  `76.1ms`, and reverse-CSR load is about `1.0ms`. Further setup reductions
-  should be weighed against the much larger full-generated project creation
-  cost before adding another storage mode.
+  runner, and full generated-project compile-only generation is no longer the
+  multi-minute ceiling after assoc-backed CSR ID lookup. The next measurement
+  should run the generated `50k_cats` child-CSR target, not just compile it,
+  to see whether result enumeration or query count becomes the next blocker.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -690,10 +698,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use the narrow bidirectional-kernel runner to validate whether full-generated
-WAM-C project creation, not runtime setup, is now the dominant `50k_cats` /
-`100k_cats` ceiling. Runtime setup is down to about `145ms` at `50k_cats`, so
-further setup work should be justified by a concrete benchmark gap. Keep
+Run the generated `50k_cats` WAM-C child-CSR target now that compile-only
+generation is down to about `18s` and narrow runtime setup is down to about
+`145ms`. That should identify whether result enumeration, query volume, or
+full runner overhead is now the next scale ceiling. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

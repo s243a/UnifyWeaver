@@ -7,6 +7,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_c_target').
 :- use_module('../../src/unifyweaver/core/cost_model', [resolve_csr_io_policy/2]).
+:- use_module(library(assoc), [get_assoc/3, list_to_assoc/2]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(lists)).
 :- use_module(library(pairs), [pairs_keys/2, pairs_values/2]).
@@ -385,19 +386,21 @@ write_effective_distance_reverse_csr(OutputDir, CategoryParents,
                                      IndexBackend, IoPolicy, CategoryIdMap) :-
     effective_distance_category_id_map(CategoryParents, ArticleCategories,
                                        RootCategories, CategoryIdMap),
+    list_to_assoc(CategoryIdMap, CategoryIdsByAtom),
     directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
     directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
-    findall(ParentId-ChildId,
-            (   member(Child-Parent, CategoryParents),
-                memberchk(Child-ChildId, CategoryIdMap),
-                memberchk(Parent-ParentId, CategoryIdMap)
-            ),
+    maplist(category_parent_child_id_pair(CategoryIdsByAtom),
+            CategoryParents,
             ChildPairs0),
     sort(ChildPairs0, ChildPairs),
     group_children_by_parent(ChildPairs, Rows),
     write_reverse_csr_files(IndexPath, ValuesPath, Rows),
     maybe_pad_reverse_csr_values(IoPolicy, ValuesPath),
     maybe_write_reverse_csr_offset_lmdb_seeder(IndexBackend, OutputDir, Rows).
+
+category_parent_child_id_pair(CategoryIdsByAtom, Child-Parent, ParentId-ChildId) :-
+    get_assoc(Child, CategoryIdsByAtom, ChildId),
+    get_assoc(Parent, CategoryIdsByAtom, ParentId).
 
 effective_distance_category_id_map(CategoryParents, ArticleCategories,
                                    RootCategories, CategoryIdMap) :-
