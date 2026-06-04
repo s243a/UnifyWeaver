@@ -1460,6 +1460,7 @@ declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
 declare i64 @time(i64*)
+declare i32 @clock_gettime(i32, i8*)
 declare i32 @stat(i8*, i8*)
 declare i32 @unlink(i8*)
 declare i32 @mkdir(i8*, i32)
@@ -4375,12 +4376,24 @@ builtin_at_ge:
   ret i1 %atge.ok
 
 builtin_get_time:
-  ; M72: get_time(?Time) -- wall-clock seconds since the epoch, as
-  ; Float. Calls libc time(NULL) so resolution is whole-second;
-  ; gettimeofday / clock_gettime can replace this for sub-second
-  ; precision in a follow-up. Unifies A1 with the resulting Float.
-  %gt.t_i64 = call i64 @time(i64* null)
-  %gt.t_d = sitofp i64 %gt.t_i64 to double
+  ; M72/M87: get_time(?Time) -- wall-clock seconds since the epoch
+  ; as Float. M87 upgrades the resolution from whole-second (libc
+  ; time()) to nanosecond via clock_gettime(CLOCK_REALTIME, &ts).
+  ; struct timespec on x86-64 Linux glibc is { i64 tv_sec; i64
+  ; tv_nsec } -- 16 bytes -- so a stack alloca of [16 x i8] is
+  ; enough. CLOCK_REALTIME has numeric value 0.
+  %gt.ts_buf = alloca [16 x i8]
+  %gt.ts_ptr = getelementptr [16 x i8], [16 x i8]* %gt.ts_buf, i32 0, i32 0
+  %gt.cg_ret = call i32 @clock_gettime(i32 0, i8* %gt.ts_ptr)
+  %gt.sec_ptr = bitcast i8* %gt.ts_ptr to i64*
+  %gt.sec = load i64, i64* %gt.sec_ptr
+  %gt.nsec_ptr_i8 = getelementptr i8, i8* %gt.ts_ptr, i64 8
+  %gt.nsec_ptr = bitcast i8* %gt.nsec_ptr_i8 to i64*
+  %gt.nsec = load i64, i64* %gt.nsec_ptr
+  %gt.sec_d = sitofp i64 %gt.sec to double
+  %gt.nsec_d = sitofp i64 %gt.nsec to double
+  %gt.frac = fdiv double %gt.nsec_d, 1.000000e+09
+  %gt.t_d = fadd double %gt.sec_d, %gt.frac
   %gt.t_bits = bitcast double %gt.t_d to i64
   %gt.v0 = insertvalue %Value undef, i32 2, 0
   %gt.v = insertvalue %Value %gt.v0, i64 %gt.t_bits, 1
