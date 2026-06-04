@@ -595,7 +595,8 @@ wam_instruction_to_go_literal(get_value(Xn, Ai), GoLiteral) :-
     format(atom(GoLiteral), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(get_structure(F, Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
-    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
+    escape_go_string(F, EscapedFunctor),
+    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_instruction_to_go_literal(get_list(Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
     format(atom(GoLiteral), '&GetList{Ai: ~w}', [AiIdx]).
@@ -621,7 +622,8 @@ wam_instruction_to_go_literal(put_value(Xn, Ai), GoLiteral) :-
     format(atom(GoLiteral), '&PutValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(put_structure(F, Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
-    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
+    escape_go_string(F, EscapedFunctor),
+    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_instruction_to_go_literal(put_list(Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
     format(atom(GoLiteral), '&PutList{Ai: ~w}', [AiIdx]).
@@ -1228,7 +1230,8 @@ wam_line_to_go_literal(["get_value", Xn, Ai], GoLit) :-
 wam_line_to_go_literal(["get_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
-    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
+    escape_go_string(CFN, EscapedFunctor),
+    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_line_to_go_literal(["get_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
@@ -1262,7 +1265,8 @@ wam_line_to_go_literal(["put_value", Xn, Ai], GoLit) :-
 wam_line_to_go_literal(["put_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
-    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
+    escape_go_string(CFN, EscapedFunctor),
+    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_line_to_go_literal(["put_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
