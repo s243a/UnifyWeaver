@@ -2459,6 +2459,35 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M83: pi/e atom constants + xor/2 integer bitwise.
+
+:- dynamic test_pi_50/2.
+test_pi_50(_, R) :-
+    % pi * 50 ~ 157.08; truncate -> 157 (fits in 0..255).
+    X is pi,
+    R is truncate(X * 50).   % 157
+
+:- dynamic test_pi_gt3/2.
+test_pi_gt3(_, R) :-
+    X is pi,
+    ( X > 3.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_e_90/2.
+test_e_90(_, R) :-
+    % e * 90 ~ 244.65; truncate -> 244.
+    X is e,
+    R is truncate(X * 90).   % 244
+
+:- dynamic test_xor_small/2.
+test_xor_small(_, R) :-
+    % 5 = 0b101; 3 = 0b011; xor = 0b110 = 6.
+    R is xor(5, 3).   % 6
+
+:- dynamic test_xor_byte/2.
+test_xor_byte(_, R) :-
+    % 0xFF xor 0x0F = 0xF0 = 240.
+    R is xor(255, 15).   % 240
+
 % M82: gcd/2 (Integer Euclidean) + log/2 (Float log with base).
 
 :- dynamic test_gcd_basic/2.
@@ -4488,6 +4517,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M83 pi/e constants + xor/2 ---~n'),
+       run_test_r0('truncate(pi * 50) -> 157',
+                   test_pi_50, 0, 157),
+       run_test_r0('pi > 3.0 -> 1',
+                   test_pi_gt3, 0, 1),
+       run_test_r0('truncate(e * 90) -> 244',
+                   test_e_90, 0, 244),
+       run_test_r0('xor(5, 3) -> 6',
+                   test_xor_small, 0, 6),
+       run_test_r0('xor(255, 15) -> 240',
+                   test_xor_byte, 0, 240),
        format('--- M82 gcd/2 + log/2 binary arith ---~n'),
        run_test_r0('gcd(12, 18) -> 6',
                    test_gcd_basic, 0, 6),
