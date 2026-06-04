@@ -1240,6 +1240,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     register_functor_string("ground"),
     register_functor_string("list"),
     register_functor_string("boolean"),
+    % M83: arithmetic atom constants. ``X is pi'' and ``X is e''
+    % resolve to Float(pi) and Float(e) in eval_arith_value via
+    % strcmp against these registered names.
+    register_functor_string("pi"),
+    register_functor_string("e"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -9877,6 +9882,7 @@ entry:
   %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
   %tag = extractvalue %Value %expr, 0
   switch i32 %tag, label %ev_zero [
+    i32 0, label %ev_atom_const
     i32 1, label %ev_atomic_in
     i32 2, label %ev_atomic_in
     i32 3, label %ev_compound
@@ -9884,6 +9890,33 @@ entry:
 
 ev_atomic_in:
   ret %Value %expr
+
+ev_atom_const:
+  ; M83: arithmetic atom constants. Currently pi and e; failable
+  ; otherwise. Resolve the atom''s name to a C string, then strcmp
+  ; against the registered functor strings.
+  %atc.aid = extractvalue %Value %expr, 1
+  %atc.str = call i8* @wam_atom_to_string(i64 %atc.aid)
+  %atc.null = icmp eq i8* %atc.str, null
+  br i1 %atc.null, label %ev_zero, label %atc.try_pi
+atc.try_pi:
+  %atc.fn_pi = getelementptr [3 x i8], [3 x i8]* @.fn_pi, i32 0, i32 0
+  %atc.cmp_pi = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_pi)
+  %atc.is_pi = icmp eq i32 %atc.cmp_pi, 0
+  br i1 %atc.is_pi, label %atc.ret_pi, label %atc.try_e
+atc.ret_pi:
+  ; pi as IEEE 754 double = 0x400921FB54442D18 (3.141592653589793).
+  %atc.pi_v = call %Value @value_float(double 0x400921FB54442D18)
+  ret %Value %atc.pi_v
+atc.try_e:
+  %atc.fn_e = getelementptr [2 x i8], [2 x i8]* @.fn_e, i32 0, i32 0
+  %atc.cmp_e = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_e)
+  %atc.is_e = icmp eq i32 %atc.cmp_e, 0
+  br i1 %atc.is_e, label %atc.ret_e, label %ev_zero
+atc.ret_e:
+  ; e as IEEE 754 double = 0x4005BF0A8B145769 (2.718281828459045).
+  %atc.e_v = call %Value @value_float(double 0x4005BF0A8B145769)
+  ret %Value %atc.e_v
 
 ev_compound:
   %cp_bits = extractvalue %Value %expr, 1
@@ -10064,11 +10097,13 @@ ev_check_named_binary:
   ; atan2 -- functor name starts with ``a`` (M81).
   ; gcd -- functor name starts with ``g`` (M82).
   ; log/2 -- functor name starts with ``l`` (M82).
+  ; xor -- functor name starts with ``x`` (M83, integer bitwise).
   switch i8 %fn0, label %ev_zero [
     i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
     i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
     i8 103, label %ev_gcd         ; ''g'' -> gcd
     i8 108, label %ev_log2        ; ''l'' -> log/2
+    i8 120, label %ev_xor         ; ''x'' -> xor
   ]
 ev_nb_a_second:
   ; M81: only atan2 starts with ``a'' in the binary path. Verify the
@@ -10121,6 +10156,16 @@ ev_log2:
   %lg2.r = fdiv double %lg2.lnx, %lg2.lnb
   %lg2.v = call %Value @value_float(double %lg2.r)
   ret %Value %lg2.v
+
+ev_xor:
+  ; M83: xor(A, B) -- integer-only bitwise XOR. Reads payloads as
+  ; i64 directly; passing a Float silently XORs its bit pattern,
+  ; consistent with the gcd treatment.
+  %xor.a_i = extractvalue %Value %a, 1
+  %xor.b_i = extractvalue %Value %b, 1
+  %xor.r = xor i64 %xor.a_i, %xor.b_i
+  %xor.v = call %Value @value_integer(i64 %xor.r)
+  ret %Value %xor.v
 
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
