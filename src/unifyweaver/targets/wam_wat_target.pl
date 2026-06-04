@@ -2091,10 +2091,10 @@ wam_wat_case(fused_is_add,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.add (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.add (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_sub,
 '  ;; Dest := deref(Src1) - deref(Src2). Same layout and semantics as
@@ -2116,10 +2116,10 @@ wam_wat_case(fused_is_sub,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.sub (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.sub (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_mul,
 '  ;; Dest := deref(Src1) * deref(Src2). Same layout and semantics as
@@ -2141,10 +2141,10 @@ wam_wat_case(fused_is_mul,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.mul (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.mul (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_add_const,
 '  ;; Dest := deref(Src) + Const. op1 layout: Dest (low 8), Src (bits
@@ -2161,10 +2161,10 @@ wam_wat_case(fused_is_add_const,
   (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.add (local.get $a) (local.get $op2)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.add (local.get $a) (local.get $op2)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_mul_const,
 '  ;; Dest := deref(Src) * Const. Same layout as fused_is_add_const.
@@ -2178,10 +2178,10 @@ wam_wat_case(fused_is_mul_const,
   (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.mul (local.get $a) (local.get $op2)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.mul (local.get $a) (local.get $op2)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(arg_direct,
 '  ;; Direct arg/3 call, bypassing the $execute_builtin br_table.
@@ -4089,6 +4089,26 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (i32.and
     (i32.eq (local.get $t1) (local.get $t2))
     (i64.eq (local.get $p1) (local.get $p2))))
+
+;; Unify register $dest (through its deref chain) with integer $val:
+;; bind if the cell is unbound, succeed if it already holds the same
+;; integer, fail otherwise. Mirrors the $builtin_is A1 handling so the
+;; fused is/* forms VALIDATE an already-bound output register instead of
+;; overwriting it. Without this, F is F1+F2 with F bound (a recursive
+;; predicate result check, e.g. fib) always succeeded by clobbering F.
+(func $is_unify_int (param $dest i32) (param $val i64) (result i32)
+  (local $addr i32)
+  (local.set $addr (call $deref_reg_addr (local.get $dest)))
+  (if (i32.eq (call $val_tag (local.get $addr)) (i32.const 6))
+    (then
+      (call $trail_binding_at (local.get $addr))
+      (call $val_store (local.get $addr) (i32.const 1) (local.get $val))
+      (return (i32.const 1))))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $addr)) (i32.const 1))
+        (i64.eq (call $val_payload (local.get $addr)) (local.get $val)))
+    (then (return (i32.const 1))))
+  (i32.const 0))
 
 ;; --- Builtin dispatch ---
 ;; O(1) br_table dispatch for ALL builtins. Earlier versions routed
