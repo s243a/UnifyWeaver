@@ -110,30 +110,32 @@ ct_xfail(wat, builtins).
 %  wam_elixir_target.pl; both programs are now conformant and the xfails
 %  are removed.)
 
-%  Haskell member/append/reverse/builtins. The conformance driver
+%  Haskell builtins. The conformance driver
 %  (tests/fixtures/haskell_conformance_driver.hs) runs a 0-arity wrapper
 %  whose atoms are baked into the compiled instruction stream, which
 %  removed the atom-interning mismatch that sank the earlier throwaway
-%  driver (fib/ack now pass, so the driver discriminates correctly).
-%  That unmasked real backend gaps:
-%   - member: cmem(z,[a,b,c]) wrongly succeeds. The PR #2708 first-arg
-%     indexing fix was validated with the list injected as a VList in a
-%     register; on a heap-built cons list (put_list) the non-member case
-%     is not rejected.
-%   - append/reverse: a freshly-constructed list will not unify against
-%     an already-ground list compound (capp([a],[b],[a,b]) -> false).
-%     TWO root causes: (1) unifyVal/unifyValues do NO structural
-%     unification — only identity (==) and var-binding, then Nothing; and
-%     (2) the cons functor "[|]/2" interns to its own id, distinct from
-%     atomDot (".", id 3), so a put_list VList and a put_structure
-%     "[|]/2" Str never match. (Same ./2-vs-[|]/2 class as the Elixir
-%     bug, but Haskell also lacks compound unification entirely.)
-%   - builtins: =/2 of two identical atoms returns false (cbi_eq(foo)),
-%     and // (integer div) / mod evaluate incorrectly (cbi_arith). fib
-%     and ack pass, so +/-/comparison and is/2 bound-LHS checking work.
-ct_xfail(haskell, member).
-ct_xfail(haskell, append).
-ct_xfail(haskell, reverse).
+%  driver (fib/ack discriminate correctly).
+%
+%  member/append/reverse USED to be xfail here, all failing on heap-built
+%  cons lists. Root causes (now fixed in wam_haskell_target.pl):
+%   1. unifyVal/unifyValues did NO structural unification (identity +
+%      var-binding only) — added a shared structural unifyTerms.
+%   2. the cons functor "[|]/2" interned to its own id, distinct from
+%      atomDot — intern_struct_functor/2 now folds every cons spelling
+%      onto atomDot (the ./2-vs-[|]/2 class, same as the Elixir bug).
+%   3. GetValue had its own inline unify bypassing the above — now routed
+%      through unifyVal.
+%   4. THE multi-element bug: building [a|X] with X a set_variable tail
+%      placeholder emitted VList [a, X] (X as a 2nd ELEMENT) instead of a
+%      cons cell, and put_structure filling X did not bind the embedded
+%      var. addToBuilder now emits Str atomDot [hd, tl] for a partial
+%      tail and binds the placeholder var on finalize. This fixed member,
+%      append, AND reverse on lists of any length; the xfails are removed.
+%
+%  builtins remains: =/2 of two identical atoms returns false
+%  (cbi_eq(foo)), and // (integer div) / mod evaluate incorrectly
+%  (cbi_arith). fib/ack pass, so +/-/comparison and is/2 bound-LHS
+%  checking work — these are isolated builtin bugs, not the list path.
 ct_xfail(haskell, builtins).
 
 %% ct_skip(Target, ProgramName)

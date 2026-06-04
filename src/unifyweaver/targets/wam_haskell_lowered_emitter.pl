@@ -522,7 +522,7 @@ emit_one(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
 emit_one(get_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
     parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_atom(FuncName, FnId),
+    wam_haskell_target:intern_struct_functor(FuncName, FnId),
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (GetStructure ~w ~w ~w)~n",
            [I, SVout, SV, PC, FnId, Ai, Arity]).
@@ -599,7 +599,7 @@ emit_one(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
 emit_one(put_structure(FnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
     parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_atom(FuncName, FnId),
+    wam_haskell_target:intern_struct_functor(FuncName, FnId),
     fresh_sv(SV, SVout),
     format("~wlet ~w = ~w { wsBuilder = BuildStruct ~w ~w ~w [] }~n",
            [I, SVout, SV, FnId, Ai, Arity]).
