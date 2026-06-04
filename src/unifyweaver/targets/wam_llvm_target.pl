@@ -1466,7 +1466,10 @@ declare i64 @strlen(i8*)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
-declare i32 @getpid()'
+declare i32 @getpid()
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -10125,7 +10128,7 @@ ev_eval_unary:
   ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
     i8 45,  label %ev_neg       ; ''-''
-    i8 97,  label %ev_abs       ; ''a''
+    i8 97,  label %ev_a_disambig ; ''a'' -> abs | asin | acos | atan
     i8 114, label %ev_round     ; ''r''
     i8 102, label %ev_floor     ; ''f''
     i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
@@ -10160,6 +10163,37 @@ ev_abs_f:
   %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
+
+; M80: second-byte dispatch for ''a''-prefix unary functions.
+; ``abs'' alone keeps the original ev_abs path; asin / acos / atan
+; route to libm and always return Float.
+ev_a_disambig:
+  %ad.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %ad.fn1 = load i8, i8* %ad.fn1_ptr
+  switch i8 %ad.fn1, label %ev_zero [
+    i8 98,  label %ev_abs   ; ''b'' -> abs
+    i8 115, label %ev_asin  ; ''s'' -> asin
+    i8 99,  label %ev_acos  ; ''c'' -> acos
+    i8 116, label %ev_atan  ; ''t'' -> atan
+  ]
+
+ev_asin:
+  %asin_d = call double @value_to_double(%Value %u)
+  %asin_r = call double @asin(double %asin_d)
+  %asin_v = call %Value @value_float(double %asin_r)
+  ret %Value %asin_v
+
+ev_acos:
+  %acos_d = call double @value_to_double(%Value %u)
+  %acos_r = call double @acos(double %acos_d)
+  %acos_v = call %Value @value_float(double %acos_r)
+  ret %Value %acos_v
+
+ev_atan:
+  %atan_d = call double @value_to_double(%Value %u)
+  %atan_r = call double @atan(double %atan_d)
+  %atan_v = call %Value @value_float(double %atan_r)
+  ret %Value %atan_v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
 ; double, apply the LLVM intrinsic, return Integer (Prolog''s

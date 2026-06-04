@@ -2459,6 +2459,38 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M80: inverse trig -- asin/1, acos/1, atan/1 via libm.
+
+:- dynamic test_asin_zero/2.
+test_asin_zero(_, R) :-
+    X is asin(0.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_asin_one/2.
+test_asin_one(_, R) :-
+    % asin(1) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is asin(1.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_acos_one/2.
+test_acos_one(_, R) :-
+    X is acos(1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_acos_zero/2.
+test_acos_zero(_, R) :-
+    % acos(0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is acos(0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan_one/2.
+test_atan_one(_, R) :-
+    % atan(1) = pi/4 ~ 0.7854; *200 truncated -> 157 (same as
+    % asin(1.0)/acos(0.0)). Cannot use *400 because OS exit codes
+    % are 8-bit and 314 mod 256 = 58.
+    X is atan(1.0),
+    R is truncate(X * 200).   % 157
+
 % M79: working_directory/2 + getpid/1 -- libc getcwd/chdir/getpid.
 
 :- dynamic test_wd_query/2.
@@ -4396,6 +4428,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M80 inverse trig -- asin/1, acos/1, atan/1 ---~n'),
+       run_test_r0('truncate(asin(0.0) * 100) -> 0',
+                   test_asin_zero, 0, 0),
+       run_test_r0('truncate(asin(1.0) * 100) -> 157 (~ pi/2)',
+                   test_asin_one, 0, 157),
+       run_test_r0('truncate(acos(1.0) * 100) -> 0',
+                   test_acos_one, 0, 0),
+       run_test_r0('truncate(acos(0.0) * 100) -> 157 (~ pi/2)',
+                   test_acos_zero, 0, 157),
+       run_test_r0('truncate(atan(1.0) * 200) -> 157 (~ pi/2)',
+                   test_atan_one, 0, 157),
        format('--- M79 working_directory/2 + getpid/1 ---~n'),
        run_test_r0('working_directory(D, D) query -> 1',
                    test_wd_query, 0, 1),
