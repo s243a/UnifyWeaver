@@ -973,11 +973,23 @@ compile_utility_helpers_to_elixir(Code) :-
         {:ref, addr1} = v1
         {:ref, addr2} = v2
         case {Map.get(state.heap, addr1), Map.get(state.heap, addr2)} do
-          {{:str, fn_name}, {:str, fn_name}} ->
-            arity = parse_functor_arity(fn_name)
-            args1 = heap_slice(state, addr1 + 1, arity)
-            args2 = heap_slice(state, addr2 + 1, arity)
-            unify_arg_list(state, args1, args2)
+          {{:str, fn1}, {:str, fn2}} ->
+            # Cons-cell functor aliasing: "./2" (put_list) and "[|]/2"
+            # (put_structure) are the SAME ISO cons functor. The
+            # get_structure match path already treats them as
+            # equivalent via step_get_structure_matches?/2; this clause
+            # must too, or a constructed list ("./2") fails to unify
+            # against an already-ground list compound ("[|]/2") in a
+            # clause head — e.g. capp([a],[b],[a,b]) returned false
+            # while capp([a],[b],X), X=[a,b] succeeded.
+            if fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2) do
+              arity = parse_functor_arity(fn1)
+              args1 = heap_slice(state, addr1 + 1, arity)
+              args2 = heap_slice(state, addr2 + 1, arity)
+              unify_arg_list(state, args1, args2)
+            else
+              :fail
+            end
           _ -> :fail
         end
       true -> :fail

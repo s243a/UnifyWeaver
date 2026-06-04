@@ -73,7 +73,7 @@ artifact — **Scala passes the whole spec**, which is the reference.
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
 | wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
-| elixir | append, reverse | xfail | The lowered Elixir backend fails to unify a freshly-constructed list against an already-**ground** compound head argument: `capp([a],[b],[a,b])` returns false, while `capp([a],[b],X), X=[a,b]` succeeds. `member` passes (it only matches an input list). |
+| ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. Now conformant; xfails removed. |
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
@@ -150,12 +150,33 @@ Open questions a future Haskell adapter must resolve first:
   established here (the interning bug masks it). This is worth checking
   independently of the harness.
 
-### Cross-cutting observation
+### Cross-cutting observation (investigated)
 
-The divergences the harness has found so far cluster around **matching /
-unifying heap-built compound terms**: WAT (read-mode structure unify
-unimplemented), Elixir (constructed list vs ground compound head arg),
-and the suspected Haskell path all live here. If that turns out to be one
-shared weakness in the lowering rather than N independent backend bugs,
-fixing it once would move several backends toward conformance at the same
-time — a higher-leverage option than wiring up adapters one by one.
+The divergences the harness has found cluster around **matching /
+unifying heap-built compound terms** — WAT (read-mode structure unify),
+Elixir (constructed list vs ground compound head arg), the suspected
+Haskell path. The open question was whether this is *one* shared lowering
+weakness or *N* independent backend bugs.
+
+**It is not a shared lowering bug.** The WAM lowering
+(`wam_target.pl:compile_head_arguments/5` + `compile_unify_arguments/5`)
+emits `get_structure`/`get_list`/`unify_*` identically for every backend,
+and **Scala consumes that same stream and passes the whole spec** — so
+the instruction stream is sound. The failures live in each backend's
+*runtime* implementation of the read-mode unify protocol, and they are
+distinct:
+
+- **Elixir** — a self-contained `unify/3` bug (cons-functor `./2`↔`[|]/2`
+  aliasing missing on the structural-unify path). Fixed in this pass; one
+  clause, ~6 lines. `append`/`reverse` now conformant.
+- **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
+  nops and there is no S-register / argument queue. This is a real
+  runtime feature to build, not a one-line fix.
+- **Haskell** — still unverified: the prototype driver's atom-interning
+  bug (above) masks it. Worth re-auditing `readNextArg`/`unifyValues`
+  against the now-fixed Elixir/Scala runtimes for the same cons-aliasing
+  and heap-cons `member/2` concerns once the driver is sound.
+
+So the leverage is per-backend after all, but the harness did its job:
+it pinned each divergence to a specific runtime and made the Elixir one a
+quick, verified fix.
