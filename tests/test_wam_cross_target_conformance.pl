@@ -76,6 +76,10 @@ ct_default_target(elixir).
 :- discontiguous ct_build/4.
 :- discontiguous ct_run/5.
 :- discontiguous ct_teardown/2.
+%% ct_xfail/2 may legitimately have zero clauses (every target/program is
+%% now conformant). Declare it dynamic so calls fail cleanly instead of
+%% raising existence_error when no xfail entries remain.
+:- dynamic ct_xfail/2.
 
 %% ct_xfail(Target, ProgramName)
 %  (Target, program) pairs known to diverge from the shared spec.
@@ -101,17 +105,17 @@ ct_default_target(elixir).
 %     Fixed functor_arity_of to take the last '/'-component and added
 %     //, mod (with zero guards and floored mod). cmp/eq already worked.
 %
-%  WAT fib remains xfail: cfib(10,54) wrongly succeeds (fib(10)=55). The
-%  is/2 output check itself is correct (cbi_arith with a bound result is
-%  fine). The fault is recursive backtracking: the fact clauses
-%  cfib(0,0)/cfib(1,1) coexist with the variable-headed recursive clause,
-%  so calls like cfib(0,F2) legitimately leave a choice point; when the
-%  parent's final is/2 correctly fails, backtracking re-enters those
-%  alternatives with reused argument registers and eventually rebinds the
-%  (now-unbound) result variable to a passing value. This is a choice-
-%  point / first-argument-indexing determinism issue in the WAT runtime,
-%  not the read-mode or arithmetic path — a separate follow-up.
-ct_xfail(wat, fib).
+%  WAT fib USED to be xfail: cfib(10,54) wrongly succeeded. Root cause
+%  (now fixed in wam_wat_target.pl): peephole_fused_arith rewrites
+%  `F is F1+F2` into a single fused_is_add(Dest,Src1,Src2), and the WAT
+%  handlers for the fused is/* forms (add/sub/mul and the _const variants)
+%  called $bind_reg_deref to STORE the result into Dest unconditionally,
+%  never checking an already-bound Dest. So a recursive predicate result
+%  check (F bound to the queried value) always succeeded by clobbering F.
+%  Added $is_unify_int (bind if unbound, else integer-equality check,
+%  mirroring builtin_is) and routed all five fused forms through it.
+%  (The non-fused is/2 path was already correct, which is why cbi_arith
+%  passed — fib was the only program hitting the fused result-check.)
 
 %  (Elixir append/reverse used to be xfail here: a freshly-constructed
 %  list ("./2", from put_list) would not unify against an already-GROUND
