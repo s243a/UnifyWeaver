@@ -2459,6 +2459,34 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M82: gcd/2 (Integer Euclidean) + log/2 (Float log with base).
+
+:- dynamic test_gcd_basic/2.
+test_gcd_basic(_, R) :-
+    R is gcd(12, 18).   % 6
+
+:- dynamic test_gcd_coprime/2.
+test_gcd_coprime(_, R) :-
+    R is gcd(7, 5).   % 1
+
+:- dynamic test_gcd_with_zero/2.
+test_gcd_with_zero(_, R) :-
+    % gcd(0, n) = n -- Euclid terminates on the first iteration.
+    R is gcd(0, 5).   % 5
+
+:- dynamic test_log2_eight/2.
+test_log2_eight(_, R) :-
+    % log(2, 8) = 3 (since 2^3 = 8). Use floats to force the
+    % named-binary path; integer literals go through int eval which
+    % doesn''t recognize ``log''.
+    X is log(2.0, 8.0),
+    R is truncate(X).   % 3
+
+:- dynamic test_log10_hundred/2.
+test_log10_hundred(_, R) :-
+    X is log(10.0, 100.0),
+    R is truncate(X).   % 2
+
 % M81: atan2/2 -- binary inverse tangent (4-quadrant).
 
 :- dynamic test_atan2_xaxis/2.
@@ -4460,6 +4488,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M82 gcd/2 + log/2 binary arith ---~n'),
+       run_test_r0('gcd(12, 18) -> 6',
+                   test_gcd_basic, 0, 6),
+       run_test_r0('gcd(7, 5) -> 1 (coprime)',
+                   test_gcd_coprime, 0, 1),
+       run_test_r0('gcd(0, 5) -> 5',
+                   test_gcd_with_zero, 0, 5),
+       run_test_r0('truncate(log(2.0, 8.0)) -> 3',
+                   test_log2_eight, 0, 3),
+       run_test_r0('truncate(log(10.0, 100.0)) -> 2',
+                   test_log10_hundred, 0, 2),
        format('--- M81 atan2/2 binary inverse tangent ---~n'),
        run_test_r0('atan2(0,1) -> 0 (x-axis)',
                    test_atan2_xaxis, 0, 0),
