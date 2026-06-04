@@ -9950,6 +9950,7 @@ ev_eval_binary:
     i8 47, label %ev_div
     i8 60, label %ev_shl_check    ; ''<'' -> << (M84)
     i8 62, label %ev_shr_check    ; ''>'' -> >> (M84)
+    i8 92, label %ev_bor_check    ; ''\\'' -> \\/ (M85)
   ]
 
 ev_add:
@@ -10068,6 +10069,20 @@ ev_pow_pos_finish:
   ret %Value %pow_pos_v
 
 ev_div:
+  ; M85: second-byte check disambiguates ``/'' (division) from
+  ; ``/\\'' (bitwise AND). ``/\\'' has fn_ptr[1] = ''\\'' (92).
+  %div.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %div.fn1 = load i8, i8* %div.fn1_ptr
+  %div.is_band = icmp eq i8 %div.fn1, 92
+  br i1 %div.is_band, label %ev_band, label %ev_div_normal
+ev_band:
+  ; M85: /\\ -- integer bitwise AND.
+  %band.a_i = extractvalue %Value %a, 1
+  %band.b_i = extractvalue %Value %b, 1
+  %band.r = and i64 %band.a_i, %band.b_i
+  %band.v = call %Value @value_integer(i64 %band.r)
+  ret %Value %band.v
+ev_div_normal:
   ; Prolog ``/``: int/int that divides exactly stays int; otherwise
   ; the result is float.
   br i1 %either_float, label %ev_div_f, label %ev_div_i_check
@@ -10124,6 +10139,23 @@ ev_shr:
   %shr.r = ashr i64 %shr.a_i, %shr.b_i
   %shr.v = call %Value @value_integer(i64 %shr.r)
   ret %Value %shr.v
+
+ev_bor_check:
+  ; M85: ``\\'' (92) is the first byte of binary ``\\/'' (bitwise OR).
+  ; Verify the second byte is ``/'' (47); fail otherwise (the only
+  ; other ``\\''-prefix binary in standard Prolog arithmetic would
+  ; be ``\\='' or ``\\=='' which are unification/equality, not
+  ; arith).
+  %bor.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %bor.fn1 = load i8, i8* %bor.fn1_ptr
+  %bor.is_slash = icmp eq i8 %bor.fn1, 47
+  br i1 %bor.is_slash, label %ev_bor, label %ev_zero
+ev_bor:
+  %bor.a_i = extractvalue %Value %a, 1
+  %bor.b_i = extractvalue %Value %b, 1
+  %bor.r = or i64 %bor.a_i, %bor.b_i
+  %bor.v = call %Value @value_integer(i64 %bor.r)
+  ret %Value %bor.v
 
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
@@ -10274,6 +10306,7 @@ ev_eval_unary:
     i8 116, label %ev_trunc_tan ; ''t'' -> truncate | tan
     i8 108, label %ev_log       ; ''l''
     i8 101, label %ev_exp       ; ''e''
+    i8 92,  label %ev_bnot      ; ''\\'' -> unary bitwise NOT (M85)
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -10332,6 +10365,14 @@ ev_atan:
   %atan_r = call double @atan(double %atan_d)
   %atan_v = call %Value @value_float(double %atan_r)
   ret %Value %atan_v
+
+ev_bnot:
+  ; M85: unary ``\\'' -- integer bitwise NOT. xor with all-ones is
+  ; the LLVM idiom (no dedicated ``not'' instruction).
+  %bnot.u_i = extractvalue %Value %u, 1
+  %bnot.r = xor i64 %bnot.u_i, -1
+  %bnot.v = call %Value @value_integer(i64 %bnot.r)
+  ret %Value %bnot.v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
 ; double, apply the LLVM intrinsic, return Integer (Prolog''s
@@ -10993,19 +11034,40 @@ wam_instruction_to_llvm_literal(Instr, Lit) :-
 %% emit_functor_string_globals(-IR)
 %  Emits LLVM global constants for functor names collected during WAM
 %  compilation (by put_structure instructions). Each functor "name" becomes
-%  @.fn_name = private constant [N x i8] c"name\00".
+%  @.fn_name = private constant [N x i8] c"name\00". Byte content is
+%  emitted as per-byte hex escapes (\NN) so functor names containing
+%  ``\'' (e.g. ``/\\'' bitwise-AND, ``\\/'' bitwise-OR) survive LLVM IR
+%  parsing -- a raw ``\\'' would collide with the ``\\00'' null terminator
+%  and produce a [4 x i8] instead of the declared [3 x i8].
 emit_functor_string_globals(IR) :-
     findall(GlobalDef,
         ( functor_string_global(NameStr, Len),
           sanitize_functor_for_llvm(NameStr, SaneName),
+          llvm_ir_hex_string(NameStr, HexContent),
           format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
-              [SaneName, Len, NameStr])
+              [SaneName, Len, HexContent])
         ),
         Defs),
     ( Defs == []
     -> IR = ''
     ;  atomic_list_concat(Defs, '\n', IR)
     ).
+
+%% llvm_ir_hex_string(+Str, -HexEscaped)
+%  Re-encode every byte of Str as an LLVM IR hex escape ``\NN'' so the
+%  result can be dropped between c"..." quotes without any character
+%  needing further escaping.
+llvm_ir_hex_string(Str, Hex) :-
+    string_codes(Str, Codes),
+    maplist(byte_to_hex_escape, Codes, EscapedLists),
+    append(EscapedLists, AllCodes),
+    string_codes(Hex, AllCodes).
+
+byte_to_hex_escape(Byte, [0'\\, H, L]) :-
+    Hi is (Byte >> 4) /\ 0xF,
+    Lo is Byte /\ 0xF,
+    hex_digit(Hi, H),
+    hex_digit(Lo, L).
 
 %% emit_atom_string_globals(-IR)
 %
