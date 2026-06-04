@@ -6342,11 +6342,31 @@ gen_all_entry_funcs([pred_data(Pred/Arity, _, _, StartPC, _)|Rest],
     atomic_list_concat([Export, '\n', RestExports], Exports).
 
 %% read_template_file(+Path, -Content)
+%  Resolve template paths relative to the project root (derived from this
+%  module's source location), NOT the current working directory. The old
+%  cwd-relative exists_file/1 silently emitted a ";; Template not found"
+%  stub whenever generation ran from anywhere but the repo root (e.g. the
+%  conformance harness with cwd=tests/), producing a 68-byte module with
+%  no exports — every query then failed to instantiate. The cwd-relative
+%  path is kept as a fallback for back-compat.
 read_template_file(Path, Content) :-
-    (   exists_file(Path)
+    (   wat_template_abs_path(Path, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
+    ;   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
     ;   format(atom(Content), ";; Template not found: ~w", [Path])
     ).
+
+%% wat_template_abs_path(+RelPath, -AbsPath)
+%  Anchor a repo-relative template path at the project root, computed by
+%  walking up from this source file (src/unifyweaver/targets/<this>.pl).
+wat_template_abs_path(RelPath, AbsPath) :-
+    source_file(read_template_file(_, _), SrcFile),
+    file_directory_name(SrcFile, SrcDir),         % .../src/unifyweaver/targets
+    file_directory_name(SrcDir, UWDir),           % .../src/unifyweaver
+    file_directory_name(UWDir, SrcRoot),          % .../src
+    file_directory_name(SrcRoot, ProjectRoot),    % .../
+    atomic_list_concat([ProjectRoot, '/', RelPath], AbsPath).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-
