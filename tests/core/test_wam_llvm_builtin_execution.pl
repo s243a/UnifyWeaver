@@ -2459,6 +2459,46 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M86: sleep/1 -- libc usleep wrapper.
+
+:- dynamic test_sleep_zero/2.
+test_sleep_zero(_, R) :-
+    sleep(0),
+    R is 1.   % 1
+
+:- dynamic test_sleep_float_zero/2.
+test_sleep_float_zero(_, R) :-
+    sleep(0.0),
+    R is 1.   % 1
+
+:- dynamic test_sleep_tiny/2.
+test_sleep_tiny(_, R) :-
+    % 1ms is the floor we use for ``definitely returned'' tests; any
+    % usleep call should at least cycle through the kernel and return.
+    sleep(0.001),
+    R is 1.   % 1
+
+:- dynamic test_sleep_elapsed_float/2.
+test_sleep_elapsed_float(_, R) :-
+    % Verify sleep actually waits. M72 get_time/1 has whole-second
+    % resolution (libc time()), so use sleep(1.0) and floor at 0.5
+    % seconds. Boundary case (T0 captured at S, T1 at S+1) still
+    % gives Diff=1.
+    get_time(T0),
+    sleep(1.0),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sleep_elapsed_int/2.
+test_sleep_elapsed_int(_, R) :-
+    % Same shape but Integer argument exercising the from_int branch.
+    get_time(T0),
+    sleep(1),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.5 -> R is 1 ; R is 0 ).   % 1
+
 % M85: bitwise /\ (AND), \/ (OR), \ (unary NOT).
 
 :- dynamic test_band_basic/2.
@@ -4565,6 +4605,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M86 sleep/1 ---~n'),
+       run_test_r0('sleep(0) -> 1',
+                   test_sleep_zero, 0, 1),
+       run_test_r0('sleep(0.0) -> 1',
+                   test_sleep_float_zero, 0, 1),
+       run_test_r0('sleep(0.001) -> 1',
+                   test_sleep_tiny, 0, 1),
+       run_test_r0('sleep(1.0) elapsed >= 0.5 -> 1',
+                   test_sleep_elapsed_float, 0, 1),
+       run_test_r0('sleep(1) elapsed >= 0.5 -> 1',
+                   test_sleep_elapsed_int, 0, 1),
        format('--- M85 bitwise /\\ \\/ \\ ---~n'),
        run_test_r0('12 /\\ 10 -> 8',
                    test_band_basic, 0, 8),
