@@ -3499,6 +3499,8 @@ entry:
     i32 94, label %builtin_make_directory
     i32 95, label %builtin_rename_file
     i32 96, label %builtin_delete_directory
+    i32 97, label %builtin_size_file
+    i32 98, label %builtin_time_file
   ]
 
 builtin_is:
@@ -4507,6 +4509,76 @@ ddr.rmdir:
   %ddr.ret = call i32 @rmdir(i8* %ddr.path)
   %ddr.ok = icmp eq i32 %ddr.ret, 0
   ret i1 %ddr.ok
+
+builtin_size_file:
+  ; M76: size_file(+Path, ?Size) -- atom Path; unifies A2 with stat
+  ; result st_size (i64, offset 48 on Linux glibc). Fails if stat
+  ; fails (missing path, permission denied, etc).
+  %sf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sf.t1 = extractvalue %Value %sf.a1, 0
+  %sf.is_atom = icmp eq i32 %sf.t1, 0
+  br i1 %sf.is_atom, label %sf.go, label %sf.fail
+sf.fail:
+  ret i1 false
+sf.go:
+  %sf.aid = extractvalue %Value %sf.a1, 1
+  %sf.path = call i8* @wam_atom_to_string(i64 %sf.aid)
+  %sf.path_null = icmp eq i8* %sf.path, null
+  br i1 %sf.path_null, label %sf.fail, label %sf.stat
+sf.stat:
+  %sf.buf = alloca [256 x i8]
+  %sf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %sf.buf, i32 0, i32 0
+  %sf.ret = call i32 @stat(i8* %sf.path, i8* %sf.buf_ptr)
+  %sf.stat_ok = icmp eq i32 %sf.ret, 0
+  br i1 %sf.stat_ok, label %sf.read, label %sf.fail
+sf.read:
+  %sf.size_ptr_i8 = getelementptr i8, i8* %sf.buf_ptr, i64 48
+  %sf.size_ptr = bitcast i8* %sf.size_ptr_i8 to i64*
+  %sf.size = load i64, i64* %sf.size_ptr
+  %sf.v = call %Value @value_integer(i64 %sf.size)
+  %sf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sf.raw2, %Value %sf.v)
+  ret i1 %sf.ok
+
+builtin_time_file:
+  ; M76: time_file(+Path, ?Time) -- atom Path; unifies A2 with the
+  ; modification time as Float seconds since the epoch
+  ; (st_mtim.tv_sec at offset 88 + tv_nsec at offset 96 / 1e9).
+  ; Fails if stat fails.
+  %tf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tf.t1 = extractvalue %Value %tf.a1, 0
+  %tf.is_atom = icmp eq i32 %tf.t1, 0
+  br i1 %tf.is_atom, label %tf.go, label %tf.fail
+tf.fail:
+  ret i1 false
+tf.go:
+  %tf.aid = extractvalue %Value %tf.a1, 1
+  %tf.path = call i8* @wam_atom_to_string(i64 %tf.aid)
+  %tf.path_null = icmp eq i8* %tf.path, null
+  br i1 %tf.path_null, label %tf.fail, label %tf.stat
+tf.stat:
+  %tf.buf = alloca [256 x i8]
+  %tf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %tf.buf, i32 0, i32 0
+  %tf.ret = call i32 @stat(i8* %tf.path, i8* %tf.buf_ptr)
+  %tf.stat_ok = icmp eq i32 %tf.ret, 0
+  br i1 %tf.stat_ok, label %tf.read, label %tf.fail
+tf.read:
+  %tf.sec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 88
+  %tf.sec_ptr = bitcast i8* %tf.sec_ptr_i8 to i64*
+  %tf.sec = load i64, i64* %tf.sec_ptr
+  %tf.nsec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 96
+  %tf.nsec_ptr = bitcast i8* %tf.nsec_ptr_i8 to i64*
+  %tf.nsec = load i64, i64* %tf.nsec_ptr
+  %tf.sec_d = sitofp i64 %tf.sec to double
+  %tf.nsec_d = sitofp i64 %tf.nsec to double
+  %tf.frac = fdiv double %tf.nsec_d, 1.000000e+09
+  %tf.total = fadd double %tf.sec_d, %tf.frac
+  %tf.bits = bitcast double %tf.total to i64
+  %tf.v0 = insertvalue %Value undef, i32 2, 0
+  %tf.v = insertvalue %Value %tf.v0, i64 %tf.bits, 1
+  %tf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tf.raw2, %Value %tf.v)
+  ret i1 %tf.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11085,6 +11157,8 @@ builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
 builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
 builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
 builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
+builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
+builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

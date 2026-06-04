@@ -2459,6 +2459,34 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M76: size_file/2 + time_file/2 -- stat-based mtime + size readers.
+
+:- dynamic test_sf_etc_hostname/2.
+test_sf_etc_hostname(_, R) :-
+    % /etc/hostname is small but > 0 bytes on every Linux container.
+    size_file('/etc/hostname', N),
+    ( N > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sf_zero/2.
+test_sf_zero(_, R) :-
+    % /dev/null is a 0-byte character device; stat reports size = 0.
+    size_file('/dev/null', N),
+    R is N.   % 0
+
+:- dynamic test_sf_fail_missing/2.
+test_sf_fail_missing(_, R) :-
+    ( size_file('/nonexistent/file/qqq', _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_tf_etc_hostname/2.
+test_tf_etc_hostname(_, R) :-
+    % Mtime on /etc/hostname is some Float > 0 (epoch seconds).
+    time_file('/etc/hostname', T),
+    ( T > 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tf_fail_missing/2.
+test_tf_fail_missing(_, R) :-
+    ( time_file('/nonexistent/file/qqq', _) -> R is 1 ; R is 0 ).   % 0
+
 % M75: rename_file/2 + delete_directory/1 -- libc rename + rmdir.
 
 :- dynamic test_rnf_basic/2.
@@ -4274,6 +4302,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M76 size_file/2 + time_file/2 ---~n'),
+       run_test_r0('size_file(/etc/hostname) > 0 -> 1',
+                   test_sf_etc_hostname, 0, 1),
+       run_test_r0('size_file(/dev/null) -> 0',
+                   test_sf_zero, 0, 0),
+       run_test_r0('size_file(/nonexistent/...) -> 0',
+                   test_sf_fail_missing, 0, 0),
+       run_test_r0('time_file(/etc/hostname) > 0.0 -> 1',
+                   test_tf_etc_hostname, 0, 1),
+       run_test_r0('time_file(/nonexistent/...) -> 0',
+                   test_tf_fail_missing, 0, 0),
        format('--- M75 rename_file/2 + delete_directory/1 ---~n'),
        run_test_r0('rename_file(src, dst) roundtrip -> 1',
                    test_rnf_basic, 0, 1),
