@@ -2459,6 +2459,35 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M91: format_time/3 -- libc strftime + localtime_r wrapper.
+
+:- dynamic test_ft_year/2.
+test_ft_year(_, R) :-
+    % format_time(?Atom, +Fmt, +Stamp) -- direct atom output. Stamp
+    % 1609459200 = 2021-01-01 00:00:00 UTC; with timezone offset the
+    % calendar year is 2020 or 2021, so length-of-year = 4.
+    Stamp is 1609459200,
+    format_time(Y, '%Y', Stamp),
+    atom_length(Y, L),
+    ( L =:= 4 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ft_iso_len/2.
+test_ft_iso_len(_, R) :-
+    % '%Y-%m-%d %H:%M:%S' renders as 19 chars regardless of timezone.
+    Stamp is 1700000000,
+    format_time(S, '%Y-%m-%d %H:%M:%S', Stamp),
+    atom_length(S, L),
+    ( L =:= 19 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ft_float_stamp/2.
+test_ft_float_stamp(_, R) :-
+    % Float Stamp must also work -- the fractional part is dropped to
+    % whole-second precision before localtime_r.
+    Stamp is 1700000000.5,
+    format_time(S, '%S', Stamp),
+    atom_length(S, L),
+    ( L =:= 2 -> R is 1 ; R is 0 ).   % 1
+
 % M90: random/1 + random_between/3 -- libc drand48 / lrand48 wrappers.
 
 :- dynamic test_rand_in_unit/2.
@@ -4725,6 +4754,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M91 format_time/3 ---~n'),
+       run_test_r0('format_time(Y, ''%Y'', stamp), len(Y) = 4 -> 1',
+                   test_ft_year, 0, 1),
+       run_test_r0('format_time(S, ISO, stamp), len(S) = 19 -> 1',
+                   test_ft_iso_len, 0, 1),
+       run_test_r0('format_time(S, ''%S'', Float stamp), len(S) = 2 -> 1',
+                   test_ft_float_stamp, 0, 1),
        format('--- M90 random/1 + random_between/3 ---~n'),
        run_test_r0('random(X), 0.0 <= X < 1.0 -> 1',
                    test_rand_in_unit, 0, 1),

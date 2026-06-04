@@ -1477,6 +1477,8 @@ declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
 declare i64 @lrand48()
+declare i8* @localtime_r(i64*, i8*)
+declare i64 @strftime(i8*, i64, i8*, i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3533,6 +3535,7 @@ entry:
     i32 107, label %builtin_cpu_time
     i32 108, label %builtin_random
     i32 109, label %builtin_random_between
+    i32 110, label %builtin_format_time
   ]
 
 builtin_is:
@@ -4931,6 +4934,65 @@ rb.draw:
   %rb.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %rb.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rb.raw3, %Value %rb.v)
   ret i1 %rb.ok
+
+builtin_format_time:
+  ; M91: format_time(?Atom, +Format, +Stamp) -- Stamp is the get_time-
+  ; style epoch seconds (Integer or Float), Format is a strftime atom
+  ; (e.g. ``%Y-%m-%d %H:%M:%S''), result Atom is the rendered string.
+  ; Pipeline: time_t = (i64)Stamp -> localtime_r(&t, &tm) ->
+  ; strftime(buf, 256, fmt, &tm) -> intern buf as atom -> unify.
+  ; struct tm on x86-64 glibc is 56 bytes; alloca 64 for headroom.
+  %ft.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ft.t2 = extractvalue %Value %ft.a2, 0
+  %ft.fmt_is_atom = icmp eq i32 %ft.t2, 0
+  br i1 %ft.fmt_is_atom, label %ft.have_fmt, label %ft.fail
+ft.fail:
+  ret i1 false
+ft.have_fmt:
+  %ft.fmt_aid = extractvalue %Value %ft.a2, 1
+  %ft.fmt_str = call i8* @wam_atom_to_string(i64 %ft.fmt_aid)
+  %ft.fmt_null = icmp eq i8* %ft.fmt_str, null
+  br i1 %ft.fmt_null, label %ft.fail, label %ft.read_stamp
+ft.read_stamp:
+  %ft.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %ft.t3 = extractvalue %Value %ft.a3, 0
+  %ft.is_int = icmp eq i32 %ft.t3, 1
+  br i1 %ft.is_int, label %ft.from_int, label %ft.maybe_float
+ft.from_int:
+  %ft.t_int = extractvalue %Value %ft.a3, 1
+  br label %ft.have_time
+ft.maybe_float:
+  %ft.is_float = icmp eq i32 %ft.t3, 2
+  br i1 %ft.is_float, label %ft.from_float, label %ft.fail
+ft.from_float:
+  %ft.bits = extractvalue %Value %ft.a3, 1
+  %ft.d = bitcast i64 %ft.bits to double
+  %ft.t_flt = fptosi double %ft.d to i64
+  br label %ft.have_time
+ft.have_time:
+  %ft.time_t = phi i64 [ %ft.t_int, %ft.from_int ],
+                       [ %ft.t_flt, %ft.from_float ]
+  ; Stack-alloc time_t cell + struct tm cell.
+  %ft.tp = alloca i64
+  store i64 %ft.time_t, i64* %ft.tp
+  %ft.tp_i8 = bitcast i64* %ft.tp to i8*
+  %ft.tm_buf = alloca [64 x i8]
+  %ft.tm_ptr = getelementptr [64 x i8], [64 x i8]* %ft.tm_buf, i32 0, i32 0
+  %ft.lt = call i8* @localtime_r(i64* %ft.tp, i8* %ft.tm_ptr)
+  %ft.lt_null = icmp eq i8* %ft.lt, null
+  br i1 %ft.lt_null, label %ft.fail, label %ft.do_strftime
+ft.do_strftime:
+  ; Render into a 256-byte arena buffer. Most strftime patterns fit
+  ; comfortably; truncation just means a shorter atom.
+  call void @wam_arena_ensure()
+  %ft.out = call i8* @wam_arena_alloc(i64 256)
+  %ft.len = call i64 @strftime(i8* %ft.out, i64 256, i8* %ft.fmt_str, i8* %ft.tm_ptr)
+  %ft.aid = call i64 @wam_intern_atom(i8* %ft.out, i64 %ft.len)
+  %ft.v0 = insertvalue %Value undef, i32 0, 0
+  %ft.v = insertvalue %Value %ft.v0, i64 %ft.aid, 1
+  %ft.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ft.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ft.raw1, %Value %ft.v)
+  ret i1 %ft.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11766,6 +11828,7 @@ builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
 builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
 builtin_op_to_id('random/1', 108).            % libc drand48() in [0, 1) as Float.
 builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
+builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
