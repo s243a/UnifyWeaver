@@ -839,7 +839,9 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexO
     format(atom(Code),
 '#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include "wam_runtime.h"
 
 void setup_category_ancestor_4(WamState* state);
@@ -849,6 +851,31 @@ void setup_category_ancestor_4(WamState* state);
 ~w
 ~w
 ~w
+
+static double wam_now_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return ((double)tv.tv_sec * 1000.0) + ((double)tv.tv_usec / 1000.0);
+}
+
+static long long wam_read_env_limit(const char *name) {
+    const char *raw = getenv(name);
+    if (raw == NULL || raw[0] == 0) return 0;
+    char *end = NULL;
+    long long value = strtoll(raw, &end, 10);
+    if (end == raw || *end != 0 || value < 0) {
+        fprintf(stderr, "wam_c_effective_warning invalid_%s=%s\\n", name, raw);
+        fflush(stderr);
+        return 0;
+    }
+    return value;
+}
+
+static int wam_read_count_limit(const char *name, int total) {
+    long long limit = wam_read_env_limit(name);
+    if (limit <= 0 || limit > total) return total;
+    return (int)limit;
+}
 
 static WamValue make_visited_singleton(WamState *state, const char *atom) {
     WamValue list;
@@ -1078,6 +1105,7 @@ static void collect_hops(WamState *state,
 }
 
 int main(void) {
+    double setup_start_ms = wam_now_ms();
     WamState state;
     WamFactSource source;
 ~w
@@ -1098,9 +1126,36 @@ int main(void) {
     wam_register_category_ancestor_kernel(&state, "category_ancestor/4", ~w);
 ~w
 
+    int article_limit = wam_read_count_limit("UW_WAM_C_EFFECTIVE_MAX_ARTICLES",
+                                             ARTICLE_COUNT);
+    int root_limit = wam_read_count_limit("UW_WAM_C_EFFECTIVE_MAX_ROOTS",
+                                          ROOT_COUNT);
+    long long query_limit = wam_read_env_limit("UW_WAM_C_EFFECTIVE_MAX_QUERIES");
+    long long result_limit = wam_read_env_limit("UW_WAM_C_EFFECTIVE_MAX_RESULTS");
+    long long progress_queries =
+        wam_read_env_limit("UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES");
+    double setup_ms = wam_now_ms() - setup_start_ms;
+    fprintf(stderr,
+            "wam_c_effective_setup article_count=%d root_count=%d "
+            "article_category_count=%d article_limit=%d root_limit=%d "
+            "query_limit=%lld result_limit=%lld setup_ms=%.3f\\n",
+            ARTICLE_COUNT, ROOT_COUNT, ARTICLE_CATEGORY_COUNT,
+            article_limit, root_limit, query_limit, result_limit, setup_ms);
+    fflush(stderr);
+
     printf("article\\troot_category\\teffective_distance\\n");
-    for (int ai = 0; ai < ARTICLE_COUNT; ai++) {
-        for (int ri = 0; ri < ROOT_COUNT; ri++) {
+    double query_start_ms = wam_now_ms();
+    double first_result_ms = -1.0;
+    long long queries = 0;
+    long long results = 0;
+    int stopped_by_cap = 0;
+    for (int ai = 0; ai < article_limit && !stopped_by_cap; ai++) {
+        for (int ri = 0; ri < root_limit; ri++) {
+            if (query_limit > 0 && queries >= query_limit) {
+                stopped_by_cap = 1;
+                break;
+            }
+            queries++;
             double weight_sum = 0.0;
             for (int ci = 0; ci < ARTICLE_CATEGORY_COUNT; ci++) {
                 if (strcmp(ARTICLE_IDS[ci], ARTICLES[ai]) != 0) continue;
@@ -1135,10 +1190,31 @@ int main(void) {
             }
             if (weight_sum > 0.0) {
                 double deff = pow(weight_sum, -1.0 / ~w.0);
+                if (first_result_ms < 0.0) {
+                    first_result_ms = wam_now_ms() - query_start_ms;
+                }
                 printf("%s\\t%s\\t%.6f\\n", ARTICLES[ai], ROOTS[ri], deff);
+                results++;
+                if (result_limit > 0 && results >= result_limit) {
+                    stopped_by_cap = 1;
+                    break;
+                }
+            }
+            if (progress_queries > 0 && queries % progress_queries == 0) {
+                fprintf(stderr,
+                        "wam_c_effective_progress queries=%lld results=%lld "
+                        "elapsed_ms=%.3f\\n",
+                        queries, results, wam_now_ms() - query_start_ms);
+                fflush(stderr);
             }
         }
     }
+    fprintf(stderr,
+            "wam_c_effective_runtime queries=%lld results=%lld "
+            "first_result_ms=%.3f query_ms=%.3f capped=%d\\n",
+            queries, results, first_result_ms, wam_now_ms() - query_start_ms,
+            stopped_by_cap);
+    fflush(stderr);
 
 ~w
     wam_fact_source_close(&source);

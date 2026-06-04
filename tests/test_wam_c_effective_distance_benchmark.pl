@@ -80,6 +80,26 @@ test_generate_and_run_lmdb_if_available :-
     ;   pass('WAM-C effective-distance: facts_lmdb generated runner skipped (LMDB toolchain unavailable)')
     ).
 
+test_generated_runner_supports_runtime_caps :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime caps',
+    (   unique_tmp_dir(runtime_caps, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_MAX_QUERIES'='1'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        \+ sub_string(Output, _, _, _, "article_a\troot\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_setup "),
+        sub_string(ErrText, _, _, _, "query_limit=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime cap output or metrics mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search :-
     Test = 'WAM-C effective-distance: bounded child search finds non-parent path',
     (   unique_tmp_dir(child_search, OutputDir),
@@ -390,6 +410,16 @@ category_parent(child, orphan).
 category_parent(child, root).
 ').
 
+write_runtime_cap_facts(OutputDir, FactsPath) :-
+    directory_file_path(OutputDir, 'facts.pl', FactsPath),
+    write_text_file(FactsPath,
+'article_category(article_a, leaf).
+root_category(root).
+root_category(other_root).
+category_parent(leaf, root).
+category_parent(leaf, other_root).
+').
+
 unique_tmp_dir(KernelMode, OutputDir) :-
     get_time(Now),
     Stamp is round(Now * 1000000),
@@ -517,6 +547,26 @@ run_generated_project(OutputDir, Output) :-
         fail
     ).
 
+run_generated_project_with_env(OutputDir, Env, Output, ErrText) :-
+    directory_file_path(OutputDir, 'wam_c_effective_distance', ExePath),
+    process_create(ExePath, [],
+        [ cwd(OutputDir),
+          environment(Env),
+          stdout(pipe(Out)),
+          stderr(pipe(Err)),
+          process(Pid)
+        ]),
+    read_string(Out, _, Output),
+    read_string(Err, _, ErrText),
+    close(Out),
+    close(Err),
+    process_wait(Pid, Status),
+    (   Status = exit(0)
+    ->  true
+    ;   format(user_error, 'generated runner failed: ~w~n', [ErrText]),
+        fail
+    ).
+
 write_text_file(Path, Content) :-
     setup_call_cleanup(
         open(Path, write, Stream),
@@ -538,6 +588,7 @@ run_tests_once :-
     test_generate_lmdb_mode_files,
     test_generated_runner_bounds_kernel_heap,
     test_generate_and_run_lmdb_if_available,
+    test_generated_runner_supports_runtime_caps,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,

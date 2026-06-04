@@ -111,6 +111,13 @@ class RunResult:
         return self.status == "ok"
 
 
+def nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default=default_scales_csv())
@@ -143,6 +150,36 @@ def parse_args() -> argparse.Namespace:
         "--compile-only-targets",
         default="",
         help="Comma-separated targets to generate/build but not execute. Useful for slow WAM fallback validation.",
+    )
+    parser.add_argument(
+        "--wam-c-max-articles",
+        type=nonnegative_int,
+        default=0,
+        help="Optional generated WAM-C article cap. Zero leaves the generated runner uncapped.",
+    )
+    parser.add_argument(
+        "--wam-c-max-roots",
+        type=nonnegative_int,
+        default=0,
+        help="Optional generated WAM-C root cap. Zero leaves the generated runner uncapped.",
+    )
+    parser.add_argument(
+        "--wam-c-max-queries",
+        type=nonnegative_int,
+        default=0,
+        help="Optional generated WAM-C article/root query cap. Zero leaves the generated runner uncapped.",
+    )
+    parser.add_argument(
+        "--wam-c-max-results",
+        type=nonnegative_int,
+        default=0,
+        help="Optional generated WAM-C output row cap. Zero leaves the generated runner uncapped.",
+    )
+    parser.add_argument(
+        "--wam-c-progress-queries",
+        type=nonnegative_int,
+        default=0,
+        help="Emit generated WAM-C stderr progress after this many article/root queries. Zero disables progress.",
     )
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
@@ -287,6 +324,24 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     return [str(project_dir / "hybrid_ed_bench_go")]
 
 
+def wam_c_runtime_env(args: argparse.Namespace) -> dict[str, str]:
+    options = {
+        "UW_WAM_C_EFFECTIVE_MAX_ARTICLES": args.wam_c_max_articles,
+        "UW_WAM_C_EFFECTIVE_MAX_ROOTS": args.wam_c_max_roots,
+        "UW_WAM_C_EFFECTIVE_MAX_QUERIES": args.wam_c_max_queries,
+        "UW_WAM_C_EFFECTIVE_MAX_RESULTS": args.wam_c_max_results,
+        "UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES": args.wam_c_progress_queries,
+    }
+    return {name: str(value) for name, value in options.items() if value > 0}
+
+
+def shell_env_prefix(env: dict[str, str] | None) -> str:
+    if not env:
+        return ""
+    assignments = [f"{shlex.quote(name)}={shlex.quote(value)}" for name, value in sorted(env.items())]
+    return " ".join(assignments) + " "
+
+
 def timed_run_command(
     phase_timings: dict[str, float] | None,
     phase: str,
@@ -311,6 +366,7 @@ def build_wam_c_effective_distance(
     fact_storage: str = "facts_tsv",
     layout_profile: str = "parent_only",
     phase_timings: dict[str, float] | None = None,
+    runtime_env: dict[str, str] | None = None,
 ) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
     project_dir = root / f"wam_c_{kernel_mode}_{fact_storage}_{layout_profile}" / scale
@@ -401,7 +457,7 @@ def build_wam_c_effective_distance(
     )
     quoted_dir = shlex.quote(str(project_dir))
     quoted_binary = shlex.quote(str(binary_path))
-    return ["sh", "-c", f"cd {quoted_dir} && {quoted_binary}"]
+    return ["sh", "-c", f"cd {quoted_dir} && {shell_env_prefix(runtime_env)}{quoted_binary}"]
 
 
 def build_wam_c_lowered_helper_benchmark(root: Path, scale: str, mode: str) -> list[str]:
@@ -960,6 +1016,28 @@ def wam_c_artifact_size_message(
     return "generated/built but not executed; " + " ".join(details)
 
 
+def wam_c_runtime_metric_message(stderr: str) -> str:
+    setup_line = ""
+    progress_line = ""
+    runtime_line = ""
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if line.startswith("wam_c_effective_setup "):
+            setup_line = line
+        elif line.startswith("wam_c_effective_progress "):
+            progress_line = line
+        elif line.startswith("wam_c_effective_runtime "):
+            runtime_line = line
+    details = []
+    if setup_line:
+        details.append(setup_line)
+    if runtime_line:
+        details.append(runtime_line)
+    elif progress_line:
+        details.append(progress_line)
+    return "; ".join(details)
+
+
 def failed_result(
     target: str,
     scale: str,
@@ -1015,15 +1093,20 @@ def benchmark_target(
                 result = run_command(command + [str(edge_path), str(article_path)], cwd=ROOT, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             elapsed = time.perf_counter() - started
+            stderr_text = completed_output_text(exc.stderr)
+            metrics = wam_c_runtime_metric_message(stderr_text)
+            message = f"timed out after {timeout:.3f}s"
+            if metrics:
+                message = f"{message}; {metrics}"
             return RunResult(
                 target=target,
                 scale=scale,
                 times=[elapsed],
                 stdout_sha256="",
                 row_count=0,
-                stderr=completed_output_text(exc.stderr),
+                stderr=stderr_text,
                 status="timeout",
-                message=f"timed out after {timeout:.3f}s",
+                message=message,
             )
         except subprocess.CalledProcessError as exc:
             elapsed = time.perf_counter() - started
@@ -1034,7 +1117,7 @@ def benchmark_target(
 
     normalized = normalize_output(stdout)
     digest, row_count = digest_normalized_output(normalized)
-    return RunResult(target, scale, times, digest, row_count, stderr)
+    return RunResult(target, scale, times, digest, row_count, stderr, message=wam_c_runtime_metric_message(stderr))
 
 
 def print_summary(results: list[RunResult], baseline_target: str) -> None:
@@ -1155,6 +1238,7 @@ def main() -> int:
         print("no benchmark targets available", file=sys.stderr)
         return 1
 
+    wam_c_env = wam_c_runtime_env(args)
     temp_parent = benchmark_temp_parent()
     temp_ctx = None
     if args.keep_temp:
@@ -1188,19 +1272,37 @@ def main() -> int:
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
                 elif target == "c-wam-accumulated":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", phase_timings=phase_timings
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-no-kernels":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_off", phase_timings=phase_timings
+                        temp_root,
+                        scale,
+                        "kernels_off",
+                        phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-lmdb":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_on", "facts_lmdb", phase_timings=phase_timings
+                        temp_root,
+                        scale,
+                        "kernels_on",
+                        "facts_lmdb",
+                        phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-no-kernels-lmdb":
                     command = build_wam_c_effective_distance(
-                        temp_root, scale, "kernels_off", "facts_lmdb", phase_timings=phase_timings
+                        temp_root,
+                        scale,
+                        "kernels_off",
+                        "facts_lmdb",
+                        phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-child-scan":
                     command = build_wam_c_effective_distance(
@@ -1210,6 +1312,7 @@ def main() -> int:
                         "facts_tsv",
                         "child_scan",
                         phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-child-csr":
                     command = build_wam_c_effective_distance(
@@ -1219,6 +1322,7 @@ def main() -> int:
                         "facts_tsv",
                         "child_csr_sorted",
                         phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-child-csr-drop":
                     command = build_wam_c_effective_distance(
@@ -1228,6 +1332,7 @@ def main() -> int:
                         "facts_tsv",
                         "child_csr_buffered_drop",
                         phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-accumulated-child-csr-lmdb-offset":
                     command = build_wam_c_effective_distance(
@@ -1237,6 +1342,7 @@ def main() -> int:
                         "facts_tsv",
                         "child_csr_lmdb_offset",
                         phase_timings=phase_timings,
+                        runtime_env=wam_c_env,
                     )
                 elif target == "c-wam-lowered-helper":
                     command = build_wam_c_lowered_helper_benchmark(temp_root, scale, "lowered")

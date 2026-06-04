@@ -455,6 +455,12 @@ Evidence:
   compile-only for that target is now `17.796s`, the remaining full-generated
   ceiling is generated execution, result enumeration, query volume, or runner
   output timing rather than CSR file creation.
+- After adding generated-runner root/query caps and stderr timing probes, a
+  `50k_cats` run capped at `100` article/root queries completed in `0.172s`
+  of generated runtime with `setup_ms=120.323`, `query_ms=38.815`, and no
+  result rows. A one-article/all-root run completed `4054` queries in `1.509s`
+  of generated runtime with `setup_ms=124.893`, `query_ms=1370.613`, one
+  result row, and `first_result_ms=990.534`.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -504,9 +510,10 @@ Open measurement:
 
 - Runtime setup is no longer the large `50k_cats` ceiling in the narrow
   runner, and full generated-project compile-only generation is no longer the
-  multi-minute ceiling after assoc-backed CSR ID lookup. A bounded generated
-  `50k_cats` child-CSR run still timed out at `300s`, so the next measurement
-  should split generated execution from result enumeration and query volume.
+  multi-minute ceiling after assoc-backed CSR ID lookup. Generated-runner caps
+  now show the full runner still has a query-shape ceiling: each article/root
+  pair scans all `ARTICLE_CATEGORY_COUNT` rows before attempting paths for the
+  current article.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -704,11 +711,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Add a generated-runtime probe or root/query caps for the `50k_cats` WAM-C
-child-CSR target now that compile-only generation is down to about `18s` and
-narrow runtime setup is down to about `145ms`. The probe should report enough
-timing to separate process startup, query execution, first result emission, and
-full result enumeration. Keep
+Pre-index generated WAM-C article-category rows by article so each
+article/root query scans only the current article's category slice instead of
+all `ARTICLE_CATEGORY_COUNT` rows. Keep the generated runtime caps for
+large-scale diagnosis, keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
