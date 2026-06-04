@@ -3528,6 +3528,7 @@ entry:
     i32 104, label %builtin_getpid
     i32 105, label %builtin_sleep
     i32 106, label %builtin_gethostname
+    i32 107, label %builtin_cpu_time
   ]
 
 builtin_is:
@@ -4857,6 +4858,30 @@ ghn.intern:
   %ghn.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %ghn.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ghn.raw1, %Value %ghn.v)
   ret i1 %ghn.uok
+
+builtin_cpu_time:
+  ; M89: cpu_time(?Time) -- process CPU time in seconds as Float, via
+  ; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts). Same struct timespec
+  ; layout as M87 get_time; only the clock id differs (CLOCK_REALTIME=0
+  ; vs CLOCK_PROCESS_CPUTIME_ID=2 on Linux glibc).
+  %cpu.ts_buf = alloca [16 x i8]
+  %cpu.ts_ptr = getelementptr [16 x i8], [16 x i8]* %cpu.ts_buf, i32 0, i32 0
+  %cpu.cg_ret = call i32 @clock_gettime(i32 2, i8* %cpu.ts_ptr)
+  %cpu.sec_ptr = bitcast i8* %cpu.ts_ptr to i64*
+  %cpu.sec = load i64, i64* %cpu.sec_ptr
+  %cpu.nsec_ptr_i8 = getelementptr i8, i8* %cpu.ts_ptr, i64 8
+  %cpu.nsec_ptr = bitcast i8* %cpu.nsec_ptr_i8 to i64*
+  %cpu.nsec = load i64, i64* %cpu.nsec_ptr
+  %cpu.sec_d = sitofp i64 %cpu.sec to double
+  %cpu.nsec_d = sitofp i64 %cpu.nsec to double
+  %cpu.frac = fdiv double %cpu.nsec_d, 1.000000e+09
+  %cpu.t_d = fadd double %cpu.sec_d, %cpu.frac
+  %cpu.t_bits = bitcast double %cpu.t_d to i64
+  %cpu.v0 = insertvalue %Value undef, i32 2, 0
+  %cpu.v = insertvalue %Value %cpu.v0, i64 %cpu.t_bits, 1
+  %cpu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cpu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cpu.raw1, %Value %cpu.v)
+  ret i1 %cpu.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11689,6 +11714,7 @@ builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New
 builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
 builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
 builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
+builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
