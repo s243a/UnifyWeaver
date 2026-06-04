@@ -464,10 +464,15 @@ impl WamState {
         self.heap.push(val);
     }
 
-    /// Save only argument registers (A* = indices 0..99) for choice-point restoration.
+    /// Save argument and temporary registers (A* = 0..99, X* = 100..199) for
+    /// choice-point restoration. X registers must be saved because mid-body
+    /// choice points (BeginAggregate, foreign_results, ...) can be pushed
+    /// when X registers hold meaningful state that backtrack must restore.
+    /// Y registers live in stack Env frames and are restored via the
+    /// ChoicePoint's stack snapshot.
     fn save_regs(&self) -> Vec<(usize, Value)> {
         self.regs.iter().enumerate()
-            .take(100) // A registers are indices 0..99
+            .take(200) // A registers (0..99) + X registers (100..199)
             .filter(|(_, v)| !matches!(v, Value::Uninit))
             .map(|(i, v)| (i, v.clone()))
             .collect()
