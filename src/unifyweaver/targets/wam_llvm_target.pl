@@ -1462,7 +1462,8 @@ declare i32 @rename(i8*, i8*)
 declare i32 @rmdir(i8*)
 declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
-declare i64 @strlen(i8*)'
+declare i64 @strlen(i8*)
+declare i32 @system(i8*)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3506,6 +3507,8 @@ entry:
     i32 98, label %builtin_time_file
     i32 99, label %builtin_getenv
     i32 100, label %builtin_setenv
+    i32 101, label %builtin_shell1
+    i32 102, label %builtin_shell2
   ]
 
 builtin_is:
@@ -4651,6 +4654,57 @@ se.do:
   %se.ret = call i32 @setenv(i8* %se.name, i8* %se.val, i32 1)
   %se.ok = icmp eq i32 %se.ret, 0
   ret i1 %se.ok
+
+builtin_shell1:
+  ; M78: shell(+Command) -- atom Command; runs ``/bin/sh -c Command``
+  ; via libc system(); succeeds iff the raw wait status is 0
+  ; (i.e. exit 0, no signal). Note that on Linux system() returns
+  ; the wait status, which is 0 only when the child exited
+  ; normally with code 0 -- exactly the desired semantics for
+  ; shell/1.
+  %sh1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh1.t1 = extractvalue %Value %sh1.a1, 0
+  %sh1.is_atom = icmp eq i32 %sh1.t1, 0
+  br i1 %sh1.is_atom, label %sh1.go, label %sh1.fail
+sh1.fail:
+  ret i1 false
+sh1.go:
+  %sh1.aid = extractvalue %Value %sh1.a1, 1
+  %sh1.cmd = call i8* @wam_atom_to_string(i64 %sh1.aid)
+  %sh1.cmd_null = icmp eq i8* %sh1.cmd, null
+  br i1 %sh1.cmd_null, label %sh1.fail, label %sh1.run
+sh1.run:
+  %sh1.raw = call i32 @system(i8* %sh1.cmd)
+  %sh1.ok = icmp eq i32 %sh1.raw, 0
+  ret i1 %sh1.ok
+
+builtin_shell2:
+  ; M78: shell(+Command, ?Status) -- atom Command; unifies Status
+  ; with WEXITSTATUS(raw) (decoded exit code 0..255), matching
+  ; SWI-Prolog''s convention. For abnormal termination (signal,
+  ; system() == -1) Status reflects the high bits as encoded
+  ; by the kernel; callers can compare against 0 for ``ran and
+  ; exited cleanly''.
+  %sh2.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh2.t1 = extractvalue %Value %sh2.a1, 0
+  %sh2.is_atom = icmp eq i32 %sh2.t1, 0
+  br i1 %sh2.is_atom, label %sh2.go, label %sh2.fail
+sh2.fail:
+  ret i1 false
+sh2.go:
+  %sh2.aid = extractvalue %Value %sh2.a1, 1
+  %sh2.cmd = call i8* @wam_atom_to_string(i64 %sh2.aid)
+  %sh2.cmd_null = icmp eq i8* %sh2.cmd, null
+  br i1 %sh2.cmd_null, label %sh2.fail, label %sh2.run
+sh2.run:
+  %sh2.raw = call i32 @system(i8* %sh2.cmd)
+  %sh2.shifted = ashr i32 %sh2.raw, 8
+  %sh2.exit = and i32 %sh2.shifted, 255
+  %sh2.exit64 = sext i32 %sh2.exit to i64
+  %sh2.v = call %Value @value_integer(i64 %sh2.exit64)
+  %sh2.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sh2.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sh2.raw2, %Value %sh2.v)
+  ret i1 %sh2.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11233,6 +11287,8 @@ builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
 builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
 builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value or fail.
 builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
+builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
+builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

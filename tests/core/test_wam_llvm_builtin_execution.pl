@@ -2459,6 +2459,30 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M78: shell/1 + shell/2 -- libc system() process spawn.
+
+:- dynamic test_sh1_true/2.
+test_sh1_true(_, R) :-
+    ( shell('true') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sh1_false/2.
+test_sh1_false(_, R) :-
+    ( shell('false') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_sh1_nonexistent/2.
+test_sh1_nonexistent(_, R) :-
+    ( shell('/nonexistent/uw_m78_definitely_no_such_binary') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_sh2_true/2.
+test_sh2_true(_, R) :-
+    shell('true', S),
+    R is S.   % 0
+
+:- dynamic test_sh2_exit42/2.
+test_sh2_exit42(_, R) :-
+    shell('exit 42', S),
+    R is S.   % 42
+
 % M77: getenv/2 + setenv/2 -- libc env-var access.
 
 :- dynamic test_ge_path/2.
@@ -4337,6 +4361,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M78 shell/1 + shell/2 ---~n'),
+       run_test_r0('shell(true) -> 1',
+                   test_sh1_true, 0, 1),
+       run_test_r0('shell(false) -> 0',
+                   test_sh1_false, 0, 0),
+       run_test_r0('shell(/nonexistent/...) -> 0',
+                   test_sh1_nonexistent, 0, 0),
+       run_test_r0('shell(true, S), S=0 -> 0',
+                   test_sh2_true, 0, 0),
+       run_test_r0('shell(exit 42, S), S=42 -> 42',
+                   test_sh2_exit42, 0, 42),
        format('--- M77 getenv/2 + setenv/2 ---~n'),
        run_test_r0('getenv(PATH) length > 0 -> 1',
                    test_ge_path, 0, 1),
