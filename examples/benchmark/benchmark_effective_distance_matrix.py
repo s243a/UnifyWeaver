@@ -181,6 +181,40 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Emit generated WAM-C stderr progress after this many article/root queries. Zero disables progress.",
     )
+    parser.add_argument(
+        "--wam-c-article-names",
+        default="",
+        help="Comma-separated generated WAM-C article IDs to include. Empty includes all articles.",
+    )
+    parser.add_argument(
+        "--wam-c-root-names",
+        default="",
+        help="Comma-separated generated WAM-C root categories to include. Empty includes all roots.",
+    )
+    parser.add_argument(
+        "--wam-c-article-stride",
+        type=nonnegative_int,
+        default=0,
+        help="Generated WAM-C article sampling stride. Zero disables stride sampling.",
+    )
+    parser.add_argument(
+        "--wam-c-root-stride",
+        type=nonnegative_int,
+        default=0,
+        help="Generated WAM-C root sampling stride. Zero disables stride sampling.",
+    )
+    parser.add_argument(
+        "--wam-c-article-offset",
+        type=nonnegative_int,
+        default=0,
+        help="Generated WAM-C article sampling offset used with --wam-c-article-stride.",
+    )
+    parser.add_argument(
+        "--wam-c-root-offset",
+        type=nonnegative_int,
+        default=0,
+        help="Generated WAM-C root sampling offset used with --wam-c-root-stride.",
+    )
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
     parser.add_argument(
@@ -325,14 +359,23 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
 
 
 def wam_c_runtime_env(args: argparse.Namespace) -> dict[str, str]:
-    options = {
+    numeric_options = {
         "UW_WAM_C_EFFECTIVE_MAX_ARTICLES": args.wam_c_max_articles,
         "UW_WAM_C_EFFECTIVE_MAX_ROOTS": args.wam_c_max_roots,
         "UW_WAM_C_EFFECTIVE_MAX_QUERIES": args.wam_c_max_queries,
         "UW_WAM_C_EFFECTIVE_MAX_RESULTS": args.wam_c_max_results,
         "UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES": args.wam_c_progress_queries,
+        "UW_WAM_C_EFFECTIVE_ARTICLE_STRIDE": args.wam_c_article_stride,
+        "UW_WAM_C_EFFECTIVE_ROOT_STRIDE": args.wam_c_root_stride,
+        "UW_WAM_C_EFFECTIVE_ARTICLE_OFFSET": args.wam_c_article_offset,
+        "UW_WAM_C_EFFECTIVE_ROOT_OFFSET": args.wam_c_root_offset,
     }
-    return {name: str(value) for name, value in options.items() if value > 0}
+    env = {name: str(value) for name, value in numeric_options.items() if value > 0}
+    if args.wam_c_article_names:
+        env["UW_WAM_C_EFFECTIVE_ARTICLE_NAMES"] = args.wam_c_article_names
+    if args.wam_c_root_names:
+        env["UW_WAM_C_EFFECTIVE_ROOT_NAMES"] = args.wam_c_root_names
+    return env
 
 
 def shell_env_prefix(env: dict[str, str] | None) -> str:

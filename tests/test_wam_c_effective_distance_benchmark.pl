@@ -116,6 +116,48 @@ test_generated_runner_supports_runtime_caps :-
     ;   fail_test(Test, 'runtime cap output or metrics mismatch')
     ).
 
+test_generated_runner_supports_runtime_sampling :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime sampling',
+    (   unique_tmp_dir(runtime_sampling, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_ROOT_STRIDE'='2',
+              'UW_WAM_C_EFFECTIVE_ROOT_OFFSET'='1'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        sub_string(ErrText, _, _, _, "selected_roots=1"),
+        sub_string(ErrText, _, _, _, "root_stride=2"),
+        sub_string(ErrText, _, _, _, "root_offset=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime sampling output or metrics mismatch')
+    ).
+
+test_generated_runner_supports_runtime_name_filters :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime name filters',
+    (   unique_tmp_dir(runtime_name_filters, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_ROOT_NAMES'='root'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        sub_string(ErrText, _, _, _, "selected_roots=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime name-filter output or metrics mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search :-
     Test = 'WAM-C effective-distance: bounded child search finds non-parent path',
     (   unique_tmp_dir(child_search, OutputDir),
@@ -606,6 +648,8 @@ run_tests_once :-
     test_generated_runner_indexes_article_categories,
     test_generate_and_run_lmdb_if_available,
     test_generated_runner_supports_runtime_caps,
+    test_generated_runner_supports_runtime_sampling,
+    test_generated_runner_supports_runtime_name_filters,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,

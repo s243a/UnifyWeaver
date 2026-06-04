@@ -468,6 +468,16 @@ Evidence:
   `query_ms=569.122`, one result row, and `first_result_ms=387.293`. An
   uncapped `10k` `c-wam-accumulated-child-csr` smoke produced the same `5262`
   rows in `5.406s`, down from the earlier `6.503s` sorted-array CSR row.
+- After adding generated-runner article/root name filters and stride/offset
+  sampling, a sampled `50k_cats` run with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. It completed
+  `2050` generated queries in `1.549s`, with `setup_ms=130.866`,
+  `query_ms=1403.952`, one result row, and `first_result_ms=1141.808`.
+- On that same sampled `50k_cats` query set, parent-only WAM-C produced no
+  rows with `query_ms=1425.065`. The child-search variants all produced the
+  same one-row output: scan fallback took `query_ms=4988.927`, sorted CSR took
+  `query_ms=1439.475`, buffered-drop CSR took `query_ms=1433.230`, and
+  LMDB-offset CSR took `query_ms=1334.566`.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -520,7 +530,8 @@ Open measurement:
   multi-minute ceiling after assoc-backed CSR ID lookup. Generated article-row
   slicing removes the full `ARTICLE_CATEGORY_COUNT` scan from each query. The
   remaining full-runner ceiling is the Cartesian `ARTICLE_COUNT * ROOT_COUNT`
-  query product plus per-query WAM/path collection cost.
+  query product plus per-query WAM/path collection cost; generated-runner
+  sampling can now measure that cost without launching the full matrix.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -718,9 +729,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Avoid using full generated `50k_cats` matrix runs as the next diagnostic until
-the runner can accept sampled or explicit article/root query lists. Keep the
-generated runtime caps for large-scale diagnosis, keep
+Use generated-runner sampling or explicit article/root name filters to compare
+more representative `50k_cats` query sets before attempting another full matrix
+run. The first sampled query set confirms child-CSR variants agree and scan
+fallback is much slower, but it only found one child-search row. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

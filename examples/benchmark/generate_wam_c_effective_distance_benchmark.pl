@@ -875,6 +875,60 @@ static int wam_read_count_limit(const char *name, int total) {
     return (int)limit;
 }
 
+static int wam_read_stride(const char *name) {
+    long long value = wam_read_env_limit(name);
+    if (value <= 0) return 1;
+    return (int)value;
+}
+
+static int wam_read_offset(const char *name) {
+    long long value = wam_read_env_limit(name);
+    if (value <= 0) return 0;
+    return (int)value;
+}
+
+static int wam_csv_contains(const char *csv, const char *value) {
+    if (csv == NULL || csv[0] == 0) return 1;
+    const char *cursor = csv;
+    size_t value_len = strlen(value);
+    while (*cursor != 0) {
+        while (*cursor == 32 || *cursor == 9) cursor++;
+        const char *start = cursor;
+        while (*cursor != 0 && *cursor != 44) cursor++;
+        const char *end = cursor;
+        while (end > start && (end[-1] == 32 || end[-1] == 9)) end--;
+        size_t token_len = (size_t)(end - start);
+        if (token_len == value_len && strncmp(start, value, token_len) == 0) {
+            return 1;
+        }
+        if (*cursor == 44) cursor++;
+    }
+    return 0;
+}
+
+static int wam_selected_index(int index,
+                              const char *name,
+                              const char *names,
+                              int stride,
+                              int offset) {
+    if (!wam_csv_contains(names, name)) return 0;
+    if (index < offset) return 0;
+    return ((index - offset) % stride) == 0;
+}
+
+static int wam_count_selected(const char **values,
+                              int count,
+                              int limit,
+                              const char *names,
+                              int stride,
+                              int offset) {
+    int selected = 0;
+    for (int i = 0; i < limit && i < count; i++) {
+        if (wam_selected_index(i, values[i], names, stride, offset)) selected++;
+    }
+    return selected;
+}
+
 static WamValue make_visited_singleton(WamState *state, const char *atom) {
     WamValue list;
     int required = state->H + 2;
@@ -1132,13 +1186,29 @@ int main(void) {
     long long result_limit = wam_read_env_limit("UW_WAM_C_EFFECTIVE_MAX_RESULTS");
     long long progress_queries =
         wam_read_env_limit("UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES");
+    const char *article_names = getenv("UW_WAM_C_EFFECTIVE_ARTICLE_NAMES");
+    const char *root_names = getenv("UW_WAM_C_EFFECTIVE_ROOT_NAMES");
+    int article_stride = wam_read_stride("UW_WAM_C_EFFECTIVE_ARTICLE_STRIDE");
+    int root_stride = wam_read_stride("UW_WAM_C_EFFECTIVE_ROOT_STRIDE");
+    int article_offset = wam_read_offset("UW_WAM_C_EFFECTIVE_ARTICLE_OFFSET");
+    int root_offset = wam_read_offset("UW_WAM_C_EFFECTIVE_ROOT_OFFSET");
+    int selected_article_count = wam_count_selected(ARTICLES, ARTICLE_COUNT,
+                                                    article_limit, article_names,
+                                                    article_stride, article_offset);
+    int selected_root_count = wam_count_selected(ROOTS, ROOT_COUNT, root_limit,
+                                                 root_names, root_stride,
+                                                 root_offset);
     double setup_ms = wam_now_ms() - setup_start_ms;
     fprintf(stderr,
             "wam_c_effective_setup article_count=%d root_count=%d "
             "article_category_count=%d article_limit=%d root_limit=%d "
-            "query_limit=%lld result_limit=%lld setup_ms=%.3f\\n",
+            "selected_articles=%d selected_roots=%d query_limit=%lld "
+            "result_limit=%lld article_stride=%d root_stride=%d "
+            "article_offset=%d root_offset=%d setup_ms=%.3f\\n",
             ARTICLE_COUNT, ROOT_COUNT, ARTICLE_CATEGORY_COUNT,
-            article_limit, root_limit, query_limit, result_limit, setup_ms);
+            article_limit, root_limit, selected_article_count,
+            selected_root_count, query_limit, result_limit, article_stride,
+            root_stride, article_offset, root_offset, setup_ms);
     fflush(stderr);
 
     printf("article\\troot_category\\teffective_distance\\n");
@@ -1148,7 +1218,15 @@ int main(void) {
     long long results = 0;
     int stopped_by_cap = 0;
     for (int ai = 0; ai < article_limit && !stopped_by_cap; ai++) {
+        if (!wam_selected_index(ai, ARTICLES[ai], article_names,
+                                article_stride, article_offset)) {
+            continue;
+        }
         for (int ri = 0; ri < root_limit; ri++) {
+            if (!wam_selected_index(ri, ROOTS[ri], root_names,
+                                    root_stride, root_offset)) {
+                continue;
+            }
             if (query_limit > 0 && queries >= query_limit) {
                 stopped_by_cap = 1;
                 break;
