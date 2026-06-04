@@ -4033,6 +4033,20 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ;   IntAtomSeeds = false,
         IntAtomSeedsLmdb = false
     ),
+    % lmdb_skip_intern_table(true): in int_atom_seeds(lmdb) mode the seeds,
+    % edges, and output are all int-keyed (iAtom = id, results printed as raw
+    % ids), so the s2i/i2s intern table is dead weight — at enwiki scale it is
+    % ~3.78M entries / ~3.8 GB RSS that starves the OS page cache of the LMDB
+    % (see WAM_PERF_OPTIMIZATION_LOG.md appendix #18). When set, skip the
+    % loadInternTableFromLmdb call and use compileTimeAtomTable (the WAM
+    % program's own atoms, all extractDouble needs). Only valid with
+    % int_atom_seeds(lmdb); default false preserves de-interning for any
+    % consumer that prints category names.
+    (   IntAtomSeedsLmdb == true,
+        option(lmdb_skip_intern_table(true), Options)
+    ->  LmdbSkipInternTable = true
+    ;   LmdbSkipInternTable = false
+    ),
     % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
     % by the workload or overridden by tests) so the generated FFI kernel
     % uses the same depth bound SWI-Prolog would. Defaults to 10 to match
@@ -4087,6 +4101,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , has_csr=HasCsr
         , int_atom_seeds=IntAtomSeeds
         , int_atom_seeds_lmdb=IntAtomSeedsLmdb
+        , lmdb_skip_intern_table=LmdbSkipInternTable
         , demand_bfs_mode_cursor=DemandBfsModeCursor
         , max_depth=MaxDepth
         , dimension_n=DimN

@@ -20,6 +20,7 @@
 :- dynamic user:test_nth_builtin/0.
 :- dynamic user:test_numlist_builtin/0.
 :- dynamic user:test_sort_builtin/0.
+:- dynamic user:test_keysort_builtin/0.
 :- dynamic user:test_term_order_builtin/0.
 :- dynamic user:test_ground_builtin/0.
 :- dynamic user:test_sub_atom_builtin/0.
@@ -27,6 +28,7 @@
 :- dynamic user:test_string_code_builtin/0.
 :- dynamic user:test_split_string_builtin/0.
 :- dynamic user:test_tab_builtin/0.
+:- dynamic user:test_env_builtin/0.
 :- dynamic user:test_succ_builtin/0.
 :- dynamic user:test_between_builtin/0.
 :- dynamic user:test_list_numeric_builtin/0.
@@ -270,6 +272,30 @@ test(builtins_execution) :-
                 \+ sort([a|b], _),
                 \+ msort([a|b], _)
             )),
+          assertz(user:test_keysort_builtin :-
+            (   keysort([3-a,1-b,2-c], IntSorted),
+                IntSorted = [1-b,2-c,3-a],
+                keysort([5-x,2-y,8-z,1-w], LastSorted),
+                LastSorted = [1-w,2-y,5-x,8-z],
+                keysort([1-a,2-b,3-c], AlreadySorted),
+                AlreadySorted = [1-a,2-b,3-c],
+                keysort([5-a,4-b,3-c,2-d,1-e], ReverseSorted),
+                ReverseSorted = [1-e,2-d,3-c,4-b,5-a],
+                keysort([], Empty),
+                Empty = [],
+                keysort([42-only], Singleton),
+                Singleton = [42-only],
+                keysort([2-first,1-x,2-second,1-y], StableDupes),
+                StableDupes = [1-x,1-y,2-first,2-second],
+                keysort([banana-2,apple-1,cherry-3], AtomSorted),
+                AtomSorted = [apple-1,banana-2,cherry-3],
+                keysort([3.5-a,1.5-b,2.5-c], FloatSorted),
+                FloatSorted = [1.5-b,2.5-c,3.5-a],
+                keysort([2-a,1.5-b,1-c,2.5-d], MixedSorted),
+                MixedSorted = [1-c,1.5-b,2-a,2.5-d],
+                \+ keysort([a|b], _),
+                \+ keysort([not_a_pair], _)
+            )),
           assertz(user:test_term_order_builtin :-
             (   bar @< foo,
                 foo @=< foo,
@@ -380,6 +406,22 @@ test(builtins_execution) :-
                 \+ tab(-1),
                 \+ tab(_),
                 \+ tab(foo)
+            )),
+          assertz(user:test_env_builtin :-
+            (   setenv('UW_GO_WAM_ENV_TEST', go_wam_value),
+                getenv('UW_GO_WAM_ENV_TEST', V),
+                V == go_wam_value,
+                setenv('UW_GO_WAM_ENV_TEST', overwritten),
+                getenv('UW_GO_WAM_ENV_TEST', V2),
+                V2 == overwritten,
+                setenv('UW_GO_WAM_EMPTY', ''),
+                getenv('UW_GO_WAM_EMPTY', Empty),
+                atom_length(Empty, Len),
+                Len =:= 0,
+                \+ getenv('UW_GO_WAM_DEFINITELY_UNSET', _),
+                \+ getenv(_, _),
+                \+ setenv(_, value),
+                \+ setenv('UW_GO_WAM_ENV_TEST', _)
             )),
           assertz(user:test_succ_builtin :-
             (   succ(0, 1),
@@ -582,6 +624,7 @@ test(builtins_execution) :-
           retractall(user:test_nth_builtin),
           retractall(user:test_numlist_builtin),
           retractall(user:test_sort_builtin),
+          retractall(user:test_keysort_builtin),
           retractall(user:test_term_order_builtin),
           retractall(user:test_ground_builtin),
           retractall(user:test_sub_atom_builtin),
@@ -589,6 +632,7 @@ test(builtins_execution) :-
           retractall(user:test_string_code_builtin),
           retractall(user:test_split_string_builtin),
           retractall(user:test_tab_builtin),
+          retractall(user:test_env_builtin),
           retractall(user:test_succ_builtin),
           retractall(user:test_between_builtin),
           retractall(user:test_list_numeric_builtin),
@@ -612,7 +656,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -663,6 +707,7 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "list_to_set/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "sort/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "msort/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "keysort/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@</2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@=</2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "@>/2"')),
@@ -674,6 +719,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "string_code/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "split_string/4"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "tab/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "getenv/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "setenv/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -831,6 +878,14 @@ func main() {
 		fmt.Println("SORT_FAILURE")
 	}
 
+	keysortVM := wam.NewWamState(wam.Test_keysort_builtinCode, wam.Test_keysort_builtinLabels)
+	keysortVM.PC = wam.Test_keysort_builtinStartPC
+	if keysortVM.Run() {
+		fmt.Println("KEYSORT_SUCCESS")
+	} else {
+		fmt.Println("KEYSORT_FAILURE")
+	}
+
 	termOrderVM := wam.NewWamState(wam.Test_term_order_builtinCode, wam.Test_term_order_builtinLabels)
 	termOrderVM.PC = wam.Test_term_order_builtinStartPC
 	if termOrderVM.Run() {
@@ -885,6 +940,14 @@ func main() {
 		fmt.Println("TAB_SUCCESS")
 	} else {
 		fmt.Println("TAB_FAILURE")
+	}
+
+	envVM := wam.NewWamState(wam.Test_env_builtinCode, wam.Test_env_builtinLabels)
+	envVM.PC = wam.Test_env_builtinStartPC
+	if envVM.Run() {
+		fmt.Println("ENV_SUCCESS")
+	} else {
+		fmt.Println("ENV_FAILURE")
 	}
 
 	succVM := wam.NewWamState(wam.Test_succ_builtinCode, wam.Test_succ_builtinLabels)
@@ -1063,6 +1126,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "NTH_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NUMLIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SORT_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "KEYSORT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_ORDER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "GROUND_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUB_ATOM_SUCCESS")),
@@ -1070,6 +1134,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "STRING_CODE_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SPLIT_STRING_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "   tabbedTAB_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "ENV_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SUCC_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "BETWEEN_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "LIST_NUMERIC_SUCCESS")),

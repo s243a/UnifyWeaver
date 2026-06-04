@@ -134,6 +134,17 @@
 :- dynamic user:wam_copy_term_guard/2.
 :- dynamic user:wam_copy_term_sharing_fail/0.
 :- dynamic user:wam_copy_term_independent_ok/0.
+:- dynamic user:wam_term_variables_guard/2.
+:- dynamic user:wam_term_variables_order/0.
+:- dynamic user:wam_term_variables_ground/0.
+:- dynamic user:wam_term_variables_single_unbound/0.
+:- dynamic user:wam_term_variables_mismatch/0.
+:- dynamic user:wam_variant_guard/2.
+:- dynamic user:wam_variant_repeated_vars/0.
+:- dynamic user:wam_variant_repeated_vars_mismatch/0.
+:- dynamic user:wam_variant_constant_mismatch/0.
+:- dynamic user:wam_variant_does_not_bind/0.
+:- dynamic user:wam_variant_same_var/0.
 :- dynamic user:wam_functor_guard/3.
 :- dynamic user:wam_functor_arity_unify/0.
 :- dynamic user:wam_functor_arity_unify_mismatch/0.
@@ -443,6 +454,17 @@ user:wam_msort_unbound_list(S) :- msort(L, S), is_list(L).
 user:wam_copy_term_guard(A, B) :- copy_term(A, B).
 user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
+user:wam_term_variables_guard(Term, Vars) :- term_variables(Term, Vars).
+user:wam_term_variables_order :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), term_variables(f(X,Y,X), Vars), Vars = [X,Y].
+user:wam_term_variables_ground :- term_variables(f(a,42), Vars), Vars = [].
+user:wam_term_variables_single_unbound :- user:wam_unbound_arg(X), term_variables(X, Vars), Vars = [X].
+user:wam_term_variables_mismatch :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), term_variables(f(X,Y), [X]).
+user:wam_variant_guard(A, B) :- variant(A, B).
+user:wam_variant_repeated_vars :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), user:wam_unbound_arg(A), user:wam_unbound_arg(B), variant(f(X,Y,X), f(A,B,A)).
+user:wam_variant_repeated_vars_mismatch :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), user:wam_unbound_arg(A), variant(f(X,Y), f(A,A)).
+user:wam_variant_constant_mismatch :- user:wam_unbound_arg(X), variant(f(a,X), f(a,b)).
+user:wam_variant_does_not_bind :- user:wam_unbound_arg(X), user:wam_unbound_arg(Y), variant(X, Y), X == Y.
+user:wam_variant_same_var :- user:wam_unbound_arg(X), variant(X, X).
 user:wam_functor_guard(Term, Name, Arity) :- functor(Term, Name, Arity).
 user:wam_functor_arity_unify :- functor(f(a,b), f, Arity), Arity = 2.
 user:wam_functor_arity_unify_mismatch :- functor(f(a,b), f, Arity), Arity = 1.
@@ -757,6 +779,17 @@ run_smoke :-
           user:wam_copy_term_guard/2,
           user:wam_copy_term_sharing_fail/0,
           user:wam_copy_term_independent_ok/0,
+          user:wam_term_variables_guard/2,
+          user:wam_term_variables_order/0,
+          user:wam_term_variables_ground/0,
+          user:wam_term_variables_single_unbound/0,
+          user:wam_term_variables_mismatch/0,
+          user:wam_variant_guard/2,
+          user:wam_variant_repeated_vars/0,
+          user:wam_variant_repeated_vars_mismatch/0,
+          user:wam_variant_constant_mismatch/0,
+          user:wam_variant_does_not_bind/0,
+          user:wam_variant_same_var/0,
           user:wam_functor_guard/3,
           user:wam_functor_arity_unify/0,
           user:wam_functor_arity_unify_mismatch/0,
@@ -975,6 +1008,8 @@ run_smoke :-
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
+    assert_lowered_term_variables_builtin_emitted(TmpDir),
+    assert_lowered_variant_builtin_emitted(TmpDir),
     assert_lowered_functor_builtin_emitted(TmpDir),
     assert_lowered_arg_builtin_emitted(TmpDir),
     assert_lowered_compound_name_builtin_emitted(TmpDir),
@@ -1225,6 +1260,19 @@ smoke_cases([
     case('wam_copy_term_guard/2', args('f(a)', 'f(b)'), "false"),
     case('wam_copy_term_sharing_fail/0', no_args, "false"),
     case('wam_copy_term_independent_ok/0', no_args, "true"),
+    case('wam_term_variables_guard/2', args('f(a,b)', '[]'), "true"),
+    case('wam_term_variables_guard/2', args('f(a,b)', '[a]'), "false"),
+    case('wam_term_variables_order/0', no_args, "true"),
+    case('wam_term_variables_ground/0', no_args, "true"),
+    case('wam_term_variables_single_unbound/0', no_args, "true"),
+    case('wam_term_variables_mismatch/0', no_args, "false"),
+    case('wam_variant_guard/2', args('f(a,b)', 'f(a,b)'), "true"),
+    case('wam_variant_guard/2', args('f(a,b)', 'f(a,c)'), "false"),
+    case('wam_variant_repeated_vars/0', no_args, "true"),
+    case('wam_variant_repeated_vars_mismatch/0', no_args, "false"),
+    case('wam_variant_constant_mismatch/0', no_args, "false"),
+    case('wam_variant_does_not_bind/0', no_args, "false"),
+    case('wam_variant_same_var/0', no_args, "true"),
     case('wam_functor_guard/3', args('f(a)', f, 1), "true"),
     case('wam_functor_guard/3', args('f(a)', a, 1), "false"),
     case('wam_functor_guard/3', args(a, a, 0), "true"),
@@ -1720,6 +1768,21 @@ assert_lowered_copy_term_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-copy-term-independent-ok-0"),
     has(CoreCode, "runtime/apply-copy-term-solution").
 
+assert_lowered_term_variables_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-term-variables-guard-2"),
+    has(CoreCode, "defn lowered-wam-term-variables-order-0"),
+    has(CoreCode, "runtime/apply-term-variables-solution").
+
+assert_lowered_variant_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-variant-guard-2"),
+    has(CoreCode, "defn lowered-wam-variant-repeated-vars-0"),
+    has(CoreCode, "defn lowered-wam-variant-does-not-bind-0"),
+    has(CoreCode, "runtime/apply-variant-solution").
+
 assert_lowered_functor_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -2015,6 +2078,7 @@ prolog_term_string_to_edn("bar", "\"bar\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
+prolog_term_string_to_edn('f(a,c)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"c\"]}") :- !.
 prolog_term_string_to_edn('f(b)', "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn('[a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[42]', "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.
@@ -2048,6 +2112,7 @@ prolog_term_string_to_edn('[f(b)]', "{:tag :struct :functor \"[|]/2\" :args [{:t
 prolog_term_string_to_edn('[a|b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"b\"]}") :- !.
 prolog_term_string_to_edn("f(a)", "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn("f(a,b)", "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
+prolog_term_string_to_edn("f(a,c)", "{:tag :struct :functor \"f/2\" :args [\"a\" \"c\"]}") :- !.
 prolog_term_string_to_edn("f(b)", "{:tag :struct :functor \"f/1\" :args [\"b\"]}") :- !.
 prolog_term_string_to_edn("[a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[42]", "{:tag :struct :functor \"[|]/2\" :args [42 \"[]\"]}") :- !.

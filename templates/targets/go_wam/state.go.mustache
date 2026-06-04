@@ -3,6 +3,7 @@ package {{package_name}}
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1238,6 +1239,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		fmt.Print(strings.Repeat(" ", int(count.Val)))
 		return true
+	case "getenv/2":
+		name, ok := vm.deref(arg1).(*Atom)
+		if !ok {
+			return false
+		}
+		value, ok := os.LookupEnv(name.Name)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, internAtom(value))
+	case "setenv/2":
+		name, okName := vm.deref(arg1).(*Atom)
+		value, okValue := vm.deref(arg2).(*Atom)
+		if !okName || !okValue {
+			return false
+		}
+		return os.Setenv(name.Name, value.Name) == nil
 	case "true/0":
 		return true
 	case "fail/0":
@@ -2021,6 +2039,101 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				}
 			}
 			sorted = deduped
+		}
+		return vm.Unify(arg2, &List{Elements: sorted})
+	case "keysort/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		type keyPair struct {
+			key  Value
+			pair Value
+		}
+		pairAfterUnbound := func(u *Unbound) (Value, bool) {
+			found := false
+			for _, cell := range vm.Heap[:vm.HeapLen] {
+				if cell == u {
+					found = true
+					continue
+				}
+				if !found {
+					continue
+				}
+				pair := vm.deref(cell)
+				switch p := pair.(type) {
+				case *Compound:
+					if parseFunctorName(p.Functor) == "-" && len(p.Args) == 2 {
+						return pair, true
+					}
+				case *Structure:
+					if parseFunctorName(p.Functor) == "-" && len(p.Args) == 2 {
+						return pair, true
+					}
+				}
+			}
+			return nil, false
+		}
+		pairs := make([]keyPair, 0, len(items))
+		for _, item := range items {
+			pair := vm.deref(item)
+			if u, ok := pair.(*Unbound); ok {
+				if resolved, ok := pairAfterUnbound(u); ok {
+					pair = resolved
+				}
+			}
+			var key Value
+			switch p := pair.(type) {
+			case *Compound:
+				if parseFunctorName(p.Functor) != "-" || len(p.Args) != 2 {
+					return false
+				}
+				key = vm.deref(p.Args[0])
+			case *Structure:
+				if parseFunctorName(p.Functor) != "-" || len(p.Args) != 2 {
+					return false
+				}
+				key = vm.deref(p.Args[0])
+			default:
+				return false
+			}
+			pairs = append(pairs, keyPair{key: key, pair: pair})
+		}
+		compareKeys := func(a, b Value) int {
+			switch ka := a.(type) {
+			case *Integer:
+				switch kb := b.(type) {
+				case *Integer:
+					if ka.Val < kb.Val { return -1 }
+					if ka.Val > kb.Val { return 1 }
+					return 0
+				case *Float:
+					av := float64(ka.Val)
+					if av < kb.Val { return -1 }
+					if av > kb.Val { return 1 }
+					return 0
+				}
+			case *Float:
+				switch kb := b.(type) {
+				case *Integer:
+					bv := float64(kb.Val)
+					if ka.Val < bv { return -1 }
+					if ka.Val > bv { return 1 }
+					return 0
+				case *Float:
+					if ka.Val < kb.Val { return -1 }
+					if ka.Val > kb.Val { return 1 }
+					return 0
+				}
+			}
+			return compareValues(a, b)
+		}
+		sort.SliceStable(pairs, func(i, j int) bool {
+			return compareKeys(pairs[i].key, pairs[j].key) < 0
+		})
+		sorted := make([]Value, len(pairs))
+		for i, pair := range pairs {
+			sorted[i] = pair.pair
 		}
 		return vm.Unify(arg2, &List{Elements: sorted})
 	case "functor/3":

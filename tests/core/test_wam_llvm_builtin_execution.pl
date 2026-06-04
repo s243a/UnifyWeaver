@@ -2459,6 +2459,289 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M82: gcd/2 (Integer Euclidean) + log/2 (Float log with base).
+
+:- dynamic test_gcd_basic/2.
+test_gcd_basic(_, R) :-
+    R is gcd(12, 18).   % 6
+
+:- dynamic test_gcd_coprime/2.
+test_gcd_coprime(_, R) :-
+    R is gcd(7, 5).   % 1
+
+:- dynamic test_gcd_with_zero/2.
+test_gcd_with_zero(_, R) :-
+    % gcd(0, n) = n -- Euclid terminates on the first iteration.
+    R is gcd(0, 5).   % 5
+
+:- dynamic test_log2_eight/2.
+test_log2_eight(_, R) :-
+    % log(2, 8) = 3 (since 2^3 = 8). Use floats to force the
+    % named-binary path; integer literals go through int eval which
+    % doesn''t recognize ``log''.
+    X is log(2.0, 8.0),
+    R is truncate(X).   % 3
+
+:- dynamic test_log10_hundred/2.
+test_log10_hundred(_, R) :-
+    X is log(10.0, 100.0),
+    R is truncate(X).   % 2
+
+% M81: atan2/2 -- binary inverse tangent (4-quadrant).
+
+:- dynamic test_atan2_xaxis/2.
+test_atan2_xaxis(_, R) :-
+    % atan2(0, 1) -- positive x-axis -- is 0.
+    X is atan2(0.0, 1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_atan2_diag/2.
+test_atan2_diag(_, R) :-
+    % atan2(1, 1) = pi/4 ~ 0.7854; *200 truncated -> 157.
+    X is atan2(1.0, 1.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_yaxis/2.
+test_atan2_yaxis(_, R) :-
+    % atan2(1, 0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is atan2(1.0, 0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan2_diag_scaled/2.
+test_atan2_diag_scaled(_, R) :-
+    % atan2 only cares about the ratio: (2,2) is the same angle as (1,1).
+    X is atan2(2.0, 2.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_pi/2.
+test_atan2_pi(_, R) :-
+    % atan2(0, -1) = pi ~ 3.14159; *50 truncated -> 157.
+    X is atan2(0.0, -1.0),
+    R is truncate(X * 50).   % 157
+
+% M80: inverse trig -- asin/1, acos/1, atan/1 via libm.
+
+:- dynamic test_asin_zero/2.
+test_asin_zero(_, R) :-
+    X is asin(0.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_asin_one/2.
+test_asin_one(_, R) :-
+    % asin(1) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is asin(1.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_acos_one/2.
+test_acos_one(_, R) :-
+    X is acos(1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_acos_zero/2.
+test_acos_zero(_, R) :-
+    % acos(0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is acos(0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan_one/2.
+test_atan_one(_, R) :-
+    % atan(1) = pi/4 ~ 0.7854; *200 truncated -> 157 (same as
+    % asin(1.0)/acos(0.0)). Cannot use *400 because OS exit codes
+    % are 8-bit and 314 mod 256 = 58.
+    X is atan(1.0),
+    R is truncate(X * 200).   % 157
+
+% M79: working_directory/2 + getpid/1 -- libc getcwd/chdir/getpid.
+
+:- dynamic test_wd_query/2.
+test_wd_query(_, R) :-
+    % Query mode: working_directory(D, D) -- after the call D is
+    % bound to CWD; no chdir happens. CWD should not be empty.
+    working_directory(D, D),
+    atom_length(D, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_chdir/2.
+test_wd_chdir(_, R) :-
+    % Save current CWD, chdir to /tmp, read CWD again, restore.
+    working_directory(Old, '/tmp'),
+    working_directory(New, New),
+    working_directory(_, Old),
+    ( New == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_fail/2.
+test_wd_fail(_, R) :-
+    % chdir to a non-existent directory must fail (ENOENT).
+    ( working_directory(_, '/nonexistent/uw_m79_dir') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_getpid_pos/2.
+test_getpid_pos(_, R) :-
+    getpid(P),
+    ( P > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_getpid_stable/2.
+test_getpid_stable(_, R) :-
+    % Two getpid calls in the same process should return the same value.
+    getpid(P1),
+    getpid(P2),
+    ( P1 =:= P2 -> R is 1 ; R is 0 ).   % 1
+
+% M78: shell/1 + shell/2 -- libc system() process spawn.
+
+:- dynamic test_sh1_true/2.
+test_sh1_true(_, R) :-
+    ( shell('true') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sh1_false/2.
+test_sh1_false(_, R) :-
+    ( shell('false') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_sh1_nonexistent/2.
+test_sh1_nonexistent(_, R) :-
+    ( shell('/nonexistent/uw_m78_definitely_no_such_binary') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_sh2_true/2.
+test_sh2_true(_, R) :-
+    shell('true', S),
+    R is S.   % 0
+
+:- dynamic test_sh2_exit42/2.
+test_sh2_exit42(_, R) :-
+    shell('exit 42', S),
+    R is S.   % 42
+
+% M77: getenv/2 + setenv/2 -- libc env-var access.
+
+:- dynamic test_ge_path/2.
+test_ge_path(_, R) :-
+    % PATH is set in every container shell.
+    getenv('PATH', P),
+    atom_length(P, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ge_missing/2.
+test_ge_missing(_, R) :-
+    ( getenv('UW_M77_DEFINITELY_UNSET', _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_se_basic/2.
+test_se_basic(_, R) :-
+    setenv('UW_M77_TEST', 'hello'),
+    getenv('UW_M77_TEST', V),
+    ( V == 'hello' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_se_overwrite/2.
+test_se_overwrite(_, R) :-
+    setenv('UW_M77_OVR', 'first'),
+    setenv('UW_M77_OVR', 'second'),
+    getenv('UW_M77_OVR', V),
+    ( V == 'second' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_se_empty/2.
+test_se_empty(_, R) :-
+    % Empty string is a valid value (setenv accepts ""). getenv
+    % then succeeds and returns the empty atom.
+    setenv('UW_M77_EMPTY', ''),
+    getenv('UW_M77_EMPTY', V),
+    atom_length(V, L),
+    R is L.   % 0
+
+% M76: size_file/2 + time_file/2 -- stat-based mtime + size readers.
+
+:- dynamic test_sf_etc_hostname/2.
+test_sf_etc_hostname(_, R) :-
+    % /etc/hostname is small but > 0 bytes on every Linux container.
+    size_file('/etc/hostname', N),
+    ( N > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sf_zero/2.
+test_sf_zero(_, R) :-
+    % /dev/null is a 0-byte character device; stat reports size = 0.
+    size_file('/dev/null', N),
+    R is N.   % 0
+
+:- dynamic test_sf_fail_missing/2.
+test_sf_fail_missing(_, R) :-
+    ( size_file('/nonexistent/file/qqq', _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_tf_etc_hostname/2.
+test_tf_etc_hostname(_, R) :-
+    % Mtime on /etc/hostname is some Float > 0 (epoch seconds).
+    time_file('/etc/hostname', T),
+    ( T > 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tf_fail_missing/2.
+test_tf_fail_missing(_, R) :-
+    ( time_file('/nonexistent/file/qqq', _) -> R is 1 ; R is 0 ).   % 0
+
+% M75: rename_file/2 + delete_directory/1 -- libc rename + rmdir.
+
+:- dynamic test_rnf_basic/2.
+test_rnf_basic(_, R) :-
+    % Make a directory we can write a sentinel file into, rename it,
+    % then check both old-name absence and new-name presence. Pre-clean
+    % via best-effort delete (ignored if missing).
+    ( delete_directory('/tmp/uw_m75_rnf_dst') ; true ),
+    ( delete_directory('/tmp/uw_m75_rnf_src') ; true ),
+    make_directory('/tmp/uw_m75_rnf_src'),
+    rename_file('/tmp/uw_m75_rnf_src', '/tmp/uw_m75_rnf_dst'),
+    exists_directory('/tmp/uw_m75_rnf_dst'),
+    \+ exists_directory('/tmp/uw_m75_rnf_src'),
+    R is 1.   % 1
+
+:- dynamic test_rnf_fail_missing/2.
+test_rnf_fail_missing(_, R) :-
+    % Source doesn''t exist -> ENOENT.
+    ( rename_file('/nonexistent/source/foo', '/tmp/uw_m75_target') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ddr_basic/2.
+test_ddr_basic(_, R) :-
+    % Roundtrip: create then delete, verify gone.
+    ( delete_directory('/tmp/uw_m75_ddr_test') ; true ),
+    make_directory('/tmp/uw_m75_ddr_test'),
+    delete_directory('/tmp/uw_m75_ddr_test'),
+    \+ exists_directory('/tmp/uw_m75_ddr_test'),
+    R is 1.   % 1
+
+:- dynamic test_ddr_fail_missing/2.
+test_ddr_fail_missing(_, R) :-
+    % Path doesn''t exist -> ENOENT.
+    ( delete_directory('/nonexistent/dir/qqq') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_ddr_fail_file/2.
+test_ddr_fail_file(_, R) :-
+    % rmdir() refuses non-directories (ENOTDIR).
+    ( delete_directory('/etc/hostname') -> R is 1 ; R is 0 ).   % 0
+
+% M74: delete_file/1 + make_directory/1 -- libc unlink + mkdir.
+
+:- dynamic test_mkd_basic/2.
+test_mkd_basic(_, R) :-
+    % Disjunction: either makes it new or finds it already there.
+    ( make_directory('/tmp/uw_m74_test')
+    ; exists_directory('/tmp/uw_m74_test')
+    ),
+    exists_directory('/tmp/uw_m74_test'),
+    R is 1.   % 1
+
+:- dynamic test_mkd_fail_perm/2.
+test_mkd_fail_perm(_, R) :-
+    % /sys is locked down (EPERM/EROFS) even for root in typical containers.
+    ( make_directory('/sys/uw_m74_protected_dir') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_mkd_fail_parent/2.
+test_mkd_fail_parent(_, R) :-
+    % Parent doesn''t exist; mkdir fails with ENOENT.
+    ( make_directory('/nonexistent/foo/bar') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_df_fail_missing/2.
+test_df_fail_missing(_, R) :-
+    ( delete_file('/nonexistent/file/qqq') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_df_dir_no/2.
+test_df_dir_no(_, R) :-
+    % unlink() refuses directories (EISDIR).
+    ( delete_file('/tmp') -> R is 1 ; R is 0 ).   % 0
+
 % M73: exists_file/1 + exists_directory/1 -- stat-based fs checks.
 
 :- dynamic test_xf_real/2.
@@ -4205,6 +4488,105 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M82 gcd/2 + log/2 binary arith ---~n'),
+       run_test_r0('gcd(12, 18) -> 6',
+                   test_gcd_basic, 0, 6),
+       run_test_r0('gcd(7, 5) -> 1 (coprime)',
+                   test_gcd_coprime, 0, 1),
+       run_test_r0('gcd(0, 5) -> 5',
+                   test_gcd_with_zero, 0, 5),
+       run_test_r0('truncate(log(2.0, 8.0)) -> 3',
+                   test_log2_eight, 0, 3),
+       run_test_r0('truncate(log(10.0, 100.0)) -> 2',
+                   test_log10_hundred, 0, 2),
+       format('--- M81 atan2/2 binary inverse tangent ---~n'),
+       run_test_r0('atan2(0,1) -> 0 (x-axis)',
+                   test_atan2_xaxis, 0, 0),
+       run_test_r0('atan2(1,1) * 200 -> 157 (~ pi/4)',
+                   test_atan2_diag, 0, 157),
+       run_test_r0('atan2(1,0) * 100 -> 157 (~ pi/2)',
+                   test_atan2_yaxis, 0, 157),
+       run_test_r0('atan2(2,2) * 200 -> 157 (ratio only)',
+                   test_atan2_diag_scaled, 0, 157),
+       run_test_r0('atan2(0,-1) * 50 -> 157 (~ pi)',
+                   test_atan2_pi, 0, 157),
+       format('--- M80 inverse trig -- asin/1, acos/1, atan/1 ---~n'),
+       run_test_r0('truncate(asin(0.0) * 100) -> 0',
+                   test_asin_zero, 0, 0),
+       run_test_r0('truncate(asin(1.0) * 100) -> 157 (~ pi/2)',
+                   test_asin_one, 0, 157),
+       run_test_r0('truncate(acos(1.0) * 100) -> 0',
+                   test_acos_one, 0, 0),
+       run_test_r0('truncate(acos(0.0) * 100) -> 157 (~ pi/2)',
+                   test_acos_zero, 0, 157),
+       run_test_r0('truncate(atan(1.0) * 200) -> 157 (~ pi/2)',
+                   test_atan_one, 0, 157),
+       format('--- M79 working_directory/2 + getpid/1 ---~n'),
+       run_test_r0('working_directory(D, D) query -> 1',
+                   test_wd_query, 0, 1),
+       run_test_r0('working_directory chdir/restore roundtrip -> 1',
+                   test_wd_chdir, 0, 1),
+       run_test_r0('working_directory chdir to /nonexistent -> 0',
+                   test_wd_fail, 0, 0),
+       run_test_r0('getpid(P), P > 0 -> 1',
+                   test_getpid_pos, 0, 1),
+       run_test_r0('getpid stable across calls -> 1',
+                   test_getpid_stable, 0, 1),
+       format('--- M78 shell/1 + shell/2 ---~n'),
+       run_test_r0('shell(true) -> 1',
+                   test_sh1_true, 0, 1),
+       run_test_r0('shell(false) -> 0',
+                   test_sh1_false, 0, 0),
+       run_test_r0('shell(/nonexistent/...) -> 0',
+                   test_sh1_nonexistent, 0, 0),
+       run_test_r0('shell(true, S), S=0 -> 0',
+                   test_sh2_true, 0, 0),
+       run_test_r0('shell(exit 42, S), S=42 -> 42',
+                   test_sh2_exit42, 0, 42),
+       format('--- M77 getenv/2 + setenv/2 ---~n'),
+       run_test_r0('getenv(PATH) length > 0 -> 1',
+                   test_ge_path, 0, 1),
+       run_test_r0('getenv(unset) -> 0',
+                   test_ge_missing, 0, 0),
+       run_test_r0('setenv + getenv roundtrip -> 1',
+                   test_se_basic, 0, 1),
+       run_test_r0('setenv overwrite -> 1 (last write wins)',
+                   test_se_overwrite, 0, 1),
+       run_test_r0('setenv empty value -> 0 (empty atom length)',
+                   test_se_empty, 0, 0),
+       format('--- M76 size_file/2 + time_file/2 ---~n'),
+       run_test_r0('size_file(/etc/hostname) > 0 -> 1',
+                   test_sf_etc_hostname, 0, 1),
+       run_test_r0('size_file(/dev/null) -> 0',
+                   test_sf_zero, 0, 0),
+       run_test_r0('size_file(/nonexistent/...) -> 0',
+                   test_sf_fail_missing, 0, 0),
+       run_test_r0('time_file(/etc/hostname) > 0.0 -> 1',
+                   test_tf_etc_hostname, 0, 1),
+       run_test_r0('time_file(/nonexistent/...) -> 0',
+                   test_tf_fail_missing, 0, 0),
+       format('--- M75 rename_file/2 + delete_directory/1 ---~n'),
+       run_test_r0('rename_file(src, dst) roundtrip -> 1',
+                   test_rnf_basic, 0, 1),
+       run_test_r0('rename_file(/nonexistent, ...) -> 0',
+                   test_rnf_fail_missing, 0, 0),
+       run_test_r0('delete_directory roundtrip -> 1',
+                   test_ddr_basic, 0, 1),
+       run_test_r0('delete_directory(/nonexistent/...) -> 0',
+                   test_ddr_fail_missing, 0, 0),
+       run_test_r0('delete_directory(/etc/hostname) file -> 0',
+                   test_ddr_fail_file, 0, 0),
+       format('--- M74 delete_file/1 + make_directory/1 ---~n'),
+       run_test_r0('make_directory + exists_directory roundtrip -> 1',
+                   test_mkd_basic, 0, 1),
+       run_test_r0('make_directory(/sys/...) no permission -> 0',
+                   test_mkd_fail_perm, 0, 0),
+       run_test_r0('make_directory(/nonexistent/...) missing parent -> 0',
+                   test_mkd_fail_parent, 0, 0),
+       run_test_r0('delete_file(/nonexistent/file) -> 0',
+                   test_df_fail_missing, 0, 0),
+       run_test_r0('delete_file(/tmp) directory -> 0',
+                   test_df_dir_no, 0, 0),
        format('--- M73 exists_file/1 + exists_directory/1 ---~n'),
        run_test_r0('exists_file(/etc/hostname) -> 1',
                    test_xf_real, 0, 1),

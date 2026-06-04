@@ -839,12 +839,6 @@ wam_instruction_to_wat_bytes(
     Op2 is (CmpdPC /\ 0xFFFFFFFF) \/ ((DefaultPC /\ 0xFFFFFFFF) << 32),
     encode_instr_hex(Tag, Op1, Op2, Hex).
 
-%% resolve_opt_label(+Label, +Labels, -PC)
-%  Like resolve_label/3 but allows atom 0 (or integer 0) as "no
-%  dispatch" — returns PC = 0. Real labels resolve normally.
-resolve_opt_label(0, _, 0) :- !.
-resolve_opt_label(Lbl, Labels, PC) :- resolve_label(Lbl, Labels, PC).
-
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
 %%   put_value(R4,A4) put_value(R5,A5) deallocate execute(Pred)
@@ -936,6 +930,27 @@ wam_instruction_to_wat_bytes(switch_on_term_hdr(RegIdx, CC, SC), _Labels, Hex) :
     instr_tag(switch_on_term_hdr, Tag),
     Op1 is (CC << 32) \/ RegIdx,
     encode_instr_hex(Tag, Op1, SC, Hex).
+
+wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labels, Hex) :-
+    instr_tag(neck_cut_test, Tag),
+    resolve_label(ElseLabel, Labels, ElsePC),
+    (   builtin_id(GuardOp, GuardId) -> true ; GuardId = 255 ),
+    %% op1 = else PC, op2 = (guard_builtin_id << 32) | guard_arity
+    Op2 is (GuardId << 32) \/ GuardArity,
+    encode_instr_hex(Tag, ElsePC, Op2, Hex).
+
+%% resolve_opt_label(+Label, +Labels, -PC)
+%  Like resolve_label/3 but allows atom 0 (or integer 0) as "no
+%  dispatch" — returns PC = 0. Real labels resolve normally.
+resolve_opt_label(0, _, 0) :- !.
+resolve_opt_label(Lbl, Labels, PC) :- resolve_label(Lbl, Labels, PC).
+
+agg_type_id(sum, 0).
+agg_type_id(count, 1).
+agg_type_id(max, 2).
+agg_type_id(min, 3).
+agg_type_id(collect, 4).
+agg_type_id(_, 0).  % default to sum
 
 %% parse_switch_entries(+Parts, -Entries)
 %  Parts is a list of strings like ["10:default,", "20:L_my_fact_1_2,",
@@ -1092,21 +1107,6 @@ build_switch_term_instrs(RegIdx, AllConsts, AllStructs,
     maplist(entry_to_instr, Consts, CInstrs),
     maplist(struct_entry_to_instr, Structs, SInstrs),
     append(CInstrs, SInstrs, AllEntries).
-
-agg_type_id(sum, 0).
-agg_type_id(count, 1).
-agg_type_id(max, 2).
-agg_type_id(min, 3).
-agg_type_id(collect, 4).
-agg_type_id(_, 0).  % default to sum
-
-wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labels, Hex) :-
-    instr_tag(neck_cut_test, Tag),
-    resolve_label(ElseLabel, Labels, ElsePC),
-    (   builtin_id(GuardOp, GuardId) -> true ; GuardId = 255 ),
-    %% op1 = else PC, op2 = (guard_builtin_id << 32) | guard_arity
-    Op2 is (GuardId << 32) \/ GuardArity,
-    encode_instr_hex(Tag, ElsePC, Op2, Hex).
 
 % --- Encoding helpers ---
 

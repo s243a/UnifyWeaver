@@ -1455,7 +1455,22 @@ declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
 declare i64 @time(i64*)
-declare i32 @stat(i8*, i8*)'
+declare i32 @stat(i8*, i8*)
+declare i32 @unlink(i8*)
+declare i32 @mkdir(i8*, i32)
+declare i32 @rename(i8*, i8*)
+declare i32 @rmdir(i8*)
+declare i8* @getenv(i8*)
+declare i32 @setenv(i8*, i8*, i32)
+declare i64 @strlen(i8*)
+declare i32 @system(i8*)
+declare i8* @getcwd(i8*, i64)
+declare i32 @chdir(i8*)
+declare i32 @getpid()
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3491,6 +3506,18 @@ entry:
     i32 90, label %builtin_get_time
     i32 91, label %builtin_exists_file
     i32 92, label %builtin_exists_directory
+    i32 93, label %builtin_delete_file
+    i32 94, label %builtin_make_directory
+    i32 95, label %builtin_rename_file
+    i32 96, label %builtin_delete_directory
+    i32 97, label %builtin_size_file
+    i32 98, label %builtin_time_file
+    i32 99, label %builtin_getenv
+    i32 100, label %builtin_setenv
+    i32 101, label %builtin_shell1
+    i32 102, label %builtin_shell2
+    i32 103, label %builtin_working_directory
+    i32 104, label %builtin_getpid
   ]
 
 builtin_is:
@@ -4412,6 +4439,340 @@ xd.check_mode:
   %xd.type_bits = and i32 %xd.mode, 61440  ; S_IFMT
   %xd.is_dir = icmp eq i32 %xd.type_bits, 16384  ; S_IFDIR = 0o040000
   ret i1 %xd.is_dir
+
+builtin_delete_file:
+  ; M74: delete_file(+Path) -- atom Path. Calls libc unlink(path);
+  ; succeeds iff unlink returns 0.
+  %df.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %df.t1 = extractvalue %Value %df.a1, 0
+  %df.is_atom = icmp eq i32 %df.t1, 0
+  br i1 %df.is_atom, label %df.go, label %df.fail
+df.fail:
+  ret i1 false
+df.go:
+  %df.aid = extractvalue %Value %df.a1, 1
+  %df.path = call i8* @wam_atom_to_string(i64 %df.aid)
+  %df.path_null = icmp eq i8* %df.path, null
+  br i1 %df.path_null, label %df.fail, label %df.unlink
+df.unlink:
+  %df.ret = call i32 @unlink(i8* %df.path)
+  %df.ok = icmp eq i32 %df.ret, 0
+  ret i1 %df.ok
+
+builtin_make_directory:
+  ; M74: make_directory(+Path) -- atom Path. Calls libc mkdir(path,
+  ; 0o755); succeeds iff mkdir returns 0. (0o755 = 493 decimal --
+  ; rwxr-xr-x, the conventional ``mkdir'' default; subject to umask.)
+  %mkd.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mkd.t1 = extractvalue %Value %mkd.a1, 0
+  %mkd.is_atom = icmp eq i32 %mkd.t1, 0
+  br i1 %mkd.is_atom, label %mkd.go, label %mkd.fail
+mkd.fail:
+  ret i1 false
+mkd.go:
+  %mkd.aid = extractvalue %Value %mkd.a1, 1
+  %mkd.path = call i8* @wam_atom_to_string(i64 %mkd.aid)
+  %mkd.path_null = icmp eq i8* %mkd.path, null
+  br i1 %mkd.path_null, label %mkd.fail, label %mkd.mkdir
+mkd.mkdir:
+  %mkd.ret = call i32 @mkdir(i8* %mkd.path, i32 493)
+  %mkd.ok = icmp eq i32 %mkd.ret, 0
+  ret i1 %mkd.ok
+
+builtin_rename_file:
+  ; M75: rename_file(+Old, +New) -- both atoms. Calls libc
+  ; rename(old, new); succeeds iff rename returns 0.
+  %rnf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rnf.t1 = extractvalue %Value %rnf.a1, 0
+  %rnf.a1_atom = icmp eq i32 %rnf.t1, 0
+  br i1 %rnf.a1_atom, label %rnf.chk2, label %rnf.fail
+rnf.fail:
+  ret i1 false
+rnf.chk2:
+  %rnf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rnf.t2 = extractvalue %Value %rnf.a2, 0
+  %rnf.a2_atom = icmp eq i32 %rnf.t2, 0
+  br i1 %rnf.a2_atom, label %rnf.go, label %rnf.fail
+rnf.go:
+  %rnf.aid1 = extractvalue %Value %rnf.a1, 1
+  %rnf.old = call i8* @wam_atom_to_string(i64 %rnf.aid1)
+  %rnf.old_null = icmp eq i8* %rnf.old, null
+  br i1 %rnf.old_null, label %rnf.fail, label %rnf.go2
+rnf.go2:
+  %rnf.aid2 = extractvalue %Value %rnf.a2, 1
+  %rnf.new = call i8* @wam_atom_to_string(i64 %rnf.aid2)
+  %rnf.new_null = icmp eq i8* %rnf.new, null
+  br i1 %rnf.new_null, label %rnf.fail, label %rnf.do
+rnf.do:
+  %rnf.ret = call i32 @rename(i8* %rnf.old, i8* %rnf.new)
+  %rnf.ok = icmp eq i32 %rnf.ret, 0
+  ret i1 %rnf.ok
+
+builtin_delete_directory:
+  ; M75: delete_directory(+Path) -- atom Path. Calls libc rmdir(path);
+  ; succeeds iff rmdir returns 0 (target was an empty directory).
+  %ddr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ddr.t1 = extractvalue %Value %ddr.a1, 0
+  %ddr.is_atom = icmp eq i32 %ddr.t1, 0
+  br i1 %ddr.is_atom, label %ddr.go, label %ddr.fail
+ddr.fail:
+  ret i1 false
+ddr.go:
+  %ddr.aid = extractvalue %Value %ddr.a1, 1
+  %ddr.path = call i8* @wam_atom_to_string(i64 %ddr.aid)
+  %ddr.path_null = icmp eq i8* %ddr.path, null
+  br i1 %ddr.path_null, label %ddr.fail, label %ddr.rmdir
+ddr.rmdir:
+  %ddr.ret = call i32 @rmdir(i8* %ddr.path)
+  %ddr.ok = icmp eq i32 %ddr.ret, 0
+  ret i1 %ddr.ok
+
+builtin_size_file:
+  ; M76: size_file(+Path, ?Size) -- atom Path; unifies A2 with stat
+  ; result st_size (i64, offset 48 on Linux glibc). Fails if stat
+  ; fails (missing path, permission denied, etc).
+  %sf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sf.t1 = extractvalue %Value %sf.a1, 0
+  %sf.is_atom = icmp eq i32 %sf.t1, 0
+  br i1 %sf.is_atom, label %sf.go, label %sf.fail
+sf.fail:
+  ret i1 false
+sf.go:
+  %sf.aid = extractvalue %Value %sf.a1, 1
+  %sf.path = call i8* @wam_atom_to_string(i64 %sf.aid)
+  %sf.path_null = icmp eq i8* %sf.path, null
+  br i1 %sf.path_null, label %sf.fail, label %sf.stat
+sf.stat:
+  %sf.buf = alloca [256 x i8]
+  %sf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %sf.buf, i32 0, i32 0
+  %sf.ret = call i32 @stat(i8* %sf.path, i8* %sf.buf_ptr)
+  %sf.stat_ok = icmp eq i32 %sf.ret, 0
+  br i1 %sf.stat_ok, label %sf.read, label %sf.fail
+sf.read:
+  %sf.size_ptr_i8 = getelementptr i8, i8* %sf.buf_ptr, i64 48
+  %sf.size_ptr = bitcast i8* %sf.size_ptr_i8 to i64*
+  %sf.size = load i64, i64* %sf.size_ptr
+  %sf.v = call %Value @value_integer(i64 %sf.size)
+  %sf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sf.raw2, %Value %sf.v)
+  ret i1 %sf.ok
+
+builtin_time_file:
+  ; M76: time_file(+Path, ?Time) -- atom Path; unifies A2 with the
+  ; modification time as Float seconds since the epoch
+  ; (st_mtim.tv_sec at offset 88 + tv_nsec at offset 96 / 1e9).
+  ; Fails if stat fails.
+  %tf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tf.t1 = extractvalue %Value %tf.a1, 0
+  %tf.is_atom = icmp eq i32 %tf.t1, 0
+  br i1 %tf.is_atom, label %tf.go, label %tf.fail
+tf.fail:
+  ret i1 false
+tf.go:
+  %tf.aid = extractvalue %Value %tf.a1, 1
+  %tf.path = call i8* @wam_atom_to_string(i64 %tf.aid)
+  %tf.path_null = icmp eq i8* %tf.path, null
+  br i1 %tf.path_null, label %tf.fail, label %tf.stat
+tf.stat:
+  %tf.buf = alloca [256 x i8]
+  %tf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %tf.buf, i32 0, i32 0
+  %tf.ret = call i32 @stat(i8* %tf.path, i8* %tf.buf_ptr)
+  %tf.stat_ok = icmp eq i32 %tf.ret, 0
+  br i1 %tf.stat_ok, label %tf.read, label %tf.fail
+tf.read:
+  %tf.sec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 88
+  %tf.sec_ptr = bitcast i8* %tf.sec_ptr_i8 to i64*
+  %tf.sec = load i64, i64* %tf.sec_ptr
+  %tf.nsec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 96
+  %tf.nsec_ptr = bitcast i8* %tf.nsec_ptr_i8 to i64*
+  %tf.nsec = load i64, i64* %tf.nsec_ptr
+  %tf.sec_d = sitofp i64 %tf.sec to double
+  %tf.nsec_d = sitofp i64 %tf.nsec to double
+  %tf.frac = fdiv double %tf.nsec_d, 1.000000e+09
+  %tf.total = fadd double %tf.sec_d, %tf.frac
+  %tf.bits = bitcast double %tf.total to i64
+  %tf.v0 = insertvalue %Value undef, i32 2, 0
+  %tf.v = insertvalue %Value %tf.v0, i64 %tf.bits, 1
+  %tf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tf.raw2, %Value %tf.v)
+  ret i1 %tf.ok
+
+builtin_getenv:
+  ; M77: getenv(+Name, ?Value) -- atom Name; if env var exists,
+  ; copies its value into the arena, interns as an atom, and
+  ; unifies with A2. Fails if the var is unset.
+  %gev.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gev.t1 = extractvalue %Value %gev.a1, 0
+  %gev.is_atom = icmp eq i32 %gev.t1, 0
+  br i1 %gev.is_atom, label %gev.go, label %gev.fail
+gev.fail:
+  ret i1 false
+gev.go:
+  %gev.aid = extractvalue %Value %gev.a1, 1
+  %gev.name = call i8* @wam_atom_to_string(i64 %gev.aid)
+  %gev.name_null = icmp eq i8* %gev.name, null
+  br i1 %gev.name_null, label %gev.fail, label %gev.call
+gev.call:
+  %gev.val = call i8* @getenv(i8* %gev.name)
+  %gev.val_null = icmp eq i8* %gev.val, null
+  br i1 %gev.val_null, label %gev.fail, label %gev.copy
+gev.copy:
+  ; getenv returns a pointer into the libc env block. Copy into
+  ; the arena (so the atom table owns the bytes) before interning.
+  %gev.len = call i64 @strlen(i8* %gev.val)
+  call void @wam_arena_ensure()
+  %gev.bufsize = add i64 %gev.len, 1
+  %gev.buf = call i8* @wam_arena_alloc(i64 %gev.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gev.buf, i8* %gev.val, i64 %gev.len, i1 false)
+  %gev.term = getelementptr i8, i8* %gev.buf, i64 %gev.len
+  store i8 0, i8* %gev.term
+  %gev.new_id = call i64 @wam_intern_atom(i8* %gev.buf, i64 %gev.len)
+  %gev.v0 = insertvalue %Value undef, i32 0, 0
+  %gev.v = insertvalue %Value %gev.v0, i64 %gev.new_id, 1
+  %gev.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %gev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gev.raw2, %Value %gev.v)
+  ret i1 %gev.ok
+
+builtin_setenv:
+  ; M77: setenv(+Name, +Value) -- both atoms. Calls libc
+  ; setenv(name, value, 1) -- the trailing 1 is the "overwrite"
+  ; flag, matching SWI-Prolog''s set-without-checking semantics.
+  ; Succeeds iff setenv returns 0.
+  %se.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %se.t1 = extractvalue %Value %se.a1, 0
+  %se.a1_atom = icmp eq i32 %se.t1, 0
+  br i1 %se.a1_atom, label %se.chk2, label %se.fail
+se.fail:
+  ret i1 false
+se.chk2:
+  %se.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %se.t2 = extractvalue %Value %se.a2, 0
+  %se.a2_atom = icmp eq i32 %se.t2, 0
+  br i1 %se.a2_atom, label %se.go, label %se.fail
+se.go:
+  %se.aid1 = extractvalue %Value %se.a1, 1
+  %se.name = call i8* @wam_atom_to_string(i64 %se.aid1)
+  %se.name_null = icmp eq i8* %se.name, null
+  br i1 %se.name_null, label %se.fail, label %se.go2
+se.go2:
+  %se.aid2 = extractvalue %Value %se.a2, 1
+  %se.val = call i8* @wam_atom_to_string(i64 %se.aid2)
+  %se.val_null = icmp eq i8* %se.val, null
+  br i1 %se.val_null, label %se.fail, label %se.do
+se.do:
+  %se.ret = call i32 @setenv(i8* %se.name, i8* %se.val, i32 1)
+  %se.ok = icmp eq i32 %se.ret, 0
+  ret i1 %se.ok
+
+builtin_shell1:
+  ; M78: shell(+Command) -- atom Command; runs ``/bin/sh -c Command``
+  ; via libc system(); succeeds iff the raw wait status is 0
+  ; (i.e. exit 0, no signal). Note that on Linux system() returns
+  ; the wait status, which is 0 only when the child exited
+  ; normally with code 0 -- exactly the desired semantics for
+  ; shell/1.
+  %sh1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh1.t1 = extractvalue %Value %sh1.a1, 0
+  %sh1.is_atom = icmp eq i32 %sh1.t1, 0
+  br i1 %sh1.is_atom, label %sh1.go, label %sh1.fail
+sh1.fail:
+  ret i1 false
+sh1.go:
+  %sh1.aid = extractvalue %Value %sh1.a1, 1
+  %sh1.cmd = call i8* @wam_atom_to_string(i64 %sh1.aid)
+  %sh1.cmd_null = icmp eq i8* %sh1.cmd, null
+  br i1 %sh1.cmd_null, label %sh1.fail, label %sh1.run
+sh1.run:
+  %sh1.raw = call i32 @system(i8* %sh1.cmd)
+  %sh1.ok = icmp eq i32 %sh1.raw, 0
+  ret i1 %sh1.ok
+
+builtin_shell2:
+  ; M78: shell(+Command, ?Status) -- atom Command; unifies Status
+  ; with WEXITSTATUS(raw) (decoded exit code 0..255), matching
+  ; SWI-Prolog''s convention. For abnormal termination (signal,
+  ; system() == -1) Status reflects the high bits as encoded
+  ; by the kernel; callers can compare against 0 for ``ran and
+  ; exited cleanly''.
+  %sh2.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh2.t1 = extractvalue %Value %sh2.a1, 0
+  %sh2.is_atom = icmp eq i32 %sh2.t1, 0
+  br i1 %sh2.is_atom, label %sh2.go, label %sh2.fail
+sh2.fail:
+  ret i1 false
+sh2.go:
+  %sh2.aid = extractvalue %Value %sh2.a1, 1
+  %sh2.cmd = call i8* @wam_atom_to_string(i64 %sh2.aid)
+  %sh2.cmd_null = icmp eq i8* %sh2.cmd, null
+  br i1 %sh2.cmd_null, label %sh2.fail, label %sh2.run
+sh2.run:
+  %sh2.raw = call i32 @system(i8* %sh2.cmd)
+  %sh2.shifted = ashr i32 %sh2.raw, 8
+  %sh2.exit = and i32 %sh2.shifted, 255
+  %sh2.exit64 = sext i32 %sh2.exit to i64
+  %sh2.v = call %Value @value_integer(i64 %sh2.exit64)
+  %sh2.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sh2.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sh2.raw2, %Value %sh2.v)
+  ret i1 %sh2.ok
+
+builtin_working_directory:
+  ; M79: working_directory(?Old, ?New) -- unifies Old with the
+  ; current CWD read via getcwd. If New is an atom, chdir to
+  ; that path; if New is unbound, it gets unified with Old as
+  ; well (the canonical ``query mode'' for working_directory(D,D)).
+  ; 4096-byte stack buffer covers PATH_MAX on Linux.
+  %wd.buf = alloca [4096 x i8]
+  %wd.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %wd.buf, i32 0, i32 0
+  %wd.got = call i8* @getcwd(i8* %wd.buf_ptr, i64 4096)
+  %wd.got_null = icmp eq i8* %wd.got, null
+  br i1 %wd.got_null, label %wd.fail, label %wd.intern
+wd.fail:
+  ret i1 false
+wd.intern:
+  ; Copy the cwd string into the arena, intern, build atom Value.
+  %wd.len = call i64 @strlen(i8* %wd.buf_ptr)
+  call void @wam_arena_ensure()
+  %wd.bufsize = add i64 %wd.len, 1
+  %wd.arena = call i8* @wam_arena_alloc(i64 %wd.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %wd.arena, i8* %wd.buf_ptr, i64 %wd.len, i1 false)
+  %wd.term = getelementptr i8, i8* %wd.arena, i64 %wd.len
+  store i8 0, i8* %wd.term
+  %wd.aid = call i64 @wam_intern_atom(i8* %wd.arena, i64 %wd.len)
+  %wd.v0 = insertvalue %Value undef, i32 0, 0
+  %wd.cwd_v = insertvalue %Value %wd.v0, i64 %wd.aid, 1
+  %wd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wd.u1 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw1, %Value %wd.cwd_v)
+  br i1 %wd.u1, label %wd.chk_new, label %wd.fail
+wd.chk_new:
+  ; Inspect New (reg 1, deref). Atom -> chdir; anything else
+  ; (typically an unbound var) -> unify it with CWD, no chdir.
+  %wd.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wd.t2 = extractvalue %Value %wd.a2, 0
+  %wd.is_atom = icmp eq i32 %wd.t2, 0
+  br i1 %wd.is_atom, label %wd.chdir, label %wd.unify_new
+wd.unify_new:
+  %wd.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %wd.u2 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw2, %Value %wd.cwd_v)
+  ret i1 %wd.u2
+wd.chdir:
+  %wd.aid2 = extractvalue %Value %wd.a2, 1
+  %wd.path = call i8* @wam_atom_to_string(i64 %wd.aid2)
+  %wd.path_null = icmp eq i8* %wd.path, null
+  br i1 %wd.path_null, label %wd.fail, label %wd.dochdir
+wd.dochdir:
+  %wd.ret = call i32 @chdir(i8* %wd.path)
+  %wd.ok = icmp eq i32 %wd.ret, 0
+  ret i1 %wd.ok
+
+builtin_getpid:
+  ; M79: getpid(?Pid) -- unifies Pid with the process id from
+  ; libc getpid() as Integer. Always succeeds (getpid cannot fail).
+  %gp.pid = call i32 @getpid()
+  %gp.pid64 = sext i32 %gp.pid to i64
+  %gp.v = call %Value @value_integer(i64 %gp.pid64)
+  %gp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gp.raw1, %Value %gp.v)
+  ret i1 %gp.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -9700,8 +10061,67 @@ ev_div_f_go:
 
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
-  %nb_is_m = icmp eq i8 %fn0, 109
-  br i1 %nb_is_m, label %ev_nb_second, label %ev_zero
+  ; atan2 -- functor name starts with ``a`` (M81).
+  ; gcd -- functor name starts with ``g`` (M82).
+  ; log/2 -- functor name starts with ``l`` (M82).
+  switch i8 %fn0, label %ev_zero [
+    i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
+    i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
+    i8 103, label %ev_gcd         ; ''g'' -> gcd
+    i8 108, label %ev_log2        ; ''l'' -> log/2
+  ]
+ev_nb_a_second:
+  ; M81: only atan2 starts with ``a'' in the binary path. Verify the
+  ; second byte is ``t'' so a stray ``a''-prefixed binary name
+  ; doesn''t pretend to be atan2.
+  %nba.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nba.fn1 = load i8, i8* %nba.fn1_ptr
+  %nba.is_t = icmp eq i8 %nba.fn1, 116
+  br i1 %nba.is_t, label %ev_atan2, label %ev_zero
+ev_atan2:
+  %a2.a_d = call double @value_to_double(%Value %a)
+  %a2.b_d = call double @value_to_double(%Value %b)
+  %a2.r = call double @atan2(double %a2.a_d, double %a2.b_d)
+  %a2.v = call %Value @value_float(double %a2.r)
+  ret %Value %a2.v
+
+ev_gcd:
+  ; M82: gcd(A, B) -- integer-only. Iterative Euclid on i64 with
+  ; abs() of both args so negative inputs still produce a positive
+  ; gcd (matching SWI semantics). gcd(0, 0) is defined as 0.
+  %gcd.a_i = extractvalue %Value %a, 1
+  %gcd.b_i = extractvalue %Value %b, 1
+  %gcd.a_neg = icmp slt i64 %gcd.a_i, 0
+  %gcd.a_op = sub i64 0, %gcd.a_i
+  %gcd.a_abs = select i1 %gcd.a_neg, i64 %gcd.a_op, i64 %gcd.a_i
+  %gcd.b_neg = icmp slt i64 %gcd.b_i, 0
+  %gcd.b_op = sub i64 0, %gcd.b_i
+  %gcd.b_abs = select i1 %gcd.b_neg, i64 %gcd.b_op, i64 %gcd.b_i
+  br label %gcd.loop
+gcd.loop:
+  %gcd.x = phi i64 [ %gcd.a_abs, %ev_gcd ], [ %gcd.y, %gcd.step ]
+  %gcd.y = phi i64 [ %gcd.b_abs, %ev_gcd ], [ %gcd.r, %gcd.step ]
+  %gcd.y_zero = icmp eq i64 %gcd.y, 0
+  br i1 %gcd.y_zero, label %gcd.done, label %gcd.step
+gcd.step:
+  %gcd.r = srem i64 %gcd.x, %gcd.y
+  br label %gcd.loop
+gcd.done:
+  %gcd.v = call %Value @value_integer(i64 %gcd.x)
+  ret %Value %gcd.v
+
+ev_log2:
+  ; M82: log(Base, X) -- change-of-base via log(X)/log(Base).
+  ; Always Float; matches the existing log/1 (natural log) when
+  ; Base == e.
+  %lg2.base_d = call double @value_to_double(%Value %a)
+  %lg2.x_d = call double @value_to_double(%Value %b)
+  %lg2.lnb = call double @llvm.log.f64(double %lg2.base_d)
+  %lg2.lnx = call double @llvm.log.f64(double %lg2.x_d)
+  %lg2.r = fdiv double %lg2.lnx, %lg2.lnb
+  %lg2.v = call %Value @value_float(double %lg2.r)
+  ret %Value %lg2.v
+
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_fn1 = load i8, i8* %nb_fn1_ptr
@@ -9768,7 +10188,7 @@ ev_eval_unary:
   ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
     i8 45,  label %ev_neg       ; ''-''
-    i8 97,  label %ev_abs       ; ''a''
+    i8 97,  label %ev_a_disambig ; ''a'' -> abs | asin | acos | atan
     i8 114, label %ev_round     ; ''r''
     i8 102, label %ev_floor     ; ''f''
     i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
@@ -9803,6 +10223,37 @@ ev_abs_f:
   %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
+
+; M80: second-byte dispatch for ''a''-prefix unary functions.
+; ``abs'' alone keeps the original ev_abs path; asin / acos / atan
+; route to libm and always return Float.
+ev_a_disambig:
+  %ad.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %ad.fn1 = load i8, i8* %ad.fn1_ptr
+  switch i8 %ad.fn1, label %ev_zero [
+    i8 98,  label %ev_abs   ; ''b'' -> abs
+    i8 115, label %ev_asin  ; ''s'' -> asin
+    i8 99,  label %ev_acos  ; ''c'' -> acos
+    i8 116, label %ev_atan  ; ''t'' -> atan
+  ]
+
+ev_asin:
+  %asin_d = call double @value_to_double(%Value %u)
+  %asin_r = call double @asin(double %asin_d)
+  %asin_v = call %Value @value_float(double %asin_r)
+  ret %Value %asin_v
+
+ev_acos:
+  %acos_d = call double @value_to_double(%Value %u)
+  %acos_r = call double @acos(double %acos_d)
+  %acos_v = call %Value @value_float(double %acos_r)
+  ret %Value %acos_v
+
+ev_atan:
+  %atan_d = call double @value_to_double(%Value %u)
+  %atan_r = call double @atan(double %atan_d)
+  %atan_v = call %Value @value_float(double %atan_r)
+  ret %Value %atan_v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
 ; double, apply the LLVM intrinsic, return Integer (Prolog''s
@@ -10986,6 +11437,18 @@ builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal
 builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
 builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular file.
 builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
+builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
+builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
+builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
+builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
+builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
+builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
+builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value or fail.
+builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
+builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
+builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
+builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
+builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

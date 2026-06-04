@@ -496,6 +496,9 @@ wam_go_direct_builtin("sort/2", 2, 'sort/2').
 wam_go_direct_builtin(msort/2, 2, 'msort/2').
 wam_go_direct_builtin('msort/2', 2, 'msort/2').
 wam_go_direct_builtin("msort/2", 2, 'msort/2').
+wam_go_direct_builtin(keysort/2, 2, 'keysort/2').
+wam_go_direct_builtin('keysort/2', 2, 'keysort/2').
+wam_go_direct_builtin("keysort/2", 2, 'keysort/2').
 wam_go_direct_builtin('@</2', 2, '@</2').
 wam_go_direct_builtin("@</2", 2, '@</2').
 wam_go_direct_builtin('@=</2', 2, '@=</2').
@@ -525,6 +528,12 @@ wam_go_direct_builtin("split_string/4", 4, 'split_string/4').
 wam_go_direct_builtin(tab/1, 1, 'tab/1').
 wam_go_direct_builtin('tab/1', 1, 'tab/1').
 wam_go_direct_builtin("tab/1", 1, 'tab/1').
+wam_go_direct_builtin(getenv/2, 2, 'getenv/2').
+wam_go_direct_builtin('getenv/2', 2, 'getenv/2').
+wam_go_direct_builtin("getenv/2", 2, 'getenv/2').
+wam_go_direct_builtin(setenv/2, 2, 'setenv/2').
+wam_go_direct_builtin('setenv/2', 2, 'setenv/2').
+wam_go_direct_builtin("setenv/2", 2, 'setenv/2').
 wam_go_direct_builtin(succ/2, 2, 'succ/2').
 wam_go_direct_builtin('succ/2', 2, 'succ/2').
 wam_go_direct_builtin("succ/2", 2, 'succ/2').

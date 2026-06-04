@@ -833,7 +833,13 @@ openLmdbInternEnvReadonly dbPath = do
     env <- mdb_env_create
     mdb_env_set_mapsize env (4 * 1024 * 1024 * 1024)
     mdb_env_set_maxdbs env 4
-    mdb_env_set_maxreaders env 126
+    -- 16384, not the LMDB default of 126: this env backs the kernel's
+    -- on-demand cpEdgeLookup, and at -N>=4 the parallel demand-BFS workers
+    -- plus the GHC safe-FFI thread pool open more concurrent read txns than
+    -- 126 reader slots (MDB_NOTLS is implicit in this binding, so a slot is
+    -- held per in-flight txn). At enwiki scale 126 overflows -> MDB_READERS_FULL
+    -- during the parallel query. 16384 slots cost ~0.5 MB of lock table.
+    mdb_env_set_maxreaders env 16384
     mdb_env_open env dbPath [MDB_RDONLY]
     return env
 

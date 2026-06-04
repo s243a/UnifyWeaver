@@ -388,6 +388,57 @@
                   :else (interned-equal? l* r*))))]
       (identical* left right))))
 
+(defn variant-term? [state left right]
+  (let [bindings (:bindings state)]
+    (letfn [(bind-var-pair [env left-id right-id]
+              (let [left-existing (get (:left->right env) left-id ::missing)
+                    right-existing (get (:right->left env) right-id ::missing)]
+                (cond
+                  (not= left-existing ::missing)
+                  [(= left-existing right-id) env]
+
+                  (not= right-existing ::missing)
+                  [false env]
+
+                  :else
+                  [true (-> env
+                            (assoc-in [:left->right left-id] right-id)
+                            (assoc-in [:right->left right-id] left-id))])))
+            (variant-args? [env left-args right-args]
+              (loop [e env
+                     xs left-args
+                     ys right-args]
+                (cond
+                  (and (empty? xs) (empty? ys)) [true e]
+                  (or (empty? xs) (empty? ys)) [false e]
+                  :else
+                  (let [[ok next-env] (variant* e (first xs) (first ys))]
+                    (if ok
+                      (recur next-env (rest xs) (rest ys))
+                      [false e])))))
+            (variant* [env l r]
+              (let [l* (deref-value bindings l)
+                    r* (deref-value bindings r)]
+                (cond
+                  (and (logic-var? l*) (logic-var? r*))
+                  (bind-var-pair env (:var l*) (:var r*))
+
+                  (or (logic-var? l*) (logic-var? r*))
+                  [false env]
+
+                  (and (structure-term? l*) (structure-term? r*))
+                  (if (and (interned-equal? (:functor l*) (:functor r*))
+                           (= (count (:args l*)) (count (:args r*))))
+                    (variant-args? env (:args l*) (:args r*))
+                    [false env])
+
+                  (or (structure-term? l*) (structure-term? r*))
+                  [false env]
+
+                  :else
+                  [(interned-equal? l* r*) env])))]
+      (first (variant* {:left->right {} :right->left {}} left right)))))
+
 (defn term-compare [state left right]
   (let [bindings (:bindings state)
         ctx (:intern-context state)]
@@ -1841,6 +1892,39 @@
             (backtrack state)))
         (backtrack state)))))
 
+(defn term-variables [state term]
+  (letfn [(add-var [acc var-value]
+            (let [id (:var var-value)]
+              (if (contains? (:seen acc) id)
+                acc
+                (-> acc
+                    (update :seen conj id)
+                    (update :vars conj var-value)))))
+          (walk [acc value]
+            (let [value* (deref-value (:bindings state) value)]
+              (cond
+                (logic-var? value*) (add-var acc value*)
+                (structure-term? value*) (reduce walk acc (:args value*))
+                :else acc)))]
+    (:vars (walk {:seen #{} :vars []} term))))
+
+(defn apply-term-variables-solution [state]
+  (let [term (or (reg-get-raw state "A1") ::unbound)
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A2") ::unbound))
+        vars-term (list->term (:intern-context state) (term-variables state term))
+        [ok next-state] (unify-values state out vars-term)]
+    (if ok
+      (advance next-state)
+      (backtrack state))))
+
+(defn apply-variant-solution [state]
+  (let [left (or (reg-get-raw state "A1") ::unbound)
+        right (or (reg-get-raw state "A2") ::unbound)]
+    (if (variant-term? state left right)
+      (advance state)
+      (backtrack state))))
+
 (defn term->unify-items [term]
   (if (structure-term? term)
     (seq (:args term))
@@ -2511,6 +2595,12 @@
           "copy_term/2"
           (apply-copy-term-solution state)
 
+          "term_variables/2"
+          (apply-term-variables-solution state)
+
+          "variant/2"
+          (apply-variant-solution state)
+
           "functor/3"
           (apply-functor-solution state)
 
@@ -2597,6 +2687,23 @@
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))
               advance)
+
+          (backtrack state))
+
+        :call
+        (case (:pred instr)
+          "variant/2"
+          (apply-variant-solution state)
+
+          (backtrack state))
+
+        :execute
+        (case (:pred instr)
+          "variant/2"
+          (let [next-state (apply-variant-solution state)]
+            (if (= :running (:status next-state))
+              (succeed-state next-state)
+              next-state))
 
           (backtrack state))
 

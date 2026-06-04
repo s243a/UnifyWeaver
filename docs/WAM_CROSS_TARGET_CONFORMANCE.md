@@ -53,6 +53,14 @@ Environment knobs:
 | `CONFORMANCE_PROGRAMS=member,fib`  | limit which programs run |
 | `CONFORMANCE_SAMPLE=N`             | random N queries per program |
 | `CONFORMANCE_SEED=N`               | seed the sampler (reproducible) |
+| `UW_SMOKE_TMPDIR`, `TMPDIR`, `$PREFIX/tmp` | writable temp-root selection via `tests/helpers/smoke_paths.pl` |
+| `SCALA_MAVEN_ROOT` | optional root for Scala runtime jars when running generated Scala classes via `java -cp` |
+
+Scala builds still use `scalac`, but the harness runs generated Scala
+classes via `java -cp` when Scala 3 runtime jars are discoverable. This
+avoids Scala-CLI/JNA launcher failures on native Termux while preserving
+the legacy `scala -classpath ...` fallback for environments without a
+local Scala maven cache.
 
 Suggested CI tiers:
 
@@ -72,26 +80,27 @@ so any failure is reproducible from the recorded seed.
 The harness is green today; the divergences below are tolerated and
 logged (an unexpected pass is logged as `XPASS` so the entry can be
 retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact — **Scala passes the whole spec**, so it is the reference
-*implementation*. (The oracle is the hand-specified expected-results
-table, not Scala's output — Scala is just the one backend that currently
-matches it end-to-end.)
+artifact. The oracle is the hand-specified expected-results table in
+`wam_conformance_fixtures.pl` (standard Prolog semantics), not any
+backend's output; among the backends, **Scala is the reference
+implementation** — it passes the whole spec. The table below is the full
+set of tracked divergences (it matches the `ct_xfail/2` / `ct_skip/2`
+facts in the harness); WAT conforms only on `ack`, and `elixir` and
+`scala` pass the whole spec.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
-| wat | fib | xfail | `is/2` with an already-**bound** LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
-| wat | builtins | xfail | `//` (integer div) and `mod` are not evaluated correctly (return false); `cmp`/`eq` are fine. |
-| wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
+| wat | fib | xfail | `is/2` with an already-bound LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
+| wat | builtins | xfail | `cbi_arith` uses `//` (integer div) and `mod`, which the WAT backend does not evaluate correctly (returns false). The comparison (`cbi_cmp`) and unification (`cbi_eq`) families are fine. |
+| wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. Now conformant; xfails removed. |
-
-Net: WAT currently conforms only on `ack` — it diverges on `member`,
-`fib`, `builtins` (xfail) and `append`, `reverse` (skip). `elixir` and
-`scala` pass the whole spec.
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable.
+*generation itself* is unusable. (`append`/`reverse` on WAT are `ct_skip`
+only — they are never built; the formerly-shadowing `ct_xfail` facts have
+been removed.)
 
 ### Other backend issue surfaced (not xfail)
 
