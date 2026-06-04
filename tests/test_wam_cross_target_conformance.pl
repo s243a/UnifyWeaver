@@ -51,6 +51,8 @@
 :- use_module('../src/unifyweaver/targets/wam_scala_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
+:- use_module('../src/unifyweaver/targets/wam_haskell_target',
+              [write_wam_haskell_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -59,11 +61,14 @@
 conformance_target(scala).
 conformance_target(elixir).
 conformance_target(wat).
+conformance_target(haskell).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT is wired up but NOT a default: its backend currently diverges on
-%  most list/arithmetic programs (see ct_xfail/ct_skip below), so it is
-%  opt-in via CONFORMANCE_TARGETS=wat while those backend bugs are fixed.
+%  WAT and Haskell are wired up but NOT defaults: their backends still
+%  diverge on list programs (see ct_xfail/ct_skip below), and a Haskell
+%  build is a cabal compile per program (slow for CI). Both are opt-in
+%  via CONFORMANCE_TARGETS=wat / =haskell while the backend bugs are
+%  fixed.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -105,6 +110,32 @@ ct_xfail(wat, builtins).
 %  wam_elixir_target.pl; both programs are now conformant and the xfails
 %  are removed.)
 
+%  Haskell member/append/reverse/builtins. The conformance driver
+%  (tests/fixtures/haskell_conformance_driver.hs) runs a 0-arity wrapper
+%  whose atoms are baked into the compiled instruction stream, which
+%  removed the atom-interning mismatch that sank the earlier throwaway
+%  driver (fib/ack now pass, so the driver discriminates correctly).
+%  That unmasked real backend gaps:
+%   - member: cmem(z,[a,b,c]) wrongly succeeds. The PR #2708 first-arg
+%     indexing fix was validated with the list injected as a VList in a
+%     register; on a heap-built cons list (put_list) the non-member case
+%     is not rejected.
+%   - append/reverse: a freshly-constructed list will not unify against
+%     an already-ground list compound (capp([a],[b],[a,b]) -> false).
+%     TWO root causes: (1) unifyVal/unifyValues do NO structural
+%     unification — only identity (==) and var-binding, then Nothing; and
+%     (2) the cons functor "[|]/2" interns to its own id, distinct from
+%     atomDot (".", id 3), so a put_list VList and a put_structure
+%     "[|]/2" Str never match. (Same ./2-vs-[|]/2 class as the Elixir
+%     bug, but Haskell also lacks compound unification entirely.)
+%   - builtins: =/2 of two identical atoms returns false (cbi_eq(foo)),
+%     and // (integer div) / mod evaluate incorrectly (cbi_arith). fib
+%     and ack pass, so +/-/comparison and is/2 bound-LHS checking work.
+ct_xfail(haskell, member).
+ct_xfail(haskell, append).
+ct_xfail(haskell, reverse).
+ct_xfail(haskell, builtins).
+
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
 %  Used when *generation itself* is unusable, not just the answer.
@@ -126,6 +157,7 @@ ct_skip(wat, reverse).
 ct_toolchain(scala,  [scalac]).
 ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
+ct_toolchain(haskell, [ghc, cabal]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -480,3 +512,52 @@ WebAssembly.instantiate(buf,imports).then(({instance})=>{\n\c
   console.log(fn());\n\c
 }).catch(e=>{console.log('TRAP');process.exit(2);});\n",
     open(HarnessJs, write, S), write(S, Src), close(S).
+
+% ============================================================
+% Adapter: Haskell  (0-arity wrapper via `cabal run <key>`)
+%
+% write_wam_haskell_project/3 compiles predicate INDICATORS itself
+% (unlike elixir, which takes WAM pairs), so this mirrors the WAT
+% adapter shape. The driver (haskell_conformance_driver.hs) runs one
+% wrapper key and prints true/false. Crucially it wires the context
+% with compileTimeAtomTable and runs a 0-arity wrapper whose atoms are
+% all baked into the compiled instruction stream — so there is NO
+% runtime atom parsing and hence none of the atom-interning mismatch
+% that sank the earlier throwaway driver.
+%
+% The build is a cabal compile (done once in ct_build); ct_run then
+% `cabal run`s per query (fast, no recompile). Opt-in only.
+% ============================================================
+
+ct_build(haskell, Preds, Queries, haskell_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_haskell', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_haskell_project(AllPreds,
+        [no_kernels(true), module_name('uw-hs-ct'), use_hashmap(false)], Dir),
+    classic_haskell_driver(DriverSrc),
+    directory_file_path(Dir, 'src/Main.hs', DriverDst),
+    copy_file(DriverSrc, DriverDst),
+    run_proc(cabal, ['build'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(haskell_build_failed(BExit, BErr)) ).
+
+ct_run(haskell, haskell_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    absolute_file_name(Dir, Abs),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(cabal, ['run', '-v0', 'uw-hs-ct', '--', KeyStr], Abs, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(haskell, haskell_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+qualify_user(_M:N/A, user:N/A) :- !.
+qualify_user(N/A, user:N/A).
+
+:- ( prolog_load_context(directory, Dir),
+     directory_file_path(Dir, 'fixtures/haskell_conformance_driver.hs', P),
+     assertz(classic_haskell_driver_fact(P))
+   ; true ).
+classic_haskell_driver(P) :- classic_haskell_driver_fact(P).
