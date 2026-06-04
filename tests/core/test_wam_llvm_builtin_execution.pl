@@ -2459,6 +2459,35 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M89: cpu_time/1 -- process CPU time via clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
+
+:- dynamic test_cpu_nonneg/2.
+test_cpu_nonneg(_, R) :-
+    % A freshly-started process always has cpu_time >= 0.
+    cpu_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cpu_monotonic/2.
+test_cpu_monotonic(_, R) :-
+    % CPU time is monotonically non-decreasing within a process.
+    cpu_time(T0),
+    cpu_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_cpu_under_wall/2.
+test_cpu_under_wall(_, R) :-
+    % CPU time accrued during a sleep should be much less than the
+    % wall-clock elapsed time -- sleeping doesn''t consume CPU.
+    % 50ms sleep => wall ~0.05s, CPU should be < 0.04s.
+    cpu_time(C0),
+    get_time(W0),
+    sleep(0.05),
+    cpu_time(C1),
+    get_time(W1),
+    CpuDiff is C1 - C0,
+    WallDiff is W1 - W0,
+    ( CpuDiff < WallDiff -> R is 1 ; R is 0 ).   % 1
+
 % M88: gethostname/1 -- libc gethostname() wrapper.
 
 :- dynamic test_ghn_nonempty/2.
@@ -4676,6 +4705,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M89 cpu_time/1 ---~n'),
+       run_test_r0('cpu_time(T), T >= 0.0 -> 1',
+                   test_cpu_nonneg, 0, 1),
+       run_test_r0('cpu_time monotonic across calls -> 1',
+                   test_cpu_monotonic, 0, 1),
+       run_test_r0('cpu_time accrued < wall during sleep -> 1',
+                   test_cpu_under_wall, 0, 1),
        format('--- M88 gethostname/1 ---~n'),
        run_test_r0('gethostname(H), length(H) > 0 -> 1',
                    test_ghn_nonempty, 0, 1),
