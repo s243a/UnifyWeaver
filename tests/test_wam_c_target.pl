@@ -363,7 +363,9 @@ test_fact_source_generation :-
         sub_string(S, _, _, _, 'bool wam_fact_source_load_lmdb'),
         sub_string(S, _, _, _, 'bool wam_fact_source_child_range'),
         sub_string(S, _, _, _, 'int wam_fact_source_lookup_arg1'),
-        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source')
+        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source'),
+        sub_string(S, _, _, _, 'source->owner_state'),
+        sub_string(S, _, _, _, 'memcpy(target, source->edges')
     ->  pass(Test)
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
@@ -4172,6 +4174,11 @@ int main(void) {
     }
 
     wam_register_category_parent_fact_source(&state, &source);
+    if (state.category_edge_count != source.edge_count) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 25;
+    }
     wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
 
     WamValue args[4] = {

@@ -405,6 +405,10 @@ Implemented so far:
   and fallback. This removes the duplicate-registration scan during setup and
   avoids scanning all category IDs when CSR child IDs are converted back to
   atoms.
+- WAM-C FactSource parent-edge registration now bulk appends loaded edge
+  arrays into `WamState`, reusing already-interned edge atoms when the source
+  was loaded by the same state and invalidating child indexes/root-distance
+  cache once per source instead of once per edge.
 
 Evidence:
 
@@ -443,6 +447,9 @@ Evidence:
   `456.704ms` for `100` warm-cache sampled queries and produced the same
   `17,047` path results and checksum. Runtime setup dropped to `20.257ms`,
   with category-ID load down to `6.108ms`.
+- After bulk parent-edge registration, the same `10k` sorted-array CSR narrow
+  row took `450.202ms` for `100` warm-cache sampled queries. Runtime setup
+  dropped to `13.125ms`, with parent-edge registration down to `0.129ms`.
 - The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
   sampled queries, and one sampled root completed without full source
   generation before category-ID indexing. Runtime setup/loading took
@@ -457,17 +464,22 @@ Evidence:
   `0.024ms` query TSV load, and `1.015ms` reverse-CSR load. The measured query
   loop took `0.042ms` for the same `10` sampled queries and produced the same
   checksum.
+- After bulk parent-edge registration, the `50k_cats` sorted-array CSR narrow
+  row dropped to `507.700ms` setup, split into `285.517ms` parent TSV load,
+  `1.270ms` parent-edge registration, `219.686ms` category-ID load, `0.024ms`
+  query TSV load, and `0.977ms` reverse-CSR load. The measured query loop took
+  `0.061ms` for the same `10` sampled queries and produced the same checksum.
 - A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
-  `setup_ms=0.195`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
-  results after category-ID indexing.
+  `setup_ms=0.182`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
+  results after bulk parent-edge registration.
 
 Open measurement:
 
-- Parent-edge runtime setup is now the largest narrow-runner setup component
-  at `50k_cats`: `309ms` TSV load plus `637ms` registration out of `1.15s`
-  total. Evaluate whether parent-edge setup should use a bulk load, a
-  parent-edge artifact, or a larger atom intern table before adding another
-  child-edge storage mode.
+- Parent-edge registration is no longer material at `50k_cats`; the remaining
+  narrow-runner setup cost is split mainly between TSV parsing/atom interning
+  for parent edges (`285.5ms`) and category-ID loading (`219.7ms`). Evaluate
+  whether the fixed-size atom intern table, TSV parser, or a parent-edge
+  artifact is the next best setup reduction.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -666,10 +678,10 @@ After hash-bucket row dispatch but before compact row tables:
 ## Suggested Immediate Next Step
 
 Reduce the remaining runtime setup cost at `50k_cats`/`100k_cats` by measuring
-parent-edge registration and atom interning under the indexed category-ID
-runtime. The narrow bidirectional-kernel runner now shows category-ID setup is
-small enough that parent TSV load and parent-edge registration dominate the
-`50k_cats` setup row. Keep
+atom interning and TSV parsing under the indexed category-ID plus bulk
+FactSource-registration runtime. The narrow bidirectional-kernel runner now
+shows parent-edge registration is negligible, while parent TSV load and
+category-ID load dominate the `50k_cats` setup row. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

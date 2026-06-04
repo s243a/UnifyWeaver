@@ -123,6 +123,7 @@ typedef struct {
 } WeightedEdge;
 
 typedef struct {
+    WamState *owner_state;
     CategoryEdge *edges;
     int edge_count;
     int edge_cap;

@@ -2673,11 +2673,29 @@ bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity)
     return handler(state, pred, arity);
 }
 
-void wam_register_category_parent(WamState *state, const char *child, const char *parent) {
-    if (state->category_edge_count >= state->category_edge_cap) {
-        state->category_edge_cap = state->category_edge_cap ? state->category_edge_cap * 2 : WAM_INITIAL_CAP;
-        state->category_edges = realloc(state->category_edges, sizeof(CategoryEdge) * state->category_edge_cap);
+static bool wam_ensure_category_edge_capacity(WamState *state, int additional) {
+    if (additional <= 0) return true;
+    if (state->category_edge_count > INT_MAX - additional) return false;
+    int needed = state->category_edge_count + additional;
+    if (state->category_edge_cap >= needed) return true;
+    int new_cap = state->category_edge_cap ? state->category_edge_cap : WAM_INITIAL_CAP;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
     }
+    CategoryEdge *edges =
+        realloc(state->category_edges, sizeof(CategoryEdge) * (size_t)new_cap);
+    if (!edges) return false;
+    state->category_edges = edges;
+    state->category_edge_cap = new_cap;
+    return true;
+}
+
+void wam_register_category_parent(WamState *state, const char *child, const char *parent) {
+    if (!wam_ensure_category_edge_capacity(state, 1)) return;
     state->category_edges[state->category_edge_count].child = wam_intern_atom(state, child);
     state->category_edges[state->category_edge_count].parent = wam_intern_atom(state, parent);
     state->category_edge_count++;
@@ -2725,6 +2743,11 @@ static void wam_fact_source_add_edge(WamState *state,
                                      WamFactSource *source,
                                      const char *child,
                                      const char *parent) {
+    if (source->edge_count == 0) {
+        source->owner_state = state;
+    } else if (source->owner_state != state) {
+        source->owner_state = NULL;
+    }
     if (source->edge_count >= source->edge_cap) {
         source->edge_cap = source->edge_cap ? source->edge_cap * 2 : WAM_INITIAL_CAP;
         source->edges = realloc(source->edges, sizeof(CategoryEdge) * source->edge_cap);
@@ -2914,9 +2937,23 @@ int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
 }
 
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source) {
-    for (int i = 0; i < source->edge_count; i++) {
-        wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
+    if (source->edge_count <= 0) return true;
+    if (!wam_ensure_category_edge_capacity(state, source->edge_count)) {
+        return false;
     }
+
+    CategoryEdge *target = state->category_edges + state->category_edge_count;
+    if (source->owner_state == state) {
+        memcpy(target, source->edges, sizeof(CategoryEdge) * (size_t)source->edge_count);
+    } else {
+        for (int i = 0; i < source->edge_count; i++) {
+            target[i].child = wam_intern_atom(state, source->edges[i].child);
+            target[i].parent = wam_intern_atom(state, source->edges[i].parent);
+        }
+    }
+    state->category_edge_count += source->edge_count;
+    state->category_child_index_dirty = true;
+    wam_bidirectional_distance_cache_clear(state);
     return true;
 }
 
