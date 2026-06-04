@@ -2459,6 +2459,41 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M77: getenv/2 + setenv/2 -- libc env-var access.
+
+:- dynamic test_ge_path/2.
+test_ge_path(_, R) :-
+    % PATH is set in every container shell.
+    getenv('PATH', P),
+    atom_length(P, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ge_missing/2.
+test_ge_missing(_, R) :-
+    ( getenv('UW_M77_DEFINITELY_UNSET', _) -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_se_basic/2.
+test_se_basic(_, R) :-
+    setenv('UW_M77_TEST', 'hello'),
+    getenv('UW_M77_TEST', V),
+    ( V == 'hello' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_se_overwrite/2.
+test_se_overwrite(_, R) :-
+    setenv('UW_M77_OVR', 'first'),
+    setenv('UW_M77_OVR', 'second'),
+    getenv('UW_M77_OVR', V),
+    ( V == 'second' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_se_empty/2.
+test_se_empty(_, R) :-
+    % Empty string is a valid value (setenv accepts ""). getenv
+    % then succeeds and returns the empty atom.
+    setenv('UW_M77_EMPTY', ''),
+    getenv('UW_M77_EMPTY', V),
+    atom_length(V, L),
+    R is L.   % 0
+
 % M76: size_file/2 + time_file/2 -- stat-based mtime + size readers.
 
 :- dynamic test_sf_etc_hostname/2.
@@ -4302,6 +4337,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M77 getenv/2 + setenv/2 ---~n'),
+       run_test_r0('getenv(PATH) length > 0 -> 1',
+                   test_ge_path, 0, 1),
+       run_test_r0('getenv(unset) -> 0',
+                   test_ge_missing, 0, 0),
+       run_test_r0('setenv + getenv roundtrip -> 1',
+                   test_se_basic, 0, 1),
+       run_test_r0('setenv overwrite -> 1 (last write wins)',
+                   test_se_overwrite, 0, 1),
+       run_test_r0('setenv empty value -> 0 (empty atom length)',
+                   test_se_empty, 0, 0),
        format('--- M76 size_file/2 + time_file/2 ---~n'),
        run_test_r0('size_file(/etc/hostname) > 0 -> 1',
                    test_sf_etc_hostname, 0, 1),
