@@ -376,8 +376,9 @@ emit_one(get_value(XnStr, AiStr), I) :-
 
 emit_one(get_structure(FStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
+    escape_go_string(FStr, EscapedFunctor),
     format("~w// get_structure ~w, ~w~n", [I, FStr, AiStr]),
-    format("~wif !vm.Step(&GetStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, FStr, Ai]),
+    format("~wif !vm.Step(&GetStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, EscapedFunctor, Ai]),
     format("~w    return false~n", [I]),
     format("~w}~n", [I]).
 
@@ -412,8 +413,9 @@ emit_one(put_value(XnStr, AiStr), I) :-
 
 emit_one(put_structure(FStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
+    escape_go_string(FStr, EscapedFunctor),
     format("~w// put_structure ~w, ~w~n", [I, FStr, AiStr]),
-    format("~wif !vm.Step(&PutStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, FStr, Ai]),
+    format("~wif !vm.Step(&PutStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, EscapedFunctor, Ai]),
     format("~w    return false~n", [I]),
     format("~w}~n", [I]).
 

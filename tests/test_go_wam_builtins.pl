@@ -6,6 +6,7 @@
 :- begin_tests(go_wam_builtins).
 
 :- dynamic user:test_builtins/1.
+:- dynamic user:test_arithmetic_expr_builtin/0.
 :- dynamic user:test_term_builtins/0.
 :- dynamic user:test_member_collect/0.
 :- dynamic user:test_memberchk_builtin/0.
@@ -63,6 +64,55 @@ test(builtins_execution) :-
                 nl,
                 atom(foo),
                 \+ atom(5)
+            )),
+          assertz(user:test_arithmetic_expr_builtin :-
+            (   Abs is abs(-7),
+                Abs =:= 7,
+                Neg is -5,
+                Neg =:= -5,
+                SignNeg is sign(-3),
+                SignNeg =:= -1,
+                SignZero is sign(0),
+                SignZero =:= 0,
+                SignPos is sign(3),
+                SignPos =:= 1,
+                FloatVal is float(3),
+                FloatVal =:= 3,
+                Trunc is truncate(3.9),
+                Trunc =:= 3,
+                IntegerVal is integer(4.8),
+                IntegerVal =:= 4,
+                FloatIntegerPart is float_integer_part(5.7),
+                FloatIntegerPart =:= 5,
+                Div is 7 / 2,
+                Div =:= 3.5,
+                IntDiv is 7 // 2,
+                IntDiv =:= 3,
+                Mod is 7 mod 3,
+                Mod =:= 1,
+                Max is max(4, 9),
+                Max =:= 9,
+                Min is min(4, 9),
+                Min =:= 4,
+                PowA is 2 ** 3,
+                PowA =:= 8,
+                PowB is 2 ^ 4,
+                PowB =:= 16,
+                And is 6 /\ 3,
+                And =:= 2,
+                Or is 4 \/ 1,
+                Or =:= 5,
+                Xor is 6 xor 3,
+                Xor =:= 5,
+                ShiftRight is 16 >> 2,
+                ShiftRight =:= 4,
+                ShiftLeft is 3 << 2,
+                ShiftLeft =:= 12,
+                \+ (_ is 1 / 0),
+                \+ (_ is 1 // 0),
+                \+ (_ is 1 mod 0),
+                \+ (_ is _ + 1),
+                \+ (_ is unknown(1))
             )),
           assertz(user:test_term_builtins :-
             (   functor(f(a, 7), F, A),
@@ -610,6 +660,7 @@ test(builtins_execution) :-
         ),
         run_builtins_test(TmpDir),
         ( retractall(user:test_builtins(_)),
+          retractall(user:test_arithmetic_expr_builtin),
           retractall(user:test_term_builtins),
           retractall(user:test_member_collect),
           retractall(user:test_memberchk_builtin),
@@ -656,7 +707,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -764,6 +815,14 @@ func main() {
 		fmt.Printf("SUCCESS: X=%v\\n", vm.Deref(x))
 	} else {
 		fmt.Println("FAILURE")
+	}
+
+	arithVM := wam.NewWamState(wam.Test_arithmetic_expr_builtinCode, wam.Test_arithmetic_expr_builtinLabels)
+	arithVM.PC = wam.Test_arithmetic_expr_builtinStartPC
+	if arithVM.Run() {
+		fmt.Println("ARITH_EXPR_SUCCESS")
+	} else {
+		fmt.Println("ARITH_EXPR_FAILURE")
 	}
 
 	termVM := wam.NewWamState(wam.Test_term_builtinsCode, wam.Test_term_builtinsLabels)
@@ -1112,6 +1171,7 @@ func main() {
         assertion(Exit == exit(0)),
         assertion(sub_string(FullOutput, _, _, _, "ok")),
         assertion(sub_string(FullOutput, _, _, _, "SUCCESS: X=3")),
+        assertion(sub_string(FullOutput, _, _, _, "ARITH_EXPR_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "TERM_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBER_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "MEMBERCHK_SUCCESS")),
