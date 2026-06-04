@@ -83,22 +83,35 @@ ct_default_target(elixir).
 %  match (xpass) is logged so the entry can be retired once the gap is
 %  fixed.
 %
-%  WAT member: WAT's runtime read-mode structure/list argument
-%  unification is unimplemented (unify_* read-mode branches are nops; no
-%  S-register), so get_structure/get_list match only the functor and
-%  element mismatches go undetected. See
-%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md. (append/reverse hit the same
-%  gap conceptually, but are ct_skip'd below — they never build — so
-%  they are NOT also xfail'd here: ct_skip is checked first and would
-%  shadow the xfail, leaving dead cruft.)
-ct_xfail(wat, member).
-%  WAT fib: is/2 with an already-bound LHS doesn't verify the computed
-%  value — cfib(10,54) returns true though fib(10)=55 (the result is
-%  stored over the bound arg instead of being unified/checked).
+%  WAT member/builtins USED to be xfail. Both are fixed in
+%  wam_wat_target.pl (and templates/targets/wat_wam/state.wat.mustache):
+%   - member: read-mode argument unification was unimplemented (unify_*
+%     read-mode branches were nops; no S register), so get_structure/
+%     get_list matched only the functor and element mismatches went
+%     undetected. Added an S register (heap arg pointer at 65568),
+%     wired get_structure/get_list to set it and unify_variable/
+%     unify_value/unify_constant to consume successive arg cells, and
+%     made get_list also accept a tag-3 [|]/2 compound as a list cell
+%     (the compiler emits the outer list as put_list/tag-4 but nested
+%     cons as put_structure [|]/2/tag-3 — the same ./2-vs-[|]/2 split
+%     handled in the other backends), via a generated $cons_op1 global.
+%   - builtins: eval_arith lacked // and mod, AND functor_arity_of
+%     mis-parsed '///2' (split on '/' expecting two parts) to arity 0,
+%     so // structures were skipped by eval_arith's arity-2 dispatch.
+%     Fixed functor_arity_of to take the last '/'-component and added
+%     //, mod (with zero guards and floored mod). cmp/eq already worked.
+%
+%  WAT fib remains xfail: cfib(10,54) wrongly succeeds (fib(10)=55). The
+%  is/2 output check itself is correct (cbi_arith with a bound result is
+%  fine). The fault is recursive backtracking: the fact clauses
+%  cfib(0,0)/cfib(1,1) coexist with the variable-headed recursive clause,
+%  so calls like cfib(0,F2) legitimately leave a choice point; when the
+%  parent's final is/2 correctly fails, backtracking re-enters those
+%  alternatives with reused argument registers and eventually rebinds the
+%  (now-unbound) result variable to a passing value. This is a choice-
+%  point / first-argument-indexing determinism issue in the WAT runtime,
+%  not the read-mode or arithmetic path — a separate follow-up.
 ct_xfail(wat, fib).
-%  WAT builtins: cbi_arith uses // (integer div) and mod, which the WAT
-%  backend does not evaluate correctly (returns false). cmp/eq are fine.
-ct_xfail(wat, builtins).
 
 %  (Elixir append/reverse used to be xfail here: a freshly-constructed
 %  list ("./2", from put_list) would not unify against an already-GROUND
