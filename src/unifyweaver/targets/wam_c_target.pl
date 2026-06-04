@@ -4122,6 +4122,21 @@ bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results)
                                      visited, visited_len, results);
 }
 
+bool wam_category_min_parent_hops(WamState *state,
+                                  const char *cat,
+                                  const char *root,
+                                  int *hops_out) {
+    if (!cat || !root || !hops_out) return false;
+    if (strcmp(cat, root) == 0) {
+        *hops_out = 0;
+        return true;
+    }
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) return false;
+    return wam_bidirectional_distance_map_get(min_distances, cat, hops_out);
+}
+
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
     (void)pred;
     if (arity != 4) return false;

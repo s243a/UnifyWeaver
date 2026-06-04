@@ -281,6 +281,7 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_get_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
+        sub_string(S, _, _, _, 'bool wam_category_min_parent_hops'),
         sub_string(S, _, _, _, 'bidirectional_min_distance_cache'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
@@ -3265,6 +3266,21 @@ int main(void) {
     if (state.bidirectional_min_distance_cache == NULL) {
         wam_free_state(&state);
         return 11;
+    }
+    int min_hops = -1;
+    if (!wam_category_min_parent_hops(&state, "child", "root", &min_hops) ||
+        min_hops != 1) {
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_min_parent_hops(&state, "orphan", "root", &min_hops)) {
+        wam_free_state(&state);
+        return 14;
+    }
+    if (!wam_category_min_parent_hops(&state, "root", "root", &min_hops) ||
+        min_hops != 0) {
+        wam_free_state(&state);
+        return 15;
     }
     wam_register_category_parent(&state, "fresh_child", "root");
     if (state.bidirectional_min_distance_cache != NULL) {

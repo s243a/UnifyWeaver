@@ -492,6 +492,16 @@ Evidence:
   `72,975` parent collector calls, found `626` parent path results, and spent
   `parent_collect_ms=8008.670`. It made `72,932` child collector calls, found
   only `11` child path results, and spent `child_collect_ms=3022.342`.
+- After adding cached parent-reachability prefiltering, the same sorted-CSR
+  result-capped run reached the same `50` rows after `72,977` queries with
+  `query_ms=4718.503`. Parent reachability checks took
+  `parent_reachability_ms=2668.182`, but they pruned `72,932` parent DFS calls:
+  parent collector calls dropped from `72,975` to `43`, and
+  `parent_collect_ms` dropped from `8008.670` to `9.889`. Child collection is
+  now the largest remaining measured traversal cost, with `72,932` calls,
+  `11` child path results, and `child_collect_ms=2024.048`. An uncapped `10k`
+  `c-wam-accumulated-child-csr` smoke still produced `5262` rows with the same
+  output hash and improved from `5.406s` to `3.983s`.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -746,9 +756,8 @@ After hash-bucket row dispatch but before compact row tables:
 Do not attempt another full `50k_cats` generated matrix until there is a plan
 for reducing the `ARTICLE_COUNT * ROOT_COUNT` traversal volume. Result-capped
 and sampled runs now confirm child-CSR variants agree; the next useful work is
-to reuse root-distance information for parent lookups, then use child
-collection only for misses where the child-search policy can plausibly produce
-new paths. Keep
+to prefilter child collection for misses where no child expansion can plausibly
+reach the root within the active child-search budget. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

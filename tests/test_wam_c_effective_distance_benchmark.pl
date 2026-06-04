@@ -113,6 +113,8 @@ test_generated_runner_supports_runtime_caps :-
         sub_string(ErrText, _, _, _, "query_limit=1"),
         sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
         sub_string(ErrText, _, _, _, "category_visits="),
+        sub_string(ErrText, _, _, _, "parent_reachability_checks="),
+        sub_string(ErrText, _, _, _, "parent_reachability_prunes="),
         sub_string(ErrText, _, _, _, "parent_collect_calls="),
         sub_string(ErrText, _, _, _, "child_collect_calls=")
     ->  pass(Test)

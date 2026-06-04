@@ -1218,10 +1218,13 @@ int main(void) {
     long long results = 0;
     long long category_visits = 0;
     long long direct_hits = 0;
+    long long parent_reachability_checks = 0;
+    long long parent_reachability_prunes = 0;
     long long parent_collect_calls = 0;
     long long parent_path_results = 0;
     long long child_collect_calls = 0;
     long long child_path_results = 0;
+    double parent_reachability_ms = 0.0;
     double parent_collect_ms = 0.0;
     double child_collect_ms = 0.0;
     int stopped_by_cap = 0;
@@ -1253,14 +1256,24 @@ int main(void) {
                     double_results_push(&path_costs, ~w);
                     direct_hits++;
                 } else {
-                    double parent_start_ms = wam_now_ms();
-                    parent_collect_calls++;
-                    collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
-                    parent_collect_ms += wam_now_ms() - parent_start_ms;
-                    parent_path_results += hops.count;
-                    for (int hi = 0; hi < hops.count; hi++) {
-                        double_results_push(&path_costs,
-                                            ((double)hops.values[hi] + 1.0) * ~w);
+                    int min_parent_hops = 0;
+                    double reachability_start_ms = wam_now_ms();
+                    parent_reachability_checks++;
+                    int parent_reachable = wam_category_min_parent_hops(
+                        &state, ARTICLE_CATS[ci], ROOTS[ri], &min_parent_hops);
+                    parent_reachability_ms += wam_now_ms() - reachability_start_ms;
+                    if (parent_reachable && min_parent_hops <= ~w) {
+                        double parent_start_ms = wam_now_ms();
+                        parent_collect_calls++;
+                        collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
+                        parent_collect_ms += wam_now_ms() - parent_start_ms;
+                        parent_path_results += hops.count;
+                        for (int hi = 0; hi < hops.count; hi++) {
+                            double_results_push(&path_costs,
+                                                ((double)hops.values[hi] + 1.0) * ~w);
+                        }
+                    } else {
+                        parent_reachability_prunes++;
                     }
                     if (path_costs.count == 0 && ~w) {
                         double child_start_ms = wam_now_ms();
@@ -1307,12 +1320,14 @@ int main(void) {
     fprintf(stderr,
             "wam_c_effective_runtime queries=%lld results=%lld "
             "category_visits=%lld direct_hits=%lld "
-            "parent_collect_calls=%lld parent_path_results=%lld "
-            "parent_collect_ms=%.3f child_collect_calls=%lld "
+            "parent_reachability_checks=%lld parent_reachability_prunes=%lld "
+            "parent_reachability_ms=%.3f parent_collect_calls=%lld "
+            "parent_path_results=%lld parent_collect_ms=%.3f child_collect_calls=%lld "
             "child_path_results=%lld child_collect_ms=%.3f "
             "first_result_ms=%.3f query_ms=%.3f capped=%d\\n",
             queries, results, category_visits, direct_hits,
-            parent_collect_calls, parent_path_results, parent_collect_ms,
+            parent_reachability_checks, parent_reachability_prunes,
+            parent_reachability_ms, parent_collect_calls, parent_path_results, parent_collect_ms,
             child_collect_calls, child_path_results, child_collect_ms,
             first_result_ms, wam_now_ms() - query_start_ms, stopped_by_cap);
     fflush(stderr);
@@ -1326,7 +1341,7 @@ int main(void) {
     ArticleArrays, ArticlesArray, RootArray, MaxDepth,
     ReverseIndexLocal, BidirSetupCall, ReverseIndexSetupCall,
     LoadCode, ReverseIndexTeardownCall, MaxDepth, BidirRegisterCall,
-    ParentStepCost, KernelFlag, ParentStepCost,
+    ParentStepCost, MaxDepth, KernelFlag, ParentStepCost,
     ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget, ParentStepCost,
     Dimension, Dimension, ReverseIndexTeardownCall]).

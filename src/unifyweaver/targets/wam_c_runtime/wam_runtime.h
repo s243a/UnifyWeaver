@@ -411,6 +411,10 @@ bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *re
                                              int total_hops,
                                              int parent_hops,
                                              int child_hops);
+bool wam_category_min_parent_hops(WamState *state,
+                                  const char *cat,
+                                  const char *root,
+                                  int *hops_out);
 bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
 bool wam_collect_bidirectional_ancestor_hops(WamState *state,
                                              WamBidirectionalAncestorResults *results);
