@@ -409,6 +409,10 @@ Implemented so far:
   arrays into `WamState`, reusing already-interned edge atoms when the source
   was loaded by the same state and invalidating child indexes/root-distance
   cache once per source instead of once per edge.
+- WAM-C atom interning now uses a dynamic hash table that grows and rehashes
+  as large benchmark datasets intern tens of thousands of category atoms,
+  avoiding long chains in the old fixed 512-bucket table without inflating each
+  stack-allocated `WamState`.
 
 Evidence:
 
@@ -450,6 +454,10 @@ Evidence:
 - After bulk parent-edge registration, the same `10k` sorted-array CSR narrow
   row took `450.202ms` for `100` warm-cache sampled queries. Runtime setup
   dropped to `13.125ms`, with parent-edge registration down to `0.129ms`.
+- After dynamic atom-table rehashing, the same `10k` sorted-array CSR narrow
+  row took `438.787ms` for `100` warm-cache sampled queries. Runtime setup was
+  `13.080ms`, with parent TSV load at `7.001ms` and category-ID load at
+  `5.549ms`.
 - The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
   sampled queries, and one sampled root completed without full source
   generation before category-ID indexing. Runtime setup/loading took
@@ -469,17 +477,22 @@ Evidence:
   `1.270ms` parent-edge registration, `219.686ms` category-ID load, `0.024ms`
   query TSV load, and `0.977ms` reverse-CSR load. The measured query loop took
   `0.061ms` for the same `10` sampled queries and produced the same checksum.
+- After dynamic atom-table rehashing, the `50k_cats` sorted-array CSR narrow
+  row dropped to `144.934ms` setup, split into `65.613ms` parent TSV load,
+  `1.749ms` parent-edge registration, `76.071ms` category-ID load, `0.019ms`
+  query TSV load, and `1.012ms` reverse-CSR load. The measured query loop took
+  `0.010ms` for the same `10` sampled queries and produced the same checksum.
 - A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
-  `setup_ms=0.182`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
-  results after bulk parent-edge registration.
+  `setup_ms=0.172`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
+  results after dynamic atom-table rehashing.
 
 Open measurement:
 
-- Parent-edge registration is no longer material at `50k_cats`; the remaining
-  narrow-runner setup cost is split mainly between TSV parsing/atom interning
-  for parent edges (`285.5ms`) and category-ID loading (`219.7ms`). Evaluate
-  whether the fixed-size atom intern table, TSV parser, or a parent-edge
-  artifact is the next best setup reduction.
+- Runtime setup is no longer the large `50k_cats` ceiling in the narrow
+  runner: parent TSV load is about `65.6ms`, category-ID load is about
+  `76.1ms`, and reverse-CSR load is about `1.0ms`. Further setup reductions
+  should be weighed against the much larger full-generated project creation
+  cost before adding another storage mode.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -677,11 +690,10 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Reduce the remaining runtime setup cost at `50k_cats`/`100k_cats` by measuring
-atom interning and TSV parsing under the indexed category-ID plus bulk
-FactSource-registration runtime. The narrow bidirectional-kernel runner now
-shows parent-edge registration is negligible, while parent TSV load and
-category-ID load dominate the `50k_cats` setup row. Keep
+Use the narrow bidirectional-kernel runner to validate whether full-generated
+WAM-C project creation, not runtime setup, is now the dominant `50k_cats` /
+`100k_cats` ceiling. Runtime setup is down to about `145ms` at `50k_cats`, so
+further setup work should be justified by a concrete benchmark gap. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

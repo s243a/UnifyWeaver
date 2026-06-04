@@ -19,7 +19,7 @@
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
-#define WAM_ATOM_HASH_SIZE 512
+#define WAM_INITIAL_ATOM_HASH_SIZE 512
 #define WAM_FOREIGN_HASH_SIZE 256
 #define WAM_CALL_STACK_SIZE 1024
 
@@ -289,7 +289,9 @@ struct WamState {
     PredEntry pred_hash[WAM_PRED_HASH_SIZE];
 
     /* Interned dynamic atoms */
-    AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
+    AtomEntry **atom_table;
+    int atom_table_size;
+    int atom_count;
 
     /* Foreign predicate handlers */
     ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
@@ -527,10 +529,46 @@ static inline char *wam_strdup(const char *str) {
     return copy;
 }
 
+static inline bool wam_atom_table_ensure(WamState *state) {
+    if (state->atom_table) return true;
+    state->atom_table_size = WAM_INITIAL_ATOM_HASH_SIZE;
+    state->atom_table = calloc((size_t)state->atom_table_size, sizeof(AtomEntry *));
+    if (!state->atom_table) {
+        state->atom_table_size = 0;
+        return false;
+    }
+    return true;
+}
+
+static inline bool wam_atom_table_rehash(WamState *state, int new_size) {
+    AtomEntry **new_table = calloc((size_t)new_size, sizeof(AtomEntry *));
+    if (!new_table) return false;
+    for (int i = 0; i < state->atom_table_size; i++) {
+        AtomEntry *entry = state->atom_table[i];
+        while (entry) {
+            AtomEntry *next = entry->next;
+            unsigned int h = wam_hash_string(entry->str) & (unsigned int)(new_size - 1);
+            entry->next = new_table[h];
+            new_table[h] = entry;
+            entry = next;
+        }
+    }
+    free(state->atom_table);
+    state->atom_table = new_table;
+    state->atom_table_size = new_size;
+    return true;
+}
+
 static inline const char *wam_intern_atom(WamState *state, const char *str) {
-    unsigned int h = wam_hash_string(str) & (WAM_ATOM_HASH_SIZE - 1);
+    if (!wam_atom_table_ensure(state)) return str;
+    unsigned int h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     for (AtomEntry *e = state->atom_table[h]; e; e = e->next) {
         if (strcmp(e->str, str) == 0) return e->str;
+    }
+    if ((state->atom_count + 1) * 4 > state->atom_table_size * 3 &&
+        state->atom_table_size <= INT_MAX / 2 &&
+        wam_atom_table_rehash(state, state->atom_table_size * 2)) {
+        h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     }
     AtomEntry *e = malloc(sizeof(AtomEntry));
     if (!e) return str;
@@ -541,6 +579,7 @@ static inline const char *wam_intern_atom(WamState *state, const char *str) {
     }
     e->next = state->atom_table[h];
     state->atom_table[h] = e;
+    state->atom_count++;
     return e->str;
 }
 // Creates a new unbound reference on the heap.

@@ -2357,7 +2357,7 @@ void wam_state_init(WamState *state) {
 }
 
 void wam_free_state(WamState *state) {
-    for (int i = 0; i < WAM_ATOM_HASH_SIZE; i++) {
+    for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
         while (e) {
             AtomEntry *next = e->next;
@@ -2366,6 +2366,7 @@ void wam_free_state(WamState *state) {
             e = next;
         }
     }
+    free(state->atom_table);
     for (int i = 0; i < state->code_size; i++) {
         if (state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) {
             free(state->code[i].as.switch_index.hash_table);

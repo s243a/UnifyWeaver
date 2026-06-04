@@ -46,7 +46,9 @@ test_helpers_generation :-
         sub_string(S, _, _, _, 'void wam_state_init(WamState'),
         sub_string(S, _, _, _, 'void wam_free_state(WamState'),
         sub_string(S, _, _, _, 'int wam_run_predicate(WamState'),
-        sub_string(S, _, _, _, 'resolve_predicate_hash')
+        sub_string(S, _, _, _, 'resolve_predicate_hash'),
+        sub_string(S, _, _, _, 'state->atom_table_size'),
+        sub_string(S, _, _, _, 'free(state->atom_table)')
     ->  pass(Test)
     ;   fail_test(Test, 'helper generation missing expected content')
     ).
@@ -2873,6 +2875,19 @@ int main(void) {
     if (a1 != a2 || strcmp(a1, "runtime_atom") != 0) {
         wam_free_state(&state);
         return 10;
+    }
+    for (int i = 0; i < 1000; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "runtime_atom_%d", i);
+        if (wam_intern_atom(&state, atom) == NULL) {
+            wam_free_state(&state);
+            return 11;
+        }
+    }
+    const char *a3 = wam_intern_atom(&state, "runtime_atom");
+    if (a1 != a3 || state.atom_table_size <= WAM_INITIAL_ATOM_HASH_SIZE) {
+        wam_free_state(&state);
+        return 12;
     }
 
     WamValue list;
