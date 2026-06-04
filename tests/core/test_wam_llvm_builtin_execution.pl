@@ -2459,6 +2459,32 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M93: unsetenv/1 -- libc unsetenv() wrapper, complement to M77 setenv/2.
+
+:- dynamic test_unsetenv_roundtrip/2.
+test_unsetenv_roundtrip(_, R) :-
+    % Set var, confirm it''s set, unsetenv, confirm getenv fails.
+    % Uses explicit if-then-else rather than \+ getenv(...) -- the
+    % WAM backend has a pre-existing issue where \+ over a builtin
+    % can mis-evaluate as "negation succeeds when getenv succeeds".
+    setenv('UW_M93_TEST', 'hello'),
+    getenv('UW_M93_TEST', V1),
+    V1 == 'hello',
+    unsetenv('UW_M93_TEST'),
+    ( getenv('UW_M93_TEST', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_unsetenv_idempotent/2.
+test_unsetenv_idempotent(_, R) :-
+    % Unsetting a var that isn''t set still succeeds (matches SWI).
+    unsetenv('UW_M93_NOT_SET_VAR_NAME'),
+    unsetenv('UW_M93_NOT_SET_VAR_NAME'),
+    R is 1.   % 1
+
+:- dynamic test_unsetenv_non_atom/2.
+test_unsetenv_non_atom(_, R) :-
+    % Integer arg fails (non-atom).
+    ( unsetenv(42) -> R is 0 ; R is 1 ).   % 1
+
 % M92: halt/0 + halt/1 -- libc exit() wrapper. Process terminates
 % inside the WAM run loop, so the test driver never reaches its
 % normal `read reg 0 + return as exit code' path -- the exit code
@@ -4771,6 +4797,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M93 unsetenv/1 ---~n'),
+       run_test_r0('setenv/getenv/unsetenv/getenv-fails roundtrip -> 1',
+                   test_unsetenv_roundtrip, 0, 1),
+       run_test_r0('unsetenv on already-unset succeeds -> 1',
+                   test_unsetenv_idempotent, 0, 1),
+       run_test_r0('unsetenv(42) fails (non-atom) -> 1',
+                   test_unsetenv_non_atom, 0, 1),
        format('--- M92 halt/0 + halt/1 ---~n'),
        run_test_r0('halt/0 -> exit 0',
                    test_halt_zero, 0, 0),

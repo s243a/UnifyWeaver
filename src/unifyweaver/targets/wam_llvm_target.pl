@@ -1468,6 +1468,7 @@ declare i32 @rename(i8*, i8*)
 declare i32 @rmdir(i8*)
 declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
+declare i32 @unsetenv(i8*)
 declare i64 @strlen(i8*)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
@@ -3538,6 +3539,7 @@ entry:
     i32 110, label %builtin_format_time
     i32 111, label %builtin_halt0
     i32 112, label %builtin_halt1
+    i32 113, label %builtin_unsetenv
   ]
 
 builtin_is:
@@ -5018,6 +5020,27 @@ h1.do_exit:
   %h1.code32 = trunc i64 %h1.code64 to i32
   call void @exit(i32 %h1.code32)
   unreachable
+
+builtin_unsetenv:
+  ; M93: unsetenv(+Name) -- complements M77 setenv/2. Name must be an
+  ; atom; non-atom fails. libc unsetenv returns 0 on success and -1
+  ; only on EINVAL (invalid name like one containing ``=''). Treats
+  ; an unset-when-not-set as success, matching SWI-Prolog semantics.
+  %us.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %us.t1 = extractvalue %Value %us.a1, 0
+  %us.is_atom = icmp eq i32 %us.t1, 0
+  br i1 %us.is_atom, label %us.go, label %us.fail
+us.fail:
+  ret i1 false
+us.go:
+  %us.aid = extractvalue %Value %us.a1, 1
+  %us.name = call i8* @wam_atom_to_string(i64 %us.aid)
+  %us.name_null = icmp eq i8* %us.name, null
+  br i1 %us.name_null, label %us.fail, label %us.do
+us.do:
+  %us.ret = call i32 @unsetenv(i8* %us.name)
+  %us.ok = icmp eq i32 %us.ret, 0
+  ret i1 %us.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11856,6 +11879,7 @@ builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
 builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
 builtin_op_to_id('halt/0', 111).              % libc exit(0).
 builtin_op_to_id('halt/1', 112).              % libc exit(Code).
+builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
