@@ -84,9 +84,11 @@ artifact. The oracle is the hand-specified expected-results table in
 `wam_conformance_fixtures.pl` (standard Prolog semantics), not any
 backend's output; among the backends, **Scala is the reference
 implementation** — it passes the whole spec. The table below is the full
-set of tracked divergences (it matches the `ct_xfail/2` / `ct_skip/2`
-facts in the harness); WAT conforms only on `ack`, and `elixir` and
-`scala` pass the whole spec.
+set of active divergences plus recent fixed rows retained as status
+history. The active harness facts are currently WAT `fib` as `xfail` and
+WAT `append`/`reverse` as `skip`; Elixir and Scala pass the default spec,
+and Haskell is opt-in because cabal builds are slow, not because the
+adapter has a current divergence.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
@@ -96,9 +98,13 @@ facts in the harness); WAT conforms only on `ack`, and `elixir` and
 | wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. The runtime also aliases native Elixir `[]` with WAM `"[]"` for direct list inputs. Now conformant; xfails removed. |
 | ~~haskell~~ | ~~member, append, reverse~~ | **fixed** | All three failed on heap-built cons lists. Four root causes, now fixed in `wam_haskell_target.pl`: (1) `unifyVal`/`unifyValues` did **no** structural unification — added a shared `unifyTerms`; (2) the cons functor `"[|]/2"` interned to its own id, distinct from `atomDot` — `intern_struct_functor/2` folds every cons spelling onto `atomDot` (the `./2`-vs-`[|]/2` class, same as the Elixir bug); (3) `GetValue` had its own inline unify bypassing the above — now routed through `unifyVal`; (4) **the multi-element bug** — building `[a\|X]` with `X` a `set_variable` tail placeholder emitted `VList [a, X]` (`X` as a 2nd *element*) and `put_structure` filling `X` did not bind the embedded var, so `addToBuilder` now emits a `Str atomDot [hd, tl]` cons cell for a partial tail and binds the placeholder var on finalize. Fixes lists of any length; xfails removed. |
-| haskell | builtins | xfail | `=/2` of two identical atoms returns false (`cbi_eq(foo)`), and `//`/`mod` evaluate incorrectly (`cbi_arith`). `fib`/`ack` pass, so `+`/`-`/comparison and `is/2` bound-LHS checking are fine — isolated builtin bugs, not the list path. |
+| ~~haskell~~ | ~~builtins~~ | **fixed** | Was: `=/2` of two identical atoms returned false (`cbi_eq(foo)`), and `//`/`mod` evaluated incorrectly (`cbi_arith`). Both are fixed in `wam_haskell_target.pl`: `=/2` now dispatches through `unifyVal`, and the arithmetic operator parser strips only a trailing `/Arity` suffix so `/`, `//`, and `mod` survive as real operators. Haskell has no current `ct_xfail/2` entries. |
 
-(Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
+(Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program
+is a cabal compile. The driver,
+`tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper
+whose atoms are baked into the compiled stream, which is what removed the
+earlier interning mismatch — see below.)
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
@@ -184,24 +190,27 @@ the harness exercised the realistic **heap-cons** path and surfaced all of
 this. Validated with no regressions across the Haskell suites (target
 codegen, lowered phases 1–4, dispatch ghc smoke, st_regs e2e, iso, csr).
 
-Still open (own PR): the `builtins` `=/2` / `//` / `mod` gaps — isolated
-builtin bugs, unrelated to the list path.
+The builtin gaps are fixed too: `=/2` is routed through `unifyVal`, and
+the arithmetic operator parser now strips only trailing `/Arity` suffixes
+so operators containing `/` (`/`, `//`) are not truncated before dispatch.
+The Haskell adapter is therefore green in the harness when run explicitly;
+it remains opt-in only because a cabal build per program is slow.
 
 ### Cross-cutting observation (investigated)
 
-The divergences the harness has found cluster around **matching /
-unifying heap-built compound terms** — WAT (read-mode structure unify),
-Elixir (constructed list vs ground compound head arg), the suspected
-Haskell path. The open question was whether this is *one* shared lowering
-weakness or *N* independent backend bugs.
+The earlier divergences clustered around **matching / unifying heap-built
+compound terms** — WAT read-mode structure unify, Elixir constructed-list
+vs ground-compound unification, and the suspected Haskell path. The open
+question was whether this was *one* shared lowering weakness or *N*
+independent backend bugs.
 
 **It is not a shared lowering bug.** The WAM lowering
 (`wam_target.pl:compile_head_arguments/5` + `compile_unify_arguments/5`)
 emits `get_structure`/`get_list`/`unify_*` identically for every backend,
 and **Scala consumes that same stream and passes the whole spec** — so
-the instruction stream is sound. The failures live in each backend's
-*runtime* implementation of the read-mode unify protocol, and they are
-distinct:
+the instruction stream is sound. The failures have lived in backend
+runtime/codegen details rather than the shared WAM instruction stream,
+and they are distinct:
 
 - **Elixir** — a self-contained `unify/3` bug (cons-functor `./2`↔`[|]/2`
   aliasing missing on the structural-unify path). Fixed in this pass; one
@@ -209,17 +218,19 @@ distinct:
   so direct Elixir-list inputs and heap-built WAM lists agree.
   `append`/`reverse` now conformant.
 - **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
-  nops and there is no S-register / argument queue. This is a real
-  runtime feature to build, not a one-line fix.
-- **Haskell** — **fixed** (`member`/`append`/`reverse`). It was the same
+  nops and there is no S-register / argument queue. Fixed for `member`;
+  the active WAT issues are now recursive choice-point/indexing behavior
+  for `fib` and the list-building codegen loop that keeps
+  `append`/`reverse` skipped.
+- **Haskell** — **fixed** (`member`/`append`/`reverse` and `builtins`). It was the same
   `./2`-vs-`[|]/2` cons-aliasing class as Elixir, but with three more
   layers: no structural unification at all, a `GetValue` inline-unify
   bypass, and a multi-element construction bug (`set_variable` tail
   placeholders emitted as `VList` elements, never bound on `put_structure`
   finalize). So Haskell needed real compound unification *plus* a
   cons-cell representation fix for partial tails — more than the Elixir
-  one-liner, but the same root family. `=/2`/`//`/`mod` remain (separate
-  builtin bugs).
+  one-liner, but the same root family. The separate `=/2` / `//` / `mod`
+  builtin bugs are also fixed.
 
 So the leverage is per-backend after all, but the harness did its job:
 it pinned each divergence to a specific runtime — made the Elixir one a

@@ -64,11 +64,10 @@ conformance_target(wat).
 conformance_target(haskell).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT and Haskell are wired up but NOT defaults: their backends still
-%  diverge on list programs (see ct_xfail/ct_skip below), and a Haskell
-%  build is a cabal compile per program (slow for CI). Both are opt-in
-%  via CONFORMANCE_TARGETS=wat / =haskell while the backend bugs are
-%  fixed.
+%  WAT and Haskell are wired up but NOT defaults. WAT still has active
+%  divergences (see ct_xfail/ct_skip below); Haskell is opt-in because
+%  it performs a cabal compile per program, which is too slow for the
+%  default CI tier even though the adapter is currently green.
 ct_default_target(scala).
 ct_default_target(elixir).
 
