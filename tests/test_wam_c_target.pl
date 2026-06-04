@@ -282,6 +282,7 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'wam_bidirectional_get_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
         sub_string(S, _, _, _, 'bool wam_category_min_parent_hops'),
+        sub_string(S, _, _, _, 'bool wam_category_child_may_reach_root_within_budget'),
         sub_string(S, _, _, _, 'bidirectional_min_distance_cache'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
@@ -3360,6 +3361,31 @@ int main(void) {
         wam_reverse_csr_close(&csr);
         wam_free_state(&state);
         return 11;
+    }
+    int child_candidates = -1;
+    if (!wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 1) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "child", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 14;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 1.5,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 15;
     }
 
     wam_attach_bidirectional_child_csr(&state, NULL);

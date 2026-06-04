@@ -415,6 +415,15 @@ bool wam_category_min_parent_hops(WamState *state,
                                   const char *cat,
                                   const char *root,
                                   int *hops_out);
+bool wam_category_child_may_reach_root_within_budget(WamState *state,
+                                                     const char *cat,
+                                                     const char *root,
+                                                     int max_child_expansions,
+                                                     int child_depth,
+                                                     double parent_cost,
+                                                     double child_cost,
+                                                     double budget,
+                                                     int *candidate_count_out);
 bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
 bool wam_collect_bidirectional_ancestor_hops(WamState *state,
                                              WamBidirectionalAncestorResults *results);

@@ -1222,10 +1222,14 @@ int main(void) {
     long long parent_reachability_prunes = 0;
     long long parent_collect_calls = 0;
     long long parent_path_results = 0;
+    long long child_prefilter_checks = 0;
+    long long child_prefilter_prunes = 0;
+    long long child_prefilter_candidates = 0;
     long long child_collect_calls = 0;
     long long child_path_results = 0;
     double parent_reachability_ms = 0.0;
     double parent_collect_ms = 0.0;
+    double child_prefilter_ms = 0.0;
     double child_collect_ms = 0.0;
     int stopped_by_cap = 0;
     for (int ai = 0; ai < article_limit && !stopped_by_cap; ai++) {
@@ -1276,17 +1280,30 @@ int main(void) {
                         parent_reachability_prunes++;
                     }
                     if (path_costs.count == 0 && ~w) {
-                        double child_start_ms = wam_now_ms();
-                        child_collect_calls++;
-                        (void)collect_bidirectional_child_costs(&state, &source,
-                                                                ARTICLE_CATS[ci], ROOTS[ri],
-                                                                ~w, ~w,
-                                                                ~w, ~w, ~w, ~w,
-                                                                &path_costs);
-                        child_collect_ms += wam_now_ms() - child_start_ms;
-                        child_path_results += path_costs.count;
-                        for (int pi = 0; pi < path_costs.count; pi++) {
-                            path_costs.values[pi] += ~w;
+                        int child_candidate_count = 0;
+                        double child_prefilter_start_ms = wam_now_ms();
+                        child_prefilter_checks++;
+                        int child_may_reach =
+                            wam_category_child_may_reach_root_within_budget(
+                                &state, ARTICLE_CATS[ci], ROOTS[ri], ~w, ~w,
+                                ~w, ~w, ~w, &child_candidate_count);
+                        child_prefilter_ms += wam_now_ms() - child_prefilter_start_ms;
+                        child_prefilter_candidates += child_candidate_count;
+                        if (child_may_reach) {
+                            double child_start_ms = wam_now_ms();
+                            child_collect_calls++;
+                            (void)collect_bidirectional_child_costs(&state, &source,
+                                                                    ARTICLE_CATS[ci], ROOTS[ri],
+                                                                    ~w, ~w,
+                                                                    ~w, ~w, ~w, ~w,
+                                                                    &path_costs);
+                            child_collect_ms += wam_now_ms() - child_start_ms;
+                            child_path_results += path_costs.count;
+                            for (int pi = 0; pi < path_costs.count; pi++) {
+                                path_costs.values[pi] += ~w;
+                            }
+                        } else {
+                            child_prefilter_prunes++;
                         }
                     }
                 }
@@ -1323,12 +1340,16 @@ int main(void) {
             "parent_reachability_checks=%lld parent_reachability_prunes=%lld "
             "parent_reachability_ms=%.3f parent_collect_calls=%lld "
             "parent_path_results=%lld parent_collect_ms=%.3f child_collect_calls=%lld "
+            "child_prefilter_checks=%lld child_prefilter_prunes=%lld "
+            "child_prefilter_candidates=%lld child_prefilter_ms=%.3f "
             "child_path_results=%lld child_collect_ms=%.3f "
             "first_result_ms=%.3f query_ms=%.3f capped=%d\\n",
             queries, results, category_visits, direct_hits,
             parent_reachability_checks, parent_reachability_prunes,
             parent_reachability_ms, parent_collect_calls, parent_path_results, parent_collect_ms,
-            child_collect_calls, child_path_results, child_collect_ms,
+            child_collect_calls, child_prefilter_checks, child_prefilter_prunes,
+            child_prefilter_candidates, child_prefilter_ms,
+            child_path_results, child_collect_ms,
             first_result_ms, wam_now_ms() - query_start_ms, stopped_by_cap);
     fflush(stderr);
 
@@ -1342,7 +1363,9 @@ int main(void) {
     ReverseIndexLocal, BidirSetupCall, ReverseIndexSetupCall,
     LoadCode, ReverseIndexTeardownCall, MaxDepth, BidirRegisterCall,
     ParentStepCost, MaxDepth, KernelFlag, ParentStepCost,
-    ChildSearchFlag, KernelFlag, MaxChildExpansions, ChildSearchDepth,
+    ChildSearchFlag, MaxChildExpansions, ChildSearchDepth,
+    ParentStepCost, ChildStepCost, ChildSearchBudget,
+    KernelFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget, ParentStepCost,
     Dimension, Dimension, ReverseIndexTeardownCall]).
 

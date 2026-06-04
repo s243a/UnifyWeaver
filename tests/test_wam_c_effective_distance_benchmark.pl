@@ -116,6 +116,8 @@ test_generated_runner_supports_runtime_caps :-
         sub_string(ErrText, _, _, _, "parent_reachability_checks="),
         sub_string(ErrText, _, _, _, "parent_reachability_prunes="),
         sub_string(ErrText, _, _, _, "parent_collect_calls="),
+        sub_string(ErrText, _, _, _, "child_prefilter_checks="),
+        sub_string(ErrText, _, _, _, "child_prefilter_prunes="),
         sub_string(ErrText, _, _, _, "child_collect_calls=")
     ->  pass(Test)
     ;   fail_test(Test, 'runtime cap output or metrics mismatch')

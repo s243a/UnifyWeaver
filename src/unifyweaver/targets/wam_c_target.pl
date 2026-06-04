@@ -4137,6 +4137,63 @@ bool wam_category_min_parent_hops(WamState *state,
     return wam_bidirectional_distance_map_get(min_distances, cat, hops_out);
 }
 
+bool wam_category_child_may_reach_root_within_budget(WamState *state,
+                                                     const char *cat,
+                                                     const char *root,
+                                                     int max_child_expansions,
+                                                     int child_depth,
+                                                     double parent_cost,
+                                                     double child_cost,
+                                                     double budget,
+                                                     int *candidate_count_out) {
+    if (candidate_count_out) *candidate_count_out = 0;
+    if (!state || !cat || !root) return true;
+    if (max_child_expansions <= 0 || child_depth <= 0) return false;
+    if (child_cost > budget) return false;
+    if (child_depth != 1) return true;
+    if (!state->bidirectional_child_csr) return true;
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) return true;
+
+    int parent_id = 0;
+    if (!wam_category_atom_to_id(state, cat, &parent_id)) return false;
+    int child_count = wam_reverse_csr_lookup_children(
+        state->bidirectional_child_csr, parent_id, NULL, 0);
+    if (child_count < 0) return true;
+    if (child_count == 0) return false;
+
+    int child_limit = child_count < 256 ? child_count : 256;
+    if (child_limit <= 0) return false;
+    int *child_ids = malloc(sizeof(int) * (size_t)child_limit);
+    if (!child_ids) return true;
+    int read_count = wam_reverse_csr_lookup_children(
+        state->bidirectional_child_csr, parent_id, child_ids, child_limit);
+    if (read_count < 0) {
+        free(child_ids);
+        return true;
+    }
+
+    int candidate_count = 0;
+    int limit = read_count < child_limit ? read_count : child_limit;
+    for (int i = 0; i < limit; i++) {
+        const char *child = NULL;
+        int min_parent_hops = 0;
+        if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+        if (!wam_bidirectional_distance_map_get(
+                min_distances, child, &min_parent_hops)) {
+            continue;
+        }
+        double total_cost = child_cost + ((double)min_parent_hops * parent_cost);
+        if (total_cost <= budget) {
+            candidate_count++;
+        }
+    }
+    free(child_ids);
+    if (candidate_count_out) *candidate_count_out = candidate_count;
+    return candidate_count > 0;
+}
+
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
     (void)pred;
     if (arity != 4) return false;
