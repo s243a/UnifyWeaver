@@ -81,7 +81,6 @@ artifact — **Scala passes the whole spec**, which is the reference.
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
 | wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
-| elixir | append, reverse | xfail | The lowered Elixir backend fails to unify a freshly-constructed list against an already-**ground** compound head argument: `capp([a],[b],[a,b])` returns false, while `capp([a],[b],X), X=[a,b]` succeeds. `member` passes (it only matches an input list). |
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
@@ -161,9 +160,8 @@ Open questions a future Haskell adapter must resolve first:
 ### Cross-cutting observation
 
 The divergences the harness has found so far cluster around **matching /
-unifying heap-built compound terms**: WAT (read-mode structure unify
-unimplemented), Elixir (constructed list vs ground compound head arg),
-and the suspected Haskell path all live here. If that turns out to be one
-shared weakness in the lowering rather than N independent backend bugs,
-fixing it once would move several backends toward conformance at the same
-time — a higher-leverage option than wiring up adapters one by one.
+unifying heap-built compound terms**: WAT read-mode structure unify is
+still unimplemented, and the suspected Haskell path may live there too.
+Elixir's earlier constructed-list-vs-ground-head mismatch was fixed by
+treating native `[]` and WAM `"[]"` as equivalent empty-list constants in
+runtime matching, lowered switch dispatch, and unification.

@@ -1096,11 +1096,17 @@ build_switch_arm_group(Suffix, Key-Labels, Arm) :-
         % CP — which points at that same clause — would cause a duplicate
         % solution on backtracking. The inline-dispatched clause pushes
         % its own retry CP, which remains correct.
-        format(string(Arm),
-               '~w -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
-               [KeyLit, LocalFunc])
-    ;   format(string(Arm), '~w -> :ok', [KeyLit])
-    ).
+        format(string(Body),
+               'throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
+               [LocalFunc])
+    ;   Body = ':ok'
+    ),
+    build_switch_arm_aliases(Key, KeyLit, Body, Arm).
+
+build_switch_arm_aliases("[]", KeyLit, Body, Arm) :- !,
+    format(string(Arm), '~w -> ~w\n          [] -> ~w', [KeyLit, Body, Body]).
+build_switch_arm_aliases(_, KeyLit, Body, Arm) :-
+    format(string(Arm), '~w -> ~w', [KeyLit, Body]).
 
 segment_func_name("clause_start", "clause_main") :- !.
 segment_func_name(Label, Name) :-
@@ -1631,7 +1637,7 @@ wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = cond do
-      val == ~w -> state
+      WamRuntime.constant_match?(val, ~w) -> state
       match?({:unbound, _}, val) ->
         {:unbound, id} = val
         state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, ~w)
