@@ -75,17 +75,27 @@ Suggested CI tiers:
 The harness is green today; the divergences below are tolerated and
 logged (an unexpected pass is logged as `XPASS` so the entry can be
 retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact — **Scala passes the whole spec**, which is the reference.
+artifact. The oracle is the hand-specified expected-results table in
+`wam_conformance_fixtures.pl` (standard Prolog semantics); among the
+backends, **Scala is the reference implementation** — it passes the whole
+spec. The table below is the full set of tracked divergences (it matches
+the `ct_xfail/2` / `ct_skip/2` facts in the harness); WAT conforms only on
+`ack`.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
-| wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
+| wat | fib | xfail | `is/2` with an already-bound LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
+| wat | builtins | xfail | `cbi_arith` uses `//` (integer div) and `mod`, which the WAT backend does not evaluate correctly (returns false). The comparison (`cbi_cmp`) and unification (`cbi_eq`) families are fine. |
+| wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
 | elixir | append, reverse | xfail | The lowered Elixir backend fails to unify a freshly-constructed list against an already-**ground** compound head argument: `capp([a],[b],[a,b])` returns false, while `capp([a],[b],X), X=[a,b]` succeeds. `member` passes (it only matches an input list). |
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable.
+*generation itself* is unusable. (`append`/`reverse` on WAT carry both an
+`ct_xfail` and a `ct_skip` fact in the harness; `ct_skip` wins — it is
+checked first — so they are never built. The shadowed xfail facts are
+harmless leftovers.)
 
 ### Other backend issue surfaced (not xfail)
 
