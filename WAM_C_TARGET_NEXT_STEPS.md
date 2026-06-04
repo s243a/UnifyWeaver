@@ -486,6 +486,12 @@ Evidence:
   measured `query_ms=10407.918`, so this comparison is enough to show the
   remaining full-matrix cost is per-query traversal volume, not CSR storage
   disagreement.
+- After adding generated-runner traversal counters, a sorted-CSR result-capped
+  `50k_cats` run reached the same `50` rows after `72,977` queries with
+  `query_ms=11049.112`. It visited `72,977` article-category slices, made
+  `72,975` parent collector calls, found `626` parent path results, and spent
+  `parent_collect_ms=8008.670`. It made `72,932` child collector calls, found
+  only `11` child path results, and spent `child_collect_ms=3022.342`.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -740,8 +746,9 @@ After hash-bucket row dispatch but before compact row tables:
 Do not attempt another full `50k_cats` generated matrix until there is a plan
 for reducing the `ARTICLE_COUNT * ROOT_COUNT` traversal volume. Result-capped
 and sampled runs now confirm child-CSR variants agree; the next useful work is
-to measure or reduce per-query WAM/path collection cost for result-bearing
-queries. Keep
+to reuse root-distance information for parent lookups, then use child
+collection only for misses where the child-search policy can plausibly produce
+new paths. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

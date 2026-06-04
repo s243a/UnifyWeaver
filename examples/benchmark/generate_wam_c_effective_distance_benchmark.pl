@@ -1216,6 +1216,14 @@ int main(void) {
     double first_result_ms = -1.0;
     long long queries = 0;
     long long results = 0;
+    long long category_visits = 0;
+    long long direct_hits = 0;
+    long long parent_collect_calls = 0;
+    long long parent_path_results = 0;
+    long long child_collect_calls = 0;
+    long long child_path_results = 0;
+    double parent_collect_ms = 0.0;
+    double child_collect_ms = 0.0;
     int stopped_by_cap = 0;
     for (int ai = 0; ai < article_limit && !stopped_by_cap; ai++) {
         if (!wam_selected_index(ai, ARTICLES[ai], article_names,
@@ -1236,24 +1244,34 @@ int main(void) {
             int category_start = ARTICLE_CATEGORY_STARTS[ai];
             int category_end = ARTICLE_CATEGORY_ENDS[ai];
             for (int ci = category_start; ci < category_end; ci++) {
+                category_visits++;
                 WamIntResults hops;
                 WamDoubleResults path_costs;
                 wam_int_results_init(&hops);
                 double_results_init(&path_costs);
                 if (strcmp(ARTICLE_CATS[ci], ROOTS[ri]) == 0) {
                     double_results_push(&path_costs, ~w);
+                    direct_hits++;
                 } else {
+                    double parent_start_ms = wam_now_ms();
+                    parent_collect_calls++;
                     collect_hops(&state, &source, ARTICLE_CATS[ci], ROOTS[ri], ~w, &hops);
+                    parent_collect_ms += wam_now_ms() - parent_start_ms;
+                    parent_path_results += hops.count;
                     for (int hi = 0; hi < hops.count; hi++) {
                         double_results_push(&path_costs,
                                             ((double)hops.values[hi] + 1.0) * ~w);
                     }
                     if (path_costs.count == 0 && ~w) {
+                        double child_start_ms = wam_now_ms();
+                        child_collect_calls++;
                         (void)collect_bidirectional_child_costs(&state, &source,
                                                                 ARTICLE_CATS[ci], ROOTS[ri],
                                                                 ~w, ~w,
                                                                 ~w, ~w, ~w, ~w,
                                                                 &path_costs);
+                        child_collect_ms += wam_now_ms() - child_start_ms;
+                        child_path_results += path_costs.count;
                         for (int pi = 0; pi < path_costs.count; pi++) {
                             path_costs.values[pi] += ~w;
                         }
@@ -1288,9 +1306,15 @@ int main(void) {
     }
     fprintf(stderr,
             "wam_c_effective_runtime queries=%lld results=%lld "
+            "category_visits=%lld direct_hits=%lld "
+            "parent_collect_calls=%lld parent_path_results=%lld "
+            "parent_collect_ms=%.3f child_collect_calls=%lld "
+            "child_path_results=%lld child_collect_ms=%.3f "
             "first_result_ms=%.3f query_ms=%.3f capped=%d\\n",
-            queries, results, first_result_ms, wam_now_ms() - query_start_ms,
-            stopped_by_cap);
+            queries, results, category_visits, direct_hits,
+            parent_collect_calls, parent_path_results, parent_collect_ms,
+            child_collect_calls, child_path_results, child_collect_ms,
+            first_result_ms, wam_now_ms() - query_start_ms, stopped_by_cap);
     fflush(stderr);
 
 ~w

@@ -111,7 +111,10 @@ test_generated_runner_supports_runtime_caps :-
         \+ sub_string(Output, _, _, _, "article_a\troot\t"),
         sub_string(ErrText, _, _, _, "wam_c_effective_setup "),
         sub_string(ErrText, _, _, _, "query_limit=1"),
-        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
+        sub_string(ErrText, _, _, _, "category_visits="),
+        sub_string(ErrText, _, _, _, "parent_collect_calls="),
+        sub_string(ErrText, _, _, _, "child_collect_calls=")
     ->  pass(Test)
     ;   fail_test(Test, 'runtime cap output or metrics mismatch')
     ).
