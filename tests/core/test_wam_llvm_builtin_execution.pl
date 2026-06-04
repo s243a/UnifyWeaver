@@ -2464,14 +2464,11 @@ test_forall_manual(_, R) :-
 :- dynamic test_unsetenv_roundtrip/2.
 test_unsetenv_roundtrip(_, R) :-
     % Set var, confirm it''s set, unsetenv, confirm getenv fails.
-    % Uses explicit if-then-else rather than \+ getenv(...) -- the
-    % WAM backend has a pre-existing issue where \+ over a builtin
-    % can mis-evaluate as "negation succeeds when getenv succeeds".
     setenv('UW_M93_TEST', 'hello'),
     getenv('UW_M93_TEST', V1),
     V1 == 'hello',
     unsetenv('UW_M93_TEST'),
-    ( getenv('UW_M93_TEST', _) -> R is 0 ; R is 1 ).   % 1
+    ( \+ getenv('UW_M93_TEST', _) -> R is 1 ; R is 0 ).   % 1
 
 :- dynamic test_unsetenv_idempotent/2.
 test_unsetenv_idempotent(_, R) :-

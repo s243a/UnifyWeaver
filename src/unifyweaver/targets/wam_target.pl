@@ -1746,6 +1746,24 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    % M93b: \+ G inlining for inner goal positions (if-then-else
+    % conditions, disjunction arms, etc). Without this, an inner
+    % `\+ G' falls through to compile_goal_call which emits
+    % `builtin_call \+/1, 1' -- but the LLVM target has no \+/1
+    % dispatch case, so the runtime metacall path is taken. That
+    % path was previously colliding with op id 99 (getenv) via the
+    % catch-all in builtin_op_to_id; even after fixing the
+    % collision, no inner backend actually implements \+ as a
+    % builtin, so \+ G in an inner position would always fail.
+    % Inline-rewrite to the soft-cut form `(G -> fail ; true)' to
+    % match the existing top-level handling (compile_goals at the
+    % outer call site) and to avoid the nested-cut barrier issue
+    % the hard-cut form has when stacked.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_inner_call_goals([((NotGoal -> fail ; true)) | Rest],
+                                  V0, Vf, Code)
     % once(G) / forall(G, T) — same desugarings as compile_goals.
     % Recurse with the rewritten goal so the if-then-else / negation
     % machinery picks it up.
