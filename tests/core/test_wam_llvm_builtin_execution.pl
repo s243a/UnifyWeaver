@@ -2459,6 +2459,38 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M81: atan2/2 -- binary inverse tangent (4-quadrant).
+
+:- dynamic test_atan2_xaxis/2.
+test_atan2_xaxis(_, R) :-
+    % atan2(0, 1) -- positive x-axis -- is 0.
+    X is atan2(0.0, 1.0),
+    R is truncate(X * 100).   % 0
+
+:- dynamic test_atan2_diag/2.
+test_atan2_diag(_, R) :-
+    % atan2(1, 1) = pi/4 ~ 0.7854; *200 truncated -> 157.
+    X is atan2(1.0, 1.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_yaxis/2.
+test_atan2_yaxis(_, R) :-
+    % atan2(1, 0) = pi/2 ~ 1.5708; *100 truncated -> 157.
+    X is atan2(1.0, 0.0),
+    R is truncate(X * 100).   % 157
+
+:- dynamic test_atan2_diag_scaled/2.
+test_atan2_diag_scaled(_, R) :-
+    % atan2 only cares about the ratio: (2,2) is the same angle as (1,1).
+    X is atan2(2.0, 2.0),
+    R is truncate(X * 200).   % 157
+
+:- dynamic test_atan2_pi/2.
+test_atan2_pi(_, R) :-
+    % atan2(0, -1) = pi ~ 3.14159; *50 truncated -> 157.
+    X is atan2(0.0, -1.0),
+    R is truncate(X * 50).   % 157
+
 % M80: inverse trig -- asin/1, acos/1, atan/1 via libm.
 
 :- dynamic test_asin_zero/2.
@@ -4428,6 +4460,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M81 atan2/2 binary inverse tangent ---~n'),
+       run_test_r0('atan2(0,1) -> 0 (x-axis)',
+                   test_atan2_xaxis, 0, 0),
+       run_test_r0('atan2(1,1) * 200 -> 157 (~ pi/4)',
+                   test_atan2_diag, 0, 157),
+       run_test_r0('atan2(1,0) * 100 -> 157 (~ pi/2)',
+                   test_atan2_yaxis, 0, 157),
+       run_test_r0('atan2(2,2) * 200 -> 157 (ratio only)',
+                   test_atan2_diag_scaled, 0, 157),
+       run_test_r0('atan2(0,-1) * 50 -> 157 (~ pi)',
+                   test_atan2_pi, 0, 157),
        format('--- M80 inverse trig -- asin/1, acos/1, atan/1 ---~n'),
        run_test_r0('truncate(asin(0.0) * 100) -> 0',
                    test_asin_zero, 0, 0),
