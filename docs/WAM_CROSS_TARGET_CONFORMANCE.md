@@ -102,13 +102,22 @@ it unexpectedly matches). `ct_skip/2` = do not even build, because
 only — they are never built; the formerly-shadowing `ct_xfail` facts have
 been removed.)
 
-### Other backend issue surfaced (not xfail)
+### Other backend issue surfaced
 
-- **Scala loops compiling 0-arity predicates with comparison-only
-  bodies** (e.g. `p :- 3 > 2.`). The harness sidesteps this by (a) giving
-  Scala direct args rather than 0-arity wrappers, and (b) phrasing the
-  `builtins` comparison fixture as a 1-arity predicate. Worth fixing in
-  the Scala backend separately.
+- **Scala 0-arity predicates with comparison-only bodies** (e.g.
+  `p :- 3 > 2.`) — **fixed.** Two independent gaps: (1)
+  `emit_scala_wrapper/4` called `numlist(1, 0, _)`, which *fails* when
+  `Low > High`, silently failing the whole project write for any 0-arity
+  predicate; and (2) the CLI driver's single-query / `--queries` dispatch
+  required at least one argument (`rest.nonEmpty`), so even a compiled
+  0-arity predicate could not be invoked. Now the wrapper guards the
+  empty-arg case (and emits a typed `Array[WamTerm]()`), and dispatch
+  keys on `key.contains("/")` so a lone `pred/0` runs with no args.
+  Covered by `tests/test_wam_scala_classic_programs.pl`
+  (`zero_arity_comparison`). The harness still gives Scala direct args
+  rather than 0-arity wrappers (for list-arg passing), and the `builtins`
+  comparison fixture stays 1-arity — that workaround is no longer
+  *required*, just retained.
 
 ## Adding more backends
 

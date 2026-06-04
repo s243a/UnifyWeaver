@@ -121,8 +121,10 @@ object GeneratedProgram {
             // Tokenise on whitespace. CLI-style argument parsing — same
             // as for single-query mode, just one query per line.
             val tokens = line.split("\\s+").toList
+            // Guard on a "name/arity" key (not rest.nonEmpty) so 0-arity
+            // queries like "p/0" with no args still dispatch.
             tokens match {
-              case key :: rest if rest.nonEmpty =>
+              case key :: rest if key.contains("/") =>
                 sharedProgram.dispatch.get(key) match {
                   case None =>
                     println(s"unknown:$key")
@@ -167,7 +169,10 @@ object GeneratedProgram {
             val elapsed = (System.nanoTime() - t0) / 1.0e9
             println(f"BENCH n=$n elapsed=$elapsed%.6f last=$last")
         }
-      case key :: rest if rest.nonEmpty =>
+      // Guard on a "name/arity" key (not rest.nonEmpty) so 0-arity
+      // predicates like "p/0" invoked with no args still dispatch
+      // instead of falling through to the usage error.
+      case key :: rest if key.contains("/") =>
         sharedProgram.dispatch.get(key) match {
           case None =>
             System.err.println(s"Unknown predicate: $key")
