@@ -1182,8 +1182,14 @@ encode_structure_op1(FSlashArity, Op1) :-
 %  Falls back to 0 if the atom does not match this shape.
 functor_arity_of(FSlashArity, Arity) :-
     atom_string(FSlashArity, Str),
+    %% The arity is the final '/'-separated component. Taking the LAST
+    %% part (not requiring exactly two) is essential for operators whose
+    %% functor itself contains '/', e.g. '///2' (integer division //) or
+    %% '//2' (float division /): splitting those on '/' yields 3-4 parts,
+    %% and the old [_, AStr] pattern fell through to arity 0 -- which made
+    %% eval_arith (it dispatches only on arity-2 cells) silently skip //.
     (   split_string(Str, "/", "", Parts),
-        Parts = [_, AStr],
+        last(Parts, AStr),
         number_string(A, AStr)
     ->  Arity = A
     ;   Arity = 0
@@ -1624,6 +1630,8 @@ wam_wat_case(get_structure,
             (i64.eq (call $val_payload (local.get $d_addr)) (local.get $op1)))
         (then
           (call $set_mode (i32.const 0))
+          ;; S -> first argument cell (one 12-byte cell past the header).
+          (call $set_s (i32.add (local.get $d_addr) (i32.const 12)))
           (call $inc_pc)
           (i32.const 1))
         (else (i32.const 0)))))').
@@ -1643,9 +1651,23 @@ wam_wat_case(get_list,
       (call $inc_pc)
       (i32.const 1))
     (else
-      (if (result i32) (i32.eq (local.get $tag) (i32.const 4)) ;; list
+      ;; Match a tag-4 list header OR a tag-3 compound whose functor is
+      ;; the cons functor [|]/2. The WAM compiler emits the outermost list
+      ;; cell as put_list (tag 4) but nested cons as put_structure [|]/2
+      ;; (tag 3); both lay out head at +12 and tail at +24, so get_list
+      ;; must accept either or recursion down a list fails after one step
+      ;; (the same ./2-vs-[|]/2 cons split handled in the other backends).
+      (if (result i32) (i32.or
+            (i32.eq (local.get $tag) (i32.const 4))
+            (i32.and
+              (i32.eq (local.get $tag) (i32.const 3))
+              (i64.eq (call $val_payload (local.get $d_addr))
+                      (global.get $cons_op1))))
         (then
           (call $set_mode (i32.const 0))
+          ;; S -> head cell (one 12-byte cell past the list header);
+          ;; the tail cell follows at S+12.
+          (call $set_s (i32.add (local.get $d_addr) (i32.const 12)))
           (call $inc_pc)
           (i32.const 1))
         (else (i32.const 0)))))').
@@ -1658,8 +1680,10 @@ wam_wat_case(unify_variable,
       ;; Create new unbound on heap and bind to register
       (call $set_reg (local.get $xn) (i32.const 6) (i64.extend_i32_u (local.get $xn))))
     (else
-      ;; Read mode: nothing to do for basic unify_variable
-      (nop)))
+      ;; Read mode: Xn := the argument cell at S (raw copy preserves a
+      ;; Ref so Xn aliases the heap variable), then advance S by one cell.
+      (call $copy_to_reg (local.get $xn) (call $get_s))
+      (call $set_s (i32.add (call $get_s) (i32.const 12)))))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1676,13 +1700,19 @@ wam_wat_case(unify_value,
       (call $inc_pc)
       (i32.const 1))
     (else
-      ;; Read mode: unify with next structure arg
-      (call $inc_pc)
-      (i32.const 1)))').
+      ;; Read mode: unify Xn with the arg cell at S, advance S, and FAIL
+      ;; on mismatch so a non-matching head argument rejects the clause
+      ;; (this is what makes member(z,[a,b,c]) correctly fail).
+      (if (result i32) (call $unify_reg_with_addr (local.get $xn) (call $get_s))
+        (then
+          (call $set_s (i32.add (call $get_s) (i32.const 12)))
+          (call $inc_pc)
+          (i32.const 1))
+        (else (i32.const 0)))))').
 
 wam_wat_case(unify_constant,
 '  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
-  (local $c_tag i32)
+  (local $c_tag i32) (local $sa i32) (local $st i32)
   (local.set $c_tag (i32.wrap_i64 (local.get $op2)))
   (if (result i32) (call $get_mode) ;; write mode
     (then
@@ -1690,9 +1720,27 @@ wam_wat_case(unify_constant,
       (call $inc_pc)
       (i32.const 1))
     (else
-      ;; Read mode: match constant
-      (call $inc_pc)
-      (i32.const 1)))').
+      ;; Read mode: match the constant against the arg cell at S. Bind if
+      ;; the cell is unbound, else require an exact (tag,payload) match;
+      ;; advance S and fail on mismatch.
+      (local.set $sa (call $deref_cell (call $get_s)))
+      (local.set $st (call $val_tag (local.get $sa)))
+      (if (result i32) (i32.eq (local.get $st) (i32.const 6))
+        (then
+          (call $trail_binding_at (local.get $sa))
+          (call $val_store (local.get $sa) (local.get $c_tag) (local.get $op1))
+          (call $set_s (i32.add (call $get_s) (i32.const 12)))
+          (call $inc_pc)
+          (i32.const 1))
+        (else
+          (if (result i32) (i32.and
+                (i32.eq (local.get $st) (local.get $c_tag))
+                (i64.eq (call $val_payload (local.get $sa)) (local.get $op1)))
+            (then
+              (call $set_s (i32.add (call $get_s) (i32.const 12)))
+              (call $inc_pc)
+              (i32.const 1))
+            (else (i32.const 0)))))))').
 
 % --- Body construction ---
 
@@ -4015,6 +4063,33 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (i32.eq (local.get $t1) (local.get $t2))
     (i64.eq (local.get $p1) (local.get $p2))))
 
+;; Unify register $r against the heap cell at address $addr0 (a structure
+;; argument slot in read mode). Same bind/shallow-equality logic as
+;; $unify_regs, but the second operand starts from a memory address
+;; (deref via $deref_cell) rather than a register index.
+(func $unify_reg_with_addr (param $r i32) (param $addr0 i32) (result i32)
+  (local $a1 i32) (local $a2 i32)
+  (local $t1 i32) (local $t2 i32) (local $p1 i64) (local $p2 i64)
+  (local.set $a1 (call $deref_reg_addr (local.get $r)))
+  (local.set $a2 (call $deref_cell (local.get $addr0)))
+  (local.set $t1 (call $val_tag (local.get $a1)))
+  (local.set $p1 (call $val_payload (local.get $a1)))
+  (local.set $t2 (call $val_tag (local.get $a2)))
+  (local.set $p2 (call $val_payload (local.get $a2)))
+  (if (i32.eq (local.get $t1) (i32.const 6))
+    (then
+      (call $trail_binding_at (local.get $a1))
+      (call $val_store (local.get $a1) (local.get $t2) (local.get $p2))
+      (return (i32.const 1))))
+  (if (i32.eq (local.get $t2) (i32.const 6))
+    (then
+      (call $trail_binding_at (local.get $a2))
+      (call $val_store (local.get $a2) (local.get $t1) (local.get $p1))
+      (return (i32.const 1))))
+  (i32.and
+    (i32.eq (local.get $t1) (local.get $t2))
+    (i64.eq (local.get $p1) (local.get $p2))))
+
 ;; --- Builtin dispatch ---
 ;; O(1) br_table dispatch for ALL builtins. Earlier versions routed
 ;; term inspection (18-21) through a linear if-chain and left IDs
@@ -4212,6 +4287,26 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
           ;; * (hash 41869)
           (if (i32.eq (local.get $functor_hash) (i32.const 41869))
             (then (return (i64.mul (local.get $a) (local.get $b)))))
+          ;; // integer division (hash 1446851), truncating toward zero.
+          ;; Guard b=0 (i64.div_s traps on zero) by failing the eval.
+          (if (i32.eq (local.get $functor_hash) (i32.const 1446851))
+            (then
+              (if (i64.eqz (local.get $b))
+                (then (global.set $arith_ok (i32.const 0)) (return (i64.const 0))))
+              (return (i64.div_s (local.get $a) (local.get $b)))))
+          ;; mod (hash 104068197): floored remainder (sign of the divisor),
+          ;; matching Prolog mod/2. rem_s gives the truncated remainder;
+          ;; fix up when it is non-zero and its sign differs from b.
+          (if (i32.eq (local.get $functor_hash) (i32.const 104068197))
+            (then
+              (if (i64.eqz (local.get $b))
+                (then (global.set $arith_ok (i32.const 0)) (return (i64.const 0))))
+              (local.set $a (i64.rem_s (local.get $a) (local.get $b)))
+              (if (i32.and
+                    (i64.ne (local.get $a) (i64.const 0))
+                    (i64.lt_s (i64.xor (local.get $a) (local.get $b)) (i64.const 0)))
+                (then (local.set $a (i64.add (local.get $a) (local.get $b)))))
+              (return (local.get $a))))
           ))
       ;; Unary operators (arity 1)
       (if (i32.eq (local.get $arity) (i32.const 1))
@@ -5313,9 +5408,18 @@ write_wam_wat_project(Predicates, Options, OutputFile) :-
     read_template_file('templates/targets/wat_wam/state.wat.mustache', StateTemplate),
     render_template(StateTemplate, [], StateCode),
 
-    %% Generate runtime (step + helpers)
+    %% Generate runtime (step + helpers). Prepend a module-level global
+    %% holding the packed op1 (arity<<32 | functor-hash) of the cons
+    %% functor [|]/2, computed with the same encoder used for
+    %% put_structure/get_structure. get_list reads it to recognise a
+    %% tag-3 [|]/2 compound as a list cell (the nested-cons representation).
     compile_step_wam_to_wat(Options, StepBody),
-    compile_wam_helpers_to_wat(Options, HelpersCode),
+    compile_wam_helpers_to_wat(Options, HelpersCode0),
+    encode_structure_op1('[|]/2', ConsOp1),
+    format(atom(ConsGlobal),
+           ';; Packed op1 of the cons functor [|]/2 (see encode_structure_op1).~n(global $cons_op1 i64 (i64.const ~w))~n~n',
+           [ConsOp1]),
+    atom_concat(ConsGlobal, HelpersCode0, HelpersCode),
     read_template_file('templates/targets/wat_wam/runtime.wat.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_body=StepBody,
