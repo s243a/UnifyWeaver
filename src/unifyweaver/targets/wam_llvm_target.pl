@@ -1479,6 +1479,7 @@ declare double @drand48()
 declare i64 @lrand48()
 declare i8* @localtime_r(i64*, i8*)
 declare i64 @strftime(i8*, i64, i8*, i8*)
+declare void @exit(i32)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3536,6 +3537,8 @@ entry:
     i32 108, label %builtin_random
     i32 109, label %builtin_random_between
     i32 110, label %builtin_format_time
+    i32 111, label %builtin_halt0
+    i32 112, label %builtin_halt1
   ]
 
 builtin_is:
@@ -4993,6 +4996,29 @@ ft.do_strftime:
   %ft.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %ft.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ft.raw1, %Value %ft.v)
   ret i1 %ft.uok
+
+builtin_halt0:
+  ; M92: halt/0 -- exit(0). Never returns; `unreachable` keeps llc
+  ; happy after the noreturn call.
+  call void @exit(i32 0)
+  unreachable
+
+builtin_halt1:
+  ; M92: halt(+Code) -- exit(Code). Code must be Integer; non-integer
+  ; falls through to a plain failure (no exit) so the run_loop returns
+  ; i1 false and the caller sees a Prolog miss instead of an undefined
+  ; status.
+  %h1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %h1.t1 = extractvalue %Value %h1.a1, 0
+  %h1.is_int = icmp eq i32 %h1.t1, 1
+  br i1 %h1.is_int, label %h1.do_exit, label %h1.fail
+h1.fail:
+  ret i1 false
+h1.do_exit:
+  %h1.code64 = extractvalue %Value %h1.a1, 1
+  %h1.code32 = trunc i64 %h1.code64 to i32
+  call void @exit(i32 %h1.code32)
+  unreachable
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11829,6 +11855,8 @@ builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUT
 builtin_op_to_id('random/1', 108).            % libc drand48() in [0, 1) as Float.
 builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
 builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
+builtin_op_to_id('halt/0', 111).              % libc exit(0).
+builtin_op_to_id('halt/1', 112).              % libc exit(Code).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

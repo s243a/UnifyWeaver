@@ -2459,6 +2459,23 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M92: halt/0 + halt/1 -- libc exit() wrapper. Process terminates
+% inside the WAM run loop, so the test driver never reaches its
+% normal `read reg 0 + return as exit code' path -- the exit code
+% from halt IS the test result.
+
+:- dynamic test_halt_zero/2.
+test_halt_zero(_, _) :- halt.   % -> exit 0
+
+:- dynamic test_halt_seven/2.
+test_halt_seven(_, _) :- halt(7).   % -> exit 7
+
+:- dynamic test_halt_var/2.
+test_halt_var(_, _) :-
+    % Code computed at runtime: 2 + 3 = 5.
+    X is 2 + 3,
+    halt(X).   % -> exit 5
+
 % M91: format_time/3 -- libc strftime + localtime_r wrapper.
 
 :- dynamic test_ft_year/2.
@@ -4754,6 +4771,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M92 halt/0 + halt/1 ---~n'),
+       run_test_r0('halt/0 -> exit 0',
+                   test_halt_zero, 0, 0),
+       run_test_r0('halt(7) -> exit 7',
+                   test_halt_seven, 0, 7),
+       run_test_r0('halt(2+3) -> exit 5',
+                   test_halt_var, 0, 5),
        format('--- M91 format_time/3 ---~n'),
        run_test_r0('format_time(Y, ''%Y'', stamp), len(Y) = 4 -> 1',
                    test_ft_year, 0, 1),

@@ -2080,6 +2080,8 @@ is_builtin_pred(getpid, 1).             % getpid(-Pid).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
+is_builtin_pred(halt, 0).               % halt/0 -- exit(0).
+is_builtin_pred(halt, 1).               % halt(+Code) -- exit(Code).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
