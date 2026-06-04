@@ -77,14 +77,15 @@ ct_default_target(elixir).
 %  match (xpass) is logged so the entry can be retired once the gap is
 %  fixed.
 %
-%  WAT member/append/reverse: WAT's runtime read-mode structure/list
-%  argument unification is unimplemented (unify_* read-mode branches are
-%  nops; no S-register), so get_structure/get_list match only the
-%  functor and element mismatches go undetected. See
-%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md.
+%  WAT member: WAT's runtime read-mode structure/list argument
+%  unification is unimplemented (unify_* read-mode branches are nops; no
+%  S-register), so get_structure/get_list match only the functor and
+%  element mismatches go undetected. See
+%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md. (append/reverse hit the same
+%  gap conceptually, but are ct_skip'd below — they never build — so
+%  they are NOT also xfail'd here: ct_skip is checked first and would
+%  shadow the xfail, leaving dead cruft.)
 ct_xfail(wat, member).
-ct_xfail(wat, append).
-ct_xfail(wat, reverse).
 %  WAT fib: is/2 with an already-bound LHS doesn't verify the computed
 %  value — cfib(10,54) returns true though fib(10)=55 (the result is
 %  stored over the bound arg instead of being unified/checked).

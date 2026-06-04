@@ -62,18 +62,32 @@ Suggested CI tiers:
 - **full / nightly or pre-merge:** no sampling — every program, every
   query, every available backend.
 
+Because random sampling is nondeterministic, a real divergence can pass
+one push and fail the next, which is confusing for whoever's bisecting.
+CI should **log the `CONFORMANCE_SEED` it used** (and set one explicitly)
+so any failure is reproducible from the recorded seed.
+
 ## Known divergences (tracked as `ct_xfail/2`)
 
 The harness is green today; the divergences below are tolerated and
 logged (an unexpected pass is logged as `XPASS` so the entry can be
 retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact — **Scala passes the whole spec**, which is the reference.
+artifact — **Scala passes the whole spec**, so it is the reference
+*implementation*. (The oracle is the hand-specified expected-results
+table, not Scala's output — Scala is just the one backend that currently
+matches it end-to-end.)
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
 | wat | member | xfail | Read-mode structure/list argument unification is unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` are nops; no S-register), so `get_structure`/`get_list` match only the functor. See `WAM_SWITCH_INDEXING_CROSS_TARGET.md`. |
+| wat | fib | xfail | `is/2` with an already-**bound** LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
+| wat | builtins | xfail | `//` (integer div) and `mod` are not evaluated correctly (return false); `cmp`/`eq` are fine. |
 | wat | append, reverse | **skip** | A *second*, separate WAT bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. Now conformant; xfails removed. |
+
+Net: WAT currently conforms only on `ack` — it diverges on `member`,
+`fib`, `builtins` (xfail) and `append`, `reverse` (skip). `elixir` and
+`scala` pass the whole spec.
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
