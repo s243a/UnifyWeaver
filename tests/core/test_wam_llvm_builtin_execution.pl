@@ -2459,6 +2459,28 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M88: gethostname/1 -- libc gethostname() wrapper.
+
+:- dynamic test_ghn_nonempty/2.
+test_ghn_nonempty(_, R) :-
+    gethostname(H),
+    atom_length(H, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ghn_stable/2.
+test_ghn_stable(_, R) :-
+    % Two gethostname calls in the same process must return the
+    % same atom (host name doesn''t change mid-run).
+    gethostname(H1),
+    gethostname(H2),
+    ( H1 == H2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ghn_not_empty_atom/2.
+test_ghn_not_empty_atom(_, R) :-
+    % Hostname should not be the empty atom.
+    gethostname(H),
+    ( H \== '' -> R is 1 ; R is 0 ).   % 1
+
 % M87: get_time/1 upgraded to nanosecond precision (clock_gettime).
 
 :- dynamic test_gt87_short_sleep/2.
@@ -2517,19 +2539,19 @@ test_sleep_tiny(_, R) :-
 
 :- dynamic test_sleep_elapsed_float/2.
 test_sleep_elapsed_float(_, R) :-
-    % Verify sleep actually waits. M72 get_time/1 has whole-second
-    % resolution (libc time()), so use sleep(1.0) and floor at 0.5
-    % seconds. Boundary case (T0 captured at S, T1 at S+1) still
-    % gives Diff=1.
+    % M88: tightened from sleep(1.0) -> sleep(0.05) now that M87
+    % gave get_time/1 nanosecond resolution. 50ms wait with a 40ms
+    % floor for slow CI machines.
     get_time(T0),
-    sleep(1.0),
+    sleep(0.05),
     get_time(T1),
     Diff is T1 - T0,
-    ( Diff >= 0.5 -> R is 1 ; R is 0 ).   % 1
+    ( Diff >= 0.04 -> R is 1 ; R is 0 ).   % 1
 
 :- dynamic test_sleep_elapsed_int/2.
 test_sleep_elapsed_int(_, R) :-
-    % Same shape but Integer argument exercising the from_int branch.
+    % Integer-arg branch needs a whole number of seconds; keep
+    % sleep(1) here with the original 0.5s floor.
     get_time(T0),
     sleep(1),
     get_time(T1),
@@ -3723,6 +3745,12 @@ miss:
     catch(delete_file(OPath), _, true),
     catch(delete_file(BinPath), _, true),
     clear_llvm_foreign_kernel_specs,
+    % M88: 600+ run_test invocations in one swipl session accumulate
+    % large IR-string intermediates on the global stack; tripped a 4GB
+    % stack-limit OOM around test_write_rem. Force a GC + trim of
+    % stack/heap between tests to keep memory bounded.
+    garbage_collect,
+    trim_stacks,
     assertion(ExitCode =:= Expected).
 
 % Runner for is/2 predicates: result ends up in A1 (reg 0) due to WAM register layout.
@@ -3811,6 +3839,12 @@ miss:
     catch(delete_file(OPath), _, true),
     catch(delete_file(BinPath), _, true),
     clear_llvm_foreign_kernel_specs,
+    % M88: 600+ run_test invocations in one swipl session accumulate
+    % large IR-string intermediates on the global stack; tripped a 4GB
+    % stack-limit OOM around test_write_rem. Force a GC + trim of
+    % stack/heap between tests to keep memory bounded.
+    garbage_collect,
+    trim_stacks,
     assertion(ExitCode =:= Expected).
 
 test_all :-
@@ -4642,6 +4676,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M88 gethostname/1 ---~n'),
+       run_test_r0('gethostname(H), length(H) > 0 -> 1',
+                   test_ghn_nonempty, 0, 1),
+       run_test_r0('gethostname stable across calls -> 1',
+                   test_ghn_stable, 0, 1),
+       run_test_r0('gethostname \\= empty atom -> 1',
+                   test_ghn_not_empty_atom, 0, 1),
        format('--- M87 get_time/1 nanosecond precision ---~n'),
        run_test_r0('sleep(0.05) elapsed in [0.04, 0.5) -> 1',
                    test_gt87_short_sleep, 0, 1),
@@ -4656,7 +4697,7 @@ test_all :-
                    test_sleep_float_zero, 0, 1),
        run_test_r0('sleep(0.001) -> 1',
                    test_sleep_tiny, 0, 1),
-       run_test_r0('sleep(1.0) elapsed >= 0.5 -> 1',
+       run_test_r0('sleep(0.05) elapsed >= 0.04 -> 1 (M87 tightened)',
                    test_sleep_elapsed_float, 0, 1),
        run_test_r0('sleep(1) elapsed >= 0.5 -> 1',
                    test_sleep_elapsed_int, 0, 1),
