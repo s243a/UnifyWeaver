@@ -444,11 +444,17 @@ Evidence:
   `reverse_csr_index_bytes=118672`, and `reverse_csr_values_bytes=100908`;
   `50k_cats` has `category_parent_tsv_bytes=10126909`,
   `reverse_csr_index_bytes=678752`, and `reverse_csr_values_bytes=787600`.
-- A constrained full-generated `50k_cats` matrix attempt over
+- Before assoc-backed category-ID lookup in CSR generation, a constrained
+  full-generated `50k_cats` matrix attempt over
   `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
-  several minutes. The compile-only phase split above explains the missing
-  rows: the large-scale blocker is currently generated WAM-C project creation,
-  not query execution.
+  several minutes. The old compile-only phase split above explains that missing
+  row: project generation alone was multi-minute.
+- After assoc-backed category-ID lookup in CSR generation, a bounded
+  single-target generated `50k_cats` run for
+  `c-wam-accumulated-child-csr` timed out at `300s` with no matrix row. Since
+  compile-only for that target is now `17.796s`, the remaining full-generated
+  ceiling is generated execution, result enumeration, query volume, or runner
+  output timing rather than CSR file creation.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -498,9 +504,9 @@ Open measurement:
 
 - Runtime setup is no longer the large `50k_cats` ceiling in the narrow
   runner, and full generated-project compile-only generation is no longer the
-  multi-minute ceiling after assoc-backed CSR ID lookup. The next measurement
-  should run the generated `50k_cats` child-CSR target, not just compile it,
-  to see whether result enumeration or query count becomes the next blocker.
+  multi-minute ceiling after assoc-backed CSR ID lookup. A bounded generated
+  `50k_cats` child-CSR run still timed out at `300s`, so the next measurement
+  should split generated execution from result enumeration and query volume.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -698,10 +704,11 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Run the generated `50k_cats` WAM-C child-CSR target now that compile-only
-generation is down to about `18s` and narrow runtime setup is down to about
-`145ms`. That should identify whether result enumeration, query volume, or
-full runner overhead is now the next scale ceiling. Keep
+Add a generated-runtime probe or root/query caps for the `50k_cats` WAM-C
+child-CSR target now that compile-only generation is down to about `18s` and
+narrow runtime setup is down to about `145ms`. The probe should report enough
+timing to separate process startup, query execution, first result emission, and
+full result enumeration. Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
