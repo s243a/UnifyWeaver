@@ -2073,6 +2073,7 @@ is_builtin_pred(size_file, 2).          % size_file(+Path, -Size).
 is_builtin_pred(time_file, 2).          % time_file(+Path, -Time).
 is_builtin_pred(getenv, 2).             % getenv(+Name, -Value).
 is_builtin_pred(setenv, 2).             % setenv(+Name, +Value).
+is_builtin_pred(unsetenv, 1).           % unsetenv(+Name).
 is_builtin_pred(shell, 1).              % shell(+Command).
 is_builtin_pred(shell, 2).              % shell(+Command, -Status).
 is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).
