@@ -1472,6 +1472,7 @@ declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
 declare i32 @getpid()
+declare i32 @usleep(i32)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3523,6 +3524,7 @@ entry:
     i32 102, label %builtin_shell2
     i32 103, label %builtin_working_directory
     i32 104, label %builtin_getpid
+    i32 105, label %builtin_sleep
   ]
 
 builtin_is:
@@ -4778,6 +4780,40 @@ builtin_getpid:
   %gp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gp.raw1, %Value %gp.v)
   ret i1 %gp.ok
+
+builtin_sleep:
+  ; M86: sleep(+Seconds) -- accepts Integer or Float seconds and
+  ; calls libc usleep(microseconds). usleep takes i32, so very
+  ; long sleeps (more than ~71 minutes) silently truncate; for
+  ; typical usage this is fine. Returns success unconditionally
+  ; once the call returns (any signal that woke usleep early
+  ; still counts as a successful sleep). Prefix ``slp.'' to avoid
+  ; the ``sl.'' collision with builtin_sum_list (M42).
+  %slp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %slp.t1 = extractvalue %Value %slp.a1, 0
+  %slp.is_int = icmp eq i32 %slp.t1, 1
+  %slp.is_float = icmp eq i32 %slp.t1, 2
+  %slp.is_num = or i1 %slp.is_int, %slp.is_float
+  br i1 %slp.is_num, label %slp.dispatch, label %slp.fail
+slp.fail:
+  ret i1 false
+slp.dispatch:
+  br i1 %slp.is_float, label %slp.from_float, label %slp.from_int
+slp.from_int:
+  %slp.sec_i = extractvalue %Value %slp.a1, 1
+  %slp.us_int = mul i64 %slp.sec_i, 1000000
+  br label %slp.do_sleep
+slp.from_float:
+  %slp.sec_bits = extractvalue %Value %slp.a1, 1
+  %slp.sec_d = bitcast i64 %slp.sec_bits to double
+  %slp.us_d = fmul double %slp.sec_d, 1.000000e+06
+  %slp.us_flt = fptosi double %slp.us_d to i64
+  br label %slp.do_sleep
+slp.do_sleep:
+  %slp.us = phi i64 [ %slp.us_int, %slp.from_int ], [ %slp.us_flt, %slp.from_float ]
+  %slp.us32 = trunc i64 %slp.us to i32
+  call i32 @usleep(i32 %slp.us32)
+  ret i1 true
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11589,6 +11625,7 @@ builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff ex
 builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
 builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
 builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
+builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
