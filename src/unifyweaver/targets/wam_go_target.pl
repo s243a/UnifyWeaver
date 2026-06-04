@@ -1143,9 +1143,22 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
             wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, RestLabels)
         ;   % Instruction line
             wam_line_to_go_literal(CleanParts, PredIndicator, Options, GoLit),
-            GoLits = [GoLit | RestLits],
-            NPC is PC + 1,
-            wam_lines_to_go(Rest, NPC, PredIndicator, Options, RestLits, Labels)
+            (   sub_atom(GoLit, 0, 2, _, '//')
+            ->  % Non-instruction placeholder: some unimplemented ops (e.g.
+                % arg/3 in certain modes) emit a `// TODO ...` comment instead
+                % of a real instruction. Go ignores comment lines, so they
+                % occupy NO slot in the runtime instruction array. They must
+                % therefore not advance PC or be counted in InstrCount —
+                % otherwise every predicate emitted after them gets a StartPC
+                % shifted by the number of comments, so it is entered past its
+                % prologue (e.g. skipping the put_variable that allocates a
+                % findall template), silently corrupting execution. Skip the
+                % comment entirely so PC accounting matches the emitted array.
+                wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
+            ;   GoLits = [GoLit | RestLits],
+                NPC is PC + 1,
+                wam_lines_to_go(Rest, NPC, PredIndicator, Options, RestLits, Labels)
+            )
         )
     ).
 

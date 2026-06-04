@@ -775,6 +775,38 @@ func (vm *WamState) valueListHeadTail(v Value) (Value, Value, bool) {
 	return nil, nil, false
 }
 
+// termIdentical implements ==/2 (and, negated, \==/2) with list-representation
+// normalization. findall/aggregate build flat *List values while list literals
+// and put_list/put_structure build heap-linked cons cells, so a shallow
+// valueEquals sees the two representations of the same logical list as unequal
+// (e.g. *List{[a,b,c]} vs *List{[a, _heapTail]}). Mirror Unify's
+// valueListHeadTail walk — but without binding anything — so the two
+// representations of one logical list compare equal under ==/2. Atomics,
+// numbers and variables fall back to valueEquals (variable identity by Idx).
+func (vm *WamState) termIdentical(a, b Value) bool {
+	a = vm.deref(a)
+	b = vm.deref(b)
+	if valueEquals(a, b) {
+		return true
+	}
+	ha, ta, oka := vm.valueListHeadTail(a)
+	hb, tb, okb := vm.valueListHeadTail(b)
+	if oka || okb {
+		return oka && okb && vm.termIdentical(ha, hb) && vm.termIdentical(ta, tb)
+	}
+	fa, argsa := decompose(a)
+	fb, argsb := decompose(b)
+	if fa != "" && fa == fb && len(argsa) == len(argsb) {
+		for i := range argsa {
+			if !vm.termIdentical(argsa[i], argsb[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // listToSlice walks a Prolog cons list and collects its elements
 // into a Go slice. Used by `length/2`, `member/2`, `append/3`, etc.
 // Iterative implementation: the previous recursive version did
@@ -1616,8 +1648,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "ground/1": return vm.groundTerm(arg1, make(map[Value]bool))
 	case "is_list/1": return isList(vm.deref(arg1))
 
-	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
-	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "==/2": return vm.termIdentical(arg1, arg2)
+	case "\\==/2": return !vm.termIdentical(arg1, arg2)
 	case "@</2":
 		return compareValues(vm.deref(arg1), vm.deref(arg2)) < 0
 	case "@=</2":
