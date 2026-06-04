@@ -1475,6 +1475,8 @@ declare i32 @chdir(i8*)
 declare i32 @getpid()
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
+declare double @drand48()
+declare i64 @lrand48()
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3529,6 +3531,8 @@ entry:
     i32 105, label %builtin_sleep
     i32 106, label %builtin_gethostname
     i32 107, label %builtin_cpu_time
+    i32 108, label %builtin_random
+    i32 109, label %builtin_random_between
   ]
 
 builtin_is:
@@ -4882,6 +4886,51 @@ builtin_cpu_time:
   %cpu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %cpu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cpu.raw1, %Value %cpu.v)
   ret i1 %cpu.ok
+
+builtin_random:
+  ; M90: random(?X) -- libc drand48() returns double in [0, 1). Pack as
+  ; Float (tag 2). Default seed is 0, so values are deterministic across
+  ; runs unless srand48 is called (not yet exposed).
+  %rnd.d = call double @drand48()
+  %rnd.bits = bitcast double %rnd.d to i64
+  %rnd.v0 = insertvalue %Value undef, i32 2, 0
+  %rnd.v = insertvalue %Value %rnd.v0, i64 %rnd.bits, 1
+  %rnd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %rnd.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rnd.raw1, %Value %rnd.v)
+  ret i1 %rnd.ok
+
+builtin_random_between:
+  ; M90: random_between(+L, +H, ?X) -- Integer X in [L, H] inclusive.
+  ; Both bounds must be Integer (tag 1); fails if either is not, or if
+  ; H < L. Implementation: lrand48() % (H - L + 1) + L. The modulo bias
+  ; is acceptable for typical small ranges (Prolog idiom).
+  %rb.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rb.t1 = extractvalue %Value %rb.a1, 0
+  %rb.is_int1 = icmp eq i32 %rb.t1, 1
+  br i1 %rb.is_int1, label %rb.check2, label %rb.fail
+rb.fail:
+  ret i1 false
+rb.check2:
+  %rb.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rb.t2 = extractvalue %Value %rb.a2, 0
+  %rb.is_int2 = icmp eq i32 %rb.t2, 1
+  br i1 %rb.is_int2, label %rb.go, label %rb.fail
+rb.go:
+  %rb.lo = extractvalue %Value %rb.a1, 1
+  %rb.hi = extractvalue %Value %rb.a2, 1
+  %rb.le = icmp sle i64 %rb.lo, %rb.hi
+  br i1 %rb.le, label %rb.draw, label %rb.fail
+rb.draw:
+  %rb.range_m1 = sub i64 %rb.hi, %rb.lo
+  %rb.range = add i64 %rb.range_m1, 1
+  %rb.raw = call i64 @lrand48()
+  %rb.mod = srem i64 %rb.raw, %rb.range
+  %rb.x = add i64 %rb.mod, %rb.lo
+  %rb.v0 = insertvalue %Value undef, i32 1, 0
+  %rb.v = insertvalue %Value %rb.v0, i64 %rb.x, 1
+  %rb.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %rb.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rb.raw3, %Value %rb.v)
+  ret i1 %rb.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11715,6 +11764,8 @@ builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
 builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
 builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
 builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
+builtin_op_to_id('random/1', 108).            % libc drand48() in [0, 1) as Float.
+builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

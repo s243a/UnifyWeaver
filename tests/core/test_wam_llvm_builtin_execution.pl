@@ -2459,6 +2459,26 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M90: random/1 + random_between/3 -- libc drand48 / lrand48 wrappers.
+
+:- dynamic test_rand_in_unit/2.
+test_rand_in_unit(_, R) :-
+    % drand48() result must satisfy 0.0 <= X < 1.0.
+    random(X),
+    ( X >= 0.0, X < 1.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rand_between_in_range/2.
+test_rand_between_in_range(_, R) :-
+    % random_between(1, 10, X), 1 <= X <= 10.
+    random_between(1, 10, X),
+    ( X >= 1, X =< 10 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rand_between_singleton/2.
+test_rand_between_singleton(_, R) :-
+    % random_between(7, 7, X) -- only valid value is 7.
+    random_between(7, 7, X),
+    ( X =:= 7 -> R is 1 ; R is 0 ).   % 1
+
 % M89: cpu_time/1 -- process CPU time via clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
 
 :- dynamic test_cpu_nonneg/2.
@@ -4705,6 +4725,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M90 random/1 + random_between/3 ---~n'),
+       run_test_r0('random(X), 0.0 <= X < 1.0 -> 1',
+                   test_rand_in_unit, 0, 1),
+       run_test_r0('random_between(1, 10, X), 1 <= X <= 10 -> 1',
+                   test_rand_between_in_range, 0, 1),
+       run_test_r0('random_between(7, 7, X) =:= 7 -> 1',
+                   test_rand_between_singleton, 0, 1),
        format('--- M89 cpu_time/1 ---~n'),
        run_test_r0('cpu_time(T), T >= 0.0 -> 1',
                    test_cpu_nonneg, 0, 1),
