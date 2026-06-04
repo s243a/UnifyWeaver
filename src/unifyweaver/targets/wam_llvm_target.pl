@@ -1459,7 +1459,10 @@ declare i32 @stat(i8*, i8*)
 declare i32 @unlink(i8*)
 declare i32 @mkdir(i8*, i32)
 declare i32 @rename(i8*, i8*)
-declare i32 @rmdir(i8*)'
+declare i32 @rmdir(i8*)
+declare i8* @getenv(i8*)
+declare i32 @setenv(i8*, i8*, i32)
+declare i64 @strlen(i8*)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3501,6 +3504,8 @@ entry:
     i32 96, label %builtin_delete_directory
     i32 97, label %builtin_size_file
     i32 98, label %builtin_time_file
+    i32 99, label %builtin_getenv
+    i32 100, label %builtin_setenv
   ]
 
 builtin_is:
@@ -4579,6 +4584,73 @@ tf.read:
   %tf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %tf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tf.raw2, %Value %tf.v)
   ret i1 %tf.ok
+
+builtin_getenv:
+  ; M77: getenv(+Name, ?Value) -- atom Name; if env var exists,
+  ; copies its value into the arena, interns as an atom, and
+  ; unifies with A2. Fails if the var is unset.
+  %gev.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gev.t1 = extractvalue %Value %gev.a1, 0
+  %gev.is_atom = icmp eq i32 %gev.t1, 0
+  br i1 %gev.is_atom, label %gev.go, label %gev.fail
+gev.fail:
+  ret i1 false
+gev.go:
+  %gev.aid = extractvalue %Value %gev.a1, 1
+  %gev.name = call i8* @wam_atom_to_string(i64 %gev.aid)
+  %gev.name_null = icmp eq i8* %gev.name, null
+  br i1 %gev.name_null, label %gev.fail, label %gev.call
+gev.call:
+  %gev.val = call i8* @getenv(i8* %gev.name)
+  %gev.val_null = icmp eq i8* %gev.val, null
+  br i1 %gev.val_null, label %gev.fail, label %gev.copy
+gev.copy:
+  ; getenv returns a pointer into the libc env block. Copy into
+  ; the arena (so the atom table owns the bytes) before interning.
+  %gev.len = call i64 @strlen(i8* %gev.val)
+  call void @wam_arena_ensure()
+  %gev.bufsize = add i64 %gev.len, 1
+  %gev.buf = call i8* @wam_arena_alloc(i64 %gev.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gev.buf, i8* %gev.val, i64 %gev.len, i1 false)
+  %gev.term = getelementptr i8, i8* %gev.buf, i64 %gev.len
+  store i8 0, i8* %gev.term
+  %gev.new_id = call i64 @wam_intern_atom(i8* %gev.buf, i64 %gev.len)
+  %gev.v0 = insertvalue %Value undef, i32 0, 0
+  %gev.v = insertvalue %Value %gev.v0, i64 %gev.new_id, 1
+  %gev.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %gev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gev.raw2, %Value %gev.v)
+  ret i1 %gev.ok
+
+builtin_setenv:
+  ; M77: setenv(+Name, +Value) -- both atoms. Calls libc
+  ; setenv(name, value, 1) -- the trailing 1 is the "overwrite"
+  ; flag, matching SWI-Prolog''s set-without-checking semantics.
+  ; Succeeds iff setenv returns 0.
+  %se.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %se.t1 = extractvalue %Value %se.a1, 0
+  %se.a1_atom = icmp eq i32 %se.t1, 0
+  br i1 %se.a1_atom, label %se.chk2, label %se.fail
+se.fail:
+  ret i1 false
+se.chk2:
+  %se.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %se.t2 = extractvalue %Value %se.a2, 0
+  %se.a2_atom = icmp eq i32 %se.t2, 0
+  br i1 %se.a2_atom, label %se.go, label %se.fail
+se.go:
+  %se.aid1 = extractvalue %Value %se.a1, 1
+  %se.name = call i8* @wam_atom_to_string(i64 %se.aid1)
+  %se.name_null = icmp eq i8* %se.name, null
+  br i1 %se.name_null, label %se.fail, label %se.go2
+se.go2:
+  %se.aid2 = extractvalue %Value %se.a2, 1
+  %se.val = call i8* @wam_atom_to_string(i64 %se.aid2)
+  %se.val_null = icmp eq i8* %se.val, null
+  br i1 %se.val_null, label %se.fail, label %se.do
+se.do:
+  %se.ret = call i32 @setenv(i8* %se.name, i8* %se.val, i32 1)
+  %se.ok = icmp eq i32 %se.ret, 0
+  ret i1 %se.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11159,6 +11231,8 @@ builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
 builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
 builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
 builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
+builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value or fail.
+builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
