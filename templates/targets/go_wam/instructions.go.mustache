@@ -102,6 +102,14 @@ func (i *BeginAggregate) instrTag() {}
 type EndAggregate struct { ValueReg int }
 func (i *EndAggregate) instrTag() {}
 
+// GetArgInto implements the `arg N, Src, Dest` WAM instruction: extract
+// argument N (1-based) of the compound/structure/list term held in
+// register Src into register Dest. Emitted by arg/3 when the source term
+// is a runtime value already in a register (e.g. arg(1, C, Y) after
+// copy_term), as opposed to the arg/3 builtin_call form.
+type GetArgInto struct { Index int; Src int; Dest int }
+func (i *GetArgInto) instrTag() {}
+
 type Proceed struct{}
 func (i *Proceed) instrTag() {}
 
