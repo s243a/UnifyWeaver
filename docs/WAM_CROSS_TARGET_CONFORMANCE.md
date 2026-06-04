@@ -24,9 +24,12 @@ entry point, so invocation is per-target:
 
 - **scala** passes the query args straight to its `GeneratedProgram`
   driver (`<predkey> <args...>` → `true`/`false`).
-- **elixir / wat** synthesise a ground 0-arity wrapper per query
-  (`ctw_N :- pred(args).`), compile it with the program, and ask whether
-  `ctw_N` succeeds. This is the shape their own runtime tests use.
+- **elixir / wat / haskell / python** synthesise a ground 0-arity wrapper
+  per query (`ctw_N :- pred(args).`), build it with the program, and ask
+  whether `ctw_N` succeeds. This is the shape their own runtime tests use.
+  (Python is interpreted — no build step; its generated `main.py` prints
+  `A_i = ...` register dumps on success and `false.` on failure, so the
+  adapter reads success as the absence of `false.`.)
 
 Each adapter is self-contained (`ct_build/4`, `ct_run/5`,
 `ct_teardown/2`); adding a backend is one adapter plus a
@@ -77,16 +80,17 @@ so any failure is reproducible from the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
-The harness is green today; the divergences below are tolerated and
-logged (an unexpected pass is logged as `XPASS` so the entry can be
-retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact. The oracle is the hand-specified expected-results table in
-`wam_conformance_fixtures.pl` (standard Prolog semantics), not any
-backend's output; among the backends, **Scala is the reference
-implementation** — it passes the whole spec. The table below is the full
-set of tracked divergences (it matches the `ct_xfail/2` / `ct_skip/2`
-facts in the harness); WAT conforms only on `ack`, and `elixir` and
-`scala` pass the whole spec.
+The harness is green today and **every registered backend — scala,
+elixir, wat, haskell, and python — now passes the whole spec** (there are
+no live `ct_xfail/2` or `ct_skip/2` entries; both are declared `dynamic`
+so they may have zero clauses). The oracle is the hand-specified
+expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
+semantics), not any backend's output; Scala was the original reference.
+The table below is the historical record of divergences the harness
+surfaced and that were fixed — each was a real backend gap, not a fixture
+artifact. (A future divergence would be tolerated and logged via a new
+`ct_xfail/2`, with an unexpected pass logged as `XPASS` so the entry can
+be retired.)
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
@@ -96,7 +100,8 @@ facts in the harness); WAT conforms only on `ack`, and `elixir` and
 | ~~wat~~ | ~~append, reverse~~ | **fixed** | Two bugs. **(1) Generation:** the `switch_on_term` first-arg index that list-recursive predicates emit had no working parser clause (`parse_term_entries` expected an old operand format), so it fell to the `unrecognized instruction → allocate` fallback — looping on warnings / failing to generate. Fixed by emitting an empty (unindexed) `switch_on_term_hdr` on register 0, mirroring `switch_on_term_a2`; the `try_me_else` chain alone is correct. **(2) Unification:** with generation working, `$unify_regs` did only **shallow** (tag+payload) equality, so a constructed cons (tag-3 `[|]/2`) would not match an already-ground list cell (tag-4) and append/reverse returned false on correct answers — the same `./2`-vs-`[|]/2` split as the other backends, plus it never recursed into elements. Replaced with recursive, cons-aware `$unify_addrs`. Both conformant; skips removed. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. The runtime also aliases native Elixir `[]` with WAM `"[]"` for direct list inputs. Now conformant; xfails removed. |
 | ~~haskell~~ | ~~member, append, reverse~~ | **fixed** | All three failed on heap-built cons lists. Four root causes, now fixed in `wam_haskell_target.pl`: (1) `unifyVal`/`unifyValues` did **no** structural unification — added a shared `unifyTerms`; (2) the cons functor `"[|]/2"` interned to its own id, distinct from `atomDot` — `intern_struct_functor/2` folds every cons spelling onto `atomDot` (the `./2`-vs-`[|]/2` class, same as the Elixir bug); (3) `GetValue` had its own inline unify bypassing the above — now routed through `unifyVal`; (4) **the multi-element bug** — building `[a\|X]` with `X` a `set_variable` tail placeholder emitted `VList [a, X]` (`X` as a 2nd *element*) and `put_structure` filling `X` did not bind the embedded var, so `addToBuilder` now emits a `Str atomDot [hd, tl]` cons cell for a partial tail and binds the placeholder var on finalize. Fixes lists of any length; xfails removed. |
-| haskell | builtins | xfail | `=/2` of two identical atoms returns false (`cbi_eq(foo)`), and `//`/`mod` evaluate incorrectly (`cbi_arith`). `fib`/`ack` pass, so `+`/`-`/comparison and `is/2` bound-LHS checking are fine — isolated builtin bugs, not the list path. |
+| ~~haskell~~ | ~~builtins~~ | **fixed** | `=/2` of two identical atoms returned false (no `BuiltinCall "=/2"` handler — added one routing through `unifyVal`), and `//`/`mod` evaluated incorrectly: the arity-stripper `takeWhile (/= '/')` truncated any operator containing `/` (so `//` → `""`). Replaced with `bareArithOp` (strips only a trailing `/<digits>`). `fib`/`ack` already passed. Now conformant; xfail removed. |
+| ~~python~~ | ~~builtins~~ | **fixed** | `cbi_arith(28)` → false: `wam_line_to_python_literal` computed the `put_structure`/`get_structure` arity with `split_string(Fn,"/","",[_,ArStr])`, which expects exactly two parts and fell back to **arity 0** for `///2` (integer division `//`). A 0-arity `//` compound carried no argument cells, so `eval_arith` could not apply it and `X is 17 // 5` failed — the same `/`-in-operator class as the Haskell/WAT `//` bugs. Added `python_functor_arity/2` (last `/`-component). The Python adapter was added to the harness in the same change; every other program already passed. |
 
 (Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
