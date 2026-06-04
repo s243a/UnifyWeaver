@@ -2459,6 +2459,43 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M87: get_time/1 upgraded to nanosecond precision (clock_gettime).
+
+:- dynamic test_gt87_short_sleep/2.
+test_gt87_short_sleep(_, R) :-
+    % Now that get_time has sub-second resolution, a 50ms sleep is
+    % observable. Both bounds:
+    %   Diff >= 0.04 -- sleep actually waited.
+    %   Diff <  0.5  -- whole-second resolution would have produced
+    %                   either 0 or >= 1, never something in [0.04, 0.5).
+    get_time(T0),
+    sleep(0.05),
+    get_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.04, Diff < 0.5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gt87_ms_count/2.
+test_gt87_ms_count(_, R) :-
+    % truncate((T1 - T0) * 1000) should land in roughly [40, 200] for
+    % a 50ms sleep. Just verify >= 40 here -- the upper bound is
+    % machine-dependent.
+    get_time(T0),
+    sleep(0.05),
+    get_time(T1),
+    Ms is truncate((T1 - T0) * 1000),
+    ( Ms >= 40 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gt87_fractional/2.
+test_gt87_fractional(_, R) :-
+    % Verify there''s actually a non-integer part in the value. For a
+    % nanosecond-resolution clock the fractional part is essentially
+    % never zero. Use floor() (M18) and subtract; if the diff is
+    % strictly > 0.0 the clock has sub-second precision.
+    get_time(T),
+    Whole is floor(T),
+    Frac is T - Whole,
+    ( Frac > 0.0 -> R is 1 ; R is 0 ).   % 1
+
 % M86: sleep/1 -- libc usleep wrapper.
 
 :- dynamic test_sleep_zero/2.
@@ -4605,6 +4642,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M87 get_time/1 nanosecond precision ---~n'),
+       run_test_r0('sleep(0.05) elapsed in [0.04, 0.5) -> 1',
+                   test_gt87_short_sleep, 0, 1),
+       run_test_r0('sleep(0.05) ms_count >= 40 -> 1',
+                   test_gt87_ms_count, 0, 1),
+       run_test_r0('get_time(T), T - floor(T) > 0.0 -> 1',
+                   test_gt87_fractional, 0, 1),
        format('--- M86 sleep/1 ---~n'),
        run_test_r0('sleep(0) -> 1',
                    test_sleep_zero, 0, 1),
