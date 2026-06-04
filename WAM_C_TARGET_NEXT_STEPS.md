@@ -461,6 +461,13 @@ Evidence:
   result rows. A one-article/all-root run completed `4054` queries in `1.509s`
   of generated runtime with `setup_ms=124.893`, `query_ms=1370.613`, one
   result row, and `first_result_ms=990.534`.
+- After pre-indexing generated article-category rows by article, the same
+  `100`-query cap completed in `0.165s` of generated runtime with
+  `setup_ms=127.881` and `query_ms=21.676`. The same one-article/all-root run
+  completed in `0.721s` of generated runtime with `setup_ms=132.850`,
+  `query_ms=569.122`, one result row, and `first_result_ms=387.293`. An
+  uncapped `10k` `c-wam-accumulated-child-csr` smoke produced the same `5262`
+  rows in `5.406s`, down from the earlier `6.503s` sorted-array CSR row.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -510,10 +517,10 @@ Open measurement:
 
 - Runtime setup is no longer the large `50k_cats` ceiling in the narrow
   runner, and full generated-project compile-only generation is no longer the
-  multi-minute ceiling after assoc-backed CSR ID lookup. Generated-runner caps
-  now show the full runner still has a query-shape ceiling: each article/root
-  pair scans all `ARTICLE_CATEGORY_COUNT` rows before attempting paths for the
-  current article.
+  multi-minute ceiling after assoc-backed CSR ID lookup. Generated article-row
+  slicing removes the full `ARTICLE_CATEGORY_COUNT` scan from each query. The
+  remaining full-runner ceiling is the Cartesian `ARTICLE_COUNT * ROOT_COUNT`
+  query product plus per-query WAM/path collection cost.
 - Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
   copying every parent edge into `WamState` when the hot query path uses the
   sorted child CSR plus parent-child index.
@@ -711,10 +718,9 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Pre-index generated WAM-C article-category rows by article so each
-article/root query scans only the current article's category slice instead of
-all `ARTICLE_CATEGORY_COUNT` rows. Keep the generated runtime caps for
-large-scale diagnosis, keep
+Avoid using full generated `50k_cats` matrix runs as the next diagnostic until
+the runner can accept sampled or explicit article/root query lists. Keep the
+generated runtime caps for large-scale diagnosis, keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

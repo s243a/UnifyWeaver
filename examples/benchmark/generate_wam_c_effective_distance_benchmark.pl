@@ -815,9 +815,7 @@ int main(void) {
 effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexOptions,
                              Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
-    c_pair_arrays('ARTICLE_IDS', 'ARTICLE_CATS', ArticleCategories, ArticleArrays),
-    pairs_keys(ArticleCategories, ArticleIds0),
-    sort(ArticleIds0, ArticleIds),
+    c_article_category_arrays(ArticleCategories, ArticleIds, ArticleArrays),
     c_string_array('ARTICLE_COUNT', 'ARTICLES', ArticleIds, ArticlesArray),
     c_string_array('ROOT_COUNT', 'ROOTS', RootCategories, RootArray),
     kernel_mode_flag(KernelMode, KernelFlag),
@@ -1157,8 +1155,9 @@ int main(void) {
             }
             queries++;
             double weight_sum = 0.0;
-            for (int ci = 0; ci < ARTICLE_CATEGORY_COUNT; ci++) {
-                if (strcmp(ARTICLE_IDS[ci], ARTICLES[ai]) != 0) continue;
+            int category_start = ARTICLE_CATEGORY_STARTS[ai];
+            int category_end = ARTICLE_CATEGORY_ENDS[ai];
+            for (int ci = category_start; ci < category_end; ci++) {
                 WamIntResults hops;
                 WamDoubleResults path_costs;
                 wam_int_results_init(&hops);
@@ -1309,15 +1308,36 @@ reverse_index_teardown_call(ReverseIndexOptions,
     !.
 reverse_index_teardown_call(_, '').
 
-c_pair_arrays(NamesName, ValuesName, Pairs, Code) :-
-    pairs_keys(Pairs, Keys),
-    pairs_values(Pairs, Values),
+c_article_category_arrays(Pairs, ArticleIds, Code) :-
+    msort(Pairs, SortedPairs),
+    pairs_keys(SortedPairs, Keys),
+    pairs_values(SortedPairs, Values),
+    sort(Keys, ArticleIds),
+    article_category_ranges(ArticleIds, SortedPairs, Starts, Ends),
     c_string_initializer(Keys, KeyInit),
     c_string_initializer(Values, ValueInit),
-    length(Pairs, Count),
+    c_int_initializer(Starts, StartInit),
+    c_int_initializer(Ends, EndInit),
+    length(SortedPairs, Count),
     format(atom(Code),
-           'static const int ARTICLE_CATEGORY_COUNT = ~w;\nstatic const char *~w[] = { ~w };\nstatic const char *~w[] = { ~w };',
-           [Count, NamesName, KeyInit, ValuesName, ValueInit]).
+           'static const int ARTICLE_CATEGORY_COUNT = ~w;\nstatic const char *ARTICLE_IDS[] = { ~w };\nstatic const char *ARTICLE_CATS[] = { ~w };\nstatic const int ARTICLE_CATEGORY_STARTS[] = { ~w };\nstatic const int ARTICLE_CATEGORY_ENDS[] = { ~w };',
+           [Count, KeyInit, ValueInit, StartInit, EndInit]).
+
+article_category_ranges(ArticleIds, SortedPairs, Starts, Ends) :-
+    article_category_ranges(ArticleIds, SortedPairs, 0, Starts, Ends).
+
+article_category_ranges([], [], _Offset, [], []).
+article_category_ranges([Article|Articles], Pairs0, Offset,
+                        [Offset|Starts], [End|Ends]) :-
+    take_article_category_rows(Pairs0, Article, Count, Pairs),
+    End is Offset + Count,
+    article_category_ranges(Articles, Pairs, End, Starts, Ends).
+
+take_article_category_rows([Article-_|Rest], Article, Count, Remaining) :-
+    !,
+    take_article_category_rows(Rest, Article, Count0, Remaining),
+    Count is Count0 + 1.
+take_article_category_rows(Remaining, _Article, 0, Remaining).
 
 c_string_array(CountName, Name, Values, Code) :-
     c_string_initializer(Values, Init),
@@ -1329,6 +1349,13 @@ c_string_array(CountName, Name, Values, Code) :-
 c_string_initializer(Values, Init) :-
     maplist(c_string_literal, Values, Literals),
     atomic_list_concat(Literals, ', ', Init).
+
+c_int_initializer(Values, Init) :-
+    maplist(format_int_atom, Values, Literals),
+    atomic_list_concat(Literals, ', ', Init).
+
+format_int_atom(Value, Atom) :-
+    format(atom(Atom), '~w', [Value]).
 
 c_string_literal(Value, Literal) :-
     format(atom(Raw), '~w', [Value]),

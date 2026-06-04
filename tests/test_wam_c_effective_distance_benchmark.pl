@@ -68,6 +68,22 @@ test_generated_runner_bounds_kernel_heap :-
     ;   fail_test(Test, 'generated runner does not bound/reset kernel heap cells')
     ).
 
+test_generated_runner_indexes_article_categories :-
+    Test = 'WAM-C effective-distance: generated runner indexes article categories',
+    (   unique_tmp_dir(article_category_index, OutputDir),
+        write_test_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Main, _, _, _, 'ARTICLE_CATEGORY_STARTS'),
+        sub_string(Main, _, _, _, 'ARTICLE_CATEGORY_ENDS'),
+        sub_string(Main, _, _, _, 'int category_start = ARTICLE_CATEGORY_STARTS[ai];'),
+        sub_string(Main, _, _, _, 'for (int ci = category_start; ci < category_end; ci++)'),
+        \+ sub_string(Main, _, _, _, 'strcmp(ARTICLE_IDS[ci], ARTICLES[ai])')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated runner did not use article-category slices')
+    ).
+
 test_generate_and_run_lmdb_if_available :-
     Test = 'WAM-C effective-distance: facts_lmdb generated runner emits expected result',
     (   lmdb_toolchain_available
@@ -587,6 +603,7 @@ run_tests_once :-
     test_generate_and_run_kernels_off,
     test_generate_lmdb_mode_files,
     test_generated_runner_bounds_kernel_heap,
+    test_generated_runner_indexes_article_categories,
     test_generate_and_run_lmdb_if_available,
     test_generated_runner_supports_runtime_caps,
     test_generate_and_run_bounded_child_search,
