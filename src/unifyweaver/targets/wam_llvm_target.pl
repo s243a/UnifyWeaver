@@ -1463,7 +1463,10 @@ declare i32 @rmdir(i8*)
 declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
 declare i64 @strlen(i8*)
-declare i32 @system(i8*)'
+declare i32 @system(i8*)
+declare i8* @getcwd(i8*, i64)
+declare i32 @chdir(i8*)
+declare i32 @getpid()'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -3509,6 +3512,8 @@ entry:
     i32 100, label %builtin_setenv
     i32 101, label %builtin_shell1
     i32 102, label %builtin_shell2
+    i32 103, label %builtin_working_directory
+    i32 104, label %builtin_getpid
   ]
 
 builtin_is:
@@ -4705,6 +4710,65 @@ sh2.run:
   %sh2.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %sh2.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sh2.raw2, %Value %sh2.v)
   ret i1 %sh2.ok
+
+builtin_working_directory:
+  ; M79: working_directory(?Old, ?New) -- unifies Old with the
+  ; current CWD read via getcwd. If New is an atom, chdir to
+  ; that path; if New is unbound, it gets unified with Old as
+  ; well (the canonical ``query mode'' for working_directory(D,D)).
+  ; 4096-byte stack buffer covers PATH_MAX on Linux.
+  %wd.buf = alloca [4096 x i8]
+  %wd.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %wd.buf, i32 0, i32 0
+  %wd.got = call i8* @getcwd(i8* %wd.buf_ptr, i64 4096)
+  %wd.got_null = icmp eq i8* %wd.got, null
+  br i1 %wd.got_null, label %wd.fail, label %wd.intern
+wd.fail:
+  ret i1 false
+wd.intern:
+  ; Copy the cwd string into the arena, intern, build atom Value.
+  %wd.len = call i64 @strlen(i8* %wd.buf_ptr)
+  call void @wam_arena_ensure()
+  %wd.bufsize = add i64 %wd.len, 1
+  %wd.arena = call i8* @wam_arena_alloc(i64 %wd.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %wd.arena, i8* %wd.buf_ptr, i64 %wd.len, i1 false)
+  %wd.term = getelementptr i8, i8* %wd.arena, i64 %wd.len
+  store i8 0, i8* %wd.term
+  %wd.aid = call i64 @wam_intern_atom(i8* %wd.arena, i64 %wd.len)
+  %wd.v0 = insertvalue %Value undef, i32 0, 0
+  %wd.cwd_v = insertvalue %Value %wd.v0, i64 %wd.aid, 1
+  %wd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wd.u1 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw1, %Value %wd.cwd_v)
+  br i1 %wd.u1, label %wd.chk_new, label %wd.fail
+wd.chk_new:
+  ; Inspect New (reg 1, deref). Atom -> chdir; anything else
+  ; (typically an unbound var) -> unify it with CWD, no chdir.
+  %wd.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wd.t2 = extractvalue %Value %wd.a2, 0
+  %wd.is_atom = icmp eq i32 %wd.t2, 0
+  br i1 %wd.is_atom, label %wd.chdir, label %wd.unify_new
+wd.unify_new:
+  %wd.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %wd.u2 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw2, %Value %wd.cwd_v)
+  ret i1 %wd.u2
+wd.chdir:
+  %wd.aid2 = extractvalue %Value %wd.a2, 1
+  %wd.path = call i8* @wam_atom_to_string(i64 %wd.aid2)
+  %wd.path_null = icmp eq i8* %wd.path, null
+  br i1 %wd.path_null, label %wd.fail, label %wd.dochdir
+wd.dochdir:
+  %wd.ret = call i32 @chdir(i8* %wd.path)
+  %wd.ok = icmp eq i32 %wd.ret, 0
+  ret i1 %wd.ok
+
+builtin_getpid:
+  ; M79: getpid(?Pid) -- unifies Pid with the process id from
+  ; libc getpid() as Integer. Always succeeds (getpid cannot fail).
+  %gp.pid = call i32 @getpid()
+  %gp.pid64 = sext i32 %gp.pid to i64
+  %gp.v = call %Value @value_integer(i64 %gp.pid64)
+  %gp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gp.raw1, %Value %gp.v)
+  ret i1 %gp.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11289,6 +11353,8 @@ builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value 
 builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
 builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
 builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
+builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
+builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================

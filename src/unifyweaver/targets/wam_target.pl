@@ -2075,6 +2075,8 @@ is_builtin_pred(getenv, 2).             % getenv(+Name, -Value).
 is_builtin_pred(setenv, 2).             % setenv(+Name, +Value).
 is_builtin_pred(shell, 1).              % shell(+Command).
 is_builtin_pred(shell, 2).              % shell(+Command, -Status).
+is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).
+is_builtin_pred(getpid, 1).             % getpid(-Pid).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

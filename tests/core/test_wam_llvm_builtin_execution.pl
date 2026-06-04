@@ -2459,6 +2459,41 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M79: working_directory/2 + getpid/1 -- libc getcwd/chdir/getpid.
+
+:- dynamic test_wd_query/2.
+test_wd_query(_, R) :-
+    % Query mode: working_directory(D, D) -- after the call D is
+    % bound to CWD; no chdir happens. CWD should not be empty.
+    working_directory(D, D),
+    atom_length(D, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_chdir/2.
+test_wd_chdir(_, R) :-
+    % Save current CWD, chdir to /tmp, read CWD again, restore.
+    working_directory(Old, '/tmp'),
+    working_directory(New, New),
+    working_directory(_, Old),
+    ( New == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wd_fail/2.
+test_wd_fail(_, R) :-
+    % chdir to a non-existent directory must fail (ENOENT).
+    ( working_directory(_, '/nonexistent/uw_m79_dir') -> R is 1 ; R is 0 ).   % 0
+
+:- dynamic test_getpid_pos/2.
+test_getpid_pos(_, R) :-
+    getpid(P),
+    ( P > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_getpid_stable/2.
+test_getpid_stable(_, R) :-
+    % Two getpid calls in the same process should return the same value.
+    getpid(P1),
+    getpid(P2),
+    ( P1 =:= P2 -> R is 1 ; R is 0 ).   % 1
+
 % M78: shell/1 + shell/2 -- libc system() process spawn.
 
 :- dynamic test_sh1_true/2.
@@ -4361,6 +4396,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M79 working_directory/2 + getpid/1 ---~n'),
+       run_test_r0('working_directory(D, D) query -> 1',
+                   test_wd_query, 0, 1),
+       run_test_r0('working_directory chdir/restore roundtrip -> 1',
+                   test_wd_chdir, 0, 1),
+       run_test_r0('working_directory chdir to /nonexistent -> 0',
+                   test_wd_fail, 0, 0),
+       run_test_r0('getpid(P), P > 0 -> 1',
+                   test_getpid_pos, 0, 1),
+       run_test_r0('getpid stable across calls -> 1',
+                   test_getpid_stable, 0, 1),
        format('--- M78 shell/1 + shell/2 ---~n'),
        run_test_r0('shell(true) -> 1',
                    test_sh1_true, 0, 1),
