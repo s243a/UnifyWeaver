@@ -132,11 +132,17 @@ ct_xfail(wat, builtins).
 %      tail and binds the placeholder var on finalize. This fixed member,
 %      append, AND reverse on lists of any length; the xfails are removed.
 %
-%  builtins remains: =/2 of two identical atoms returns false
-%  (cbi_eq(foo)), and // (integer div) / mod evaluate incorrectly
-%  (cbi_arith). fib/ack pass, so +/-/comparison and is/2 bound-LHS
-%  checking work — these are isolated builtin bugs, not the list path.
-ct_xfail(haskell, builtins).
+%  builtins USED to be xfail (=/2 and //,mod). Both fixed in
+%  wam_haskell_target.pl:
+%   - // (interns as "///2") and / ("//2") evaluated to Nothing because
+%     the arity-stripper used takeWhile (/= '/'), which truncates any
+%     operator that contains '/'. Replaced with bareArithOp, which strips
+%     only a trailing /<digits>. (cbi_arith's 17//5 + 17 mod 5 now folds.)
+%   - =/2 is emitted by the compiler as BuiltinCall "=/2" but had no
+%     handler, so it fell to the default branch and always failed
+%     (cbi_eq(foo) -> false). Added a handler routing through unifyVal.
+%  fib/ack already passed, so +/-/comparison and is/2 bound-LHS checking
+%  were fine; with these two fixes the Haskell adapter is fully green.
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).

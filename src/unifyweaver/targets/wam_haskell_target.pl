@@ -2330,6 +2330,17 @@ step !ctx s (BuiltinCall "is/2" _) =
     (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- =/2 is term unification (the compiler emits it as a BuiltinCall rather
+-- than inline get/put instructions). Route through unifyVal so it handles
+-- constants, var binding, and full structural unification of compounds
+-- (and advances PC on success). Without this it fell to the default
+-- BuiltinCall branch and always failed (cbi_eq(foo) -> false).
+step !ctx s (BuiltinCall "=/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b) ->
+      unifyVal (derefVar (wsBindings s) a) (derefVar (wsBindings s) b) s
+    _ -> Nothing
+
 step !ctx s (BuiltinCall "length/2" _) =
   let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 1 (wsRegs s))
   in case listVal of
@@ -5083,6 +5094,18 @@ isoMetaBuiltinArity pred = case pred of
 
 -- | Evaluate arithmetic expression. InternTable needed for reverse
 -- lookup of atom strings (numeric atom parsing, operator names).
+-- Strip a trailing "/<arity>" from a functor name (e.g. "+/2" -> "+",
+-- "mod/2" -> "mod"). Must NOT use takeWhile (/= ''/''): operators that
+-- contain ''/'' themselves -- "//" (interns as "///2") and "/" ("//2") --
+-- would be truncated to "", making integer div and float div evaluate to
+-- Nothing and silently failing the whole `is/2` goal.
+bareArithOp :: String -> String
+bareArithOp name =
+  case break (== ''/'') (reverse name) of
+    (revArity, ''/'' : revHead)
+      | not (null revArity) && all (`elem` "0123456789") revArity -> reverse revHead
+    _ -> name
+
 evalArith :: InternTable -> IM.IntMap Value -> Value -> Maybe Double
 evalArith _ _ (Integer n) = Just (fromIntegral n)
 evalArith _ _ (Float f) = Just f
@@ -5091,7 +5114,7 @@ evalArith tbl _ (Atom aid) = case reads (lookupAtom tbl aid) of
   _ -> Nothing
 evalArith tbl bindings (Str opId [a]) = do
   va <- evalArith tbl bindings (derefVar bindings a)
-  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
+  let bareOp = bareArithOp (lookupAtom tbl opId)
   case bareOp of
     "-" -> Just (negate va)
     "abs" -> Just (abs va)
@@ -5099,7 +5122,7 @@ evalArith tbl bindings (Str opId [a]) = do
 evalArith tbl bindings (Str opId [a, b]) = do
   va <- evalArith tbl bindings (derefVar bindings a)
   vb <- evalArith tbl bindings (derefVar bindings b)
-  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
+  let bareOp = bareArithOp (lookupAtom tbl opId)
   case bareOp of
     "+" -> Just (va + vb)
     "-" -> Just (va - vb)
