@@ -2383,6 +2383,8 @@ void wam_free_state(WamState *state) {
     free(state->category_edges);
     free(state->category_edges_by_child);
     free(state->category_ids);
+    free(state->category_id_by_atom);
+    free(state->category_id_by_value);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
     memset(state, 0, sizeof(WamState));
@@ -2965,22 +2967,216 @@ static bool wam_state_category_child_range(WamState *state, const char *child,
     return true;
 }
 
-void wam_register_category_id(WamState *state, const char *atom, int id) {
-    const char *interned = wam_intern_atom(state, atom);
+static uint64_t wam_category_id_hash_atom(const char *atom) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)atom;
+    while (*p) {
+        h ^= (uint64_t)(*p++);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t wam_category_id_hash_value(int id) {
+    uint32_t x = (uint32_t)id;
+    x ^= x >> 16;
+    x *= 2246822519u;
+    x ^= x >> 13;
+    x *= 3266489917u;
+    x ^= x >> 16;
+    return (uint64_t)x;
+}
+
+static int wam_category_id_index_capacity(int desired_count) {
+    int needed = desired_count * 2;
+    int capacity = WAM_INITIAL_CAP;
+    while (capacity < needed && capacity < (INT_MAX / 2)) {
+        capacity *= 2;
+    }
+    return capacity;
+}
+
+static int wam_category_id_find_atom_linear(WamState *state, const char *atom) {
     for (int i = 0; i < state->category_id_count; i++) {
-        if (strcmp(state->category_ids[i].atom, interned) == 0) {
-            state->category_ids[i].id = id;
-            wam_bidirectional_distance_cache_clear(state);
+        if (strcmp(state->category_ids[i].atom, atom) == 0) return i;
+    }
+    return -1;
+}
+
+static int wam_category_id_find_value_linear(WamState *state, int id) {
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (state->category_ids[i].id == id) return i;
+    }
+    return -1;
+}
+
+static bool wam_category_id_atom_index_find(WamState *state,
+                                            const char *atom,
+                                            int *index_out) {
+    if (!state->category_id_by_atom || state->category_id_by_atom_cap <= 0) {
+        return false;
+    }
+    int mask = state->category_id_by_atom_cap - 1;
+    int slot = (int)(wam_category_id_hash_atom(atom) & (uint64_t)mask);
+    while (state->category_id_by_atom[slot].atom) {
+        if (strcmp(state->category_id_by_atom[slot].atom, atom) == 0) {
+            *index_out = state->category_id_by_atom[slot].index;
+            return true;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return false;
+}
+
+static bool wam_category_id_value_index_find(WamState *state,
+                                             int id,
+                                             int *index_out) {
+    if (!state->category_id_by_value || state->category_id_by_value_cap <= 0) {
+        return false;
+    }
+    int mask = state->category_id_by_value_cap - 1;
+    int slot = (int)(wam_category_id_hash_value(id) & (uint64_t)mask);
+    while (state->category_id_by_value[slot].occupied) {
+        if (state->category_id_by_value[slot].id == id) {
+            *index_out = state->category_id_by_value[slot].index;
+            return true;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return false;
+}
+
+static void wam_category_id_insert_atom_index(WamCategoryIdAtomIndexEntry *table,
+                                              int capacity,
+                                              const char *atom,
+                                              int index) {
+    int mask = capacity - 1;
+    int slot = (int)(wam_category_id_hash_atom(atom) & (uint64_t)mask);
+    while (table[slot].atom) {
+        if (strcmp(table[slot].atom, atom) == 0) {
+            table[slot].index = index;
             return;
         }
+        slot = (slot + 1) & mask;
+    }
+    table[slot].atom = atom;
+    table[slot].index = index;
+}
+
+static void wam_category_id_insert_value_index(WamCategoryIdValueIndexEntry *table,
+                                               int capacity,
+                                               int id,
+                                               int index,
+                                               bool replace_existing) {
+    int mask = capacity - 1;
+    int slot = (int)(wam_category_id_hash_value(id) & (uint64_t)mask);
+    while (table[slot].occupied) {
+        if (table[slot].id == id) {
+            if (replace_existing) table[slot].index = index;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+    table[slot].occupied = true;
+    table[slot].id = id;
+    table[slot].index = index;
+}
+
+static bool wam_rebuild_category_id_indexes_for_count(WamState *state,
+                                                      int desired_count) {
+    if (desired_count == 0 && state->category_id_count == 0) {
+        free(state->category_id_by_atom);
+        free(state->category_id_by_value);
+        state->category_id_by_atom = NULL;
+        state->category_id_by_value = NULL;
+        state->category_id_by_atom_cap = 0;
+        state->category_id_by_value_cap = 0;
+        return true;
+    }
+
+    int capacity = wam_category_id_index_capacity(desired_count);
+    WamCategoryIdAtomIndexEntry *atom_table =
+        calloc((size_t)capacity, sizeof(WamCategoryIdAtomIndexEntry));
+    WamCategoryIdValueIndexEntry *value_table =
+        calloc((size_t)capacity, sizeof(WamCategoryIdValueIndexEntry));
+    if (!atom_table || !value_table) {
+        free(atom_table);
+        free(value_table);
+        return false;
+    }
+
+    for (int i = 0; i < state->category_id_count; i++) {
+        wam_category_id_insert_atom_index(atom_table, capacity,
+                                          state->category_ids[i].atom, i);
+        wam_category_id_insert_value_index(value_table, capacity,
+                                           state->category_ids[i].id, i, false);
+    }
+
+    free(state->category_id_by_atom);
+    free(state->category_id_by_value);
+    state->category_id_by_atom = atom_table;
+    state->category_id_by_value = value_table;
+    state->category_id_by_atom_cap = capacity;
+    state->category_id_by_value_cap = capacity;
+    return true;
+}
+
+static bool wam_rebuild_category_id_indexes(WamState *state) {
+    return wam_rebuild_category_id_indexes_for_count(state,
+                                                    state->category_id_count);
+}
+
+static bool wam_ensure_category_id_index_capacity(WamState *state,
+                                                  int desired_count) {
+    int required_capacity = wam_category_id_index_capacity(desired_count);
+    if (state->category_id_by_atom &&
+        state->category_id_by_value &&
+        state->category_id_by_atom_cap >= required_capacity &&
+        state->category_id_by_value_cap >= required_capacity) {
+        return true;
+    }
+    return wam_rebuild_category_id_indexes_for_count(state, desired_count);
+}
+
+void wam_register_category_id(WamState *state, const char *atom, int id) {
+    const char *interned = wam_intern_atom(state, atom);
+    int existing_index = -1;
+    if (!wam_category_id_atom_index_find(state, interned, &existing_index) &&
+        (!state->category_id_by_atom || state->category_id_by_atom_cap <= 0)) {
+        existing_index = wam_category_id_find_atom_linear(state, interned);
+    }
+    if (existing_index >= 0) {
+        int old_id = state->category_ids[existing_index].id;
+        state->category_ids[existing_index].id = id;
+        if (old_id != id ||
+            !state->category_id_by_atom ||
+            !state->category_id_by_value) {
+            (void)wam_rebuild_category_id_indexes(state);
+        }
+        wam_bidirectional_distance_cache_clear(state);
+        return;
     }
     if (state->category_id_count >= state->category_id_cap) {
         state->category_id_cap = state->category_id_cap ? state->category_id_cap * 2 : WAM_INITIAL_CAP;
-        state->category_ids = realloc(state->category_ids, sizeof(WamCategoryIdEntry) * state->category_id_cap);
+        WamCategoryIdEntry *entries =
+            realloc(state->category_ids,
+                    sizeof(WamCategoryIdEntry) * (size_t)state->category_id_cap);
+        if (!entries) return;
+        state->category_ids = entries;
     }
-    state->category_ids[state->category_id_count].atom = interned;
-    state->category_ids[state->category_id_count].id = id;
+    if (!wam_ensure_category_id_index_capacity(state, state->category_id_count + 1)) {
+        return;
+    }
+    int index = state->category_id_count;
+    state->category_ids[index].atom = interned;
+    state->category_ids[index].id = id;
     state->category_id_count++;
+    wam_category_id_insert_atom_index(state->category_id_by_atom,
+                                      state->category_id_by_atom_cap,
+                                      interned, index);
+    wam_category_id_insert_value_index(state->category_id_by_value,
+                                       state->category_id_by_value_cap,
+                                       id, index, false);
     wam_bidirectional_distance_cache_clear(state);
 }
 
@@ -3499,21 +3695,23 @@ static bool wam_visited_array_contains(const char **visited, int visited_len, co
 }
 
 static bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out) {
-    for (int i = 0; i < state->category_id_count; i++) {
-        if (strcmp(state->category_ids[i].atom, atom) == 0) {
-            *id_out = state->category_ids[i].id;
-            return true;
-        }
+    int index = -1;
+    if (wam_category_id_atom_index_find(state, atom, &index) ||
+        ((!state->category_id_by_atom || state->category_id_by_atom_cap <= 0) &&
+         (index = wam_category_id_find_atom_linear(state, atom)) >= 0)) {
+        *id_out = state->category_ids[index].id;
+        return true;
     }
     return false;
 }
 
 static bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out) {
-    for (int i = 0; i < state->category_id_count; i++) {
-        if (state->category_ids[i].id == id) {
-            *atom_out = state->category_ids[i].atom;
-            return true;
-        }
+    int index = -1;
+    if (wam_category_id_value_index_find(state, id, &index) ||
+        ((!state->category_id_by_value || state->category_id_by_value_cap <= 0) &&
+         (index = wam_category_id_find_value_linear(state, id)) >= 0)) {
+        *atom_out = state->category_ids[index].atom;
+        return true;
     }
     return false;
 }

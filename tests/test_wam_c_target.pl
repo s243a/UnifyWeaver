@@ -271,6 +271,9 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
         sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
         sub_string(S, _, _, _, 'void wam_register_category_id'),
+        sub_string(S, _, _, _, 'wam_category_id_atom_index_find'),
+        sub_string(S, _, _, _, 'wam_category_id_value_index_find'),
+        sub_string(S, _, _, _, 'category_id_by_atom'),
         sub_string(S, _, _, _, 'WamBidirectionalDistanceMap'),
         sub_string(S, _, _, _, 'WamBidirectionalDistanceCacheEntry'),
         sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
@@ -3294,6 +3297,11 @@ int main(void) {
     wam_register_category_id(&state, "orphan", 20);
     wam_register_category_id(&state, "child", 30);
     wam_register_category_id(&state, "root", 40);
+    for (int i = 0; i < 130; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "extra_%d", i);
+        wam_register_category_id(&state, atom, 1000 + i);
+    }
     wam_register_category_parent(&state, "child", "root");
     wam_attach_bidirectional_child_csr(&state, &csr);
     wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",

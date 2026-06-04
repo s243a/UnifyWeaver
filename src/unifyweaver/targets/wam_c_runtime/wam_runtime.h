@@ -160,6 +160,17 @@ typedef struct {
 } WamCategoryIdEntry;
 
 typedef struct {
+    const char *atom;
+    int index;
+} WamCategoryIdAtomIndexEntry;
+
+typedef struct {
+    int id;
+    int index;
+    bool occupied;
+} WamCategoryIdValueIndexEntry;
+
+typedef struct {
     int *values;
     int count;
     int cap;
@@ -302,6 +313,10 @@ struct WamState {
     WamCategoryIdEntry *category_ids;
     int category_id_count;
     int category_id_cap;
+    WamCategoryIdAtomIndexEntry *category_id_by_atom;
+    int category_id_by_atom_cap;
+    WamCategoryIdValueIndexEntry *category_id_by_value;
+    int category_id_by_value_cap;
 
     /* Native weighted_shortest_path3 kernel data */
     WeightedEdge *weighted_edges;
