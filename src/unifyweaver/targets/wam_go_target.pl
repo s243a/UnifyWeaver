@@ -1238,6 +1238,15 @@ wam_line_to_go_literal(["get_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
+wam_line_to_go_literal(["arg", N, Src, Dest], GoLit) :-
+    % arg N, Src, Dest — extract argument N (1-based) of the term in
+    % register Src into register Dest. Previously unhandled: it fell
+    % through to the `// TODO` catch-all (a silent no-op), which is what
+    % left findall templates unbound after copy_term. Lower it to a real
+    % GetArgInto instruction.
+    clean_comma(N, CN), clean_comma(Src, CSrc), clean_comma(Dest, CDest),
+    go_reg_index(CSrc, SrcIdx), go_reg_index(CDest, DestIdx),
+    format(atom(GoLit), '&GetArgInto{Index: ~w, Src: ~w, Dest: ~w}', [CN, SrcIdx, DestIdx]).
 wam_line_to_go_literal(["get_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
@@ -1832,6 +1841,39 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
             return true
         }
         return false').
+
+wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
+        var selected Value
+        switch t := term.(type) {
+        case *Compound:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *Structure:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *List:
+            head, tail, ok := vm.listHeadTail(t)
+            if !ok {
+                return false
+            }
+            if i.Index == 1 {
+                selected = head
+            } else if i.Index == 2 {
+                selected = tail
+            } else {
+                return false
+            }
+        default:
+            return false
+        }
+        vm.trailBinding(i.Dest)
+        vm.putReg(i.Dest, selected)
+        vm.PC++
+        return true').
 
 wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.Arity)').
 
