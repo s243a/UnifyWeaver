@@ -127,6 +127,62 @@ let loadCategoryParent (env: LightningEnvironment) : Map<int, int list> =
 let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
     loadDupsortRelation env "category_child"
 
+/// Demand-set BFS.  Returns every node reachable DOWN from `root` via
+/// category_child (the descendants of `root` in the child graph).  These
+/// are exactly the nodes from which `root` is reachable going UP via
+/// category_parent, so the upward category_ancestor walk can be pruned to
+/// this set: a parent outside the demand set can never lie on a path to
+/// `root`.  Mirrors the Rust `reachable_to_root` / Haskell
+/// `computeDemandSetCursorBFS` demand BFS.
+///
+/// Uses a single short-lived read transaction + cursor over category_child
+/// (no full materialisation of the child relation).  Bounded by `maxDepth`
+/// to match the kernel's depth bound; pass Int32.MaxValue for an unbounded
+/// (always-safe, never-over-prunes) demand set.
+let reachableToRoot (env: LightningEnvironment) (root: int) (maxDepth: int) : Set<int> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("category_child", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let childrenOf (node: int) : int list =
+        let struct (rc, _, _) = cursor.SetKey(encodeI32 node)
+        if rc <> MDBResultCode.Success then []
+        else
+            let struct (_, _, v) = cursor.GetCurrent()
+            let mutable result = [decodeI32 (v.AsSpan())]
+            let mutable ok = true
+            while ok do
+                let struct (rc2, _, _) = cursor.NextDuplicate()
+                if rc2 = MDBResultCode.Success then
+                    let struct (_, _, v2) = cursor.GetCurrent()
+                    result <- decodeI32 (v2.AsSpan()) :: result
+                else ok <- false
+            result
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    let mutable depth = 0
+    while not (List.isEmpty frontier) && depth < maxDepth do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            for c in childrenOf node do
+                if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+        depth <- depth + 1
+    Set.ofSeq visited
+
+/// Load category_parent (child->parents) for LMDB-eager mode, pruned to the
+/// demand set: only edges whose endpoints lie on a possible path to `root`
+/// are retained.  Keys are restricted to demand-set nodes and each value
+/// list is filtered to demand-set parents.  The resulting Map is keyed and
+/// valued in raw LMDB int space (no string interning of the graph) and is
+/// directly usable as the kernel's `lookupParents` via WcFfiFacts.
+let loadCategoryParentDemand (env: LightningEnvironment) (demand: Set<int>) : Map<int, int list> =
+    loadCategoryParent env
+    |> Map.fold (fun acc k vs ->
+        if demand.Contains k then
+            Map.add k (vs |> List.filter demand.Contains) acc
+        else acc) Map.empty
+
 /// Load a DUPSORT database directly into a Dictionary (skipping the
 /// Map conversion). Returns O(1) lookup via DictLookupSource. Use
 /// this when the caller only needs ILookupSource access (not a Map

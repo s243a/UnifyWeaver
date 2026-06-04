@@ -74,10 +74,19 @@ generate(VariantAtom, OutputDir) :-
     format(user_error, '[WAM-FSharp-Optimized] variant=~w predicates=~w~n',
            [VariantAtom, Predicates]),
 
-    % Step 5: Generate F# WAM project with lowered emitter and parallel support
+    % Step 5: Generate F# WAM project with lowered emitter and parallel support.
+    %         LMDB variants add an int-native demand-set fact source (no TSV
+    %         graph): the kernel reads category_parent eagerly from the
+    %         Phase-1 resident LMDB, pruned to the demand set (descendants of
+    %         root via category_child).  The runtime opens <factsDir>/lmdb.
+    (   sub_atom(VariantAtom, 0, _, _, lmdb)
+    ->  variant_materialisation(VariantAtom, Materialisation),
+        LmdbOpts = [lmdb_path('lmdb'), lmdb_materialisation(Materialisation)]
+    ;   LmdbOpts = []
+    ),
     Options = [module_name('wam-fsharp-optimized-bench'),
                emit_mode(functions),
-               parallel(true)],
+               parallel(true) | LmdbOpts],
     write_wam_fsharp_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-FSharp-Optimized] Generated project at ~w~n', [OutputDir]).
 
@@ -92,6 +101,21 @@ parse_variant(accumulated, [
     min_closure(false),
     seeded_accumulation(auto)
 ]).
+% LMDB variants compile only the raw category_ancestor/4 kernel (no lowered
+% aggregate helpers), so the benchmark dispatches straight to the native
+% kernel via executeForeign -- the apples-to-apples eager comparison with the
+% Rust matrix bench, which also walks the kernel directly.
+parse_variant(lmdb_eager, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+
+%% variant_materialisation(+Variant, -Mode)
+variant_materialisation(lmdb_eager,  eager).
+variant_materialisation(lmdb_lazy,   lazy).
+variant_materialisation(lmdb_cached, cached).
+variant_materialisation(_,           eager).
 
 %% collect_wam_predicates(+Variant, -Predicates)
 %  Collect the predicate list to compile through WAM, including
@@ -101,6 +125,10 @@ collect_wam_predicates(seeded, [
     user:max_depth/1,
     user:category_ancestor/4,
     user:power_sum_bound/4
+]).
+collect_wam_predicates(lmdb_eager, [
+    user:max_depth/1,
+    user:category_ancestor/4
 ]).
 collect_wam_predicates(accumulated, [
     user:dimension_n/1,

@@ -95,18 +95,16 @@ let main argv =
 
     let sw = Stopwatch.StartNew()
 
-    // Load TSV facts
-    let categoryParents  = loadTsvPairs (System.IO.Path.Combine(factsDir, "category_parent.tsv"))
-    let articleCategories = loadTsvPairs (System.IO.Path.Combine(factsDir, "article_category.tsv"))
-    let roots            = loadSingleColumn (System.IO.Path.Combine(factsDir, "root_categories.tsv"))
-    let root = if roots.Length > 0 then roots.[0] else "Physics"
-
-    let loadMs = sw.ElapsedMilliseconds
-    eprintfn "load_ms=%d" loadMs
-
-    // Resolve call instructions
+    // Resolve call instructions (compile-time; independent of fact source).
     let foreignPreds = [ {{foreign_preds}} ]
     let resolvedCode = resolveCallInstrs allLabels foreignPreds (Array.toList allCode) |> List.toArray
+
+{{^has_lmdb}}
+    // ---- TSV fact source (in-memory, string-interned) -------------------
+    let categoryParents   = loadTsvPairs (System.IO.Path.Combine(factsDir, "category_parent.tsv"))
+    let articleCategories = loadTsvPairs (System.IO.Path.Combine(factsDir, "article_category.tsv"))
+    let roots             = loadSingleColumn (System.IO.Path.Combine(factsDir, "root_categories.tsv"))
+    let root = if roots.Length > 0 then roots.[0] else "Physics"
 
     // Build atom intern table from instructions + all TSV atoms
     let extraAtoms = seq {
@@ -119,31 +117,84 @@ let main argv =
     // Build interned FFI facts: category_parent child -> [parent ids]
     let parentsInterned = buildFfiFacts categoryParents atomIntern
 
-{{#has_lmdb}}
-    // LMDB fact source setup (materialisation mode dispatch)
-    let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
-{{match materialisation}}
-{{case eager}}
-    // Eager: load entire LMDB relation into memory for O(log n) Map lookup
-    let lmdbFactMap = loadCategoryParent lmdbEnv
-    let lmdbFactLookup (key: int) : int list =
-        Map.tryFind key lmdbFactMap |> Option.defaultValue []
-{{case lazy}}
-    // Lazy: on-demand cursor lookup, no startup materialisation cost
-    let lmdbFactSource = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
-{{default}}
-    // Cached (default): two-level L1/L2 cache over cursor lookup
-    let lmdbInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
-    let lmdbFactSource = TwoLevelCachedLookupSource(lmdbInner, maxL2Entries = {{l2_capacity}}) :> ILookupSource
-{{/match}}
-{{/has_lmdb}}
-
     // Seed categories (distinct second column of article_category)
     let seedCats =
         articleCategories
         |> Array.map snd
         |> Array.distinct
         |> Array.sort
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d" loadMs
+{{/has_lmdb}}
+{{#has_lmdb}}
+    // ---- LMDB fact source (int-native; no TSV graph, no string interning) -
+    //
+    // The Phase-1 resident LMDB stores the graph in its own int id space
+    // (s2i/i2s + category_parent/category_child keyed by those ints).  The
+    // fixture's article_category column 2 and root_ids.txt ARE those LMDB
+    // ints, so seeds and root are consumed directly as ints and the kernel
+    // recursion stays entirely in int space.  The only "interning" is an
+    // identity map over the ids that cross the WAM register boundary (seed in
+    // r1, root in r2), so Atom "4985" derefs/interns back to 4985.  This is
+    // the key parity move over the Haskell target, which string-interned the
+    // whole graph; here the graph never leaves int space.
+    let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
+
+    // Seeds: distinct ints from article_category column 2 (no header skip).
+    let seedInts =
+        System.IO.File.ReadAllLines(System.IO.Path.Combine(factsDir, "article_category.tsv"))
+        |> Array.choose (fun l ->
+            let t = l.Trim()
+            if t.Length = 0 || t.StartsWith("#") then None
+            else
+                let parts = t.Split('\t')
+                if parts.Length >= 2 then
+                    match System.Int32.TryParse(parts.[1].Trim()) with
+                    | true, v -> Some v
+                    | _ -> None
+                else None)
+        |> Array.distinct
+        |> Array.sort
+
+    // Root: first non-blank int in root_ids.txt.
+    let rootInt =
+        let rp = System.IO.Path.Combine(factsDir, "root_ids.txt")
+        match System.IO.File.ReadAllLines rp |> Array.tryFind (fun l -> l.Trim().Length > 0) with
+        | Some l -> int (l.Trim())
+        | None -> 0
+
+    // Demand-set BFS (descendants of root via category_child).  Unbounded so
+    // it can never over-prune a valid upward path; the kernel's own max_depth
+    // bounds path length.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    eprintfn "demand_set=%d" demandSet.Count
+
+    // Identity intern over the ids that cross the register boundary.
+    let atomIntern =
+        seq { yield! seedInts; yield rootInt }
+        |> Seq.distinct
+        |> Seq.map (fun i -> (string i, i))
+        |> Map.ofSeq
+    let atomDeintern = atomIntern |> Map.toSeq |> Seq.map (fun (s, i) -> (i, s)) |> Map.ofSeq
+    let seedCats = seedInts |> Array.map string
+    let root = string rootInt
+
+{{match materialisation}}
+{{case eager}}
+    // Eager: materialise the demand-pruned category_parent map (int-keyed),
+    // exposed to the kernel through WcFfiFacts.
+    let parentsInterned = loadCategoryParentDemand lmdbEnv demandSet
+{{default}}
+    // Lazy / cached demand-filtered modes land here in later stages; Stage 1
+    // ships eager only, so any materialisation flag falls back to the eager
+    // demand map -- the project still builds and runs correctly.
+    let parentsInterned = loadCategoryParentDemand lmdbEnv demandSet
+{{/match}}
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d seeds=%d" loadMs seedCats.Length
+{{/has_lmdb}}
 
     // Build WamContext
     let ctx =
@@ -209,16 +260,16 @@ let main argv =
             // Register layout depends on which queryPred resolved.  The /3
             // candidates are lowered aggregate variants whose semantics fold
             // a target root into the call shape, so A2 is the root and A3
-            // accumulates the result.  The /4 variant is the raw
-            // category_ancestor(+Cat, -Ancestor, -Hops, +Visited) -- A2 and
-            // A3 are outputs (Unbound), and A4 must be a list-valued input
-            // seeded with [Cat] so that the cycle-detection guard (negation
-            // over member/2) sees a real list rather than an unbound
-            // variable.  Without the seeded A4 the predicate fails
-            // unconditionally and the benchmark reports solutions=0.
+            // accumulates the result.  The /4 variant dispatches straight to
+            // the native category_ancestor kernel, whose register layout
+            // (recursive_kernel_detection.pl) is input(1)=cat, input(2)=ROOT,
+            // output(3)=hops, input(4)=visited.  So A2 must be the BOUND root
+            // (not an unbound output) or the kernel's `| Atom rootS ->`
+            // scrutinee never matches and every seed reports 0; A4 is seeded
+            // with [Cat] so the cycle-detection guard sees a real list.
             if queryPred.EndsWith "/4" then
                 regs.[1] <- Atom cat
-                regs.[2] <- Unbound varId
+                regs.[2] <- Atom root
                 regs.[3] <- Unbound (varId + 1)
                 regs.[4] <- VList [ Atom cat ]
             else
@@ -226,7 +277,17 @@ let main argv =
                 regs.[2] <- Atom root
                 regs.[3] <- Unbound varId
             let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
-            match dispatchCall ctx queryPred s0 with
+            // The /4 entry IS the native category_ancestor kernel: route it
+            // straight to executeForeign (via callForeign).  dispatchCall would
+            // instead run the compiled WAM bytecode for category_ancestor/4
+            // (it is present in WcLabels), which cannot resolve the
+            // category_parent fact source and so always fails.  The /3 lowered
+            // aggregates already wrap the kernel internally, so they keep the
+            // normal dispatchCall path.
+            let result =
+                if queryPred.EndsWith "/4" then callForeign ctx queryPred s0
+                else dispatchCall ctx queryPred s0
+            match result with
             | Some s1 ->
                 repSolutions <- repSolutions + 1
             | None -> ()
