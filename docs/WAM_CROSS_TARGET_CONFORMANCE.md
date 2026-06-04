@@ -70,17 +70,23 @@ Suggested CI tiers:
 - **full / nightly or pre-merge:** no sampling — every program, every
   query, every available backend.
 
+Because random sampling is nondeterministic, a real divergence can pass
+one push and fail the next, which is confusing for whoever's bisecting.
+CI should **log the `CONFORMANCE_SEED` it used** (and set one explicitly)
+so any failure is reproducible from the recorded seed.
+
 ## Known divergences (tracked as `ct_xfail/2`)
 
 The harness is green today; the divergences below are tolerated and
 logged (an unexpected pass is logged as `XPASS` so the entry can be
 retired). Each is a real backend gap the harness surfaced, not a fixture
 artifact. The oracle is the hand-specified expected-results table in
-`wam_conformance_fixtures.pl` (standard Prolog semantics); among the
-backends, **Scala is the reference implementation** — it passes the whole
-spec. The table below is the full set of tracked divergences (it matches
-the `ct_xfail/2` / `ct_skip/2` facts in the harness); WAT conforms only on
-`ack`.
+`wam_conformance_fixtures.pl` (standard Prolog semantics), not any
+backend's output; among the backends, **Scala is the reference
+implementation** — it passes the whole spec. The table below is the full
+set of tracked divergences (it matches the `ct_xfail/2` / `ct_skip/2`
+facts in the harness); WAT conforms only on `ack`, and `elixir` and
+`scala` pass the whole spec.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
@@ -88,14 +94,13 @@ the `ct_xfail/2` / `ct_skip/2` facts in the harness); WAT conforms only on
 | wat | fib | xfail | `is/2` with an already-bound LHS doesn't verify the computed value — `cfib(10,54)` returns true though `fib(10)=55` (the result is stored over the bound arg instead of being unified/checked). |
 | wat | builtins | xfail | `cbi_arith` uses `//` (integer div) and `mod`, which the WAT backend does not evaluate correctly (returns false). The comparison (`cbi_cmp`) and unification (`cbi_eq`) families are fine. |
 | wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
-| elixir | append, reverse | xfail | The lowered Elixir backend fails to unify a freshly-constructed list against an already-**ground** compound head argument: `capp([a],[b],[a,b])` returns false, while `capp([a],[b],X), X=[a,b]` succeeds. `member` passes (it only matches an input list). |
+| ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. Now conformant; xfails removed. |
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable. (`append`/`reverse` on WAT carry both an
-`ct_xfail` and a `ct_skip` fact in the harness; `ct_skip` wins — it is
-checked first — so they are never built. The shadowed xfail facts are
-harmless leftovers.)
+*generation itself* is unusable. (`append`/`reverse` on WAT are `ct_skip`
+only — they are never built; the formerly-shadowing `ct_xfail` facts have
+been removed.)
 
 ### Other backend issue surfaced (not xfail)
 
@@ -168,12 +173,33 @@ Open questions a future Haskell adapter must resolve first:
   established here (the interning bug masks it). This is worth checking
   independently of the harness.
 
-### Cross-cutting observation
+### Cross-cutting observation (investigated)
 
-The divergences the harness has found so far cluster around **matching /
-unifying heap-built compound terms**: WAT (read-mode structure unify
-unimplemented), Elixir (constructed list vs ground compound head arg),
-and the suspected Haskell path all live here. If that turns out to be one
-shared weakness in the lowering rather than N independent backend bugs,
-fixing it once would move several backends toward conformance at the same
-time — a higher-leverage option than wiring up adapters one by one.
+The divergences the harness has found cluster around **matching /
+unifying heap-built compound terms** — WAT (read-mode structure unify),
+Elixir (constructed list vs ground compound head arg), the suspected
+Haskell path. The open question was whether this is *one* shared lowering
+weakness or *N* independent backend bugs.
+
+**It is not a shared lowering bug.** The WAM lowering
+(`wam_target.pl:compile_head_arguments/5` + `compile_unify_arguments/5`)
+emits `get_structure`/`get_list`/`unify_*` identically for every backend,
+and **Scala consumes that same stream and passes the whole spec** — so
+the instruction stream is sound. The failures live in each backend's
+*runtime* implementation of the read-mode unify protocol, and they are
+distinct:
+
+- **Elixir** — a self-contained `unify/3` bug (cons-functor `./2`↔`[|]/2`
+  aliasing missing on the structural-unify path). Fixed in this pass; one
+  clause, ~6 lines. `append`/`reverse` now conformant.
+- **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
+  nops and there is no S-register / argument queue. This is a real
+  runtime feature to build, not a one-line fix.
+- **Haskell** — still unverified: the prototype driver's atom-interning
+  bug (above) masks it. Worth re-auditing `readNextArg`/`unifyValues`
+  against the now-fixed Elixir/Scala runtimes for the same cons-aliasing
+  and heap-cons `member/2` concerns once the driver is sound.
+
+So the leverage is per-backend after all, but the harness did its job:
+it pinned each divergence to a specific runtime and made the Elixir one a
+quick, verified fix.

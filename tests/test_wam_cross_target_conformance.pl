@@ -78,14 +78,15 @@ ct_default_target(elixir).
 %  match (xpass) is logged so the entry can be retired once the gap is
 %  fixed.
 %
-%  WAT member/append/reverse: WAT's runtime read-mode structure/list
-%  argument unification is unimplemented (unify_* read-mode branches are
-%  nops; no S-register), so get_structure/get_list match only the
-%  functor and element mismatches go undetected. See
-%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md.
+%  WAT member: WAT's runtime read-mode structure/list argument
+%  unification is unimplemented (unify_* read-mode branches are nops; no
+%  S-register), so get_structure/get_list match only the functor and
+%  element mismatches go undetected. See
+%  docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md. (append/reverse hit the same
+%  gap conceptually, but are ct_skip'd below — they never build — so
+%  they are NOT also xfail'd here: ct_skip is checked first and would
+%  shadow the xfail, leaving dead cruft.)
 ct_xfail(wat, member).
-ct_xfail(wat, append).
-ct_xfail(wat, reverse).
 %  WAT fib: is/2 with an already-bound LHS doesn't verify the computed
 %  value — cfib(10,54) returns true though fib(10)=55 (the result is
 %  stored over the bound arg instead of being unified/checked).
@@ -94,15 +95,15 @@ ct_xfail(wat, fib).
 %  backend does not evaluate correctly (returns false). cmp/eq are fine.
 ct_xfail(wat, builtins).
 
-%  Elixir append/reverse: the lowered Elixir backend fails to unify a
-%  freshly-constructed list against an already-GROUND compound argument
-%  in the clause head — e.g. capp([a],[b],[a,b]) (3rd arg ground) returns
-%  false, while capp([a],[b],X), X=[a,b] succeeds. member passes because
-%  it only matches an input list, never constructs+unifies a ground
-%  output. Scala handles both, so this is a genuine backend divergence
-%  the harness surfaced (not a harness artifact).
-ct_xfail(elixir, append).
-ct_xfail(elixir, reverse).
+%  (Elixir append/reverse used to be xfail here: a freshly-constructed
+%  list ("./2", from put_list) would not unify against an already-GROUND
+%  list compound ("[|]/2", from put_structure) in a clause head, so
+%  capp([a],[b],[a,b]) returned false while capp([a],[b],X), X=[a,b]
+%  succeeded. Root cause: unify/3's compound clause demanded identical
+%  functor names, never applying the ./2 <-> [|]/2 cons-cell aliasing
+%  that the get_structure match path already used. Fixed in
+%  wam_elixir_target.pl; both programs are now conformant and the xfails
+%  are removed.)
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
