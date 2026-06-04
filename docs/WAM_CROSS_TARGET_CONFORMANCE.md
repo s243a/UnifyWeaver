@@ -95,9 +95,8 @@ facts in the harness); WAT conforms only on `ack`, and `elixir` and
 | wat | builtins | xfail | `cbi_arith` uses `//` (integer div) and `mod`, which the WAT backend does not evaluate correctly (returns false). The comparison (`cbi_cmp`) and unification (`cbi_eq`) families are fine. |
 | wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. Now conformant; xfails removed. |
-| haskell | member | xfail | `cmem(z,[a,b,c])` wrongly succeeds. The PR #2708 first-arg indexing fix was validated with the list injected as a `VList` in a register; on a heap-built cons list (`put_list`) the non-member case is not rejected. |
-| haskell | append, reverse | xfail | A constructed list will not unify against an already-ground list compound (`capp([a],[b],[a,b])` → false). **Two** root causes: (1) `unifyVal`/`unifyValues` do **no** structural unification — only identity (`==`) + var-binding, then `Nothing`; and (2) the cons functor `"[|]/2"` interns to its own id, distinct from `atomDot` (`"."`, id 3), so a `put_list` `VList` and a `put_structure "[|]/2"` `Str` never match. Same `./2`-vs-`[|]/2` class as the Elixir bug, but Haskell also lacks compound unification entirely. |
-| haskell | builtins | xfail | `=/2` of two identical atoms returns false (`cbi_eq(foo)`), and `//`/`mod` evaluate incorrectly (`cbi_arith`). `fib`/`ack` pass, so `+`/`-`/comparison and `is/2` bound-LHS checking are fine. |
+| ~~haskell~~ | ~~member, append, reverse~~ | **fixed** | All three failed on heap-built cons lists. Four root causes, now fixed in `wam_haskell_target.pl`: (1) `unifyVal`/`unifyValues` did **no** structural unification — added a shared `unifyTerms`; (2) the cons functor `"[|]/2"` interned to its own id, distinct from `atomDot` — `intern_struct_functor/2` folds every cons spelling onto `atomDot` (the `./2`-vs-`[|]/2` class, same as the Elixir bug); (3) `GetValue` had its own inline unify bypassing the above — now routed through `unifyVal`; (4) **the multi-element bug** — building `[a\|X]` with `X` a `set_variable` tail placeholder emitted `VList [a, X]` (`X` as a 2nd *element*) and `put_structure` filling `X` did not bind the embedded var, so `addToBuilder` now emits a `Str atomDot [hd, tl]` cons cell for a partial tail and binds the placeholder var on finalize. Fixes lists of any length; xfails removed. |
+| haskell | builtins | xfail | `=/2` of two identical atoms returns false (`cbi_eq(foo)`), and `//`/`mod` evaluate incorrectly (`cbi_arith`). `fib`/`ack` pass, so `+`/`-`/comparison and `is/2` bound-LHS checking are fine — isolated builtin bugs, not the list path. |
 
 (Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
@@ -174,18 +173,19 @@ baked into the compiled instruction stream, so there is **no runtime atom
 parsing** — and it wires `wcInternTable = compileTimeAtomTable`. Proof it
 discriminates correctly: `fib` and `ack` (true and false cases) pass.
 
-That unmasked the **real** backend bugs (now tracked as `ct_xfail`
-above): the heap-cons `member` false-positive, the constructed-list vs
-ground-compound unify failure (`unifyVal`/`unifyValues` do no structural
-unification, **plus** the `"[|]/2"`-vs-`atomDot` cons split), and the
-`=/2` / `//` / `mod` builtin gaps. The PR #2708 first-arg indexing fix was
-validated with the list injected as a `VList` in a register; the harness
-now exercises the realistic **heap-cons** path and shows `cmem(z,[a,b,c])`
-is not rejected there.
+That unmasked the **real** backend bugs. `member`, `append`, and
+`reverse` are **now fixed** (see the table) — the chain was: no structural
+unification, the `"[|]/2"`-vs-`atomDot` cons split, a `GetValue` inline
+unify that bypassed both, and the multi-element construction bug (a
+`set_variable` tail placeholder emitted as a `VList` *element* and never
+bound when `put_structure` filled it). The PR #2708 first-arg indexing fix
+had only been validated with the list injected as a `VList` in a register;
+the harness exercised the realistic **heap-cons** path and surfaced all of
+this. Validated with no regressions across the Haskell suites (target
+codegen, lowered phases 1–4, dispatch ghc smoke, st_regs e2e, iso, csr).
 
-Follow-up (own PR): give `unifyVal` **and** `unifyValues` real structural
-unification (recurse into `Str`/`VList` args with deref; treat `atomDot`
-and the `"[|]/2"` functor as the same cons), then fix `=/2`, `//`, `mod`.
+Still open (own PR): the `builtins` `=/2` / `//` / `mod` gaps — isolated
+builtin bugs, unrelated to the list path.
 
 ### Cross-cutting observation (investigated)
 
@@ -209,12 +209,15 @@ distinct:
 - **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
   nops and there is no S-register / argument queue. This is a real
   runtime feature to build, not a one-line fix.
-- **Haskell** — now verified (the new driver removed the interning mask).
-  Same `./2`-vs-`[|]/2` cons-aliasing class as Elixir (`"[|]/2"` interns
-  separately from `atomDot`), **plus** a deeper gap: both `unifyVal` and
-  `unifyValues` lack structural unification entirely (identity +
-  var-binding only). So Haskell needs more than the Elixir one-liner — it
-  needs real compound unification, then `=/2`/`//`/`mod` fixes.
+- **Haskell** — **fixed** (`member`/`append`/`reverse`). It was the same
+  `./2`-vs-`[|]/2` cons-aliasing class as Elixir, but with three more
+  layers: no structural unification at all, a `GetValue` inline-unify
+  bypass, and a multi-element construction bug (`set_variable` tail
+  placeholders emitted as `VList` elements, never bound on `put_structure`
+  finalize). So Haskell needed real compound unification *plus* a
+  cons-cell representation fix for partial tails — more than the Elixir
+  one-liner, but the same root family. `=/2`/`//`/`mod` remain (separate
+  builtin bugs).
 
 So the leverage is per-backend after all, but the harness did its job:
 it pinned each divergence to a specific runtime — made the Elixir one a
