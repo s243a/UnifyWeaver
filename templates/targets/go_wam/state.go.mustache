@@ -1197,6 +1197,32 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 			return float64(int64(a)), true
 		case "float_integer_part":
 			return math.Trunc(a), true
+		case "sqrt":
+			r := math.Sqrt(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "sin":
+			return math.Sin(a), true
+		case "cos":
+			return math.Cos(a), true
+		case "tan":
+			return math.Tan(a), true
+		case "asin":
+			r := math.Asin(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "acos":
+			r := math.Acos(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "atan":
+			return math.Atan(a), true
+		case "floor":
+			return math.Floor(a), true
+		case "ceiling":
+			return math.Ceil(a), true
+		case "round":
+			return math.Round(a), true
 		}
 	}
 	if len(args) == 2 {
