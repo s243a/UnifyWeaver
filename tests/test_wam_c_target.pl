@@ -46,7 +46,9 @@ test_helpers_generation :-
         sub_string(S, _, _, _, 'void wam_state_init(WamState'),
         sub_string(S, _, _, _, 'void wam_free_state(WamState'),
         sub_string(S, _, _, _, 'int wam_run_predicate(WamState'),
-        sub_string(S, _, _, _, 'resolve_predicate_hash')
+        sub_string(S, _, _, _, 'resolve_predicate_hash'),
+        sub_string(S, _, _, _, 'state->atom_table_size'),
+        sub_string(S, _, _, _, 'free(state->atom_table)')
     ->  pass(Test)
     ;   fail_test(Test, 'helper generation missing expected content')
     ).
@@ -271,11 +273,16 @@ test_bidirectional_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
         sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
         sub_string(S, _, _, _, 'void wam_register_category_id'),
+        sub_string(S, _, _, _, 'wam_category_id_atom_index_find'),
+        sub_string(S, _, _, _, 'wam_category_id_value_index_find'),
+        sub_string(S, _, _, _, 'category_id_by_atom'),
         sub_string(S, _, _, _, 'WamBidirectionalDistanceMap'),
         sub_string(S, _, _, _, 'WamBidirectionalDistanceCacheEntry'),
         sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_get_min_distances'),
         sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
+        sub_string(S, _, _, _, 'bool wam_category_min_parent_hops'),
+        sub_string(S, _, _, _, 'bool wam_category_child_may_reach_root_within_budget'),
         sub_string(S, _, _, _, 'bidirectional_min_distance_cache'),
         sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
     ->  pass(Test)
@@ -360,7 +367,9 @@ test_fact_source_generation :-
         sub_string(S, _, _, _, 'bool wam_fact_source_load_lmdb'),
         sub_string(S, _, _, _, 'bool wam_fact_source_child_range'),
         sub_string(S, _, _, _, 'int wam_fact_source_lookup_arg1'),
-        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source')
+        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source'),
+        sub_string(S, _, _, _, 'source->owner_state'),
+        sub_string(S, _, _, _, 'memcpy(target, source->edges')
     ->  pass(Test)
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
@@ -2869,6 +2878,19 @@ int main(void) {
         wam_free_state(&state);
         return 10;
     }
+    for (int i = 0; i < 1000; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "runtime_atom_%d", i);
+        if (wam_intern_atom(&state, atom) == NULL) {
+            wam_free_state(&state);
+            return 11;
+        }
+    }
+    const char *a3 = wam_intern_atom(&state, "runtime_atom");
+    if (a1 != a3 || state.atom_table_size <= WAM_INITIAL_ATOM_HASH_SIZE) {
+        wam_free_state(&state);
+        return 12;
+    }
 
     WamValue list;
     list.tag = VAL_LIST;
@@ -3246,6 +3268,21 @@ int main(void) {
         wam_free_state(&state);
         return 11;
     }
+    int min_hops = -1;
+    if (!wam_category_min_parent_hops(&state, "child", "root", &min_hops) ||
+        min_hops != 1) {
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_min_parent_hops(&state, "orphan", "root", &min_hops)) {
+        wam_free_state(&state);
+        return 14;
+    }
+    if (!wam_category_min_parent_hops(&state, "root", "root", &min_hops) ||
+        min_hops != 0) {
+        wam_free_state(&state);
+        return 15;
+    }
     wam_register_category_parent(&state, "fresh_child", "root");
     if (state.bidirectional_min_distance_cache != NULL) {
         wam_free_state(&state);
@@ -3294,6 +3331,11 @@ int main(void) {
     wam_register_category_id(&state, "orphan", 20);
     wam_register_category_id(&state, "child", 30);
     wam_register_category_id(&state, "root", 40);
+    for (int i = 0; i < 130; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "extra_%d", i);
+        wam_register_category_id(&state, atom, 1000 + i);
+    }
     wam_register_category_parent(&state, "child", "root");
     wam_attach_bidirectional_child_csr(&state, &csr);
     wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
@@ -3319,6 +3361,31 @@ int main(void) {
         wam_reverse_csr_close(&csr);
         wam_free_state(&state);
         return 11;
+    }
+    int child_candidates = -1;
+    if (!wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 1) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "child", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 14;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 1.5,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 15;
     }
 
     wam_attach_bidirectional_child_csr(&state, NULL);
@@ -4164,6 +4231,11 @@ int main(void) {
     }
 
     wam_register_category_parent_fact_source(&state, &source);
+    if (state.category_edge_count != source.edge_count) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 25;
+    }
     wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
 
     WamValue args[4] = {

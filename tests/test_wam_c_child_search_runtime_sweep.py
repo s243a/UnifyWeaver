@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from benchmark_wam_c_child_search_runtime_sweep import (  # noqa: E402
     DEFAULT_REPETITIONS,
     DEFAULT_TIMEOUT_SECONDS,
     PARENT_ONLY_TARGET,
+    cache_input_summary,
+    cache_input_summary_line,
     matrix_command,
 )
 
@@ -54,6 +57,33 @@ class WamCChildSearchRuntimeSweepTests(unittest.TestCase):
         self.assertEqual(command[command.index("--run-timeout-seconds") + 1], "45")
         self.assertEqual(command[command.index("--baseline-target") + 1], CHILD_SEARCH_TARGETS[0])
         self.assertEqual(command[-1], "--keep-temp")
+
+    def test_cache_input_summary_reports_root_cache_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scale_dir = Path(tmp) / "toy"
+            scale_dir.mkdir()
+            (scale_dir / "root_categories.tsv").write_text("category\nroot\nother_root\n", encoding="utf-8")
+            (scale_dir / "category_parent.tsv").write_text(
+                "child\tparent\nchild\troot\nleaf\tchild\nside\tother_root\n",
+                encoding="utf-8",
+            )
+            (scale_dir / "article_category.tsv").write_text(
+                "article\tcategory\narticle_a\tleaf\narticle_b\tside\n",
+                encoding="utf-8",
+            )
+
+            summary = cache_input_summary("toy", Path(tmp))
+            self.assertEqual(summary["roots"], 2)
+            self.assertEqual(summary["parent_edges"], 3)
+            self.assertEqual(summary["article_category_rows"], 2)
+            self.assertEqual(summary["max_cache_maps"], 2)
+            self.assertEqual(summary["category_ids"], 5)
+            self.assertEqual(summary["max_distance_entries_upper_bound"], 10)
+
+            line = cache_input_summary_line("toy", Path(tmp))
+            self.assertTrue(line.startswith("toy\twam_c_child_search_cache_inputs\t"))
+            self.assertIn("roots=2", line)
+            self.assertIn("max_distance_entries_upper_bound=10", line)
 
 
 if __name__ == "__main__":
