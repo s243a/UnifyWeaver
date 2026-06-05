@@ -5908,8 +5908,16 @@ u.a2_bind:
   ret i1 true
 
 u.a2_check:
-  ; A2 already bound — limited support: accept iff structural-equal.
-  %u.a2_eq = call i1 @value_equals(%Value %u.a2, %Value %u.cons_val)
+  ; M101: A2 already bound -- unify (not just structurally compare)
+  ; with the freshly-built result list. value_equals only tests
+  ; equality of fully-bound terms and would silently fail for a
+  ; partial-list arg like [H|_] (unbound H plus unbound tail), so
+  ; the canonical pattern Term =.. [H|_] never matched. Routing
+  ; through wam_unify_value binds H to the functor atom and the
+  ; tail to the rest of the list -- exactly what the source-level
+  ; partial pattern asks for.
+  %u.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.a2_eq = call i1 @wam_unify_value(%WamState* %vm, %Value %u.raw2, %Value %u.cons_val)
   ret i1 %u.a2_eq
 
 u.fail:
