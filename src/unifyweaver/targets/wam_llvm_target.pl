@@ -5589,8 +5589,19 @@ builtin_unify:
   br i1 %uf.a1_unb, label %uf.bind_a1, label %uf.check_a2
 
 uf.bind_a1:
+  ; M104: if a2 is also unbound after deref, the underlying register
+  ; holds a Ref to a heap cell with Unbound. Bind a1 to that raw Ref
+  ; (so the two vars alias) rather than to the Unbound sentinel.
+  ; When a2 is bound (not Unbound), uf.a2 IS the bound value and we
+  ; bind a1 to it directly.
+  %uf.a2_raw = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uf.a2_raw_tag = extractvalue %Value %uf.a2_raw, 0
+  %uf.a2_raw_isref = icmp eq i32 %uf.a2_raw_tag, 5
+  %uf.a2_d_unb = call i1 @value_is_unbound(%Value %uf.a2)
+  %uf.bind1_alias = and i1 %uf.a2_raw_isref, %uf.a2_d_unb
+  %uf.bind1_val = select i1 %uf.bind1_alias, %Value %uf.a2_raw, %Value %uf.a2
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %uf.a2)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %uf.bind1_val)
   ret i1 true
 
 uf.check_a2:
@@ -5598,8 +5609,15 @@ uf.check_a2:
   br i1 %uf.a2_unb, label %uf.bind_a2, label %uf.both_bound
 
 uf.bind_a2:
+  ; M104: symmetric to bind_a1.
+  %uf.a1_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uf.a1_raw_tag = extractvalue %Value %uf.a1_raw, 0
+  %uf.a1_raw_isref = icmp eq i32 %uf.a1_raw_tag, 5
+  %uf.a1_d_unb = call i1 @value_is_unbound(%Value %uf.a1)
+  %uf.bind2_alias = and i1 %uf.a1_raw_isref, %uf.a1_d_unb
+  %uf.bind2_val = select i1 %uf.bind2_alias, %Value %uf.a1_raw, %Value %uf.a1
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %uf.a1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %uf.bind2_val)
   ret i1 true
 
 uf.both_bound:
