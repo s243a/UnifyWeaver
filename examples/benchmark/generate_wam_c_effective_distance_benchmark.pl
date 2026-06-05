@@ -848,11 +848,12 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexO
     reverse_index_teardown_call(ReverseIndexOptions, ReverseIndexTeardownCall),
     candidate_filter_default_min_roots(CandidateFilter, CandidateFilterDefaultMinRoots),
     format(atom(Code),
-'#include <math.h>
+'#define _GNU_SOURCE
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
+#include <time.h>
 #include "wam_runtime.h"
 
 void setup_category_ancestor_4(WamState* state);
@@ -864,9 +865,9 @@ void setup_category_ancestor_4(WamState* state);
 ~w
 
 static double wam_now_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return ((double)tv.tv_sec * 1000.0) + ((double)tv.tv_usec / 1000.0);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ((double)ts.tv_sec * 1000.0) + ((double)ts.tv_nsec / 1000000.0);
 }
 
 static long long wam_read_env_limit(const char *name) {

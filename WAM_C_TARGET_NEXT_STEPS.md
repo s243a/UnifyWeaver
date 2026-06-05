@@ -9,8 +9,11 @@ Latest branch verification:
   s243a/investigate/wam-c-child-search-scale-ceiling`)
 - `python3 -m py_compile examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py tests/test_wam_c_candidate_filter_threshold_sweep.py`
 - `python3 tests/test_wam_c_candidate_filter_threshold_sweep.py`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --dry-run --scales 50k_cats --profiles low,high-capped --thresholds auto,always,off`
 - `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales dev --profiles low --thresholds auto,always,off --run-timeout-seconds 120`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles low,medium,high-capped --thresholds auto,always,16,64,256,1024,off --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles medium --thresholds auto,256,512,1024,off --repetitions 3 --run-timeout-seconds 180`
 - `git diff --check`
 
 Active branch:
@@ -801,6 +804,9 @@ Implemented so far:
   candidate-filter time, schedule roots, skipped roots, and category visits.
 - Added unit coverage for threshold alias parsing, matrix command construction,
   message parsing, dense-baseline selection, and TSV rendering.
+- The generated effective-distance runner now uses `CLOCK_MONOTONIC` for setup
+  and query counters, matching the narrower WAM-C timing harnesses and avoiding
+  wall-clock adjustments in calibration rows.
 
 Evidence:
 
@@ -811,6 +817,20 @@ Evidence:
   `e94e9c7a70e3` output hash for all three policies. `auto` and `off` stayed
   dense, while `always` used sparse scheduling and reported
   `candidate_schedule_roots=1`.
+- Full `50k_cats` threshold sweep over `low,medium,high-capped` profiles and
+  `auto,always,16,64,256,1024,off` preserved output hashes for every row.
+  Low selected `50` articles and `41` roots; `auto` stayed dense
+  (`query_ms=25.338`) while forced sparse rows were much slower
+  (`query_ms=108.324` for `always`, `114.917` for `16`). High-capped selected
+  all `4,054` roots and reached the same `50` rows with hash `8da5f8534aba`;
+  `auto` stayed sparse with `query_ms=483.756`, while `off` dense traversal
+  took `query_ms=4546.297`.
+- The medium profile selected `50` articles and `406` roots with hash
+  `226c7fdad57d`. One full sweep put sparse `auto` at `query_ms=119.097` and
+  dense `off` at `105.482`; a focused 3-repetition medium rerun put `auto` at
+  `106.188`, `256` at `108.198`, `512` dense at `100.884`, `1024` dense at
+  `110.546`, and `off` at `130.339`. Treat this as the noisy boundary region,
+  not as a reason to move the default yet.
 
 ## Suggested Immediate Next Step
 
@@ -821,10 +841,13 @@ candidate-root scheduling now avoids most impossible root traversals when many
 roots are selected, while staying off for low-root workloads by default and
 preserving dense semantics when an explicit query cap is active. The threshold
 default now has a cost-model resolver, a Prolog option surface, and a repeatable
-calibration wrapper. The next useful work is to run the wrapper on `50k_cats`
-over `low,medium,high-capped` profiles with a wider threshold set such as
-`auto,always,16,64,256,1024,off`; if the boundary is stable, keep `auto` at
-`256`, otherwise feed the measured query/artifact costs into the resolver.
+calibration wrapper. The `50k_cats` sweep supports keeping `auto` at `256` for
+now: low-root workloads remain dense, high-root workloads get the sparse
+candidate schedule, and the 406-root profile is close/noisy enough that a more
+complex resolver is not justified yet. The next useful work is either a
+repeatability sweep around the 400-1000 root boundary or feeding measured
+query/artifact costs into the resolver if future datasets show a sharper
+crossover.
 Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
