@@ -55,6 +55,10 @@ current cross-target builtin/runtime baseline.
 - Deterministic `delete/3` is now covered by the generated Go WAM builtin E2E
   test for removing one, none, or all matching atom elements and malformed-list
   failure, matching the Clojure/C++ structural-list surface for proper lists.
+- Bounded deterministic `append/3` is now covered by the generated Go WAM
+  builtin E2E test for concatenating proper lists, empty-left and empty-right
+  behavior, bound-output success and mismatch failure, malformed-list failure,
+  and unsupported unbound input modes, matching the current Go runtime surface.
 - Deterministic `subtract/3` is now covered by the generated Go WAM builtin
   E2E test for filtering all right-list matches from the left list, preserving
   left-list order, empty-list behavior, all-removed results, duplicate removal,
