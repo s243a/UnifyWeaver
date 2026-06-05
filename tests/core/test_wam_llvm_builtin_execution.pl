@@ -2459,6 +2459,41 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M103: term_variables/2 -- depth-first left-to-right collection of
+% unbound vars from a term. No dedup -- repeated occurrences of the
+% same var appear once per occurrence (SWI dedupes; documented
+% limitation for M103).
+
+:- dynamic test_tv_ground/2.
+test_tv_ground(_, R) :-
+    % All-ground term -> empty Vars list.
+    term_variables(foo(1, 2, 3), Vs),
+    ( Vs == [] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tv_single/2.
+test_tv_single(_, R) :-
+    % One free var in a compound -> 1-element list.
+    term_variables(foo(X, 2), Vs),
+    Vs = [V | T],
+    ( var(V), V == X, T == [] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tv_three/2.
+test_tv_three(_, R) :-
+    % Three distinct free vars left-to-right.
+    term_variables(bar(X, Y, Z), Vs),
+    Vs = [V1, V2, V3],
+    ( var(V1), var(V2), var(V3),
+      V1 == X, V2 == Y, V3 == Z
+    -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tv_nested/2.
+test_tv_nested(_, R) :-
+    % Nested compound -- vars found in left-to-right depth-first
+    % order: X (outer arg 1), Y (inner arg 1), Z (outer arg 3).
+    term_variables(outer(X, inner(Y), Z), Vs),
+    Vs = [V1, V2, V3],
+    ( V1 == X, V2 == Y, V3 == Z -> R is 1 ; R is 0 ).   % 1
+
 % M102: chmod/2 -- libc chmod wrapper for file mode bits.
 
 :- dynamic test_chmod_set_readonly/2.
@@ -5059,6 +5094,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M103 term_variables/2 ---~n'),
+       run_test_r0('ground term -> [] -> 1',
+                   test_tv_ground, 0, 1),
+       run_test_r0('one var -> [V], V == X -> 1',
+                   test_tv_single, 0, 1),
+       run_test_r0('three vars left-to-right -> 1',
+                   test_tv_three, 0, 1),
+       run_test_r0('nested compound, DFS left-to-right -> 1',
+                   test_tv_nested, 0, 1),
        format('--- M102 chmod/2 ---~n'),
        run_test_r0('create + chmod 0o444 + size_file roundtrip -> 1',
                    test_chmod_set_readonly, 0, 1),

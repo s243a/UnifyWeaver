@@ -3567,6 +3567,7 @@ entry:
     i32 120, label %builtin_stamp_date_time
     i32 121, label %builtin_date_time_stamp
     i32 122, label %builtin_chmod
+    i32 123, label %builtin_term_variables
   ]
 
 builtin_is:
@@ -5501,6 +5502,21 @@ ch.do:
   %ch.ret = call i32 @chmod(i8* %ch.path, i32 %ch.mode)
   %ch.ok = icmp eq i32 %ch.ret, 0
   ret i1 %ch.ok
+
+builtin_term_variables:
+  ; M103: term_variables(+Term, -Vars) -- depth-first left-to-right
+  ; walk over Term, prepending each Unbound variable onto an
+  ; accumulator that starts as the empty list. wam_collect_vars
+  ; does the recursion; this driver just sets up the empty seed
+  ; list and unifies the result with reg 1.
+  %tva.t = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tva.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %tva.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %tva.empty = insertvalue %Value %tva.empty_v0, i64 %tva.empty_aid, 1
+  %tva.vars = call %Value @wam_collect_vars(%WamState* %vm, %Value %tva.t, %Value %tva.empty)
+  %tva.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tva.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tva.raw2, %Value %tva.vars)
+  ret i1 %tva.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11371,6 +11387,78 @@ ct_done:
   ret %Value %new_val
 }
 
+; M103: recursive depth-first left-to-right walk over a term,
+; prepending each Unbound variable onto an accumulator list. The
+; outer driver passes the empty [] atom-id list as initial acc;
+; walking args right-to-left + prepending keeps the leftmost var
+; at the front of the result. Does NOT deduplicate -- repeated
+; occurrences of the same variable appear once per occurrence.
+; SWI semantics technically dedupes -- known limitation for M103.
+define %Value @wam_collect_vars(%WamState* %vm, %Value %term, %Value %acc) {
+entry:
+  %tv.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %tv.tag = call i32 @value_tag(%Value %tv.t)
+  switch i32 %tv.tag, label %tv.atomic [
+    i32 6, label %tv.unbound
+    i32 3, label %tv.compound
+  ]
+
+tv.atomic:
+  ret %Value %acc
+
+tv.unbound:
+  call void @wam_arena_ensure()
+  %tv.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %tv.cp_mem = call i8* @wam_arena_alloc(i64 %tv.cp_size)
+  %tv.cp = bitcast i8* %tv.cp_mem to %Compound*
+  %tv.fn_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %tv.fn_slot
+  %tv.ar_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 1
+  store i32 2, i32* %tv.ar_slot
+  %tv.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %tv.args = bitcast i8* %tv.args_mem to %Value*
+  %tv.args_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 2
+  store %Value* %tv.args, %Value** %tv.args_slot
+  %tv.head_ptr = getelementptr %Value, %Value* %tv.args, i32 0
+  store %Value %tv.t, %Value* %tv.head_ptr
+  %tv.tail_ptr = getelementptr %Value, %Value* %tv.args, i32 1
+  store %Value %acc, %Value* %tv.tail_ptr
+  %tv.cp_i64 = ptrtoint %Compound* %tv.cp to i64
+  %tv.v0 = insertvalue %Value undef, i32 3, 0
+  %tv.v = insertvalue %Value %tv.v0, i64 %tv.cp_i64, 1
+  ret %Value %tv.v
+
+tv.compound:
+  %tv.cp_bits = call i64 @value_payload(%Value %tv.t)
+  %tv.src_cp = inttoptr i64 %tv.cp_bits to %Compound*
+  %tv.src_ar_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 1
+  %tv.arity = load i32, i32* %tv.src_ar_slot
+  %tv.src_args_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 2
+  %tv.src_args = load %Value*, %Value** %tv.src_args_slot
+  %tv.i0 = sub i32 %tv.arity, 1
+  %tv.has_args = icmp sge i32 %tv.i0, 0
+  br i1 %tv.has_args, label %tv.loop, label %tv.ret_acc
+
+tv.loop:
+  %tv.i = phi i32 [ %tv.i0, %tv.compound ], [ %tv.i_next, %tv.step ]
+  %tv.acc_cur = phi %Value [ %acc, %tv.compound ], [ %tv.acc_next, %tv.step ]
+  %tv.arg_ptr = getelementptr %Value, %Value* %tv.src_args, i32 %tv.i
+  %tv.arg = load %Value, %Value* %tv.arg_ptr
+  %tv.acc_next = call %Value @wam_collect_vars(%WamState* %vm, %Value %tv.arg, %Value %tv.acc_cur)
+  %tv.done = icmp eq i32 %tv.i, 0
+  br i1 %tv.done, label %tv.ret_loop, label %tv.step
+
+tv.step:
+  %tv.i_next = sub i32 %tv.i, 1
+  br label %tv.loop
+
+tv.ret_loop:
+  ret %Value %tv.acc_next
+
+tv.ret_acc:
+  ret %Value %acc
+}
+
 ; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
 ; then copies Compounds (recursing on args) so the returned %Value
 ; is self-contained -- it survives a heap rewind. Used by
@@ -12389,6 +12477,7 @@ builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
 builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
 builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
 builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
+builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
