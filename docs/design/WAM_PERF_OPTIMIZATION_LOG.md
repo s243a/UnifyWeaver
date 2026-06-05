@@ -4692,4 +4692,118 @@ and scaling (3.60× vs 0.89×). The honest conclusion: on this memory-constraine
 box, Rust's compact footprint lets seed-parallelism scale where Haskell's
 parallel GC cannot — the language runtimes, not the algorithm, decide it here.
 
+## Phase F appendix #19: F# LMDB target parity — eager/lazy/cached, plus a Rust cursor correctness fix (2026-06-04)
+
+Goal: give the **F# WAM target** proper LMDB capability — eager, lazy, and
+cached materialisation of the `category_ancestor` effective-distance workload —
+to parity with the Rust and Haskell targets, and measure it head-to-head.
+Fixture throughout: `data/benchmark/simplewiki_articles` (root 2, 14,680
+article-category seeds; the Articles-rooted simplewiki subgraph, keyed by raw
+page ids). All runs serial (single thread), `max_depth = 10`.
+
+### Correctness oracle
+
+An independent Python BFS over the raw LMDB establishes ground truth:
+`category_child` is the exact reverse of `category_parent`; the down-closure of
+root is 14,680 *nodes*, but only **970 of the 14,680 seeds** are descendants of
+root (reach it within depth 10). So the correct solution count is **970**. F#
+reports 970 in every mode; Rust reports 969 (its TSV loader skips one header
+row, dropping `art_0`). This 970/969 agreement is the conformance anchor for
+everything below.
+
+### The F# arc (merged PRs #2757, #2759, #2761, #2762, #2766)
+
+1. **Int-native eager + a latent `/4` bug.** The Phase-1 resident LMDB stores
+   the graph in its own int id space, and the fixture's seeds/root are those
+   same raw ids — so F# consumes them directly as ints, the only "interning"
+   being an identity map over the ids that cross the WAM register boundary. The
+   graph never leaves int space (the parity move over the Haskell target, which
+   string-interned the whole graph). Surfaced a pre-existing bug: the
+   benchmark's `/4` register setup bound A2 to an unbound output and dispatched
+   via `dispatchCall` (which runs the compiled bytecode, never the foreign
+   kernel), so every seed reported 0. The native kernel's layout is
+   `input(2)=root`; fixed to bind A2=root and route `/4` through
+   `callForeign`/`executeForeign`.
+
+2. **Eager is at kernel parity with Rust — the gap was dispatch tax.** First
+   measurement put F# eager query at ~61 ms vs Rust ~3 ms. Profiling showed
+   ~90% was the per-seed WAM dispatch (register-array alloc, `derefVar`, intern
+   `Map.tryFind`, choice-point setup), not the kernel. Calling
+   `nativeKernel_category_ancestor` directly dropped query to ~5 ms; switching
+   the eager map from an immutable `Map` to a mutable `Dictionary` dropped it to
+   ~3 ms — **parity with Rust's 3 ms**. A single-scan loader (read
+   `category_parent` once, build the reverse = `category_child` in-memory, BFS
+   the demand set from it, prune) cut load 488 → ~255 ms.
+
+3. **Cached warm-query parity — three fixes.** Cached query initially sat at
+   ~7 ms (no better than lazy): (a) the auto-resolver floored L2 at 256
+   entries — missing ~98% of the 14,680-node working set; sized L1/L2 to the
+   demand set at runtime instead (the demand set *is* the working set, known at
+   runtime). (b) The demand filter sat *outside* the cache, re-running
+   `List.filter` on every hit; moved it under the cache (a `DemandFilteredSource`
+   decorator) so the cache stores pre-pruned lists. (c) Dropped a redundant
+   O(log n) `Set.Contains` guard per kernel call. Result: cached **warm** query
+   → ~1 ms = eager parity.
+
+### The Rust cursor correctness bug (PR #2772)
+
+The cross-target lazy/cached comparison surfaced a real divergence: Rust's
+cursor (lazy *and* cached) path reported `tuple_count = 14678`, not 970. Root
+cause (oracle-proven): the cursor path resolved seeds through `s2i`
+(page-id-string → dense id) before looking them up in `category_parent`.
+Correct when seeds are category-name strings whose `s2i` maps into the graph's
+key space — but on this **int-native** fixture the graph is keyed by raw page
+ids and `s2i` is a separate dense renumbering (`s2i["4985"]=0`, not identity),
+so every seed got remapped onto a low root-adjacent node and spuriously
+"reached" root. Not a localized logic bug — a missing feature.
+
+Fix: an `int_native_edges` mode (env `WAM_INT_NATIVE=1`). In `state.rs`'s
+`edge_parents_via` Lazy branch, when set, the kernel's node id is used *as* the
+raw LMDB key directly (bypassing the `wam↔lmdb` maps); the matrix-bench cursor
+`main` parses seeds as raw ints and reuses the raw root int — mirroring the
+eager int-seed path and the F# target. Default-off, so the name-keyed path is
+unchanged. With it, both Rust cursor modes report **969**.
+
+### Aligned cross-target table
+
+Cold single-pass, serial, root 2, ~14,680 seeds (F# `reps=1`; the Rust matrix
+bench is single-pass — the only methodology both share, since the Rust bench has
+no warm-rep loop). Representative of 3 trials.
+
+| mode   | F# load | F# query | Rust load | Rust query | answer (F#/Rust) |
+| ---    | ---:    | ---:     | ---:      | ---:       | :---: |
+| eager  | ~255 ms | 3 ms     | ~135 ms   | 3 ms       | 970 / 969 |
+| lazy   | ~150 ms | ~15 ms   | ~35 ms    | ~8 ms      | 970 / 969 |
+| cached | ~145 ms | ~35 ms   | ~34 ms    | ~11 ms     | 970 / 969 |
+
+(F# cached **warm** query is ~1 ms across repeated passes; the ~35 ms above is
+the single-pass cache-fill cost. The Rust bench has no warm loop, so warm
+numbers are F#-only and excluded from the aligned table.)
+
+### Verdict
+
+- **Query is at parity.** Eager is a dead heat (3 ms both); F#'s warm cached
+  query reaches eager parity (~1 ms). The earlier 20× "Rust wins eager" was a
+  pure WAM-dispatch artifact, not a language or kernel gap.
+- **Load is Rust's durable edge (~2–4×).** Rust reads a TSV into a `Vec` /
+  raw-id-keyed structures; F# pays LightningDB's *managed per-entry* read cost
+  plus structure-building on every cursor step. Confirmed inherent to the .NET
+  LMDB binding, not the kernel: removing a redundant `cursor.Next()`/
+  `GetCurrent()` pair gave no measurable change, and liblmdb already mmaps
+  internally — the cost is the P/Invoke crossing per step, closable only by a
+  different access pattern (bulk `MDB_NEXT_MULTIPLE`, needs `DUP_FIXED`
+  re-ingest) not pursued.
+- **Mode crossover reproduces the Rust/Haskell finding.** On cold single-pass
+  *total* time, cached ≈ lazy < eager on both targets — cached/lazy skip the
+  full-map materialisation, and eager's heavier load isn't amortized in one
+  pass. Eager wins only at very high query volume.
+- **A silent cross-target divergence was caught by comparison, not tests.** The
+  Rust cursor `s2i` bug produced wrong answers on int-native fixtures with no
+  test failure — the cross-target conformance harness has no LMDB-mode coverage.
+
+Open follow-ups: warm-rep loop in the Rust matrix bench (for a warm
+cross-target table); F# CSR end-to-end; Rust lazy seed-level demand pre-guard
+(F#'s guard skips the 13,710 non-demand seeds before any cursor open — Rust lazy
+lacks it); LMDB-mode coverage in the cross-target conformance harness.
+
 
