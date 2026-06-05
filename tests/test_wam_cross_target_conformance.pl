@@ -209,27 +209,34 @@ ct_default_target(elixir).
 %   - cons-cell aliasing added to get_list (accepts "[|]/2"/"./2" Str and
 %     Ref, derefs before the unbound test) and to unify (List <-> cons Str,
 %     empty-list <-> "[]" atom).
-%  STILL diverging, tracked below. Onboarding bounded execution with a
-%  step_limit in the runner driver after finding that some recursive
-%  programs do not terminate (runaway backtracking), so a wrong answer is
-%  returned instead of hanging the harness. All six programs are tracked
-%  for a follow-up; the fixes above are real progress, not full conformance:
+%   - put_constant/get_constant emitted Value::Atom("28") for the integer
+%     28 (unlike set_/unify_constant, which already used Value::Integer), so
+%     `R is <expr>` with R bound to a ground integer (the head arg) failed —
+%     is/2's result match handles Unbound/Integer/Float, not Atom. That
+%     wrong is/2 answer was the BACKTRACKING root cause: it made cfib(10,55)
+%     fail its result check and then re-search exponentially (looping to the
+%     step_limit). Both now route through rust_const_value. builtins is now
+%     conformant, and fib no longer loops (it returns fast) — though it
+%     still gives the wrong answer (see below), so the non-termination is
+%     fixed but fib is not yet green.
+%  STILL diverging, tracked below for a follow-up:
 %   - member: cmem(z,[a,b,c]) wrongly succeeds (cons traversal in the
 %     heap-materialisation list model).
-%   - append/reverse: positive cases fail / backtrack without terminating.
-%   - fib: a query does not terminate (hits the step_limit) — the
-%     result-check on a bound R or the choice-point/backtracking management
-%     loops; needs the same kind of bound-LHS/cut audit the other backends
-%     had.
-%   - builtins: cbi_arith(28) — `R is <sum>` with R bound to a ground
-%     integer (the head arg) still fails, distinct from the =:= path that
-%     the nested-arith fix covered.
-%   - ack: cack(2,3,9) deep integer recursion fails.
+%   - append/reverse: positive cases fail (the list model again).
+%   - fib: cfib(10,55) now returns false fast (no longer loops). Compiled
+%     ALONE it fails, though it succeeded when co-compiled with other
+%     predicates — a first-arg-indexing / shared-program-assembly
+%     sensitivity (the integer constants changed the switch dispatch),
+%     distinct from the is/2 fix.
+%   - ack: cack(2,3,9) fails — the doubly-recursive integer case (base
+%     cack(0,N,R) and cack(2,3,8)->false work; the nested
+%     cack(M,N1,R1),cack(M1,R1,R) does not yield the right result).
+%  The runner driver keeps vm.step_limit as a guard so any remaining
+%  non-termination returns false rather than hanging the harness.
 ct_xfail(rust, member).
 ct_xfail(rust, append).
 ct_xfail(rust, reverse).
 ct_xfail(rust, fib).
-ct_xfail(rust, builtins).
 ct_xfail(rust, ack).
 
 %% ct_skip(Target, ProgramName)
