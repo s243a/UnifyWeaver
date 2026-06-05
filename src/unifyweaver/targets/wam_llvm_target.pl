@@ -1255,6 +1255,9 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % @.fn_... globals are in every module.
     register_functor_string("date"),
     register_functor_string("local"),
+    % M105: numbervars/3 binds free vars to ''$VAR''(N) compounds.
+    % Pre-register so @.fn__24VAR exists in every module.
+    register_functor_string("$VAR"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -3568,6 +3571,7 @@ entry:
     i32 121, label %builtin_date_time_stamp
     i32 122, label %builtin_chmod
     i32 123, label %builtin_term_variables
+    i32 124, label %builtin_numbervars
   ]
 
 builtin_is:
@@ -5517,6 +5521,30 @@ builtin_term_variables:
   %tva.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %tva.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tva.raw2, %Value %tva.vars)
   ret i1 %tva.ok
+
+builtin_numbervars:
+  ; M105: numbervars(+Term, +Start, -End) -- walks Term depth-first
+  ; left-to-right and binds each free variable to a fresh
+  ; ''$VAR''(N) compound, where N starts at Start and increments by 1
+  ; per binding. End is unified with the final counter (Start +
+  ; number_of_vars_bound). Start must be Integer; non-Integer fails.
+  ; Same Ref-aliasing guarantees as M104: a single var with multiple
+  ; occurrences gets a single $VAR(N) compound visible at every
+  ; occurrence via heap-cell aliasing.
+  %nv.start_raw = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %nv.start_tag = call i32 @value_tag(%Value %nv.start_raw)
+  %nv.start_int = icmp eq i32 %nv.start_tag, 1
+  br i1 %nv.start_int, label %nv.go, label %nv.fail
+nv.fail:
+  ret i1 false
+nv.go:
+  %nv.start = call i64 @value_payload(%Value %nv.start_raw)
+  %nv.term = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nv.end = call i64 @wam_numbervars_walk(%WamState* %vm, %Value %nv.term, i64 %nv.start)
+  %nv.end_v = call %Value @value_integer(i64 %nv.end)
+  %nv.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %nv.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %nv.raw3, %Value %nv.end_v)
+  ret i1 %nv.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11483,6 +11511,90 @@ tv.ret_acc:
   ret %Value %acc
 }
 
+; M105: recursive depth-first left-to-right walk that binds each
+; Unbound variable encountered to a fresh ''$VAR''(N) compound on
+; the arena. Counter n is threaded through and returned -- caller
+; gets the next-available N to unify with End.
+define i64 @wam_numbervars_walk(%WamState* %vm, %Value %term, i64 %n) {
+entry:
+  %nw.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %nw.tag = call i32 @value_tag(%Value %nw.t)
+  switch i32 %nw.tag, label %nw.atomic [
+    i32 6, label %nw.unbound
+    i32 3, label %nw.compound
+  ]
+
+nw.atomic:
+  ret i64 %n
+
+nw.unbound:
+  ; Build the ''$VAR''(n) compound on the arena. Then bind the
+  ; variable''s heap cell to it via wam_trail_heap_binding + heap_set
+  ; so backtrack restores. Use the ORIGINAL term (a Ref) to locate
+  ; the heap cell; deref''d nw.t is just an Unbound sentinel.
+  call void @wam_arena_ensure()
+  %nw.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nw.cp_mem = call i8* @wam_arena_alloc(i64 %nw.cp_size)
+  %nw.cp = bitcast i8* %nw.cp_mem to %Compound*
+  %nw.fn_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 0
+  store i8* getelementptr ([5 x i8], [5 x i8]* @.fn__24VAR, i32 0, i32 0), i8** %nw.fn_slot
+  %nw.ar_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 1
+  store i32 1, i32* %nw.ar_slot
+  %nw.args_mem = call i8* @wam_arena_alloc(i64 16)
+  %nw.args = bitcast i8* %nw.args_mem to %Value*
+  %nw.args_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 2
+  store %Value* %nw.args, %Value** %nw.args_slot
+  %nw.n_v = call %Value @value_integer(i64 %n)
+  %nw.arg0_ptr = getelementptr %Value, %Value* %nw.args, i32 0
+  store %Value %nw.n_v, %Value* %nw.arg0_ptr
+  %nw.cp_i64 = ptrtoint %Compound* %nw.cp to i64
+  %nw.varN_v0 = insertvalue %Value undef, i32 3, 0
+  %nw.varN_v = insertvalue %Value %nw.varN_v0, i64 %nw.cp_i64, 1
+  ; Bind the var. The original %term is the Ref into the heap cell.
+  %nw.t_tag = extractvalue %Value %term, 0
+  %nw.t_isref = icmp eq i32 %nw.t_tag, 5
+  br i1 %nw.t_isref, label %nw.bind, label %nw.skip
+nw.bind:
+  %nw.addr_i64 = extractvalue %Value %term, 1
+  %nw.addr = trunc i64 %nw.addr_i64 to i32
+  %nw.old = call %Value @wam_heap_get(%WamState* %vm, i32 %nw.addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %nw.addr, %Value %nw.old)
+  call void @wam_heap_set(%WamState* %vm, i32 %nw.addr, %Value %nw.varN_v)
+  br label %nw.skip
+nw.skip:
+  %nw.n1 = add i64 %n, 1
+  ret i64 %nw.n1
+
+nw.compound:
+  %nw.cp_bits = call i64 @value_payload(%Value %nw.t)
+  %nw.src_cp = inttoptr i64 %nw.cp_bits to %Compound*
+  %nw.src_ar_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 1
+  %nw.arity = load i32, i32* %nw.src_ar_slot
+  %nw.src_args_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 2
+  %nw.src_args = load %Value*, %Value** %nw.src_args_slot
+  %nw.has_args = icmp sgt i32 %nw.arity, 0
+  br i1 %nw.has_args, label %nw.loop, label %nw.ret_n
+
+nw.loop:
+  %nw.i = phi i32 [ 0, %nw.compound ], [ %nw.i_next, %nw.step ]
+  %nw.n_cur = phi i64 [ %n, %nw.compound ], [ %nw.n_next, %nw.step ]
+  %nw.arg_ptr = getelementptr %Value, %Value* %nw.src_args, i32 %nw.i
+  %nw.arg = load %Value, %Value* %nw.arg_ptr
+  %nw.n_next = call i64 @wam_numbervars_walk(%WamState* %vm, %Value %nw.arg, i64 %nw.n_cur)
+  %nw.i_next = add i32 %nw.i, 1
+  %nw.done = icmp sge i32 %nw.i_next, %nw.arity
+  br i1 %nw.done, label %nw.ret_loop, label %nw.step
+
+nw.step:
+  br label %nw.loop
+
+nw.ret_loop:
+  ret i64 %nw.n_next
+
+nw.ret_n:
+  ret i64 %n
+}
+
 ; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
 ; then copies Compounds (recursing on args) so the returned %Value
 ; is self-contained -- it survives a heap rewind. Used by
@@ -12502,6 +12614,7 @@ builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date
 builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
 builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
 builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
+builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
