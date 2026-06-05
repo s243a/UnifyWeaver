@@ -2098,6 +2098,9 @@ is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).
 is_builtin_pred(getpid, 1).             % getpid(-Pid).
 is_builtin_pred(getuid, 1).             % getuid(-Uid).
 is_builtin_pred(geteuid, 1).            % geteuid(-EUid).
+is_builtin_pred(getgid, 1).             % getgid(-Gid).
+is_builtin_pred(getegid, 1).            % getegid(-EGid).
+is_builtin_pred(getppid, 1).            % getppid(-PPid).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

@@ -1476,6 +1476,9 @@ declare i32 @chdir(i8*)
 declare i32 @getpid()
 declare i32 @getuid()
 declare i32 @geteuid()
+declare i32 @getgid()
+declare i32 @getegid()
+declare i32 @getppid()
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3544,6 +3547,9 @@ entry:
     i32 113, label %builtin_unsetenv
     i32 114, label %builtin_getuid
     i32 115, label %builtin_geteuid
+    i32 116, label %builtin_getgid
+    i32 117, label %builtin_getegid
+    i32 118, label %builtin_getppid
   ]
 
 builtin_is:
@@ -5068,6 +5074,36 @@ builtin_geteuid:
   %geu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %geu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %geu.raw1, %Value %geu.v)
   ret i1 %geu.ok
+
+builtin_getgid:
+  ; M96: getgid(?Gid) -- real group id via libc getgid(). gid_t is
+  ; unsigned 32 bits on Linux; zext to i64. Always succeeds.
+  %gg.gid = call i32 @getgid()
+  %gg.gid64 = zext i32 %gg.gid to i64
+  %gg.v = call %Value @value_integer(i64 %gg.gid64)
+  %gg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gg.raw1, %Value %gg.v)
+  ret i1 %gg.ok
+
+builtin_getegid:
+  ; M96: getegid(?EGid) -- effective gid via libc getegid().
+  %gegg.gid = call i32 @getegid()
+  %gegg.gid64 = zext i32 %gegg.gid to i64
+  %gegg.v = call %Value @value_integer(i64 %gegg.gid64)
+  %gegg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gegg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gegg.raw1, %Value %gegg.v)
+  ret i1 %gegg.ok
+
+builtin_getppid:
+  ; M96: getppid(?PPid) -- parent process id via libc getppid().
+  ; pid_t is signed 32 bits; sext to i64 to keep the sign correct
+  ; even though a real ppid is always positive.
+  %gpp.pid = call i32 @getppid()
+  %gpp.pid64 = sext i32 %gpp.pid to i64
+  %gpp.v = call %Value @value_integer(i64 %gpp.pid64)
+  %gpp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpp.raw1, %Value %gpp.v)
+  ret i1 %gpp.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11909,6 +11945,9 @@ builtin_op_to_id('halt/1', 112).              % libc exit(Code).
 builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
 builtin_op_to_id('getuid/1', 114).            % libc getuid() as Integer.
 builtin_op_to_id('geteuid/1', 115).           % libc geteuid() as Integer.
+builtin_op_to_id('getgid/1', 116).            % libc getgid() as Integer.
+builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
+builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
