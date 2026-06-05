@@ -103,6 +103,36 @@ jobs:
           echo "✓ Visualization glue tests (478 tests)"
           echo "=========================================="
 
+  wam_conformance_smoke:
+    name: WAM Conformance Smoke (${{ matrix.target }})
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scala, elixir, wat, haskell, python, go, rust, c, cpp]
+    env:
+      CONFORMANCE_TARGETS: ${{ matrix.target }}
+      CONFORMANCE_PROGRAMS: member,builtins
+      CONFORMANCE_SAMPLE: 2
+      CONFORMANCE_SEED: ${{ github.run_number }}
+      UW_SMOKE_TMPDIR: ${{ runner.temp }}/unifyweaver-smoke
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: bash scripts/ci/install_swi_prolog.sh
+
+      - name: Create smoke temp root
+        run: mkdir -p "$UW_SMOKE_TMPDIR"
+
+      - name: Run sampled WAM conformance
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
+
   csharp_query_runtime_smoke:
     name: C# Query Runtime Smoke
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'

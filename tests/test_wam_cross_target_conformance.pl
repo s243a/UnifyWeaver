@@ -348,8 +348,21 @@ run_target_conformance(Target) :-
     ).
 
 seed_sampler :-
-    ( getenv('CONFORMANCE_SEED', S), atom_number(S, Seed)
-    -> set_random(seed(Seed)) ; true ).
+    (   getenv('CONFORMANCE_SEED', S), S \== ''
+    ->  (   atom_number(S, Seed), integer(Seed)
+        ->  set_random(seed(Seed)),
+            log_conformance_seed_once(Seed)
+        ;   throw(error(domain_error(conformance_seed, S), _))
+        )
+    ;   true
+    ).
+
+log_conformance_seed_once(Seed) :-
+    (   nb_current(ct_conformance_seed_logged, Seed)
+    ->  true
+    ;   format(user_error, '  [conformance] CONFORMANCE_SEED=~w~n', [Seed]),
+        nb_setval(ct_conformance_seed_logged, Seed)
+    ).
 
 selected_programs(Programs) :-
     findall(P, conformance_program(P, _), All0),
