@@ -22,15 +22,16 @@ are deliberately chosen to exercise every convention below.
 
 ---
 
-## TL;DR — the five things that bite
+## TL;DR — the six things that bite
 
 | # | Convention | Symptom if you get it wrong | Conformance program that catches it |
 |---|---|---|---|
 | 1 | Cons cells have **two spellings** (`put_list` *and* `put_structure [|]/2`) | recursive list predicates mis-traverse the tail | `member`, `reverse` |
-| 2 | A functor string is `name/arity` and **the name may contain `/`** | `//` and `/` arithmetic silently break | `builtins` (`cbi_arith`) |
+| 2 | A functor string is `name/arity` and **the name may contain `/`** (and `\`, e.g. `=\=`) | `//` and `/` arithmetic silently break; `=\=` no-ops in C string literals | `builtins` (`cbi_arith`, `cbi_cmp`) |
 | 3 | Nested terms are built **outer-first** via placeholder vars that a later `put_*` must **bind** | nested structures / list tails stay unbound | `builtins`, `member`, `reverse` |
 | 4 | **`deref` before every type test** (`is_var`, `is_list`, …) | a *bound* variable is mistaken for unbound → write-mode corruption | `member`, `reverse` |
 | 5 | `is/2` must produce an **integer** for integral results (if unify is type-strict) | `R is N+1` fails when `R` is a ground integer | `fib`, `ack` |
+| 6 | **Never drop or throw on an unhandled instruction** — emit a real no-op so PC/label alignment is preserved | indexing hints (`switch_on_term*`, `switch_on_constant_fallthrough`) vanish from the code vector, shifting every later label by one; backtracking skips `retry_me_else`/`trust_me` and loops or mis-clauses | `fib`, `ack`, `append`, `reverse` |
 
 ---
 
@@ -190,6 +191,43 @@ the same int-vs-float heuristic.
 
 ---
 
+## 6. Unhandled instructions must no-op, not vanish
+
+A backend that lowers the WAM listing one line at a time computes label
+PCs on the assumption that **every instruction line occupies exactly one
+slot**. If you encounter an instruction you do not implement and either
+*drop it* (emit a comment / nothing) or *throw*, you break that
+assumption:
+
+- **Throwing** stops the whole backend (C used to `throw` on
+  `switch_on_term_a2`).
+- **Dropping** is worse — it silently corrupts. The dropped line still
+  counted as a PC when labels were computed, so every label after it now
+  points **one instruction too far**. The classic failure: a clause-chain
+  label lands *past* its `retry_me_else`/`trust_me`, so the choice point's
+  alternative PC is never updated — execution loops on the same clause
+  (hangs / hits a step limit) or falls into the wrong clause.
+
+This bit two backends. Rust dropped `switch_on_constant_fallthrough` and
+`switch_on_term` (comments in the `vec!`); C threw on `switch_on_term_a2`.
+
+**Rule:** emit a real **no-op** instruction (one slot) for anything you do
+not translate. First-argument indexing (`switch_on_*`) is **only an
+optimisation** — skipping it and letting the `try_me_else` clause chain run
+is always correct, and the no-op keeps every later label aligned. Make the
+*fallback* for unknown instructions a no-op, so the next unimplemented
+indexing variant degrades gracefully instead of corrupting.
+
+**Precedents:** Rust emits `Instruction::NoOp`; C emits `INSTR_NOOP`. Both
+route any unrecognised `switch_on_*` (and the generic unknown-instruction
+fallback) through it.
+
+> Note: `switch_on_term` dispatches on the term's *tag*, so it must also
+> obey §1 — a cons cell that happens to be a `[|]/2` **structure** has to be
+> routed to the *list* clause, not the (empty) structure table.
+
+---
+
 ## New-backend checklist
 
 Before declaring a WAM backend conformant, confirm each of these against a
@@ -206,6 +244,12 @@ expression (the conformance fixtures do both):
 - [ ] every type test derefs first; `member(z, [a,b,c])` is **false** and
       `reverse([a,b,c],[a,b,c])` terminates as **false**. (§4)
 - [ ] `is/2` of an integral expression unifies with a ground integer. (§5)
+- [ ] unimplemented instructions emit a **no-op** (not a comment / throw),
+      so label PCs stay aligned; `switch_on_term` routes a `[|]/2` structure
+      to the list clause. Test a *depth-≥2* recursion (`fib(10,55)`,
+      `append`). (§6)
+- [ ] operator functors are escaped for the host string syntax (`=\=` must
+      survive as `=\\=` in a C/Java/… literal). (§2)
 - [ ] `CONFORMANCE_TARGETS=<target>` is green with no `ct_xfail` entries.
 
 The first backend that hits a *new* class of divergence should add a row

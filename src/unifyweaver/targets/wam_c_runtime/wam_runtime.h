@@ -86,7 +86,8 @@ typedef enum {
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
-    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN
+    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
+    INSTR_NOOP
 } WamInstrTag;
 
 /* Hash Entry for Indexing */
@@ -655,6 +656,22 @@ static inline void wam_bind(WamState *state, WamValue *v1, WamValue *v2) {
     trail_binding(state, v1);
     *v1 = *v2;
 }
+/* Return the heap address of a cons cell's head, treating both a VAL_LIST
+   (head@addr, tail@addr+1) and a "[|]/2"/"./2" VAL_STR (functor@addr,
+   head@addr+1, tail@addr+2) as the same list cell; -1 if not a cons. The
+   compiler mixes the two spellings for one logical list (put_list vs
+   put_structure "[|]/2"), so unification must alias them. */
+static inline int wam_cons_head_addr(WamState *state, WamValue *d) {
+    if (d->tag == VAL_LIST) return d->data.ref_addr;
+    if (d->tag == VAL_STR) {
+        WamValue *f = &state->H_array[d->data.ref_addr];
+        if (f->tag == VAL_ATOM &&
+            (strcmp(f->data.atom, "[|]/2") == 0 || strcmp(f->data.atom, "./2") == 0)) {
+            return d->data.ref_addr + 1;
+        }
+    }
+    return -1;
+}
 static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
     WamValue *pdl[256];
     int pdl_top = 0;
@@ -674,7 +691,22 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             wam_bind(state, unbound, other);
             continue;
         }
-        
+
+        /* Cons-cell aliasing: a VAL_LIST and a "[|]/2"/"./2" VAL_STR are the
+           same list cell. Unify head with head and tail with tail. */
+        {
+            int c1 = wam_cons_head_addr(state, d1);
+            int c2 = wam_cons_head_addr(state, d2);
+            if (c1 >= 0 && c2 >= 0) {
+                if (pdl_top + 4 > 256) return false;
+                pdl[pdl_top++] = &state->H_array[c2 + 1];
+                pdl[pdl_top++] = &state->H_array[c1 + 1];
+                pdl[pdl_top++] = &state->H_array[c2];
+                pdl[pdl_top++] = &state->H_array[c1];
+                continue;
+            }
+        }
+
         if (d1->tag != d2->tag) return false;
         
         if (d1->tag == VAL_INT) {
