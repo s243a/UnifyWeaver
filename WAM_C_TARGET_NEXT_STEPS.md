@@ -538,6 +538,12 @@ Evidence:
   the same sample now stays dense by default, preserves the hash, and reports
   `candidate_filter_articles=0` with `query_ms=26.435`. This is why the default
   root threshold is conservative and the CLI override exists.
+- The generated runner now resolves the default candidate-root threshold through
+  `cost_model:resolve_candidate_filter_min_roots/2`, so Prolog workload options
+  can declare `candidate_filter_min_roots(N)`, `always`, `off`, or `auto`.
+  `auto` currently preserves the measured dense-root ceiling by generating
+  `256`, while `UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS` remains a runtime
+  override for sweeps.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -794,9 +800,10 @@ plus child reachability prefilters remove most avoidable traversal work inside
 each visited article/root pair. Per-article candidate-root filtering plus sparse
 candidate-root scheduling now avoids most impossible root traversals when many
 roots are selected, while staying off for low-root workloads by default and
-preserving dense semantics when an explicit query cap is active. The next useful
-work is promoting the threshold/scheduling decision into a
-cost-analyzer-controlled runtime option.
+preserving dense semantics when an explicit query cap is active. The threshold
+default now has a cost-model resolver and a Prolog option surface; the next
+useful work is broader scale validation of the `auto` dense-root ceiling and,
+if needed, feeding measured query/artifact costs into that resolver.
 Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`

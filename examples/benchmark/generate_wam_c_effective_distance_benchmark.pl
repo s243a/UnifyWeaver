@@ -6,7 +6,10 @@
 :- initialization(main, main).
 
 :- use_module('../../src/unifyweaver/targets/wam_c_target').
-:- use_module('../../src/unifyweaver/core/cost_model', [resolve_csr_io_policy/2]).
+:- use_module('../../src/unifyweaver/core/cost_model',
+              [ resolve_candidate_filter_min_roots/2,
+                resolve_csr_io_policy/2
+              ]).
 :- use_module(library(assoc), [get_assoc/3, list_to_assoc/2]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(lists)).
@@ -95,11 +98,13 @@ generate(FactsPath, OutputDir, KernelMode, OptionsOrFactStorage) :-
     effective_distance_reverse_index_options(OptionsOrFactStorage, OutputDir,
                                              CategoryParents, ArticleCategories,
                                              RootCategories, ReverseIndexOptions),
+    parse_candidate_filter_options(OptionsOrFactStorage, CandidateFilter),
     effective_distance_predicate_lib_code(ChildSearch, ReverseIndexOptions, LibCode),
     directory_file_path(OutputDir, 'lib.c', LibPath),
     write_text_file(LibPath, LibCode),
     effective_distance_main_code(ParsedMode, FactStorage, ChildSearch,
-                                 ReverseIndexOptions, Dimension, MaxDepth,
+                                 ReverseIndexOptions, CandidateFilter,
+                                 Dimension, MaxDepth,
                                  ArticleCategories, RootCategories, MainCode),
     directory_file_path(OutputDir, 'main.c', MainPath),
     write_text_file(MainPath, MainCode),
@@ -226,6 +231,13 @@ parse_child_search_options(Options, ChildSearch) :-
     ChildSearch = child_search(Mode, MaxChildren, ChildDepth,
                                ParentCost, ChildCost, Budget).
 parse_child_search_options(_, child_search(parent_only, 0, 1, 1.0, 1.0, 1.0e100)).
+
+parse_candidate_filter_options(Options, candidate_filter(MinRoots)) :-
+    is_list(Options),
+    !,
+    resolve_candidate_filter_min_roots(Options, MinRoots).
+parse_candidate_filter_options(_, candidate_filter(MinRoots)) :-
+    resolve_candidate_filter_min_roots([], MinRoots).
 
 parse_child_search(parent_only, parent_only).
 parse_child_search(bounded, bounded).
@@ -813,7 +825,7 @@ int main(void) {
 ', [ExpectedRows, ExpectedDuplicate]).
 
 effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexOptions,
-                             Dimension, MaxDepth,
+                             CandidateFilter, Dimension, MaxDepth,
                              ArticleCategories, RootCategories, Code) :-
     c_article_category_arrays(ArticleCategories, ArticleIds, ArticleArrays),
     c_string_array('ARTICLE_COUNT', 'ARTICLES', ArticleIds, ArticlesArray),
@@ -834,6 +846,7 @@ effective_distance_main_code(KernelMode, FactStorage, ChildSearch, ReverseIndexO
     reverse_index_local(ReverseIndexOptions, ReverseIndexLocal),
     reverse_index_setup_call(ReverseIndexOptions, ReverseIndexSetupCall),
     reverse_index_teardown_call(ReverseIndexOptions, ReverseIndexTeardownCall),
+    candidate_filter_default_min_roots(CandidateFilter, CandidateFilterDefaultMinRoots),
     format(atom(Code),
 '#include <math.h>
 #include <stdio.h>
@@ -1420,7 +1433,7 @@ int main(void) {
                                                     root_offset);
     long long candidate_filter_min_roots =
         wam_read_env_limit("UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS");
-    if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = 256;
+    if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = ~d;
     WamCandidateRootSet candidate_roots;
     wam_candidate_root_set_init(&candidate_roots, root_limit);
     int candidate_filter_available =
@@ -1686,6 +1699,7 @@ int main(void) {
     ArticleArrays, ArticlesArray, RootArray, MaxDepth,
     ReverseIndexLocal, BidirSetupCall, ReverseIndexSetupCall,
     LoadCode, ReverseIndexTeardownCall, MaxDepth, BidirRegisterCall,
+    CandidateFilterDefaultMinRoots,
     ChildSearchFlag, ChildSearchDepth,
     MaxDepth, ChildSearchFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget,
@@ -1718,6 +1732,8 @@ child_search_depth(child_search(_, _, ChildDepth, _, _, _), ChildDepth).
 child_search_parent_cost(child_search(_, _, _, ParentCost, _, _), ParentCost).
 child_search_child_cost(child_search(_, _, _, _, ChildCost, _), ChildCost).
 child_search_budget(child_search(_, _, _, _, _, Budget), Budget).
+
+candidate_filter_default_min_roots(candidate_filter(MinRoots), MinRoots).
 
 bidirectional_setup_declaration(ChildSearch,
                                 'void setup_bidirectional_ancestor_5(WamState* state);') :-

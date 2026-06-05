@@ -3,6 +3,8 @@
 % Usage: swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl
 
 :- use_module('../examples/benchmark/generate_wam_c_effective_distance_benchmark').
+:- use_module('../src/unifyweaver/core/cost_model',
+              [resolve_candidate_filter_min_roots/2]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module(library(process)).
 
@@ -15,6 +17,17 @@ pass(Test) :-
 fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
+
+test_candidate_filter_cost_model_resolver :-
+    Test = 'WAM-C effective-distance: candidate filter threshold resolver handles policy modes',
+    (   resolve_candidate_filter_min_roots([], 256),
+        resolve_candidate_filter_min_roots([candidate_filter_dense_root_ceiling(31)], 32),
+        resolve_candidate_filter_min_roots([candidate_filter_min_roots(always)], 0),
+        resolve_candidate_filter_min_roots([candidate_filter_min_roots(off)], Off),
+        Off > 1000000
+    ->  pass(Test)
+    ;   fail_test(Test, 'candidate filter threshold resolver mismatch')
+    ).
 
 test_generate_and_run_kernels_on :-
     Test = 'WAM-C effective-distance: kernels_on generated runner emits expected result',
@@ -190,6 +203,34 @@ test_generated_runner_prefilters_candidate_roots :-
         sub_string(ErrText, _, _, _, "category_visits=1")
     ->  pass(Test)
     ;   fail_test(Test, 'candidate root prefilter metrics or output mismatch')
+    ).
+
+test_generated_runner_uses_planned_candidate_filter_threshold :-
+    Test = 'WAM-C effective-distance: generated runner uses planned candidate filter threshold',
+    (   unique_tmp_dir(candidate_root_planned_threshold, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              candidate_filter_min_roots(2)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES'='0'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "candidate_filter_min_roots=2"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=1"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'planned candidate filter threshold was not applied')
     ).
 
 test_generated_runner_keeps_dense_query_cap :-
@@ -708,6 +749,7 @@ run_tests :-
 
 run_tests_once :-
     format('~n=== WAM-C Effective Distance Benchmark Tests ===~n~n'),
+    test_candidate_filter_cost_model_resolver,
     test_generate_and_run_kernels_on,
     test_generate_and_run_kernels_off,
     test_generate_lmdb_mode_files,
@@ -718,6 +760,7 @@ run_tests_once :-
     test_generated_runner_supports_runtime_sampling,
     test_generated_runner_supports_runtime_name_filters,
     test_generated_runner_prefilters_candidate_roots,
+    test_generated_runner_uses_planned_candidate_filter_threshold,
     test_generated_runner_keeps_dense_query_cap,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
