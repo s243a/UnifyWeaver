@@ -825,7 +825,19 @@ impl WamState {
                             let tail = self.heap[marker + 1].clone();
                             let list = match tail {
                                 Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                                _ => Value::List(vec![head, tail]),
+                                Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
+                                // Partial list: the tail is still an unbound
+                                // variable (or a ref/cons) that a later
+                                // put_structure will fill — e.g. building
+                                // [a|X2] then X2=[b|X3]. Materialising this as
+                                // Value::List([head, tail]) would treat the
+                                // tail var as a SECOND ELEMENT (so [a|X] looked
+                                // like the 2-list [a,X]); get_list then peeled
+                                // a wrong tail and member(z,...) bound the var
+                                // and wrongly succeeded. Keep it as a cons cell
+                                // so the tail var derefs to the rest of the
+                                // list. get_list/unify already alias [|]/2.
+                                _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
                             };
                             // Update the register holding Ref(marker) or Integer(marker)
                             let ref_val = Value::Ref(marker);

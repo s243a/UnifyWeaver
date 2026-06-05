@@ -193,8 +193,8 @@ ct_default_target(elixir).
 %     (b) it tested isUnbound BEFORE deref, so a *bound* variable tail was
 %     mistaken for unbound and sent into write mode (now derefs first).
 
-%  Rust (onboarding in progress). The Rust WAM runtime had the same gap
-%  family as Go, plus a missing =/2; fixed so far (wam_rust_target.pl /
+%  Rust is now fully conformant. The Rust WAM runtime had the same gap
+%  family as Go, plus a missing =/2; the fixes (wam_rust_target.pl /
 %  templates/targets/rust_wam/state.rs.mustache):
 %   - =/2 had NO handler in execute_builtin (the compiler emits `X = Y` as
 %     builtin_call =/2), so even `a = a` returned false. Added a handler
@@ -224,16 +224,25 @@ ct_default_target(elixir).
 %     and ack (cack(0,_)/cack(M,_)). Added the instruction with proper
 %     fallthrough semantics (jump on a table hit; advance to the try_me_else
 %     chain on unbound/miss — never fail). fib and ack are now conformant.
-%  STILL diverging, tracked below for a follow-up — all in the list model:
-%   - member: cmem(z,[a,b,c]) wrongly succeeds (cons traversal in the
-%     heap-materialisation list representation).
-%   - append/reverse: positive cases (capp([a,b],[c],[a,b,c]),
-%     crev([a,b,c],[c,b,a])) fail.
-%  The runner driver keeps vm.step_limit as a guard so any remaining
-%  non-termination returns false rather than hanging the harness.
-ct_xfail(rust, member).
-ct_xfail(rust, append).
-ct_xfail(rust, reverse).
+%   - the list model (member/append/reverse) needed four fixes:
+%     (a) a partial list whose tail is still an unbound variable
+%         ([a|X2] then X2=[b|X3]) was materialised as Value::List([a,X2]),
+%         treating the tail var as a SECOND ELEMENT; get_list then peeled a
+%         wrong tail and member(z,...) bound the var and wrongly succeeded.
+%         set_heap_or_list now keeps such a cell as a "[|]/2" cons so the
+%         tail var derefs to the rest of the list.
+%     (b) switch_on_term had no codegen and was dropped (same label-shift
+%         class as switch_on_constant_fallthrough: a skipped trust_me made
+%         the choice point loop). Unknown instructions now emit a real NoOp,
+%         preserving PC alignment; falling through to the try chain is
+%         correct for indexing hints.
+%     (c) get_constant [] now matches an empty Value::List (append's base
+%         case capp([],L,L) sees the peeled tail as Value::List([])).
+%     (d) get_value did only raw equality + unbound-binding; it now routes
+%         through unify(), so it follows heap Refs and structurally unifies
+%         the accumulated result list (append/reverse output).
+%  The runner driver keeps vm.step_limit as a guard against accidental
+%  non-termination.
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
