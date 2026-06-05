@@ -182,6 +182,12 @@ def parse_args() -> argparse.Namespace:
         help="Emit generated WAM-C stderr progress after this many article/root queries. Zero disables progress.",
     )
     parser.add_argument(
+        "--wam-c-candidate-filter-min-roots",
+        type=nonnegative_int,
+        default=0,
+        help="Minimum selected roots before generated WAM-C candidate-root filtering activates. Zero uses the runner default.",
+    )
+    parser.add_argument(
         "--wam-c-article-names",
         default="",
         help="Comma-separated generated WAM-C article IDs to include. Empty includes all articles.",
@@ -369,6 +375,7 @@ def wam_c_runtime_env(args: argparse.Namespace) -> dict[str, str]:
         "UW_WAM_C_EFFECTIVE_ROOT_STRIDE": args.wam_c_root_stride,
         "UW_WAM_C_EFFECTIVE_ARTICLE_OFFSET": args.wam_c_article_offset,
         "UW_WAM_C_EFFECTIVE_ROOT_OFFSET": args.wam_c_root_offset,
+        "UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS": args.wam_c_candidate_filter_min_roots,
     }
     env = {name: str(value) for name, value in numeric_options.items() if value > 0}
     if args.wam_c_article_names:

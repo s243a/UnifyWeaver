@@ -25,6 +25,7 @@ from benchmark_effective_distance_matrix import (  # noqa: E402
     print_kernel_pair_deltas,
     print_summary,
     resolve_requested_targets,
+    wam_c_runtime_env,
 )
 from benchmark_target_matrix import (  # noqa: E402
     KERNEL_TARGET_PAIRS,
@@ -240,6 +241,22 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ]
             args = parse_args()
             self.assertEqual(resolve_requested_targets(args), ["clojure-wam-seeded", "prolog-accumulated"])
+        finally:
+            sys.argv = original_argv
+
+    def test_wam_c_candidate_filter_threshold_maps_to_env(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "benchmark_effective_distance_matrix.py",
+                "--wam-c-candidate-filter-min-roots",
+                "32",
+            ]
+            args = parse_args()
+            self.assertEqual(
+                wam_c_runtime_env(args)["UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS"],
+                "32",
+            )
         finally:
             sys.argv = original_argv
 

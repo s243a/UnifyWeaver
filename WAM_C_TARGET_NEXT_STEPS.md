@@ -526,7 +526,9 @@ Evidence:
   scheduled `52` candidate roots across `19` articles, and reduced
   `query_ms` to `485.270`. The one-root `10k` guardrail stayed off as
   intended with hash `51be51c22aa7`, `candidate_schedule_articles=0`, and
-  `query_ms=3674.656`.
+  `query_ms=3674.656`. The matrix runner exposes
+  `--wam-c-candidate-filter-min-roots` so sweeps can tune or disable the
+  threshold without regenerating C.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was

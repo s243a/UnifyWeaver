@@ -192,6 +192,30 @@ test_generated_runner_prefilters_candidate_roots :-
     ;   fail_test(Test, 'candidate root prefilter metrics or output mismatch')
     ).
 
+test_generated_runner_keeps_dense_query_cap :-
+    Test = 'WAM-C effective-distance: query cap disables sparse candidate schedule',
+    (   unique_tmp_dir(candidate_root_query_cap, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_MAX_QUERIES'='1',
+              'UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS'='2'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=0"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_roots=0"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'query cap sparse-schedule guard mismatch')
+    ).
+
 test_generate_and_run_bounded_child_search :-
     Test = 'WAM-C effective-distance: bounded child search finds non-parent path',
     (   unique_tmp_dir(child_search, OutputDir),
@@ -694,6 +718,7 @@ run_tests_once :-
     test_generated_runner_supports_runtime_sampling,
     test_generated_runner_supports_runtime_name_filters,
     test_generated_runner_prefilters_candidate_roots,
+    test_generated_runner_keeps_dense_query_cap,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,
