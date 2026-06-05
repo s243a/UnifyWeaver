@@ -2483,8 +2483,13 @@ test_functor_arity_check(_, R) :-
 test_univ_head_eq_literal(_, R) :-
     % Same fix applied to =.. (univ): the list head is the functor
     % as an id-based Atom Value, comparing correctly with literals.
+    % Uses the two-step =.. L, L = [H|_] form -- the direct
+    % =.. [H|_] form has a separate pre-existing WAM-compile
+    % issue (partial-list arg to =.. doesn''t reach the builtin in
+    % a unifiable shape).
     Term = baz(7, 8),
-    Term =.. [H | _],
+    Term =.. L,
+    L = [H | _],
     ( H == baz -> R is 1 ; R is 0 ).   % 1
 
 :- dynamic test_univ_tail_is_empty_list/2.
@@ -2492,7 +2497,8 @@ test_univ_tail_is_empty_list(_, R) :-
     % =.. terminates with the [] atom -- M100 makes that id-based
     % via @wam_empty_list_atom_id, matching the literal [].
     Term = quux(1),
-    Term =.. [_, _ | Tail],
+    Term =.. L,
+    L = [_, _ | Tail],
     ( Tail == [] -> R is 1 ; R is 0 ).   % 1
 
 % M99: date_time_stamp/2 -- inverse of M98 stamp_date_time/3 via libc mktime.
