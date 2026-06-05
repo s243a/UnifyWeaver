@@ -11422,10 +11422,10 @@ tv.unbound:
   %tv.head_ptr = getelementptr %Value, %Value* %tv.args, i32 0
   ; Store the ORIGINAL %term (a Ref into the heap cell), not the
   ; deref''d Unbound payload. Var identity matters: callers do
-  ; `term_variables(foo(X, _), [V|_]), V == X' which needs V and
-  ; X to share the same Ref address. Storing the deref''d Unbound
-  ; would give a tag-6 sentinel that compares unequal to the
-  ; original Ref.
+  ; term_variables(foo(X, _), [V|_]) followed by V == X, which
+  ; needs V and X to share the same Ref address. Storing the
+  ; deref''d Unbound would give a tag-6 sentinel that compares
+  ; unequal to the original Ref.
   store %Value %term, %Value* %tv.head_ptr
   %tv.tail_ptr = getelementptr %Value, %Value* %tv.args, i32 1
   store %Value %acc, %Value* %tv.tail_ptr
