@@ -820,6 +820,27 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 // Unbound A1: skip dispatch, advance to next instruction
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        for (key, label) in table {
+                            if *key == val {
+                                if let Some(&pc) = self.labels.get(label) {
+                                    self.pc = pc; return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                // No table key matched (or A1 unbound): fall through to the
+                // next instruction (the try_me_else clause chain). Unlike
+                // SwitchOnConstant this never fails — failing here skipped the
+                // chain entirely and, because the dropped instruction also
+                // shifted every later label by one, backtracking landed past
+                // retry_me_else and looped.
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
     Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
@@ -2872,6 +2893,16 @@ wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries], _, _, Rust) :-
+    % Entries with a "default" target mean "fall through" for that key, so
+    % they carry no jump and are dropped from the table. Emitting this as a
+    % real instruction (rather than the unknown-fallback comment) keeps every
+    % later label PC aligned — the missing instruction shifted them by one.
+    exclude(is_default_index_entry, Entries, JumpEntries),
+    maplist(parse_index_entry_constant, JumpEntries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust),
+        'Instruction::SwitchOnConstantFallthrough(vec![~w])', [Joined]).
 wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
@@ -2925,6 +2956,11 @@ rust_foreign_spec(Pred/Arity,
         Pred/Arity) :-
     is_list(SetupOps),
     is_list(RewriteCalls).
+
+%% is_default_index_entry(+Entry) — true for a "K:default" switch entry.
+is_default_index_entry(Entry) :-
+    ( string(Entry) -> S = Entry ; atom_string(Entry, S) ),
+    sub_string(S, _, _, 0, ":default").
 
 parse_index_entry_constant(Entry, Rust) :-
     (   sub_string(Entry, Before, 1, After, ":")
