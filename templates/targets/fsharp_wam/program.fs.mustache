@@ -170,19 +170,36 @@ let main argv =
     // (= category_child) in memory, BFS the demand set from it, and prune the
     // parent Dictionary to demand-set edges -- one cursor pass instead of two.
     // The kernel reads it through `lmdbLookupFn`, so WcFfiFacts stays empty and
-    // no immutable Map is ever built.
+    // no immutable Map is ever built.  parentsDict is already demand-pruned, so
+    // the lookup is a plain O(1) Dictionary hit -- no per-call demand filter.
     let parentsDict, demandSet = loadEagerDemandSingleScan lmdbEnv rootInt
-{{default}}
-    // Lazy / cached demand-filtered modes land here in later stages; Stage 1
-    // ships eager only, so any materialisation flag falls back to the eager
-    // single-scan loader -- the project still builds and runs correctly.
-    let parentsDict, demandSet = loadEagerDemandSingleScan lmdbEnv rootInt
-{{/match}}
-    eprintfn "demand_set=%d" demandSet.Count
     let lmdbLookupFn (k: int) : int list =
         match parentsDict.TryGetValue k with
         | true, v -> v
         | _ -> []
+{{case lazy}}
+    // Lazy: NO parent materialisation.  Only the demand set is built (a cursor
+    // BFS down category_child); each kernel lookup opens a short-lived cursor
+    // on category_parent and reads that child's parents on demand, filtered to
+    // the demand set so the upward walk never leaves it.  Trades the eager load
+    // cost for per-lookup cursor cost.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let lazySource = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+    let lmdbLookupFn (k: int) : int list =
+        if demandSet.Contains k then lazySource.Lookup k |> List.filter demandSet.Contains
+        else []
+{{default}}
+    // Cached: lazy cursor lookup behind the two-level (L1 thread-local +
+    // bounded L2) cache, so repeated parent lookups across seeds are served
+    // from memory.  Demand set built and applied exactly as in lazy mode.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let lazyInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+    let cachedSource = TwoLevelCachedLookupSource(lazyInner, maxL2Entries = {{l2_capacity}}) :> ILookupSource
+    let lmdbLookupFn (k: int) : int list =
+        if demandSet.Contains k then cachedSource.Lookup k |> List.filter demandSet.Contains
+        else []
+{{/match}}
+    eprintfn "demand_set=%d" demandSet.Count
     let parentsInterned : Map<int, int list> = Map.empty
 
     // Identity intern over the ids that cross the register boundary.
