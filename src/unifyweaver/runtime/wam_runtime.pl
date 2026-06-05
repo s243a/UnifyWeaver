@@ -1065,6 +1065,20 @@ step_wam(builtin_call('var/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
     is_wam_unbound(DVal),
     NPC is PC + 1.
 
+%% Type-check builtins (atom/1, integer/1, float/1, number/1,
+%% compound/1, is_list/1). These were defined in apply_type_check/2
+%% but had no step_wam dispatch clause — only var/1 and nonvar/1 above
+%% were wired up — so e.g. atom(hello) matched no clause and failed.
+%% Read A1, deref, and apply the type test. (var/1 and nonvar/1 are
+%% also is_type_check_op/1 ops but are handled by the explicit clauses
+%% above, which take priority.)
+step_wam(builtin_call(Op, 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    is_type_check_op(Op), !,
+    get_assoc('A1', R, Val), wam_deref(Val, DVal),
+    apply_type_check(Op, DVal),
+    NPC is PC + 1.
+
 %% !/0 — cut: truncate choice points to the cut barrier.
 %  The cut barrier is saved at Allocate time in the env frame.
 step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
