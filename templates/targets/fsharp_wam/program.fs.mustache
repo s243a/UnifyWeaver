@@ -182,15 +182,22 @@ let main argv =
 
 {{match materialisation}}
 {{case eager}}
-    // Eager: materialise the demand-pruned category_parent map (int-keyed),
-    // exposed to the kernel through WcFfiFacts.
-    let parentsInterned = loadCategoryParentDemand lmdbEnv demandSet
+    // Eager: materialise the demand-pruned category_parent edges into a
+    // mutable Dictionary (O(1) insert/lookup) rather than an immutable Map.
+    // The kernel reads it through `lmdbLookupFn` directly, so WcFfiFacts stays
+    // empty and no immutable Map is ever built.
+    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
 {{default}}
     // Lazy / cached demand-filtered modes land here in later stages; Stage 1
     // ships eager only, so any materialisation flag falls back to the eager
-    // demand map -- the project still builds and runs correctly.
-    let parentsInterned = loadCategoryParentDemand lmdbEnv demandSet
+    // demand Dictionary -- the project still builds and runs correctly.
+    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
 {{/match}}
+    let lmdbLookupFn (k: int) : int list =
+        match parentsDict.TryGetValue k with
+        | true, v -> v
+        | _ -> []
+    let parentsInterned : Map<int, int list> = Map.empty
 
     let loadMs = sw.ElapsedMilliseconds
     eprintfn "load_ms=%d seeds=%d" loadMs seedCats.Length
@@ -250,6 +257,30 @@ let main argv =
     let mutable totalSolutions = 0
     let mutable lastQueryMs = 0L
 
+{{#has_lmdb}}
+    // LMDB int-native fast path: call the native kernel directly, bypassing
+    // the per-seed WAM dispatch (register-array alloc, derefVar, intern
+    // Map.tryFind, choice-point setup) that callForeign/executeForeign would
+    // pay for every seed.  This matches what the Rust matrix bench does (tight
+    // native kernel loop) and isolates kernel cost from the WAM-target
+    // dispatch tax.  Seeds and root are already ints; the lookup is resolved
+    // once.  depth/visited mirror the executeForeign seeding (visited=[cat],
+    // depth=1) so the result matches the dispatched path exactly.
+    let maxDepthCfg = Map.tryFind "max_depth" ctx.WcForeignConfig |> Option.defaultValue 10
+    let lookupFn = lmdbLookupFn
+    for rep = 1 to numReps do
+        let querySw = Stopwatch.StartNew()
+        let mutable repSolutions = 0
+        for cat in seedInts do
+            let hits = nativeKernel_category_ancestor lookupFn cat rootInt maxDepthCfg 1 [ cat ]
+            if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+        querySw.Stop()
+        lastQueryMs <- querySw.ElapsedMilliseconds
+        totalSolutions <- totalSolutions + repSolutions
+        eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
+            rep lastQueryMs seedInts.Length repSolutions
+{{/has_lmdb}}
+{{^has_lmdb}}
     for rep = 1 to numReps do
         let querySw = Stopwatch.StartNew()
         let mutable repSolutions = 0
@@ -297,6 +328,7 @@ let main argv =
         totalSolutions <- totalSolutions + repSolutions
         eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
             rep lastQueryMs seedCats.Length repSolutions
+{{/has_lmdb}}
 
     sw.Stop()
     let totalMs = sw.ElapsedMilliseconds
