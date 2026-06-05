@@ -1333,7 +1333,18 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "is/2":
 		val, ok := vm.evalArithmetic(arg2)
 		if !ok { return false }
-		return vm.Unify(arg1, &Float{Val: val})
+		// Produce an Integer for integral results: Unify is type-strict
+		// (Integer never unifies with Float), so always wrapping in Float
+		// made `R is N + 1` fail whenever R was already bound to a ground
+		// Integer (e.g. cack(0,5,6) / cfib(10,55) / cbi_arith). Mirrors the
+		// Python target's int-vs-float result heuristic.
+		var result Value
+		if !math.IsInf(val, 0) && val == math.Trunc(val) {
+			result = &Integer{Val: int64(val)}
+		} else {
+			result = &Float{Val: val}
+		}
+		return vm.Unify(arg1, result)
 
 	case "=:=/2" :
 		v1, ok1 := vm.evalArithmetic(arg1)

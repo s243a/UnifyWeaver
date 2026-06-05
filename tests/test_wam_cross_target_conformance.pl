@@ -55,6 +55,8 @@
               [write_wam_haskell_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_python_target',
               [write_wam_python_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [write_wam_go_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -65,6 +67,7 @@ conformance_target(elixir).
 conformance_target(wat).
 conformance_target(haskell).
 conformance_target(python).
+conformance_target(go).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  WAT and Haskell are wired up but NOT defaults: their backends still
@@ -165,6 +168,30 @@ ct_default_target(elixir).
 %  fib/ack already passed, so +/-/comparison and is/2 bound-LHS checking
 %  were fine; with these two fixes the Haskell adapter is fully green.
 
+%  Go (LIVE xfails). The Go WAM runtime is exercised here via
+%  prefer_wam(true) (its default strategy is the dataflow/stream backend,
+%  not the shared WAM pipeline). Onboarding surfaced three independent
+%  gaps; fib/ack/append are conformant, the rest are tracked below.
+%   - is/2 produced a Float for every result, and Unify is type-strict
+%     (Integer never unifies with Float), so `R is N + 1` failed whenever
+%     R was bound to a ground Integer. FIXED in state.go.mustache (integral
+%     results now wrap as Integer), which made fib and ack pass.
+%   - member/reverse (cons-cell gap, still open): the compiler builds a
+%     list as an outer put_list *List cell whose tail cells are
+%     put_structure "[|]/2" *Structures, but GetList only recognises *List,
+%     so the recursion mis-unifies the tail. cmem(z,[a,b,c]) wrongly
+%     succeeds and clist_reverse mismatches. A localized GetList fix was
+%     attempted but is insufficient (member still wrong) and regressed
+%     reverse into a non-terminating loop, so the proper fix is a broader
+%     overhaul of list unification/backtracking — tracked, not forced.
+%   - builtins (nested-arithmetic gap, still open): a single `is` of two
+%     operands evaluates correctly (fib/ack/`//`/`mod` all work), but a
+%     nested expression of depth >= 2 (cbi_arith's A+B+C+D+E, i.e.
+%     +(+(+(+(A,B),C),D),E)) mis-evaluates, so cbi_arith(28) fails.
+ct_xfail(go, member).
+ct_xfail(go, reverse).
+ct_xfail(go, builtins).
+
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
 %  Used when *generation itself* is unusable, not just the answer.
@@ -192,6 +219,7 @@ ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
 ct_toolchain(python, [python3]).
+ct_toolchain(go,     [go]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -229,6 +257,7 @@ test(scala,  [condition(ct_available(scala))])  :- run_target_conformance(scala)
 test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir).
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
 test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
+test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -622,6 +651,80 @@ ct_run(python, python_ctx(Dir, Map), K, A, Bool) :-
     ).
 
 ct_teardown(python, python_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Go  (0-arity wrapper -> `./bin <key>` -> true/false)
+%
+% write_wam_go_project/3 compiles predicate INDICATORS itself, but its
+% DEFAULT strategy is the dataflow/stream Go backend (a stdin filter),
+% NOT the WAM pipeline the other backends share. prefer_wam(true) forces
+% every predicate through compile_predicate_to_wam, so Go is tested on the
+% same WAM lowering as scala/elixir/wat/haskell/python. We generate with
+% package_name(main) (which emits a domain-specific benchmark main.go) and
+% then OVERWRITE main.go with a tiny query-runner driver: it looks up the
+% wrapper label in SharedWamLabels, sets vm.PC, and runs vm.Run() — which
+% returns true only when the machine halts (Proceed with CP<=0), false on
+% backtrack exhaustion. Go compiles fast to a single binary, so ct_build
+% does the `go build` and ct_run is a cheap exec per query. Opt-in via
+% CONFORMANCE_TARGETS=go.
+% ============================================================
+
+go_runner_driver('package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: runner <pred/arity>")
+		os.Exit(2)
+	}
+	key := os.Args[1]
+	pc, ok := SharedWamLabels[key]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "unknown predicate: "+key)
+		os.Exit(3)
+	}
+	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
+	vm := NewWamStateFromCtx(ctx)
+	setupSharedForeignPredicates(vm)
+	vm.PC = pc
+	if vm.Run() {
+		fmt.Println("true")
+	} else {
+		fmt.Println("false")
+	}
+}
+').
+
+ct_build(go, Preds, Queries, go_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_go', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_go_project(AllPreds,
+        [package_name(main), module_name('uw_go_ct'), prefer_wam(true)], Dir),
+    go_runner_driver(DriverSrc),
+    directory_file_path(Dir, 'main.go', MainPath),
+    setup_call_cleanup(open(MainPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(go, ['build', '-o', 'runner', '.'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(go_build_failed(BExit, BErr)) ).
+
+ct_run(go, go_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    % Execute via `go run` rather than exec'ing the built binary directly:
+    % process_create(path(AbsPath)) fails to launch a binary under some
+    % $TMPDIR layouts, whereas `go` is resolved on PATH and runs the program
+    % from its own (warm) build cache. ct_build already gated compilation.
+    run_proc_out(go, ['run', '.', KeyStr], Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(go, go_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 qualify_user(_M:N/A, user:N/A) :- !.
