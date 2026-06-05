@@ -183,6 +183,44 @@ let loadCategoryParentDemand (env: LightningEnvironment) (demand: Set<int>) : Ma
             Map.add k (vs |> List.filter demand.Contains) acc
         else acc) Map.empty
 
+/// Mutable-Dictionary variant of loadCategoryParentDemand for LMDB-eager mode.
+/// Single cursor pass over category_parent, keeping only edges whose BOTH
+/// endpoints are in the demand set, accumulated into a Dictionary (O(1)
+/// amortised insert) instead of an immutable Map (O(log n) insert + node
+/// allocation per edge).  Returns int->int list lookup in raw LMDB int space.
+/// Pair with `fun k -> match dict.TryGetValue k with | true, v -> v | _ -> []`
+/// for an O(1) kernel lookup that skips the Map entirely.
+let loadCategoryParentDemandDict (env: LightningEnvironment) (demand: Set<int>)
+    : System.Collections.Generic.Dictionary<int, int list> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("category_parent", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let acc = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let addEntry () =
+            let struct (_, k, v) = cursor.GetCurrent()
+            let key = decodeI32 (k.AsSpan())
+            if demand.Contains key then
+                let value = decodeI32 (v.AsSpan())
+                if demand.Contains value then
+                    let ok, vs = acc.TryGetValue(key)
+                    if ok then vs.Add(value)
+                    else
+                        let vs = System.Collections.Generic.List<int>()
+                        vs.Add(value)
+                        acc.[key] <- vs
+        addEntry ()
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then addEntry ()
+            else ok <- false
+    let result = System.Collections.Generic.Dictionary<int, int list>(acc.Count)
+    for kv in acc do
+        result.[kv.Key] <- Seq.toList kv.Value
+    result
+
 /// Load a DUPSORT database directly into a Dictionary (skipping the
 /// Map conversion). Returns O(1) lookup via DictLookupSource. Use
 /// this when the caller only needs ILookupSource access (not a Map
