@@ -5870,7 +5870,12 @@ u.build_cons:
   %u.cons_mem = call i8* @wam_arena_alloc(i64 %u.cp_size)
   %u.cons = bitcast i8* %u.cons_mem to %Compound*
   %u.cons_fn = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 0
-  store i8* getelementptr ([2 x i8], [2 x i8]* @.fn__2E, i32 0, i32 0), i8** %u.cons_fn
+  ; M100: use the SWI [|] cons functor (matches put_list, put_structure
+  ; for list-syntax, findall output, and every other cons-cell producer
+  ; in the codebase). The previous . (period) functor used here made
+  ; univ-built lists fail to unify with source-level list patterns
+  ; like [H|T], because put_list emits [|](H,T) compounds.
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %u.cons_fn
   %u.cons_ar = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 1
   store i32 2, i32* %u.cons_ar
   %u.cargs_mem = call i8* @wam_arena_alloc(i64 32)
