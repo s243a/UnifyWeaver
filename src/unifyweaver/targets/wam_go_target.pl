@@ -1554,6 +1554,7 @@ wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
 
 wam_go_case('GetList', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        val = vm.deref(val)
         if isUnbound(val) {
             addr := vm.heapPush(nil)
             l := &List{Elements: make([]Value, 2)}
@@ -1565,9 +1566,13 @@ wam_go_case('GetList', '        val := vm.Regs[i.Ai]
             vm.PC++
             return true
         }
-        val = vm.deref(val)
         if list, ok := val.(*List); ok && len(list.Elements) > 0 {
             vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
+            vm.PC++
+            return true
+        }
+        if h, t, ok := consHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
             vm.PC++
             return true
         }
@@ -1700,7 +1705,20 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         vm.Heap[addr] = s
         vm.CurrentStruct = s
         vm.CurrentList = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
+        ref := &Ref{Addr: addr}
+        // If this register holds an unbound placeholder (one a prior
+        // set_variable embedded into an enclosing structure/list arg), bind
+        // it to the new structure so the embedded copy resolves here. The
+        // compiler builds nested terms outer-first — e.g. +(+(A,B),C) or a
+        // list tail cell [|]/2 — leaving a placeholder in the arg slot that
+        // a later put_structure into the same register must fill. Trailing
+        // via bindUnbound keeps it backtrack-safe.
+        if cur := vm.Regs[i.Ai]; cur != nil {
+            if u, ok := vm.deref(cur).(*Unbound); ok {
+                vm.bindUnbound(u, ref)
+            }
+        }
+        vm.Regs[i.Ai] = ref
         vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
         vm.PC++
         return true').

@@ -85,17 +85,17 @@ so any failure is reproducible from the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
-The harness is green today. **scala, elixir, wat, haskell, and python
-pass the whole spec**; **go passes append/fib/ack and has three live
-`ct_xfail/2` entries** (member, reverse, builtins) for gaps still open in
-its WAM runtime. The oracle is the hand-specified expected-results table
-in `wam_conformance_fixtures.pl` (standard Prolog semantics), not any
-backend's output; Scala was the original reference. Mismatches under an
-`ct_xfail/2` are tolerated and logged; an unexpected full match is logged
-as `XPASS` so the entry can be retired once the gap is fixed. The table
-below records every divergence the harness has surfaced — each a real
-backend gap, not a fixture artifact — marking which are fixed and which
-remain open.
+The harness is green today and **every registered backend — scala,
+elixir, wat, haskell, python, and go — passes the whole spec** (there are
+no live `ct_xfail/2` or `ct_skip/2` entries; both are declared `dynamic`
+so they may have zero clauses). The oracle is the hand-specified
+expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
+semantics), not any backend's output; Scala was the original reference.
+A tolerated divergence would be logged via a new `ct_xfail/2`, with an
+unexpected full match logged as `XPASS` so the entry can be retired once
+the gap is fixed. The table below records every divergence the harness has
+surfaced — each a real backend gap, not a fixture artifact — all now
+fixed.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
@@ -108,12 +108,12 @@ remain open.
 | ~~haskell~~ | ~~builtins~~ | **fixed** | `=/2` of two identical atoms returned false (no `BuiltinCall "=/2"` handler — added one routing through `unifyVal`), and `//`/`mod` evaluated incorrectly: the arity-stripper `takeWhile (/= '/')` truncated any operator containing `/` (so `//` → `""`). Replaced with `bareArithOp` (strips only a trailing `/<digits>`). `fib`/`ack` already passed. Now conformant; xfail removed. |
 | ~~python~~ | ~~builtins~~ | **fixed** | `cbi_arith(28)` → false: `wam_line_to_python_literal` computed the `put_structure`/`get_structure` arity with `split_string(Fn,"/","",[_,ArStr])`, which expects exactly two parts and fell back to **arity 0** for `///2` (integer division `//`). A 0-arity `//` compound carried no argument cells, so `eval_arith` could not apply it and `X is 17 // 5` failed — the same `/`-in-operator class as the Haskell/WAT `//` bugs. Added `python_functor_arity/2` (last `/`-component). The Python adapter was added to the harness in the same change; every other program already passed. |
 | ~~go~~ | ~~fib, ack~~ | **fixed** | `is/2` wrapped every result in `&Float`, but Go's `Unify` is type-strict (Integer never unifies with Float), so `R is N + 1` failed whenever R was already bound to a ground Integer — `cack(0,5,6)`, `cfib(10,55)`. Integral results now wrap as `&Integer` (mirrors the Python int-vs-float heuristic), in `templates/targets/go_wam/state.go.mustache`. Made fib and ack pass; the Go adapter was added in the same change. |
-| go | member, reverse | **xfail** | Cons-cell gap. The compiler builds a list as an outer `put_list` `*List` cell whose tail cells are `put_structure "[|]/2"` `*Structure`s, but `GetList` only recognises `*List`, so the recursion mis-unifies the tail: `cmem(z,[a,b,c])` wrongly succeeds and `clist_reverse([a,b,c],[a,b,c])` mismatches. Same `./2`-vs-`[|]/2` class as Elixir/Haskell/WAT, but a localized `GetList` fix proved insufficient (member still wrong) and regressed reverse into a non-terminating loop — the real fix is a broader overhaul of Go list unification/backtracking. |
-| go | builtins | **xfail** | Nested-arithmetic gap. A single `is` of two operands is correct (fib/ack and `//`/`mod` in isolation all pass), but an expression of depth ≥ 2 — `cbi_arith`'s `A+B+C+D+E`, i.e. `+(+(+(+(A,B),C),D),E)` — mis-evaluates, so `cbi_arith(28)` → false. The two-variable sum works; three or more does not. |
+| ~~go~~ | ~~builtins~~ | **fixed** | Nested-arithmetic gap. A depth-1 `is` was correct (`//`/`mod` too) but `cbi_arith`'s `A+B+C+D+E` — `+(+(+(+(A,B),C),D),E)` — mis-evaluated. The compiler builds nested terms outer-first: `set_variable` drops an unbound placeholder into the outer arg, then `put_structure` builds the inner term into that *same register* — but `PutStructure` overwrote the register without binding the embedded placeholder, so the outer arg stayed unbound and `evalArithmetic` gave up at depth ≥ 2. `PutStructure` now binds an unbound placeholder it overwrites (`wam_go_target.pl`), which also fixes list **tail** cells built the same way. |
+| ~~go~~ | ~~member, reverse~~ | **fixed** | Cons-cell traversal. Lists build as an outer `put_list` `*List` cell whose tails are `put_structure "[|]/2"` `*Structure`s (the `./2`-vs-`[|]/2` class). Two further `GetList` bugs, both fixed: (a) it recognised only `*List`, not the inner `[|]/2` `*Structure` tail cells — added `consHeadTail` (`state.go.mustache`); (b) it tested `isUnbound` **before** `deref`, so a *bound* variable tail (after the placeholder fix above) was mistaken for unbound and sent into write mode, wrongly succeeding `cmem(z,…)` and looping `clist_reverse` — now derefs first. With all three fixes member, reverse (and append's negative cases) pass. |
 
 (Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
-(Go is opt-in too — `CONFORMANCE_TARGETS=go`. `append`, `fib`, and `ack` pass; `member`, `reverse`, and `builtins` are tracked as `ct_xfail/2` — see the table above. The driver is a small generated `main.go` that looks up the wrapper label in `SharedWamLabels` and runs `vm.Run()`.)
+(Go is opt-in too — `CONFORMANCE_TARGETS=go` — and now passes the whole spec. The driver is a small generated `main.go` that looks up the wrapper label in `SharedWamLabels` and runs `vm.Run()`.)
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because

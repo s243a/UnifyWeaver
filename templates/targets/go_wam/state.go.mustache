@@ -592,6 +592,31 @@ func parseFunctorName(f string) string {
 	return f
 }
 
+// isConsName reports whether a bare functor name (arity stripped) is one of
+// the interchangeable cons-cell spellings WAM lists use.
+func isConsName(n string) bool {
+	return n == "[|]" || n == "."
+}
+
+// consHeadTail exposes head/tail for the cons-cell spellings that arrive as
+// a Compound/Structure (e.g. "[|]/2", built by put_structure for list tail
+// cells) rather than as a *List. Without this, GetList recognised only the
+// outer *List cell and failed on the inner "[|]/2" tail cells, so recursive
+// list predicates (member/reverse) mis-traversed the tail.
+func consHeadTail(v Value) (Value, Value, bool) {
+	switch t := v.(type) {
+	case *Compound:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	case *Structure:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	}
+	return nil, nil, false
+}
+
 // compareValues returns <0, 0, or >0 for sort ordering of atoms/integers.
 func compareValues(a, b Value) int {
 	// Type ordering: Atom < Integer < Float < other
