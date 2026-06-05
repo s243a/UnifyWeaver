@@ -110,6 +110,16 @@ parse_variant(lmdb_eager, [
     branch_pruning(false),
     min_closure(false)
 ]).
+parse_variant(lmdb_lazy, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+parse_variant(lmdb_cached, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
 
 %% variant_materialisation(+Variant, -Mode)
 variant_materialisation(lmdb_eager,  eager).
@@ -127,6 +137,14 @@ collect_wam_predicates(seeded, [
     user:power_sum_bound/4
 ]).
 collect_wam_predicates(lmdb_eager, [
+    user:max_depth/1,
+    user:category_ancestor/4
+]).
+collect_wam_predicates(lmdb_lazy, [
+    user:max_depth/1,
+    user:category_ancestor/4
+]).
+collect_wam_predicates(lmdb_cached, [
     user:max_depth/1,
     user:category_ancestor/4
 ]).
