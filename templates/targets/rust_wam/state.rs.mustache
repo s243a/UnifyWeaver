@@ -684,6 +684,22 @@ impl WamState {
         self.edge_parents_via(cat_id, &acc)
     }
 
+    /// True if a structure functor string is one of the interchangeable
+    /// cons-cell spellings WAM lists use. Accepts the bare name, an arity
+    /// suffix, and the "str(...)" wrapper the heap sometimes carries — i.e.
+    /// "[|]/2", "./2", "str([|]/2)", "str(./2)", "[|]", "." all match. The
+    /// compiler builds the outer list cell with put_list (a Value::List) but
+    /// inner tail cells with put_structure "[|]/2"; without aliasing these,
+    /// get_list mis-traversed the tail.
+    pub fn is_cons_functor(&self, s: &str) -> bool {
+        let s = s.strip_prefix("str(").and_then(|x| x.strip_suffix(')')).unwrap_or(s);
+        let name = match s.rsplit_once('/') {
+            Some((n, ar)) if ar.chars().all(|c| c.is_ascii_digit()) => n,
+            _ => s,
+        };
+        name == "[|]" || name == "."
+    }
+
     /// Dereference an Unbound variable through the binding table.
     /// Follows chains: if Unbound("X") -> Unbound("Y") -> Atom("hello"), returns Atom("hello").
     pub fn deref_var(&self, val: &Value) -> Value {
@@ -892,17 +908,34 @@ impl WamState {
             (Value::Integer(i1), Value::Integer(i2)) => i1 == i2,
             (Value::Float(f1), Value::Float(f2)) => (f1 - f2).abs() < f64::EPSILON,
             (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
+            // Empty-list aliasing: the [] atom and the empty Value::List.
+            (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
+                if l.is_empty() && s == "[]" => true,
+            // Cons-cell aliasing: one logical list is built from both put_list
+            // (Value::List) and put_structure "[|]/2" (Value::Str) cells, so a
+            // List and a cons-functor Str of arity 2 are the same cell.
+            (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
+                if self.is_cons_functor(f) && a.len() == 2 && !l.is_empty() => {
+                let h = l[0].clone();
+                let t = Value::List(l[1..].to_vec());
+                let (a0, a1v) = (a[0].clone(), a[1].clone());
+                self.unify(&h, &a0) && self.unify(&t, &a1v)
+            }
             (Value::Str(f1, a1), Value::Str(f2, a2)) => {
-                if f1 != f2 || a1.len() != a2.len() { return false; }
-                for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                    if !self.unify(arg1, arg2) { return false; }
+                // Alias cons spellings ("[|]/2" vs "./2") against each other.
+                let same = f1 == f2 || (self.is_cons_functor(f1) && self.is_cons_functor(f2));
+                if !same || a1.len() != a2.len() { return false; }
+                let pairs: Vec<(Value, Value)> = a1.iter().cloned().zip(a2.iter().cloned()).collect();
+                for (arg1, arg2) in pairs {
+                    if !self.unify(&arg1, &arg2) { return false; }
                 }
                 true
             }
             (Value::List(l1), Value::List(l2)) => {
                 if l1.len() != l2.len() { return false; }
-                for (i1, i2) in l1.iter().zip(l2.iter()) {
-                    if !self.unify(i1, i2) { return false; }
+                let pairs: Vec<(Value, Value)> = l1.iter().cloned().zip(l2.iter().cloned()).collect();
+                for (i1, i2) in pairs {
+                    if !self.unify(&i1, &i2) { return false; }
                 }
                 true
             }

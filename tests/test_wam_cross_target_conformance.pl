@@ -57,6 +57,8 @@
               [write_wam_python_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_go_target',
               [write_wam_go_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_rust_target',
+              [write_wam_rust_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -68,6 +70,7 @@ conformance_target(wat).
 conformance_target(haskell).
 conformance_target(python).
 conformance_target(go).
+conformance_target(rust).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  WAT and Haskell are wired up but NOT defaults: their backends still
@@ -190,6 +193,34 @@ ct_default_target(elixir).
 %     (b) it tested isUnbound BEFORE deref, so a *bound* variable tail was
 %     mistaken for unbound and sent into write mode (now derefs first).
 
+%  Rust (onboarding in progress). The Rust WAM runtime had the same gap
+%  family as Go, plus a missing =/2; fixed so far (wam_rust_target.pl /
+%  templates/targets/rust_wam/state.rs.mustache):
+%   - =/2 had NO handler in execute_builtin (the compiler emits `X = Y` as
+%     builtin_call =/2), so even `a = a` returned false. Added a handler
+%     routing through unify(). This made fib and builtins pass.
+%   - set_variable did not write the fresh var into the current
+%     structure/list arg slot (unlike set_value/set_constant), so terms
+%     with a variable argument had their args misaligned — now calls
+%     set_heap_or_list.
+%   - nested arithmetic: put_structure into a placeholder register did not
+%     bind the embedded placeholder, and eval_arith did not deref Unbound.
+%     Both fixed; nested cbi_arith now evaluates.
+%   - cons-cell aliasing added to get_list (accepts "[|]/2"/"./2" Str and
+%     Ref, derefs before the unbound test) and to unify (List <-> cons Str,
+%     empty-list <-> "[]" atom).
+%  STILL failing, tracked below (Rust's heap-materialisation list model has
+%  deeper issues than the convention fixes cover, and recursive list/ack
+%  predicates do not yet terminate with the right answer):
+%   - member: cmem(z,[a,b,c]) wrongly succeeds.
+%   - append/reverse: positive cases (capp([a,b],[c],[a,b,c])) fail.
+%   - ack: cack(2,3,9) fails (deep integer recursion).
+%  fib and builtins are conformant. These four are tracked for a follow-up.
+ct_xfail(rust, member).
+ct_xfail(rust, append).
+ct_xfail(rust, reverse).
+ct_xfail(rust, ack).
+
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
 %  Used when *generation itself* is unusable, not just the answer.
@@ -218,6 +249,7 @@ ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
 ct_toolchain(python, [python3]).
 ct_toolchain(go,     [go]).
+ct_toolchain(rust,   [cargo]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -256,6 +288,7 @@ test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
 test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
 test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
+test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -723,6 +756,67 @@ ct_run(go, go_ctx(Dir, Map), K, A, Bool) :-
     normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
 
 ct_teardown(go, go_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Rust  (0-arity wrapper -> `cargo run -- <key>` -> true/false)
+%
+% Like Go, write_wam_rust_project/3 attempts native lowering first and
+% falls back to the shared WAM pipeline; the conformance predicates all
+% take the WAM path. We generate the project, overwrite the emitted
+% benchmark src/main.rs with a tiny query-runner driver (look up the
+% wrapper label in shared_wam_program(), set vm.pc, run vm.run() — which
+% returns true when the machine halts with pc==0), gate compilation with
+% `cargo build`, and run each query with `cargo run` (cargo execs the
+% binary from its own target dir, sidestepping the $TMPDIR exec issue the
+% Go adapter hit). The generated crate has no external deps, so --offline
+% needs no network. Opt-in via CONFORMANCE_TARGETS=rust.
+% ============================================================
+
+rust_runner_driver('use std::env;
+use wam_lib::state::WamState;
+use wam_lib::{shared_wam_program, setup_foreign_predicates};
+
+fn main() {
+    let key = match env::args().nth(1) {
+        Some(k) => k,
+        None => { eprintln!("usage: runner <pred/arity>"); std::process::exit(2); }
+    };
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels.clone());
+    setup_foreign_predicates(&mut vm);
+    match labels.get(&key) {
+        Some(&pc) => {
+            vm.pc = pc;
+            println!("{}", if vm.run() { "true" } else { "false" });
+        }
+        None => { eprintln!("unknown predicate: {}", key); std::process::exit(3); }
+    }
+}
+').
+
+ct_build(rust, Preds, Queries, rust_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_rust', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_rust_project(AllPreds,
+        [module_name('uw_rust_ct'), no_kernels(true)], Dir),
+    rust_runner_driver(DriverSrc),
+    directory_file_path(Dir, 'src/main.rs', MainPath),
+    setup_call_cleanup(open(MainPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(cargo, ['build', '--offline', '-q'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(rust_build_failed(BExit, BErr)) ).
+
+ct_run(rust, rust_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(cargo, ['run', '--offline', '-q', '--bin', bench, '--', KeyStr],
+                 Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(rust, rust_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 qualify_user(_M:N/A, user:N/A) :- !.
