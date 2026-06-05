@@ -143,6 +143,120 @@ strip_arity_suffix_scala(Pred, Name) :-
     ).
 
 % =====================================================================
+% If-then-else structuring (cut_ite / negation / once)
+% =====================================================================
+%
+%  The compiler lowers (C -> T ; E), \+G and once/1 to a deterministic
+%  choice-point pair around a soft cut:
+%
+%      try_me_else L_else
+%      <cond>                 % C
+%      cut_ite | !/0          % commit point (-> uses cut_ite, \+ uses !/0)
+%      <then>                 % T
+%      jump L_cont
+%    L_else: trust_me
+%      <else>                 % E
+%    L_cont: <continuation>
+%
+%  The base parser strips labels and drops cut_ite, which loses this
+%  structure. parse_wam_text_labeled_scala keeps both so we can fold each
+%  block into an ite(Cond,Then,Else) term and emit native Scala if/else.
+%  Sound by construction: the condition runs in its own boolean helper
+%  with trail save/restore, so a failed cond undoes its bindings before the
+%  else branch, and a then/else failure returns false from the lowered
+%  function (the entry-wrapper interpreter fallback then re-runs the whole
+%  predicate). It can never produce a wrong success.
+
+parse_wam_text_labeled_scala(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled_scala(Lines, Instrs).
+
+parse_lines_labeled_scala([], []).
+parse_lines_labeled_scala([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts0),
+    delete(Parts0, "", Parts),
+    (   Parts == []
+    ->  parse_lines_labeled_scala(Rest, Instrs)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelStr),
+        Instrs = [label(LabelStr)|More],   % keep as string to match try_me_else/jump args
+        parse_lines_labeled_scala(Rest, More)
+    ;   Parts == ["cut_ite"]
+    ->  Instrs = [cut_ite|More],
+        parse_lines_labeled_scala(Rest, More)
+    ;   instr_from_parts_scala(Parts, Instr)
+    ->  Instrs = [Instr|More],
+        parse_lines_labeled_scala(Rest, More)
+    ;   parse_lines_labeled_scala(Rest, Instrs)   % unrecognised — skip
+    ).
+
+%% structure_ite_scala(+Flat, -Structured) is semidet.
+%  Folds every well-formed ITE block into ite(Cond,Then,Else); drops the
+%  structural markers (try_me_else/trust_me/cut_ite/jump/label). Fails if a
+%  try_me_else cannot be matched to a clean block (caller then declines to
+%  lower, falling back to the interpreter).
+structure_ite_scala([], []).
+structure_ite_scala([try_me_else(LE)|Rest0], [ite(CondS,ThenS,ElseS)|Out]) :-
+    !,
+    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
+    \+ member(label(LE), ThenWithJump),          % first (matching) else label
+    append(ThenPath, [jump(LC)], ThenWithJump),  % then-path ends in its jump
+    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
+    \+ member(label(LC), ElsePath),
+    split_commit_scala(ThenPath, Cond, Then),
+    structure_ite_scala(Cond, CondS),
+    structure_ite_scala(Then, ThenS),
+    structure_ite_scala(ElsePath, ElseS),
+    structure_ite_scala(AfterCont, Out).
+structure_ite_scala([label(_)|Rest], Out) :- !,
+    structure_ite_scala(Rest, Out).
+structure_ite_scala([I|Rest], [I|Out]) :-
+    structure_ite_scala(Rest, Out).
+
+%% split_commit_scala(+ThenPath, -Cond, -Then)
+%  Splits a then-path at its commit instruction (cut_ite for ->, the !/0
+%  builtin for \+). The commit itself is dropped.
+split_commit_scala(Path, Cond, Then) :-
+    append(Cond, [Commit|Then], Path),
+    is_commit_scala(Commit),
+    \+ ( member(C0, Cond), is_commit_scala(C0) ),   % split at the first commit
+    !.
+
+is_commit_scala(cut_ite).
+is_commit_scala(builtin_call("!/0", _)).
+is_commit_scala(builtin_call('!/0', _)).
+
+%% structured_supported_scala(+StructuredInstrs)
+%  All leaf instructions supported, and every ite() fully structured.
+structured_supported_scala(Instrs) :-
+    forall(member(I, Instrs), structured_supported_one_scala(I)).
+
+structured_supported_one_scala(ite(C, T, E)) :- !,
+    structured_supported_scala(C),
+    structured_supported_scala(T),
+    structured_supported_scala(E).
+structured_supported_one_scala(I) :- scala_supported(I).
+
+%% has_ite_block_scala(+Clause1Instrs)
+%  True when the (base-parsed) clause-1 contains an inner ITE choice point.
+has_ite_block_scala(Instrs) :- member(try_me_else(_), Instrs).
+
+%% structured_clause1_scala(+WamCode, -StructuredClause1) is semidet.
+%  Re-parse keeping labels/cut_ite, take clause 1, fold ITE blocks. Only
+%  attempted for single-clause predicates (MultiClause=false) so an inner
+%  ITE try_me_else is never confused with a predicate-level clause chain.
+structured_clause1_scala(WamCode, Structured) :-
+    parse_wam_text_labeled_scala(WamCode, LInstrs),
+    \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
+    take_to_proceed_scala(LInstrs, C1L),
+    structure_ite_scala(C1L, Structured),
+    \+ member(try_me_else(_), Structured),  % every block consumed
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+% =====================================================================
 % Lowerability analysis
 % =====================================================================
 
@@ -155,9 +269,18 @@ strip_arity_suffix_scala(Pred, Name) :-
 wam_scala_lowerable(_PI, WamCode, Reason) :-
     parse_wam_text_scala(WamCode, Instrs),
     clause1_instrs_scala(Instrs, C1, MultiClause),
-    is_deterministic_pred_scala(C1),
-    forall(member(I, C1), scala_supported(I)),
-    ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause ).
+    (   is_deterministic_pred_scala(C1),
+        forall(member(I, C1), scala_supported(I))
+    ->  ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause )
+    ;   % Clause-1 has an inner choice point. Lower it only if that point is
+        % a pure (C -> T ; E) / \+ / once block whose pieces are all
+        % supported; otherwise decline (interpreter fallback).
+        MultiClause == false,
+        has_ite_block_scala(C1),
+        structured_clause1_scala(WamCode, Structured),
+        structured_supported_scala(Structured),
+        Reason = ite_lowered
+    ).
 
 %% clause1_instrs_scala(+Instrs, -Clause1, -MultiClause)
 %  Extracts clause 1.  MultiClause is `true` when the predicate opens
@@ -269,8 +392,15 @@ lower_predicate_to_scala(PI, WamCode, Options, lowered(PredName, FuncName, Code)
     ->  maplist(foreign_key_atom, FK0, ForeignKeys)
     ;   ForeignKeys = []
     ),
+    % Emit from the plain clause-1 when it is already fully supported;
+    % otherwise fold its inner ITE block(s) into structured form first.
+    (   is_deterministic_pred_scala(C1),
+        forall(member(I, C1), scala_supported(I))
+    ->  EmitBody = C1
+    ;   structured_clause1_scala(WamCode, EmitBody)
+    ),
     with_output_to(string(Code),
-        emit_function_scala(FuncName, C1, MultiClause, ForeignKeys)).
+        emit_function_scala(FuncName, EmitBody, MultiClause, ForeignKeys)).
 
 foreign_key_atom(K, A) :- ( atom(K) -> A = K ; atom_string(A, K) ).
 
@@ -292,6 +422,7 @@ foreign_key_atom(K, A) :- ( atom(K) -> A = K ; atom_string(A, K) ).
 %  the emission — the entry-wrapper fallback subsumes the old replay/CP
 %  juggling and is correct regardless of the predicate's indexing prefix.
 emit_function_scala(FuncName, C1, _MultiClause, FK) :-
+    nb_setval(scala_ite_ctr, 0),
     format("  /** ~w — clause-1 fast path (generated); entry wrapper handles fallback. */~n", [FuncName]),
     format("  def ~w(s: WamState, program: WamProgram): Boolean = {~n", [FuncName]),
     emit_body_scala(C1, "    ", FK),
@@ -322,6 +453,26 @@ emit_one_scala(proceed, I, _) :-
     format("~w// proceed (clause complete)~n", [I]).
 emit_one_scala(fail, I, _) :-
     format("~wreturn false~n", [I]).
+
+% --- If-then-else (structured; see structure_ite_scala) ---
+% The condition runs in its own boolean helper with a trail mark, so a
+% failed condition undoes its bindings before the else branch. `return
+% false` inside the helper means "condition failed"; inside then/else it
+% returns from the lowered function (clause fails -> interpreter fallback).
+emit_one_scala(ite(Cond, Then, Else), I, FK) :-
+    nb_getval(scala_ite_ctr, N0), N is N0 + 1, nb_setval(scala_ite_ctr, N),
+    string_concat(I, "  ", I2),
+    format("~wval _iteMark~w = s.trail.length~n", [I, N]),
+    format("~wdef _iteCond~w(): Boolean = {~n", [I, N]),
+    emit_body_scala(Cond, I2, FK),
+    format("~w  true~n", [I]),
+    format("~w}~n", [I]),
+    format("~wif (_iteCond~w()) {~n", [I, N]),
+    emit_body_scala(Then, I2, FK),
+    format("~w} else {~n", [I]),
+    format("~w  WamRuntime.unwindTrail(s, _iteMark~w)~n", [I, N]),
+    emit_body_scala(Else, I2, FK),
+    format("~w}~n", [I]).
 
 % --- Head unification (get_*) ---
 emit_one_scala(get_constant(CStr, AiStr), I, _) :-
