@@ -2459,6 +2459,30 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M104: wam_unify_value bind path now aliases two unbound vars
+% via Ref-to-Ref instead of writing the Unbound sentinel. So after
+% X = Y, var(X) and var(Y) both still hold but X == Y is now true.
+
+:- dynamic test_unify_aliases_vars/2.
+test_unify_aliases_vars(_, R) :-
+    X = Y,
+    ( X == Y -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_unify_then_bind_propagates/2.
+test_unify_then_bind_propagates(_, R) :-
+    % After X = Y, binding one should propagate to the other.
+    X = Y,
+    X = 42,
+    ( Y =:= 42 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_term_vars_identity/2.
+test_term_vars_identity(_, R) :-
+    % The natural M103 test that used to fail: term_variables
+    % returns the list of variables, and via the M104 aliasing
+    % fix the V we get back == X.
+    term_variables(foo(X, 2), [V | _]),
+    ( V == X -> R is 1 ; R is 0 ).   % 1
+
 % M103: term_variables/2 -- depth-first left-to-right collection of
 % unbound vars from a term. No dedup -- repeated occurrences of the
 % same var appear once per occurrence (SWI dedupes; documented
@@ -5097,6 +5121,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M104 wam_unify_value Ref-to-Ref aliasing ---~n'),
+       run_test_r0('X = Y, X == Y -> 1',
+                   test_unify_aliases_vars, 0, 1),
+       run_test_r0('X = Y, X = 42, Y =:= 42 -> 1',
+                   test_unify_then_bind_propagates, 0, 1),
+       run_test_r0('term_variables(foo(X,_), [V|_]), V == X -> 1',
+                   test_term_vars_identity, 0, 1),
        format('--- M103 term_variables/2 ---~n'),
        run_test_r0('ground term -> [] -> 1',
                    test_tv_ground, 0, 1),

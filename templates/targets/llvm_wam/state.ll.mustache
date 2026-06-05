@@ -668,7 +668,18 @@ bind_a_through:
   %a_addr = trunc i64 %a_addr_i64 to i32
   %a_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
   call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %a_old)
-  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %db)
+  ; M104: if b is also a Ref to an unbound heap cell, store the
+  ; ORIGINAL b (the Ref) into a's cell rather than the deref'd
+  ; Unbound sentinel. That way a now points at b's cell, and
+  ; subsequent var(a) / var(b) / a == b / etc. all see them as
+  ; the same variable. Previously bind_a_through stored db (=
+  ; Unbound) which left a and b as two distinct unbound cells.
+  %ba_b_tag = extractvalue %Value %b, 0
+  %ba_b_is_ref = icmp eq i32 %ba_b_tag, 5
+  %ba_db_unb = call i1 @value_is_unbound(%Value %db)
+  %ba_alias = and i1 %ba_b_is_ref, %ba_db_unb
+  %ba_to_write = select i1 %ba_alias, %Value %b, %Value %db
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_to_write)
   ret i1 true
 
 check_b_unb:
@@ -685,7 +696,14 @@ bind_b_through:
   %b_addr = trunc i64 %b_addr_i64 to i32
   %b_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
   call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %b_old)
-  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %da)
+  ; M104: symmetric to bind_a_through -- if a is also an unbound
+  ; Ref, store the original a so they alias.
+  %bb_a_tag = extractvalue %Value %a, 0
+  %bb_a_is_ref = icmp eq i32 %bb_a_tag, 5
+  %bb_da_unb = call i1 @value_is_unbound(%Value %da)
+  %bb_alias = and i1 %bb_a_is_ref, %bb_da_unb
+  %bb_to_write = select i1 %bb_alias, %Value %a, %Value %da
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_to_write)
   ret i1 true
 
 both_bound:
