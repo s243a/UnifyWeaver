@@ -1496,6 +1496,7 @@ declare i64 @lrand48()
 declare void @srand48(i64)
 declare i8* @localtime_r(i64*, i8*)
 declare i64 @strftime(i8*, i64, i8*, i8*)
+declare i64 @mktime(i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
@@ -3563,6 +3564,7 @@ entry:
     i32 118, label %builtin_getppid
     i32 119, label %builtin_set_random
     i32 120, label %builtin_stamp_date_time
+    i32 121, label %builtin_date_time_stamp
   ]
 
 builtin_is:
@@ -5311,6 +5313,164 @@ sdt.read_fields:
   %sdt.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %sdt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sdt.raw2, %Value %sdt.dt_v)
   ret i1 %sdt.ok
+
+builtin_date_time_stamp:
+  ; M99: date_time_stamp(+DateTime, -Stamp) -- inverse of M98. Takes
+  ; a date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst) compound,
+  ; populates a struct tm, calls mktime, returns Stamp as Float
+  ; (matching SWI''s convention so that round-tripping through
+  ; stamp_date_time / date_time_stamp preserves the Float type from
+  ; get_time). Compound shape check borrows the M97 pattern:
+  ; tag check + arity 9 + functor strcmp against "date".
+  %dts.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dts.tag = call i32 @value_tag(%Value %dts.a1)
+  %dts.is_cp = icmp eq i32 %dts.tag, 3
+  br i1 %dts.is_cp, label %dts.check_arity, label %dts.fail
+dts.fail:
+  ret i1 false
+dts.check_arity:
+  %dts.cp_bits = call i64 @value_payload(%Value %dts.a1)
+  %dts.cp_ptr = inttoptr i64 %dts.cp_bits to %Compound*
+  %dts.ar_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 1
+  %dts.ar = load i32, i32* %dts.ar_slot
+  %dts.ar_ok = icmp eq i32 %dts.ar, 9
+  br i1 %dts.ar_ok, label %dts.check_name, label %dts.fail
+dts.check_name:
+  %dts.fn_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 0
+  %dts.fn_i8 = load i8*, i8** %dts.fn_slot
+  %dts.want = getelementptr [5 x i8], [5 x i8]* @.fn_date, i32 0, i32 0
+  %dts.cmp = call i32 @strcmp(i8* %dts.fn_i8, i8* %dts.want)
+  %dts.name_ok = icmp eq i32 %dts.cmp, 0
+  br i1 %dts.name_ok, label %dts.read_args, label %dts.fail
+dts.read_args:
+  %dts.args_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 2
+  %dts.args = load %Value*, %Value** %dts.args_slot
+  ; Args 1..7 + 9 must be Integer; arg 8 (TZName) must be Atom.
+  ; year (arg 1)
+  %dts.y_ptr = getelementptr %Value, %Value* %dts.args, i32 0
+  %dts.y_raw = load %Value, %Value* %dts.y_ptr
+  %dts.y = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.y_raw)
+  %dts.y_tag = call i32 @value_tag(%Value %dts.y)
+  %dts.y_int = icmp eq i32 %dts.y_tag, 1
+  br i1 %dts.y_int, label %dts.read_mon, label %dts.fail
+dts.read_mon:
+  %dts.m_ptr = getelementptr %Value, %Value* %dts.args, i32 1
+  %dts.m_raw = load %Value, %Value* %dts.m_ptr
+  %dts.m = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.m_raw)
+  %dts.m_tag = call i32 @value_tag(%Value %dts.m)
+  %dts.m_int = icmp eq i32 %dts.m_tag, 1
+  br i1 %dts.m_int, label %dts.read_day, label %dts.fail
+dts.read_day:
+  %dts.d_ptr = getelementptr %Value, %Value* %dts.args, i32 2
+  %dts.d_raw = load %Value, %Value* %dts.d_ptr
+  %dts.d = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.d_raw)
+  %dts.d_tag = call i32 @value_tag(%Value %dts.d)
+  %dts.d_int = icmp eq i32 %dts.d_tag, 1
+  br i1 %dts.d_int, label %dts.read_hour, label %dts.fail
+dts.read_hour:
+  %dts.h_ptr = getelementptr %Value, %Value* %dts.args, i32 3
+  %dts.h_raw = load %Value, %Value* %dts.h_ptr
+  %dts.h = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.h_raw)
+  %dts.h_tag = call i32 @value_tag(%Value %dts.h)
+  %dts.h_int = icmp eq i32 %dts.h_tag, 1
+  br i1 %dts.h_int, label %dts.read_min, label %dts.fail
+dts.read_min:
+  %dts.mn_ptr = getelementptr %Value, %Value* %dts.args, i32 4
+  %dts.mn_raw = load %Value, %Value* %dts.mn_ptr
+  %dts.mn = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.mn_raw)
+  %dts.mn_tag = call i32 @value_tag(%Value %dts.mn)
+  %dts.mn_int = icmp eq i32 %dts.mn_tag, 1
+  br i1 %dts.mn_int, label %dts.read_sec, label %dts.fail
+dts.read_sec:
+  %dts.s_ptr = getelementptr %Value, %Value* %dts.args, i32 5
+  %dts.s_raw = load %Value, %Value* %dts.s_ptr
+  %dts.s = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.s_raw)
+  %dts.s_tag = call i32 @value_tag(%Value %dts.s)
+  %dts.s_int = icmp eq i32 %dts.s_tag, 1
+  br i1 %dts.s_int, label %dts.read_off, label %dts.fail
+dts.read_off:
+  %dts.o_ptr = getelementptr %Value, %Value* %dts.args, i32 6
+  %dts.o_raw = load %Value, %Value* %dts.o_ptr
+  %dts.o = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.o_raw)
+  %dts.o_tag = call i32 @value_tag(%Value %dts.o)
+  %dts.o_int = icmp eq i32 %dts.o_tag, 1
+  br i1 %dts.o_int, label %dts.read_tzn, label %dts.fail
+dts.read_tzn:
+  %dts.tzn_ptr = getelementptr %Value, %Value* %dts.args, i32 7
+  %dts.tzn_raw = load %Value, %Value* %dts.tzn_ptr
+  %dts.tzn = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.tzn_raw)
+  %dts.tzn_tag = call i32 @value_tag(%Value %dts.tzn)
+  %dts.tzn_atom = icmp eq i32 %dts.tzn_tag, 0
+  br i1 %dts.tzn_atom, label %dts.read_dst, label %dts.fail
+dts.read_dst:
+  %dts.dst_ptr = getelementptr %Value, %Value* %dts.args, i32 8
+  %dts.dst_raw = load %Value, %Value* %dts.dst_ptr
+  %dts.dst = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.dst_raw)
+  %dts.dst_tag = call i32 @value_tag(%Value %dts.dst)
+  %dts.dst_int = icmp eq i32 %dts.dst_tag, 1
+  br i1 %dts.dst_int, label %dts.fill_tm, label %dts.fail
+dts.fill_tm:
+  ; Stack-alloc struct tm (zero-init) and populate the fields mktime
+  ; cares about. mktime ignores tm_wday and tm_yday on entry and will
+  ; recompute them; tm_isdst tells mktime whether DST is in effect
+  ; (1), not (0), or to figure it out (-1).
+  %dts.tm_buf = alloca [64 x i8]
+  %dts.tm_ptr = getelementptr [64 x i8], [64 x i8]* %dts.tm_buf, i32 0, i32 0
+  ; Zero the buffer so the unused padding bytes (and tm_gmtoff/tm_zone
+  ; if present) don''t hand mktime random stack contents.
+  call void @llvm.memset.p0i8.i64(i8* %dts.tm_ptr, i8 0, i64 64, i1 false)
+  %dts.y_val = call i64 @value_payload(%Value %dts.y)
+  %dts.y_adj = sub i64 %dts.y_val, 1900
+  %dts.y_i32 = trunc i64 %dts.y_adj to i32
+  %dts.m_val = call i64 @value_payload(%Value %dts.m)
+  %dts.m_adj = sub i64 %dts.m_val, 1
+  %dts.m_i32 = trunc i64 %dts.m_adj to i32
+  %dts.d_val = call i64 @value_payload(%Value %dts.d)
+  %dts.d_i32 = trunc i64 %dts.d_val to i32
+  %dts.h_val = call i64 @value_payload(%Value %dts.h)
+  %dts.h_i32 = trunc i64 %dts.h_val to i32
+  %dts.mn_val = call i64 @value_payload(%Value %dts.mn)
+  %dts.mn_i32 = trunc i64 %dts.mn_val to i32
+  %dts.s_val = call i64 @value_payload(%Value %dts.s)
+  %dts.s_i32 = trunc i64 %dts.s_val to i32
+  %dts.dst_val = call i64 @value_payload(%Value %dts.dst)
+  %dts.dst_i32 = trunc i64 %dts.dst_val to i32
+  ; Write fields at the struct tm byte offsets (same layout as M98).
+  %dts.sec_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 0
+  %dts.sec_p = bitcast i8* %dts.sec_p_i8 to i32*
+  store i32 %dts.s_i32, i32* %dts.sec_p
+  %dts.min_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 4
+  %dts.min_p = bitcast i8* %dts.min_p_i8 to i32*
+  store i32 %dts.mn_i32, i32* %dts.min_p
+  %dts.hour_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 8
+  %dts.hour_p = bitcast i8* %dts.hour_p_i8 to i32*
+  store i32 %dts.h_i32, i32* %dts.hour_p
+  %dts.mday_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 12
+  %dts.mday_p = bitcast i8* %dts.mday_p_i8 to i32*
+  store i32 %dts.d_i32, i32* %dts.mday_p
+  %dts.mon_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 16
+  %dts.mon_p = bitcast i8* %dts.mon_p_i8 to i32*
+  store i32 %dts.m_i32, i32* %dts.mon_p
+  %dts.year_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 20
+  %dts.year_p = bitcast i8* %dts.year_p_i8 to i32*
+  store i32 %dts.y_i32, i32* %dts.year_p
+  %dts.isdst_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 32
+  %dts.isdst_p = bitcast i8* %dts.isdst_p_i8 to i32*
+  store i32 %dts.dst_i32, i32* %dts.isdst_p
+  ; mktime returns time_t == i64 on x86-64 Linux. -1 signals an
+  ; invalid struct tm (mktime couldn''t represent it as time_t).
+  %dts.t = call i64 @mktime(i8* %dts.tm_ptr)
+  %dts.bad = icmp eq i64 %dts.t, -1
+  br i1 %dts.bad, label %dts.fail, label %dts.do_unify
+dts.do_unify:
+  ; Pack as Float to match SWI''s get_time-style stamp convention.
+  %dts.t_d = sitofp i64 %dts.t to double
+  %dts.t_bits = bitcast double %dts.t_d to i64
+  %dts.v0 = insertvalue %Value undef, i32 2, 0
+  %dts.v = insertvalue %Value %dts.v0, i64 %dts.t_bits, 1
+  %dts.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dts.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dts.raw2, %Value %dts.v)
+  ret i1 %dts.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12157,6 +12317,7 @@ builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
 builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
 builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
 builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
+builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
