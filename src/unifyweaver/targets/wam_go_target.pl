@@ -457,6 +457,9 @@ wam_go_direct_builtin("intersection/3", 3, 'intersection/3').
 wam_go_direct_builtin(union/3, 3, 'union/3').
 wam_go_direct_builtin('union/3', 3, 'union/3').
 wam_go_direct_builtin("union/3", 3, 'union/3').
+wam_go_direct_builtin(append/3, 3, 'append/3').
+wam_go_direct_builtin('append/3', 3, 'append/3').
+wam_go_direct_builtin("append/3", 3, 'append/3').
 wam_go_direct_builtin(permutation/2, 2, 'permutation/2').
 wam_go_direct_builtin('permutation/2', 2, 'permutation/2').
 wam_go_direct_builtin("permutation/2", 2, 'permutation/2').
