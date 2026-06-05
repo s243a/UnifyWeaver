@@ -2459,6 +2459,40 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M102: chmod/2 -- libc chmod wrapper for file mode bits.
+
+:- dynamic test_chmod_set_readonly/2.
+test_chmod_set_readonly(_, R) :-
+    % Create a temp file, chmod 0o444 (read-only), confirm size_file
+    % still works (read succeeds). Cleanup afterwards.
+    Path = '/tmp/uw_m102_chmod_test',
+    setup_call_cleanup(
+        ( open(Path, write, S),
+          write(S, x),
+          close(S)
+        ),
+        ( chmod(Path, 0o444),
+          size_file(Path, _Sz),
+          R = 1
+        ),
+        ( catch(chmod(Path, 0o644), _, true),
+          catch(delete_file(Path), _, true)
+        )
+    ).   % 1
+
+:- dynamic test_chmod_missing_file/2.
+test_chmod_missing_file(_, R) :-
+    % chmod on a path that doesn''t exist fails (returns -1, ENOENT).
+    ( chmod('/tmp/uw_m102_nope_xyz', 0o644) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_chmod_bad_args/2.
+test_chmod_bad_args(_, R) :-
+    % Non-atom path or non-integer mode falls through to plain fail.
+    ( chmod(42, 0o644) -> R is 0
+    ; chmod('/tmp/x', not_an_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M101: =.. with partial-list second arg now unifies (was broken
 % in M100 -- u.a2_check used value_equals which couldn''t bind
 % through the unbound vars in [H|_]).
@@ -5030,6 +5064,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M102 chmod/2 ---~n'),
+       run_test_r0('create + chmod 0o444 + size_file roundtrip -> 1',
+                   test_chmod_set_readonly, 0, 1),
+       run_test_r0('chmod on missing file fails -> 1',
+                   test_chmod_missing_file, 0, 1),
+       run_test_r0('chmod with non-atom path / non-int mode fails -> 1',
+                   test_chmod_bad_args, 0, 1),
        format('--- M101 =.. partial-list unify ---~n'),
        run_test_r0('baz(7,8) =.. [H|_], H == baz -> 1',
                    test_univ_partial_head, 0, 1),

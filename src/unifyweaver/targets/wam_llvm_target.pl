@@ -1479,6 +1479,7 @@ declare i32 @rmdir(i8*)
 declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
 declare i32 @unsetenv(i8*)
+declare i32 @chmod(i8*, i32)
 declare i64 @strlen(i8*)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
@@ -3565,6 +3566,7 @@ entry:
     i32 119, label %builtin_set_random
     i32 120, label %builtin_stamp_date_time
     i32 121, label %builtin_date_time_stamp
+    i32 122, label %builtin_chmod
   ]
 
 builtin_is:
@@ -5471,6 +5473,34 @@ dts.do_unify:
   %dts.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %dts.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dts.raw2, %Value %dts.v)
   ret i1 %dts.uok
+
+builtin_chmod:
+  ; M102: chmod(+Path, +Mode) -- Path is atom, Mode is Integer
+  ; (interpreted as octal in source via the user''s 0o... or 0''o...
+  ; literal; the WAM just receives the i64 payload). Succeeds iff
+  ; libc chmod returns 0.
+  %ch.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ch.t1 = call i32 @value_tag(%Value %ch.a1)
+  %ch.is_atom = icmp eq i32 %ch.t1, 0
+  br i1 %ch.is_atom, label %ch.check2, label %ch.fail
+ch.fail:
+  ret i1 false
+ch.check2:
+  %ch.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ch.t2 = call i32 @value_tag(%Value %ch.a2)
+  %ch.is_int = icmp eq i32 %ch.t2, 1
+  br i1 %ch.is_int, label %ch.go, label %ch.fail
+ch.go:
+  %ch.aid = call i64 @value_payload(%Value %ch.a1)
+  %ch.path = call i8* @wam_atom_to_string(i64 %ch.aid)
+  %ch.path_null = icmp eq i8* %ch.path, null
+  br i1 %ch.path_null, label %ch.fail, label %ch.do
+ch.do:
+  %ch.mode64 = call i64 @value_payload(%Value %ch.a2)
+  %ch.mode = trunc i64 %ch.mode64 to i32
+  %ch.ret = call i32 @chmod(i8* %ch.path, i32 %ch.mode)
+  %ch.ok = icmp eq i32 %ch.ret, 0
+  ret i1 %ch.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12358,6 +12388,7 @@ builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
 builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
 builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
 builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
+builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
