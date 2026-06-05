@@ -11880,7 +11880,16 @@ builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
 builtin_op_to_id('halt/0', 111).              % libc exit(0).
 builtin_op_to_id('halt/1', 112).              % libc exit(Code).
 builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
-builtin_op_to_id(_, 99).  % Unknown
+% Catch-all for builtin names with no dedicated dispatch entry. Must
+% be a value that no real builtin uses AND that the switch in
+% @execute_builtin has no case for, so dispatch falls through to the
+% %unknown label (ret i1 false). 99 was previously used here, but
+% 99 is also the dispatch case for getenv/2 -- so `\+ G' where G is
+% any non-builtin or a non-dispatched builtin would route to
+% builtin_getenv, read whatever junk reg 0 held, and return false
+% instead of running the metacall semantics. 200 is well above the
+% currently-defined range and not in the switch.
+builtin_op_to_id(_, 200).  % Unknown
 
 % ============================================================================
 % WAM line parser → LLVM struct literals (from WAM assembly text)
