@@ -1191,6 +1191,16 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
+    % M105: also reset the atom-table dynamic predicates per module.
+    % Atom ids are module-scoped (each module emits its own
+    % @wam_atom_strings global) so persistent state across compiles
+    % only serves to accumulate. The 600+ test suite hit Prolog''s
+    % 4GB global-stack cap around test 650 because every compile
+    % re-interns 95 ASCII chars + [] + a handful of named atoms,
+    % and those atom_table_entry asserts piled up monotonically.
+    retractall(atom_table_entry(_, _)),
+    retractall(atom_table_next_id(_)),
+    assertz(atom_table_next_id(1)),
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
     % empty-list atom "[]"). Route through register_functor_string so
