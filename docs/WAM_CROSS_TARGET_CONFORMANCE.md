@@ -86,9 +86,9 @@ so any failure is reproducible from the recorded seed.
 ## Known divergences (tracked as `ct_xfail/2`)
 
 The harness is green today and **every registered backend — scala,
-elixir, wat, haskell, python, and go — passes the whole spec** (there are
-no live `ct_xfail/2` or `ct_skip/2` entries; both are declared `dynamic`
-so they may have zero clauses). The oracle is the hand-specified
+elixir, wat, haskell, python, go, rust, c, and c++ — passes the whole
+spec** (there are no live `ct_xfail/2` or `ct_skip/2` entries; both are
+declared `dynamic` so they may have zero clauses). The oracle is the hand-specified
 expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
 semantics), not any backend's output; Scala was the original reference.
 A tolerated divergence would be logged via a new `ct_xfail/2`, with an
@@ -114,6 +114,10 @@ fixed.
 (Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
 (Go is opt-in too — `CONFORMANCE_TARGETS=go` — and now passes the whole spec. The driver is a small generated `main.go` that looks up the wrapper label in `SharedWamLabels` and runs `vm.Run()`.)
+
+(Rust and C are opt-in — `CONFORMANCE_TARGETS=rust` / `=c` — and pass the whole spec; both needed the same convention fixes the other native backends did (cons-cell aliasing, placeholder binding, integer `is/2`, and — for the indexing instructions a backend doesn't translate — degrading to a real no-op rather than dropping the instruction and shifting label PCs). See `WAM_BACKEND_CONVENTIONS.md`.)
+
+(C++ is opt-in — `CONFORMANCE_TARGETS=cpp` — and was **conformant on first onboarding**: the only WAM-runtime gaps the conventions warn about were already handled in `wam_cpp_target.pl`, so no backend fix was needed. `write_wam_cpp_project/3` with `emit_main(true)` generates the CLI driver itself (`cpp/main.cpp` runs `vm.query(key, args)` and exits 0/1), so the adapter just builds the three `.cpp` files with `g++` and reads the exit status.)
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
