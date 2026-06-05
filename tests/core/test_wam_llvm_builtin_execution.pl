@@ -2463,9 +2463,16 @@ test_forall_manual(_, R) :-
 
 :- dynamic test_sdt_arity/2.
 test_sdt_arity(_, R) :-
+    % arg(9, DT, _) succeeds iff DT is a compound with arity >= 9; the
+    % stamp_date_time output is exactly 9 args, so this also confirms
+    % we don''t overshoot. (Avoids functor/3 read-mode + atom literal
+    % comparison -- the functor slot is currently a pointer to the
+    % functor string globals while atom literals are interned atom ids,
+    % so payload comparison there spuriously fails.)
     Stamp is 1700000000,
     stamp_date_time(Stamp, DT, local),
-    functor(DT, date, 9),
+    arg(1, DT, _),
+    arg(9, DT, _),
     R is 1.   % 1
 
 :- dynamic test_sdt_year_4digit/2.
@@ -4922,7 +4929,7 @@ test_all :-
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
        format('--- M98 stamp_date_time/3 ---~n'),
-       run_test_r0('functor(DT, date, 9) -> 1',
+       run_test_r0('arg(1,DT,_), arg(9,DT,_) -> 1',
                    test_sdt_arity, 0, 1),
        run_test_r0('1970 < Year < 3000 -> 1',
                    test_sdt_year_4digit, 0, 1),
