@@ -166,6 +166,23 @@ let main argv =
 
 {{match materialisation}}
 {{case eager}}
+{{#has_csr}}
+    // Eager + CSR demand BFS: build the demand set by walking DOWN
+    // category_child via the compact binary-searched CSR artifact (no LMDB
+    // cursor for the down-walk), then materialise the demand-pruned
+    // category_parent map from LMDB. CSR is keyed by raw page ids (sorted
+    // index), so this stays int-native -- no s2i indirection.
+    let csrChild =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_child")
+        :> ILookupSource
+    let demandSet = reachableToRootVia (fun k -> csrChild.Lookup k) rootInt
+    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
+    let lmdbLookupFn (k: int) : int list =
+        match parentsDict.TryGetValue k with
+        | true, v -> v
+        | _ -> []
+{{/has_csr}}
+{{^has_csr}}
     // Eager (single LMDB scan): read category_parent ONCE, build the reverse
     // (= category_child) in memory, BFS the demand set from it, and prune the
     // parent Dictionary to demand-set edges -- one cursor pass instead of two.
@@ -177,6 +194,7 @@ let main argv =
         match parentsDict.TryGetValue k with
         | true, v -> v
         | _ -> []
+{{/has_csr}}
 {{case lazy}}
     // Lazy: NO parent materialisation.  Only the demand set is built (a cursor
     // BFS down category_child); each kernel lookup opens a short-lived cursor
