@@ -2459,6 +2459,38 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M96: getgid/1 + getegid/1 + getppid/1 -- more libc process-info wrappers.
+
+:- dynamic test_gid_nonneg/2.
+test_gid_nonneg(_, R) :-
+    getgid(G),
+    ( G >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_egid_nonneg/2.
+test_egid_nonneg(_, R) :-
+    getegid(E),
+    ( E >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gid_eq_egid/2.
+test_gid_eq_egid(_, R) :-
+    % Unprivileged context: real == effective.
+    getgid(G),
+    getegid(E),
+    ( G =:= E -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ppid_positive/2.
+test_ppid_positive(_, R) :-
+    % A spawned binary always has a positive parent pid (its launcher).
+    getppid(PP),
+    ( PP > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ppid_neq_pid/2.
+test_ppid_neq_pid(_, R) :-
+    % The test binary cannot be its own parent.
+    getpid(P),
+    getppid(PP),
+    ( P =\= PP -> R is 1 ; R is 0 ).   % 1
+
 % M95: getuid/1 + geteuid/1 -- libc uid_t wrappers.
 
 :- dynamic test_uid_nonneg/2.
@@ -4816,6 +4848,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M96 getgid/1 + getegid/1 + getppid/1 ---~n'),
+       run_test_r0('getgid(G), G >= 0 -> 1',
+                   test_gid_nonneg, 0, 1),
+       run_test_r0('getegid(E), E >= 0 -> 1',
+                   test_egid_nonneg, 0, 1),
+       run_test_r0('getgid =:= getegid (no setgid) -> 1',
+                   test_gid_eq_egid, 0, 1),
+       run_test_r0('getppid(PP), PP > 0 -> 1',
+                   test_ppid_positive, 0, 1),
+       run_test_r0('getpid =\\= getppid -> 1',
+                   test_ppid_neq_pid, 0, 1),
        format('--- M95 getuid/1 + geteuid/1 ---~n'),
        run_test_r0('getuid(U), U >= 0 -> 1',
                    test_uid_nonneg, 0, 1),
