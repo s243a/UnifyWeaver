@@ -2459,6 +2459,28 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M95: getuid/1 + geteuid/1 -- libc uid_t wrappers.
+
+:- dynamic test_uid_nonneg/2.
+test_uid_nonneg(_, R) :-
+    % getuid is unsigned -- always >= 0. Just sanity-check that the
+    % i32->i64 zext path doesn''t produce a negative i64.
+    getuid(U),
+    ( U >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_euid_nonneg/2.
+test_euid_nonneg(_, R) :-
+    geteuid(E),
+    ( E >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uid_eq_euid/2.
+test_uid_eq_euid(_, R) :-
+    % In an unprivileged context (the test container) no setuid bit
+    % is in play, so real and effective uids should match.
+    getuid(U),
+    geteuid(E),
+    ( U =:= E -> R is 1 ; R is 0 ).   % 1
+
 % M93: unsetenv/1 -- libc unsetenv() wrapper, complement to M77 setenv/2.
 
 :- dynamic test_unsetenv_roundtrip/2.
@@ -4794,6 +4816,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M95 getuid/1 + geteuid/1 ---~n'),
+       run_test_r0('getuid(U), U >= 0 -> 1',
+                   test_uid_nonneg, 0, 1),
+       run_test_r0('geteuid(E), E >= 0 -> 1',
+                   test_euid_nonneg, 0, 1),
+       run_test_r0('getuid =:= geteuid (no setuid) -> 1',
+                   test_uid_eq_euid, 0, 1),
        format('--- M93 unsetenv/1 ---~n'),
        run_test_r0('setenv/getenv/unsetenv/getenv-fails roundtrip -> 1',
                    test_unsetenv_roundtrip, 0, 1),
