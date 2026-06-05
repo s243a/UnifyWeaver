@@ -53,6 +53,8 @@
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
 :- use_module('../src/unifyweaver/targets/wam_haskell_target',
               [write_wam_haskell_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_python_target',
+              [write_wam_python_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -62,6 +64,7 @@ conformance_target(scala).
 conformance_target(elixir).
 conformance_target(wat).
 conformance_target(haskell).
+conformance_target(python).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  WAT and Haskell are wired up but NOT defaults: their backends still
@@ -188,6 +191,7 @@ ct_toolchain(scala,  [scalac]).
 ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
+ct_toolchain(python, [python3]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -224,6 +228,7 @@ exe_on_path(Exe) :-
 test(scala,  [condition(ct_available(scala))])  :- run_target_conformance(scala).
 test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir).
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
+test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -581,6 +586,42 @@ ct_run(haskell, haskell_ctx(Dir, Map), K, A, Bool) :-
     normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
 
 ct_teardown(haskell, haskell_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Python  (0-arity wrapper -> `python3 main.py <key>` -> bool)
+%
+% write_wam_python_project/3 compiles predicate INDICATORS itself (like
+% the Haskell adapter), so this mirrors that shape: synthesise one ground
+% 0-arity wrapper per query, generate the project, and run each wrapper.
+% Python is interpreted, so there is NO build step — generation in
+% ct_build is the whole cost, and ct_run is a fast `python3 main.py` per
+% query. The generated main.py prints `A_i = ...` register dumps on
+% success and the literal `false.` on failure (a 0-arity wrapper has no
+% meaningful output registers, so success is detected by the ABSENCE of
+% `false.`). Opt-in via CONFORMANCE_TARGETS=python.
+% ============================================================
+
+ct_build(python, Preds, Queries, python_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_python', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_python_project(AllPreds, [module_name(wam_ct)], Dir).
+
+ct_run(python, python_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(python3, ['main.py', KeyStr], Dir, _Exit, OutStr),
+    (   sub_string(OutStr, _, _, _, "false.")
+    ->  Bool = false
+    ;   sub_string(OutStr, _, _, _, "Unknown predicate")
+    ->  Bool = error(unknown_predicate)
+    ;   Bool = true
+    ).
+
+ct_teardown(python, python_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 qualify_user(_M:N/A, user:N/A) :- !.
