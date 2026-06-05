@@ -192,12 +192,32 @@ let main argv =
     // Cached: lazy cursor lookup behind the two-level (L1 thread-local +
     // bounded L2) cache, so repeated parent lookups across seeds are served
     // from memory.  Demand set built and applied exactly as in lazy mode.
+    //
+    // Cache sizing: the demand set IS the working set -- every parent the
+    // kernel can ever touch is in it -- and its exact size is known here at
+    // runtime.  So size L2 to cover the demand set (it is what makes "cached"
+    // actually cache rather than thrash); a compile-time {{l2_capacity}} guess
+    // floors at 256 and would miss ~98% of a 14k-node working set.  The
+    // configured value is still honoured as a LOWER bound / memory ceiling
+    // override.  L1 is rounded up to the next power of two >= demand (its
+    // index is a bit-mask, so it must be a power of two).
     let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let l2Cap = max {{l2_capacity}} demandSet.Count
+    let l1Cap =
+        let mutable p = 1024
+        while p < demandSet.Count do p <- p * 2
+        p
+    // Filter UNDER the cache so it stores already-pruned lists: a cache hit
+    // then returns the filtered list directly, with no per-lookup re-filter or
+    // allocation.  (Filtering outside the cache kept cached as slow as lazy.)
     let lazyInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
-    let cachedSource = TwoLevelCachedLookupSource(lazyInner, maxL2Entries = {{l2_capacity}}) :> ILookupSource
-    let lmdbLookupFn (k: int) : int list =
-        if demandSet.Contains k then cachedSource.Lookup k |> List.filter demandSet.Contains
-        else []
+    let filteredInner = DemandFilteredSource(lazyInner, demandSet) :> ILookupSource
+    let cachedSource = TwoLevelCachedLookupSource(filteredInner, l1Capacity = l1Cap, maxL2Entries = l2Cap) :> ILookupSource
+    // No demandSet.Contains guard here: DemandFilteredSource already returns
+    // only demand-set parents, so a non-demand node can never be reached (all
+    // its parents are non-demand -> []).  Dropping the guard removes an
+    // O(log n) F# Set lookup from every kernel call -- the last gap to eager.
+    let lmdbLookupFn (k: int) : int list = cachedSource.Lookup k
 {{/match}}
     eprintfn "demand_set=%d" demandSet.Count
     let parentsInterned : Map<int, int list> = Map.empty
