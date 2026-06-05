@@ -164,11 +164,26 @@ let main argv =
         | Some l -> int (l.Trim())
         | None -> 0
 
-    // Demand-set BFS (descendants of root via category_child).  Unbounded so
-    // it can never over-prune a valid upward path; the kernel's own max_depth
-    // bounds path length.
-    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+{{match materialisation}}
+{{case eager}}
+    // Eager (single LMDB scan): read category_parent ONCE, build the reverse
+    // (= category_child) in memory, BFS the demand set from it, and prune the
+    // parent Dictionary to demand-set edges -- one cursor pass instead of two.
+    // The kernel reads it through `lmdbLookupFn`, so WcFfiFacts stays empty and
+    // no immutable Map is ever built.
+    let parentsDict, demandSet = loadEagerDemandSingleScan lmdbEnv rootInt
+{{default}}
+    // Lazy / cached demand-filtered modes land here in later stages; Stage 1
+    // ships eager only, so any materialisation flag falls back to the eager
+    // single-scan loader -- the project still builds and runs correctly.
+    let parentsDict, demandSet = loadEagerDemandSingleScan lmdbEnv rootInt
+{{/match}}
     eprintfn "demand_set=%d" demandSet.Count
+    let lmdbLookupFn (k: int) : int list =
+        match parentsDict.TryGetValue k with
+        | true, v -> v
+        | _ -> []
+    let parentsInterned : Map<int, int list> = Map.empty
 
     // Identity intern over the ids that cross the register boundary.
     let atomIntern =
@@ -179,25 +194,6 @@ let main argv =
     let atomDeintern = atomIntern |> Map.toSeq |> Seq.map (fun (s, i) -> (i, s)) |> Map.ofSeq
     let seedCats = seedInts |> Array.map string
     let root = string rootInt
-
-{{match materialisation}}
-{{case eager}}
-    // Eager: materialise the demand-pruned category_parent edges into a
-    // mutable Dictionary (O(1) insert/lookup) rather than an immutable Map.
-    // The kernel reads it through `lmdbLookupFn` directly, so WcFfiFacts stays
-    // empty and no immutable Map is ever built.
-    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
-{{default}}
-    // Lazy / cached demand-filtered modes land here in later stages; Stage 1
-    // ships eager only, so any materialisation flag falls back to the eager
-    // demand Dictionary -- the project still builds and runs correctly.
-    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
-{{/match}}
-    let lmdbLookupFn (k: int) : int list =
-        match parentsDict.TryGetValue k with
-        | true, v -> v
-        | _ -> []
-    let parentsInterned : Map<int, int list> = Map.empty
 
     let loadMs = sw.ElapsedMilliseconds
     eprintfn "load_ms=%d seeds=%d" loadMs seedCats.Length
