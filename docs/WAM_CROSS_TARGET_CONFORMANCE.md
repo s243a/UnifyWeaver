@@ -86,9 +86,9 @@ so any failure is reproducible from the recorded seed.
 ## Known divergences (tracked as `ct_xfail/2`)
 
 The harness is green today and **every registered backend — scala,
-elixir, wat, haskell, python, go, rust, and c — passes the whole spec**
-(there are no live `ct_xfail/2` or `ct_skip/2` entries; both are declared
-`dynamic` so they may have zero clauses). The oracle is the hand-specified
+elixir, wat, haskell, python, go, rust, c, and c++ — passes the whole
+spec** (there are no live `ct_xfail/2` or `ct_skip/2` entries; both are
+declared `dynamic` so they may have zero clauses). The oracle is the hand-specified
 expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
 semantics), not any backend's output; Scala was the original reference.
 A tolerated divergence would be logged via a new `ct_xfail/2`, with an
@@ -111,19 +111,21 @@ fixed.
 | ~~go~~ | ~~builtins~~ | **fixed** | Nested-arithmetic gap. A depth-1 `is` was correct (`//`/`mod` too) but `cbi_arith`'s `A+B+C+D+E` — `+(+(+(+(A,B),C),D),E)` — mis-evaluated. The compiler builds nested terms outer-first: `set_variable` drops an unbound placeholder into the outer arg, then `put_structure` builds the inner term into that *same register* — but `PutStructure` overwrote the register without binding the embedded placeholder, so the outer arg stayed unbound and `evalArithmetic` gave up at depth ≥ 2. `PutStructure` now binds an unbound placeholder it overwrites (`wam_go_target.pl`), which also fixes list **tail** cells built the same way. |
 | ~~go~~ | ~~member, reverse~~ | **fixed** | Cons-cell traversal. Lists build as an outer `put_list` `*List` cell whose tails are `put_structure "[|]/2"` `*Structure`s (the `./2`-vs-`[|]/2` class). Two further `GetList` bugs, both fixed: (a) it recognised only `*List`, not the inner `[|]/2` `*Structure` tail cells — added `consHeadTail` (`state.go.mustache`); (b) it tested `isUnbound` **before** `deref`, so a *bound* variable tail (after the placeholder fix above) was mistaken for unbound and sent into write mode, wrongly succeeding `cmem(z,…)` and looping `clist_reverse` — now derefs first. With all three fixes member, reverse (and append's negative cases) pass. |
 
-(Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program
-is a cabal compile. The driver,
-`tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper
-whose atoms are baked into the compiled stream, which is what removed the
-earlier interning mismatch — see below.)
+(Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program is a cabal compile. `fib` and `ack` pass; the driver, `tests/fixtures/haskell_conformance_driver.hs`, runs a 0-arity wrapper whose atoms are baked into the compiled stream, which is what removed the earlier interning mismatch — see below.)
 
 (Go is opt-in too — `CONFORMANCE_TARGETS=go` — and now passes the whole spec. The driver is a small generated `main.go` that looks up the wrapper label in `SharedWamLabels` and runs `vm.Run()`.)
 
+(Rust and C are opt-in — `CONFORMANCE_TARGETS=rust` / `=c` — and pass the whole spec; both needed the same convention fixes the other native backends did (cons-cell aliasing, placeholder binding, integer `is/2`, and — for the indexing instructions a backend doesn't translate — degrading to a real no-op rather than dropping the instruction and shifting label PCs). See `WAM_BACKEND_CONVENTIONS.md`.)
+
+(C++ is opt-in — `CONFORMANCE_TARGETS=cpp` — and was **conformant on first onboarding**: the only WAM-runtime gaps the conventions warn about were already handled in `wam_cpp_target.pl`, so no backend fix was needed. `write_wam_cpp_project/3` with `emit_main(true)` generates the CLI driver itself (`cpp/main.cpp` runs `vm.query(key, args)` and exits 0/1), so the adapter just builds the three `.cpp` files with `g++` and reads the exit status.)
+
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable. Both predicates currently have zero
-clauses; the table above records historical divergences retained as
-status history.
+*generation itself* is unusable. Both registries are **empty today** — no
+backend is xfailed or skipped. (WAT `append`/`reverse` were the last
+`ct_skip` entries; once WAT's `switch_on_term` generation and cons-aware
+unification were fixed they build and pass like everything else, and the
+skips were removed.)
 
 ### Other backend issue surfaced
 
@@ -212,46 +214,42 @@ the harness exercised the realistic **heap-cons** path and surfaced all of
 this. Validated with no regressions across the Haskell suites (target
 codegen, lowered phases 1–4, dispatch ghc smoke, st_regs e2e, iso, csr).
 
-The builtin gaps are fixed too: `=/2` is routed through `unifyVal`, and
-the arithmetic operator parser now strips only trailing `/Arity` suffixes
-so operators containing `/` (`/`, `//`) are not truncated before dispatch.
-The Haskell adapter is therefore green in the harness when run explicitly;
-it remains opt-in only because a cabal build per program is slow.
+Still open (own PR): the `builtins` `=/2` / `//` / `mod` gaps — isolated
+builtin bugs, unrelated to the list path.
 
 ### Cross-cutting observation (investigated)
 
-The earlier divergences clustered around **matching / unifying heap-built
-compound terms** — WAT read-mode structure unify, Elixir constructed-list
-vs ground-compound unification, and the suspected Haskell path. The open
-question was whether this was *one* shared lowering weakness or *N*
-independent backend bugs.
+The divergences the harness has found cluster around **matching /
+unifying heap-built compound terms** — WAT (read-mode structure unify),
+Elixir (constructed list vs ground compound head arg), the suspected
+Haskell path. The open question was whether this is *one* shared lowering
+weakness or *N* independent backend bugs.
 
 **It is not a shared lowering bug.** The WAM lowering
 (`wam_target.pl:compile_head_arguments/5` + `compile_unify_arguments/5`)
 emits `get_structure`/`get_list`/`unify_*` identically for every backend,
 and **Scala consumes that same stream and passes the whole spec** — so
-the instruction stream is sound. The failures have lived in backend
-runtime/codegen details rather than the shared WAM instruction stream,
-and they are distinct:
+the instruction stream is sound. The failures live in each backend's
+*runtime* implementation of the read-mode unify protocol, and they are
+distinct:
 
 - **Elixir** — a self-contained `unify/3` bug (cons-functor `./2`↔`[|]/2`
   aliasing missing on the structural-unify path). Fixed in this pass; one
   clause, ~6 lines. The runtime also aliases native `[]` with WAM `"[]"`
   so direct Elixir-list inputs and heap-built WAM lists agree.
   `append`/`reverse` now conformant.
-- **WAT** — **fixed** (`member`, `builtins`, `fib`, `append`, and
-  `reverse`). It needed both read-mode unification fixes and later
-  target-specific fixes for fused `is/*` result checking, `switch_on_term`
-  parsing, and recursive cons-aware structural unification.
-- **Haskell** — **fixed** (`member`/`append`/`reverse` and `builtins`). It was the same
+- **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
+  nops and there is no S-register / argument queue. This is a real
+  runtime feature to build, not a one-line fix.
+- **Haskell** — **fixed** (`member`/`append`/`reverse`). It was the same
   `./2`-vs-`[|]/2` cons-aliasing class as Elixir, but with three more
   layers: no structural unification at all, a `GetValue` inline-unify
   bypass, and a multi-element construction bug (`set_variable` tail
   placeholders emitted as `VList` elements, never bound on `put_structure`
   finalize). So Haskell needed real compound unification *plus* a
   cons-cell representation fix for partial tails — more than the Elixir
-  one-liner, but the same root family. The separate `=/2` / `//` / `mod`
-  builtin bugs are also fixed.
+  one-liner, but the same root family. `=/2`/`//`/`mod` remain (separate
+  builtin bugs).
 
 So the leverage is per-backend after all, but the harness did its job:
 it pinned each divergence to a specific runtime — made the Elixir one a

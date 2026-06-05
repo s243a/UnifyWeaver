@@ -61,6 +61,14 @@
               [write_wam_rust_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_c_target',
               [write_wam_c_project/3]).
+% library(pairs) is loaded before wam_cpp_target so the latter's load-time
+% "lists_extra stdlib" directive (guarded by current_predicate(pairs_keys/2))
+% short-circuits: without pairs_keys present it would assertz user:intersection
+% etc., which clash with library(lists)' static predicates and raise a
+% permission error on load.
+:- use_module(library(pairs)).
+:- use_module('../src/unifyweaver/targets/wam_cpp_target',
+              [write_wam_cpp_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -74,13 +82,16 @@ conformance_target(python).
 conformance_target(go).
 conformance_target(rust).
 conformance_target(c).
+conformance_target(cpp).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT/Haskell/Python/Go/Rust/C are wired up but NOT defaults. They are
-%  opt-in to keep the default CI tier cheap and avoid requiring every
-%  native toolchain on ordinary runs. ct_xfail/2 and ct_skip/2 are dynamic
-%  and currently have zero clauses because the registered adapters are
-%  conformant when run explicitly.
+%  Only scala and elixir run by default. Every other registered backend
+%  (wat, haskell, python, go, rust, c, cpp) is conformant — each passes the
+%  whole spec with no ct_xfail/ct_skip entries — but stays opt-in via
+%  CONFORMANCE_TARGETS because it builds a per-program project with an
+%  external toolchain (wat2wasm+node / cabal / python3 / go / cargo / gcc /
+%  g++) that a default run should not require or pay for. Haskell is the
+%  slowest (a cabal compile per program); audited green 2026-06.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -277,6 +288,7 @@ ct_toolchain(python, [python3]).
 ct_toolchain(go,     [go]).
 ct_toolchain(rust,   [cargo]).
 ct_toolchain(c,      [gcc]).
+ct_toolchain(cpp,    ['g++']).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -317,6 +329,7 @@ test(python, [condition(ct_available(python))]) :- run_target_conformance(python
 test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
 test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
+test(cpp,    [condition(ct_available(cpp))])    :- run_target_conformance(cpp).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -894,6 +907,46 @@ ct_run(c, c_ctx(Dir, Map), K, A, Bool) :-
     ; throw(c_run_failed(KeyAtom, Status)) ).
 
 ct_teardown(c, c_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: C++  (0-arity wrapper -> compiled binary, result via exit code)
+%
+% write_wam_cpp_project/3 with emit_main(true) materialises a self-contained
+% project under <Dir>/cpp/ (wam_runtime.{h,cpp}, generated_program.cpp, and
+% a main.cpp CLI shim). The shim runs vm.query(argv[1], parsed_args),
+% printing true/false and exiting 0/1 — so we need no hand-written driver.
+% We build the three .cpp files with g++ and exec via shell/2 (matching the
+% C adapter; process_create(path(tmpbin)) is unreliable under $TMPDIR).
+% Opt-in via CONFORMANCE_TARGETS=cpp.
+% ============================================================
+
+ct_build(cpp, Preds, Queries, cpp_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_cpp', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_cpp_project(AllPreds, [emit_main(true)], Dir),
+    directory_file_path(Dir, cpp, CppDir),
+    run_proc('g++', ['-O1', '-std=c++17', '-o', 'runner',
+                     'wam_runtime.cpp', 'generated_program.cpp', 'main.cpp'],
+             CppDir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(cpp_build_failed(BExit, BErr)) ).
+
+ct_run(cpp, cpp_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]),
+    absolute_file_name(Dir, AbsDir),
+    directory_file_path(AbsDir, 'cpp/runner', Exe),
+    % Result carried by the process exit status: 0 = true, 1 = false.
+    format(atom(Cmd), 'timeout 30 ~w ~w', [Exe, KeyAtom]),
+    shell(Cmd, Status),
+    ( Status =:= 0 -> Bool = true
+    ; Status =:= 1 -> Bool = false
+    ; throw(cpp_run_failed(KeyAtom, Status)) ).
+
+ct_teardown(cpp, cpp_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.
