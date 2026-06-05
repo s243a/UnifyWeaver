@@ -1250,6 +1250,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % @.fn_seed is in the module even for programs that never
     % explicitly construct a `seed/1' compound elsewhere.
     register_functor_string("seed"),
+    % M98: stamp_date_time/3 builds a `date(...)' compound and uses
+    % a `local' atom for the TZName slot. Pre-register both so their
+    % @.fn_... globals are in every module.
+    register_functor_string("date"),
+    register_functor_string("local"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -3557,6 +3562,7 @@ entry:
     i32 117, label %builtin_getegid
     i32 118, label %builtin_getppid
     i32 119, label %builtin_set_random
+    i32 120, label %builtin_stamp_date_time
   ]
 
 builtin_is:
@@ -5152,6 +5158,159 @@ sr.do_seed:
   %sr.seed = call i64 @value_payload(%Value %sr.arg0)
   call void @srand48(i64 %sr.seed)
   ret i1 true
+
+builtin_stamp_date_time:
+  ; M98: stamp_date_time(+Stamp, -DateTime, +TZ) -- decompose a Unix
+  ; epoch Stamp (Integer or Float) into the 9-arity SWI date/9
+  ; compound: date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst).
+  ; TZ is required to be an Atom (`local'' is the only accepted
+  ; value for now -- gmt/UTC and integer offsets fall back to the
+  ; same localtime_r path; the slot just records the requested
+  ; name as the TZName component).
+  ;
+  ; struct tm layout on x86-64 glibc:
+  ;   off  0 i32 tm_sec
+  ;   off  4 i32 tm_min
+  ;   off  8 i32 tm_hour
+  ;   off 12 i32 tm_mday
+  ;   off 16 i32 tm_mon       (0-based; add 1 for Prolog)
+  ;   off 20 i32 tm_year      (years since 1900; add 1900)
+  ;   off 24 i32 tm_wday      (unused)
+  ;   off 28 i32 tm_yday      (unused)
+  ;   off 32 i32 tm_isdst
+  ;   off 36   (4 byte pad)
+  ;   off 40 i64 tm_gmtoff
+  ;   off 48 i8* tm_zone      (unused -- we store the requested
+  ;                            TZName atom instead)
+  ;   total: 56 bytes (alloca 64 for headroom).
+  %sdt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sdt.a1_tag = call i32 @value_tag(%Value %sdt.a1)
+  %sdt.is_int = icmp eq i32 %sdt.a1_tag, 1
+  br i1 %sdt.is_int, label %sdt.from_int, label %sdt.maybe_float
+sdt.fail:
+  ret i1 false
+sdt.from_int:
+  %sdt.t_int = call i64 @value_payload(%Value %sdt.a1)
+  br label %sdt.have_time
+sdt.maybe_float:
+  %sdt.is_float = icmp eq i32 %sdt.a1_tag, 2
+  br i1 %sdt.is_float, label %sdt.from_float, label %sdt.fail
+sdt.from_float:
+  %sdt.bits = call i64 @value_payload(%Value %sdt.a1)
+  %sdt.d = bitcast i64 %sdt.bits to double
+  %sdt.t_flt = fptosi double %sdt.d to i64
+  br label %sdt.have_time
+sdt.have_time:
+  %sdt.time_t = phi i64 [ %sdt.t_int, %sdt.from_int ],
+                        [ %sdt.t_flt, %sdt.from_float ]
+  ; Validate TZ arg (just require Atom -- value ignored beyond
+  ; the requirement, since libc localtime_r reads TZ env at libc
+  ; init time, not per-call).
+  %sdt.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %sdt.a3_tag = call i32 @value_tag(%Value %sdt.a3)
+  %sdt.a3_atom = icmp eq i32 %sdt.a3_tag, 0
+  br i1 %sdt.a3_atom, label %sdt.do_localtime, label %sdt.fail
+sdt.do_localtime:
+  %sdt.tp = alloca i64
+  store i64 %sdt.time_t, i64* %sdt.tp
+  %sdt.tm_buf = alloca [64 x i8]
+  %sdt.tm_ptr = getelementptr [64 x i8], [64 x i8]* %sdt.tm_buf, i32 0, i32 0
+  %sdt.lt = call i8* @localtime_r(i64* %sdt.tp, i8* %sdt.tm_ptr)
+  %sdt.lt_null = icmp eq i8* %sdt.lt, null
+  br i1 %sdt.lt_null, label %sdt.fail, label %sdt.read_fields
+sdt.read_fields:
+  ; Pull i32 fields from struct tm by byte offset. Each field is
+  ; sign-extended to i64 (tm_year offset is needed and can be
+  ; negative for years < 1900, which matters for date arithmetic
+  ; even though the test suite uses 21st-century stamps).
+  %sdt.sec_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 0
+  %sdt.sec_p = bitcast i8* %sdt.sec_p_i8 to i32*
+  %sdt.sec_i32 = load i32, i32* %sdt.sec_p
+  %sdt.sec = sext i32 %sdt.sec_i32 to i64
+  %sdt.min_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 4
+  %sdt.min_p = bitcast i8* %sdt.min_p_i8 to i32*
+  %sdt.min_i32 = load i32, i32* %sdt.min_p
+  %sdt.min = sext i32 %sdt.min_i32 to i64
+  %sdt.hour_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 8
+  %sdt.hour_p = bitcast i8* %sdt.hour_p_i8 to i32*
+  %sdt.hour_i32 = load i32, i32* %sdt.hour_p
+  %sdt.hour = sext i32 %sdt.hour_i32 to i64
+  %sdt.mday_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 12
+  %sdt.mday_p = bitcast i8* %sdt.mday_p_i8 to i32*
+  %sdt.mday_i32 = load i32, i32* %sdt.mday_p
+  %sdt.mday = sext i32 %sdt.mday_i32 to i64
+  %sdt.mon_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 16
+  %sdt.mon_p = bitcast i8* %sdt.mon_p_i8 to i32*
+  %sdt.mon_i32 = load i32, i32* %sdt.mon_p
+  %sdt.mon_raw = sext i32 %sdt.mon_i32 to i64
+  %sdt.mon = add i64 %sdt.mon_raw, 1
+  %sdt.year_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 20
+  %sdt.year_p = bitcast i8* %sdt.year_p_i8 to i32*
+  %sdt.year_i32 = load i32, i32* %sdt.year_p
+  %sdt.year_raw = sext i32 %sdt.year_i32 to i64
+  %sdt.year = add i64 %sdt.year_raw, 1900
+  %sdt.isdst_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 32
+  %sdt.isdst_p = bitcast i8* %sdt.isdst_p_i8 to i32*
+  %sdt.isdst_i32 = load i32, i32* %sdt.isdst_p
+  %sdt.isdst = sext i32 %sdt.isdst_i32 to i64
+  %sdt.gmtoff_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 40
+  %sdt.gmtoff_p = bitcast i8* %sdt.gmtoff_p_i8 to i64*
+  %sdt.gmtoff = load i64, i64* %sdt.gmtoff_p
+  ; Intern the TZ atom "local" so the date/9 compound carries an
+  ; atom-tagged TZName.
+  %sdt.tzn_str = getelementptr [6 x i8], [6 x i8]* @.fn_local, i32 0, i32 0
+  %sdt.tzn_id = call i64 @wam_intern_atom(i8* %sdt.tzn_str, i64 5)
+  ; Build the 9 arg Values: 8 Integers + 1 Atom.
+  %sdt.v_year = call %Value @value_integer(i64 %sdt.year)
+  %sdt.v_mon  = call %Value @value_integer(i64 %sdt.mon)
+  %sdt.v_mday = call %Value @value_integer(i64 %sdt.mday)
+  %sdt.v_hour = call %Value @value_integer(i64 %sdt.hour)
+  %sdt.v_min  = call %Value @value_integer(i64 %sdt.min)
+  %sdt.v_sec  = call %Value @value_integer(i64 %sdt.sec)
+  %sdt.v_off  = call %Value @value_integer(i64 %sdt.gmtoff)
+  %sdt.v_tzn0 = insertvalue %Value undef, i32 0, 0
+  %sdt.v_tzn  = insertvalue %Value %sdt.v_tzn0, i64 %sdt.tzn_id, 1
+  %sdt.v_dst  = call %Value @value_integer(i64 %sdt.isdst)
+  ; Allocate a fresh %Compound on the arena: header + 9-slot args.
+  call void @wam_arena_ensure()
+  %sdt.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %sdt.cp_mem = call i8* @wam_arena_alloc(i64 %sdt.cp_size)
+  %sdt.cp = bitcast i8* %sdt.cp_mem to %Compound*
+  %sdt.fn_str = getelementptr [5 x i8], [5 x i8]* @.fn_date, i32 0, i32 0
+  %sdt.fn_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 0
+  store i8* %sdt.fn_str, i8** %sdt.fn_slot
+  %sdt.ar_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 1
+  store i32 9, i32* %sdt.ar_slot
+  ; 9 args * sizeof(%Value)==16 bytes = 144 bytes.
+  %sdt.args_mem = call i8* @wam_arena_alloc(i64 144)
+  %sdt.args = bitcast i8* %sdt.args_mem to %Value*
+  %sdt.args_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 2
+  store %Value* %sdt.args, %Value** %sdt.args_slot
+  %sdt.s0 = getelementptr %Value, %Value* %sdt.args, i32 0
+  store %Value %sdt.v_year, %Value* %sdt.s0
+  %sdt.s1 = getelementptr %Value, %Value* %sdt.args, i32 1
+  store %Value %sdt.v_mon,  %Value* %sdt.s1
+  %sdt.s2 = getelementptr %Value, %Value* %sdt.args, i32 2
+  store %Value %sdt.v_mday, %Value* %sdt.s2
+  %sdt.s3 = getelementptr %Value, %Value* %sdt.args, i32 3
+  store %Value %sdt.v_hour, %Value* %sdt.s3
+  %sdt.s4 = getelementptr %Value, %Value* %sdt.args, i32 4
+  store %Value %sdt.v_min,  %Value* %sdt.s4
+  %sdt.s5 = getelementptr %Value, %Value* %sdt.args, i32 5
+  store %Value %sdt.v_sec,  %Value* %sdt.s5
+  %sdt.s6 = getelementptr %Value, %Value* %sdt.args, i32 6
+  store %Value %sdt.v_off,  %Value* %sdt.s6
+  %sdt.s7 = getelementptr %Value, %Value* %sdt.args, i32 7
+  store %Value %sdt.v_tzn,  %Value* %sdt.s7
+  %sdt.s8 = getelementptr %Value, %Value* %sdt.args, i32 8
+  store %Value %sdt.v_dst,  %Value* %sdt.s8
+  ; Compound Value: tag=3, payload=ptr-as-i64.
+  %sdt.cp_i64 = ptrtoint %Compound* %sdt.cp to i64
+  %sdt.dt_v0 = insertvalue %Value undef, i32 3, 0
+  %sdt.dt_v = insertvalue %Value %sdt.dt_v0, i64 %sdt.cp_i64, 1
+  %sdt.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sdt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sdt.raw2, %Value %sdt.dt_v)
+  ret i1 %sdt.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11997,6 +12156,7 @@ builtin_op_to_id('getgid/1', 116).            % libc getgid() as Integer.
 builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
 builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
 builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
+builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

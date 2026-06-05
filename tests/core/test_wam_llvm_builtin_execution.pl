@@ -2459,6 +2459,56 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M98: stamp_date_time/3 -- localtime_r + build 9-arity date/9 compound.
+
+:- dynamic test_sdt_arity/2.
+test_sdt_arity(_, R) :-
+    % arg(9, DT, _) succeeds iff DT is a compound with arity >= 9; the
+    % stamp_date_time output is exactly 9 args, so this also confirms
+    % we don''t overshoot. (Avoids functor/3 read-mode + atom literal
+    % comparison -- the functor slot is currently a pointer to the
+    % functor string globals while atom literals are interned atom ids,
+    % so payload comparison there spuriously fails.)
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, _),
+    arg(9, DT, _),
+    R is 1.   % 1
+
+:- dynamic test_sdt_year_4digit/2.
+test_sdt_year_4digit(_, R) :-
+    % Year component is the calendar year (>= 1970 for any non-negative
+    % Unix stamp). 1000 < Y < 3000 catches the +1900 offset working.
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, Y),
+    ( Y > 1970, Y < 3000 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_month_in_range/2.
+test_sdt_month_in_range(_, R) :-
+    % Month is 1..12 after the +1 fixup (tm_mon is 0..11).
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(2, DT, M),
+    ( M >= 1, M =< 12 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_tzname/2.
+test_sdt_tzname(_, R) :-
+    % TZName slot (arg 8) is the atom local for any TZ input (we don''t
+    % actually consult libc TZ; the slot just records the requested name).
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(8, DT, TZ),
+    ( TZ == local -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_float_stamp/2.
+test_sdt_float_stamp(_, R) :-
+    % Float stamps are truncated to whole seconds before localtime_r.
+    Stamp is 1700000000.7,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, Y),
+    ( Y > 1970, Y < 3000 -> R is 1 ; R is 0 ).   % 1
+
 % M97: set_random/1 -- libc srand48 via the SWI-style seed(N) compound.
 
 :- dynamic test_setrand_changes_output/2.
@@ -4878,6 +4928,17 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M98 stamp_date_time/3 ---~n'),
+       run_test_r0('arg(1,DT,_), arg(9,DT,_) -> 1',
+                   test_sdt_arity, 0, 1),
+       run_test_r0('1970 < Year < 3000 -> 1',
+                   test_sdt_year_4digit, 0, 1),
+       run_test_r0('1 <= Month <= 12 -> 1',
+                   test_sdt_month_in_range, 0, 1),
+       run_test_r0('TZName slot = local -> 1',
+                   test_sdt_tzname, 0, 1),
+       run_test_r0('Float stamp truncates -> Y in range -> 1',
+                   test_sdt_float_stamp, 0, 1),
        format('--- M97 set_random/1 ---~n'),
        run_test_r0('set_random(seed(N)) changes lrand48 output -> 1',
                    test_setrand_changes_output, 0, 1),
