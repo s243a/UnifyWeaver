@@ -168,29 +168,27 @@ ct_default_target(elixir).
 %  fib/ack already passed, so +/-/comparison and is/2 bound-LHS checking
 %  were fine; with these two fixes the Haskell adapter is fully green.
 
-%  Go (LIVE xfails). The Go WAM runtime is exercised here via
-%  prefer_wam(true) (its default strategy is the dataflow/stream backend,
-%  not the shared WAM pipeline). Onboarding surfaced three independent
-%  gaps; fib/ack/append are conformant, the rest are tracked below.
+%  Go (now fully conformant; the WAM runtime is exercised here via
+%  prefer_wam(true), since its default strategy is the dataflow/stream
+%  backend, not the shared WAM pipeline). Onboarding surfaced four gaps,
+%  all since fixed:
 %   - is/2 produced a Float for every result, and Unify is type-strict
 %     (Integer never unifies with Float), so `R is N + 1` failed whenever
-%     R was bound to a ground Integer. FIXED in state.go.mustache (integral
-%     results now wrap as Integer), which made fib and ack pass.
-%   - member/reverse (cons-cell gap, still open): the compiler builds a
-%     list as an outer put_list *List cell whose tail cells are
-%     put_structure "[|]/2" *Structures, but GetList only recognises *List,
-%     so the recursion mis-unifies the tail. cmem(z,[a,b,c]) wrongly
-%     succeeds and clist_reverse mismatches. A localized GetList fix was
-%     attempted but is insufficient (member still wrong) and regressed
-%     reverse into a non-terminating loop, so the proper fix is a broader
-%     overhaul of list unification/backtracking — tracked, not forced.
-%   - builtins (nested-arithmetic gap, still open): a single `is` of two
-%     operands evaluates correctly (fib/ack/`//`/`mod` all work), but a
-%     nested expression of depth >= 2 (cbi_arith's A+B+C+D+E, i.e.
-%     +(+(+(+(A,B),C),D),E)) mis-evaluates, so cbi_arith(28) fails.
-ct_xfail(go, member).
-ct_xfail(go, reverse).
-ct_xfail(go, builtins).
+%     R was bound to a ground Integer. Integral results now wrap as Integer
+%     (state.go.mustache) — fixed fib/ack.
+%   - nested-arithmetic (cbi_arith): the compiler builds `+(+(A,B),C)`
+%     outer-first, emitting a set_variable placeholder into the outer arg
+%     and then a put_structure into that placeholder register; put_structure
+%     overwrote the register but never bound the embedded placeholder, so
+%     the outer arg stayed unbound and evalArithmetic gave up at depth >= 2.
+%     PutStructure now binds an unbound placeholder it overwrites
+%     (wam_go_target.pl) — this also fixes list TAIL cells built the same
+%     way (the ./2-vs-[|]/2 class).
+%   - member/reverse (cons-cell traversal): two further GetList bugs —
+%     (a) it recognised only the outer *List cell, not the inner "[|]/2"
+%     *Structure tail cells (added consHeadTail in state.go.mustache), and
+%     (b) it tested isUnbound BEFORE deref, so a *bound* variable tail was
+%     mistaken for unbound and sent into write mode (now derefs first).
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
