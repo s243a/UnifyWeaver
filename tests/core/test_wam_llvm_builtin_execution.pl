@@ -2459,6 +2459,37 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M99: date_time_stamp/2 -- inverse of M98 stamp_date_time/3 via libc mktime.
+
+:- dynamic test_dts_roundtrip/2.
+test_dts_roundtrip(_, R) :-
+    % stamp -> DT -> stamp round-trip. mktime is the inverse of
+    % localtime_r on the same TZ, so the recovered stamp must equal
+    % the original integer-truncated stamp.
+    S0 is 1700000000,
+    stamp_date_time(S0, DT, local),
+    date_time_stamp(DT, S1),
+    S1i is truncate(S1),
+    ( S1i =:= S0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_dts_returns_float/2.
+test_dts_returns_float(_, R) :-
+    % Matches SWI: stamp result is a Float, not an Integer (so it
+    % round-trips with get_time which is also Float).
+    S0 is 1700000000,
+    stamp_date_time(S0, DT, local),
+    date_time_stamp(DT, S1),
+    ( float(S1) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_dts_bad_arity/2.
+test_dts_bad_arity(_, R) :-
+    % Non-date/9 compound fails the structure check.
+    ( date_time_stamp(foo(1,2,3), _) -> R is 0
+    ; date_time_stamp(date(2020), _) -> R is 0
+    ; date_time_stamp(42, _) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M98: stamp_date_time/3 -- localtime_r + build 9-arity date/9 compound.
 
 :- dynamic test_sdt_arity/2.
@@ -4928,6 +4959,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M99 date_time_stamp/2 ---~n'),
+       run_test_r0('stamp -> DT -> stamp round-trip -> 1',
+                   test_dts_roundtrip, 0, 1),
+       run_test_r0('result is Float -> 1',
+                   test_dts_returns_float, 0, 1),
+       run_test_r0('bad arity / non-date compound / non-compound fails -> 1',
+                   test_dts_bad_arity, 0, 1),
        format('--- M98 stamp_date_time/3 ---~n'),
        run_test_r0('arg(1,DT,_), arg(9,DT,_) -> 1',
                    test_sdt_arity, 0, 1),
