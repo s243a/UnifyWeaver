@@ -508,3 +508,14 @@ type LmdbCursorLookup(env: LightningEnvironment, dbName: string) =
                     else
                         ok <- false
                 result
+
+/// Decorator that demand-filters an inner source's results.  Used UNDER the
+/// cache (TwoLevelCachedLookupSource(DemandFilteredSource(cursor, demand)))
+/// so the cache stores already-pruned parent lists: a cache hit then returns
+/// the filtered list directly, with no per-lookup List.filter allocation.
+/// Without this the filter sits outside the cache and re-runs (and re-allocs)
+/// on every hit, which keeps "cached" query as slow as "lazy".
+type DemandFilteredSource(inner: WamTypes.ILookupSource, demand: Set<int>) =
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            inner.Lookup key |> List.filter demand.Contains
