@@ -1245,6 +1245,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % strcmp against these registered names.
     register_functor_string("pi"),
     register_functor_string("e"),
+    % M97: set_random(seed(N)) -- builtin_set_random does strcmp on
+    % the compound''s functor string against "seed". Pre-register so
+    % @.fn_seed is in the module even for programs that never
+    % explicitly construct a `seed/1' compound elsewhere.
+    register_functor_string("seed"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -1483,6 +1488,7 @@ declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
 declare i64 @lrand48()
+declare void @srand48(i64)
 declare i8* @localtime_r(i64*, i8*)
 declare i64 @strftime(i8*, i64, i8*, i8*)
 declare double @asin(double)
@@ -3550,6 +3556,7 @@ entry:
     i32 116, label %builtin_getgid
     i32 117, label %builtin_getegid
     i32 118, label %builtin_getppid
+    i32 119, label %builtin_set_random
   ]
 
 builtin_is:
@@ -5104,6 +5111,47 @@ builtin_getppid:
   %gpp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gpp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpp.raw1, %Value %gpp.v)
   ret i1 %gpp.ok
+
+builtin_set_random:
+  ; M97: set_random(+Option) -- seeds libc srand48. Option must be
+  ; the compound seed/1 with an Integer arg (matches SWI''s
+  ; set_random/1 calling convention). Other Option shapes fail
+  ; rather than erroring -- this isn''t the place to validate every
+  ; SWI-side option since the only one with a libc-mappable
+  ; semantic is the seed/1 compound.
+  %sr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sr.tag = call i32 @value_tag(%Value %sr.a1)
+  %sr.is_cp = icmp eq i32 %sr.tag, 3
+  br i1 %sr.is_cp, label %sr.check_arity, label %sr.fail
+sr.fail:
+  ret i1 false
+sr.check_arity:
+  %sr.cp_bits = call i64 @value_payload(%Value %sr.a1)
+  %sr.cp_ptr = inttoptr i64 %sr.cp_bits to %Compound*
+  %sr.ar_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 1
+  %sr.ar = load i32, i32* %sr.ar_slot
+  %sr.ar_ok = icmp eq i32 %sr.ar, 1
+  br i1 %sr.ar_ok, label %sr.check_name, label %sr.fail
+sr.check_name:
+  %sr.fn_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 0
+  %sr.fn_i8 = load i8*, i8** %sr.fn_slot
+  %sr.want = getelementptr [5 x i8], [5 x i8]* @.fn_seed, i32 0, i32 0
+  %sr.cmp = call i32 @strcmp(i8* %sr.fn_i8, i8* %sr.want)
+  %sr.name_ok = icmp eq i32 %sr.cmp, 0
+  br i1 %sr.name_ok, label %sr.read_arg, label %sr.fail
+sr.read_arg:
+  %sr.args_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 2
+  %sr.args = load %Value*, %Value** %sr.args_slot
+  %sr.arg0_ptr = getelementptr %Value, %Value* %sr.args, i32 0
+  %sr.arg0_raw = load %Value, %Value* %sr.arg0_ptr
+  %sr.arg0 = call %Value @wam_deref_value(%WamState* %vm, %Value %sr.arg0_raw)
+  %sr.arg0_tag = call i32 @value_tag(%Value %sr.arg0)
+  %sr.is_int = icmp eq i32 %sr.arg0_tag, 1
+  br i1 %sr.is_int, label %sr.do_seed, label %sr.fail
+sr.do_seed:
+  %sr.seed = call i64 @value_payload(%Value %sr.arg0)
+  call void @srand48(i64 %sr.seed)
+  ret i1 true
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11948,6 +11996,7 @@ builtin_op_to_id('geteuid/1', 115).           % libc geteuid() as Integer.
 builtin_op_to_id('getgid/1', 116).            % libc getgid() as Integer.
 builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
 builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
+builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
