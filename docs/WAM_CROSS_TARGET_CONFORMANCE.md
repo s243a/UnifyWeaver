@@ -146,6 +146,15 @@ per-target runtime test showing how to compile+run. Wiring one in is a
 `conformance_target/1` (+ `ct_default_target/1`) entry, and a
 `ct_toolchain/2` probe.
 
+> **Before debugging answers, read
+> [`WAM_BACKEND_CONVENTIONS.md`](WAM_BACKEND_CONVENTIONS.md).** Every
+> divergence in the table above belongs to one of five recurring classes
+> (cons-cell spelling, `/`-in-operator functor arity, outer-first
+> placeholder binding, deref-before-type-test, `is/2` result typing) that
+> have bitten *every* WAM backend in turn. That doc is the checklist; this
+> section is about the orthogonal problem of *invoking* the generated
+> program.
+
 ### The invocation style is the hard part
 
 Scala and Elixir were cheap to add because each ships a **query driver**
