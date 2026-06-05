@@ -59,6 +59,8 @@
               [write_wam_go_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_c_target',
+              [write_wam_c_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -71,6 +73,7 @@ conformance_target(haskell).
 conformance_target(python).
 conformance_target(go).
 conformance_target(rust).
+conformance_target(c).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  WAT and Haskell are wired up but NOT defaults: their backends still
@@ -273,6 +276,7 @@ ct_toolchain(haskell, [ghc, cabal]).
 ct_toolchain(python, [python3]).
 ct_toolchain(go,     [go]).
 ct_toolchain(rust,   [cargo]).
+ct_toolchain(c,      [gcc]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -312,6 +316,7 @@ test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
 test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
 test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
+test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -846,6 +851,81 @@ ct_run(rust, rust_ctx(Dir, Map), K, A, Bool) :-
 
 ct_teardown(rust, rust_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: C  (0-arity wrapper -> compiled binary, result via exit code)
+%
+% write_wam_c_project/3 emits wam_runtime.c + lib.c (and reuses the static
+% wam_runtime.h shipped in the targets tree, which we copy in). Each
+% predicate gets a setup_<pred>_<arity>() that registers its code; the
+% driver calls them all, then wam_run_predicate(state, "ctw_N/0", ...).
+% wam_run returns 0 on success (machine halted) and WAM_HALT on failure,
+% which the driver maps to process exit status 0/1. We exec via shell/2
+% (the pattern the C target's own tests use) rather than
+% process_create(path(AbsBinary)), which is unreliable under $TMPDIR.
+% Opt-in via CONFORMANCE_TARGETS=c.
+% ============================================================
+
+ct_build(c, Preds, Queries, c_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_c', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_c_project(AllPreds, [no_kernels(true)], Dir),
+    c_copy_runtime_header(Dir),
+    c_runner_driver(AllPreds, DriverSrc),
+    directory_file_path(Dir, 'driver.c', DriverPath),
+    setup_call_cleanup(open(DriverPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c'],
+             Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(c_build_failed(BExit, BErr)) ).
+
+ct_run(c, c_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]),
+    absolute_file_name(Dir, AbsDir),
+    directory_file_path(AbsDir, runner, Exe),
+    % Result is carried by the process exit status: 0 = true, 1 = false.
+    format(atom(Cmd), 'timeout 30 ~w ~w', [Exe, KeyAtom]),
+    shell(Cmd, Status),
+    ( Status =:= 0 -> Bool = true
+    ; Status =:= 1 -> Bool = false
+    ; throw(c_run_failed(KeyAtom, Status)) ).
+
+ct_teardown(c, c_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+%% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.
+c_copy_runtime_header(Dir) :-
+    module_property(wam_c_target, file(TargetFile)),
+    file_directory_name(TargetFile, TargetsDir),
+    directory_file_path(TargetsDir, 'wam_c_runtime/wam_runtime.h', HdrSrc),
+    directory_file_path(Dir, 'wam_runtime.h', HdrDst),
+    copy_file(HdrSrc, HdrDst).
+
+%% c_runner_driver(+QualifiedPreds, -CSource)
+%  A main() that registers every predicate (setup_<pred>_<arity>) then runs
+%  the predicate named on argv[1], exiting 0 (true) / 1 (false).
+c_runner_driver(Preds, Src) :-
+    findall(Decl-Call,
+        ( member(_M:N/A, Preds),
+          format(atom(Decl), 'void setup_~w_~w(WamState*);', [N, A]),
+          format(atom(Call), '    setup_~w_~w(&state);', [N, A]) ),
+        Pairs),
+    pairs_keys_values(Pairs, Decls, Calls),
+    atomic_list_concat(Decls, '\n', DeclS),
+    atomic_list_concat(Calls, '\n', CallS),
+    format(atom(Src),
+'#include <string.h>\n#include <stdio.h>\n#include "wam_runtime.h"\n~w\n\c
+int main(int argc, char **argv) {\n\c
+    WamState state; wam_state_init(&state);\n~w\n\c
+    if (argc < 2) { return 2; }\n\c
+    WamValue args[1];\n\c
+    int rc = wam_run_predicate(&state, argv[1], args, 0);\n\c
+    wam_free_state(&state);\n\c
+    return (rc == 0) ? 0 : 1;\n\c
+}\n', [DeclS, CallS]).
 
 qualify_user(_M:N/A, user:N/A) :- !.
 qualify_user(N/A, user:N/A).

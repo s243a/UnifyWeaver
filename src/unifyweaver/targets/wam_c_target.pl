@@ -1751,7 +1751,7 @@ wam_line_to_c_instr(["execute", P], Instr) :-
     clean_comma(P, CP),
     format(atom(Instr), '{ .tag = INSTR_EXECUTE, .as.pred = { .pred = "~w" } }', [CP]).
 wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
-    clean_comma(Op, COp), clean_comma(N, CN),
+    clean_comma(Op, COp0), clean_comma(N, CN), c_escape_atom(COp0, COp),
     format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [COp, CN]).
 wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
@@ -1776,6 +1776,19 @@ clean_comma(S, Clean) :-
     ->  sub_string(S, 0, _, 1, Clean)
     ;   Clean = S
     ).
+
+%% c_escape_atom(+Atom, -Escaped)
+%  Escape backslashes and double quotes so the value is safe inside a C
+%  string literal. Functors carry them: =\=/2 must be emitted as "=\\=/2",
+%  otherwise the C compiler reads \= as an unknown escape and drops the
+%  backslash, so the runtime functor ("==/2") no longer matches its handler
+%  and arithmetic disequality silently fails.
+c_escape_atom(Atom, Escaped) :-
+    atom_string(Atom, S0),
+    split_string(S0, "\\", "", BSParts),
+    atomic_list_concat(BSParts, '\\\\', S1),
+    split_string(S1, "\"", "", QParts),
+    atomic_list_concat(QParts, '\\"', Escaped).
 
 wam_lines_to_c_pass1([], _, []).
 wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
@@ -1862,6 +1875,15 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, OffsetVar, CodeLines) :-
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", CEntries, 0, LabelMap, OffsetVar, CHashLines),
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.s_hash_table", SEntries, 0, LabelMap, OffsetVar, SHashLines),
         append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
+    ;   Parts = [SwitchOp|_], string_concat("switch_on_", _, SwitchOp)
+    ->  % Unhandled first/second-argument indexing hint (e.g.
+        % switch_on_term_a2): degrade to a NoOp rather than throwing.
+        % Indexing is only an optimisation, so falling through to the
+        % try_me_else clause chain is correct, and emitting a real
+        % instruction keeps every later label PC aligned (a dropped one
+        % would shift them — the NoOp lesson from the Rust backend).
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_NOOP };', [PCExpr]),
+        CodeLines = [L0]
     ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, OffsetVar, CInstr)
         ->  true
         ;   wam_line_to_c_instr(Parts, CInstr_NoMap)
@@ -2002,6 +2024,16 @@ compile_step_wam_to_c(_Options, CCode) :-
                 state->P++;
                 return true;
             }
+            case INSTR_NOOP: {
+                /* No-op: advance past an instruction the C backend does not
+                   translate (chiefly first-argument indexing hints such as
+                   switch_on_term_a2). Indexing is only an optimisation, so
+                   falling through to the try_me_else clause chain is correct;
+                   emitting a real instruction keeps every later label PC
+                   aligned (a dropped instruction would shift them). */
+                state->P++;
+                return true;
+            }
             case INSTR_PROCEED: {
                 int continuation = state->CP;
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
@@ -2118,6 +2150,19 @@ compile_step_wam_to_c(_Options, CCode) :-
                     }
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
+                    /* A "[|]/2"/"./2" structure is a list cell (nested cons
+                       cells are built with put_structure), so route it to the
+                       list clause exactly like a VAL_LIST — otherwise the
+                       recursion tail (a cons STR) misses the list clause. */
+                    if (f->tag == VAL_ATOM &&
+                        (strcmp(f->data.atom, "[|]/2") == 0 || strcmp(f->data.atom, "./2") == 0)) {
+                        if (instr->as.switch_index.list_target_pc >= 0) {
+                            state->P = instr->as.switch_index.list_target_pc;
+                        } else {
+                            state->P++;
+                        }
+                        return true;
+                    }
                     for (int i = 0; i < instr->as.switch_index.s_hash_size; i++) {
                         if (val_equal(*f, instr->as.switch_index.s_hash_table[i].key)) {
                             state->P = instr->as.switch_index.s_hash_table[i].target_pc;
@@ -2172,8 +2217,19 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_PUT_STRUCTURE: {
                 WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
                 WamValue *cell = resolve_reg(state, instr->as.functor.reg, instr->as.functor.is_y_reg);
+                /* If this register dereferences to an unbound placeholder heap
+                   cell (the embedded argument of an enclosing structure that a
+                   prior set_variable wrote, e.g. nested arithmetic
+                   +(+(A,B),C)), bind that cell to the new structure as well —
+                   otherwise the enclosing structure keeps pointing at the
+                   still-unbound placeholder and eval/unify never see this
+                   subterm. */
+                WamValue *placeholder = wam_deref_ptr(state, cell);
+                if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
+                    *placeholder = s;
+                }
                 *cell = s;
-                
+
                 const char *slash = strchr(instr->as.functor.pred, ''/'');
                 assert(slash != NULL && "Functor missing arity suffix");
                 int arity = strtol(slash + 1, NULL, 10);
@@ -2211,6 +2267,19 @@ compile_step_wam_to_c(_Options, CCode) :-
                 } else if (cell->tag == VAL_LIST) {
                     state->S = cell->data.ref_addr;
                     state->mode = MODE_READ;
+                } else if (cell->tag == VAL_STR) {
+                    /* Cons-cell aliasing: the compiler emits the outer list
+                       with put_list (VAL_LIST) but nested cons cells with
+                       put_structure "[|]/2" (VAL_STR). Treat a "[|]/2"/"./2"
+                       structure as a list cell: its head/tail are the two args
+                       after the functor cell. */
+                    WamValue *f = &state->H_array[cell->data.ref_addr];
+                    if (f->tag == VAL_ATOM &&
+                        (strcmp(f->data.atom, "[|]/2") == 0 ||
+                         strcmp(f->data.atom, "./2") == 0)) {
+                        state->S = cell->data.ref_addr + 1;
+                        state->mode = MODE_READ;
+                    } else { return false; }
                 } else { return false; }
                 state->P++;
                 return true;
@@ -2438,6 +2507,22 @@ static bool wam_eval_arith(WamState *state, WamValue value, int *out) {
     if (strcmp(functor->data.atom, "//2") == 0 || strcmp(functor->data.atom, "div/2") == 0) {
         if (rhs == 0) return false;
         *out = lhs / rhs;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "///2") == 0) {
+        /* // is integer (floored) division. */
+        if (rhs == 0) return false;
+        int q = lhs / rhs;
+        if ((lhs % rhs != 0) && ((lhs < 0) != (rhs < 0))) q -= 1;
+        *out = q;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "mod/2") == 0) {
+        /* mod follows the sign of the divisor (floored modulo). */
+        if (rhs == 0) return false;
+        int m = lhs % rhs;
+        if (m != 0 && ((m < 0) != (rhs < 0))) m += rhs;
+        *out = m;
         return true;
     }
     return false;
