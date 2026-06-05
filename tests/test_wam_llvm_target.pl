@@ -35,7 +35,8 @@ test(type_map_integer) :-
 
 test(type_map_assoc) :-
     llvm_wam_type_map(assoc, LLVMType),
-    assertion(LLVMType == '[32 x %Value]').
+    % The assoc register array was widened from 32 to 64 %Value slots.
+    assertion(LLVMType == '[64 x %Value]').
 
 test(binding_exists_get_assoc) :-
     llvm_wam_binding(get_assoc/3, _, _, _, _).
@@ -208,7 +209,10 @@ test(builtin_op_cut) :-
 
 test(builtin_op_unknown) :-
     builtin_op_to_id('unknown/3', Id),
-    assertion(Id == 99).
+    % Unknown ops map to the reserved sentinel 200. (It was 99 until the
+    % builtin table grew past that — id 99 is now getenv/2 — so the
+    % sentinel was moved above the op range.)
+    assertion(Id == 200).
 
 % ============================================================================
 % Review fixes: label resolution in text parser
@@ -368,7 +372,9 @@ test(unify_variable_has_read_write_dispatch) :-
     assertion(sub_atom(StepCode, _, _, _, 'uv.write:')),
     assertion(sub_atom(StepCode, _, _, _, 'wam_peek_stack_type')),
     assertion(sub_atom(StepCode, _, _, _, 'wam_unify_ctx_next')),
-    assertion(sub_atom(StepCode, _, _, _, 'wam_write_ctx_dec')).
+    % Write mode advances the cursor via wam_write_ctx_set_arg (this
+    % replaced the older standalone wam_write_ctx_dec helper).
+    assertion(sub_atom(StepCode, _, _, _, 'wam_write_ctx_set_arg')).
 
 test(unify_value_has_read_write_dispatch) :-
     compile_step_wam_to_llvm([], StepCode),
