@@ -164,11 +164,18 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+                    // Deref BEFORE the unbound test: a bound variable is still
+                    // typed Unbound, and treating a bound list tail as unbound
+                    // would wrongly take the write-mode branch.
+                    let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
+                        if let Value::Unbound(ref name) = val {
+                            self.bind_var(name, Value::Ref(addr));
+                        }
                         self.set_reg_str(ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(2));
                         self.pc += 1; true
@@ -178,9 +185,15 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                                 vec![head.clone(), Value::List(tail.to_vec())]));
                             self.pc += 1; true
                         } else { false }
+                    } else if let Value::Str(s, args) = &val {
+                        // Materialised cons cell, e.g. "[|]/2"/"./2".
+                        if self.is_cons_functor(s) && args.len() == 2 {
+                            self.smut().push(StackEntry::UnifyCtx(args.clone()));
+                            self.pc += 1; true
+                        } else { false }
                     } else if let Value::Ref(addr) = &val {
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == "str(./2)" {
+                            if self.is_cons_functor(s) {
                                 let args = self.heap_subargs(addr + 1, 2);
                                 self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
@@ -303,6 +316,16 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
+                // If this register holds an unbound placeholder (one a prior
+                // set_variable embedded into an enclosing term), bind it to the
+                // new structure so the embedded copy resolves here. The compiler
+                // builds nested terms outer-first — +(+(A,B),C), or a list tail
+                // cell — leaving a placeholder a later put_structure must fill.
+                if let Some(cur) = self.get_reg_raw(ai) {
+                    if let Value::Unbound(name) = self.deref_var(&cur) {
+                        self.bind_var(&name, Value::Ref(addr));
+                    }
+                }
                 self.set_reg_str(ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
@@ -322,8 +345,13 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
     Body = '                let addr = self.heap.len();
                 let var = Value::Unbound(format!("_H{}", addr));
-                self.heap.push(var.clone());
-                self.put_reg(xn, var);
+                self.put_reg(xn, var.clone());
+                // Write the fresh variable into the current structure/list arg
+                // slot, exactly as set_value/set_constant do. Without this the
+                // placeholder never lands in the term being built, so any
+                // structure/list with a variable argument (nested arithmetic
+                // +(+(A,B),C); list tail cells [H|T]) had its args misaligned.
+                self.set_heap_or_list(var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
@@ -1010,6 +1038,14 @@ compile_execute_builtin_to_rust(Code) :-
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
             "!/0" => { self.choice_points.truncate(self.cut_barrier); self.pc += 1; true }
+            "=/2" => {
+                // Unification: the compiler emits `X = Y` as builtin_call =/2.
+                // Without a handler it fell through to `_ => false`, so even
+                // `a = a` failed.
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
+            }
             _ => false,
         }
     }'.
@@ -2493,6 +2529,14 @@ compile_eval_arith_to_rust(Code) :-
                 }
             }
             Value::Str(op, args) => self.eval_arith_compound(op, args),
+            Value::Unbound(_) => {
+                // A bound placeholder variable (e.g. the embedded arg of a
+                // nested expression +(+(A,B),C)) derefs through the binding
+                // table to the real subterm. Without this it fell to None and
+                // any depth>=2 arithmetic failed.
+                let d = self.deref_var(expr);
+                if d == *expr { None } else { self.eval_arith(&d) }
+            }
             Value::Atom(name) => {
                 // Try register dereference
                 if name.starts_with(\'A\') || name.starts_with(\'X\') || name.starts_with(\'Y\') {
@@ -3334,9 +3378,22 @@ write_file(Path, Content) :-
 read_template_file(RelativePath, Content) :-
     (   exists_file(RelativePath)
     ->  read_file_to_string(RelativePath, Content, [])
+    ;   resolve_template_path(RelativePath, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content),
             '// Template not found: ~w', [RelativePath])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python/go targets.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_rust_target:write_wam_rust_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 % ============================================================================
 % CARGO CHECK VALIDATION
