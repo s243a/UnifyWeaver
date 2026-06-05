@@ -480,6 +480,12 @@ wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 wam_go_direct_builtin(between/3, 3, 'between/3').
 wam_go_direct_builtin('between/3', 3, 'between/3').
 wam_go_direct_builtin("between/3", 3, 'between/3').
+wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
+wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
+wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
+wam_go_direct_builtin(print/1, 1, 'print/1').
+wam_go_direct_builtin('print/1', 1, 'print/1').
+wam_go_direct_builtin("print/1", 1, 'print/1').
 wam_go_direct_builtin(sum_list/2, 2, 'sum_list/2').
 wam_go_direct_builtin('sum_list/2', 2, 'sum_list/2').
 wam_go_direct_builtin("sum_list/2", 2, 'sum_list/2').

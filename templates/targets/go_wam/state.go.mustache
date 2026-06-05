@@ -1312,6 +1312,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
 		return true
+	case "writeln/1":
+		fmt.Println(vm.deref(arg1).String())
+		return true
+	case "print/1":
+		fmt.Print(vm.deref(arg1).String())
+		return true
 	case "nl/0":
 		fmt.Println()
 		return true
