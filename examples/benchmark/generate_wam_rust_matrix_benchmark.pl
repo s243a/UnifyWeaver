@@ -1450,12 +1450,32 @@ fn main() {
         // (intern_atom is &mut self), then resolve the constant edge
         // accessor once. After this point vm is only borrowed &self, so the
         // par_iter below can share it across workers.
-        let root_id = vm.intern_atom(&root);
+        // Int-native cursor mode (WAM_INT_NATIVE=1): seeds, root, and the graph
+        // share ONE raw page-id space (no s2i indirection), so parse seeds /
+        // reuse the raw root int directly and tell the lazy edge accessor to
+        // skip the wam<->lmdb maps. Matches the eager int-seed path and the F#
+        // target on int-native fixtures (e.g. simplewiki_articles), where the
+        // s2i-backed path would remap seeds into the wrong id space.
+        let int_native = std::env::var("WAM_INT_NATIVE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if int_native {
+            vm.set_int_native_edges(true);
+        }
+        let root_id_raw_i32 = root_id;
+        let root_id: u32 = if int_native {
+            root_id_raw_i32 as u32
+        } else {
+            vm.intern_atom(&root)
+        };
         let seed_ids: Vec<(String, u32)> = seed_cats
             .iter()
-            .map(|cat| {
-                let id = vm.intern_atom(cat);
-                (cat.clone(), id)
+            .filter_map(|cat| {
+                if int_native {
+                    cat.trim().parse::<u32>().ok().map(|id| (cat.clone(), id))
+                } else {
+                    Some((cat.clone(), vm.intern_atom(cat)))
+                }
             })
             .collect();
         let acc = vm.resolve_edge_accessor("category_parent");

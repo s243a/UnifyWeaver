@@ -361,6 +361,13 @@ pub struct WamState {
     /// path must filter identically or the kernel over-explores
     /// non-reachable ancestor branches. Empty = no filter (eager/other).
     pub demand_set: FxSet<i32>,
+    /// Int-native edge mode: when true, the lazy edge path treats the kernel's
+    /// u32 node id AS the raw LMDB int key directly (identity), bypassing
+    /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
+    /// root, and graph keys are all the same raw page-id space (no s2i
+    /// indirection) -- mirrors the eager int-seed path and the F# target.
+    /// When false (default), the s2i-backed wam<->lmdb maps are used.
+    pub int_native_edges: bool,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -424,6 +431,7 @@ impl WamState {
             lazy_lookups: HashMap::new(),
             wam_to_lmdb: FxMap::default(),
             lmdb_to_wam: FxMap::default(),
+            int_native_edges: false,
             demand_set: FxSet::default(),
             bindings: HashMap::new(),
             var_counter: 0,
@@ -619,6 +627,13 @@ impl WamState {
         self.demand_set = demand.iter().copied().collect();
     }
 
+    /// Enable int-native edge mode: the lazy edge path treats the kernel's
+    /// node id as the raw LMDB key directly, bypassing the wam<->lmdb maps.
+    /// For int-native fixtures (raw page-id seeds/root/graph, no s2i).
+    pub fn set_int_native_edges(&mut self, enabled: bool) {
+        self.int_native_edges = enabled;
+    }
+
     /// Fetch a lazy edge-lookup backend by "name/arity".
     pub fn lazy_lookup(&self, pred: &str) -> Option<Arc<dyn LookupSource>> {
         self.lazy_lookups.get(pred).cloned()
@@ -655,8 +670,16 @@ impl WamState {
                 table.get(&cat_id).cloned().unwrap_or_default()
             }
             EdgeAccessor::Lazy(source) => {
-                let Some(&int_key) = self.wam_to_lmdb.get(&cat_id) else {
-                    return Vec::new();
+                // Int-native mode: the kernel's node id IS the raw LMDB key
+                // (seeds/root/graph share one raw id space, no s2i), so look up
+                // directly and return raw pids — bypassing the wam<->lmdb maps.
+                let int_key = if self.int_native_edges {
+                    cat_id as i32
+                } else {
+                    match self.wam_to_lmdb.get(&cat_id) {
+                        Some(&k) => k,
+                        None => return Vec::new(),
+                    }
                 };
                 let parent_ints = source.lookup_parents(int_key);
                 let mut out = Vec::with_capacity(parent_ints.len());
@@ -667,7 +690,9 @@ impl WamState {
                     if !self.demand_set.is_empty() && !self.demand_set.contains(&pid) {
                         continue;
                     }
-                    if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
+                    if self.int_native_edges {
+                        out.push(pid as u32);
+                    } else if let Some(&wam) = self.lmdb_to_wam.get(&pid) {
                         out.push(wam);
                     }
                 }
