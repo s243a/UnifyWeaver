@@ -221,6 +221,66 @@ let loadCategoryParentDemandDict (env: LightningEnvironment) (demand: Set<int>)
         result.[kv.Key] <- Seq.toList kv.Value
     result
 
+/// Single-scan LMDB-eager loader.  Reads category_parent ONCE into a mutable
+/// child->parents Dictionary, builds the reverse (parent->children) in memory
+/// -- which IS category_child -- BFSes down from `root` over that reverse to
+/// get the demand set, then prunes the parent Dictionary to demand-set edges.
+/// Returns (demand-pruned child->parents lookup, demand set).
+///
+/// This avoids the separate category_child cursor scan that
+/// `reachableToRoot` + `loadCategoryParentDemandDict` together do: one LMDB
+/// pass instead of two, matching how the Rust matrix bench builds its reverse
+/// index from the single edge list it reads.  Appropriate for eager mode
+/// (small/medium graphs); large graphs use cursor/cached modes instead.
+let loadEagerDemandSingleScan (env: LightningEnvironment) (root: int)
+    : System.Collections.Generic.Dictionary<int, int list> * Set<int> =
+    // 1. One cursor pass: full child->parents into ResizeArray buckets.
+    let childToParents = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let parentToChildren = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let bump (d: System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>) k v =
+        let ok, vs = d.TryGetValue(k)
+        if ok then vs.Add(v)
+        else
+            let vs = System.Collections.Generic.List<int>()
+            vs.Add(v)
+            d.[k] <- vs
+    (   use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+        let db = tx.OpenDatabase("category_parent", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+        use cursor = tx.CreateCursor(db)
+        let struct (rc, _, _) = cursor.First()
+        if rc = MDBResultCode.Success then
+            let addEntry () =
+                let struct (_, k, v) = cursor.GetCurrent()
+                let child = decodeI32 (k.AsSpan())
+                let parent = decodeI32 (v.AsSpan())
+                bump childToParents child parent      // child -> parents
+                bump parentToChildren parent child    // 2. reverse = category_child
+            addEntry ()
+            let mutable ok = true
+            while ok do
+                let struct (rc2, _, _) = cursor.Next()
+                if rc2 = MDBResultCode.Success then addEntry ()
+                else ok <- false )
+    // 3. BFS down from root over the in-memory reverse -> demand set.
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            let ok, kids = parentToChildren.TryGetValue(node)
+            if ok then
+                for c in kids do
+                    if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+    // 4. Prune child->parents to demand-set edges, into the final int-list dict.
+    let result = System.Collections.Generic.Dictionary<int, int list>(visited.Count)
+    for kv in childToParents do
+        if visited.Contains kv.Key then
+            let parents = [ for p in kv.Value do if visited.Contains p then yield p ]
+            result.[kv.Key] <- parents
+    result, Set.ofSeq visited
+
 /// Load a DUPSORT database directly into a Dictionary (skipping the
 /// Map conversion). Returns O(1) lookup via DictLookupSource. Use
 /// this when the caller only needs ILookupSource access (not a Map
