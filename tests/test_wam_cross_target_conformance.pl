@@ -212,32 +212,28 @@ ct_default_target(elixir).
 %   - put_constant/get_constant emitted Value::Atom("28") for the integer
 %     28 (unlike set_/unify_constant, which already used Value::Integer), so
 %     `R is <expr>` with R bound to a ground integer (the head arg) failed —
-%     is/2's result match handles Unbound/Integer/Float, not Atom. That
-%     wrong is/2 answer was the BACKTRACKING root cause: it made cfib(10,55)
-%     fail its result check and then re-search exponentially (looping to the
-%     step_limit). Both now route through rust_const_value. builtins is now
-%     conformant, and fib no longer loops (it returns fast) — though it
-%     still gives the wrong answer (see below), so the non-termination is
-%     fixed but fib is not yet green.
-%  STILL diverging, tracked below for a follow-up:
+%     is/2's result match handles Unbound/Integer/Float, not Atom. Now route
+%     through rust_const_value; this made builtins conformant.
+%   - switch_on_constant_fallthrough had NO codegen, so it fell to the
+%     unknown-instruction comment and was dropped from the emitted vector.
+%     That shifted every later label PC by one: backtracking into a clause
+%     chain landed one instruction PAST retry_me_else, so the choice point's
+%     next_pc was never advanced and execution looped on the same clause
+%     (returning false at the step_limit). Any predicate indexed on a
+%     constant first argument with 3+ clauses hit this — fib (cfib(0/1/N))
+%     and ack (cack(0,_)/cack(M,_)). Added the instruction with proper
+%     fallthrough semantics (jump on a table hit; advance to the try_me_else
+%     chain on unbound/miss — never fail). fib and ack are now conformant.
+%  STILL diverging, tracked below for a follow-up — all in the list model:
 %   - member: cmem(z,[a,b,c]) wrongly succeeds (cons traversal in the
-%     heap-materialisation list model).
-%   - append/reverse: positive cases fail (the list model again).
-%   - fib: cfib(10,55) now returns false fast (no longer loops). Compiled
-%     ALONE it fails, though it succeeded when co-compiled with other
-%     predicates — a first-arg-indexing / shared-program-assembly
-%     sensitivity (the integer constants changed the switch dispatch),
-%     distinct from the is/2 fix.
-%   - ack: cack(2,3,9) fails — the doubly-recursive integer case (base
-%     cack(0,N,R) and cack(2,3,8)->false work; the nested
-%     cack(M,N1,R1),cack(M1,R1,R) does not yield the right result).
+%     heap-materialisation list representation).
+%   - append/reverse: positive cases (capp([a,b],[c],[a,b,c]),
+%     crev([a,b,c],[c,b,a])) fail.
 %  The runner driver keeps vm.step_limit as a guard so any remaining
 %  non-termination returns false rather than hanging the harness.
 ct_xfail(rust, member).
 ct_xfail(rust, append).
 ct_xfail(rust, reverse).
-ct_xfail(rust, fib).
-ct_xfail(rust, ack).
 
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
