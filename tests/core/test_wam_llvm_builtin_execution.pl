@@ -2459,6 +2459,360 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M102: chmod/2 -- libc chmod wrapper for file mode bits.
+
+:- dynamic test_chmod_set_readonly/2.
+test_chmod_set_readonly(_, R) :-
+    % Use shell to create + cleanup so the test doesn''t depend on
+    % open/3 + setup_call_cleanup interactions in the WAM backend
+    % (which currently segfault when stacked). Verifies chmod
+    % actually reaches the file by checking exists_file still
+    % succeeds after the mode change.
+    Path = '/tmp/uw_m102_chmod_test',
+    shell('touch /tmp/uw_m102_chmod_test', _),
+    chmod(Path, 0o444),
+    exists_file(Path),
+    shell('rm -f /tmp/uw_m102_chmod_test', _),
+    R is 1.   % 1
+
+:- dynamic test_chmod_missing_file/2.
+test_chmod_missing_file(_, R) :-
+    % chmod on a path that doesn''t exist fails (returns -1, ENOENT).
+    ( chmod('/tmp/uw_m102_nope_xyz', 0o644) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_chmod_bad_args/2.
+test_chmod_bad_args(_, R) :-
+    % Non-atom path or non-integer mode falls through to plain fail.
+    ( chmod(42, 0o644) -> R is 0
+    ; chmod('/tmp/x', not_an_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M101: =.. with partial-list second arg now unifies (was broken
+% in M100 -- u.a2_check used value_equals which couldn''t bind
+% through the unbound vars in [H|_]).
+
+:- dynamic test_univ_partial_head/2.
+test_univ_partial_head(_, R) :-
+    % Direct form: Term =.. [H | _] -- partial list with unbound
+    % H and unbound tail. The freshly-built result list unifies
+    % with the pattern, binding H to the functor atom.
+    Term = baz(7, 8),
+    Term =.. [H | _],
+    ( H == baz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_partial_arity/2.
+test_univ_partial_arity(_, R) :-
+    % [_, _, _] with three unbound element slots -- result list
+    % from a 2-ary compound has exactly 3 elements (functor + 2
+    % args), so unification succeeds and the pattern serves as
+    % a deterministic arity check.
+    Term = quux(a, b),
+    ( Term =.. [_, _, _] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_partial_no_match/2.
+test_univ_partial_no_match(_, R) :-
+    % [_, _] is a 2-element partial pattern; a 2-ary compound''s
+    % result list has 3 elements, so the unify fails.
+    Term = quux(a, b),
+    ( Term =.. [_, _] -> R is 0 ; R is 1 ).   % 1
+
+% M100: functor/3 + =.. read-mode atom representation fix.
+
+:- dynamic test_functor_name_eq_literal/2.
+test_functor_name_eq_literal(_, R) :-
+    % functor(C, Name, _) extracts the functor as an Atom Value.
+    % Pre-M100 that was pointer-based, so Name == foo failed even
+    % when the compound was foo(...). The fix interns the functor
+    % string into the atom table so Name carries an id payload that
+    % matches the literal `foo' (also id-based via put_constant).
+    Term = foo(1, 2, 3),
+    functor(Term, Name, _),
+    ( Name == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_functor_arity_check/2.
+test_functor_arity_check(_, R) :-
+    % And the canonical pattern `functor(T, Name, Arity)' with both
+    % name and arity literals now works as a structure shape check.
+    Term = bar(a, b),
+    ( functor(Term, bar, 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_head_eq_literal/2.
+test_univ_head_eq_literal(_, R) :-
+    % Same fix applied to =.. (univ): the list head is the functor
+    % as an id-based Atom Value, comparing correctly with literals.
+    % Uses the two-step =.. L, L = [H|_] form -- the direct
+    % =.. [H|_] form has a separate pre-existing WAM-compile
+    % issue (partial-list arg to =.. doesn''t reach the builtin in
+    % a unifiable shape).
+    Term = baz(7, 8),
+    Term =.. L,
+    L = [H | _],
+    ( H == baz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_tail_is_empty_list/2.
+test_univ_tail_is_empty_list(_, R) :-
+    % =.. terminates with the [] atom -- M100 makes that id-based
+    % via @wam_empty_list_atom_id, matching the literal [].
+    Term = quux(1),
+    Term =.. L,
+    L = [_, _ | Tail],
+    ( Tail == [] -> R is 1 ; R is 0 ).   % 1
+
+% M99: date_time_stamp/2 -- inverse of M98 stamp_date_time/3 via libc mktime.
+
+:- dynamic test_dts_roundtrip/2.
+test_dts_roundtrip(_, R) :-
+    % stamp -> DT -> stamp round-trip. mktime is the inverse of
+    % localtime_r on the same TZ, so the recovered stamp must equal
+    % the original integer-truncated stamp.
+    S0 is 1700000000,
+    stamp_date_time(S0, DT, local),
+    date_time_stamp(DT, S1),
+    S1i is truncate(S1),
+    ( S1i =:= S0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_dts_returns_float/2.
+test_dts_returns_float(_, R) :-
+    % Matches SWI: stamp result is a Float, not an Integer (so it
+    % round-trips with get_time which is also Float).
+    S0 is 1700000000,
+    stamp_date_time(S0, DT, local),
+    date_time_stamp(DT, S1),
+    ( float(S1) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_dts_bad_arity/2.
+test_dts_bad_arity(_, R) :-
+    % Non-date/9 compound fails the structure check.
+    ( date_time_stamp(foo(1,2,3), _) -> R is 0
+    ; date_time_stamp(date(2020), _) -> R is 0
+    ; date_time_stamp(42, _) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M98: stamp_date_time/3 -- localtime_r + build 9-arity date/9 compound.
+
+:- dynamic test_sdt_arity/2.
+test_sdt_arity(_, R) :-
+    % arg(9, DT, _) succeeds iff DT is a compound with arity >= 9; the
+    % stamp_date_time output is exactly 9 args, so this also confirms
+    % we don''t overshoot. (Avoids functor/3 read-mode + atom literal
+    % comparison -- the functor slot is currently a pointer to the
+    % functor string globals while atom literals are interned atom ids,
+    % so payload comparison there spuriously fails.)
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, _),
+    arg(9, DT, _),
+    R is 1.   % 1
+
+:- dynamic test_sdt_year_4digit/2.
+test_sdt_year_4digit(_, R) :-
+    % Year component is the calendar year (>= 1970 for any non-negative
+    % Unix stamp). 1000 < Y < 3000 catches the +1900 offset working.
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, Y),
+    ( Y > 1970, Y < 3000 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_month_in_range/2.
+test_sdt_month_in_range(_, R) :-
+    % Month is 1..12 after the +1 fixup (tm_mon is 0..11).
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(2, DT, M),
+    ( M >= 1, M =< 12 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_tzname/2.
+test_sdt_tzname(_, R) :-
+    % TZName slot (arg 8) is the atom local for any TZ input (we don''t
+    % actually consult libc TZ; the slot just records the requested name).
+    Stamp is 1700000000,
+    stamp_date_time(Stamp, DT, local),
+    arg(8, DT, TZ),
+    ( TZ == local -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sdt_float_stamp/2.
+test_sdt_float_stamp(_, R) :-
+    % Float stamps are truncated to whole seconds before localtime_r.
+    Stamp is 1700000000.7,
+    stamp_date_time(Stamp, DT, local),
+    arg(1, DT, Y),
+    ( Y > 1970, Y < 3000 -> R is 1 ; R is 0 ).   % 1
+
+% M97: set_random/1 -- libc srand48 via the SWI-style seed(N) compound.
+
+:- dynamic test_setrand_changes_output/2.
+test_setrand_changes_output(_, R) :-
+    % Default seed (0) gives a fixed first lrand48() value. Re-seed
+    % with a different N and lrand48 produces a different value.
+    random_between(1, 1000000, V0),
+    set_random(seed(424242)),
+    random_between(1, 1000000, V1),
+    ( V0 =\= V1 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setrand_repeatable/2.
+test_setrand_repeatable(_, R) :-
+    % Seeding twice with the same N gives the same draws -- proves
+    % srand48 is actually being called with our seed, not ignored.
+    set_random(seed(99)),
+    random_between(1, 1000000, A),
+    set_random(seed(99)),
+    random_between(1, 1000000, B),
+    ( A =:= B -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setrand_bad_option/2.
+test_setrand_bad_option(_, R) :-
+    % Wrong functor / non-Integer arg / non-compound all fail.
+    ( set_random(garbage) -> R is 0
+    ; set_random(seed(not_an_int)) -> R is 0
+    ; set_random(42) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M96: getgid/1 + getegid/1 + getppid/1 -- more libc process-info wrappers.
+
+:- dynamic test_gid_nonneg/2.
+test_gid_nonneg(_, R) :-
+    getgid(G),
+    ( G >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_egid_nonneg/2.
+test_egid_nonneg(_, R) :-
+    getegid(E),
+    ( E >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_gid_eq_egid/2.
+test_gid_eq_egid(_, R) :-
+    % Unprivileged context: real == effective.
+    getgid(G),
+    getegid(E),
+    ( G =:= E -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ppid_positive/2.
+test_ppid_positive(_, R) :-
+    % A spawned binary always has a positive parent pid (its launcher).
+    getppid(PP),
+    ( PP > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ppid_neq_pid/2.
+test_ppid_neq_pid(_, R) :-
+    % The test binary cannot be its own parent.
+    getpid(P),
+    getppid(PP),
+    ( P =\= PP -> R is 1 ; R is 0 ).   % 1
+
+% M95: getuid/1 + geteuid/1 -- libc uid_t wrappers.
+
+:- dynamic test_uid_nonneg/2.
+test_uid_nonneg(_, R) :-
+    % getuid is unsigned -- always >= 0. Just sanity-check that the
+    % i32->i64 zext path doesn''t produce a negative i64.
+    getuid(U),
+    ( U >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_euid_nonneg/2.
+test_euid_nonneg(_, R) :-
+    geteuid(E),
+    ( E >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uid_eq_euid/2.
+test_uid_eq_euid(_, R) :-
+    % In an unprivileged context (the test container) no setuid bit
+    % is in play, so real and effective uids should match.
+    getuid(U),
+    geteuid(E),
+    ( U =:= E -> R is 1 ; R is 0 ).   % 1
+
+% M93: unsetenv/1 -- libc unsetenv() wrapper, complement to M77 setenv/2.
+
+:- dynamic test_unsetenv_roundtrip/2.
+test_unsetenv_roundtrip(_, R) :-
+    % Set var, confirm it''s set, unsetenv, confirm getenv fails.
+    setenv('UW_M93_TEST', 'hello'),
+    getenv('UW_M93_TEST', V1),
+    V1 == 'hello',
+    unsetenv('UW_M93_TEST'),
+    ( \+ getenv('UW_M93_TEST', _) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_unsetenv_idempotent/2.
+test_unsetenv_idempotent(_, R) :-
+    % Unsetting a var that isn''t set still succeeds (matches SWI).
+    unsetenv('UW_M93_NOT_SET_VAR_NAME'),
+    unsetenv('UW_M93_NOT_SET_VAR_NAME'),
+    R is 1.   % 1
+
+:- dynamic test_unsetenv_non_atom/2.
+test_unsetenv_non_atom(_, R) :-
+    % Integer arg fails (non-atom).
+    ( unsetenv(42) -> R is 0 ; R is 1 ).   % 1
+
+% M92: halt/0 + halt/1 -- libc exit() wrapper. Process terminates
+% inside the WAM run loop, so the test driver never reaches its
+% normal `read reg 0 + return as exit code' path -- the exit code
+% from halt IS the test result.
+
+:- dynamic test_halt_zero/2.
+test_halt_zero(_, _) :- halt.   % -> exit 0
+
+:- dynamic test_halt_seven/2.
+test_halt_seven(_, _) :- halt(7).   % -> exit 7
+
+:- dynamic test_halt_var/2.
+test_halt_var(_, _) :-
+    % Code computed at runtime: 2 + 3 = 5.
+    X is 2 + 3,
+    halt(X).   % -> exit 5
+
+% M91: format_time/3 -- libc strftime + localtime_r wrapper.
+
+:- dynamic test_ft_year/2.
+test_ft_year(_, R) :-
+    % format_time(?Atom, +Fmt, +Stamp) -- direct atom output. Stamp
+    % 1609459200 = 2021-01-01 00:00:00 UTC; with timezone offset the
+    % calendar year is 2020 or 2021, so length-of-year = 4.
+    Stamp is 1609459200,
+    format_time(Y, '%Y', Stamp),
+    atom_length(Y, L),
+    ( L =:= 4 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ft_iso_len/2.
+test_ft_iso_len(_, R) :-
+    % '%Y-%m-%d %H:%M:%S' renders as 19 chars regardless of timezone.
+    Stamp is 1700000000,
+    format_time(S, '%Y-%m-%d %H:%M:%S', Stamp),
+    atom_length(S, L),
+    ( L =:= 19 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ft_float_stamp/2.
+test_ft_float_stamp(_, R) :-
+    % Float Stamp must also work -- the fractional part is dropped to
+    % whole-second precision before localtime_r.
+    Stamp is 1700000000.5,
+    format_time(S, '%S', Stamp),
+    atom_length(S, L),
+    ( L =:= 2 -> R is 1 ; R is 0 ).   % 1
+
+% M90: random/1 + random_between/3 -- libc drand48 / lrand48 wrappers.
+
+:- dynamic test_rand_in_unit/2.
+test_rand_in_unit(_, R) :-
+    % drand48() result must satisfy 0.0 <= X < 1.0.
+    random(X),
+    ( X >= 0.0, X < 1.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rand_between_in_range/2.
+test_rand_between_in_range(_, R) :-
+    % random_between(1, 10, X), 1 <= X <= 10.
+    random_between(1, 10, X),
+    ( X >= 1, X =< 10 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rand_between_singleton/2.
+test_rand_between_singleton(_, R) :-
+    % random_between(7, 7, X) -- only valid value is 7.
+    random_between(7, 7, X),
+    ( X =:= 7 -> R is 1 ; R is 0 ).   % 1
+
 % M89: cpu_time/1 -- process CPU time via clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
 
 :- dynamic test_cpu_nonneg/2.
@@ -4705,6 +5059,100 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M102 chmod/2 ---~n'),
+       run_test_r0('create + chmod 0o444 + size_file roundtrip -> 1',
+                   test_chmod_set_readonly, 0, 1),
+       run_test_r0('chmod on missing file fails -> 1',
+                   test_chmod_missing_file, 0, 1),
+       run_test_r0('chmod with non-atom path / non-int mode fails -> 1',
+                   test_chmod_bad_args, 0, 1),
+       format('--- M101 =.. partial-list unify ---~n'),
+       run_test_r0('baz(7,8) =.. [H|_], H == baz -> 1',
+                   test_univ_partial_head, 0, 1),
+       run_test_r0('quux(a,b) =.. [_,_,_] -> 1 (arity check)',
+                   test_univ_partial_arity, 0, 1),
+       run_test_r0('quux(a,b) =.. [_,_] fails -> 1',
+                   test_univ_partial_no_match, 0, 1),
+       format('--- M100 functor/3 + =.. atom-rep fix ---~n'),
+       run_test_r0('functor(foo(...), Name, _), Name == foo -> 1',
+                   test_functor_name_eq_literal, 0, 1),
+       run_test_r0('functor(bar(a,b), bar, 2) -> 1',
+                   test_functor_arity_check, 0, 1),
+       run_test_r0('baz(7,8) =.. [H|_], H == baz -> 1',
+                   test_univ_head_eq_literal, 0, 1),
+       run_test_r0('quux(1) =.. [_,_|T], T == [] -> 1',
+                   test_univ_tail_is_empty_list, 0, 1),
+       format('--- M99 date_time_stamp/2 ---~n'),
+       run_test_r0('stamp -> DT -> stamp round-trip -> 1',
+                   test_dts_roundtrip, 0, 1),
+       run_test_r0('result is Float -> 1',
+                   test_dts_returns_float, 0, 1),
+       run_test_r0('bad arity / non-date compound / non-compound fails -> 1',
+                   test_dts_bad_arity, 0, 1),
+       format('--- M98 stamp_date_time/3 ---~n'),
+       run_test_r0('arg(1,DT,_), arg(9,DT,_) -> 1',
+                   test_sdt_arity, 0, 1),
+       run_test_r0('1970 < Year < 3000 -> 1',
+                   test_sdt_year_4digit, 0, 1),
+       run_test_r0('1 <= Month <= 12 -> 1',
+                   test_sdt_month_in_range, 0, 1),
+       run_test_r0('TZName slot = local -> 1',
+                   test_sdt_tzname, 0, 1),
+       run_test_r0('Float stamp truncates -> Y in range -> 1',
+                   test_sdt_float_stamp, 0, 1),
+       format('--- M97 set_random/1 ---~n'),
+       run_test_r0('set_random(seed(N)) changes lrand48 output -> 1',
+                   test_setrand_changes_output, 0, 1),
+       run_test_r0('same seed gives same draw -> 1',
+                   test_setrand_repeatable, 0, 1),
+       run_test_r0('bad option (non-seed compound, etc.) fails -> 1',
+                   test_setrand_bad_option, 0, 1),
+       format('--- M96 getgid/1 + getegid/1 + getppid/1 ---~n'),
+       run_test_r0('getgid(G), G >= 0 -> 1',
+                   test_gid_nonneg, 0, 1),
+       run_test_r0('getegid(E), E >= 0 -> 1',
+                   test_egid_nonneg, 0, 1),
+       run_test_r0('getgid =:= getegid (no setgid) -> 1',
+                   test_gid_eq_egid, 0, 1),
+       run_test_r0('getppid(PP), PP > 0 -> 1',
+                   test_ppid_positive, 0, 1),
+       run_test_r0('getpid =\\= getppid -> 1',
+                   test_ppid_neq_pid, 0, 1),
+       format('--- M95 getuid/1 + geteuid/1 ---~n'),
+       run_test_r0('getuid(U), U >= 0 -> 1',
+                   test_uid_nonneg, 0, 1),
+       run_test_r0('geteuid(E), E >= 0 -> 1',
+                   test_euid_nonneg, 0, 1),
+       run_test_r0('getuid =:= geteuid (no setuid) -> 1',
+                   test_uid_eq_euid, 0, 1),
+       format('--- M93 unsetenv/1 ---~n'),
+       run_test_r0('setenv/getenv/unsetenv/getenv-fails roundtrip -> 1',
+                   test_unsetenv_roundtrip, 0, 1),
+       run_test_r0('unsetenv on already-unset succeeds -> 1',
+                   test_unsetenv_idempotent, 0, 1),
+       run_test_r0('unsetenv(42) fails (non-atom) -> 1',
+                   test_unsetenv_non_atom, 0, 1),
+       format('--- M92 halt/0 + halt/1 ---~n'),
+       run_test_r0('halt/0 -> exit 0',
+                   test_halt_zero, 0, 0),
+       run_test_r0('halt(7) -> exit 7',
+                   test_halt_seven, 0, 7),
+       run_test_r0('halt(2+3) -> exit 5',
+                   test_halt_var, 0, 5),
+       format('--- M91 format_time/3 ---~n'),
+       run_test_r0('format_time(Y, ''%Y'', stamp), len(Y) = 4 -> 1',
+                   test_ft_year, 0, 1),
+       run_test_r0('format_time(S, ISO, stamp), len(S) = 19 -> 1',
+                   test_ft_iso_len, 0, 1),
+       run_test_r0('format_time(S, ''%S'', Float stamp), len(S) = 2 -> 1',
+                   test_ft_float_stamp, 0, 1),
+       format('--- M90 random/1 + random_between/3 ---~n'),
+       run_test_r0('random(X), 0.0 <= X < 1.0 -> 1',
+                   test_rand_in_unit, 0, 1),
+       run_test_r0('random_between(1, 10, X), 1 <= X <= 10 -> 1',
+                   test_rand_between_in_range, 0, 1),
+       run_test_r0('random_between(7, 7, X) =:= 7 -> 1',
+                   test_rand_between_singleton, 0, 1),
        format('--- M89 cpu_time/1 ---~n'),
        run_test_r0('cpu_time(T), T >= 0.0 -> 1',
                    test_cpu_nonneg, 0, 1),

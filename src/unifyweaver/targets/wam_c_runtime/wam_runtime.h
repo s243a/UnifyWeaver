@@ -19,7 +19,7 @@
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
-#define WAM_ATOM_HASH_SIZE 512
+#define WAM_INITIAL_ATOM_HASH_SIZE 512
 #define WAM_FOREIGN_HASH_SIZE 256
 #define WAM_CALL_STACK_SIZE 1024
 
@@ -86,7 +86,8 @@ typedef enum {
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
-    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN
+    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
+    INSTR_NOOP
 } WamInstrTag;
 
 /* Hash Entry for Indexing */
@@ -123,6 +124,7 @@ typedef struct {
 } WeightedEdge;
 
 typedef struct {
+    WamState *owner_state;
     CategoryEdge *edges;
     int edge_count;
     int edge_cap;
@@ -158,6 +160,17 @@ typedef struct {
     const char *atom;
     int id;
 } WamCategoryIdEntry;
+
+typedef struct {
+    const char *atom;
+    int index;
+} WamCategoryIdAtomIndexEntry;
+
+typedef struct {
+    int id;
+    int index;
+    bool occupied;
+} WamCategoryIdValueIndexEntry;
 
 typedef struct {
     int *values;
@@ -277,7 +290,9 @@ struct WamState {
     PredEntry pred_hash[WAM_PRED_HASH_SIZE];
 
     /* Interned dynamic atoms */
-    AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
+    AtomEntry **atom_table;
+    int atom_table_size;
+    int atom_count;
 
     /* Foreign predicate handlers */
     ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
@@ -302,6 +317,10 @@ struct WamState {
     WamCategoryIdEntry *category_ids;
     int category_id_count;
     int category_id_cap;
+    WamCategoryIdAtomIndexEntry *category_id_by_atom;
+    int category_id_by_atom_cap;
+    WamCategoryIdValueIndexEntry *category_id_by_value;
+    int category_id_by_value_cap;
 
     /* Native weighted_shortest_path3 kernel data */
     WeightedEdge *weighted_edges;
@@ -354,6 +373,8 @@ bool wam_fact_source_child_range(WamFactSource *source, const char *child,
                                  CategoryEdge **edges_out, int *count_out);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
 void wam_register_category_id(WamState *state, const char *atom, int id);
+bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out);
+bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out);
 void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
@@ -393,6 +414,19 @@ bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *re
                                              int total_hops,
                                              int parent_hops,
                                              int child_hops);
+bool wam_category_min_parent_hops(WamState *state,
+                                  const char *cat,
+                                  const char *root,
+                                  int *hops_out);
+bool wam_category_child_may_reach_root_within_budget(WamState *state,
+                                                     const char *cat,
+                                                     const char *root,
+                                                     int max_child_expansions,
+                                                     int child_depth,
+                                                     double parent_cost,
+                                                     double child_cost,
+                                                     double budget,
+                                                     int *candidate_count_out);
 bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
 bool wam_collect_bidirectional_ancestor_hops(WamState *state,
                                              WamBidirectionalAncestorResults *results);
@@ -511,10 +545,46 @@ static inline char *wam_strdup(const char *str) {
     return copy;
 }
 
+static inline bool wam_atom_table_ensure(WamState *state) {
+    if (state->atom_table) return true;
+    state->atom_table_size = WAM_INITIAL_ATOM_HASH_SIZE;
+    state->atom_table = calloc((size_t)state->atom_table_size, sizeof(AtomEntry *));
+    if (!state->atom_table) {
+        state->atom_table_size = 0;
+        return false;
+    }
+    return true;
+}
+
+static inline bool wam_atom_table_rehash(WamState *state, int new_size) {
+    AtomEntry **new_table = calloc((size_t)new_size, sizeof(AtomEntry *));
+    if (!new_table) return false;
+    for (int i = 0; i < state->atom_table_size; i++) {
+        AtomEntry *entry = state->atom_table[i];
+        while (entry) {
+            AtomEntry *next = entry->next;
+            unsigned int h = wam_hash_string(entry->str) & (unsigned int)(new_size - 1);
+            entry->next = new_table[h];
+            new_table[h] = entry;
+            entry = next;
+        }
+    }
+    free(state->atom_table);
+    state->atom_table = new_table;
+    state->atom_table_size = new_size;
+    return true;
+}
+
 static inline const char *wam_intern_atom(WamState *state, const char *str) {
-    unsigned int h = wam_hash_string(str) & (WAM_ATOM_HASH_SIZE - 1);
+    if (!wam_atom_table_ensure(state)) return str;
+    unsigned int h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     for (AtomEntry *e = state->atom_table[h]; e; e = e->next) {
         if (strcmp(e->str, str) == 0) return e->str;
+    }
+    if ((state->atom_count + 1) * 4 > state->atom_table_size * 3 &&
+        state->atom_table_size <= INT_MAX / 2 &&
+        wam_atom_table_rehash(state, state->atom_table_size * 2)) {
+        h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     }
     AtomEntry *e = malloc(sizeof(AtomEntry));
     if (!e) return str;
@@ -525,6 +595,7 @@ static inline const char *wam_intern_atom(WamState *state, const char *str) {
     }
     e->next = state->atom_table[h];
     state->atom_table[h] = e;
+    state->atom_count++;
     return e->str;
 }
 // Creates a new unbound reference on the heap.
@@ -585,6 +656,22 @@ static inline void wam_bind(WamState *state, WamValue *v1, WamValue *v2) {
     trail_binding(state, v1);
     *v1 = *v2;
 }
+/* Return the heap address of a cons cell's head, treating both a VAL_LIST
+   (head@addr, tail@addr+1) and a "[|]/2"/"./2" VAL_STR (functor@addr,
+   head@addr+1, tail@addr+2) as the same list cell; -1 if not a cons. The
+   compiler mixes the two spellings for one logical list (put_list vs
+   put_structure "[|]/2"), so unification must alias them. */
+static inline int wam_cons_head_addr(WamState *state, WamValue *d) {
+    if (d->tag == VAL_LIST) return d->data.ref_addr;
+    if (d->tag == VAL_STR) {
+        WamValue *f = &state->H_array[d->data.ref_addr];
+        if (f->tag == VAL_ATOM &&
+            (strcmp(f->data.atom, "[|]/2") == 0 || strcmp(f->data.atom, "./2") == 0)) {
+            return d->data.ref_addr + 1;
+        }
+    }
+    return -1;
+}
 static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
     WamValue *pdl[256];
     int pdl_top = 0;
@@ -604,7 +691,22 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             wam_bind(state, unbound, other);
             continue;
         }
-        
+
+        /* Cons-cell aliasing: a VAL_LIST and a "[|]/2"/"./2" VAL_STR are the
+           same list cell. Unify head with head and tail with tail. */
+        {
+            int c1 = wam_cons_head_addr(state, d1);
+            int c2 = wam_cons_head_addr(state, d2);
+            if (c1 >= 0 && c2 >= 0) {
+                if (pdl_top + 4 > 256) return false;
+                pdl[pdl_top++] = &state->H_array[c2 + 1];
+                pdl[pdl_top++] = &state->H_array[c1 + 1];
+                pdl[pdl_top++] = &state->H_array[c2];
+                pdl[pdl_top++] = &state->H_array[c1];
+                continue;
+            }
+        }
+
         if (d1->tag != d2->tag) return false;
         
         if (d1->tag == VAL_INT) {

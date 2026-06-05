@@ -24,9 +24,17 @@ entry point, so invocation is per-target:
 
 - **scala** passes the query args straight to its `GeneratedProgram`
   driver (`<predkey> <args...>` → `true`/`false`).
-- **elixir / wat** synthesise a ground 0-arity wrapper per query
-  (`ctw_N :- pred(args).`), compile it with the program, and ask whether
-  `ctw_N` succeeds. This is the shape their own runtime tests use.
+- **elixir / wat / haskell / python / go** synthesise a ground 0-arity
+  wrapper per query (`ctw_N :- pred(args).`), build it with the program,
+  and ask whether `ctw_N` succeeds. This is the shape their own runtime
+  tests use. (Python is interpreted — no build step; its generated
+  `main.py` prints `A_i = ...` register dumps on success and `false.` on
+  failure, so the adapter reads success as the absence of `false.`. Go is
+  compiled via `prefer_wam(true)` — its default strategy is the
+  dataflow/stream backend, not the shared WAM pipeline — and `ct_build`
+  gates compilation with `go build`, while `ct_run` executes `go run`,
+  which launches the program from go's build cache rather than exec'ing a
+  binary under `$TMPDIR`.)
 
 Each adapter is self-contained (`ct_build/4`, `ct_run/5`,
 `ct_teardown/2`); adding a backend is one adapter plus a
@@ -77,28 +85,31 @@ so any failure is reproducible from the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
-The harness is green today; the divergences below are tolerated and
-logged (an unexpected pass is logged as `XPASS` so the entry can be
-retired). Each is a real backend gap the harness surfaced, not a fixture
-artifact. The oracle is the hand-specified expected-results table in
-`wam_conformance_fixtures.pl` (standard Prolog semantics), not any
-backend's output; among the backends, **Scala is the reference
-implementation** — it passes the whole spec. The table below is the full
-set of active divergences plus recent fixed rows retained as status
-history. The active harness facts are currently WAT `fib` as `xfail` and
-WAT `append`/`reverse` as `skip`; Elixir and Scala pass the default spec,
-and Haskell is opt-in because cabal builds are slow, not because the
-adapter has a current divergence.
+The harness is green today and **every registered backend — scala,
+elixir, wat, haskell, python, go, rust, and c — passes the whole spec**
+(there are no live `ct_xfail/2` or `ct_skip/2` entries; both are declared
+`dynamic` so they may have zero clauses). The oracle is the hand-specified
+expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
+semantics), not any backend's output; Scala was the original reference.
+A tolerated divergence would be logged via a new `ct_xfail/2`, with an
+unexpected full match logged as `XPASS` so the entry can be retired once
+the gap is fixed. The table below records every divergence the harness has
+surfaced — each a real backend gap, not a fixture artifact — all now
+fixed.
 
 | Backend | Program(s) | Kind | Cause |
 |---|---|---|---|
 | ~~wat~~ | ~~member~~ | **fixed** | Read-mode argument unification was unimplemented (the read-mode branches of `unify_variable`/`unify_value`/`unify_constant` were nops; no S register), so `get_structure`/`get_list` matched only the functor and element mismatches went undetected. Added an **S register** (heap arg pointer at addr 65568); `get_structure`/`get_list` set it and the `unify_*` read-mode branches consume successive arg cells (binding/checking and failing on mismatch). `get_list` also matches a tag-3 `[|]/2` compound as a list cell (the compiler emits the outer list via `put_list`/tag-4 but nested cons via `put_structure [|]/2`/tag-3 — the same `./2`-vs-`[|]/2` split as the other backends) using a generated `$cons_op1` global. |
 | ~~wat~~ | ~~builtins~~ | **fixed** | Two bugs: `eval_arith` lacked `//` and `mod`; and `functor_arity_of('///2')` split on `/` expecting exactly two parts and fell back to **arity 0**, so `//` structure cells were skipped by `eval_arith`'s arity-2 dispatch (same `/`-in-operator class as the Haskell `//` bug). Fixed `functor_arity_of` to take the last `/`-component, and added `//`/`mod` (with zero-divisor guards and floored `mod`). `cbi_cmp`/`cbi_eq` already worked. |
-| wat | fib | xfail | `cfib(10,54)` wrongly succeeds (`fib(10)=55`). The `is/2` output check is correct (`cbi_arith` with a bound result is fine). The fault is **recursive backtracking**: the fact clauses `cfib(0,0)`/`cfib(1,1)` coexist with the variable-headed recursive clause, so `cfib(0,F2)` legitimately leaves a choice point; when the parent's final `is/2` correctly fails, backtracking re-enters those alternatives with reused argument registers and rebinds the now-unbound result to a passing value. A choice-point / first-arg-indexing determinism issue, not the read-mode or arithmetic path — separate follow-up. |
-| wat | append, reverse | **skip** | A *separate* WAT codegen bug: the generator loops re-emitting millions of "unrecognized instruction" warnings on recursive list-**building** predicates, so the project is impractical to write. Skipped (not built) rather than xfail'd. |
+| ~~wat~~ | ~~fib~~ | **fixed** | `cfib(10,54)` wrongly succeeded. `peephole_fused_arith` rewrites `F is F1+F2` into a single `fused_is_add(Dest,Src1,Src2)`, and the WAT handlers for the fused `is/*` forms (`add`/`sub`/`mul` + `_const` variants) called `$bind_reg_deref` to **store** the result into `Dest` unconditionally — never checking an already-bound `Dest`. So a recursive predicate's result check (`F` bound to the queried value) always succeeded by clobbering `F`. Added `$is_unify_int` (bind if unbound, else integer-equality check, mirroring `builtin_is`) and routed all five fused forms through it. The non-fused `is/2` path was already correct (hence `cbi_arith` passed) — fib was the only program exercising the fused result-check. |
+| ~~wat~~ | ~~append, reverse~~ | **fixed** | Two bugs. **(1) Generation:** the `switch_on_term` first-arg index that list-recursive predicates emit had no working parser clause (`parse_term_entries` expected an old operand format), so it fell to the `unrecognized instruction → allocate` fallback — looping on warnings / failing to generate. Fixed by emitting an empty (unindexed) `switch_on_term_hdr` on register 0, mirroring `switch_on_term_a2`; the `try_me_else` chain alone is correct. **(2) Unification:** with generation working, `$unify_regs` did only **shallow** (tag+payload) equality, so a constructed cons (tag-3 `[|]/2`) would not match an already-ground list cell (tag-4) and append/reverse returned false on correct answers — the same `./2`-vs-`[|]/2` split as the other backends, plus it never recursed into elements. Replaced with recursive, cons-aware `$unify_addrs`. Both conformant; skips removed. |
 | ~~elixir~~ | ~~append, reverse~~ | **fixed** | Was: a freshly-constructed list (`./2`, from `put_list`) would not unify against an already-**ground** list compound (`[|]/2`, from `put_structure`) in a clause head, so `capp([a],[b],[a,b])` returned false while `capp([a],[b],X), X=[a,b]` succeeded. Root cause: `unify/3`'s compound clause demanded *identical* functor names and never applied the `./2`↔`[|]/2` cons-cell aliasing that the `get_structure` match path (`step_get_structure_matches?/2`) already used. The runtime also aliases native Elixir `[]` with WAM `"[]"` for direct list inputs. Now conformant; xfails removed. |
 | ~~haskell~~ | ~~member, append, reverse~~ | **fixed** | All three failed on heap-built cons lists. Four root causes, now fixed in `wam_haskell_target.pl`: (1) `unifyVal`/`unifyValues` did **no** structural unification — added a shared `unifyTerms`; (2) the cons functor `"[|]/2"` interned to its own id, distinct from `atomDot` — `intern_struct_functor/2` folds every cons spelling onto `atomDot` (the `./2`-vs-`[|]/2` class, same as the Elixir bug); (3) `GetValue` had its own inline unify bypassing the above — now routed through `unifyVal`; (4) **the multi-element bug** — building `[a\|X]` with `X` a `set_variable` tail placeholder emitted `VList [a, X]` (`X` as a 2nd *element*) and `put_structure` filling `X` did not bind the embedded var, so `addToBuilder` now emits a `Str atomDot [hd, tl]` cons cell for a partial tail and binds the placeholder var on finalize. Fixes lists of any length; xfails removed. |
-| ~~haskell~~ | ~~builtins~~ | **fixed** | Was: `=/2` of two identical atoms returned false (`cbi_eq(foo)`), and `//`/`mod` evaluated incorrectly (`cbi_arith`). Both are fixed in `wam_haskell_target.pl`: `=/2` now dispatches through `unifyVal`, and the arithmetic operator parser strips only a trailing `/Arity` suffix so `/`, `//`, and `mod` survive as real operators. Haskell has no current `ct_xfail/2` entries. |
+| ~~haskell~~ | ~~builtins~~ | **fixed** | `=/2` of two identical atoms returned false (no `BuiltinCall "=/2"` handler — added one routing through `unifyVal`), and `//`/`mod` evaluated incorrectly: the arity-stripper `takeWhile (/= '/')` truncated any operator containing `/` (so `//` → `""`). Replaced with `bareArithOp` (strips only a trailing `/<digits>`). `fib`/`ack` already passed. Now conformant; xfail removed. |
+| ~~python~~ | ~~builtins~~ | **fixed** | `cbi_arith(28)` → false: `wam_line_to_python_literal` computed the `put_structure`/`get_structure` arity with `split_string(Fn,"/","",[_,ArStr])`, which expects exactly two parts and fell back to **arity 0** for `///2` (integer division `//`). A 0-arity `//` compound carried no argument cells, so `eval_arith` could not apply it and `X is 17 // 5` failed — the same `/`-in-operator class as the Haskell/WAT `//` bugs. Added `python_functor_arity/2` (last `/`-component). The Python adapter was added to the harness in the same change; every other program already passed. |
+| ~~go~~ | ~~fib, ack~~ | **fixed** | `is/2` wrapped every result in `&Float`, but Go's `Unify` is type-strict (Integer never unifies with Float), so `R is N + 1` failed whenever R was already bound to a ground Integer — `cack(0,5,6)`, `cfib(10,55)`. Integral results now wrap as `&Integer` (mirrors the Python int-vs-float heuristic), in `templates/targets/go_wam/state.go.mustache`. Made fib and ack pass; the Go adapter was added in the same change. |
+| ~~go~~ | ~~builtins~~ | **fixed** | Nested-arithmetic gap. A depth-1 `is` was correct (`//`/`mod` too) but `cbi_arith`'s `A+B+C+D+E` — `+(+(+(+(A,B),C),D),E)` — mis-evaluated. The compiler builds nested terms outer-first: `set_variable` drops an unbound placeholder into the outer arg, then `put_structure` builds the inner term into that *same register* — but `PutStructure` overwrote the register without binding the embedded placeholder, so the outer arg stayed unbound and `evalArithmetic` gave up at depth ≥ 2. `PutStructure` now binds an unbound placeholder it overwrites (`wam_go_target.pl`), which also fixes list **tail** cells built the same way. |
+| ~~go~~ | ~~member, reverse~~ | **fixed** | Cons-cell traversal. Lists build as an outer `put_list` `*List` cell whose tails are `put_structure "[|]/2"` `*Structure`s (the `./2`-vs-`[|]/2` class). Two further `GetList` bugs, both fixed: (a) it recognised only `*List`, not the inner `[|]/2` `*Structure` tail cells — added `consHeadTail` (`state.go.mustache`); (b) it tested `isUnbound` **before** `deref`, so a *bound* variable tail (after the placeholder fix above) was mistaken for unbound and sent into write mode, wrongly succeeding `cmem(z,…)` and looping `clist_reverse` — now derefs first. With all three fixes member, reverse (and append's negative cases) pass. |
 
 (Haskell is opt-in — `CONFORMANCE_TARGETS=haskell` — because each program
 is a cabal compile. The driver,
@@ -106,11 +117,13 @@ is a cabal compile. The driver,
 whose atoms are baked into the compiled stream, which is what removed the
 earlier interning mismatch — see below.)
 
+(Go is opt-in too — `CONFORMANCE_TARGETS=go` — and now passes the whole spec. The driver is a small generated `main.go` that looks up the wrapper label in `SharedWamLabels` and runs `vm.Run()`.)
+
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable. (`append`/`reverse` on WAT are `ct_skip`
-only — they are never built; the formerly-shadowing `ct_xfail` facts have
-been removed.)
+*generation itself* is unusable. Both predicates currently have zero
+clauses; the table above records historical divergences retained as
+status history.
 
 ### Other backend issue surfaced
 
@@ -136,6 +149,15 @@ per-target runtime test showing how to compile+run. Wiring one in is a
 `ct_build/4` + `ct_run/5` + `ct_teardown/2` adapter, a
 `conformance_target/1` (+ `ct_default_target/1`) entry, and a
 `ct_toolchain/2` probe.
+
+> **Before debugging answers, read
+> [`WAM_BACKEND_CONVENTIONS.md`](WAM_BACKEND_CONVENTIONS.md).** Every
+> divergence in the table above belongs to one of five recurring classes
+> (cons-cell spelling, `/`-in-operator functor arity, outer-first
+> placeholder binding, deref-before-type-test, `is/2` result typing) that
+> have bitten *every* WAM backend in turn. That doc is the checklist; this
+> section is about the orthogonal problem of *invoking* the generated
+> program.
 
 ### The invocation style is the hard part
 
@@ -217,11 +239,10 @@ and they are distinct:
   clause, ~6 lines. The runtime also aliases native `[]` with WAM `"[]"`
   so direct Elixir-list inputs and heap-built WAM lists agree.
   `append`/`reverse` now conformant.
-- **WAT** — a genuine runtime *gap*: the read-mode `unify_*` branches are
-  nops and there is no S-register / argument queue. Fixed for `member`;
-  the active WAT issues are now recursive choice-point/indexing behavior
-  for `fib` and the list-building codegen loop that keeps
-  `append`/`reverse` skipped.
+- **WAT** — **fixed** (`member`, `builtins`, `fib`, `append`, and
+  `reverse`). It needed both read-mode unification fixes and later
+  target-specific fixes for fused `is/*` result checking, `switch_on_term`
+  parsing, and recursive cons-aware structural unification.
 - **Haskell** — **fixed** (`member`/`append`/`reverse` and `builtins`). It was the same
   `./2`-vs-`[|]/2` cons-aliasing class as Elixir, but with three more
   layers: no structural unification at all, a `GetValue` inline-unify

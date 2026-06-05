@@ -89,6 +89,14 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
+                    // Empty-list aliasing: the [] atom and an empty Value::List
+                    // are the same term. A list tail peeled down to its end is
+                    // Value::List([]), and a clause head get_constant [] must
+                    // match it (e.g. append/3 base case capp([],L,L)).
+                    Some(Value::List(ref items)) if items.is_empty()
+                        && matches!(c, Value::Atom(s) if s == "[]") => {
+                        self.pc += 1; true
+                    }
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
                         self.set_reg_str(ai, c.clone());
@@ -109,23 +117,18 @@ wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
-    Body = '                let val_a = self.get_reg_raw(ai);
+    Body = '                // get_value Xn, Ai is full unification of the two.
+                // The old hand-rolled version only did raw equality plus
+                // unbound-binding, so it could not unify two bound compound
+                // terms or follow a heap Ref — e.g. append/3 binding the
+                // accumulated result list against a tail cell. Route through
+                // unify(), which derefs (incl. Ref->heap), binds vars, and
+                // structurally unifies with cons-cell aliasing.
+                let val_a = self.get_reg_raw(ai);
                 let val_x = self.get_reg(xn);
                 match (val_a, val_x) {
-                    (Some(a), Some(x)) if a == x => { self.pc += 1; true }
-                    (Some(a), _) if a.is_unbound() => {
-                        self.trail_binding(ai);
-                        if let Some(x) = self.get_reg(xn) {
-                            self.set_reg_str(ai, x);
-                        }
-                        self.pc += 1; true
-                    }
-                    (_, Some(x)) if x.is_unbound() => {
-                        self.trail_binding(xn);
-                        if let Some(a) = self.get_reg_raw(ai) {
-                            self.put_reg(xn, a);
-                        }
-                        self.pc += 1; true
+                    (Some(a), Some(x)) => {
+                        if self.unify(&a, &x) { self.pc += 1; true } else { false }
                     }
                     _ => false,
                 }'.
@@ -164,11 +167,18 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+                    // Deref BEFORE the unbound test: a bound variable is still
+                    // typed Unbound, and treating a bound list tail as unbound
+                    // would wrongly take the write-mode branch.
+                    let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
+                        if let Value::Unbound(ref name) = val {
+                            self.bind_var(name, Value::Ref(addr));
+                        }
                         self.set_reg_str(ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(2));
                         self.pc += 1; true
@@ -178,9 +188,15 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                                 vec![head.clone(), Value::List(tail.to_vec())]));
                             self.pc += 1; true
                         } else { false }
+                    } else if let Value::Str(s, args) = &val {
+                        // Materialised cons cell, e.g. "[|]/2"/"./2".
+                        if self.is_cons_functor(s) && args.len() == 2 {
+                            self.smut().push(StackEntry::UnifyCtx(args.clone()));
+                            self.pc += 1; true
+                        } else { false }
                     } else if let Value::Ref(addr) = &val {
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == "str(./2)" {
+                            if self.is_cons_functor(s) {
                                 let args = self.heap_subargs(addr + 1, 2);
                                 self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
@@ -303,6 +319,16 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
+                // If this register holds an unbound placeholder (one a prior
+                // set_variable embedded into an enclosing term), bind it to the
+                // new structure so the embedded copy resolves here. The compiler
+                // builds nested terms outer-first — +(+(A,B),C), or a list tail
+                // cell — leaving a placeholder a later put_structure must fill.
+                if let Some(cur) = self.get_reg_raw(ai) {
+                    if let Value::Unbound(name) = self.deref_var(&cur) {
+                        self.bind_var(&name, Value::Ref(addr));
+                    }
+                }
                 self.set_reg_str(ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
@@ -322,8 +348,13 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
     Body = '                let addr = self.heap.len();
                 let var = Value::Unbound(format!("_H{}", addr));
-                self.heap.push(var.clone());
-                self.put_reg(xn, var);
+                self.put_reg(xn, var.clone());
+                // Write the fresh variable into the current structure/list arg
+                // slot, exactly as set_value/set_constant do. Without this the
+                // placeholder never lands in the term being built, so any
+                // structure/list with a variable argument (nested arithmetic
+                // +(+(A,B),C); list tail cells [H|T]) had its args misaligned.
+                self.set_heap_or_list(var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
@@ -678,6 +709,9 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
                 self.pc = ret;
                 true'.
 
+wam_instruction_arm('Instruction::NoOp', Body) :-
+    Body = '                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
 
@@ -790,6 +824,27 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                     }
                 }
                 // Unbound A1: skip dispatch, advance to next instruction
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        for (key, label) in table {
+                            if *key == val {
+                                if let Some(&pc) = self.labels.get(label) {
+                                    self.pc = pc; return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                // No table key matched (or A1 unbound): fall through to the
+                // next instruction (the try_me_else clause chain). Unlike
+                // SwitchOnConstant this never fails — failing here skipped the
+                // chain entirely and, because the dropped instruction also
+                // shifted every later label by one, backtracking landed past
+                // retry_me_else and looped.
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
@@ -1010,6 +1065,14 @@ compile_execute_builtin_to_rust(Code) :-
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
             "!/0" => { self.choice_points.truncate(self.cut_barrier); self.pc += 1; true }
+            "=/2" => {
+                // Unification: the compiler emits `X = Y` as builtin_call =/2.
+                // Without a handler it fell through to `_ => false`, so even
+                // `a = a` failed.
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
+            }
             _ => false,
         }
     }'.
@@ -2493,6 +2556,14 @@ compile_eval_arith_to_rust(Code) :-
                 }
             }
             Value::Str(op, args) => self.eval_arith_compound(op, args),
+            Value::Unbound(_) => {
+                // A bound placeholder variable (e.g. the embedded arg of a
+                // nested expression +(+(A,B),C)) derefs through the binding
+                // table to the real subterm. Without this it fell to None and
+                // any depth>=2 arithmetic failed.
+                let d = self.deref_var(expr);
+                if d == *expr { None } else { self.eval_arith(&d) }
+            }
             Value::Atom(name) => {
                 // Try register dereference
                 if name.starts_with(\'A\') || name.starts_with(\'X\') || name.starts_with(\'Y\') {
@@ -2704,9 +2775,10 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
 wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::GetConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
 wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2741,9 +2813,11 @@ wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     ).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::PutConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
+
 wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2825,6 +2899,16 @@ wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries], _, _, Rust) :-
+    % Entries with a "default" target mean "fall through" for that key, so
+    % they carry no jump and are dropped from the table. Emitting this as a
+    % real instruction (rather than the unknown-fallback comment) keeps every
+    % later label PC aligned — the missing instruction shifted them by one.
+    exclude(is_default_index_entry, Entries, JumpEntries),
+    maplist(parse_index_entry_constant, JumpEntries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust),
+        'Instruction::SwitchOnConstantFallthrough(vec![~w])', [Joined]).
 wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
@@ -2833,10 +2917,33 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
-% Fallback for unknown instructions
+% Fallback for unknown instructions. Emit a real NoOp (not a bare comment):
+% a comment is dropped from the vec! literal, which shifts every later label
+% PC by one and corrupts backtracking (a missing trust_me/retry_me_else made
+% the choice point loop). NoOp preserves alignment, and for the indexing
+% hints that land here (switch_on_term, ...) falling through to the
+% try_me_else chain is correct.
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
-    format(string(Rust), '/* unknown: ~w */', [Joined]).
+    format(string(Rust), 'Instruction::NoOp /* unknown: ~w */', [Joined]).
+
+%% rust_const_value(+Const, -RustValueExpr)
+%  Render a WAM constant token as the right Value variant. Numeric
+%  constants MUST become Value::Integer/Value::Float, not Value::Atom:
+%  put_constant/get_constant previously emitted Value::Atom("28") for the
+%  integer 28, so `R is <expr>` with R bound to a ground integer (the head
+%  arg, e.g. cbi_arith(28) or the cfib(N,R) result check) failed — is/2's
+%  result match only handles Unbound/Integer/Float, not Atom. That failure
+%  triggered runaway backtracking in recursive programs (fib). set_/
+%  unify_constant already did this; this routes the remaining two through
+%  the same rule.
+rust_const_value(C, Expr) :-
+    (   number_string(N, C), integer(N)
+    ->  format(string(Expr), 'Value::Integer(~w)', [N])
+    ;   number_string(N, C), float(N)
+    ->  format(string(Expr), 'Value::Float(~w)', [N])
+    ;   format(string(Expr), 'Value::Atom("~w".to_string())', [C])
+    ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
     option(foreign_lowering(ForeignSpec), Options),
@@ -2860,6 +2967,11 @@ rust_foreign_spec(Pred/Arity,
         Pred/Arity) :-
     is_list(SetupOps),
     is_list(RewriteCalls).
+
+%% is_default_index_entry(+Entry) — true for a "K:default" switch entry.
+is_default_index_entry(Entry) :-
+    ( string(Entry) -> S = Entry ; atom_string(Entry, S) ),
+    sub_string(S, _, _, 0, ":default").
 
 parse_index_entry_constant(Entry, Rust) :-
     (   sub_string(Entry, Before, 1, After, ":")
@@ -3334,9 +3446,22 @@ write_file(Path, Content) :-
 read_template_file(RelativePath, Content) :-
     (   exists_file(RelativePath)
     ->  read_file_to_string(RelativePath, Content, [])
+    ;   resolve_template_path(RelativePath, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content),
             '// Template not found: ~w', [RelativePath])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python/go targets.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_rust_target:write_wam_rust_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 % ============================================================================
 % CARGO CHECK VALIDATION

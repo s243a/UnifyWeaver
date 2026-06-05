@@ -592,6 +592,31 @@ func parseFunctorName(f string) string {
 	return f
 }
 
+// isConsName reports whether a bare functor name (arity stripped) is one of
+// the interchangeable cons-cell spellings WAM lists use.
+func isConsName(n string) bool {
+	return n == "[|]" || n == "."
+}
+
+// consHeadTail exposes head/tail for the cons-cell spellings that arrive as
+// a Compound/Structure (e.g. "[|]/2", built by put_structure for list tail
+// cells) rather than as a *List. Without this, GetList recognised only the
+// outer *List cell and failed on the inner "[|]/2" tail cells, so recursive
+// list predicates (member/reverse) mis-traversed the tail.
+func consHeadTail(v Value) (Value, Value, bool) {
+	switch t := v.(type) {
+	case *Compound:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	case *Structure:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	}
+	return nil, nil, false
+}
+
 // compareValues returns <0, 0, or >0 for sort ordering of atoms/integers.
 func compareValues(a, b Value) int {
 	// Type ordering: Atom < Integer < Float < other
@@ -1197,6 +1222,32 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 			return float64(int64(a)), true
 		case "float_integer_part":
 			return math.Trunc(a), true
+		case "sqrt":
+			r := math.Sqrt(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "sin":
+			return math.Sin(a), true
+		case "cos":
+			return math.Cos(a), true
+		case "tan":
+			return math.Tan(a), true
+		case "asin":
+			r := math.Asin(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "acos":
+			r := math.Acos(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "atan":
+			return math.Atan(a), true
+		case "floor":
+			return math.Floor(a), true
+		case "ceiling":
+			return math.Ceil(a), true
+		case "round":
+			return math.Round(a), true
 		}
 	}
 	if len(args) == 2 {
@@ -1307,7 +1358,18 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "is/2":
 		val, ok := vm.evalArithmetic(arg2)
 		if !ok { return false }
-		return vm.Unify(arg1, &Float{Val: val})
+		// Produce an Integer for integral results: Unify is type-strict
+		// (Integer never unifies with Float), so always wrapping in Float
+		// made `R is N + 1` fail whenever R was already bound to a ground
+		// Integer (e.g. cack(0,5,6) / cfib(10,55) / cbi_arith). Mirrors the
+		// Python target's int-vs-float result heuristic.
+		var result Value
+		if !math.IsInf(val, 0) && val == math.Trunc(val) {
+			result = &Integer{Val: int64(val)}
+		} else {
+			result = &Float{Val: val}
+		}
+		return vm.Unify(arg1, result)
 
 	case "=:=/2" :
 		v1, ok1 := vm.evalArithmetic(arg1)

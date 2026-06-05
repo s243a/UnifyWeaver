@@ -53,6 +53,14 @@
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
 :- use_module('../src/unifyweaver/targets/wam_haskell_target',
               [write_wam_haskell_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_python_target',
+              [write_wam_python_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [write_wam_go_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_rust_target',
+              [write_wam_rust_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_c_target',
+              [write_wam_c_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -62,12 +70,17 @@ conformance_target(scala).
 conformance_target(elixir).
 conformance_target(wat).
 conformance_target(haskell).
+conformance_target(python).
+conformance_target(go).
+conformance_target(rust).
+conformance_target(c).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT and Haskell are wired up but NOT defaults. WAT still has active
-%  divergences (see ct_xfail/ct_skip below); Haskell is opt-in because
-%  it performs a cabal compile per program, which is too slow for the
-%  default CI tier even though the adapter is currently green.
+%  WAT/Haskell/Python/Go/Rust/C are wired up but NOT defaults. They are
+%  opt-in to keep the default CI tier cheap and avoid requiring every
+%  native toolchain on ordinary runs. ct_xfail/2 and ct_skip/2 are dynamic
+%  and currently have zero clauses because the registered adapters are
+%  conformant when run explicitly.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -75,6 +88,11 @@ ct_default_target(elixir).
 :- discontiguous ct_build/4.
 :- discontiguous ct_run/5.
 :- discontiguous ct_teardown/2.
+%% ct_xfail/2 and ct_skip/2 may legitimately have zero clauses (every
+%% target/program is now conformant). Declare them dynamic so calls fail
+%% cleanly instead of raising existence_error when no entries remain.
+:- dynamic ct_xfail/2.
+:- dynamic ct_skip/2.
 
 %% ct_xfail(Target, ProgramName)
 %  (Target, program) pairs known to diverge from the shared spec.
@@ -100,17 +118,17 @@ ct_default_target(elixir).
 %     Fixed functor_arity_of to take the last '/'-component and added
 %     //, mod (with zero guards and floored mod). cmp/eq already worked.
 %
-%  WAT fib remains xfail: cfib(10,54) wrongly succeeds (fib(10)=55). The
-%  is/2 output check itself is correct (cbi_arith with a bound result is
-%  fine). The fault is recursive backtracking: the fact clauses
-%  cfib(0,0)/cfib(1,1) coexist with the variable-headed recursive clause,
-%  so calls like cfib(0,F2) legitimately leave a choice point; when the
-%  parent's final is/2 correctly fails, backtracking re-enters those
-%  alternatives with reused argument registers and eventually rebinds the
-%  (now-unbound) result variable to a passing value. This is a choice-
-%  point / first-argument-indexing determinism issue in the WAT runtime,
-%  not the read-mode or arithmetic path — a separate follow-up.
-ct_xfail(wat, fib).
+%  WAT fib USED to be xfail: cfib(10,54) wrongly succeeded. Root cause
+%  (now fixed in wam_wat_target.pl): peephole_fused_arith rewrites
+%  `F is F1+F2` into a single fused_is_add(Dest,Src1,Src2), and the WAT
+%  handlers for the fused is/* forms (add/sub/mul and the _const variants)
+%  called $bind_reg_deref to STORE the result into Dest unconditionally,
+%  never checking an already-bound Dest. So a recursive predicate result
+%  check (F bound to the queried value) always succeeded by clobbering F.
+%  Added $is_unify_int (bind if unbound, else integer-equality check,
+%  mirroring builtin_is) and routed all five fused forms through it.
+%  (The non-fused is/2 path was already correct, which is why cbi_arith
+%  passed — fib was the only program hitting the fused result-check.)
 
 %  (Elixir append/reverse used to be xfail here: a freshly-constructed
 %  list ("./2", from put_list) would not unify against an already-GROUND
@@ -156,19 +174,96 @@ ct_xfail(wat, fib).
 %  fib/ack already passed, so +/-/comparison and is/2 bound-LHS checking
 %  were fine; with these two fixes the Haskell adapter is fully green.
 
+%  Go (now fully conformant; the WAM runtime is exercised here via
+%  prefer_wam(true), since its default strategy is the dataflow/stream
+%  backend, not the shared WAM pipeline). Onboarding surfaced four gaps,
+%  all since fixed:
+%   - is/2 produced a Float for every result, and Unify is type-strict
+%     (Integer never unifies with Float), so `R is N + 1` failed whenever
+%     R was bound to a ground Integer. Integral results now wrap as Integer
+%     (state.go.mustache) — fixed fib/ack.
+%   - nested-arithmetic (cbi_arith): the compiler builds `+(+(A,B),C)`
+%     outer-first, emitting a set_variable placeholder into the outer arg
+%     and then a put_structure into that placeholder register; put_structure
+%     overwrote the register but never bound the embedded placeholder, so
+%     the outer arg stayed unbound and evalArithmetic gave up at depth >= 2.
+%     PutStructure now binds an unbound placeholder it overwrites
+%     (wam_go_target.pl) — this also fixes list TAIL cells built the same
+%     way (the ./2-vs-[|]/2 class).
+%   - member/reverse (cons-cell traversal): two further GetList bugs —
+%     (a) it recognised only the outer *List cell, not the inner "[|]/2"
+%     *Structure tail cells (added consHeadTail in state.go.mustache), and
+%     (b) it tested isUnbound BEFORE deref, so a *bound* variable tail was
+%     mistaken for unbound and sent into write mode (now derefs first).
+
+%  Rust is now fully conformant. The Rust WAM runtime had the same gap
+%  family as Go, plus a missing =/2; the fixes (wam_rust_target.pl /
+%  templates/targets/rust_wam/state.rs.mustache):
+%   - =/2 had NO handler in execute_builtin (the compiler emits `X = Y` as
+%     builtin_call =/2), so even `a = a` returned false. Added a handler
+%     routing through unify(). This made fib and builtins pass.
+%   - set_variable did not write the fresh var into the current
+%     structure/list arg slot (unlike set_value/set_constant), so terms
+%     with a variable argument had their args misaligned — now calls
+%     set_heap_or_list.
+%   - nested arithmetic: put_structure into a placeholder register did not
+%     bind the embedded placeholder, and eval_arith did not deref Unbound.
+%     Both fixed; nested cbi_arith now evaluates.
+%   - cons-cell aliasing added to get_list (accepts "[|]/2"/"./2" Str and
+%     Ref, derefs before the unbound test) and to unify (List <-> cons Str,
+%     empty-list <-> "[]" atom).
+%   - put_constant/get_constant emitted Value::Atom("28") for the integer
+%     28 (unlike set_/unify_constant, which already used Value::Integer), so
+%     `R is <expr>` with R bound to a ground integer (the head arg) failed —
+%     is/2's result match handles Unbound/Integer/Float, not Atom. Now route
+%     through rust_const_value; this made builtins conformant.
+%   - switch_on_constant_fallthrough had NO codegen, so it fell to the
+%     unknown-instruction comment and was dropped from the emitted vector.
+%     That shifted every later label PC by one: backtracking into a clause
+%     chain landed one instruction PAST retry_me_else, so the choice point's
+%     next_pc was never advanced and execution looped on the same clause
+%     (returning false at the step_limit). Any predicate indexed on a
+%     constant first argument with 3+ clauses hit this — fib (cfib(0/1/N))
+%     and ack (cack(0,_)/cack(M,_)). Added the instruction with proper
+%     fallthrough semantics (jump on a table hit; advance to the try_me_else
+%     chain on unbound/miss — never fail). fib and ack are now conformant.
+%   - the list model (member/append/reverse) needed four fixes:
+%     (a) a partial list whose tail is still an unbound variable
+%         ([a|X2] then X2=[b|X3]) was materialised as Value::List([a,X2]),
+%         treating the tail var as a SECOND ELEMENT; get_list then peeled a
+%         wrong tail and member(z,...) bound the var and wrongly succeeded.
+%         set_heap_or_list now keeps such a cell as a "[|]/2" cons so the
+%         tail var derefs to the rest of the list.
+%     (b) switch_on_term had no codegen and was dropped (same label-shift
+%         class as switch_on_constant_fallthrough: a skipped trust_me made
+%         the choice point loop). Unknown instructions now emit a real NoOp,
+%         preserving PC alignment; falling through to the try chain is
+%         correct for indexing hints.
+%     (c) get_constant [] now matches an empty Value::List (append's base
+%         case capp([],L,L) sees the peeled tail as Value::List([])).
+%     (d) get_value did only raw equality + unbound-binding; it now routes
+%         through unify(), so it follows heap Refs and structurally unifies
+%         the accumulated result list (append/reverse output).
+%  The runner driver keeps vm.step_limit as a guard against accidental
+%  non-termination.
+
 %% ct_skip(Target, ProgramName)
 %  Stronger than xfail: do NOT even build/run this (target, program).
 %  Used when *generation itself* is unusable, not just the answer.
 %
-%  WAT append/reverse: the WAT generator loops re-emitting millions of
-%  "unrecognized instruction" warnings on recursive list-BUILDING
-%  predicates (put_list/unify_* on a constructed tail), so the project
-%  takes minutes and gigabytes of log to write. (member is fine — it only
-%  matches an input list — so it stays as an xfail demonstrating the
-%  read-mode divergence.) This is a separate WAT codegen bug from the
-%  read-mode-unify gap; both are flagged for follow-up.
-ct_skip(wat, append).
-ct_skip(wat, reverse).
+%  WAT append/reverse USED to be skipped: the parser had no working clause
+%  for the `switch_on_term` first-arg index that list-recursive predicates
+%  emit (its `parse_term_entries` expected an old operand format), so it
+%  fell to the `unrecognized instruction -> allocate` fallback and either
+%  looped on warnings or silently failed to generate. Fixed by emitting an
+%  empty (unindexed) switch_on_term header on register 0 -- the try_me_else
+%  chain alone is correct -- mirroring switch_on_term_a2. With generation
+%  working, the output-list unification then needed the same fix as the
+%  read path: $unify_regs did only SHALLOW (tag+payload) equality, so a
+%  constructed cons (tag-3 [|]/2) would not match an already-ground list
+%  cell (tag-4) and append/reverse returned false on correct answers. It
+%  is now recursive and cons-aware ($unify_addrs). Both are conformant;
+%  the skips are removed.
 
 % ============================================================
 % Toolchain probes
@@ -178,6 +273,10 @@ ct_toolchain(scala,  [scalac]).
 ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
+ct_toolchain(python, [python3]).
+ct_toolchain(go,     [go]).
+ct_toolchain(rust,   [cargo]).
+ct_toolchain(c,      [gcc]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -214,6 +313,10 @@ exe_on_path(Exe) :-
 test(scala,  [condition(ct_available(scala))])  :- run_target_conformance(scala).
 test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir).
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
+test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
+test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
+test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
+test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -572,6 +675,257 @@ ct_run(haskell, haskell_ctx(Dir, Map), K, A, Bool) :-
 
 ct_teardown(haskell, haskell_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Python  (0-arity wrapper -> `python3 main.py <key>` -> bool)
+%
+% write_wam_python_project/3 compiles predicate INDICATORS itself (like
+% the Haskell adapter), so this mirrors that shape: synthesise one ground
+% 0-arity wrapper per query, generate the project, and run each wrapper.
+% Python is interpreted, so there is NO build step — generation in
+% ct_build is the whole cost, and ct_run is a fast `python3 main.py` per
+% query. The generated main.py prints `A_i = ...` register dumps on
+% success and the literal `false.` on failure (a 0-arity wrapper has no
+% meaningful output registers, so success is detected by the ABSENCE of
+% `false.`). Opt-in via CONFORMANCE_TARGETS=python.
+% ============================================================
+
+ct_build(python, Preds, Queries, python_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_python', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_python_project(AllPreds, [module_name(wam_ct)], Dir).
+
+ct_run(python, python_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(python3, ['main.py', KeyStr], Dir, _Exit, OutStr),
+    (   sub_string(OutStr, _, _, _, "false.")
+    ->  Bool = false
+    ;   sub_string(OutStr, _, _, _, "Unknown predicate")
+    ->  Bool = error(unknown_predicate)
+    ;   Bool = true
+    ).
+
+ct_teardown(python, python_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Go  (0-arity wrapper -> `./bin <key>` -> true/false)
+%
+% write_wam_go_project/3 compiles predicate INDICATORS itself, but its
+% DEFAULT strategy is the dataflow/stream Go backend (a stdin filter),
+% NOT the WAM pipeline the other backends share. prefer_wam(true) forces
+% every predicate through compile_predicate_to_wam, so Go is tested on the
+% same WAM lowering as scala/elixir/wat/haskell/python. We generate with
+% package_name(main) (which emits a domain-specific benchmark main.go) and
+% then OVERWRITE main.go with a tiny query-runner driver: it looks up the
+% wrapper label in SharedWamLabels, sets vm.PC, and runs vm.Run() — which
+% returns true only when the machine halts (Proceed with CP<=0), false on
+% backtrack exhaustion. Go compiles fast to a single binary, so ct_build
+% does the `go build` and ct_run is a cheap exec per query. Opt-in via
+% CONFORMANCE_TARGETS=go.
+% ============================================================
+
+go_runner_driver('package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: runner <pred/arity>")
+		os.Exit(2)
+	}
+	key := os.Args[1]
+	pc, ok := SharedWamLabels[key]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "unknown predicate: "+key)
+		os.Exit(3)
+	}
+	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
+	vm := NewWamStateFromCtx(ctx)
+	setupSharedForeignPredicates(vm)
+	vm.PC = pc
+	if vm.Run() {
+		fmt.Println("true")
+	} else {
+		fmt.Println("false")
+	}
+}
+').
+
+ct_build(go, Preds, Queries, go_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_go', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_go_project(AllPreds,
+        [package_name(main), module_name('uw_go_ct'), prefer_wam(true)], Dir),
+    go_runner_driver(DriverSrc),
+    directory_file_path(Dir, 'main.go', MainPath),
+    setup_call_cleanup(open(MainPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(go, ['build', '-o', 'runner', '.'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(go_build_failed(BExit, BErr)) ).
+
+ct_run(go, go_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    % Execute via `go run` rather than exec'ing the built binary directly:
+    % process_create(path(AbsPath)) fails to launch a binary under some
+    % $TMPDIR layouts, whereas `go` is resolved on PATH and runs the program
+    % from its own (warm) build cache. ct_build already gated compilation.
+    run_proc_out(go, ['run', '.', KeyStr], Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(go, go_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Rust  (0-arity wrapper -> `cargo run -- <key>` -> true/false)
+%
+% Like Go, write_wam_rust_project/3 attempts native lowering first and
+% falls back to the shared WAM pipeline; the conformance predicates all
+% take the WAM path. We generate the project, overwrite the emitted
+% benchmark src/main.rs with a tiny query-runner driver (look up the
+% wrapper label in shared_wam_program(), set vm.pc, run vm.run() — which
+% returns true when the machine halts with pc==0), gate compilation with
+% `cargo build`, and run each query with `cargo run` (cargo execs the
+% binary from its own target dir, sidestepping the $TMPDIR exec issue the
+% Go adapter hit). The generated crate has no external deps, so --offline
+% needs no network. Opt-in via CONFORMANCE_TARGETS=rust.
+% ============================================================
+
+rust_runner_driver('use std::env;
+use wam_lib::state::WamState;
+use wam_lib::{shared_wam_program, setup_foreign_predicates};
+
+fn main() {
+    let key = match env::args().nth(1) {
+        Some(k) => k,
+        None => { eprintln!("usage: runner <pred/arity>"); std::process::exit(2); }
+    };
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels.clone());
+    setup_foreign_predicates(&mut vm);
+    // Bound execution so a not-yet-conformant (xfailed) program that loops
+    // returns false instead of hanging the harness. 5M is generous for the
+    // legitimate conformance computations (fib(10)/ack(2,3) are well under
+    // it) while bounding the runaway backtracking some programs still hit.
+    vm.step_limit = 5_000_000;
+    match labels.get(&key) {
+        Some(&pc) => {
+            vm.pc = pc;
+            println!("{}", if vm.run() { "true" } else { "false" });
+        }
+        None => { eprintln!("unknown predicate: {}", key); std::process::exit(3); }
+    }
+}
+').
+
+ct_build(rust, Preds, Queries, rust_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_rust', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_rust_project(AllPreds,
+        [module_name('uw_rust_ct'), no_kernels(true)], Dir),
+    rust_runner_driver(DriverSrc),
+    directory_file_path(Dir, 'src/main.rs', MainPath),
+    setup_call_cleanup(open(MainPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(cargo, ['build', '--offline', '-q'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(rust_build_failed(BExit, BErr)) ).
+
+ct_run(rust, rust_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    run_proc_out(cargo, ['run', '--offline', '-q', '--bin', bench, '--', KeyStr],
+                 Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(rust, rust_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: C  (0-arity wrapper -> compiled binary, result via exit code)
+%
+% write_wam_c_project/3 emits wam_runtime.c + lib.c (and reuses the static
+% wam_runtime.h shipped in the targets tree, which we copy in). Each
+% predicate gets a setup_<pred>_<arity>() that registers its code; the
+% driver calls them all, then wam_run_predicate(state, "ctw_N/0", ...).
+% wam_run returns 0 on success (machine halted) and WAM_HALT on failure,
+% which the driver maps to process exit status 0/1. We exec via shell/2
+% (the pattern the C target's own tests use) rather than
+% process_create(path(AbsBinary)), which is unreliable under $TMPDIR.
+% Opt-in via CONFORMANCE_TARGETS=c.
+% ============================================================
+
+ct_build(c, Preds, Queries, c_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_c', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_c_project(AllPreds, [no_kernels(true)], Dir),
+    c_copy_runtime_header(Dir),
+    c_runner_driver(AllPreds, DriverSrc),
+    directory_file_path(Dir, 'driver.c', DriverPath),
+    setup_call_cleanup(open(DriverPath, write, S), write(S, DriverSrc), close(S)),
+    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c'],
+             Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(c_build_failed(BExit, BErr)) ).
+
+ct_run(c, c_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]),
+    absolute_file_name(Dir, AbsDir),
+    directory_file_path(AbsDir, runner, Exe),
+    % Result is carried by the process exit status: 0 = true, 1 = false.
+    format(atom(Cmd), 'timeout 30 ~w ~w', [Exe, KeyAtom]),
+    shell(Cmd, Status),
+    ( Status =:= 0 -> Bool = true
+    ; Status =:= 1 -> Bool = false
+    ; throw(c_run_failed(KeyAtom, Status)) ).
+
+ct_teardown(c, c_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+%% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.
+c_copy_runtime_header(Dir) :-
+    module_property(wam_c_target, file(TargetFile)),
+    file_directory_name(TargetFile, TargetsDir),
+    directory_file_path(TargetsDir, 'wam_c_runtime/wam_runtime.h', HdrSrc),
+    directory_file_path(Dir, 'wam_runtime.h', HdrDst),
+    copy_file(HdrSrc, HdrDst).
+
+%% c_runner_driver(+QualifiedPreds, -CSource)
+%  A main() that registers every predicate (setup_<pred>_<arity>) then runs
+%  the predicate named on argv[1], exiting 0 (true) / 1 (false).
+c_runner_driver(Preds, Src) :-
+    findall(Decl-Call,
+        ( member(_M:N/A, Preds),
+          format(atom(Decl), 'void setup_~w_~w(WamState*);', [N, A]),
+          format(atom(Call), '    setup_~w_~w(&state);', [N, A]) ),
+        Pairs),
+    pairs_keys_values(Pairs, Decls, Calls),
+    atomic_list_concat(Decls, '\n', DeclS),
+    atomic_list_concat(Calls, '\n', CallS),
+    format(atom(Src),
+'#include <string.h>\n#include <stdio.h>\n#include "wam_runtime.h"\n~w\n\c
+int main(int argc, char **argv) {\n\c
+    WamState state; wam_state_init(&state);\n~w\n\c
+    if (argc < 2) { return 2; }\n\c
+    WamValue args[1];\n\c
+    int rc = wam_run_predicate(&state, argv[1], args, 0);\n\c
+    wam_free_state(&state);\n\c
+    return (rc == 0) ? 0 : 1;\n\c
+}\n', [DeclS, CallS]).
 
 qualify_user(_M:N/A, user:N/A) :- !.
 qualify_user(N/A, user:N/A).

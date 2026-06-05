@@ -1296,6 +1296,22 @@ clean_comma(S, Clean) :-
 	;   Clean = S
 	).
 
+%% python_functor_arity(+FunctorSlashArity, -Arity)
+%  Arity is the FINAL '/'-separated component of a 'name/arity' functor.
+%  Taking the last part (not requiring exactly two) is essential for
+%  operators whose functor itself contains '/', e.g. '///2' (integer
+%  division //) or '//2' (float division /): splitting those on '/' yields
+%  3-4 parts, so the old [_Name, ArStr] pattern fell through to arity 0.
+%  A 0-arity '//' compound then carried no argument cells and eval_arith
+%  could not apply it, so `X is 17 // 5` failed (the cbi_arith divergence).
+python_functor_arity(CFn, Arity) :-
+	(   split_string(CFn, "/", "", Parts),
+	    last(Parts, ArStr),
+	    number_string(A, ArStr)
+	->  Arity = A
+	;   Arity = 0
+	).
+
 %% escape_python_string(+In, -Out)
 %  Escape a string for Python string literal.
 escape_python_string(In, Out) :-
@@ -1359,10 +1375,7 @@ wam_line_to_python_literal(["get_value", Xn, Ai], Py) :-
 	format(atom(Py), '("get_value", ~w, ~w)', [CXn, CAi]).
 wam_line_to_python_literal(["get_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("get_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["get_list", Ai], Py) :-
@@ -1435,10 +1448,7 @@ wam_line_to_python_literal(["put_float", F, Ai], Py) :-
 	format(atom(Py), '("put_float", ~w, ~w)', [CF, CAi]).
 wam_line_to_python_literal(["put_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("put_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["put_list", Ai], Py) :-

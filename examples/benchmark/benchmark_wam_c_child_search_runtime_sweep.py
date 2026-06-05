@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "examples" / "benchmark" / "benchmark_effective_distance_matrix.py"
+BENCH_DIR = ROOT / "data" / "benchmark"
 CHILD_SEARCH_TARGETS = [
     "c-wam-accumulated-child-scan",
     "c-wam-accumulated-child-csr",
@@ -53,6 +54,11 @@ def parse_args() -> argparse.Namespace:
         help="Matrix baseline for speedup rows. Default: c-wam-accumulated-child-csr.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print the matrix command without running it.")
+    parser.add_argument(
+        "--skip-cache-input-summary",
+        action="store_true",
+        help="Do not print root-distance cache input-size summary rows after the matrix run.",
+    )
     parser.add_argument(
         "matrix_args",
         nargs=argparse.REMAINDER,
@@ -90,6 +96,68 @@ def matrix_command(
     return command
 
 
+def iter_tsv_fields(path: Path, header: tuple[str, ...]):
+    with path.open("r", encoding="utf-8") as handle:
+        first_data_row = True
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split("\t")
+            if first_data_row and tuple(fields) == header:
+                first_data_row = False
+                continue
+            first_data_row = False
+            yield fields
+
+
+def cache_input_summary(scale: str, bench_dir: Path = BENCH_DIR) -> dict[str, int]:
+    scale_dir = bench_dir / scale
+    roots = {
+        fields[0]
+        for fields in iter_tsv_fields(scale_dir / "root_categories.tsv", ("category",))
+        if fields
+    }
+
+    category_ids = set(roots)
+    parent_edge_rows = 0
+    for fields in iter_tsv_fields(scale_dir / "category_parent.tsv", ("child", "parent")):
+        if len(fields) < 2:
+            continue
+        parent_edge_rows += 1
+        category_ids.add(fields[0])
+        category_ids.add(fields[1])
+
+    article_category_rows = 0
+    for fields in iter_tsv_fields(scale_dir / "article_category.tsv", ("article", "category")):
+        if len(fields) < 2:
+            continue
+        article_category_rows += 1
+        category_ids.add(fields[1])
+
+    category_id_count = len(category_ids)
+    root_count = len(roots)
+    return {
+        "roots": root_count,
+        "category_ids": category_id_count,
+        "parent_edges": parent_edge_rows,
+        "article_category_rows": article_category_rows,
+        "max_cache_maps": root_count,
+        "max_distance_entries_upper_bound": root_count * category_id_count,
+    }
+
+
+def cache_input_summary_line(scale: str, bench_dir: Path = BENCH_DIR) -> str:
+    summary = cache_input_summary(scale, bench_dir)
+    fields = " ".join(f"{key}={value}" for key, value in summary.items())
+    return f"{scale}\twam_c_child_search_cache_inputs\t{fields}"
+
+
+def print_cache_input_summary(scales_csv: str, bench_dir: Path = BENCH_DIR) -> None:
+    for scale in [part.strip() for part in scales_csv.split(",") if part.strip()]:
+        print(cache_input_summary_line(scale, bench_dir))
+
+
 def main() -> int:
     args = parse_args()
     extra_args = args.matrix_args
@@ -106,7 +174,10 @@ def main() -> int:
     if args.dry_run:
         print(" ".join(command))
         return 0
-    return subprocess.run(command, cwd=ROOT, check=False).returncode
+    result = subprocess.run(command, cwd=ROOT, check=False)
+    if not args.skip_cache_input_summary:
+        print_cache_input_summary(args.scales)
+    return result.returncode
 
 
 if __name__ == "__main__":

@@ -1766,6 +1766,24 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    % M93b: \+ G inlining for inner goal positions (if-then-else
+    % conditions, disjunction arms, etc). Without this, an inner
+    % `\+ G' falls through to compile_goal_call which emits
+    % `builtin_call \+/1, 1' -- but the LLVM target has no \+/1
+    % dispatch case, so the runtime metacall path is taken. That
+    % path was previously colliding with op id 99 (getenv) via the
+    % catch-all in builtin_op_to_id; even after fixing the
+    % collision, no inner backend actually implements \+ as a
+    % builtin, so \+ G in an inner position would always fail.
+    % Inline-rewrite to the soft-cut form `(G -> fail ; true)' to
+    % match the existing top-level handling (compile_goals at the
+    % outer call site) and to avoid the nested-cut barrier issue
+    % the hard-cut form has when stacked.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_inner_call_goals([((NotGoal -> fail ; true)) | Rest],
+                                  V0, Vf, Code)
     % once(G) / forall(G, T) — same desugarings as compile_goals.
     % Recurse with the rewritten goal so the if-then-else / negation
     % machinery picks it up.
@@ -2093,13 +2111,22 @@ is_builtin_pred(size_file, 2).          % size_file(+Path, -Size).
 is_builtin_pred(time_file, 2).          % time_file(+Path, -Time).
 is_builtin_pred(getenv, 2).             % getenv(+Name, -Value).
 is_builtin_pred(setenv, 2).             % setenv(+Name, +Value).
+is_builtin_pred(unsetenv, 1).           % unsetenv(+Name).
+is_builtin_pred(chmod, 2).              % chmod(+Path, +Mode).
 is_builtin_pred(shell, 1).              % shell(+Command).
 is_builtin_pred(shell, 2).              % shell(+Command, -Status).
 is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).
 is_builtin_pred(getpid, 1).             % getpid(-Pid).
+is_builtin_pred(getuid, 1).             % getuid(-Uid).
+is_builtin_pred(geteuid, 1).            % geteuid(-EUid).
+is_builtin_pred(getgid, 1).             % getgid(-Gid).
+is_builtin_pred(getegid, 1).            % getegid(-EGid).
+is_builtin_pred(getppid, 1).            % getppid(-PPid).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
+is_builtin_pred(halt, 0).               % halt/0 -- exit(0).
+is_builtin_pred(halt, 1).               % halt(+Code) -- exit(Code).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).

@@ -509,12 +509,16 @@ assert_scenario_findall_compound(StdOut) :-
     sub_string(W, _, _, _, "\"a\""),
     sub_string(W, _, _, _, "\"b\""),
     sub_string(W, _, _, _, "\"c\""),
-    % Numeric pairs lower as bare integer literals, not strings.
-    % Match within compound-tuple context to avoid spurious hits in
-    % refs/heap addresses.
-    sub_string(W, _, _, _, "\"a\", 1"),
-    sub_string(W, _, _, _, "\"b\", 2"),
-    sub_string(W, _, _, _, "\"c\", 3").
+    % The second argument is the ATOM '1'/'2'/'3' — quoted in the
+    % phase3_q/2 facts — so it lowers as an Elixir string "1"/"2"/"3",
+    % NOT a bare integer. Atom and integer terms are kept distinct
+    % (genuine integers, e.g. the aggregate_all(count, ...) → 3 case,
+    % still lower bare). The WAM carries `get_constant '1', A2`, i.e.
+    % the atom, confirming this. Match within the compound-tuple
+    % context to avoid spurious hits in refs/heap addresses.
+    sub_string(W, _, _, _, "\"a\", \"1\""),
+    sub_string(W, _, _, _, "\"b\", \"2\""),
+    sub_string(W, _, _, _, "\"c\", \"3\"").
 
 assert_scenario_cut_conj(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_CUT_CONJ", W),

@@ -172,28 +172,14 @@ var _ = fmt.Sprintf
     ;   true
     ),
 
-    % Generate main.go with RunParallel when parallel(true)
-    (   option(parallel(true), Options)
-    ->  (   PackageName == main
-        ->  format(atom(MainContent),
-'package main
-
-import "fmt"
-
-func main() {
-	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
-	seeds := [][]Value{
-		{&Atom{Name: "query"}},
-	}
-	results := RunParallel(ctx, seeds, 0)
-	for i, res := range results {
-		if res != nil {
-			fmt.Printf("Seed %%d: %%v\\n", i, res)
-		}
-	}
-}
-', [])
-        ;   format(atom(MainContent),
+    % Generate main.go benchmark harness from template (when package is main)
+    (   PackageName == main
+    ->  read_template_file('templates/targets/go_wam/main_bench.go.mustache', MainTemplate),
+        render_template(MainTemplate, [package_name=PackageName], MainContent),
+        directory_file_path(ProjectDir, 'main.go', MainPath),
+        write_file(MainPath, MainContent)
+    ;   option(parallel(true), Options)
+    ->  format(atom(MainContent),
 'package main
 
 import (
@@ -213,8 +199,7 @@ func main() {
 		}
 	}
 }
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName])
-        ),
+', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
@@ -258,8 +243,22 @@ compile_lowered_predicates(Predicates, Options, Code) :-
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
+    ;   resolve_template_path(Path, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content), "// Template not found: ~w", [Path])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python target's
+%  source_file/2-based resolution.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_go_target:write_wam_go_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
@@ -1555,6 +1554,7 @@ wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
 
 wam_go_case('GetList', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        val = vm.deref(val)
         if isUnbound(val) {
             addr := vm.heapPush(nil)
             l := &List{Elements: make([]Value, 2)}
@@ -1566,9 +1566,13 @@ wam_go_case('GetList', '        val := vm.Regs[i.Ai]
             vm.PC++
             return true
         }
-        val = vm.deref(val)
         if list, ok := val.(*List); ok && len(list.Elements) > 0 {
             vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
+            vm.PC++
+            return true
+        }
+        if h, t, ok := consHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
             vm.PC++
             return true
         }
@@ -1701,7 +1705,20 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         vm.Heap[addr] = s
         vm.CurrentStruct = s
         vm.CurrentList = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
+        ref := &Ref{Addr: addr}
+        // If this register holds an unbound placeholder (one a prior
+        // set_variable embedded into an enclosing structure/list arg), bind
+        // it to the new structure so the embedded copy resolves here. The
+        // compiler builds nested terms outer-first — e.g. +(+(A,B),C) or a
+        // list tail cell [|]/2 — leaving a placeholder in the arg slot that
+        // a later put_structure into the same register must fill. Trailing
+        // via bindUnbound keeps it backtrack-safe.
+        if cur := vm.Regs[i.Ai]; cur != nil {
+            if u, ok := vm.deref(cur).(*Unbound); ok {
+                vm.bindUnbound(u, ref)
+            }
+        }
+        vm.Regs[i.Ai] = ref
         vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
         vm.PC++
         return true').
@@ -1844,6 +1861,17 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
             vm.PC = pc
             return true
         }
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            if vm.executeForeignPredicate(i.Pred, i.Arity) {
+                vm.PC = vm.CP
+                return true
+            }
+            return false
+        }
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            vm.PC = vm.CP
+            return true
+        }
         return false').
 
 wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
@@ -1891,7 +1919,10 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
-        return false').
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            return vm.executeForeignPredicate(i.Pred, 0)
+        }
+        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
         return true').

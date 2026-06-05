@@ -4,20 +4,27 @@ Status date: 2026-06-02
 
 Latest branch verification:
 
-- `investigate/wam-c-root-distance-cache` based on `main` at `32a74aee`
-  (`Merge pull request #2705 from
-  s243a/investigate/wam-c-child-search-root-distance-pruning`)
-- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales dev --include-parent-only`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10x --include-parent-only --run-timeout-seconds 60`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 1k --include-parent-only --run-timeout-seconds 60`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 5k --include-parent-only --run-timeout-seconds 60`
+- `investigate/wam-c-child-search-scale-ceiling` based on `main` at `a05c8fa3`
+  (`Merge pull request #2707 from
+  s243a/investigate/wam-c-root-distance-cache`)
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py tests/test_benchmark_target_matrix.py`
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_bidirectional_kernel.py tests/test_wam_c_bidirectional_kernel_benchmark.py`
+- `python3 tests/test_wam_c_child_search_runtime_sweep.py`
+- `python3 tests/test_benchmark_target_matrix.py`
+- `python3 tests/test_wam_c_bidirectional_kernel_benchmark.py`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --dry-run --scales 10k --include-parent-only`
+- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10k --include-parent-only --run-timeout-seconds 120`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10k --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 50k_cats --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 10k --modes scan,sorted_array --sample-queries 100 --sample-roots 1 --iterations 1 --warmups 1`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 50k_cats --modes sorted_array --sample-queries 10 --sample-roots 1 --iterations 1 --warmups 1`
+- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales dev --modes lmdb_offset --sample-queries 3 --sample-roots 1 --iterations 1 --warmups 0`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-root-distance-cache`
+- `investigate/wam-c-child-search-scale-ceiling`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -317,7 +324,7 @@ Branch conclusion before cache follow-up:
 - The CSR path is now fast enough to be useful at `10x`; the next scalability
   question is query policy and repeated-root reuse, not raw CSR lookup cost.
 
-### Active: `investigate/wam-c-root-distance-cache`
+### Completed Investigation: `investigate/wam-c-root-distance-cache`
 
 Goal: reuse root-distance calibration across repeated effective-distance
 queries that share the same root, without adding a preprocessing artifact yet.
@@ -363,6 +370,241 @@ Open measurement:
   made a default.
 - The next scalability check should run larger child-search sweeps and compare
   root-cache memory growth against the number of distinct roots.
+
+### Active: `investigate/wam-c-child-search-scale-ceiling`
+
+Goal: find the next full-generated WAM-C child-search scale ceiling after
+root-distance cache reuse, while reporting enough cache-input shape data to
+decide whether persisted min-distance artifacts need cost-planner support.
+
+Implemented so far:
+
+- `benchmark_wam_c_child_search_runtime_sweep.py` now appends
+  `wam_c_child_search_cache_inputs` rows for each requested scale. The row
+  reports root count, distinct category IDs, parent-edge rows,
+  article-category rows, maximum root-cache maps, and the worst-case
+  `roots * category_ids` distance-entry upper bound.
+- Added `--skip-cache-input-summary` for callers that need the wrapper to emit
+  only matrix rows.
+- Added focused unit coverage for the cache-input summary calculation on a
+  tiny fixture with multiple roots, parent edges, and article-category rows.
+- WAM-C effective-distance matrix compile-only rows now include build phase
+  timings in their message field, so large generated builds can be attributed
+  to Prolog generation, LMDB seeding, reverse-CSR offset seeding, or C
+  compilation.
+- Added `benchmark_wam_c_bidirectional_kernel.py`, a narrow WAM-C runtime
+  harness that builds optional reverse-CSR artifacts from benchmark TSVs,
+  loads parent edges and category IDs into `WamState`, and times
+  `wam_collect_bidirectional_ancestor_hops` over sampled category/root queries
+  without generating the full effective-distance WAM-C facts program. The
+  output now splits setup into parent TSV loading, parent-edge registration,
+  category-ID loading, query TSV loading, reverse-CSR artifact loading, CSR
+  attachment, and kernel registration.
+- WAM-C category IDs now maintain hash indexes for atom-to-ID and ID-to-atom
+  lookup while preserving the existing stable category-ID array for iteration
+  and fallback. This removes the duplicate-registration scan during setup and
+  avoids scanning all category IDs when CSR child IDs are converted back to
+  atoms.
+- WAM-C FactSource parent-edge registration now bulk appends loaded edge
+  arrays into `WamState`, reusing already-interned edge atoms when the source
+  was loaded by the same state and invalidating child indexes/root-distance
+  cache once per source instead of once per edge.
+- WAM-C atom interning now uses a dynamic hash table that grows and rehashes
+  as large benchmark datasets intern tens of thousands of category atoms,
+  avoiding long chains in the old fixed 512-bucket table without inflating each
+  stack-allocated `WamState`.
+- WAM-C effective-distance reverse-CSR generation now builds an assoc from the
+  category-ID map before converting category-parent edges to parent/child ID
+  pairs. This removes the previous repeated `memberchk/2` scan over all
+  category IDs for each edge.
+
+Evidence:
+
+- `10k` runtime sweep with parent-only comparison and a `120s` per-invocation
+  timeout completed. Parent-only WAM-C emitted `5,192` rows in `6.058s`, while
+  all child-search layouts agreed on `5,262` rows. Sorted-array CSR completed
+  in `6.503s`, buffered-pread-drop CSR in `6.327s`, LMDB-offset CSR in
+  `6.708s`, and scan fallback in `8.133s`.
+- The same `10k` run reported
+  `roots=1 category_ids=8247 parent_edges=25227 article_category_rows=10326 max_cache_maps=1 max_distance_entries_upper_bound=8247`.
+- `50k_cats` and `100k_cats` currently share the same category-parent graph
+  shape for this cache calculation:
+  `roots=4054 category_ids=84136 parent_edges=196900 max_cache_maps=4054 max_distance_entries_upper_bound=341087344`.
+  Their article-category rows differ: `50k_cats` has `50,000`, and
+  `100k_cats` has `84,136`.
+- Before assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `6.750s`, split into
+  `generate_s=6.051` and `compile_s=0.699`. `50k_cats` compile-only took
+  `437.955s`, split into `generate_s=428.912` and `compile_s=9.042`.
+- After assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `2.032s`, split into
+  `generate_s=1.128` and `compile_s=0.904`. `50k_cats` compile-only took
+  `17.796s`, split into `generate_s=8.760` and `compile_s=9.036`. Artifact
+  bytes stayed the same: `10k` has `category_parent_tsv_bytes=1266946`,
+  `reverse_csr_index_bytes=118672`, and `reverse_csr_values_bytes=100908`;
+  `50k_cats` has `category_parent_tsv_bytes=10126909`,
+  `reverse_csr_index_bytes=678752`, and `reverse_csr_values_bytes=787600`.
+- Before assoc-backed category-ID lookup in CSR generation, a constrained
+  full-generated `50k_cats` matrix attempt over
+  `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
+  several minutes. The old compile-only phase split above explains that missing
+  row: project generation alone was multi-minute.
+- After assoc-backed category-ID lookup in CSR generation, a bounded
+  single-target generated `50k_cats` run for
+  `c-wam-accumulated-child-csr` timed out at `300s` with no matrix row. Since
+  compile-only for that target is now `17.796s`, the remaining full-generated
+  ceiling is generated execution, result enumeration, query volume, or runner
+  output timing rather than CSR file creation.
+- After adding generated-runner root/query caps and stderr timing probes, a
+  `50k_cats` run capped at `100` article/root queries completed in `0.172s`
+  of generated runtime with `setup_ms=120.323`, `query_ms=38.815`, and no
+  result rows. A one-article/all-root run completed `4054` queries in `1.509s`
+  of generated runtime with `setup_ms=124.893`, `query_ms=1370.613`, one
+  result row, and `first_result_ms=990.534`.
+- After pre-indexing generated article-category rows by article, the same
+  `100`-query cap completed in `0.165s` of generated runtime with
+  `setup_ms=127.881` and `query_ms=21.676`. The same one-article/all-root run
+  completed in `0.721s` of generated runtime with `setup_ms=132.850`,
+  `query_ms=569.122`, one result row, and `first_result_ms=387.293`. An
+  uncapped `10k` `c-wam-accumulated-child-csr` smoke produced the same `5262`
+  rows in `5.406s`, down from the earlier `6.503s` sorted-array CSR row.
+- After adding generated-runner article/root name filters and stride/offset
+  sampling, a sampled `50k_cats` run with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. It completed
+  `2050` generated queries in `1.549s`, with `setup_ms=130.866`,
+  `query_ms=1403.952`, one result row, and `first_result_ms=1141.808`.
+- On that same sampled `50k_cats` query set, parent-only WAM-C produced no
+  rows with `query_ms=1425.065`. The child-search variants all produced the
+  same one-row output: scan fallback took `query_ms=4988.927`, sorted CSR took
+  `query_ms=1439.475`, buffered-drop CSR took `query_ms=1433.230`, and
+  LMDB-offset CSR took `query_ms=1334.566`.
+- A result-capped `50k_cats` child-search run without article/root sampling
+  reached `50` result rows after `72,977` generated queries. The CSR storage
+  variants produced matching output hashes: sorted CSR took `query_ms=11731.611`,
+  buffered-drop CSR took `query_ms=11319.778`, and LMDB-offset CSR took
+  `query_ms=10540.272`. The first standalone sorted-CSR result-capped run
+  measured `query_ms=10407.918`, so this comparison is enough to show the
+  remaining full-matrix cost is per-query traversal volume, not CSR storage
+  disagreement.
+- After adding generated-runner traversal counters, a sorted-CSR result-capped
+  `50k_cats` run reached the same `50` rows after `72,977` queries with
+  `query_ms=11049.112`. It visited `72,977` article-category slices, made
+  `72,975` parent collector calls, found `626` parent path results, and spent
+  `parent_collect_ms=8008.670`. It made `72,932` child collector calls, found
+  only `11` child path results, and spent `child_collect_ms=3022.342`.
+- After adding cached parent-reachability prefiltering, the same sorted-CSR
+  result-capped run reached the same `50` rows after `72,977` queries with
+  `query_ms=4718.503`. Parent reachability checks took
+  `parent_reachability_ms=2668.182`, but they pruned `72,932` parent DFS calls:
+  parent collector calls dropped from `72,975` to `43`, and
+  `parent_collect_ms` dropped from `8008.670` to `9.889`. Child collection is
+  now the largest remaining measured traversal cost, with `72,932` calls,
+  `11` child path results, and `child_collect_ms=2024.048`. An uncapped `10k`
+  `c-wam-accumulated-child-csr` smoke still produced `5262` rows with the same
+  output hash and improved from `5.406s` to `3.983s`.
+- After adding capped child-reachability prefiltering, the same sorted-CSR
+  result-capped `50k_cats` run preserved the `8da5f8534aba` output hash and
+  reached `50` rows after `72,977` queries with `query_ms=3122.296`.
+  Child prefiltering checked the `72,932` parent-pruned pairs, pruned `72,927`
+  of them, found `5` plausible child candidates, and took
+  `child_prefilter_ms=494.637`. Child collector calls dropped from `72,932`
+  to `5`, while preserving the same `11` child path results and reducing
+  `child_collect_ms` from `2024.048` to `0.881`.
+- After adding per-article candidate-root filtering with a default
+  `candidate_filter_min_roots=256`, the same sorted-CSR result-capped
+  `50k_cats` run again preserved the `8da5f8534aba` output hash and reached
+  `50` rows after `72,977` ordered query pairs, but only entered category
+  traversal for `50` pairs. Candidate filtering processed `19` articles,
+  marked `52` candidate roots, skipped `72,927` impossible roots, and took
+  `candidate_filter_ms=28.418`. End-to-end query time fell to
+  `query_ms=541.447`. The default threshold keeps the filter off for one-root
+  workloads: uncapped `10k` stayed at `5262` rows with hash `51be51c22aa7`,
+  `candidate_filter_articles=0`, and `query_ms=3963.402`.
+- After replacing the dense filtered-root loop with a sparse candidate-root
+  schedule when no query cap is active, the same result-capped `50k_cats` run
+  preserved the `8da5f8534aba` hash and the logical `72,977` query-pair count,
+  scheduled `52` candidate roots across `19` articles, and reduced
+  `query_ms` to `485.270`. The one-root `10k` guardrail stayed off as
+  intended with hash `51be51c22aa7`, `candidate_schedule_articles=0`, and
+  `query_ms=3674.656`. The matrix runner exposes
+  `--wam-c-candidate-filter-min-roots` so sweeps can tune or disable the
+  threshold without regenerating C.
+- Broader sampled validation on `50k_cats` with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. Forced sparse
+  scheduling and dense traversal both produced `1` row with hash
+  `e2bde0c720fe`, but dense traversal was faster (`query_ms=25.390`) than
+  sparse scheduling (`query_ms=100.436`) because candidate discovery cost
+  dominated at only `41` roots. With the default `candidate_filter_min_roots=256`,
+  the same sample now stays dense by default, preserves the hash, and reports
+  `candidate_filter_articles=0` with `query_ms=26.435`. This is why the default
+  root threshold is conservative and the CLI override exists.
+- The generated runner now resolves the default candidate-root threshold through
+  `cost_model:resolve_candidate_filter_min_roots/2`, so Prolog workload options
+  can declare `candidate_filter_min_roots(N)`, `always`, `off`, or `auto`.
+  `auto` currently preserves the measured dense-root ceiling by generating
+  `256`, while `UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS` remains a runtime
+  override for sweeps.
+- Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
+  project generation at `10k` showed `100` warm-cache sampled queries over one
+  root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
+  `213.149ms`, split into `7.322ms` parent TSV load, `7.269ms` parent-edge
+  registration, `198.187ms` category-ID load, `0.053ms` query TSV load, and
+  `0.256ms` reverse-CSR load.
+- After category-ID indexing, the same `10k` sorted-array CSR narrow row took
+  `456.704ms` for `100` warm-cache sampled queries and produced the same
+  `17,047` path results and checksum. Runtime setup dropped to `20.257ms`,
+  with category-ID load down to `6.108ms`.
+- After bulk parent-edge registration, the same `10k` sorted-array CSR narrow
+  row took `450.202ms` for `100` warm-cache sampled queries. Runtime setup
+  dropped to `13.125ms`, with parent-edge registration down to `0.129ms`.
+- After dynamic atom-table rehashing, the same `10k` sorted-array CSR narrow
+  row took `438.787ms` for `100` warm-cache sampled queries. Runtime setup was
+  `13.080ms`, with parent TSV load at `7.001ms` and category-ID load at
+  `5.549ms`.
+- The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
+  sampled queries, and one sampled root completed without full source
+  generation before category-ID indexing. Runtime setup/loading took
+  `23,647.238ms`, split into
+  `297.197ms` parent TSV load, `613.616ms` parent-edge registration,
+  `22,734.748ms` category-ID load, `0.027ms` query TSV load, and `1.424ms`
+  reverse-CSR load. The measured query loop took `0.348ms`, artifact build
+  took `0.106s`, and the run produced `10` path results.
+- After category-ID indexing, the `50k_cats` sorted-array CSR narrow row
+  dropped to `1,150.795ms` setup, split into `309.277ms` parent TSV load,
+  `637.056ms` parent-edge registration, `203.145ms` category-ID load,
+  `0.024ms` query TSV load, and `1.015ms` reverse-CSR load. The measured query
+  loop took `0.042ms` for the same `10` sampled queries and produced the same
+  checksum.
+- After bulk parent-edge registration, the `50k_cats` sorted-array CSR narrow
+  row dropped to `507.700ms` setup, split into `285.517ms` parent TSV load,
+  `1.270ms` parent-edge registration, `219.686ms` category-ID load, `0.024ms`
+  query TSV load, and `0.977ms` reverse-CSR load. The measured query loop took
+  `0.061ms` for the same `10` sampled queries and produced the same checksum.
+- After dynamic atom-table rehashing, the `50k_cats` sorted-array CSR narrow
+  row dropped to `144.934ms` setup, split into `65.613ms` parent TSV load,
+  `1.749ms` parent-edge registration, `76.071ms` category-ID load, `0.019ms`
+  query TSV load, and `1.012ms` reverse-CSR load. The measured query loop took
+  `0.010ms` for the same `10` sampled queries and produced the same checksum.
+- A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
+  `setup_ms=0.172`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
+  results after dynamic atom-table rehashing.
+
+Open measurement:
+
+- Runtime setup is no longer the large `50k_cats` ceiling in the narrow
+  runner, and full generated-project compile-only generation is no longer the
+  multi-minute ceiling after assoc-backed CSR ID lookup. Generated article-row
+  slicing removes the full `ARTICLE_CATEGORY_COUNT` scan from each query. The
+  remaining full-runner ceiling is the Cartesian `ARTICLE_COUNT * ROOT_COUNT`
+  query product plus per-query WAM/path collection cost; generated-runner
+  sampling can now measure that cost without launching the full matrix.
+- Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
+  copying every parent edge into `WamState` when the hot query path uses the
+  sorted child CSR plus parent-child index.
+- Compare observed root-cache entry counts against the worst-case
+  `341,087,344` entry bound before adding persisted `min_distance(root,node)`.
+  Persisted distance maps still need to be justified by the cost analyzer
+  because they add preprocessing, storage, and invalidation work.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -553,8 +795,16 @@ After hash-bucket row dispatch but before compact row tables:
 
 ## Suggested Immediate Next Step
 
-Use `benchmark_wam_c_child_search_runtime_sweep.py` beyond `5k` to find the
-next child-search ceiling now that root-distance maps are reused per root. Keep
+Result-capped and sampled runs now confirm child-CSR variants agree, and parent
+plus child reachability prefilters remove most avoidable traversal work inside
+each visited article/root pair. Per-article candidate-root filtering plus sparse
+candidate-root scheduling now avoids most impossible root traversals when many
+roots are selected, while staying off for low-root workloads by default and
+preserving dense semantics when an explicit query cap is active. The threshold
+default now has a cost-model resolver and a Prolog option surface; the next
+useful work is broader scale validation of the `auto` dense-root ceiling and,
+if needed, feeding measured query/artifact costs into that resolver.
+Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

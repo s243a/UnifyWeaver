@@ -1379,9 +1379,17 @@ wam_parts_to_instr(["switch_on_constant_a2"|Rest], Result) :- !,
 wam_parts_to_instr(["switch_on_structure"|Rest], Result) :- !,
     parse_struct_entries(Rest, Entries),
     build_switch_struct_instrs(0, Entries, Result).
-wam_parts_to_instr(["switch_on_term"|Rest], Result) :- !,
-    parse_term_entries(Rest, ConstEntries, StructEntries),
-    build_switch_term_instrs(0, ConstEntries, StructEntries, Result).
+%% switch_on_term (register A1) now emits the same count-prefixed operand
+%% format as switch_on_term_a2 (`<CLen> <C..> <SLen> <S..> <ListLabel>`),
+%% NOT the `constant:`/`structure:` form parse_term_entries reads. Parsing
+%% it with parse_term_entries failed, and the `!` blocked the fallback, so
+%% write_wam_wat_project silently failed for every list-recursive predicate
+%% (append/reverse). Emit an EMPTY term header on register 0: with
+%% const_count=0/struct_count=0 the runtime $switch_on_term_hdr handler
+%% always falls through to the try_me_else clause chain — correct, just
+%% unindexed (the same approach switch_on_term_a2 uses for member).
+wam_parts_to_instr(["switch_on_term"|_],
+                   multi([switch_on_term_hdr(0, 0, 0)])) :- !.
 %% First-argument-indexing variants that previously fell through to the
 %% `allocate` catch-all below. That was a CORRECTNESS bug, not just a
 %% missed optimization: `allocate` pushes an env frame, corrupting the
@@ -2091,10 +2099,10 @@ wam_wat_case(fused_is_add,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.add (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.add (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_sub,
 '  ;; Dest := deref(Src1) - deref(Src2). Same layout and semantics as
@@ -2116,10 +2124,10 @@ wam_wat_case(fused_is_sub,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.sub (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.sub (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_mul,
 '  ;; Dest := deref(Src1) * deref(Src2). Same layout and semantics as
@@ -2141,10 +2149,10 @@ wam_wat_case(fused_is_mul,
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
   (local.set $b (call $val_payload (local.get $b_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.mul (local.get $a) (local.get $b)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.mul (local.get $a) (local.get $b)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_add_const,
 '  ;; Dest := deref(Src) + Const. op1 layout: Dest (low 8), Src (bits
@@ -2161,10 +2169,10 @@ wam_wat_case(fused_is_add_const,
   (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.add (local.get $a) (local.get $op2)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.add (local.get $a) (local.get $op2)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(fused_is_mul_const,
 '  ;; Dest := deref(Src) * Const. Same layout as fused_is_add_const.
@@ -2178,10 +2186,10 @@ wam_wat_case(fused_is_mul_const,
   (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
     (then (return (i32.const 0))))
   (local.set $a (call $val_payload (local.get $a_addr)))
-  (call $bind_reg_deref (local.get $dest) (i32.const 1)
-    (i64.mul (local.get $a) (local.get $op2)))
-  (call $inc_pc)
-  (i32.const 1)').
+  (if (result i32) (call $is_unify_int (local.get $dest)
+        (i64.mul (local.get $a) (local.get $op2)))
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(arg_direct,
 '  ;; Direct arg/3 call, bypassing the $execute_builtin br_table.
@@ -4033,62 +4041,123 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (i32.store (i32.add (local.get $off) (i32.const 20)) (local.get $n)))
 
 ;; --- Unification ---
-;; Unify two registers. Follows Ref chains via $deref_reg_addr so
-;; heap-allocated variable cells created by put_variable are properly
-;; reached and bound. No occurs check (standard Prolog semantics).
-(func $unify_regs (param $r1 i32) (param $r2 i32) (result i32)
-  (local $a1 i32) (local $a2 i32)
-  (local $t1 i32) (local $t2 i32) (local $p1 i64) (local $p2 i64)
-  ;; Deref both registers to the final cell address (may be on heap).
-  (local.set $a1 (call $deref_reg_addr (local.get $r1)))
-  (local.set $a2 (call $deref_reg_addr (local.get $r2)))
-  (local.set $t1 (call $val_tag (local.get $a1)))
-  (local.set $p1 (call $val_payload (local.get $a1)))
-  (local.set $t2 (call $val_tag (local.get $a2)))
-  (local.set $p2 (call $val_payload (local.get $a2)))
-  ;; If cell 1 is unbound, bind it to cell 2 value
-  (if (i32.eq (local.get $t1) (i32.const 6))
-    (then
-      (call $trail_binding_at (local.get $a1))
-      (call $val_store (local.get $a1) (local.get $t2) (local.get $p2))
-      (return (i32.const 1))))
-  ;; If cell 2 is unbound, bind it to cell 1 value
-  (if (i32.eq (local.get $t2) (i32.const 6))
-    (then
-      (call $trail_binding_at (local.get $a2))
-      (call $val_store (local.get $a2) (local.get $t1) (local.get $p1))
-      (return (i32.const 1))))
-  ;; Both bound: shallow equality check
-  (i32.and
-    (i32.eq (local.get $t1) (local.get $t2))
-    (i64.eq (local.get $p1) (local.get $p2))))
+;; Recursive, cons-aware structural unification over cell addresses.
+;; Binds unbound cells (trailed) and treats the two cons spellings the
+;; WAM compiler emits -- tag-4 (put_list) and tag-3 [|]/2 (put_structure,
+;; functor hash 87825375) -- as the SAME cons, so a constructed list
+;; unifies against an already-ground one no matter how each level was
+;; built. No occurs check (standard Prolog semantics).
 
-;; Unify register $r against the heap cell at address $addr0 (a structure
-;; argument slot in read mode). Same bind/shallow-equality logic as
-;; $unify_regs, but the second operand starts from a memory address
-;; (deref via $deref_cell) rather than a register index.
-(func $unify_reg_with_addr (param $r i32) (param $addr0 i32) (result i32)
-  (local $a1 i32) (local $a2 i32)
-  (local $t1 i32) (local $t2 i32) (local $p1 i64) (local $p2 i64)
-  (local.set $a1 (call $deref_reg_addr (local.get $r)))
-  (local.set $a2 (call $deref_cell (local.get $addr0)))
-  (local.set $t1 (call $val_tag (local.get $a1)))
-  (local.set $p1 (call $val_payload (local.get $a1)))
-  (local.set $t2 (call $val_tag (local.get $a2)))
-  (local.set $p2 (call $val_payload (local.get $a2)))
-  (if (i32.eq (local.get $t1) (i32.const 6))
+;; True iff the cell at $addr is a cons: a tag-4 list cell, or a tag-3
+;; compound whose functor is [|]/2 (arity 2, hash 87825375).
+(func $is_cons_cell (param $addr i32) (result i32)
+  (local $tag i32) (local $p i64)
+  (local.set $tag (call $val_tag (local.get $addr)))
+  (if (i32.eq (local.get $tag) (i32.const 4)) (then (return (i32.const 1))))
+  (if (i32.eq (local.get $tag) (i32.const 3))
     (then
-      (call $trail_binding_at (local.get $a1))
-      (call $val_store (local.get $a1) (local.get $t2) (local.get $p2))
-      (return (i32.const 1))))
-  (if (i32.eq (local.get $t2) (i32.const 6))
+      (local.set $p (call $val_payload (local.get $addr)))
+      (return (i32.and
+        (i32.eq (i32.wrap_i64 (i64.shr_u (local.get $p) (i64.const 32)))
+                (i32.const 2))
+        (i32.eq (i32.wrap_i64 (i64.and (local.get $p) (i64.const 0xFFFFFFFF)))
+                (i32.const 87825375))))))
+  (i32.const 0))
+
+;; Unify the terms at cell addresses $a_in and $b_in. Returns 1 on
+;; success (binding variables as needed), 0 on mismatch. Recurses into
+;; cons head/tail and general compound arguments.
+(func $unify_addrs (param $a_in i32) (param $b_in i32) (result i32)
+  (local $a i32) (local $b i32) (local $ta i32) (local $tb i32)
+  (local $arity i32) (local $i i32)
+  (local.set $a (call $deref_cell (local.get $a_in)))
+  (local.set $b (call $deref_cell (local.get $b_in)))
+  (if (i32.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
+  (local.set $ta (call $val_tag (local.get $a)))
+  (local.set $tb (call $val_tag (local.get $b)))
+  ;; Unbound on either side: bind it to the other cell via a Ref (tag 5).
+  (if (i32.eq (local.get $ta) (i32.const 6))
     (then
-      (call $trail_binding_at (local.get $a2))
-      (call $val_store (local.get $a2) (local.get $t1) (local.get $p1))
+      (call $trail_binding_at (local.get $a))
+      (call $val_store (local.get $a) (i32.const 5)
+        (i64.extend_i32_u (local.get $b)))
       (return (i32.const 1))))
+  (if (i32.eq (local.get $tb) (i32.const 6))
+    (then
+      (call $trail_binding_at (local.get $b))
+      (call $val_store (local.get $b) (i32.const 5)
+        (i64.extend_i32_u (local.get $a)))
+      (return (i32.const 1))))
+  ;; Both cons (in either spelling): unify head (+12) then tail (+24).
+  (if (i32.and (call $is_cons_cell (local.get $a))
+               (call $is_cons_cell (local.get $b)))
+    (then
+      (if (i32.eqz (call $unify_addrs
+            (i32.add (local.get $a) (i32.const 12))
+            (i32.add (local.get $b) (i32.const 12))))
+        (then (return (i32.const 0))))
+      (return (call $unify_addrs
+        (i32.add (local.get $a) (i32.const 24))
+        (i32.add (local.get $b) (i32.const 24))))))
+  ;; Both general compounds (tag 3, same arity+functor): unify each arg.
+  (if (i32.and (i32.eq (local.get $ta) (i32.const 3))
+               (i32.eq (local.get $tb) (i32.const 3)))
+    (then
+      (if (i64.ne (call $val_payload (local.get $a))
+                  (call $val_payload (local.get $b)))
+        (then (return (i32.const 0))))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u (call $val_payload (local.get $a))
+                                 (i64.const 32))))
+      (local.set $i (i32.const 0))
+      (block $argdone
+        (loop $argloop
+          (br_if $argdone (i32.ge_u (local.get $i) (local.get $arity)))
+          (if (i32.eqz (call $unify_addrs
+                (i32.add (local.get $a)
+                  (i32.add (i32.const 12) (i32.mul (local.get $i) (i32.const 12))))
+                (i32.add (local.get $b)
+                  (i32.add (i32.const 12) (i32.mul (local.get $i) (i32.const 12))))))
+            (then (return (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $argloop)))
+      (return (i32.const 1))))
+  ;; Scalars (atoms/integers/floats): equal iff same tag and payload.
   (i32.and
-    (i32.eq (local.get $t1) (local.get $t2))
-    (i64.eq (local.get $p1) (local.get $p2))))
+    (i32.eq (local.get $ta) (local.get $tb))
+    (i64.eq (call $val_payload (local.get $a))
+            (call $val_payload (local.get $b)))))
+
+;; Unify two registers (follows Ref chains). Delegates to $unify_addrs.
+(func $unify_regs (param $r1 i32) (param $r2 i32) (result i32)
+  (call $unify_addrs (call $deref_reg_addr (local.get $r1))
+                     (call $deref_reg_addr (local.get $r2))))
+
+;; Unify register $r against a structure-argument cell at $addr0 (read
+;; mode). Delegates to $unify_addrs so nested compounds unify correctly.
+(func $unify_reg_with_addr (param $r i32) (param $addr0 i32) (result i32)
+  (call $unify_addrs (call $deref_reg_addr (local.get $r))
+                     (call $deref_cell (local.get $addr0))))
+
+;; Unify register $dest (through its deref chain) with integer $val:
+;; bind if the cell is unbound, succeed if it already holds the same
+;; integer, fail otherwise. Mirrors the $builtin_is A1 handling so the
+;; fused is/* forms VALIDATE an already-bound output register instead of
+;; overwriting it. Without this, F is F1+F2 with F bound (a recursive
+;; predicate result check, e.g. fib) always succeeded by clobbering F.
+(func $is_unify_int (param $dest i32) (param $val i64) (result i32)
+  (local $addr i32)
+  (local.set $addr (call $deref_reg_addr (local.get $dest)))
+  (if (i32.eq (call $val_tag (local.get $addr)) (i32.const 6))
+    (then
+      (call $trail_binding_at (local.get $addr))
+      (call $val_store (local.get $addr) (i32.const 1) (local.get $val))
+      (return (i32.const 1))))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $addr)) (i32.const 1))
+        (i64.eq (call $val_payload (local.get $addr)) (local.get $val)))
+    (then (return (i32.const 1))))
+  (i32.const 0))
 
 ;; --- Builtin dispatch ---
 ;; O(1) br_table dispatch for ALL builtins. Earlier versions routed
