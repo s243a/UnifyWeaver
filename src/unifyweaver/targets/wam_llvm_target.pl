@@ -5633,7 +5633,16 @@ fn.compound:
   %fn.ar_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 1
   %fn.ar = load i32, i32* %fn.ar_slot
   %fn.ar_i64 = sext i32 %fn.ar to i64
-  %fn.name_val = call %Value @value_atom(i8* %fn.fn_i8)
+  ; M100: intern the functor string into the runtime atom table so
+  ; the resulting Atom Value carries an atom_id payload that matches
+  ; user-level atom literals (which compile to id-based put_constant
+  ; via the static atom table). The legacy value_atom(i8*) form
+  ; packed the pointer as payload, so functor(C, Name, _) followed
+  ; by Name == foo spuriously failed (pointer-based vs id-based).
+  %fn.fn_len = call i64 @strlen(i8* %fn.fn_i8)
+  %fn.fn_aid = call i64 @wam_intern_atom(i8* %fn.fn_i8, i64 %fn.fn_len)
+  %fn.name_val0 = insertvalue %Value undef, i32 0, 0
+  %fn.name_val = insertvalue %Value %fn.name_val0, i64 %fn.fn_aid, 1
   %fn.ar_val = call %Value @value_integer(i64 %fn.ar_i64)
   br label %fn.bind_both
 
@@ -5797,7 +5806,12 @@ u.setup_compound:
   %u.args_c = load %Value*, %Value** %u.args_slot
   %u.fn_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 0
   %u.fn_ptr = load i8*, i8** %u.fn_slot
-  %u.fn_val_c = call %Value @value_atom(i8* %u.fn_ptr)
+  ; M100: same fix as builtin_functor -- intern the functor string
+  ; so the head of the =.. list is an id-based Atom Value.
+  %u.fn_len = call i64 @strlen(i8* %u.fn_ptr)
+  %u.fn_aid = call i64 @wam_intern_atom(i8* %u.fn_ptr, i64 %u.fn_len)
+  %u.fn_val_c0 = insertvalue %Value undef, i32 0, 0
+  %u.fn_val_c = insertvalue %Value %u.fn_val_c0, i64 %u.fn_aid, 1
   br label %u.loop_init
 
 u.loop_init:
@@ -5812,7 +5826,14 @@ u.loop_init:
   %u.args = phi %Value* [ null, %u.setup_atomic ], [ %u.args_c, %u.setup_compound ]
   %u.fn_val = phi %Value [ zeroinitializer, %u.setup_atomic ], [ %u.fn_val_c, %u.setup_compound ]
   call void @wam_arena_ensure()
-  %u.empty = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  ; M100: build the empty-list tail sentinel via the pre-computed
+  ; @wam_empty_list_atom_id so it matches put_constant of [] in user
+  ; code (both id-based). The old value_atom(@.fn__5B_5D) packed the
+  ; functor-string pointer, which did not compare equal to a literal
+  ; [] in T == [] type tests.
+  %u.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %u.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %u.empty = insertvalue %Value %u.empty_v0, i64 %u.empty_aid, 1
   br label %u.loop_body
 
 u.loop_body:
@@ -5849,7 +5870,12 @@ u.build_cons:
   %u.cons_mem = call i8* @wam_arena_alloc(i64 %u.cp_size)
   %u.cons = bitcast i8* %u.cons_mem to %Compound*
   %u.cons_fn = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 0
-  store i8* getelementptr ([2 x i8], [2 x i8]* @.fn__2E, i32 0, i32 0), i8** %u.cons_fn
+  ; M100: use the SWI [|] cons functor (matches put_list, put_structure
+  ; for list-syntax, findall output, and every other cons-cell producer
+  ; in the codebase). The previous . (period) functor used here made
+  ; univ-built lists fail to unify with source-level list patterns
+  ; like [H|T], because put_list emits [|](H,T) compounds.
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %u.cons_fn
   %u.cons_ar = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 1
   store i32 2, i32* %u.cons_ar
   %u.cargs_mem = call i8* @wam_arena_alloc(i64 32)
@@ -5911,7 +5937,13 @@ u.c.walk_init:
   ; Each cons is a %Compound { ".", 2, [head, tail] }. Empty list is
   ; Atom("[]") with payload = ptrtoint(@.fn__5B_5D).
   call void @wam_arena_ensure()
-  %u.c.empty_val = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  ; M100: match the empty-list representation produced by put_constant
+  ; of [] (id-based via @wam_empty_list_atom_id), so the list-walk
+  ; comparison correctly terminates on both univ-built and source-
+  ; literal lists.
+  %u.c.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %u.c.empty_val0 = insertvalue %Value undef, i32 0, 0
+  %u.c.empty_val = insertvalue %Value %u.c.empty_val0, i64 %u.c.empty_aid, 1
   %u.c.empty_payload = call i64 @value_payload(%Value %u.c.empty_val)
   br label %u.c.count_loop
 

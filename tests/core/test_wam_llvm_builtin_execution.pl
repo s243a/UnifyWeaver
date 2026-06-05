@@ -2459,6 +2459,48 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M100: functor/3 + =.. read-mode atom representation fix.
+
+:- dynamic test_functor_name_eq_literal/2.
+test_functor_name_eq_literal(_, R) :-
+    % functor(C, Name, _) extracts the functor as an Atom Value.
+    % Pre-M100 that was pointer-based, so Name == foo failed even
+    % when the compound was foo(...). The fix interns the functor
+    % string into the atom table so Name carries an id payload that
+    % matches the literal `foo' (also id-based via put_constant).
+    Term = foo(1, 2, 3),
+    functor(Term, Name, _),
+    ( Name == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_functor_arity_check/2.
+test_functor_arity_check(_, R) :-
+    % And the canonical pattern `functor(T, Name, Arity)' with both
+    % name and arity literals now works as a structure shape check.
+    Term = bar(a, b),
+    ( functor(Term, bar, 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_head_eq_literal/2.
+test_univ_head_eq_literal(_, R) :-
+    % Same fix applied to =.. (univ): the list head is the functor
+    % as an id-based Atom Value, comparing correctly with literals.
+    % Uses the two-step =.. L, L = [H|_] form -- the direct
+    % =.. [H|_] form has a separate pre-existing WAM-compile
+    % issue (partial-list arg to =.. doesn''t reach the builtin in
+    % a unifiable shape).
+    Term = baz(7, 8),
+    Term =.. L,
+    L = [H | _],
+    ( H == baz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_tail_is_empty_list/2.
+test_univ_tail_is_empty_list(_, R) :-
+    % =.. terminates with the [] atom -- M100 makes that id-based
+    % via @wam_empty_list_atom_id, matching the literal [].
+    Term = quux(1),
+    Term =.. L,
+    L = [_, _ | Tail],
+    ( Tail == [] -> R is 1 ; R is 0 ).   % 1
+
 % M99: date_time_stamp/2 -- inverse of M98 stamp_date_time/3 via libc mktime.
 
 :- dynamic test_dts_roundtrip/2.
@@ -4959,6 +5001,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M100 functor/3 + =.. atom-rep fix ---~n'),
+       run_test_r0('functor(foo(...), Name, _), Name == foo -> 1',
+                   test_functor_name_eq_literal, 0, 1),
+       run_test_r0('functor(bar(a,b), bar, 2) -> 1',
+                   test_functor_arity_check, 0, 1),
+       run_test_r0('baz(7,8) =.. [H|_], H == baz -> 1',
+                   test_univ_head_eq_literal, 0, 1),
+       run_test_r0('quux(1) =.. [_,_|T], T == [] -> 1',
+                   test_univ_tail_is_empty_list, 0, 1),
        format('--- M99 date_time_stamp/2 ---~n'),
        run_test_r0('stamp -> DT -> stamp round-trip -> 1',
                    test_dts_roundtrip, 0, 1),
