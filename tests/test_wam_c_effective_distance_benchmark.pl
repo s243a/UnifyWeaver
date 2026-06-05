@@ -113,6 +113,8 @@ test_generated_runner_supports_runtime_caps :-
         sub_string(ErrText, _, _, _, "query_limit=1"),
         sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
         sub_string(ErrText, _, _, _, "category_visits="),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles="),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips="),
         sub_string(ErrText, _, _, _, "parent_reachability_checks="),
         sub_string(ErrText, _, _, _, "parent_reachability_prunes="),
         sub_string(ErrText, _, _, _, "parent_collect_calls="),
@@ -163,6 +165,29 @@ test_generated_runner_supports_runtime_name_filters :-
         sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
     ->  pass(Test)
     ;   fail_test(Test, 'runtime name-filter output or metrics mismatch')
+    ).
+
+test_generated_runner_prefilters_candidate_roots :-
+    Test = 'WAM-C effective-distance: generated runner prefilters impossible roots',
+    (   unique_tmp_dir(candidate_root_filter, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES'='0',
+              'UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS'='2'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=2"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips=1"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'candidate root prefilter metrics or output mismatch')
     ).
 
 test_generate_and_run_bounded_child_search :-
@@ -485,6 +510,15 @@ category_parent(leaf, root).
 category_parent(leaf, other_root).
 ').
 
+write_candidate_filter_facts(OutputDir, FactsPath) :-
+    directory_file_path(OutputDir, 'facts.pl', FactsPath),
+    write_text_file(FactsPath,
+'article_category(article_a, leaf).
+root_category(root).
+root_category(zmissing).
+category_parent(leaf, root).
+').
+
 unique_tmp_dir(KernelMode, OutputDir) :-
     get_time(Now),
     Stamp is round(Now * 1000000),
@@ -657,6 +691,7 @@ run_tests_once :-
     test_generated_runner_supports_runtime_caps,
     test_generated_runner_supports_runtime_sampling,
     test_generated_runner_supports_runtime_name_filters,
+    test_generated_runner_prefilters_candidate_roots,
     test_generate_and_run_bounded_child_search,
     test_child_search_uses_bidirectional_kernel,
     test_child_search_builds_reverse_csr,

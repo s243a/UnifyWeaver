@@ -3732,7 +3732,7 @@ static bool wam_visited_array_contains(const char **visited, int visited_len, co
     return false;
 }
 
-static bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out) {
+bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out) {
     int index = -1;
     if (wam_category_id_atom_index_find(state, atom, &index) ||
         ((!state->category_id_by_atom || state->category_id_by_atom_cap <= 0) &&
@@ -3743,7 +3743,7 @@ static bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_o
     return false;
 }
 
-static bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out) {
+bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out) {
     int index = -1;
     if (wam_category_id_value_index_find(state, id, &index) ||
         ((!state->category_id_by_value || state->category_id_by_value_cap <= 0) &&

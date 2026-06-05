@@ -929,6 +929,149 @@ static int wam_count_selected(const char **values,
     return selected;
 }
 
+static int visited_contains(const char **visited, int visited_len, const char *atom);
+
+static int wam_root_index_of(const char *root, int root_limit) {
+    int lo = 0;
+    int hi = root_limit;
+    while (lo < hi) {
+        int mid = lo + ((hi - lo) / 2);
+        int cmp = strcmp(ROOTS[mid], root);
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < root_limit && strcmp(ROOTS[lo], root) == 0) return lo;
+    return -1;
+}
+
+static int wam_mark_candidate_root(unsigned char *candidate_roots,
+                                   int root_limit,
+                                   const char *category) {
+    int root_index = wam_root_index_of(category, root_limit);
+    if (root_index < 0) return 0;
+    if (candidate_roots[root_index]) return 0;
+    candidate_roots[root_index] = 1;
+    return 1;
+}
+
+static int wam_mark_parent_candidate_roots(WamFactSource *source,
+                                           const char *category,
+                                           int parent_hops,
+                                           int max_parent_hops,
+                                           const char **visited,
+                                           int visited_len,
+                                           unsigned char *candidate_roots,
+                                           int root_limit) {
+    int marks = wam_mark_candidate_root(candidate_roots, root_limit, category);
+    if (parent_hops >= max_parent_hops || visited_len >= 64) return marks;
+
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_fact_source_child_range(source, category, &edges, &edge_count)) {
+        return marks;
+    }
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
+        if (visited_contains(visited, visited_len, edge->parent)) continue;
+        visited[visited_len] = edge->parent;
+        marks += wam_mark_parent_candidate_roots(source, edge->parent,
+                                                 parent_hops + 1,
+                                                 max_parent_hops,
+                                                 visited, visited_len + 1,
+                                                 candidate_roots, root_limit);
+    }
+    return marks;
+}
+
+static int wam_mark_child_candidate_roots(WamState *state,
+                                          WamFactSource *source,
+                                          const char *category,
+                                          int max_child_expansions,
+                                          int child_depth,
+                                          double parent_step_cost,
+                                          double child_step_cost,
+                                          double budget,
+                                          unsigned char *candidate_roots,
+                                          int root_limit) {
+    if (max_child_expansions <= 0 || child_depth <= 0) return 0;
+    if (child_depth != 1) return 0;
+    if (parent_step_cost <= 0.0 || child_step_cost > budget) return 0;
+    int max_parent_hops =
+        (int)(((budget - child_step_cost) / parent_step_cost) + 1.0e-9);
+    if (max_parent_hops < 0) return 0;
+
+    int marks = 0;
+    if (state->bidirectional_child_csr) {
+        int parent_id = 0;
+        if (!wam_category_atom_to_id(state, category, &parent_id)) return 0;
+        int child_ids[256];
+        int child_count = wam_reverse_csr_lookup_children(
+            state->bidirectional_child_csr, parent_id, child_ids, 256);
+        if (child_count < 0) return 0;
+        int limit = child_count < 256 ? child_count : 256;
+        for (int i = 0; i < limit; i++) {
+            const char *child = NULL;
+            const char *visited[64];
+            if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+            visited[0] = child;
+            marks += wam_mark_parent_candidate_roots(source, child, 0,
+                                                     max_parent_hops,
+                                                     visited, 1,
+                                                     candidate_roots,
+                                                     root_limit);
+        }
+        return marks;
+    }
+
+    for (int i = 0; i < source->edge_count; i++) {
+        CategoryEdge *edge = &source->edges[i];
+        const char *visited[64];
+        if (strcmp(edge->parent, category) != 0) continue;
+        visited[0] = edge->child;
+        marks += wam_mark_parent_candidate_roots(source, edge->child, 0,
+                                                 max_parent_hops,
+                                                 visited, 1,
+                                                 candidate_roots,
+                                                 root_limit);
+    }
+    return marks;
+}
+
+static int wam_mark_article_candidate_roots(WamState *state,
+                                            WamFactSource *source,
+                                            int category_start,
+                                            int category_end,
+                                            int root_limit,
+                                            int max_depth,
+                                            int child_search_enabled,
+                                            int max_child_expansions,
+                                            int child_depth,
+                                            double parent_step_cost,
+                                            double child_step_cost,
+                                            double budget,
+                                            unsigned char *candidate_roots) {
+    int marks = 0;
+    for (int ci = category_start; ci < category_end; ci++) {
+        const char *visited[64];
+        visited[0] = ARTICLE_CATS[ci];
+        marks += wam_mark_parent_candidate_roots(source, ARTICLE_CATS[ci], 0,
+                                                 max_depth, visited, 1,
+                                                 candidate_roots, root_limit);
+        if (child_search_enabled) {
+            marks += wam_mark_child_candidate_roots(state, source,
+                                                    ARTICLE_CATS[ci],
+                                                    max_child_expansions,
+                                                    child_depth,
+                                                    parent_step_cost,
+                                                    child_step_cost,
+                                                    budget,
+                                                    candidate_roots,
+                                                    root_limit);
+        }
+    }
+    return marks;
+}
+
 static WamValue make_visited_singleton(WamState *state, const char *atom) {
     WamValue list;
     int required = state->H + 2;
@@ -1198,17 +1341,32 @@ int main(void) {
     int selected_root_count = wam_count_selected(ROOTS, ROOT_COUNT, root_limit,
                                                  root_names, root_stride,
                                                  root_offset);
+    long long candidate_filter_min_roots =
+        wam_read_env_limit("UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS");
+    if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = 16;
+    unsigned char *candidate_roots =
+        root_limit > 0 ? calloc((size_t)root_limit, sizeof(unsigned char)) : NULL;
+    int candidate_filter_available =
+        candidate_roots != NULL &&
+        selected_root_count >= candidate_filter_min_roots &&
+        !(~w && ~w != 1);
+    if (root_limit > 0 && candidate_roots == NULL) {
+        fprintf(stderr, "wam_c_effective_warning candidate_filter_alloc_failed\\n");
+        fflush(stderr);
+    }
     double setup_ms = wam_now_ms() - setup_start_ms;
     fprintf(stderr,
             "wam_c_effective_setup article_count=%d root_count=%d "
             "article_category_count=%d article_limit=%d root_limit=%d "
             "selected_articles=%d selected_roots=%d query_limit=%lld "
             "result_limit=%lld article_stride=%d root_stride=%d "
-            "article_offset=%d root_offset=%d setup_ms=%.3f\\n",
+            "article_offset=%d root_offset=%d "
+            "candidate_filter_min_roots=%lld setup_ms=%.3f\\n",
             ARTICLE_COUNT, ROOT_COUNT, ARTICLE_CATEGORY_COUNT,
             article_limit, root_limit, selected_article_count,
             selected_root_count, query_limit, result_limit, article_stride,
-            root_stride, article_offset, root_offset, setup_ms);
+            root_stride, article_offset, root_offset,
+            candidate_filter_min_roots, setup_ms);
     fflush(stderr);
 
     printf("article\\troot_category\\teffective_distance\\n");
@@ -1218,6 +1376,9 @@ int main(void) {
     long long results = 0;
     long long category_visits = 0;
     long long direct_hits = 0;
+    long long candidate_filter_articles = 0;
+    long long candidate_filter_marks = 0;
+    long long candidate_filter_skips = 0;
     long long parent_reachability_checks = 0;
     long long parent_reachability_prunes = 0;
     long long parent_collect_calls = 0;
@@ -1227,6 +1388,7 @@ int main(void) {
     long long child_prefilter_candidates = 0;
     long long child_collect_calls = 0;
     long long child_path_results = 0;
+    double candidate_filter_ms = 0.0;
     double parent_reachability_ms = 0.0;
     double parent_collect_ms = 0.0;
     double child_prefilter_ms = 0.0;
@@ -1236,6 +1398,20 @@ int main(void) {
         if (!wam_selected_index(ai, ARTICLES[ai], article_names,
                                 article_stride, article_offset)) {
             continue;
+        }
+        int category_start = ARTICLE_CATEGORY_STARTS[ai];
+        int category_end = ARTICLE_CATEGORY_ENDS[ai];
+        int candidate_filter_enabled = 0;
+        if (candidate_filter_available) {
+            memset(candidate_roots, 0, (size_t)root_limit);
+            double candidate_filter_start_ms = wam_now_ms();
+            candidate_filter_articles++;
+            int article_marks = wam_mark_article_candidate_roots(
+                &state, &source, category_start, category_end, root_limit,
+                ~w, ~w, ~w, ~w, ~w, ~w, ~w, candidate_roots);
+            candidate_filter_ms += wam_now_ms() - candidate_filter_start_ms;
+            candidate_filter_marks += article_marks;
+            candidate_filter_enabled = 1;
         }
         for (int ri = 0; ri < root_limit; ri++) {
             if (!wam_selected_index(ri, ROOTS[ri], root_names,
@@ -1247,9 +1423,18 @@ int main(void) {
                 break;
             }
             queries++;
+            if (candidate_filter_enabled && !candidate_roots[ri]) {
+                candidate_filter_skips++;
+                if (progress_queries > 0 && queries % progress_queries == 0) {
+                    fprintf(stderr,
+                            "wam_c_effective_progress queries=%lld results=%lld "
+                            "elapsed_ms=%.3f\\n",
+                            queries, results, wam_now_ms() - query_start_ms);
+                    fflush(stderr);
+                }
+                continue;
+            }
             double weight_sum = 0.0;
-            int category_start = ARTICLE_CATEGORY_STARTS[ai];
-            int category_end = ARTICLE_CATEGORY_ENDS[ai];
             for (int ci = category_start; ci < category_end; ci++) {
                 category_visits++;
                 WamIntResults hops;
@@ -1337,6 +1522,8 @@ int main(void) {
     fprintf(stderr,
             "wam_c_effective_runtime queries=%lld results=%lld "
             "category_visits=%lld direct_hits=%lld "
+            "candidate_filter_articles=%lld candidate_filter_marks=%lld "
+            "candidate_filter_skips=%lld candidate_filter_ms=%.3f "
             "parent_reachability_checks=%lld parent_reachability_prunes=%lld "
             "parent_reachability_ms=%.3f parent_collect_calls=%lld "
             "parent_path_results=%lld parent_collect_ms=%.3f child_collect_calls=%lld "
@@ -1345,6 +1532,8 @@ int main(void) {
             "child_path_results=%lld child_collect_ms=%.3f "
             "first_result_ms=%.3f query_ms=%.3f capped=%d\\n",
             queries, results, category_visits, direct_hits,
+            candidate_filter_articles, candidate_filter_marks,
+            candidate_filter_skips, candidate_filter_ms,
             parent_reachability_checks, parent_reachability_prunes,
             parent_reachability_ms, parent_collect_calls, parent_path_results, parent_collect_ms,
             child_collect_calls, child_prefilter_checks, child_prefilter_prunes,
@@ -1354,6 +1543,7 @@ int main(void) {
     fflush(stderr);
 
 ~w
+    free(candidate_roots);
     wam_fact_source_close(&source);
     wam_free_state(&state);
     return 0;
@@ -1362,6 +1552,9 @@ int main(void) {
     ArticleArrays, ArticlesArray, RootArray, MaxDepth,
     ReverseIndexLocal, BidirSetupCall, ReverseIndexSetupCall,
     LoadCode, ReverseIndexTeardownCall, MaxDepth, BidirRegisterCall,
+    ChildSearchFlag, ChildSearchDepth,
+    MaxDepth, ChildSearchFlag, MaxChildExpansions, ChildSearchDepth,
+    ParentStepCost, ChildStepCost, ChildSearchBudget,
     ParentStepCost, MaxDepth, KernelFlag, ParentStepCost,
     ChildSearchFlag, MaxChildExpansions, ChildSearchDepth,
     ParentStepCost, ChildStepCost, ChildSearchBudget,

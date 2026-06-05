@@ -372,6 +372,8 @@ bool wam_fact_source_child_range(WamFactSource *source, const char *child,
                                  CategoryEdge **edges_out, int *count_out);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
 void wam_register_category_id(WamState *state, const char *atom, int id);
+bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out);
+bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out);
 void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
