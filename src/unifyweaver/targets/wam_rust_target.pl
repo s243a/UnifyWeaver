@@ -89,6 +89,14 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
+                    // Empty-list aliasing: the [] atom and an empty Value::List
+                    // are the same term. A list tail peeled down to its end is
+                    // Value::List([]), and a clause head get_constant [] must
+                    // match it (e.g. append/3 base case capp([],L,L)).
+                    Some(Value::List(ref items)) if items.is_empty()
+                        && matches!(c, Value::Atom(s) if s == "[]") => {
+                        self.pc += 1; true
+                    }
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
                         self.set_reg_str(ai, c.clone());
@@ -109,23 +117,18 @@ wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
-    Body = '                let val_a = self.get_reg_raw(ai);
+    Body = '                // get_value Xn, Ai is full unification of the two.
+                // The old hand-rolled version only did raw equality plus
+                // unbound-binding, so it could not unify two bound compound
+                // terms or follow a heap Ref — e.g. append/3 binding the
+                // accumulated result list against a tail cell. Route through
+                // unify(), which derefs (incl. Ref->heap), binds vars, and
+                // structurally unifies with cons-cell aliasing.
+                let val_a = self.get_reg_raw(ai);
                 let val_x = self.get_reg(xn);
                 match (val_a, val_x) {
-                    (Some(a), Some(x)) if a == x => { self.pc += 1; true }
-                    (Some(a), _) if a.is_unbound() => {
-                        self.trail_binding(ai);
-                        if let Some(x) = self.get_reg(xn) {
-                            self.set_reg_str(ai, x);
-                        }
-                        self.pc += 1; true
-                    }
-                    (_, Some(x)) if x.is_unbound() => {
-                        self.trail_binding(xn);
-                        if let Some(a) = self.get_reg_raw(ai) {
-                            self.put_reg(xn, a);
-                        }
-                        self.pc += 1; true
+                    (Some(a), Some(x)) => {
+                        if self.unify(&a, &x) { self.pc += 1; true } else { false }
                     }
                     _ => false,
                 }'.
@@ -705,6 +708,9 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
                 self.cp = 0; // halt
                 self.pc = ret;
                 true'.
+
+wam_instruction_arm('Instruction::NoOp', Body) :-
+    Body = '                self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
@@ -2911,10 +2917,15 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
-% Fallback for unknown instructions
+% Fallback for unknown instructions. Emit a real NoOp (not a bare comment):
+% a comment is dropped from the vec! literal, which shifts every later label
+% PC by one and corrupts backtracking (a missing trust_me/retry_me_else made
+% the choice point loop). NoOp preserves alignment, and for the indexing
+% hints that land here (switch_on_term, ...) falling through to the
+% try_me_else chain is correct.
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
-    format(string(Rust), '/* unknown: ~w */', [Joined]).
+    format(string(Rust), 'Instruction::NoOp /* unknown: ~w */', [Joined]).
 
 %% rust_const_value(+Const, -RustValueExpr)
 %  Render a WAM constant token as the right Value variant. Numeric

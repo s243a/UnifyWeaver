@@ -80,6 +80,13 @@ pub enum Instruction {
     ExecutePc(usize),
     /// Return from predicate (jump to CP).
     Proceed,
+    /// No-op: advances the program counter by one. Emitted for WAM
+    /// instructions the Rust backend does not (yet) translate — chiefly the
+    /// first-argument indexing hints (switch_on_term, ...). Indexing is only
+    /// an optimisation, so skipping it and letting the try_me_else clause
+    /// chain run is correct; emitting a real instruction (rather than a
+    /// dropped comment) keeps every later label PC aligned.
+    NoOp,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
     /// Start collecting solutions for an aggregate.
