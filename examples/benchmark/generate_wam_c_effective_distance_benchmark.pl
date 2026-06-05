@@ -1420,7 +1420,7 @@ int main(void) {
                                                     root_offset);
     long long candidate_filter_min_roots =
         wam_read_env_limit("UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS");
-    if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = 16;
+    if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = 256;
     WamCandidateRootSet candidate_roots;
     wam_candidate_root_set_init(&candidate_roots, root_limit);
     int candidate_filter_available =

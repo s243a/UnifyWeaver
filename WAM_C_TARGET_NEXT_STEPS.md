@@ -511,7 +511,7 @@ Evidence:
   to `5`, while preserving the same `11` child path results and reducing
   `child_collect_ms` from `2024.048` to `0.881`.
 - After adding per-article candidate-root filtering with a default
-  `candidate_filter_min_roots=16`, the same sorted-CSR result-capped
+  `candidate_filter_min_roots=256`, the same sorted-CSR result-capped
   `50k_cats` run again preserved the `8da5f8534aba` output hash and reached
   `50` rows after `72,977` ordered query pairs, but only entered category
   traversal for `50` pairs. Candidate filtering processed `19` articles,
@@ -529,6 +529,15 @@ Evidence:
   `query_ms=3674.656`. The matrix runner exposes
   `--wam-c-candidate-filter-min-roots` so sweeps can tune or disable the
   threshold without regenerating C.
+- Broader sampled validation on `50k_cats` with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. Forced sparse
+  scheduling and dense traversal both produced `1` row with hash
+  `e2bde0c720fe`, but dense traversal was faster (`query_ms=25.390`) than
+  sparse scheduling (`query_ms=100.436`) because candidate discovery cost
+  dominated at only `41` roots. With the default `candidate_filter_min_roots=256`,
+  the same sample now stays dense by default, preserves the hash, and reports
+  `candidate_filter_articles=0` with `query_ms=26.435`. This is why the default
+  root threshold is conservative and the CLI override exists.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -784,10 +793,10 @@ Result-capped and sampled runs now confirm child-CSR variants agree, and parent
 plus child reachability prefilters remove most avoidable traversal work inside
 each visited article/root pair. Per-article candidate-root filtering plus sparse
 candidate-root scheduling now avoids most impossible root traversals when many
-roots are selected, while staying off for one-root workloads by default and
+roots are selected, while staying off for low-root workloads by default and
 preserving dense semantics when an explicit query cap is active. The next useful
-work is either broader multi-root uncapped validation or promoting the
-threshold/scheduling decision into a cost-analyzer-controlled runtime option.
+work is promoting the threshold/scheduling decision into a
+cost-analyzer-controlled runtime option.
 Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
