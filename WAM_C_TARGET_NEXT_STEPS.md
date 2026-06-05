@@ -520,6 +520,13 @@ Evidence:
   `query_ms=541.447`. The default threshold keeps the filter off for one-root
   workloads: uncapped `10k` stayed at `5262` rows with hash `51be51c22aa7`,
   `candidate_filter_articles=0`, and `query_ms=3963.402`.
+- After replacing the dense filtered-root loop with a sparse candidate-root
+  schedule when no query cap is active, the same result-capped `50k_cats` run
+  preserved the `8da5f8534aba` hash and the logical `72,977` query-pair count,
+  scheduled `52` candidate roots across `19` articles, and reduced
+  `query_ms` to `485.270`. The one-root `10k` guardrail stayed off as
+  intended with hash `51be51c22aa7`, `candidate_schedule_articles=0`, and
+  `query_ms=3674.656`.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
   root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
@@ -773,12 +780,13 @@ After hash-bucket row dispatch but before compact row tables:
 
 Result-capped and sampled runs now confirm child-CSR variants agree, and parent
 plus child reachability prefilters remove most avoidable traversal work inside
-each visited article/root pair. Per-article candidate-root filtering now avoids
-most impossible root traversals when many roots are selected, while staying off
-for one-root workloads by default. The next useful work is deciding whether to
-replace the remaining ordered root scan with a sparse candidate-root schedule
-for high-root-count runs, while preserving output ordering and runtime cap
-semantics. Keep
+each visited article/root pair. Per-article candidate-root filtering plus sparse
+candidate-root scheduling now avoids most impossible root traversals when many
+roots are selected, while staying off for one-root workloads by default and
+preserving dense semantics when an explicit query cap is active. The next useful
+work is either broader multi-root uncapped validation or promoting the
+threshold/scheduling decision into a cost-analyzer-controlled runtime option.
+Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to

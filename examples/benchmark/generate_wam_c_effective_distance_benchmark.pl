@@ -929,7 +929,80 @@ static int wam_count_selected(const char **values,
     return selected;
 }
 
+static int *wam_selected_prefix(const char **values,
+                                int count,
+                                int limit,
+                                const char *names,
+                                int stride,
+                                int offset) {
+    int prefix_count = limit < count ? limit : count;
+    int *prefix = calloc((size_t)prefix_count + 1, sizeof(int));
+    if (!prefix) return NULL;
+    for (int i = 0; i < prefix_count; i++) {
+        prefix[i + 1] = prefix[i] +
+            (wam_selected_index(i, values[i], names, stride, offset) ? 1 : 0);
+    }
+    return prefix;
+}
+
+static int wam_selected_between(const int *prefix,
+                                int start,
+                                int end,
+                                int limit) {
+    if (!prefix) return 0;
+    if (start < 0) start = 0;
+    if (end < start) end = start;
+    if (end > limit) end = limit;
+    return prefix[end] - prefix[start];
+}
+
 static int visited_contains(const char **visited, int visited_len, const char *atom);
+
+typedef struct {
+    unsigned char *bits;
+    int *indices;
+    int count;
+    int cap;
+} WamCandidateRootSet;
+
+static void wam_candidate_root_set_init(WamCandidateRootSet *set, int root_limit) {
+    memset(set, 0, sizeof(WamCandidateRootSet));
+    if (root_limit > 0) {
+        set->bits = calloc((size_t)root_limit, sizeof(unsigned char));
+        set->indices = malloc(sizeof(int) * (size_t)root_limit);
+        if (set->indices) set->cap = root_limit;
+    }
+}
+
+static void wam_candidate_root_set_close(WamCandidateRootSet *set) {
+    free(set->bits);
+    free(set->indices);
+    memset(set, 0, sizeof(WamCandidateRootSet));
+}
+
+static void wam_candidate_root_set_reset(WamCandidateRootSet *set,
+                                         int root_limit) {
+    if (set->bits) memset(set->bits, 0, (size_t)root_limit);
+    set->count = 0;
+}
+
+static int wam_compare_ints(const void *a, const void *b) {
+    int ia = *(const int *)a;
+    int ib = *(const int *)b;
+    return (ia > ib) - (ia < ib);
+}
+
+static void wam_candidate_root_set_sort(WamCandidateRootSet *set) {
+    if (set->count > 1) {
+        qsort(set->indices, (size_t)set->count, sizeof(int), wam_compare_ints);
+    }
+}
+
+static int wam_candidate_root_set_push(WamCandidateRootSet *set, int root_index) {
+    if (set->count >= set->cap) return 0;
+    set->indices[set->count++] = root_index;
+    return 1;
+}
 
 static int wam_root_index_of(const char *root, int root_limit) {
     int lo = 0;
@@ -944,13 +1017,14 @@ static int wam_root_index_of(const char *root, int root_limit) {
     return -1;
 }
 
-static int wam_mark_candidate_root(unsigned char *candidate_roots,
+static int wam_mark_candidate_root(WamCandidateRootSet *candidate_roots,
                                    int root_limit,
                                    const char *category) {
     int root_index = wam_root_index_of(category, root_limit);
     if (root_index < 0) return 0;
-    if (candidate_roots[root_index]) return 0;
-    candidate_roots[root_index] = 1;
+    if (candidate_roots->bits[root_index]) return 0;
+    if (!wam_candidate_root_set_push(candidate_roots, root_index)) return 0;
+    candidate_roots->bits[root_index] = 1;
     return 1;
 }
 
@@ -960,7 +1034,7 @@ static int wam_mark_parent_candidate_roots(WamFactSource *source,
                                            int max_parent_hops,
                                            const char **visited,
                                            int visited_len,
-                                           unsigned char *candidate_roots,
+                                           WamCandidateRootSet *candidate_roots,
                                            int root_limit) {
     int marks = wam_mark_candidate_root(candidate_roots, root_limit, category);
     if (parent_hops >= max_parent_hops || visited_len >= 64) return marks;
@@ -991,7 +1065,7 @@ static int wam_mark_child_candidate_roots(WamState *state,
                                           double parent_step_cost,
                                           double child_step_cost,
                                           double budget,
-                                          unsigned char *candidate_roots,
+                                          WamCandidateRootSet *candidate_roots,
                                           int root_limit) {
     if (max_child_expansions <= 0 || child_depth <= 0) return 0;
     if (child_depth != 1) return 0;
@@ -1049,7 +1123,7 @@ static int wam_mark_article_candidate_roots(WamState *state,
                                             double parent_step_cost,
                                             double child_step_cost,
                                             double budget,
-                                            unsigned char *candidate_roots) {
+                                            WamCandidateRootSet *candidate_roots) {
     int marks = 0;
     for (int ci = category_start; ci < category_end; ci++) {
         const char *visited[64];
@@ -1341,17 +1415,30 @@ int main(void) {
     int selected_root_count = wam_count_selected(ROOTS, ROOT_COUNT, root_limit,
                                                  root_names, root_stride,
                                                  root_offset);
+    int *selected_root_prefix = wam_selected_prefix(ROOTS, ROOT_COUNT, root_limit,
+                                                    root_names, root_stride,
+                                                    root_offset);
     long long candidate_filter_min_roots =
         wam_read_env_limit("UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS");
     if (candidate_filter_min_roots <= 0) candidate_filter_min_roots = 16;
-    unsigned char *candidate_roots =
-        root_limit > 0 ? calloc((size_t)root_limit, sizeof(unsigned char)) : NULL;
+    WamCandidateRootSet candidate_roots;
+    wam_candidate_root_set_init(&candidate_roots, root_limit);
     int candidate_filter_available =
-        candidate_roots != NULL &&
+        candidate_roots.bits != NULL &&
+        candidate_roots.indices != NULL &&
+        selected_root_prefix != NULL &&
         selected_root_count >= candidate_filter_min_roots &&
         !(~w && ~w != 1);
-    if (root_limit > 0 && candidate_roots == NULL) {
+    if (root_limit > 0 && candidate_roots.bits == NULL) {
         fprintf(stderr, "wam_c_effective_warning candidate_filter_alloc_failed\\n");
+        fflush(stderr);
+    }
+    if (root_limit > 0 && candidate_roots.indices == NULL) {
+        fprintf(stderr, "wam_c_effective_warning candidate_schedule_alloc_failed\\n");
+        fflush(stderr);
+    }
+    if (root_limit > 0 && selected_root_prefix == NULL) {
+        fprintf(stderr, "wam_c_effective_warning selected_root_prefix_alloc_failed\\n");
         fflush(stderr);
     }
     double setup_ms = wam_now_ms() - setup_start_ms;
@@ -1379,6 +1466,8 @@ int main(void) {
     long long candidate_filter_articles = 0;
     long long candidate_filter_marks = 0;
     long long candidate_filter_skips = 0;
+    long long candidate_schedule_articles = 0;
+    long long candidate_schedule_roots = 0;
     long long parent_reachability_checks = 0;
     long long parent_reachability_prunes = 0;
     long long parent_collect_calls = 0;
@@ -1403,36 +1492,78 @@ int main(void) {
         int category_end = ARTICLE_CATEGORY_ENDS[ai];
         int candidate_filter_enabled = 0;
         if (candidate_filter_available) {
-            memset(candidate_roots, 0, (size_t)root_limit);
+            wam_candidate_root_set_reset(&candidate_roots, root_limit);
             double candidate_filter_start_ms = wam_now_ms();
             candidate_filter_articles++;
             int article_marks = wam_mark_article_candidate_roots(
                 &state, &source, category_start, category_end, root_limit,
-                ~w, ~w, ~w, ~w, ~w, ~w, ~w, candidate_roots);
+                ~w, ~w, ~w, ~w, ~w, ~w, ~w, &candidate_roots);
             candidate_filter_ms += wam_now_ms() - candidate_filter_start_ms;
             candidate_filter_marks += article_marks;
             candidate_filter_enabled = 1;
+            wam_candidate_root_set_sort(&candidate_roots);
+            if (query_limit <= 0 && selected_root_prefix != NULL) {
+                candidate_schedule_articles++;
+                candidate_schedule_roots += candidate_roots.count;
+            }
         }
-        for (int ri = 0; ri < root_limit; ri++) {
-            if (!wam_selected_index(ri, ROOTS[ri], root_names,
-                                    root_stride, root_offset)) {
-                continue;
-            }
-            if (query_limit > 0 && queries >= query_limit) {
-                stopped_by_cap = 1;
-                break;
-            }
-            queries++;
-            if (candidate_filter_enabled && !candidate_roots[ri]) {
-                candidate_filter_skips++;
-                if (progress_queries > 0 && queries % progress_queries == 0) {
-                    fprintf(stderr,
-                            "wam_c_effective_progress queries=%lld results=%lld "
-                            "elapsed_ms=%.3f\\n",
-                            queries, results, wam_now_ms() - query_start_ms);
-                    fflush(stderr);
+        int candidate_schedule_enabled =
+            candidate_filter_enabled && query_limit <= 0 &&
+            selected_root_prefix != NULL;
+        int sparse_pos = 0;
+        int sparse_next_root = 0;
+        for (int ri_scan = 0; ; ri_scan++) {
+            int ri = 0;
+            if (candidate_schedule_enabled) {
+                if (sparse_pos >= candidate_roots.count) {
+                    int tail_skips = wam_selected_between(selected_root_prefix,
+                                                          sparse_next_root,
+                                                          root_limit,
+                                                          root_limit);
+                    if (tail_skips > 0) {
+                        queries += tail_skips;
+                        candidate_filter_skips += tail_skips;
+                    }
+                    break;
                 }
-                continue;
+                ri = candidate_roots.indices[sparse_pos++];
+                if (!wam_selected_index(ri, ROOTS[ri], root_names,
+                                        root_stride, root_offset)) {
+                    continue;
+                }
+                int logical_delta = wam_selected_between(selected_root_prefix,
+                                                         sparse_next_root,
+                                                         ri + 1,
+                                                         root_limit);
+                if (logical_delta <= 0) continue;
+                queries += logical_delta;
+                if (logical_delta > 1) {
+                    candidate_filter_skips += logical_delta - 1;
+                }
+                sparse_next_root = ri + 1;
+            } else {
+                if (ri_scan >= root_limit) break;
+                ri = ri_scan;
+                if (!wam_selected_index(ri, ROOTS[ri], root_names,
+                                        root_stride, root_offset)) {
+                    continue;
+                }
+                if (query_limit > 0 && queries >= query_limit) {
+                    stopped_by_cap = 1;
+                    break;
+                }
+                queries++;
+                if (candidate_filter_enabled && !candidate_roots.bits[ri]) {
+                    candidate_filter_skips++;
+                    if (progress_queries > 0 && queries % progress_queries == 0) {
+                        fprintf(stderr,
+                                "wam_c_effective_progress queries=%lld results=%lld "
+                                "elapsed_ms=%.3f\\n",
+                                queries, results, wam_now_ms() - query_start_ms);
+                        fflush(stderr);
+                    }
+                    continue;
+                }
             }
             double weight_sum = 0.0;
             for (int ci = category_start; ci < category_end; ci++) {
@@ -1524,6 +1655,7 @@ int main(void) {
             "category_visits=%lld direct_hits=%lld "
             "candidate_filter_articles=%lld candidate_filter_marks=%lld "
             "candidate_filter_skips=%lld candidate_filter_ms=%.3f "
+            "candidate_schedule_articles=%lld candidate_schedule_roots=%lld "
             "parent_reachability_checks=%lld parent_reachability_prunes=%lld "
             "parent_reachability_ms=%.3f parent_collect_calls=%lld "
             "parent_path_results=%lld parent_collect_ms=%.3f child_collect_calls=%lld "
@@ -1534,6 +1666,7 @@ int main(void) {
             queries, results, category_visits, direct_hits,
             candidate_filter_articles, candidate_filter_marks,
             candidate_filter_skips, candidate_filter_ms,
+            candidate_schedule_articles, candidate_schedule_roots,
             parent_reachability_checks, parent_reachability_prunes,
             parent_reachability_ms, parent_collect_calls, parent_path_results, parent_collect_ms,
             child_collect_calls, child_prefilter_checks, child_prefilter_prunes,
@@ -1543,7 +1676,8 @@ int main(void) {
     fflush(stderr);
 
 ~w
-    free(candidate_roots);
+    wam_candidate_root_set_close(&candidate_roots);
+    free(selected_root_prefix);
     wam_fact_source_close(&source);
     wam_free_state(&state);
     return 0;

@@ -185,6 +185,8 @@ test_generated_runner_prefilters_candidate_roots :-
         sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=2"),
         sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
         sub_string(ErrText, _, _, _, "candidate_filter_skips=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_roots=1"),
         sub_string(ErrText, _, _, _, "category_visits=1")
     ->  pass(Test)
     ;   fail_test(Test, 'candidate root prefilter metrics or output mismatch')
