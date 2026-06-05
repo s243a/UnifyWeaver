@@ -2459,6 +2459,35 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M101: =.. with partial-list second arg now unifies (was broken
+% in M100 -- u.a2_check used value_equals which couldn''t bind
+% through the unbound vars in [H|_]).
+
+:- dynamic test_univ_partial_head/2.
+test_univ_partial_head(_, R) :-
+    % Direct form: Term =.. [H | _] -- partial list with unbound
+    % H and unbound tail. The freshly-built result list unifies
+    % with the pattern, binding H to the functor atom.
+    Term = baz(7, 8),
+    Term =.. [H | _],
+    ( H == baz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_partial_arity/2.
+test_univ_partial_arity(_, R) :-
+    % [_, _, _] with three unbound element slots -- result list
+    % from a 2-ary compound has exactly 3 elements (functor + 2
+    % args), so unification succeeds and the pattern serves as
+    % a deterministic arity check.
+    Term = quux(a, b),
+    ( Term =.. [_, _, _] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_univ_partial_no_match/2.
+test_univ_partial_no_match(_, R) :-
+    % [_, _] is a 2-element partial pattern; a 2-ary compound''s
+    % result list has 3 elements, so the unify fails.
+    Term = quux(a, b),
+    ( Term =.. [_, _] -> R is 0 ; R is 1 ).   % 1
+
 % M100: functor/3 + =.. read-mode atom representation fix.
 
 :- dynamic test_functor_name_eq_literal/2.
@@ -5001,6 +5030,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M101 =.. partial-list unify ---~n'),
+       run_test_r0('baz(7,8) =.. [H|_], H == baz -> 1',
+                   test_univ_partial_head, 0, 1),
+       run_test_r0('quux(a,b) =.. [_,_,_] -> 1 (arity check)',
+                   test_univ_partial_arity, 0, 1),
+       run_test_r0('quux(a,b) =.. [_,_] fails -> 1',
+                   test_univ_partial_no_match, 0, 1),
        format('--- M100 functor/3 + =.. atom-rep fix ---~n'),
        run_test_r0('functor(foo(...), Name, _), Name == foo -> 1',
                    test_functor_name_eq_literal, 0, 1),
