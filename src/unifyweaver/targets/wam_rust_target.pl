@@ -2748,9 +2748,10 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
 wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::GetConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
 wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2785,9 +2786,11 @@ wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     ).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::PutConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
+
 wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2881,6 +2884,24 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), '/* unknown: ~w */', [Joined]).
+
+%% rust_const_value(+Const, -RustValueExpr)
+%  Render a WAM constant token as the right Value variant. Numeric
+%  constants MUST become Value::Integer/Value::Float, not Value::Atom:
+%  put_constant/get_constant previously emitted Value::Atom("28") for the
+%  integer 28, so `R is <expr>` with R bound to a ground integer (the head
+%  arg, e.g. cbi_arith(28) or the cfib(N,R) result check) failed — is/2's
+%  result match only handles Unbound/Integer/Float, not Atom. That failure
+%  triggered runaway backtracking in recursive programs (fib). set_/
+%  unify_constant already did this; this routes the remaining two through
+%  the same rule.
+rust_const_value(C, Expr) :-
+    (   number_string(N, C), integer(N)
+    ->  format(string(Expr), 'Value::Integer(~w)', [N])
+    ;   number_string(N, C), float(N)
+    ->  format(string(Expr), 'Value::Float(~w)', [N])
+    ;   format(string(Expr), 'Value::Atom("~w".to_string())', [C])
+    ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
     option(foreign_lowering(ForeignSpec), Options),
