@@ -243,8 +243,22 @@ compile_lowered_predicates(Predicates, Options, Code) :-
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
+    ;   resolve_template_path(Path, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content), "// Template not found: ~w", [Path])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python target's
+%  source_file/2-based resolution.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_go_target:write_wam_go_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
