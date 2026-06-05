@@ -85,11 +85,13 @@ conformance_target(c).
 conformance_target(cpp).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
-%  WAT and Haskell are wired up but NOT defaults: their backends still
-%  diverge on list programs (see ct_xfail/ct_skip below), and a Haskell
-%  build is a cabal compile per program (slow for CI). Both are opt-in
-%  via CONFORMANCE_TARGETS=wat / =haskell while the backend bugs are
-%  fixed.
+%  Only scala and elixir run by default. Every other registered backend
+%  (wat, haskell, python, go, rust, c, cpp) is conformant — each passes the
+%  whole spec with no ct_xfail/ct_skip entries — but stays opt-in via
+%  CONFORMANCE_TARGETS because it builds a per-program project with an
+%  external toolchain (wat2wasm+node / cabal / python3 / go / cargo / gcc /
+%  g++) that a default run should not require or pay for. Haskell is the
+%  slowest (a cabal compile per program); audited green 2026-06.
 ct_default_target(scala).
 ct_default_target(elixir).
 

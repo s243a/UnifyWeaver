@@ -121,9 +121,11 @@ fixed.
 
 `ct_xfail/2` = build and run, tolerate a wrong answer (and log `XPASS` if
 it unexpectedly matches). `ct_skip/2` = do not even build, because
-*generation itself* is unusable. (`append`/`reverse` on WAT are `ct_skip`
-only — they are never built; the formerly-shadowing `ct_xfail` facts have
-been removed.)
+*generation itself* is unusable. Both registries are **empty today** — no
+backend is xfailed or skipped. (WAT `append`/`reverse` were the last
+`ct_skip` entries; once WAT's `switch_on_term` generation and cons-aware
+unification were fixed they build and pass like everything else, and the
+skips were removed.)
 
 ### Other backend issue surfaced
 
