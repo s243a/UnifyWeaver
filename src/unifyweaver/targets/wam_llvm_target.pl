@@ -1474,6 +1474,8 @@ declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
 declare i32 @getpid()
+declare i32 @getuid()
+declare i32 @geteuid()
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3540,6 +3542,8 @@ entry:
     i32 111, label %builtin_halt0
     i32 112, label %builtin_halt1
     i32 113, label %builtin_unsetenv
+    i32 114, label %builtin_getuid
+    i32 115, label %builtin_geteuid
   ]
 
 builtin_is:
@@ -5041,6 +5045,29 @@ us.do:
   %us.ret = call i32 @unsetenv(i8* %us.name)
   %us.ok = icmp eq i32 %us.ret, 0
   ret i1 %us.ok
+
+builtin_getuid:
+  ; M95: getuid(?Uid) -- unifies Uid with the real user id from
+  ; libc getuid() as Integer. uid_t is unsigned 32 bits on Linux;
+  ; zext to i64 so reserved bits stay clear under the Integer tag.
+  ; Always succeeds (getuid cannot fail).
+  %gu.uid = call i32 @getuid()
+  %gu.uid64 = zext i32 %gu.uid to i64
+  %gu.v = call %Value @value_integer(i64 %gu.uid64)
+  %gu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gu.raw1, %Value %gu.v)
+  ret i1 %gu.ok
+
+builtin_geteuid:
+  ; M95: geteuid(?EUid) -- effective uid via libc geteuid(). Same
+  ; shape as builtin_getuid; differs only when the process has a
+  ; setuid bit set or has called seteuid.
+  %geu.uid = call i32 @geteuid()
+  %geu.uid64 = zext i32 %geu.uid to i64
+  %geu.v = call %Value @value_integer(i64 %geu.uid64)
+  %geu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %geu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %geu.raw1, %Value %geu.v)
+  ret i1 %geu.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11880,6 +11907,8 @@ builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
 builtin_op_to_id('halt/0', 111).              % libc exit(0).
 builtin_op_to_id('halt/1', 112).              % libc exit(Code).
 builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
+builtin_op_to_id('getuid/1', 114).            % libc getuid() as Integer.
+builtin_op_to_id('geteuid/1', 115).           % libc geteuid() as Integer.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
