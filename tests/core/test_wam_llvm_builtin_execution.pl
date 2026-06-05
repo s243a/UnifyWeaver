@@ -2459,6 +2459,36 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M97: set_random/1 -- libc srand48 via the SWI-style seed(N) compound.
+
+:- dynamic test_setrand_changes_output/2.
+test_setrand_changes_output(_, R) :-
+    % Default seed (0) gives a fixed first lrand48() value. Re-seed
+    % with a different N and lrand48 produces a different value.
+    random_between(1, 1000000, V0),
+    set_random(seed(424242)),
+    random_between(1, 1000000, V1),
+    ( V0 =\= V1 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setrand_repeatable/2.
+test_setrand_repeatable(_, R) :-
+    % Seeding twice with the same N gives the same draws -- proves
+    % srand48 is actually being called with our seed, not ignored.
+    set_random(seed(99)),
+    random_between(1, 1000000, A),
+    set_random(seed(99)),
+    random_between(1, 1000000, B),
+    ( A =:= B -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setrand_bad_option/2.
+test_setrand_bad_option(_, R) :-
+    % Wrong functor / non-Integer arg / non-compound all fail.
+    ( set_random(garbage) -> R is 0
+    ; set_random(seed(not_an_int)) -> R is 0
+    ; set_random(42) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M96: getgid/1 + getegid/1 + getppid/1 -- more libc process-info wrappers.
 
 :- dynamic test_gid_nonneg/2.
@@ -4848,6 +4878,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M97 set_random/1 ---~n'),
+       run_test_r0('set_random(seed(N)) changes lrand48 output -> 1',
+                   test_setrand_changes_output, 0, 1),
+       run_test_r0('same seed gives same draw -> 1',
+                   test_setrand_repeatable, 0, 1),
+       run_test_r0('bad option (non-seed compound, etc.) fails -> 1',
+                   test_setrand_bad_option, 0, 1),
        format('--- M96 getgid/1 + getegid/1 + getppid/1 ---~n'),
        run_test_r0('getgid(G), G >= 0 -> 1',
                    test_gid_nonneg, 0, 1),
