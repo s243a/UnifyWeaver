@@ -2528,12 +2528,22 @@ compile_step_wam_to_c(_Options, CCode) :-
         while (state->P >= 0 && state->P < state->code_size) {
             Instruction* instr = &state->code[state->P];
             if (!step_wam(state, instr)) {
-                if (state->B == 0) {
+                bool recovered = false;
+                while (state->B > 0 && !recovered) {
+                    ChoicePoint* cp = &state->B_array[state->B - 1];
+                    int next_pc = cp->next_pc;
+                    restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
+                    if (next_pc == WAM_AGGREGATE_NEXT_GROUP) {
+                        pop_choice_point(state);
+                        recovered = wam_bind_next_aggregate_group(state);
+                    } else {
+                        state->P = next_pc; // Explicitly jump to alternative
+                        recovered = true;
+                    }
+                }
+                if (!recovered) {
                     return WAM_HALT; // Failure, no choice points left
                 }
-                ChoicePoint* cp = &state->B_array[state->B - 1];
-                restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
-                state->P = cp->next_pc; // Explicitly jump to alternative
             }
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
@@ -2981,6 +2991,38 @@ static bool wam_build_witness_group_indices(WamAggregateFrame *frame,
     return true;
 }
 
+static bool wam_build_witness_group_reps(WamAggregateFrame *frame,
+                                         int **reps_out,
+                                         int *group_count_out) {
+    if (frame->item_count <= 0) {
+        *reps_out = NULL;
+        *group_count_out = 0;
+        return true;
+    }
+    int *reps = malloc(sizeof(int) * (size_t)frame->item_count);
+    if (!reps) return false;
+    int group_count = 0;
+    for (int i = 0; i < frame->item_count; i++) {
+        bool seen = false;
+        for (int g = 0; g < group_count; g++) {
+            int rep = reps[g];
+            if (wam_compare_stored_value(&frame->witnesses[rep],
+                                         frame->witnesses[rep].root,
+                                         &frame->witnesses[i],
+                                         frame->witnesses[i].root) == 0) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            reps[group_count++] = i;
+        }
+    }
+    *reps_out = reps;
+    *group_count_out = group_count;
+    return true;
+}
+
 static bool wam_materialize_witness_component(WamState *state,
                                               WamStoredTerm *witness,
                                               int witness_count,
@@ -3022,6 +3064,116 @@ static bool wam_unify_witness_registers_from_group(WamState *state,
     return true;
 }
 
+static bool wam_bind_aggregate_group(WamState *state,
+                                     WamAggregateGroupIterator *iter,
+                                     int group_index) {
+    if (group_index < 0 || group_index >= iter->group_count) return false;
+    int selected_index = iter->group_reps[group_index];
+    WamAggregateFrame frame_view;
+    memset(&frame_view, 0, sizeof(WamAggregateFrame));
+    frame_view.kind = iter->kind;
+    frame_view.result_reg = iter->result_reg;
+    frame_view.result_is_y = iter->result_is_y;
+    frame_view.items = iter->items;
+    frame_view.witnesses = iter->witnesses;
+    frame_view.item_count = iter->item_count;
+    frame_view.item_cap = iter->item_cap;
+    frame_view.witness_count = iter->witness_count;
+    for (int i = 0; i < iter->witness_count; i++) {
+        frame_view.witness_regs[i] = iter->witness_regs[i];
+        frame_view.witness_is_y[i] = iter->witness_is_y[i];
+    }
+
+    int *indices = NULL;
+    int index_count = 0;
+    if (!wam_build_witness_group_indices(&frame_view, selected_index,
+                                         &indices, &index_count)) return false;
+    if (strcmp(iter->kind, "setof") == 0) {
+        wam_sort_aggregate_item_indices(&frame_view, indices, index_count);
+        index_count =
+            wam_dedup_sorted_aggregate_item_indices(&frame_view, indices,
+                                                    index_count);
+    }
+
+    WamValue result_list;
+    bool witness_ok =
+        wam_unify_witness_registers_from_group(state, &frame_view,
+                                               selected_index);
+    bool list_ok = witness_ok &&
+        wam_build_aggregate_list_from_indices(state, &frame_view, indices,
+                                              index_count, &result_list);
+    free(indices);
+    if (!list_ok) return false;
+
+    WamValue *result_cell =
+        resolve_reg(state, iter->result_reg, iter->result_is_y);
+    if (!wam_unify(state, result_cell, &result_list)) return false;
+    state->P = iter->return_pc;
+    return true;
+}
+
+static bool wam_bind_next_aggregate_group(WamState *state) {
+    if (state->aggregate_group_top <= 0) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top - 1];
+    if (iter->next_group >= iter->group_count) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+        return false;
+    }
+
+    int group_index = iter->next_group++;
+    bool has_more = iter->next_group < iter->group_count;
+    int return_pc = iter->return_pc;
+    if (has_more) {
+        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+    }
+
+    bool ok = wam_bind_aggregate_group(state, iter, group_index);
+    if (!has_more) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+    }
+    if (ok) {
+        state->P = return_pc;
+    }
+    return ok;
+}
+
+static bool wam_push_aggregate_group_iterator(WamState *state,
+                                              WamAggregateFrame *frame,
+                                              int *group_reps,
+                                              int group_count,
+                                              int return_pc) {
+    if (state->aggregate_group_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top];
+    wam_aggregate_group_iterator_free(iter);
+    iter->kind = frame->kind;
+    iter->return_pc = return_pc;
+    iter->result_reg = frame->result_reg;
+    iter->result_is_y = frame->result_is_y;
+    iter->items = frame->items;
+    iter->witnesses = frame->witnesses;
+    iter->item_count = frame->item_count;
+    iter->item_cap = frame->item_cap;
+    iter->witness_count = frame->witness_count;
+    for (int i = 0; i < frame->witness_count; i++) {
+        iter->witness_regs[i] = frame->witness_regs[i];
+        iter->witness_is_y[i] = frame->witness_is_y[i];
+    }
+    iter->group_reps = group_reps;
+    iter->group_count = group_count;
+    iter->next_group = 0;
+    state->aggregate_group_top++;
+
+    frame->items = NULL;
+    frame->witnesses = NULL;
+    frame->item_count = 0;
+    frame->item_cap = 0;
+    return true;
+}
+
 static void wam_aggregate_frame_free(WamAggregateFrame *frame) {
     for (int i = 0; i < frame->item_count; i++) {
         wam_stored_term_free(&frame->items[i]);
@@ -3039,6 +3191,7 @@ static void wam_aggregate_clear_all(WamState *state) {
         state->aggregate_top--;
         wam_aggregate_frame_free(&state->aggregate_frames[state->aggregate_top]);
     }
+    wam_trim_aggregate_group_iters(state, 0);
 }
 
 static bool wam_aggregate_append_item(WamState *state,
@@ -3138,6 +3291,27 @@ static bool wam_finalize_aggregate_frame(WamState *state,
 
     WamValue result_list;
     if (frame->witness_count > 0) {
+        if (!wam_witness_regs_are_bound(state, frame)) {
+            int *group_reps = NULL;
+            int group_count = 0;
+            if (!wam_build_witness_group_reps(frame, &group_reps,
+                                              &group_count)) return false;
+            if (group_count <= 0) {
+                free(group_reps);
+                wam_aggregate_frame_free(frame);
+                state->aggregate_top = frame_index;
+                state->P = next_pc;
+                return false;
+            }
+            if (!wam_push_aggregate_group_iterator(state, frame, group_reps,
+                                                   group_count, next_pc)) {
+                free(group_reps);
+                return false;
+            }
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            state->aggregate_top = frame_index;
+            return wam_bind_next_aggregate_group(state);
+        }
         int selected_index = wam_select_aggregate_witness_group(state, frame);
         if (selected_index < 0) {
             wam_aggregate_frame_free(frame);
