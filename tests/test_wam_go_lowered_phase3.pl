@@ -128,8 +128,10 @@ test_has_internal_ite_pattern_detects :-
         cut_ite,
         put_constant("then_val", "A2"),
         jump("L_cont"),
+        label("L_else"),
         trust_me,
         put_constant("else_val", "A2"),
+        label("L_cont"),
         proceed
     ],
     (   has_internal_ite_pattern(Instrs)
@@ -163,8 +165,10 @@ test_ite_emits_native_if_else :-
         cut_ite,
         put_constant("then_val", "A2"),
         jump("L_cont"),
+        label("L_else"),
         trust_me,
         put_constant("else_val", "A2"),
+        label("L_cont"),
         proceed
     ],
     emit_to_string(p/2, Instrs, Code),
@@ -174,6 +178,11 @@ test_ite_emits_native_if_else :-
         sub_string(S, _, _, _, "_condOk := func() bool {"),
         sub_string(S, _, _, _, "if _condOk {"),
         sub_string(S, _, _, _, "} else {"),
+        % On condition failure the else branch must restore the register
+        % file (saved as a value copy of the fixed Regs array) and unwind
+        % the trail, so a failed binding condition leaves no stale state.
+        sub_string(S, _, _, _, "_savedRegs := vm.Regs"),
+        sub_string(S, _, _, _, "vm.Regs = _savedRegs"),
         sub_string(S, _, _, _, "vm.unwindTrailTo(_trailMark)"),
         % And the cond/then/else atoms all appear via interning.
         sub_string(S, _, _, _, "wamAtom_c_"),
@@ -192,8 +201,10 @@ test_ite_does_not_silently_drop_choice_instrs :-
         cut_ite,
         put_constant("then_val", "A2"),
         jump("L_cont"),
+        label("L_else"),
         trust_me,
         put_constant("else_val", "A2"),
+        label("L_cont"),
         proceed
     ],
     emit_to_string(p/2, Instrs, Code),
