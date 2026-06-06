@@ -1510,6 +1510,9 @@ declare i32 @getgid()
 declare i32 @getegid()
 declare i32 @getppid()
 declare i32 @getpgrp()
+declare i8* @realpath(i8*, i8*)
+declare i32 @kill(i32, i32)
+declare i32 @truncate(i8*, i64)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3320,10 +3323,10 @@ cy.skip:
 
 %% compile_wam_helpers_to_llvm(+Options, -LLVMCode)
 %  Generates LLVM IR for WAM runtime helpers.
-compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
+compile_wam_helpers_to_llvm(Options, LLVMCode) :-
     compile_backtrack_to_llvm(BacktrackCode),
     compile_unwind_trail_to_llvm(UnwindCode),
-    compile_execute_builtin_to_llvm(BuiltinCode),
+    compile_execute_builtin_to_llvm(Options, BuiltinCode),
     compile_eval_arith_to_llvm(ArithCode),
     compile_copy_term_to_llvm(CopyTermCode),
     compile_term_cmp_to_llvm(TermCmpCode),
@@ -3461,8 +3464,13 @@ done:
   ret void
 }'.
 
-compile_execute_builtin_to_llvm(Code) :-
-    Code = '; Execute builtin operations
+compile_execute_builtin_to_llvm(Options, Code) :-
+    % M113: resolve target OS for struct dirent / struct tm offsets.
+    % Default mode is auto (derive from target_triple); callers can
+    % override with target_os(linux|darwin|freebsd|...).
+    target_os_resolved(Options, OS),
+    target_dirent_d_name_offset(OS, DirentNameOff),
+    Template = '; Execute builtin operations
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
@@ -3599,6 +3607,9 @@ entry:
     i32 125, label %builtin_access
     i32 126, label %builtin_directory_files
     i32 127, label %builtin_getpgrp
+    i32 128, label %builtin_realpath
+    i32 129, label %builtin_kill
+    i32 130, label %builtin_truncate
   ]
 
 builtin_is:
@@ -5641,7 +5652,7 @@ dirf.loop:
   br i1 %dirf.entry_null, label %dirf.close, label %dirf.append
 dirf.append:
   ; Build a new cons cell [|](Atom, acc) on the arena.
-  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 19
+__M113_DIRENT_NAME_PTR__
   %dirf.name_len = call i64 @strlen(i8* %dirf.name_ptr)
   %dirf.bufsize = add i64 %dirf.name_len, 1
   %dirf.buf = call i8* @wam_arena_alloc(i64 %dirf.bufsize)
@@ -5687,6 +5698,103 @@ builtin_getpgrp:
   %gpg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gpg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpg.raw1, %Value %gpg.v)
   ret i1 %gpg.ok
+
+builtin_realpath:
+  ; M110: realpath(+Path, -Abs) -- libc realpath wrapper.
+  ; Stack-alloc a PATH_MAX-sized (4096) buffer for the result.
+  ; realpath returns NULL on failure (ENOENT for missing path,
+  ; EACCES for unreadable parent dir, etc.); we map that to a
+  ; Prolog fail. Non-atom Path also fails the type guard. On
+  ; success, the resolved path is copied into the arena, interned,
+  ; and the resulting atom is unified with reg 1.
+  %rp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rp.t1 = call i32 @value_tag(%Value %rp.a1)
+  %rp.is_atom = icmp eq i32 %rp.t1, 0
+  br i1 %rp.is_atom, label %rp.go, label %rp.fail
+rp.fail:
+  ret i1 false
+rp.go:
+  %rp.aid = call i64 @value_payload(%Value %rp.a1)
+  %rp.path = call i8* @wam_atom_to_string(i64 %rp.aid)
+  %rp.path_null = icmp eq i8* %rp.path, null
+  br i1 %rp.path_null, label %rp.fail, label %rp.do
+rp.do:
+  %rp.buf = alloca [4096 x i8]
+  %rp.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %rp.buf, i32 0, i32 0
+  %rp.res = call i8* @realpath(i8* %rp.path, i8* %rp.buf_ptr)
+  %rp.res_null = icmp eq i8* %rp.res, null
+  br i1 %rp.res_null, label %rp.fail, label %rp.intern
+rp.intern:
+  %rp.len = call i64 @strlen(i8* %rp.buf_ptr)
+  call void @wam_arena_ensure()
+  %rp.bufsize = add i64 %rp.len, 1
+  %rp.arena = call i8* @wam_arena_alloc(i64 %rp.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rp.arena, i8* %rp.buf_ptr, i64 %rp.len, i1 false)
+  %rp.term = getelementptr i8, i8* %rp.arena, i64 %rp.len
+  store i8 0, i8* %rp.term
+  %rp.atom_id = call i64 @wam_intern_atom(i8* %rp.arena, i64 %rp.len)
+  %rp.v0 = insertvalue %Value undef, i32 0, 0
+  %rp.v = insertvalue %Value %rp.v0, i64 %rp.atom_id, 1
+  %rp.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rp.raw2, %Value %rp.v)
+  ret i1 %rp.ok
+
+builtin_kill:
+  ; M111: kill(+Pid, +Sig) -- libc kill wrapper. Both args must be
+  ; Integer. Most common usage is Sig=0 which sends no signal but
+  ; returns 0 iff the process exists and the caller has permission
+  ; to signal it -- a cheap existence/permission probe. Succeeds
+  ; iff libc kill returns 0; failure modes (ESRCH for missing pid,
+  ; EPERM for forbidden) all map to a Prolog fail.
+  %kl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %kl.t1 = call i32 @value_tag(%Value %kl.a1)
+  %kl.is_int1 = icmp eq i32 %kl.t1, 1
+  br i1 %kl.is_int1, label %kl.check2, label %kl.fail
+kl.fail:
+  ret i1 false
+kl.check2:
+  %kl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %kl.t2 = call i32 @value_tag(%Value %kl.a2)
+  %kl.is_int2 = icmp eq i32 %kl.t2, 1
+  br i1 %kl.is_int2, label %kl.go, label %kl.fail
+kl.go:
+  %kl.pid64 = call i64 @value_payload(%Value %kl.a1)
+  %kl.pid = trunc i64 %kl.pid64 to i32
+  %kl.sig64 = call i64 @value_payload(%Value %kl.a2)
+  %kl.sig = trunc i64 %kl.sig64 to i32
+  %kl.ret = call i32 @kill(i32 %kl.pid, i32 %kl.sig)
+  %kl.ok = icmp eq i32 %kl.ret, 0
+  ret i1 %kl.ok
+
+builtin_truncate:
+  ; M112: truncate(+Path, +Length) -- libc truncate wrapper. Sets
+  ; the file to exactly Length bytes; grows it (with zero-fill)
+  ; if smaller, shrinks it if larger. Path must be Atom, Length
+  ; Integer (off_t is i64 on x86-64 Linux). Succeeds iff truncate
+  ; returns 0; ENOENT, EACCES, EISDIR etc. all map to a Prolog
+  ; fail. Non-atom Path or non-Integer Length fall through to
+  ; fail.
+  %tr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tr.t1 = call i32 @value_tag(%Value %tr.a1)
+  %tr.is_atom = icmp eq i32 %tr.t1, 0
+  br i1 %tr.is_atom, label %tr.check2, label %tr.fail
+tr.fail:
+  ret i1 false
+tr.check2:
+  %tr.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %tr.t2 = call i32 @value_tag(%Value %tr.a2)
+  %tr.is_int = icmp eq i32 %tr.t2, 1
+  br i1 %tr.is_int, label %tr.go, label %tr.fail
+tr.go:
+  %tr.aid = call i64 @value_payload(%Value %tr.a1)
+  %tr.path = call i8* @wam_atom_to_string(i64 %tr.aid)
+  %tr.path_null = icmp eq i8* %tr.path, null
+  br i1 %tr.path_null, label %tr.fail, label %tr.do
+tr.do:
+  %tr.len = call i64 @value_payload(%Value %tr.a2)
+  %tr.ret = call i32 @truncate(i8* %tr.path, i64 %tr.len)
+  %tr.ok = icmp eq i32 %tr.ret, 0
+  ret i1 %tr.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -10651,7 +10759,20 @@ mb.bool_no:
 
 unknown:
   ret i1 false
-}'.
+}',
+    % M113/M114: substitute the dirent-d_name lookup IR. For static
+    % OS modes this is a single getelementptr with a literal offset.
+    % For target_os(adapt), it is a call to the runtime probe helper
+    % plus a getelementptr that uses the returned offset.
+    target_dirent_name_ptr_ir(OS, DirentNameOff, NamePtrIR),
+    atomic_list_concat(Parts, '__M113_DIRENT_NAME_PTR__', Template),
+    atomic_list_concat(Parts, NamePtrIR, ExecuteIR),
+    % Append the M114 runtime probe helper. Always emitted -- it is
+    % dead code when no caller is in adapt mode, which llc / clang
+    % link-time DCE strips. Keeping it unconditional means the IR
+    % template stays the same shape regardless of mode.
+    target_dirent_probe_helper_ir(HelperIR),
+    atomic_list_concat([ExecuteIR, HelperIR], '\n\n', Code).
 
 compile_eval_arith_to_llvm(Code) :-
     Code = '; Evaluate arithmetic expression
@@ -12621,6 +12742,154 @@ intern_atom(AtomName, Id) :-
         assertz(atom_table_entry(AtomName, Id))
     ).
 
+% ----------------------------------------------------------------------
+% M113: target-platform abstraction for libc struct layouts.
+% Most libc *functions* are POSIX-portable, but the *struct field
+% offsets* we read at IR-emit time (struct dirent for M107, struct tm
+% for M91/M98/M99, struct stat for M73-M76) are libc-specific. To keep
+% IR generation cross-target, callers pick a strategy via
+%   target_os(auto)    -- (default) derive OS from target_triple option
+%   target_os(linux)   -- explicit; linux | darwin | freebsd | netbsd
+%                          | openbsd | wasi | ... (atom)
+% adapt-at-runtime (a third mode that emits a probe to discover offsets
+% at program startup) is a follow-up milestone -- see todo at end of
+% this block.
+
+%% target_os_from_triple(+Triple, -OS) is det.
+%  Maps an LLVM target triple ("x86_64-pc-linux-gnu", "x86_64-apple-darwin",
+%  "x86_64-unknown-freebsd13.0", "wasm32-unknown-wasi", ...) to a short
+%  atom we can pattern-match against in layout predicates.
+target_os_from_triple(Triple, OS) :-
+    atom_string(Triple, S),
+    (   sub_string(S, _, _, _, "linux")   -> OS = linux
+    ;   sub_string(S, _, _, _, "darwin")  -> OS = darwin
+    ;   sub_string(S, _, _, _, "freebsd") -> OS = freebsd
+    ;   sub_string(S, _, _, _, "openbsd") -> OS = openbsd
+    ;   sub_string(S, _, _, _, "netbsd")  -> OS = netbsd
+    ;   sub_string(S, _, _, _, "wasi")    -> OS = wasi
+    ;   sub_string(S, _, _, _, "windows") -> OS = windows
+    ;   sub_string(S, _, _, _, "mingw")   -> OS = windows
+    ;   OS = linux   % default to linux on unknown triples (warns elsewhere)
+    ).
+
+%% resolve_target_os(+Options, -OS) is det.
+%  Consults the Options list for target_os(Mode):
+%   - target_os(auto)  (default if absent) -> derive from target_triple
+%   - target_os(<atom>) (linux/darwin/etc.) -> use that OS directly
+target_os_resolved(Options, OS) :-
+    ( option(target_os(Mode), Options) -> true ; Mode = auto ),
+    ( Mode == auto
+    -> ( option(target_triple(T), Options)
+       -> target_os_from_triple(T, OS)
+       ;  OS = linux
+       )
+    ;  OS = Mode
+    ).
+
+%% target_dirent_d_name_offset(+OS, -Offset) is det.
+%  Byte offset of d_name within struct dirent on the named OS.
+%  Linux glibc: ino(8) + off(8) + reclen(2) + type(1) = 19.
+%  Darwin (BSD libc): ino(8) + seekoff(8) + reclen(2) + namlen(2) + type(1) = 21.
+%  FreeBSD/NetBSD/OpenBSD vary -- 11/12 historically, modern is 21.
+%  WASI uses dirent compatible with Linux (the wasi-libc preview).
+target_dirent_d_name_offset(linux,   19).
+target_dirent_d_name_offset(darwin,  21).
+target_dirent_d_name_offset(freebsd, 21).
+target_dirent_d_name_offset(netbsd,  21).
+target_dirent_d_name_offset(openbsd, 21).
+target_dirent_d_name_offset(wasi,    19).
+target_dirent_d_name_offset(adapt,   0).   % unused -- adapt uses helper.
+target_dirent_d_name_offset(_, 19).        % fall-back
+
+%% target_dirent_name_ptr_ir(+OS, +StaticOff, -IR) is det.
+%  Produce the IR snippet that defines %dirf.name_ptr from
+%  %dirf.entry. For static OS modes this is one getelementptr with a
+%  literal byte offset. For target_os(adapt) it calls the runtime
+%  probe helper @wam_dirent_d_name_offset (always emitted in the
+%  module) and uses the i64 it returns.
+target_dirent_name_ptr_ir(adapt, _Off, IR) :- !,
+    atomic_list_concat([
+        '  %dirf.dno = call i64 @wam_dirent_d_name_offset()',
+        '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 %dirf.dno'
+    ], '\n', IR).
+target_dirent_name_ptr_ir(_OS, Off, IR) :-
+    format(atom(IR), '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 ~w', [Off]).
+
+%% target_dirent_probe_helper_ir(-IR) is det.
+%  M114: emit the runtime probe helper that discovers struct dirent''s
+%  d_name byte offset for the current process. Strategy: opendir("."),
+%  readdir once (always returns the "." entry first), scan the buffer
+%  for the first ''.'' byte (256 bytes max -- d_name is bounded by
+%  NAME_MAX on every supported platform), closedir. Cache the result
+%  in a private i64 global so subsequent calls reuse the probe. On
+%  failure (opendir/readdir error), fall back to 19 (Linux default)
+%  so callers continue with sane semantics even in chroots without /.
+target_dirent_probe_helper_ir(IR) :-
+    IR = '; === M114 runtime dirent::d_name offset probe ===
+@.uw_dot_dir = private constant [2 x i8] c".\\00"
+@uw_dirent_d_name_offset_cache = private global i64 -1
+
+define i64 @wam_dirent_d_name_offset() {
+entry:
+  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
+  %unset = icmp slt i64 %cached, 0
+  br i1 %unset, label %probe, label %done
+done:
+  ret i64 %cached
+probe:
+  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
+  %dir = call i8* @opendir(i8* %dot_ptr)
+  %dir_null = icmp eq i8* %dir, null
+  br i1 %dir_null, label %fallback, label %read
+read:
+  %entry_ptr = call i8* @readdir(i8* %dir)
+  %entry_null = icmp eq i8* %entry_ptr, null
+  br i1 %entry_null, label %fallback_close, label %scan_init
+scan_init:
+  br label %scan_loop
+scan_loop:
+  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
+  %too_far = icmp uge i64 %i, 256
+  br i1 %too_far, label %fallback_close, label %scan_check
+scan_check:
+  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
+  %b = load i8, i8* %byte_ptr
+  %is_dot = icmp eq i8 %b, 46
+  br i1 %is_dot, label %scan_found, label %scan_step
+scan_step:
+  %i_next = add i64 %i, 1
+  br label %scan_loop
+scan_found:
+  %close_ret = call i32 @closedir(i8* %dir)
+  store i64 %i, i64* @uw_dirent_d_name_offset_cache
+  ret i64 %i
+fallback_close:
+  %close_ret2 = call i32 @closedir(i8* %dir)
+  br label %fallback
+fallback:
+  store i64 19, i64* @uw_dirent_d_name_offset_cache
+  ret i64 19
+}'.
+
+%% target_struct_tm_size(+OS, -SizeBytes) is det.
+%  Glibc struct tm is 56 bytes; Darwin/BSD also 56 with same field
+%  order (the GNU tm_gmtoff/tm_zone extension is also present on
+%  Darwin and modern BSDs).
+target_struct_tm_size(_, 56).
+
+%% target_struct_tm_gmtoff_offset(+OS, -Offset) is det.
+target_struct_tm_gmtoff_offset(linux,   40).
+target_struct_tm_gmtoff_offset(darwin,  40).
+target_struct_tm_gmtoff_offset(freebsd, 40).
+target_struct_tm_gmtoff_offset(_, 40).
+
+% TODO: target_os(adapt) -- emit a small startup probe that opens
+% "." via opendir, calls readdir once (which always returns "." as
+% the first entry), and computes the d_name offset from where the
+% '.' byte lands in the buffer. Result stored in a runtime global so
+% builtin_directory_files reads the resolved offset instead of a
+% compile-time constant. Defer to a future milestone.
+
 % --- Value packing helpers ---
 
 llvm_pack_value(atom(A), Packed) :- !,
@@ -12760,6 +13029,9 @@ builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
 builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
 builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
 builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
+builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
+builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
+builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

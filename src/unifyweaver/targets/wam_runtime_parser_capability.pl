@@ -134,6 +134,7 @@ target_runtime_parser_default(wam_cpp, native(parse_term)).
 % and why we don't flip the default.
 target_runtime_parser_default(wam_fsharp, none).
 target_runtime_parser_default(wam_haskell, none).
+target_runtime_parser_default(wam_rust, none).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
@@ -142,6 +143,7 @@ target_runtime_parser_mode_(wam_cpp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_fsharp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_haskell, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
@@ -151,6 +153,8 @@ normalize_runtime_parser_target(fsharp, wam_fsharp) :- !.
 normalize_runtime_parser_target(wam_fsharp, wam_fsharp) :- !.
 normalize_runtime_parser_target(haskell, wam_haskell) :- !.
 normalize_runtime_parser_target(wam_haskell, wam_haskell) :- !.
+normalize_runtime_parser_target(rust, wam_rust) :- !.
+normalize_runtime_parser_target(wam_rust, wam_rust) :- !.
 normalize_runtime_parser_target(Target, Target).
 
 strip_module_qualifier(Module:Goal, Stripped) :-
