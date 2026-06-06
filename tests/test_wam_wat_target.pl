@@ -1,6 +1,7 @@
 :- encoding(utf8).
 :- use_module(library(plunit)).
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
+:- use_module('../src/unifyweaver/targets/wam_wat_lowered_emitter').
 
 :- begin_tests(wam_wat_target).
 
@@ -66,6 +67,23 @@ test(encode_get_value) :-
     assertion(atom(Hex)),
     assertion(sub_string(Hex, 0, _, _, "\\02")).  % tag=2
 
+test(operand_helper_decodes_canonical_encoding) :-
+    wam_instruction_to_wat_operands(put_constant(42, 'A1'), [], put_constant, Op1, Op2),
+    assertion(Op1 == 42),
+    assertion(Op2 =:= (1 << 32)).
+
+test(lowered_emitter_accepts_deterministic_clause) :-
+    WamCode = 'put_constant 42 A1
+builtin_call integer/1 1
+proceed
+',
+    wam_wat_lowerable(answer/0, WamCode, Reason),
+    assertion(Reason == single_clause),
+    lower_predicate_to_wat(answer/0, WamCode, [], lowered('answer/0', FuncName, Code)),
+    assertion(FuncName == lowered_answer_0),
+    assertion(sub_atom(Code, _, _, _, '(func $lowered_answer_0')),
+    assertion(sub_atom(Code, _, _, _, '(call $do_put_constant')),
+    assertion(sub_atom(Code, _, _, _, '(call $do_builtin_call'))).
 test(encode_get_structure) :-
     wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
     assertion(atom(Hex)),
@@ -311,6 +329,41 @@ test(write_wat_project) :-
     ),
     retractall(user:test_greet),
     (exists_file(TmpFile) -> delete_file(TmpFile) ; true).
+
+test(write_wat_project_default_stays_interpreter_only) :-
+    get_time(T),
+    format(atom(TmpFile), '/tmp/test_wam_wat_default_~w.wat', [T]),
+    assertz(user:test_wat_default_mode :- true),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_wat_default_mode/0],
+                                  [module_name(test_wam_default)], TmpFile),
+            read_file_to_string(TmpFile, Content, []),
+            assertion(\+ sub_string(Content, _, _, _, "$lowered_test_wat_default_mode_0")),
+            assertion(sub_string(Content, _, _, _, "$run_loop"))
+        ),
+        (   retractall(user:test_wat_default_mode),
+            (exists_file(TmpFile) -> delete_file(TmpFile) ; true)
+        )
+    ).
+
+test(write_wat_project_functions_mode_emits_lowered_entry) :-
+    get_time(T),
+    format(atom(TmpFile), '/tmp/test_wam_wat_lowered_~w.wat', [T]),
+    assertz(user:test_wat_lowered_mode :- integer(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_wat_lowered_mode/0],
+                                  [module_name(test_wam_lowered), emit_mode(functions)], TmpFile),
+            read_file_to_string(TmpFile, Content, []),
+            assertion(sub_string(Content, _, _, _, "$lowered_test_wat_lowered_mode_0")),
+            assertion(sub_string(Content, _, _, _, "Lowered clause-1 failed: replay")),
+            assertion(sub_string(Content, _, _, _, "$run_loop"))
+        ),
+        (   retractall(user:test_wat_lowered_mode),
+            (exists_file(TmpFile) -> delete_file(TmpFile) ; true)
+        )
+    ).
 
 %% --- wat2wasm syntax validation ---
 

@@ -19,6 +19,7 @@
     compile_wam_runtime_to_wat/2,       % +Options, -WatCode
     compile_wam_predicate_to_wat/4,     % +Pred/Arity, +WamCode, +Options, -WatCode
     wam_instruction_to_wat_bytes/3,     % +WamInstr, +LabelMap, -ByteHex
+    wam_instruction_to_wat_operands/5,  % +WamInstr, +LabelMap, -DoName, -Op1, -Op2
     reg_name_to_index/2,                % +Name, -Index
     atom_hash_i64/2,                    % +Atom, -Hash
     write_wam_wat_project/3             % +Predicates, +Options, +OutputFile
@@ -29,6 +30,10 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/template_system').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_wat_lowered_emitter', [
+    wam_wat_lowerable/3,
+    lower_predicate_to_wat/4
+]).
 
 :- discontiguous wam_wat_case/2.
 
@@ -1485,6 +1490,49 @@ compile_wam_predicate_to_wat(Pred/Arity, WamCode, Options, WatResult) :-
 
 encode_instr_with_labels(Labels, Instr, Hex) :-
     wam_instruction_to_wat_bytes(Instr, Labels, Hex).
+
+%% wam_instruction_to_wat_operands(+WamInstr, +LabelMap, -DoName, -Op1, -Op2)
+%  Public helper for the lowered WAT emitter. It reuses the canonical
+%  bytecode encoder, then decodes the two 64-bit operands, so lowered
+%  functions and bytecode data segments cannot drift apart.
+wam_instruction_to_wat_operands(Instr, Labels, DoName, Op1, Op2) :-
+    functor(Instr, DoName, _),
+    wam_instruction_to_wat_bytes(Instr, Labels, Hex),
+    wat_instr_hex_operands(Hex, Op1, Op2).
+
+wat_instr_hex_operands(Hex, Op1, Op2) :-
+    atom_codes(Hex, Codes),
+    wat_hex_bytes(Codes, Bytes),
+    Bytes = [_,_,_,_|OpBytes],
+    take_n(8, OpBytes, Op1Bytes, Op2Bytes),
+    le_bytes_u64(Op1Bytes, Op1),
+    le_bytes_u64(Op2Bytes, Op2).
+
+wat_hex_bytes([], []).
+wat_hex_bytes([92, H, L | Rest], [B|Bs]) :-
+    hex_digit_value(H, HV),
+    hex_digit_value(L, LV),
+    B is (HV << 4) \/ LV,
+    wat_hex_bytes(Rest, Bs).
+
+take_n(0, Rest, [], Rest) :- !.
+take_n(N, [X|Xs], [X|Ys], Rest) :-
+    N1 is N - 1,
+    take_n(N1, Xs, Ys, Rest).
+
+le_bytes_u64(Bytes, Value) :-
+    le_bytes_u64(Bytes, 0, 0, Value).
+le_bytes_u64([], _, Acc, Acc).
+le_bytes_u64([B|Bs], Shift, Acc0, Value) :-
+    Acc is Acc0 \/ (B << Shift),
+    Shift1 is Shift + 8,
+    le_bytes_u64(Bs, Shift1, Acc, Value).
+
+hex_digit_value(C, V) :-
+    (   C >= 0'0, C =< 0'9 -> V is C - 0'0
+    ;   C >= 0'a, C =< 0'f -> V is C - 0'a + 10
+    ;   C >= 0'A, C =< 0'F -> V is C - 0'A + 10
+    ).
 
 wat_pred_name(Pred, Arity, Name) :-
     format(atom(Name), '~w_~w', [Pred, Arity]).
@@ -5586,8 +5634,10 @@ compile_wat_predicates(Predicates, Options, CodeBase, DataSegs, Funcs, Exports) 
     %% Entry functions: one per predicate, each setting its own
     %% start PC before invoking the shared run loop.
     option(wam_heap_start(HeapStart), Options, 196608),
+    wat_generate_lowered(PredData, Options, LoweredFuncs, LoweredPairs),
     gen_all_entry_funcs(PredData, HeapStart, CodeBase, TotalInstrs,
-                        Funcs, Exports).
+                        LoweredPairs, EntryFuncs, Exports),
+    atomic_list_concat([LoweredFuncs, '\n', EntryFuncs], Funcs).
 
 %% wam_atom_table_base(-Offset)
 %  Fixed start address of the atom name table. Lives on page 5
@@ -6491,25 +6541,100 @@ same_label(X, X) :- !.
 same_label(X, Y) :- atom(X), string(Y), atom_string(X, Y), !.
 same_label(X, Y) :- string(X), atom(Y), atom_string(Y, X).
 
+%% wat_generate_lowered(+PredData, +Options, -Functions, -Pairs)
+%  Build per-predicate lowered WAT fast paths in mixed mode. A pair is
+%  Pred/Arity-FuncName and is consumed by gen_all_entry_funcs/7.
+wat_generate_lowered(PredData, Options, Functions, Pairs) :-
+    wat_resolve_emit_mode(Options, Mode),
+    (   Mode == interpreter
+    ->  Functions = '', Pairs = []
+    ;   findall(Code-Pair,
+            ( member(pred_data(Pred/Arity, _, _, _, _), PredData),
+              wat_mode_allows_lowering(Mode, Pred/Arity),
+              catch(wam_target:compile_predicate_to_wam(Pred/Arity, Options, WamCode), _, fail),
+              wam_wat_lowerable(Pred/Arity, WamCode, _Reason),
+              lower_predicate_to_wat(Pred/Arity, WamCode, Options, lowered(_Key, FuncName, Code)),
+              Pair = (Pred/Arity-FuncName)
+            ), CodePairs),
+        pairs_codes_pairs(CodePairs, Codes, Pairs),
+        atomic_list_concat(Codes, '\n', Functions)
+    ).
+
+pairs_codes_pairs([], [], []).
+pairs_codes_pairs([Code-Pair|Rest], [Code|Codes], [Pair|Pairs]) :-
+    pairs_codes_pairs(Rest, Codes, Pairs).
+
+% Mirrors the dual-mode lowering seam in the F#/Haskell/Scala WAM
+% targets. Keep the default as interpreter mode so existing WAM-WAT output is
+% bytecode-only unless callers explicitly opt into lowered fast paths.
+%   emit_mode(interpreter)  — default; all predicates run in $run_loop.
+%   emit_mode(functions)    — every lowerable predicate gets a fast path.
+%   emit_mode(mixed([P/A])) — only listed predicates get fast paths.
+% Back-compat aliases: emit_mode(bytecode) => interpreter,
+% emit_mode(lowered) / lowered(true) => functions, lowered(false) => interpreter.
+% Resolution order: Options, user:wam_wat_emit_mode/1, default.
+:- multifile user:wam_wat_emit_mode/1.
+
+wat_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(Mode0), Options)
+    ->  wat_validate_emit_mode(Mode0, Mode)
+    ;   option(lowered(Lowered), Options)
+    ->  wat_lowered_option_emit_mode(Lowered, Mode)
+    ;   catch(user:wam_wat_emit_mode(Mode1), _, fail)
+    ->  wat_validate_emit_mode(Mode1, Mode)
+    ;   Mode = interpreter
+    ).
+
+wat_lowered_option_emit_mode(true, functions) :- !.
+wat_lowered_option_emit_mode(false, interpreter) :- !.
+wat_lowered_option_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_wat_lowered_option, Other),
+                wat_resolve_emit_mode/2)).
+
+wat_validate_emit_mode(interpreter, interpreter) :- !.
+wat_validate_emit_mode(bytecode, interpreter) :- !.
+wat_validate_emit_mode(functions, functions) :- !.
+wat_validate_emit_mode(lowered, functions) :- !.
+wat_validate_emit_mode(mixed(List), mixed(List)) :- is_list(List), !.
+wat_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_wat_emit_mode, Other),
+                wat_resolve_emit_mode/2)).
+
+wat_mode_allows_lowering(functions, _) :- !.
+wat_mode_allows_lowering(mixed(List), Pred/Arity) :-
+    memberchk(Pred/Arity, List).
+
 %% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
-%%                     -Funcs, -Exports)
+%%                     +LoweredPairs, -Funcs, -Exports)
 %  Emit one exported entry function per predicate. All entry functions
 %  share the same CodeBase and TotalInstrs; they differ only in their
 %  StartPC, which each function writes into the VM's PC register
 %  immediately after $wam_init (before invoking the run loop).
-gen_all_entry_funcs([], _, _, _, '', '').
+gen_all_entry_funcs([], _, _, _, _, '', '').
 gen_all_entry_funcs([pred_data(Pred/Arity, _, _, StartPC, _)|Rest],
-                    HeapStart, CodeBase, TotalInstrs,
+                    HeapStart, CodeBase, TotalInstrs, LoweredPairs,
                     EntryFuncs, Exports) :-
     wat_pred_name(Pred, Arity, FName),
-    format(atom(EF),
+    (   memberchk(Pred/Arity-LoweredName, LoweredPairs)
+    ->  format(atom(EF),
+'(func $~w (export "~w") (result i32)
+  (call $wam_init (i32.const ~w))
+  (if (call $~w)
+    (then (return (i32.const 1))))
+  ;; Lowered clause-1 failed: replay with a fresh VM state through the full interpreter.
+  (call $wam_init (i32.const ~w))
+  (call $set_pc (i32.const ~w))
+  (call $run_loop (i32.const ~w) (i32.const ~w)))',
+            [FName, FName, HeapStart, LoweredName, HeapStart, StartPC, CodeBase, TotalInstrs])
+    ;   format(atom(EF),
 '(func $~w (export "~w") (result i32)
   (call $wam_init (i32.const ~w))
   (call $set_pc (i32.const ~w))
   (call $run_loop (i32.const ~w) (i32.const ~w)))',
-        [FName, FName, HeapStart, StartPC, CodeBase, TotalInstrs]),
+            [FName, FName, HeapStart, StartPC, CodeBase, TotalInstrs])
+    ),
     format(atom(Export), '  ;; exported: ~w', [FName]),
-    gen_all_entry_funcs(Rest, HeapStart, CodeBase, TotalInstrs,
+    gen_all_entry_funcs(Rest, HeapStart, CodeBase, TotalInstrs, LoweredPairs,
                         RestEF, RestExports),
     atomic_list_concat([EF, '\n', RestEF], EntryFuncs),
     atomic_list_concat([Export, '\n', RestExports], Exports).

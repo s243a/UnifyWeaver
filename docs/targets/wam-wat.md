@@ -32,6 +32,11 @@ For implementation and architecture details, see
   produces a `.wasm` module with no external dependencies beyond
   three small host imports (`print_i64`, `print_char`,
   `print_newline`) used only for optional output.
+- **Hybrid lowered fast paths**: When `emit_mode(functions)` or `emit_mode(mixed([...]))` is enabled,
+  deterministic clause-1 predicates get a `lowered_<pred>_<arity>` WAT function emitted by
+  `wam_wat_lowered_emitter.pl`. The public export tries that direct
+  sequence of `$do_*` instruction calls first, then reinitializes VM
+  state and falls back to `$run_loop` if the fast path fails.
 - **V8 JIT-friendly dispatch**: The runtime uses a `br_table`
   dispatch in a single `$step` function that returns after each
   instruction, paired with an outer `$run_loop` driver. V8's
