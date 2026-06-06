@@ -4,15 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-forall-control-smoke` based on `main` at `9e997ed5`
-  (`Merge pull request #2814 from
-  s243a/investigate/wam-c-explicit-cut-scope`)
+- `investigate/wam-c-findall-aggregate-surface` based on `main` at `f971b555`
+  (`Merge pull request #2817 from
+  s243a/investigate/wam-c-forall-control-smoke`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-forall-control-smoke`
+- `investigate/wam-c-findall-aggregate-surface`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -80,6 +80,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Precise if-then-else cut scope smoke | Done | C target tests now compile `ite_use_y_level(true)` WAM with `get_level`/`cut` and run a nondeterministic-condition scope regression that must not backtrack into the else branch after commit |
 | Explicit cut call-scope fix | Done | `!/0` now prunes to the current call barrier instead of clearing all choice points; generated executable smoke preserves an outer disjunction alternative across an inner predicate cut |
 | `forall/2` control smoke | Done | Generated executable smoke covers the shared nested soft-cut rewrite for `forall/2` all-pass, action-fail, subset, and empty-generator cases |
+| `findall/3` collect aggregate surface | Done | C now parses and executes shared `begin_aggregate collect` / `end_aggregate` WAM for simple `findall/3`, preserving generator choice points under aggregate frames and building non-empty/empty result lists |
 
 ## Current C Target Baseline
 
@@ -132,6 +133,9 @@ The C target is now a credible small WAM backend:
   `=/2`, negation, legacy `cut_ite` if-then-else, and precise
   `get_level`/`cut` if-then-else, explicit `!/0` call-scope behavior, and
   `forall/2`'s generated soft-cut rewrite.
+- Supports the first aggregate surface: generated `findall/3` lowering through
+  `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
+  result lists.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -154,7 +158,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple `findall/3` collect support over generated aggregate opcodes; remaining gaps are `bagof/3`, `setof/3`, grouping/witness handling, sort/dedup semantics, and broader aggregate forms. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -168,6 +172,31 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-findall-aggregate-surface`
+
+Goal: give the C target its first shared aggregate opcode surface by executing
+simple generated `findall/3` through `begin_aggregate collect` /
+`end_aggregate`.
+
+Evidence:
+
+- WAM text and C literal parsing now cover `begin_aggregate collect` and
+  `end_aggregate`.
+- The C runtime keeps generator choice points alive while an aggregate frame is
+  open, copies each template result into runtime-owned storage, and finalizes
+  to a normal WAM list.
+- Executable smoke coverage runs generated non-empty, empty, and pre-bound
+  result-list `findall/3` calls and checks aggregate/call/choice stacks are
+  balanced afterward.
+
+Reason:
+
+- `forall/2` proved shared control lowering, but aggregates needed new runtime
+  term-copy and list-construction behavior.
+- This branch deliberately limits the surface to simple collection. `bagof/3`,
+  `setof/3`, witness grouping, sorting/deduplication, and broader aggregate
+  forms remain separate parity work.
 
 ### Completed: `investigate/wam-c-forall-control-smoke`
 
