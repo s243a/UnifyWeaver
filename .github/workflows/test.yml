@@ -86,6 +86,10 @@ jobs:
         run: |
           swipl -q -g main -t halt tests/run_wam_fsharp_tests.pl
 
+      - name: Run scoped-subtree LMDB builder test
+        run: |
+          python3 -m unittest tests.test_build_scoped_subtree_lmdb
+
       - name: Generate and run inference test runner
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
