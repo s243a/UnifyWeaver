@@ -70,6 +70,17 @@ class TestMatrixDemandFlag(unittest.TestCase):
         self.assertIn("CachedLookup", src)
         self.assertIn("set_demand_set", src)
 
+    def test_auto_branch_and_is_scoped(self):
+        # WAM_DEMAND=auto consults the DB scoped marker via is_scoped().
+        src = self._generate("lazy")
+        self.assertIn('Ok("auto")', src)
+        self.assertIn(".is_scoped()", src)
+        # The is_scoped() definition lives in the emitted LmdbFactSource module.
+        src_dir = Path(self.tmp.name) / "lazy" / "src"
+        defs = [p.read_text() for p in src_dir.glob("*.rs")]
+        self.assertTrue(any("pub fn is_scoped" in d for d in defs),
+                        "is_scoped() definition missing from generated Rust")
+
 
 if __name__ == "__main__":
     unittest.main()

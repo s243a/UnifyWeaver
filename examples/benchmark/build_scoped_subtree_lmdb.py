@@ -173,6 +173,15 @@ def main() -> int:
     except lmdb.NotFoundError:
         sys.stderr.write("note: source has no s2i/i2s sub-dbs; skipping (int-native fixture)\n")
 
+    # 3b. stamp a `meta` marker so the runtime can auto-detect a pre-scoped DB
+    #     (WAM_DEMAND=auto) and skip the redundant query-time reachable_to_root
+    #     BFS without a manual flag.
+    meta_db = out_env.open_db(b"meta", create=True)
+    with out_env.begin(write=True) as wtxn:
+        wtxn.put(b"scoped", b"1", db=meta_db)
+        wtxn.put(b"scoped_root", str(args.root).encode(), db=meta_db)
+        wtxn.put(b"scoped_max_depth", str(args.max_depth).encode(), db=meta_db)
+
     out_env.sync()
     out_env.close()
     src_env.close()

@@ -1351,15 +1351,21 @@ fn main() {
     });
 
     let max_depth_limit = 10usize;
-    // WAM_DEMAND=off skips the reachable_to_root BFS: the DB is assumed to be a
-    // pre-scoped subtree (built by build_scoped_subtree_lmdb.py), so every node
-    // is already in scope and query-time demand filtering is redundant. An
-    // empty reachable_ids set leaves the kernel demand filter a no-op (it
-    // guards on !is_empty), so lazy/cached need no further change; the eager
-    // branch below loads all edges instead of the demand-filtered subset.
-    let demand_enabled = std::env::var("WAM_DEMAND")
-        .map(|v| v != "off")
-        .unwrap_or(true);
+    // WAM_DEMAND controls the query-time reachable_to_root BFS:
+    //   on   (default) - always run it.
+    //   off            - always skip it (DB assumed pre-scoped).
+    //   auto           - skip iff the DB self-declares scoped (a `meta` marker
+    //                    written by build_scoped_subtree_lmdb.py).
+    // Skipping is safe on a pre-scoped subtree: every node is already in scope,
+    // so the BFS just re-walks the whole DB. An empty reachable_ids set leaves
+    // the kernel demand filter a no-op (it guards on !is_empty), so lazy/cached
+    // need no further change; the eager branch below loads all edges instead of
+    // the demand-filtered subset.
+    let demand_enabled = match std::env::var("WAM_DEMAND").as_deref() {
+        Ok("off") => false,
+        Ok("auto") => !lmdb.is_scoped(),
+        _ => true,
+    };
     let reachable_ids: HashSet<i32> = if demand_enabled {
         lmdb.reachable_to_root(root_id, max_depth_limit)
             .expect("reachable_to_root")
