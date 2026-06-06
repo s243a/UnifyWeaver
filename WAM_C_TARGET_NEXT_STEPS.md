@@ -4,15 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-inline-nested-findall-lowering` based on `main` at
-  `8183cce6` (`Merge pull request #2825 from
-  s243a/investigate/wam-c-findall-nested-template-smoke`)
+- `investigate/wam-c-bagof-setof-aggregate-surface` based on `main` at
+  `a493993d` (`Merge pull request #2844 from
+  s243a/investigate/wam-c-inline-nested-findall-lowering`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-inline-nested-findall-lowering`
+- `investigate/wam-c-bagof-setof-aggregate-surface`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -83,6 +83,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `findall/3` collect aggregate surface | Done | C now parses and executes shared `begin_aggregate collect` / `end_aggregate` WAM for simple `findall/3`, preserving generator choice points under aggregate frames and building non-empty/empty result lists |
 | `findall/3` nested/template smoke | Done | C now parses compiler temporary `_XTn` registers and the generated executable smoke covers helper-nested `findall/3`, `pair(X, [X])` templates, and `[X, X]` templates |
 | Direct inline nested `findall/3` lowering | Done | Inner-body `findall/3` now lowers to nested aggregate opcodes instead of `call findall/3`; local aggregate result slots are initialized before finalization, and the executable smoke covers `findall(X, (item(X), findall(Y, item(Y), Ys), Ys = [a,b]), L)` |
+| No-witness `bagof/3` and `setof/3` aggregate surface | Done | C parses the shared 4-field no-witness `begin_aggregate bagof/setof` form, `bagof/3` preserves duplicate solution order and fails empty, and `setof/3` sorts/deduplicates and fails empty |
 
 ## Current C Target Baseline
 
@@ -138,7 +139,7 @@ The C target is now a credible small WAM backend:
 - Supports the first aggregate surface: generated `findall/3` lowering through
   `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
   result lists, helper-nested aggregate calls, direct inline nested `findall/3`
-  bodies, and compound/list templates.
+  bodies, compound/list templates, and no-witness `bagof/3` / `setof/3`.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -161,7 +162,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support over generated aggregate opcodes; remaining gaps are `bagof/3`, `setof/3`, grouping/witness handling, sort/dedup semantics, and broader aggregate forms. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness `bagof/3` / `setof/3`; remaining gaps are witness grouping, existential `^/2` inner-goal lowering, and broader aggregate forms. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -175,6 +176,33 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-bagof-setof-aggregate-surface`
+
+Goal: extend the C aggregate runtime from `findall/3` collection into the
+compiler's no-witness `bagof/3` and `setof/3` surface.
+
+Evidence:
+
+- The C WAM parser accepts `begin_aggregate bagof/setof, Template, Result, ''`
+  and rejects non-empty witness strings instead of silently compiling grouped
+  semantics that the C runtime does not yet implement.
+- The aggregate finalizer now supports `bagof` and `setof`: `bagof` fails on
+  empty generators while preserving duplicate solution order, and `setof`
+  fails empty then sorts and deduplicates copied stored terms before list
+  materialization.
+- The real-Prolog executable smoke compiles `bagof/3` and `setof/3` with
+  `inline_bagof_setof(true)`, checks no `call bagof/3` / `call setof/3`
+  remains, verifies duplicate bag output, verifies sorted unique set output,
+  and checks empty-generator failure for both predicates.
+
+Reason:
+
+- Direct inline nested `findall/3` proved that nested aggregate frames and local
+  aggregate result variables work in C.
+- The next aggregate parity step is the no-witness subset the shared compiler
+  already describes. Grouped/witness `bagof` and `setof`, including inner
+  existential `^/2` lowering, remain a separate larger semantic surface.
 
 ### Completed: `investigate/wam-c-inline-nested-findall-lowering`
 
