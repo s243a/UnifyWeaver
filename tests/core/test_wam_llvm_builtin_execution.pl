@@ -4050,9 +4050,12 @@ run_fmt_test(Label, PredAtom, ExpectedStdout) :-
           target_datalayout('')
         ],
         LLPath),
-    read_file_to_string(LLPath, Src, []),
-    extract_instr_count(Src, PredAtom, IC),
-    extract_label_count(Src, PredAtom, LC),
+    % M108: pull the module-level instruction + label counts from
+    % the side-channel asserted by write_wam_llvm_project. Avoids a
+    % per-test ~7MB read_file_to_string + 2 regex scans that
+    % accumulated SWI-stack pressure (the 4 GB cap hit was driven
+    % almost entirely by these reads).
+    wam_llvm_target:wam_llvm_last_compile_counts(IC, LC),
     format(atom(DriverIR),
 'define i32 @main() {
 entry:
@@ -4111,9 +4114,8 @@ run_pow_test(Label, Preds, EntryPred, ScaleI, ExpectedI) :-
     write_wam_llvm_project(AllPreds,
         [module_name('pow_t'), target_triple(Triple), target_datalayout('')],
         LLPath),
-    read_file_to_string(LLPath, Src, []),
-    extract_instr_count(Src, EntryPred, IC),
-    extract_label_count(Src, EntryPred, LC),
+    % M108: same side-channel as run_test_r0 -- skip the IR read-back.
+    wam_llvm_target:wam_llvm_last_compile_counts(IC, LC),
     format(atom(DriverIR),
 'define i32 @main() {
 entry:
@@ -4220,9 +4222,12 @@ run_test(Label, PredAtom, InputVal, Expected) :-
           target_datalayout('')
         ],
         LLPath),
-    read_file_to_string(LLPath, Src, []),
-    extract_instr_count(Src, PredAtom, IC),
-    extract_label_count(Src, PredAtom, LC),
+    % M108: pull the module-level instruction + label counts from
+    % the side-channel asserted by write_wam_llvm_project. Avoids a
+    % per-test ~7MB read_file_to_string + 2 regex scans that
+    % accumulated SWI-stack pressure (the 4 GB cap hit was driven
+    % almost entirely by these reads).
+    wam_llvm_target:wam_llvm_last_compile_counts(IC, LC),
     format(atom(DriverIR),
 'define i32 @main() {
 entry:
@@ -4308,9 +4313,12 @@ run_test_r0(Label, Pred, InputVal, Expected) :-
           target_datalayout('')
         ],
         LLPath),
-    read_file_to_string(LLPath, Src, []),
-    extract_instr_count(Src, PredAtom, IC),
-    extract_label_count(Src, PredAtom, LC),
+    % M108: pull the module-level instruction + label counts from
+    % the side-channel asserted by write_wam_llvm_project. Avoids a
+    % per-test ~7MB read_file_to_string + 2 regex scans that
+    % accumulated SWI-stack pressure (the 4 GB cap hit was driven
+    % almost entirely by these reads).
+    wam_llvm_target:wam_llvm_last_compile_counts(IC, LC),
     format(atom(DriverIR),
 'define i32 @main() {
 entry:

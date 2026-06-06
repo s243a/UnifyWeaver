@@ -28,6 +28,7 @@
     wam_instruction_to_llvm_literal/3,   % +WamInstr, +LabelMap, -LLVMLiteral
     wam_line_to_llvm_literal/2,          % +Parts, -LLVMLit
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
+    wam_llvm_last_compile_counts/2,      % ?InstrCount, ?LabelCount (side channel)
     write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
     build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
     builtin_op_to_id/2,                  % +OpName, -IntId
@@ -90,6 +91,7 @@
 % fact table, and writes the result.
 
 :- dynamic llvm_foreign_kernel_spec/3.
+:- dynamic wam_llvm_last_compile_counts/2.   % M108: per-compile (Instr, Label) counts.
 
 clear_llvm_foreign_kernel_specs :-
     retractall(llvm_foreign_kernel_spec(_, _, _)).
@@ -2021,6 +2023,13 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
                             AllSwitchDefs),
     length(AllLiterals, InstrCount),
     length(NamePCPairs, LabelCount),
+    % M108: side-channel the module-level instruction/label counts
+    % so the test harness (and any other caller) can fetch them
+    % without re-reading and regex-grepping the multi-MB IR file --
+    % a per-test ~7MB allocation that was the dominant source of
+    % SWI-stack pressure on long suites.
+    retractall(wam_llvm_last_compile_counts(_, _)),
+    assertz(wam_llvm_last_compile_counts(InstrCount, LabelCount)),
     (   InstrCount =:= 0
     ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
     ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
