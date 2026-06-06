@@ -142,6 +142,18 @@ test_control_cut_jump_instructions :-
     ;   fail_test(Test, 'missing cut/jump control instruction arms')
     ).
 
+test_explicit_cut_uses_current_call_barrier :-
+    Test = 'WAM-C: explicit cut prunes to current call barrier',
+    (   compile_wam_helpers_to_c([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top - 1]'),
+        sub_string(S, _, _, _, 'wam_prune_choice_points(state, target_b)'),
+        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top++] = base_b'),
+        \+ sub_string(S, _, _, _, 'state->B = 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit !/0 still clears all choice points instead of pruning to the current barrier')
+    ).
+
 test_control_instruction_parsing :-
     Test = 'WAM-C: cut and jump instructions parse to typed payloads',
     WamCode = 'wam_c_ctrl_parse/1:\n    get_level Y1\n    try_me_else L_else\n    cut Y1\n    cut_ite\n    jump L_done\nL_else:\n    trust_me\nL_done:\n    proceed',
@@ -1673,6 +1685,16 @@ test_real_prolog_precise_ite_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_explicit_cut_executable_smoke :-
+    Test = 'WAM-C: real Prolog explicit cut executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_explicit_cut_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog explicit cut executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2606,6 +2628,45 @@ cleanup_wam_c_precise_ite_smoke :-
     retractall(user:wam_c_precise_then(_, _)),
     retractall(user:wam_c_precise_else(_, _)),
     retractall(user:wam_c_precise_scope(_)).
+
+run_real_prolog_explicit_cut_executable_smoke :-
+    assertz((user:wam_c_cut_choice(a) :- true)),
+    assertz((user:wam_c_cut_choice(b) :- true)),
+    assertz((user:wam_c_inner_cut :- wam_c_cut_choice(_), !)),
+    assertz((user:wam_c_outer_cut(ok) :- (wam_c_inner_cut, fail ; true))),
+    (   compile_predicate_to_wam(user:wam_c_cut_choice/1, [], WamChoice),
+        compile_predicate_to_wam(user:wam_c_inner_cut/0, [], WamInner),
+        compile_predicate_to_wam(user:wam_c_outer_cut/1, [], WamOuter),
+        sub_string(WamInner, _, _, _, 'builtin_call !/0, 0'),
+        sub_string(WamOuter, _, _, _, 'try_me_else'),
+        compile_wam_predicate_to_c(user:wam_c_cut_choice/1, WamChoice, [], ChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_inner_cut/0, WamInner, [], InnerCode),
+        compile_wam_predicate_to_c(user:wam_c_outer_cut/1, WamOuter, [], OuterCode),
+        atomic_list_concat([ChoiceCode, InnerCode, OuterCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_explicit_cut_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_explicit_cut_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_explicit_cut_smoke
+    ;   cleanup_wam_c_explicit_cut_smoke,
+        fail
+    ).
+
+cleanup_wam_c_explicit_cut_smoke :-
+    retractall(user:wam_c_cut_choice(_)),
+    retractall(user:wam_c_inner_cut),
+    retractall(user:wam_c_outer_cut(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5506,6 +5567,45 @@ int main(void) {
 }
 ').
 
+wam_c_explicit_cut_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_cut_choice_1(WamState* state);
+void setup_wam_c_inner_cut_0(WamState* state);
+void setup_wam_c_outer_cut_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_cut_choice_1(&state);
+    setup_wam_c_inner_cut_0(&state);
+    setup_wam_c_outer_cut_1(&state);
+
+    int inner_rc = wam_run_predicate(&state, "wam_c_inner_cut/0", NULL, 0);
+    if (inner_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue outer_args[1] = { val_atom("ok") };
+    int outer_rc = wam_run_predicate(&state, "wam_c_outer_cut/1", outer_args, 1);
+    if (outer_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue outer_fail_args[1] = { val_atom("bad") };
+    int outer_fail_rc = wam_run_predicate(&state, "wam_c_outer_cut/1", outer_fail_args, 1);
+    if (outer_fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -5620,6 +5720,7 @@ run_tests_once :-
     test_unification_instructions,
     test_control_flow_instructions,
     test_control_cut_jump_instructions,
+    test_explicit_cut_uses_current_call_barrier,
     test_control_instruction_parsing,
     test_precise_ite_y_level_generation,
     test_choice_point_instructions,
@@ -5713,6 +5814,7 @@ run_tests_once :-
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_control_executable_smoke,
     test_real_prolog_precise_ite_executable_smoke,
+    test_real_prolog_explicit_cut_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,

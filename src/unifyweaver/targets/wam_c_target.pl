@@ -2518,6 +2518,8 @@ int wam_run_predicate(WamState *state, const char *pred,
     if (entry < 0) return WAM_ERR_OOB;
     int base_b = state->B;
     int base_call_base_top = state->call_base_top;
+    if (state->call_base_top >= WAM_CALL_STACK_SIZE) return WAM_ERR_OOB;
+    state->call_bases[state->call_base_top++] = base_b;
     for (int i = 0; i < arity; i++) state->A[i] = args[i];
     state->CP = WAM_HALT;
     state->P = entry;
@@ -2725,7 +2727,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
     if (strcmp(op, "!/0") == 0 && arity == 0) {
-        state->B = 0;
+        if (state->call_base_top <= 0) return false;
+        int target_b = state->call_bases[state->call_base_top - 1];
+        if (target_b < 0 || target_b > state->B) return false;
+        wam_prune_choice_points(state, target_b);
         return true;
     }
 
