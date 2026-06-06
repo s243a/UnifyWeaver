@@ -10412,12 +10412,25 @@ cached_wam_runtime_object(RuntimeCpp, CachedObj) :-
     format(atom(CachedObj), '~w/wam_runtime_~w.o', [CacheDir, Hash]),
     (   exists_file(CachedObj)
     ->  true
-    ;   process_create(path('g++'),
+    ;   %% Compile to a unique temp file, then atomically rename into
+        %% place. A direct `g++ -c -o CachedObj` is NOT crash-safe: if the
+        %% compile is interrupted (e.g. the suite is killed by a timeout),
+        %% a truncated .o is left at CachedObj and every later run reuses
+        %% it via exists_file/1, linking a corrupt runtime and producing
+        %% spurious e2e failures. rename/2 on the same filesystem is
+        %% atomic, so the cache only ever holds a complete object.
+        random_between(100000, 999999, Salt),
+        format(atom(TmpObj), '~w/wam_runtime_~w.~w.tmp.o', [CacheDir, Hash, Salt]),
+        process_create(path('g++'),
                        ['-std=c++17', '-O0', '-c',
-                        '-o', CachedObj, RuntimeCpp],
+                        '-o', TmpObj, RuntimeCpp],
                        [stderr(null), process(PID)]),
         process_wait(PID, Status),
-        assertion(Status == exit(0))
+        assertion(Status == exit(0)),
+        catch(rename_file(TmpObj, CachedObj), _,
+              %% Lost a race with a concurrent compile: the winner's
+              %% complete object is already in place; drop our temp.
+              catch(delete_file(TmpObj), _, true))
     ).
 
 run_query(BinPath, PredKey, Args, Expected) :-
