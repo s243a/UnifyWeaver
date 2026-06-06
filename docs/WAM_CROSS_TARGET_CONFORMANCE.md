@@ -72,16 +72,20 @@ local Scala maven cache.
 
 Suggested CI tiers:
 
-- **fast / every push:** `CONFORMANCE_PROGRAMS=member,builtins
-  CONFORMANCE_SAMPLE=2` — broad builtin coverage, set operation, minimal
-  compute. Seed varies per run so sampling rotates coverage.
+- **fast / PR + main smoke:** one backend per matrix job with
+  `CONFORMANCE_TARGETS=<target> CONFORMANCE_PROGRAMS=member,builtins
+  CONFORMANCE_SAMPLE=2 CONFORMANCE_SEED=<run number>` — broad builtin
+  coverage, set operation, minimal compute, and failures attributed to a
+  single backend. Missing toolchains still skip through the harness's
+  normal `ct_available/1` guards.
 - **full / nightly or pre-merge:** no sampling — every program, every
   query, every available backend.
 
 Because random sampling is nondeterministic, a real divergence can pass
 one push and fail the next, which is confusing for whoever's bisecting.
-CI should **log the `CONFORMANCE_SEED` it used** (and set one explicitly)
-so any failure is reproducible from the recorded seed.
+CI sets `CONFORMANCE_SEED` explicitly, and the harness logs
+`CONFORMANCE_SEED=<n>` once per run so any failure is reproducible from
+the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
