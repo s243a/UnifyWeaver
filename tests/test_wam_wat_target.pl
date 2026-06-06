@@ -5,6 +5,9 @@
 
 :- begin_tests(wam_wat_target).
 
+assert_substring(Haystack, Needle) :-
+    assertion(sub_string(Haystack, _, _, _, Needle)).
+
 %% --- Register mapping ---
 
 test(reg_a1_index) :-
@@ -81,9 +84,10 @@ proceed
     assertion(Reason == single_clause),
     lower_predicate_to_wat(answer/0, WamCode, [], lowered('answer/0', FuncName, Code)),
     assertion(FuncName == lowered_answer_0),
-    assertion(sub_atom(Code, _, _, _, '(func $lowered_answer_0')),
-    assertion(sub_atom(Code, _, _, _, '(call $do_put_constant')),
-    assertion(sub_atom(Code, _, _, _, '(call $do_builtin_call')).
+    assert_substring(Code, "(func $lowered_answer_0"),
+    assert_substring(Code, "(call $do_put_constant"),
+    assert_substring(Code, "(call $do_builtin_call").
+
 test(encode_get_structure) :-
     wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
     assertion(atom(Hex)),

@@ -1362,6 +1362,20 @@ user:wam_cpp_test_not_alias_fails    :- not(true).
 % because NaN =:= NaN is false but \=== NaN at the structural level.
 user:wam_cpp_test_not_nan_check   :- R is 0.0 / 0.0, \+ (R =:= R).
 
+% Cut INSIDE a negated conjunction. \+ G desugars to (G -> fail ; true),
+% so the cut becomes a cut in the if-then-else CONDITION, which is opaque
+% (local to the condition, like call/1): it must commit gen''s first
+% solution but leave the negation''s own choicepoint intact, so the goal
+% fails and the negation succeeds → true. Regression guard for the
+% condition-cut scoping fix (a clause-scope cut would prune the negation
+% CP and make this wrongly fail).
+:- dynamic user:wam_cpp_test_not_inline_cut/0.
+:- dynamic user:wam_cpp_ncut_gen/1.
+user:wam_cpp_ncut_gen(1).
+user:wam_cpp_ncut_gen(2).
+user:wam_cpp_ncut_gen(3).
+user:wam_cpp_test_not_inline_cut :- \+ (wam_cpp_ncut_gen(_), !, fail).
+
 % call/N (meta-call):
 :- dynamic user:wam_cpp_call_helper/1.
 :- dynamic user:wam_cpp_test_call_atom/0.
@@ -6463,6 +6477,24 @@ test(cpp_e2e_not_compound_conjunction,
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath, 'wam_cpp_test_not_compound/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_inline_cut, [condition(cpp_compiler_available)]) :-
+    % `\+ (gen(_), !, fail)` — a cut inside the negated conjunction is
+    % local to the negation (the ->/2 condition is opaque to cut). The
+    % cut commits gen''s first solution; `fail` then fails the goal, so
+    % the negation succeeds → true. Guards the if-then-else condition
+    % cut-scope fix: a clause-scope cut would prune the negation''s own
+    % choicepoint and make this wrongly return false.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_inline_cut', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_ncut_gen/1,
+                               user:wam_cpp_test_not_inline_cut/0],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_not_inline_cut/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
