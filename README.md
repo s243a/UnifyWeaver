@@ -33,7 +33,7 @@ UnifyWeaver supports multiple compilation strategies depending on the target and
 | **Generator-Based** | Lazy evaluation via Python generators with memoization | Python |
 | **Declarative Output** | SQL queries for external database execution | SQL |
 | **Symbolic WAM** | Low-level abstract machine instructions for complex unification/backtracking | WAM (Hub) |
-| **WAM Transpilation** | WAM instructions compiled to target-language WAM virtual machine implementations | C, Rust, Go, LLVM, JVM, ILAsm, Elixir |
+| **WAM Transpilation** | WAM instructions compiled to target-language WAM virtual machine implementations | C, Rust, Go, LLVM, JVM, ILAsm, Elixir, Kotlin |
 
 ### WAM Transpilation Targets
 
@@ -46,6 +46,7 @@ Several targets support a **hybrid WAM** compilation path: Prolog is first compi
 | **Go** | `wam_go_target` | Single | `map[string]interface{}`, slices | `for` loop + `switch` |
 | **LLVM** | `wam_llvm_target` | Single | SSA registers, stack alloca | Basic blocks + `br` |
 | **JVM** | `wam_jvm_target` | Dual (Jamaica / Krakatau) | `HashMap`/`ArrayList` fields | `while` + `tableswitch` |
+| **Kotlin** | `wam_kotlin_target` | Single (Gradle/JVM) | sealed `Value` classes + mutable WAM state | `while` loop + `when` dispatch |
 | **ILAsm (.NET)** | `wam_ilasm_target` | Single | `Dictionary`/`List` fields | `br` loop + `switch` |
 | **Elixir** | `wam_elixir_target` | Single | `%WamState{}` struct, immutable maps | Recursive `run/1` |
 

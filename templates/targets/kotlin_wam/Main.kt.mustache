@@ -1,0 +1,25 @@
+package {{package}}
+
+{{native_predicates}}
+
+{{wam_predicates}}
+
+{{failed_predicates}}
+
+fun buildProgram(): WamProgram {
+    val program = WamProgram()
+{{registrar_calls}}
+    return program
+}
+
+fun main(args: Array<String>) {
+    val program = buildProgram()
+    val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()
+    if (predicate == null) {
+        println("No WAM predicates registered")
+        return
+    }
+    val runtime = WamRuntime(program)
+    runtime.run(predicate)
+    println("Ran $predicate")
+}
