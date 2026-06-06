@@ -1211,8 +1211,24 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     ;   nonvar(Goal),
         Goal = \+(NotGoal),
         wam_inline_not_enabled
-    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
-                      V0, HasEnv, Vf, Code)
+    ->  (   wam_ite_use_y_level_enabled
+        % M17 targets (get_level/cut): use the soft-cut form
+        % (NotGoal -> fail ; true). cut Yn truncates choicepoints back to
+        % the snapshot taken BEFORE the negation try_me_else, so it wipes
+        % the negation CP AND any CPs NotGoal pushed above it -- the same
+        % correctness the hard-cut form gives, but WITHOUT a clause-scope
+        % `!`. That matters because a clause-scope cut would (via the
+        % runtime''s B0 mechanism) cut to the enclosing clause''s level and
+        % wrongly prune sibling choicepoints created before the \+. The
+        % soft cut is scoped to the negation alone.
+        ->  compile_goals([((NotGoal -> fail ; true)) | Rest],
+                          V0, HasEnv, Vf, Code)
+        % Legacy targets (no get_level/cut): keep the hard-cut rewrite
+        % ((G, !, fail) ; true) -- see note below on why soft-cut+cut_ite
+        % gets the wrong CP when G is nondeterministic on these targets.
+        ;   compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                          V0, HasEnv, Vf, Code)
+        )
     % M71: forall(Cond, Action) inlines as
     %   ((Cond, (Action -> fail ; true)) -> fail ; true)
     % i.e., \+ (Cond, \+ Action) using soft-cut (-> form) for BOTH
@@ -2124,6 +2140,9 @@ is_builtin_pred(getgid, 1).             % getgid(-Gid).
 is_builtin_pred(getegid, 1).            % getegid(-EGid).
 is_builtin_pred(getppid, 1).            % getppid(-PPid).
 is_builtin_pred(getpgrp, 1).            % getpgrp(-PGid) -- process group id.
+is_builtin_pred(realpath, 2).           % realpath(+Path, -Abs) -- canonical absolute path.
+is_builtin_pred(kill, 2).               % kill(+Pid, +Sig) -- signal 0 = existence check.
+is_builtin_pred(truncate, 2).           % truncate(+Path, +Length) -- set file size.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

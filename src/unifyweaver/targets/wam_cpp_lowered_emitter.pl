@@ -26,6 +26,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
@@ -46,6 +47,44 @@ parse_wam_text(WamText, Instrs) :-
 
 is_label_item(label(_)).
 
+% --- Label-preserving parse + if-then-else structuring ---------------
+% wam_text_to_items already emits label(Name) items; parse_wam_text drops
+% them. For (C -> T ; E) / \+ / once we need the labels, so keep them and
+% fold each block into ite(Cond,Then,Else) via the shared structurer. The
+% previous emitter no-op'd try_me_else/cut_ite/jump/trust_me, dropping the
+% structure and emitting cond+then+else as one flat conjunction.
+
+cpp_base_instrs(WamCode, Instrs) :-
+    ( is_list(WamCode) -> Instrs = WamCode ; parse_wam_text(WamCode, Instrs) ).
+
+%% cpp_structured_clause1(+WamCode, -Structured) is semidet.
+%  Re-parse keeping labels, drop leading indexing/label items, take clause 1
+%  and fold its ITE block(s). Succeeds only for a single-clause predicate
+%  whose every block is consumed.
+cpp_structured_clause1(WamCode, Structured) :-
+    ( is_list(WamCode) -> LInstrs0 = WamCode ; wam_text_to_items(WamCode, LInstrs0) ),
+    strip_leading_index_labels(LInstrs0, LInstrs),
+    \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
+    take_to_proceed(LInstrs, C1L),
+    structure_ite(C1L, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+strip_leading_index_labels([switch_on_constant(_)|T], R) :- !, strip_leading_index_labels(T, R).
+strip_leading_index_labels([switch_on_constant_a2(_)|T], R) :- !, strip_leading_index_labels(T, R).
+strip_leading_index_labels([switch_on_structure(_)|T], R) :- !, strip_leading_index_labels(T, R).
+strip_leading_index_labels([switch_on_term(_)|T], R) :- !, strip_leading_index_labels(T, R).
+strip_leading_index_labels([label(_)|T], R) :- !, strip_leading_index_labels(T, R).
+strip_leading_index_labels(L, L).
+
+%% cpp_supported_structured(+StructuredInstr)
+cpp_supported_structured(ite(C, T, E)) :- !,
+    forall(member(I, C), cpp_supported_structured(I)),
+    forall(member(I, T), cpp_supported_structured(I)),
+    forall(member(I, E), cpp_supported_structured(I)).
+cpp_supported_structured(I) :- cpp_supported(I).
+
 % =====================================================================
 % Lowerability
 % =====================================================================
@@ -54,15 +93,19 @@ is_label_item(label(_)).
 %  True if the predicate can be lowered to a direct C++ function.
 %  Reason is `deterministic` or `multi_clause_1`.
 wam_cpp_lowerable(PI, WamCode, Reason) :-
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
-    ;   atom_string(WamCode, _), parse_wam_text(WamCode, Instrs)
-    ),
+    cpp_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
-    forall(member(I, C1), cpp_supported(I)),
-    (   is_deterministic_pred_cpp(Instrs)
-    ->  Reason = deterministic
-    ;   Reason = multi_clause_1
+    (   % No internal ITE: existing deterministic / multi-clause path.
+        \+ member(try_me_else(_), C1),
+        forall(member(I, C1), cpp_supported(I))
+    ->  ( is_deterministic_pred_cpp(Instrs) -> Reason = deterministic
+        ; Reason = multi_clause_1 )
+    ;   % Clause-1 has an inner choice point: lower only if it is a pure
+        % (C -> T ; E) / \+ / once block whose pieces are all supported.
+        \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
+        cpp_structured_clause1(WamCode, Structured),
+        forall(member(I, Structured), cpp_supported_structured(I)),
+        Reason = ite_lowered
     ),
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
 
@@ -117,6 +160,8 @@ cpp_supported(call_foreign(_, _)).
 cpp_supported(try_me_else(_)).
 cpp_supported(trust_me).
 cpp_supported(cut_ite).
+cpp_supported(cut(_)).         % Y-level soft cut (ite_use_y_level mode)
+cpp_supported(get_level(_)).   % captures the cut level in the clause prefix
 cpp_supported(jump(_)).
 cpp_supported(begin_aggregate(_, _, _)).
 cpp_supported(end_aggregate(_)).
@@ -163,15 +208,20 @@ cpp_safe_code(_, 0'_).
 lower_predicate_to_cpp(PI, WamCode, Options, CppLines) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     cpp_lowered_func_name(Pred/Arity, FuncName),
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   parse_wam_text(WamCode, Instrs)
-    ),
+    cpp_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1Instrs),
     (   member(foreign_pred_keys(ForeignPreds0), Options)
     ->  maplist(foreign_key_string, ForeignPreds0, ForeignPreds)
     ;   ForeignPreds = []
     ),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "    ", ForeignPreds)),
+    % Emit the plain clause-1 when it has no inner choice point; otherwise
+    % fold its ITE block(s) into structured form (ite/3) first.
+    (   \+ member(try_me_else(_), C1Instrs)
+    ->  EmitInstrs = C1Instrs
+    ;   cpp_structured_clause1(WamCode, EmitInstrs)
+    ),
+    nb_setval(cpp_ite_ctr, 0),
+    with_output_to(string(Body), emit_instrs(EmitInstrs, "    ", ForeignPreds)),
     format(string(Header),
 '// ~w — lowered from ~w/~w
 bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
@@ -198,6 +248,28 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
     format("~w// execute ~w via foreign kernel~n", [I, PredStr]),
     format("~wreturn vm->step(Instruction::CallForeign(\"~w\", ~w));~n",
            [I, PredStr, Arity]).
+% If-then-else (structured; see wam_ite_structurer). The condition runs in
+% an immediately-invoked lambda so its `return false` means "condition
+% failed"; inside then/else, `return false` returns from the lowered
+% function. cpp's get_reg reflects cell state, so unwinding the trail
+% before the else branch restores any partial bindings the condition made
+% (cell-based, like the existing \=/2 builtin).
+emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
+    nb_getval(cpp_ite_ctr, N0), N is N0 + 1, nb_setval(cpp_ite_ctr, N),
+    string_concat(I, "    ", I2),
+    format("~w{~n", [I]),
+    format("~w    std::size_t _ite_mark~w = vm->trail.size();~n", [I, N]),
+    format("~w    bool _ite_cond~w = [&]() -> bool {~n", [I, N]),
+    emit_instrs(Cond, I2, ForeignPreds),
+    format("~w        return true;~n", [I]),
+    format("~w    }();~n", [I]),
+    format("~w    if (_ite_cond~w) {~n", [I, N]),
+    emit_instrs(Then, I2, ForeignPreds),
+    format("~w    } else {~n", [I]),
+    format("~w        vm->unwind_trail_to(_ite_mark~w);~n", [I, N]),
+    emit_instrs(Else, I2, ForeignPreds),
+    format("~w    }~n", [I]),
+    format("~w}~n", [I]).
 emit_one(Instr, I, _) :-
     emit_one(Instr, I).
 
@@ -260,7 +332,9 @@ emit_one(get_nil(AiStr), I) :-
 emit_one(get_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
     format("~w// get_variable ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", vm->get_reg(\"~w\"));~n", [I, Xn, Ai]).
+    % Repoint Xn to share Ai's cell (matches interpreter GetVariable);
+    % put_reg would mutate Xn's cell and corrupt any register aliasing it.
+    format("~wvm->set_cell(\"~w\", vm->get_cell(\"~w\"));~n", [I, Xn, Ai]).
 
 emit_one(get_value(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
@@ -288,22 +362,23 @@ emit_one(put_constant(CStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
     cpp_val_literal(CStr, CppVal),
     format("~w// put_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]).
+    % Repoint Ai to a fresh cell (matches interpreter PutConstant); mutating
+    % would corrupt any register aliasing Ai (e.g. via a prior put_variable).
+    format("~wvm->assign_reg(\"~w\", ~w);~n", [I, Ai, CppVal]).
 
 emit_one(put_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
     format("~w// put_variable ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    Value v = Value::Unbound(\"_V\" + std::to_string(vm->var_counter++));~n",
-           [I]),
-    format("~w    vm->put_reg(\"~w\", v);~n", [I, Xn]),
-    format("~w    vm->put_reg(\"~w\", v);~n", [I, Ai]),
-    format("~w}~n", [I]).
+    % Both registers must alias ONE fresh cell so the variable has a single
+    % identity (binding via the cell is seen through either register). Two
+    % put_reg copies would create two independent cells.
+    format("~wvm->put_variable_reg(\"~w\", \"~w\");~n", [I, Xn, Ai]).
 
 emit_one(put_value(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
     format("~w// put_value ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", vm->get_reg(\"~w\"));~n", [I, Ai, Xn]).
+    % Repoint Ai to share Xn's cell (matches interpreter PutValue).
+    format("~wvm->set_cell(\"~w\", vm->get_cell(\"~w\"));~n", [I, Ai, Xn]).
 
 emit_one(put_structure(FStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
@@ -398,6 +473,8 @@ emit_one(call_foreign(PredStr, ArStr), I) :-
 emit_one(try_me_else(_), _) :- !.
 emit_one(trust_me, _) :- !.
 emit_one(cut_ite, _) :- !.
+emit_one(cut(_), _) :- !.        % commit consumed by the structurer
+emit_one(get_level(_), _) :- !.  % cut-level capture: no-op in the lowered if/else
 emit_one(jump(_), _) :- !.
 
 % Aggregate ops delegate to vm->step() (the interpreter handles the

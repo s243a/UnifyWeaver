@@ -555,6 +555,12 @@ wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
 wam_go_direct_builtin(print/1, 1, 'print/1').
 wam_go_direct_builtin('print/1', 1, 'print/1').
 wam_go_direct_builtin("print/1", 1, 'print/1').
+wam_go_direct_builtin(format/1, 1, 'format/1').
+wam_go_direct_builtin('format/1', 1, 'format/1').
+wam_go_direct_builtin("format/1", 1, 'format/1').
+wam_go_direct_builtin(format/2, 2, 'format/2').
+wam_go_direct_builtin('format/2', 2, 'format/2').
+wam_go_direct_builtin("format/2", 2, 'format/2').
 wam_go_direct_builtin(sum_list/2, 2, 'sum_list/2').
 wam_go_direct_builtin('sum_list/2', 2, 'sum_list/2').
 wam_go_direct_builtin("sum_list/2", 2, 'sum_list/2').
@@ -1210,8 +1216,7 @@ go_foreign_astar_dimensionality(_Module, 5).
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, _, _, [], []).
 wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
-    split_string(Line, " \t", " \t", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
     ;   CleanParts = [First|_],
@@ -1241,14 +1246,72 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
         )
     ).
 
+wam_tokenize_line(Line, Parts) :-
+    string_chars(Line, Chars),
+    wam_tokenize_chars(Chars, [], RevParts),
+    reverse(RevParts, Parts).
+
+wam_tokenize_chars([], Parts, Parts).
+wam_tokenize_chars([C|Rest], Parts0, Parts) :-
+    char_type(C, space),
+    !,
+    wam_tokenize_chars(Rest, Parts0, Parts).
+wam_tokenize_chars(['\''|Rest], Parts0, Parts) :-
+    !,
+    wam_take_quoted(Rest, Token, Remaining),
+    wam_tokenize_chars(Remaining, [Token|Parts0], Parts).
+wam_tokenize_chars(Chars, Parts0, Parts) :-
+    wam_take_bare(Chars, Token, Remaining),
+    (   Token == ""
+    ->  Parts1 = Parts0
+    ;   Parts1 = [Token|Parts0]
+    ),
+    wam_tokenize_chars(Remaining, Parts1, Parts).
+
+wam_take_quoted(Rest, Token, Remaining) :-
+    wam_take_quoted_inner(Rest, ['\''], RevQuoted, AfterQuote),
+    reverse(RevQuoted, QuotedChars),
+    wam_take_bare_tail(AfterQuote, TailChars, Remaining),
+    append(QuotedChars, TailChars, TokenChars),
+    string_chars(Token, TokenChars).
+
+wam_take_quoted_inner([], Acc, Acc, []).
+wam_take_quoted_inner(['\\', C|Rest], Acc, RevQuoted, Remaining) :-
+    !,
+    wam_take_quoted_inner(Rest, [C, '\\'|Acc], RevQuoted, Remaining).
+wam_take_quoted_inner(['\''|Rest], Acc, ['\''|Acc], Rest) :-
+    !.
+wam_take_quoted_inner([C|Rest], Acc, RevQuoted, Remaining) :-
+    wam_take_quoted_inner(Rest, [C|Acc], RevQuoted, Remaining).
+
+wam_take_bare([], "", []).
+wam_take_bare(Chars, Token, Remaining) :-
+    wam_take_bare_chars(Chars, TokenChars, Remaining),
+    string_chars(Token, TokenChars).
+
+wam_take_bare_chars([], [], []).
+wam_take_bare_chars([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_chars([C|Rest], [C|TokenRest], Remaining) :-
+    wam_take_bare_chars(Rest, TokenRest, Remaining).
+
+wam_take_bare_tail([], [], []).
+wam_take_bare_tail([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_tail([C|Rest], [C|Tail], Remaining) :-
+    wam_take_bare_tail(Rest, Tail, Remaining).
+
 %% wam_line_to_go_literal(+Parts, -GoLit)
 %% parse_string_to_go_val(+Str, -GoVal)
 %
 % When the WAM compiler emits an atom that needs Prolog quoting (e.g.
 % an apostrophe-bearing category like 'People\'s_Republic_of_China'),
 % the WAM TEXT carries the quoted form. The split-on-whitespace parser
-% above hands that whole token here including the surrounding ' and
-% the backslash-escaped inner quote. If we just pass it to
+% used to break quoted constants containing whitespace into multiple tokens.
+% `wam_tokenize_line/2` now keeps that whole token here including the
+% surrounding ' and the backslash-escaped inner quote. If we just pass it to
 % go_value_literal/2 unchanged, the resulting Go literal becomes
 %     &Atom{Name: "'People\'s_Republic_of_China'"}
 % which (a) keeps the spurious outer apostrophes inside the atom's Name

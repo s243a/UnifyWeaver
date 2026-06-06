@@ -51,6 +51,10 @@ jobs:
         run: |
           swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), asserta(user:file_search_path(library, 'tests/core')), use_module(library(test_policy)), test_policy, halt."
 
+      - name: Run root-metric directive tests
+        run: |
+          swipl -q -g run_tests -t halt tests/core/test_root_metric.pl
+
       - name: Run C# query target tests (codegen only)
         run: |
           SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt

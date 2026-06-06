@@ -58,6 +58,12 @@ test(parse_wam_line_instruction) :-
     compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
     assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: internAtom("john"), Ai: 0}')).
 
+test(parse_wam_line_quoted_constant_with_spaces) :-
+    reset_go_atom_literal_fallback,
+    WamCode = "    put_constant 'fmt one ~~ ok~n', A1",
+    compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
+    assertion(sub_string(GoCode, _, _, _, '&PutConstant{C: internAtom("fmt one ~~ ok~n"), Ai: 0}')).
+
 test(parse_wam_line_switch) :-
     once((
         WamCode = "    switch_on_constant john:default, jane:L1",

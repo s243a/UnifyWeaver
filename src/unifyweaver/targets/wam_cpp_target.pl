@@ -320,12 +320,24 @@ wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R, W), _, Code) :-
-    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS),
+    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS0),
+    % The witness spec is emitted as a quoted atom in the WAM text (e.g.
+    % 'Y3' or 'Y1;Y2'), so the parser token keeps the surrounding single
+    % quotes. Strip them — otherwise witness_regs holds "'Y3'" and the
+    % runtime's get_cell("'Y3'") fails, leaving witness_cells empty and
+    % silently degrading bagof/setof grouping to a flat findall.
+    strip_surrounding_squotes(WS0, WS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV),
     escape_cpp_string(RS, ER), escape_cpp_string(WS, EW),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w", "~w")',
            [EK, EV, ER, EW]).
+strip_surrounding_squotes(S0, S) :-
+    string_chars(S0, Cs),
+    (   Cs = ['\''|Rest], append(Mid, ['\''], Rest)
+    ->  string_chars(S, Mid)
+    ;   S = S0
+    ).
 wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
@@ -3308,6 +3320,15 @@ struct TrailEntry {
 // nested calls that both use Y1 don''t clobber each other.
 struct EnvFrame {
     std::size_t saved_cp = 0;
+    // B0: the choicepoint-stack height when this clause''s predicate was
+    // called (captured by Allocate from cut_barrier, which Call/Execute
+    // set to choice_points.size() before transferring control). A plain
+    // cut (!/0) in this clause truncates choicepoints back to b0, so it
+    // removes only this predicate''s own alternatives and body CPs, never
+    // a caller''s choicepoint. Survives nested calls because each callee
+    // gets its own frame; restored on backtrack via ChoicePoint''s
+    // saved_env_stack snapshot.
+    std::size_t b0 = 0;
     std::unordered_map<std::string, CellPtr> y_regs;
 };
 
@@ -3708,6 +3729,16 @@ struct WamState {
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
+    // Create one fresh unbound variable cell and alias it into BOTH
+    // registers, so they share identity (binding one binds the other).
+    // Used by lowered put_variable: copying a Value into two registers
+    // would give two independent cells, losing variable identity.
+    void    put_variable_reg(const std::string& a, const std::string& b);
+    // Assign a register to a fresh cell holding v (repoint, do NOT mutate
+    // the existing cell — any register aliasing this one must not see the
+    // new value). Mirrors the interpreter PutConstant. Used by lowered
+    // put_constant.
+    void    assign_reg(const std::string& name, Value v);
 
     // Deref through Unbound chains until a concrete value (or a terminal
     // unbound cell) is reached. Returns by value (snapshot).
@@ -3716,6 +3747,10 @@ struct WamState {
     // bind_cell mutates *cell, recording the previous content on the trail.
     void    bind_cell(CellPtr cell, Value v);
     void    trail_binding(const std::string& name); // legacy reg-name trail
+    // Undo all bindings recorded since `mark` (trail.size() at the mark).
+    // Used by lowered if-then-else when the condition fails, before the
+    // else branch runs.
+    void    unwind_trail_to(std::size_t mark);
 
     // Unification: takes Cell pointers so binding works correctly.
     bool    unify_cells(CellPtr a, CellPtr b);
@@ -4096,6 +4131,16 @@ void WamState::set_cell(const std::string& name, CellPtr c) {
     regs[name] = std::move(c);
 }
 
+void WamState::put_variable_reg(const std::string& a, const std::string& b) {
+    CellPtr c = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+    set_cell(a, c);
+    set_cell(b, c);
+}
+
+void WamState::assign_reg(const std::string& name, Value v) {
+    set_cell(name, make_cell(std::move(v)));
+}
+
 Value WamState::get_reg(const std::string& name) const {
     if (is_y_reg(name)) {
         if (env_stack.empty()) return Value{};
@@ -4130,6 +4175,14 @@ void WamState::trail_binding(const std::string& name) {
     e.cell = it->second;
     e.prev = *it->second;
     trail.push_back(std::move(e));
+}
+
+void WamState::unwind_trail_to(std::size_t mark) {
+    while (trail.size() > mark) {
+        TrailEntry t = std::move(trail.back());
+        trail.pop_back();
+        *t.cell = std::move(t.prev);
+    }
 }
 
 void WamState::bind_cell(CellPtr cell, Value v) {
@@ -4495,7 +4548,20 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     if (op == "true/0") { pc += 1; return true; }
     if (op == "fail/0") { return false; }
     if (op == "!/0")    {
-        if (choice_points.size() > cut_barrier) choice_points.resize(cut_barrier);
+        // Cut to this clause''s B0 (the choicepoint height when its
+        // predicate was called), held in the current env frame. This
+        // keeps a cut local to the predicate: it prunes this predicate''s
+        // own alternatives and the body CPs it created, but never a
+        // caller''s choicepoint (e.g. the choicepoint of an enclosing
+        // negation or if-then-else whose condition called this
+        // predicate). Envless
+        // clauses (no Allocate) can only contain neck cuts -- they have
+        // no in-body call to clobber cut_barrier -- so the global
+        // cut_barrier (set to call-time height by Call/Execute) is the
+        // correct fallback.
+        std::size_t level = env_stack.empty() ? cut_barrier
+                                              : env_stack.back().b0;
+        if (choice_points.size() > level) choice_points.resize(level);
         pc += 1; return true;
     }
 
@@ -7658,6 +7724,12 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Allocate: {
             EnvFrame f;
             f.saved_cp = cp;
+            // Capture B0 for this clause: cut_barrier was set to the
+            // caller-time choicepoint height by the Call/Execute that
+            // entered this predicate (and is restored on backtrack via
+            // the choicepoint snapshot), so it is the correct cut level
+            // for a plain cut in this clause body.
+            f.b0 = cut_barrier;
             env_stack.push_back(std::move(f));
             pc += 1; return true;
         }
@@ -7719,6 +7791,11 @@ bool WamState::step(const Instruction& instr) {
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
                 cp = pc + 1;
+                // Record B0 for the callee: a plain cut in the callee
+                // cuts back to this choicepoint height (see EnvFrame::b0
+                // / Allocate). Saved/restored across backtracking by the
+                // callee''s try_me_else choicepoint snapshot of cut_barrier.
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }
@@ -7772,6 +7849,8 @@ bool WamState::step(const Instruction& instr) {
             }
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
+                // Record B0 for the tail-called callee (see Op::Call).
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }

@@ -54,6 +54,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module('../targets/wam_scala_target', [
        scala_lowered_constant_term/2,
        scala_lowered_functor_arity/3,
@@ -192,41 +193,8 @@ parse_lines_labeled_scala([Line|Rest], Instrs) :-
     ;   parse_lines_labeled_scala(Rest, Instrs)   % unrecognised — skip
     ).
 
-%% structure_ite_scala(+Flat, -Structured) is semidet.
-%  Folds every well-formed ITE block into ite(Cond,Then,Else); drops the
-%  structural markers (try_me_else/trust_me/cut_ite/jump/label). Fails if a
-%  try_me_else cannot be matched to a clean block (caller then declines to
-%  lower, falling back to the interpreter).
-structure_ite_scala([], []).
-structure_ite_scala([try_me_else(LE)|Rest0], [ite(CondS,ThenS,ElseS)|Out]) :-
-    !,
-    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
-    \+ member(label(LE), ThenWithJump),          % first (matching) else label
-    append(ThenPath, [jump(LC)], ThenWithJump),  % then-path ends in its jump
-    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
-    \+ member(label(LC), ElsePath),
-    split_commit_scala(ThenPath, Cond, Then),
-    structure_ite_scala(Cond, CondS),
-    structure_ite_scala(Then, ThenS),
-    structure_ite_scala(ElsePath, ElseS),
-    structure_ite_scala(AfterCont, Out).
-structure_ite_scala([label(_)|Rest], Out) :- !,
-    structure_ite_scala(Rest, Out).
-structure_ite_scala([I|Rest], [I|Out]) :-
-    structure_ite_scala(Rest, Out).
-
-%% split_commit_scala(+ThenPath, -Cond, -Then)
-%  Splits a then-path at its commit instruction (cut_ite for ->, the !/0
-%  builtin for \+). The commit itself is dropped.
-split_commit_scala(Path, Cond, Then) :-
-    append(Cond, [Commit|Then], Path),
-    is_commit_scala(Commit),
-    \+ ( member(C0, Cond), is_commit_scala(C0) ),   % split at the first commit
-    !.
-
-is_commit_scala(cut_ite).
-is_commit_scala(builtin_call("!/0", _)).
-is_commit_scala(builtin_call('!/0', _)).
+% structure_ite/2, split_commit/3 and is_commit/1 are shared across the
+% lowered backends — see wam_ite_structurer.pl.
 
 %% structured_supported_scala(+StructuredInstrs)
 %  All leaf instructions supported, and every ite() fully structured.
@@ -251,7 +219,7 @@ structured_clause1_scala(WamCode, Structured) :-
     parse_wam_text_labeled_scala(WamCode, LInstrs),
     \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
     take_to_proceed_scala(LInstrs, C1L),
-    structure_ite_scala(C1L, Structured),
+    structure_ite(C1L, Structured),
     \+ member(try_me_else(_), Structured),  % every block consumed
     \+ member(trust_me, Structured),
     \+ member(retry_me_else(_), Structured).
@@ -454,7 +422,7 @@ emit_one_scala(proceed, I, _) :-
 emit_one_scala(fail, I, _) :-
     format("~wreturn false~n", [I]).
 
-% --- If-then-else (structured; see structure_ite_scala) ---
+% --- If-then-else (structured; see wam_ite_structurer) ---
 % The condition runs in its own boolean helper with a trail mark, so a
 % failed condition undoes its bindings before the else branch. `return
 % false` inside the helper means "condition failed"; inside then/else it

@@ -30,6 +30,7 @@
 :- dynamic user:test_string_code_builtin/0.
 :- dynamic user:test_split_string_builtin/0.
 :- dynamic user:test_output_builtin/0.
+:- dynamic user:test_format_builtin/0.
 :- dynamic user:test_tab_builtin/0.
 :- dynamic user:test_env_builtin/0.
 :- dynamic user:test_succ_builtin/0.
@@ -685,6 +686,12 @@ test(builtins_execution) :-
                 print(go_print),
                 nl
             )),
+          assertz(user:test_format_builtin :-
+            (   format('fmt_one ~~ ok~n'),
+                format('fmt_two ~w ~w~~~n', [go, 42]),
+                format('fmt_more ~a ~d ~p ~q~n', [atom_arg, 17, pair(a,b), quoted_atom]),
+                \+ format('fmt_missing ~w', [])
+            )),
           assertz(user:test_set_aggregate :-
             (   aggregate_all(set(X), member(X, [a,b,a]), S),
                 length(S, 2),
@@ -747,6 +754,7 @@ test(builtins_execution) :-
           retractall(user:test_number_list_builtin),
           retractall(user:test_atom_string_builtin),
           retractall(user:test_output_builtin),
+          retractall(user:test_format_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
           retractall(user:test_neg_fact(_)),
@@ -756,7 +764,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_format_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -824,6 +832,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "setenv/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "writeln/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "print/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "format/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "format/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "atom_number/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "upcase_atom/2"')),
@@ -1189,6 +1199,14 @@ func main() {
 		fmt.Println("OUTPUT_FAILURE")
 	}
 
+	formatVM := wam.NewWamState(wam.Test_format_builtinCode, wam.Test_format_builtinLabels)
+	formatVM.PC = wam.Test_format_builtinStartPC
+	if formatVM.Run() {
+		fmt.Println("FORMAT_SUCCESS")
+	} else {
+		fmt.Println("FORMAT_FAILURE")
+	}
+
 	setVM := wam.NewWamState(wam.Test_set_aggregateCode, wam.Test_set_aggregateLabels)
 	setVM.PC = wam.Test_set_aggregateStartPC
 	if setVM.Run() {
@@ -1279,6 +1297,10 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "NUMBER_LIST_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "ATOM_STRING_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "OUTPUT_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "fmt_one ~ ok")),
+        assertion(sub_string(FullOutput, _, _, _, "fmt_two go 42~")),
+        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair/2/2 quoted_atom")),
+        assertion(sub_string(FullOutput, _, _, _, "FORMAT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "NEG_SUCCESS")),
