@@ -1,30 +1,24 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-06-02
+Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-child-search-scale-ceiling` based on `main` at `a05c8fa3`
-  (`Merge pull request #2707 from
-  s243a/investigate/wam-c-root-distance-cache`)
-- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py tests/test_wam_c_child_search_runtime_sweep.py`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py tests/test_benchmark_target_matrix.py`
-- `python3 -m py_compile examples/benchmark/benchmark_wam_c_bidirectional_kernel.py tests/test_wam_c_bidirectional_kernel_benchmark.py`
-- `python3 tests/test_wam_c_child_search_runtime_sweep.py`
-- `python3 tests/test_benchmark_target_matrix.py`
-- `python3 tests/test_wam_c_bidirectional_kernel_benchmark.py`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --dry-run --scales 10k --include-parent-only`
-- `python3 examples/benchmark/benchmark_wam_c_child_search_runtime_sweep.py --scales 10k --include-parent-only --run-timeout-seconds 120`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10k --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 50k_cats --targets c-wam-accumulated-child-csr --compile-only-targets c-wam-accumulated-child-csr --repetitions 1 --baseline-target c-wam-accumulated-child-csr`
-- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 10k --modes scan,sorted_array --sample-queries 100 --sample-roots 1 --iterations 1 --warmups 1`
-- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales 50k_cats --modes sorted_array --sample-queries 10 --sample-roots 1 --iterations 1 --warmups 1`
-- `python3 examples/benchmark/benchmark_wam_c_bidirectional_kernel.py --scales dev --modes lmdb_offset --sample-queries 3 --sample-roots 1 --iterations 1 --warmups 0`
+- `investigate/wam-c-candidate-filter-calibration` based on `main` at
+  `718d1a79` (`Merge pull request #2776 from
+  s243a/investigate/wam-c-child-search-scale-ceiling`)
+- `python3 -m py_compile examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py tests/test_wam_c_candidate_filter_threshold_sweep.py`
+- `python3 tests/test_wam_c_candidate_filter_threshold_sweep.py`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --dry-run --scales 50k_cats --profiles low,high-capped --thresholds auto,always,off`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales dev --profiles low --thresholds auto,always,off --run-timeout-seconds 120`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles low,medium,high-capped --thresholds auto,always,16,64,256,1024,off --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles medium --thresholds auto,256,512,1024,off --repetitions 3 --run-timeout-seconds 180`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-child-search-scale-ceiling`
+- `investigate/wam-c-candidate-filter-calibration`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -371,7 +365,7 @@ Open measurement:
 - The next scalability check should run larger child-search sweeps and compare
   root-cache memory growth against the number of distinct roots.
 
-### Active: `investigate/wam-c-child-search-scale-ceiling`
+### Completed Investigation: `investigate/wam-c-child-search-scale-ceiling`
 
 Goal: find the next full-generated WAM-C child-search scale ceiling after
 root-distance cache reuse, while reporting enough cache-input shape data to
@@ -793,6 +787,51 @@ After hash-bucket row dispatch but before compact row tables:
 | `100x` | 1600 | match | 0.004s | 0.008s | 1.81x |
 | `1k` | 4000 | match | 0.005s | 0.031s | 5.79x |
 
+### Active: `investigate/wam-c-candidate-filter-calibration`
+
+Goal: make the candidate-root filter threshold calibration repeatable enough to
+decide whether `auto` should stay at the current dense-root ceiling or consume
+measured workload costs.
+
+Implemented so far:
+
+- Added `benchmark_wam_c_candidate_filter_threshold_sweep.py`, a thin wrapper
+  around the effective-distance matrix runner. It sweeps root-count profiles
+  (`low`, `medium`, `high-capped`) against threshold policies (`auto`,
+  `always`, `off`, or explicit integers) and emits TSV or Markdown summaries.
+- The summary extracts generated-runner counters from the matrix message field:
+  selected article/root counts, output hash, dense hash agreement, query time,
+  candidate-filter time, schedule roots, skipped roots, and category visits.
+- Added unit coverage for threshold alias parsing, matrix command construction,
+  message parsing, dense-baseline selection, and TSV rendering.
+- The generated effective-distance runner now uses `CLOCK_MONOTONIC` for setup
+  and query counters, matching the narrower WAM-C timing harnesses and avoiding
+  wall-clock adjustments in calibration rows.
+
+Evidence:
+
+- Dry-run over `50k_cats` low/high-capped profiles prints the expected matrix
+  commands, with `auto` omitting the runtime override, `always` passing
+  `--wam-c-candidate-filter-min-roots 1`, and `off` passing a large threshold.
+- Live `dev` low-profile smoke over `auto,always,off` preserved the same
+  `e94e9c7a70e3` output hash for all three policies. `auto` and `off` stayed
+  dense, while `always` used sparse scheduling and reported
+  `candidate_schedule_roots=1`.
+- Full `50k_cats` threshold sweep over `low,medium,high-capped` profiles and
+  `auto,always,16,64,256,1024,off` preserved output hashes for every row.
+  Low selected `50` articles and `41` roots; `auto` stayed dense
+  (`query_ms=25.338`) while forced sparse rows were much slower
+  (`query_ms=108.324` for `always`, `114.917` for `16`). High-capped selected
+  all `4,054` roots and reached the same `50` rows with hash `8da5f8534aba`;
+  `auto` stayed sparse with `query_ms=483.756`, while `off` dense traversal
+  took `query_ms=4546.297`.
+- The medium profile selected `50` articles and `406` roots with hash
+  `226c7fdad57d`. One full sweep put sparse `auto` at `query_ms=119.097` and
+  dense `off` at `105.482`; a focused 3-repetition medium rerun put `auto` at
+  `106.188`, `256` at `108.198`, `512` dense at `100.884`, `1024` dense at
+  `110.546`, and `off` at `130.339`. Treat this as the noisy boundary region,
+  not as a reason to move the default yet.
+
 ## Suggested Immediate Next Step
 
 Result-capped and sampled runs now confirm child-CSR variants agree, and parent
@@ -801,9 +840,14 @@ each visited article/root pair. Per-article candidate-root filtering plus sparse
 candidate-root scheduling now avoids most impossible root traversals when many
 roots are selected, while staying off for low-root workloads by default and
 preserving dense semantics when an explicit query cap is active. The threshold
-default now has a cost-model resolver and a Prolog option surface; the next
-useful work is broader scale validation of the `auto` dense-root ceiling and,
-if needed, feeding measured query/artifact costs into that resolver.
+default now has a cost-model resolver, a Prolog option surface, and a repeatable
+calibration wrapper. The `50k_cats` sweep supports keeping `auto` at `256` for
+now: low-root workloads remain dense, high-root workloads get the sparse
+candidate schedule, and the 406-root profile is close/noisy enough that a more
+complex resolver is not justified yet. The next useful work is either a
+repeatability sweep around the 400-1000 root boundary or feeding measured
+query/artifact costs into the resolver if future datasets show a sharper
+crossover.
 Keep
 `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`

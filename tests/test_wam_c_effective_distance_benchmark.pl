@@ -97,6 +97,19 @@ test_generated_runner_indexes_article_categories :-
     ;   fail_test(Test, 'generated runner did not use article-category slices')
     ).
 
+test_generated_runner_uses_monotonic_timer :-
+    Test = 'WAM-C effective-distance: generated runner uses monotonic timing',
+    (   unique_tmp_dir(monotonic_timer, OutputDir),
+        write_test_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Main, _, _, _, 'clock_gettime(CLOCK_MONOTONIC, &ts);'),
+        \+ sub_string(Main, _, _, _, 'gettimeofday(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated runner timing is not monotonic')
+    ).
+
 test_generate_and_run_lmdb_if_available :-
     Test = 'WAM-C effective-distance: facts_lmdb generated runner emits expected result',
     (   lmdb_toolchain_available
@@ -755,6 +768,7 @@ run_tests_once :-
     test_generate_lmdb_mode_files,
     test_generated_runner_bounds_kernel_heap,
     test_generated_runner_indexes_article_categories,
+    test_generated_runner_uses_monotonic_timer,
     test_generate_and_run_lmdb_if_available,
     test_generated_runner_supports_runtime_caps,
     test_generated_runner_supports_runtime_sampling,

@@ -886,6 +886,7 @@ Tables:
 | `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root and root-bound Prolog variants, and C#/Rust/Go DFS binaries |
+| `benchmark_wam_c_candidate_filter_threshold_sweep.py` | Sweep WAM-C effective-distance candidate-root filter thresholds across root-count profiles and summarize hash agreement plus generated-runner counters |
 | `benchmark_shortest_path_to_root.py` | Compare counted simple-path `All` vs minimum-depth pruning inside the C# query runtime and emit path-state metrics |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
