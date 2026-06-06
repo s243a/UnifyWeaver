@@ -73,7 +73,8 @@ The initial implementation is intentionally small:
 - R is registered as `native(parse_term)` by default;
 - targets without runtime source-term parsing resolve to `none`;
 - `compiled(prolog_term_parser)` is available only for targets
-  with compile and runtime proof tests.
+  with proof tests for the advertised scope (project expansion first,
+  runtime execution where the target bridge exists).
 - the R project writer records the resolved mode in the generated
   `shared_program$runtime_parser` metadata.
 
@@ -105,6 +106,12 @@ parser predicates. A follow-up PR adds wrapper predicates
 get the standard SWI builtin surface on top of the portable
 parser. The remaining work is target-by-target adoption, not
 inventing the contract.
+Python, F#, Haskell, and Rust are also registered for opt-in
+`compiled(prolog_term_parser)`. Rust currently has the capability and
+project-expansion half: `write_wam_rust_project/3` appends the portable
+parser and wrapper predicates and rejects parser-dependent bodies when
+`runtime_parser(off)`/`none` is selected. The remaining Rust work is the
+runtime builtin bridge for standard `read_term_from_atom/2,3` execution.
 
 ### Subset generation
 
@@ -204,9 +211,12 @@ availability alone. Good candidates are targets adding:
 - reverse `term_to_atom/2`;
 - user-facing CLI term arguments.
 
-Python, Elixir, Lua, and future R experiments are reasonable candidates, but R
-should stay the semantic reference while keeping its inline parser as the
-production path.
+Python, Haskell, and Rust now have opt-in compiled-parser project wiring.
+Rust remains the next execution candidate: add a Python-style
+`_execute_read_term_from_atom` bridge in Rust and expose it through WAM
+builtin dispatch. Elixir, Lua, and future R experiments are reasonable
+candidates too, but R should stay the semantic reference while keeping its
+inline parser as the production path.
 
 ## Risks
 

@@ -33,6 +33,12 @@
     lower_predicate_to_rust/4,
     rust_lowered_func_name/2
 ]).
+:- use_module('../targets/wam_runtime_parser_capability', [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
 :- use_module('../core/recursive_kernel_detection', [
     detect_recursive_kernel/4,
     kernel_metadata/4,
@@ -3039,9 +3045,13 @@ build_rust_wam_arg_setup(Arity, Setup) :-
 %  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
 detect_kernels([], []).
 detect_kernels([PI|Rest], Kernels) :-
-    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   PI = Module:Pred/Arity -> true ; PI = Pred/Arity, Module = user ),
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   rust_runtime_parser_support_module(Module)
+    ->  Clauses = []
+    ;   catch(findall(Head-Body, Module:clause(Head, Body), Clauses),
+              _, Clauses = [])
+    ),
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
@@ -3132,6 +3142,9 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+    wam_target_runtime_parser(wam_rust, Options, RuntimeParserMode),
+    rust_validate_runtime_parser_mode(Predicates, RuntimeParserMode),
+    rust_project_predicates(Predicates, RuntimeParserMode, ProjectPredicates),
 
     % Detect recursive kernels in the predicate list. Detected kernels
     % are handled by the FFI (execute_foreign_predicate) at runtime and
@@ -3140,7 +3153,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Rust] kernel detection suppressed~n', [])
-    ;   detect_kernels(Predicates, DetectedKernels),
+    ;   detect_kernels(ProjectPredicates, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
@@ -3234,7 +3247,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
 
     % Compile predicates and generate lib.rs
     pairs_keys(DetectedKernels, DetectedKeys),
-    compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
+    compile_predicates_for_project(ProjectPredicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
@@ -3251,7 +3264,66 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     write_file(MainRsPath, MainContent),
 
     format('WAM Rust project created at: ~w~n', [ProjectDir]),
-    format('  Predicates compiled: ~w~n', [Predicates]).
+    format('  Predicates compiled: ~w~n', [ProjectPredicates]).
+
+%% rust_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In `compiled` mode, append the portable parser plus the target-agnostic
+%  wrapper predicates. Other modes leave the user predicate list unchanged.
+rust_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    rust_runtime_parser_predicates(ParserPreds),
+    rust_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+rust_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+rust_runtime_parser_support_module(prolog_term_parser).
+rust_runtime_parser_support_module(cpp_runtime_parser_wrappers).
+
+rust_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+        (   current_predicate(prolog_term_parser:Name/Arity),
+            functor(Head, Name, Arity),
+            \+ predicate_property(prolog_term_parser:Head, imported_from(_)),
+            once(clause(prolog_term_parser:Head, _))
+        ),
+        Raw),
+    sort(Raw, Predicates).
+
+rust_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+        (   current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+            functor(Head, Name, Arity),
+            \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                  imported_from(_)),
+            once(clause(cpp_runtime_parser_wrappers:Head, _))
+        ),
+        Raw),
+    sort(Raw, Predicates).
+
+rust_validate_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   rust_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_rust_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+rust_validate_runtime_parser_mode(_Predicates, _Mode).
+
+rust_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    rust_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+rust_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+rust_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 %  Two-pass compilation: collects all WAM-fallback predicates into a shared
@@ -3306,6 +3378,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ),
     (   % Check for auto-detectable FFI kernel FIRST (unless suppressed)
         \+ option(no_kernels(true), Options),
+        \+ rust_runtime_parser_support_module(Module),
         functor(KHead, Pred, Arity),
         findall(KHead-KBody, Module:clause(KHead, KBody), KClauses),
         KClauses \= [],
