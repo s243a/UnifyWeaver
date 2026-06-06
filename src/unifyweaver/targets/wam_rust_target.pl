@@ -3244,9 +3244,15 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
 
-    % Generate src/main.rs benchmark harness from template file
+    % Generate src/main.rs benchmark harness from template file.
+    % Rust crate names auto-convert dashes to underscores, so e.g.
+    % package "wam-rust-bench" => crate "wam_rust_bench" for imports.
+    atom_string(ModuleName, ModuleNameStr),
+    string_chars(ModuleNameStr, ModuleChars),
+    maplist([C, U]>>(C == '-' -> U = '_' ; U = C), ModuleChars, UnderscoreChars),
+    string_chars(CrateName, UnderscoreChars),
     read_template_file('templates/targets/rust_wam/main.rs.mustache', MainTemplate),
-    render_template(MainTemplate, [date=Date], MainContent),
+    render_template(MainTemplate, [date=Date, crate_name=CrateName], MainContent),
     directory_file_path(SrcDir, 'main.rs', MainRsPath),
     write_file(MainRsPath, MainContent),
 
