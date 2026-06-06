@@ -2776,20 +2776,42 @@ run_real_prolog_findall_executable_smoke :-
         findall(X, wam_c_findall_item(X), L))),
     assertz((user:wam_c_findall_empty(L) :-
         findall(X, wam_c_findall_none(X), L))),
+    assertz((user:wam_c_findall_nested_inner(L) :-
+        findall(Y, wam_c_findall_item(Y), L))),
+    assertz((user:wam_c_findall_nested_outer(L) :-
+        findall(X, (wam_c_findall_item(X), wam_c_findall_nested_inner(_Ys)), L))),
+    assertz((user:wam_c_findall_struct_template(L) :-
+        findall(pair(X, [X]), wam_c_findall_item(X), L))),
+    assertz((user:wam_c_findall_list_template(L) :-
+        findall([X, X], wam_c_findall_item(X), L))),
     (   compile_predicate_to_wam(user:wam_c_findall_item/1, [], WamItem),
         compile_predicate_to_wam(user:wam_c_findall_none/1, [], WamNone),
         compile_predicate_to_wam(user:wam_c_findall_all/1, [], WamAll),
         compile_predicate_to_wam(user:wam_c_findall_empty/1, [], WamEmpty),
+        compile_predicate_to_wam(user:wam_c_findall_nested_inner/1, [], WamNestedInner),
+        compile_predicate_to_wam(user:wam_c_findall_nested_outer/1, [], WamNestedOuter),
+        compile_predicate_to_wam(user:wam_c_findall_struct_template/1, [], WamStructTemplate),
+        compile_predicate_to_wam(user:wam_c_findall_list_template/1, [], WamListTemplate),
         sub_string(WamAll, _, _, _, 'begin_aggregate collect'),
         sub_string(WamAll, _, _, _, 'end_aggregate'),
         sub_string(WamEmpty, _, _, _, 'begin_aggregate collect'),
         sub_string(WamEmpty, _, _, _, 'end_aggregate'),
+        sub_string(WamNestedInner, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamNestedOuter, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamStructTemplate, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamListTemplate, _, _, _, 'begin_aggregate collect'),
         \+ sub_string(WamAll, _, _, _, 'builtin_call findall/3'),
         compile_wam_predicate_to_c(user:wam_c_findall_item/1, WamItem, [], ItemCode),
         compile_wam_predicate_to_c(user:wam_c_findall_none/1, WamNone, [], NoneCode),
         compile_wam_predicate_to_c(user:wam_c_findall_all/1, WamAll, [], AllCode),
         compile_wam_predicate_to_c(user:wam_c_findall_empty/1, WamEmpty, [], EmptyCode),
-        atomic_list_concat([ItemCode, NoneCode, AllCode, EmptyCode],
+        compile_wam_predicate_to_c(user:wam_c_findall_nested_inner/1, WamNestedInner, [], NestedInnerCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_nested_outer/1, WamNestedOuter, [], NestedOuterCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_struct_template/1, WamStructTemplate, [], StructTemplateCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_list_template/1, WamListTemplate, [], ListTemplateCode),
+        atomic_list_concat([ItemCode, NoneCode, AllCode, EmptyCode,
+                            NestedInnerCode, NestedOuterCode,
+                            StructTemplateCode, ListTemplateCode],
                            '\n\n',
                            PredCode),
         compile_wam_runtime_to_c([], RuntimeCode),
@@ -2816,7 +2838,11 @@ cleanup_wam_c_findall_smoke :-
     retractall(user:wam_c_findall_item(_)),
     retractall(user:wam_c_findall_none(_)),
     retractall(user:wam_c_findall_all(_)),
-    retractall(user:wam_c_findall_empty(_)).
+    retractall(user:wam_c_findall_empty(_)),
+    retractall(user:wam_c_findall_nested_inner(_)),
+    retractall(user:wam_c_findall_nested_outer(_)),
+    retractall(user:wam_c_findall_struct_template(_)),
+    retractall(user:wam_c_findall_list_template(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5827,24 +5853,85 @@ void setup_wam_c_findall_item_1(WamState* state);
 void setup_wam_c_findall_none_1(WamState* state);
 void setup_wam_c_findall_all_1(WamState* state);
 void setup_wam_c_findall_empty_1(WamState* state);
+void setup_wam_c_findall_nested_inner_1(WamState* state);
+void setup_wam_c_findall_nested_outer_1(WamState* state);
+void setup_wam_c_findall_struct_template_1(WamState* state);
+void setup_wam_c_findall_list_template_1(WamState* state);
 
 static bool expect_atom(WamState *state, WamValue value, const char *atom) {
     WamValue *cell = wam_deref_ptr(state, &value);
     return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
 }
 
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
 static bool expect_atom_list2(WamState *state, WamValue value,
                               const char *first, const char *second) {
     WamValue *cell = wam_deref_ptr(state, &value);
-    if (cell->tag != VAL_LIST) return false;
-    WamValue *head1 = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr]);
-    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr + 1]);
-    if (head1->tag != VAL_ATOM || strcmp(head1->data.atom, first) != 0) return false;
-    if (tail1->tag != VAL_LIST) return false;
-    WamValue *head2 = wam_deref_ptr(state, &state->H_array[tail1->data.ref_addr]);
-    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1->data.ref_addr + 1]);
-    return head2->tag == VAL_ATOM &&
-           strcmp(head2->data.atom, second) == 0 &&
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list1(WamState *state, WamValue value,
+                              const char *first) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           tail->tag == VAL_ATOM &&
+           strcmp(tail->data.atom, "[]") == 0;
+}
+
+static bool expect_pair_atom_singleton(WamState *state, WamValue value,
+                                       const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_STR) return false;
+    WamValue *functor = &state->H_array[cell->data.ref_addr];
+    if (functor->tag != VAL_ATOM || strcmp(functor->data.atom, "pair/2") != 0) {
+        return false;
+    }
+    return expect_atom_slot(state, &state->H_array[cell->data.ref_addr + 1], atom) &&
+           expect_atom_list1(state, state->H_array[cell->data.ref_addr + 2], atom);
+}
+
+static bool expect_pair_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_pair_atom_singleton(state, state->H_array[cell_addr], first) &&
+           expect_pair_atom_singleton(state, state->H_array[tail1_addr], second) &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static bool expect_nested_atom_list2(WamState *state, WamValue value,
+                                     const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_list2(state, state->H_array[cell_addr], first, first) &&
+           expect_atom_list2(state, state->H_array[tail1_addr], second, second) &&
            tail2->tag == VAL_ATOM &&
            strcmp(tail2->data.atom, "[]") == 0;
 }
@@ -5874,6 +5961,10 @@ int main(void) {
     setup_wam_c_findall_none_1(&state);
     setup_wam_c_findall_all_1(&state);
     setup_wam_c_findall_empty_1(&state);
+    setup_wam_c_findall_nested_inner_1(&state);
+    setup_wam_c_findall_nested_outer_1(&state);
+    setup_wam_c_findall_struct_template_1(&state);
+    setup_wam_c_findall_list_template_1(&state);
 
     WamValue all_args[1] = { val_unbound("All") };
     int all_rc = wam_run_predicate(&state, "wam_c_findall_all/1", all_args, 1);
@@ -5900,6 +5991,33 @@ int main(void) {
         state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
         wam_free_state(&state);
         return 30;
+    }
+
+    WamValue nested_args[1] = { val_unbound("Nested") };
+    int nested_rc = wam_run_predicate(&state, "wam_c_findall_nested_outer/1", nested_args, 1);
+    if (nested_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue struct_args[1] = { val_unbound("Struct") };
+    int struct_rc = wam_run_predicate(&state, "wam_c_findall_struct_template/1", struct_args, 1);
+    if (struct_rc != 0 || state.P != WAM_HALT ||
+        !expect_pair_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue list_args[1] = { val_unbound("List") };
+    int list_rc = wam_run_predicate(&state, "wam_c_findall_list_template/1", list_args, 1);
+    if (list_rc != 0 || state.P != WAM_HALT ||
+        !expect_nested_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 60;
     }
 
     wam_free_state(&state);

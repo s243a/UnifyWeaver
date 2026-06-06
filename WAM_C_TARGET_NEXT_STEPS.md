@@ -4,15 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-findall-aggregate-surface` based on `main` at `f971b555`
-  (`Merge pull request #2817 from
-  s243a/investigate/wam-c-forall-control-smoke`)
+- `investigate/wam-c-findall-nested-template-smoke` based on `main` at
+  `b8ebd240` (`Merge pull request #2821 from
+  s243a/investigate/wam-c-findall-aggregate-surface`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-findall-aggregate-surface`
+- `investigate/wam-c-findall-nested-template-smoke`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -81,6 +81,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Explicit cut call-scope fix | Done | `!/0` now prunes to the current call barrier instead of clearing all choice points; generated executable smoke preserves an outer disjunction alternative across an inner predicate cut |
 | `forall/2` control smoke | Done | Generated executable smoke covers the shared nested soft-cut rewrite for `forall/2` all-pass, action-fail, subset, and empty-generator cases |
 | `findall/3` collect aggregate surface | Done | C now parses and executes shared `begin_aggregate collect` / `end_aggregate` WAM for simple `findall/3`, preserving generator choice points under aggregate frames and building non-empty/empty result lists |
+| `findall/3` nested/template smoke | Done | C now parses compiler temporary `_XTn` registers and the generated executable smoke covers helper-nested `findall/3`, `pair(X, [X])` templates, and `[X, X]` templates |
 
 ## Current C Target Baseline
 
@@ -135,7 +136,7 @@ The C target is now a credible small WAM backend:
   `forall/2`'s generated soft-cut rewrite.
 - Supports the first aggregate surface: generated `findall/3` lowering through
   `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
-  result lists.
+  result lists, helper-nested aggregate calls, and compound/list templates.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -172,6 +173,30 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-findall-nested-template-smoke`
+
+Goal: harden the first C `findall/3` aggregate surface against generated WAM
+shapes that appear once templates contain nested lists or helper predicates run
+their own `findall/3`.
+
+Evidence:
+
+- The C WAM register parser now accepts compiler temporary `_XTn` registers,
+  mapping them to high X-register slots for structure/list construction.
+- The real-Prolog `findall/3` executable smoke now covers helper-nested
+  aggregate frames while an outer aggregate frame is open.
+- The same smoke validates copied compound and list templates:
+  `pair(X, [X])` and `[X, X]`.
+
+Reason:
+
+- Generated compound/list templates use temporary registers that the first
+  aggregate branch did not parse.
+- Direct inline nested `findall/3` still lowers to a call to `findall/3` in the
+  shared compiler; this branch proves the C aggregate runtime behavior through
+  an indirect helper and leaves the broader compiler/runtime surface for a
+  separate branch.
 
 ### Completed: `investigate/wam-c-findall-aggregate-surface`
 

@@ -1690,6 +1690,10 @@ c_reg_index(RegAtom, IsY, Idx) :-
     ->  IsY = 1,
         catch(number_chars(RegNo, NumChars), _, fail),
         Idx is RegNo - 1
+    ;   append(['_', 'X', 'T'], NumChars, Chars)
+    ->  IsY = 2,
+        catch(number_chars(TempNo, NumChars), _, fail),
+        Idx is 128 + TempNo
     ;   throw(error(wam_c_target_error(unknown_register(RegAtom)), _))
     ).
 
