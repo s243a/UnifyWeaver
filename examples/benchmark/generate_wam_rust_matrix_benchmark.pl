@@ -1513,6 +1513,19 @@ fn main() {
                 }
             })
             .collect();
+        // ROOT_ANCHORED_METRICS: WAM_MIN_DIST_PRUNE=1 loads the materialised
+        // metric_min_dist_to_root table (built at ingest by
+        // build_scoped_subtree_lmdb.py) and hands it to the kernel as an
+        // admissible A*-style prune. Off by default (empty table => no-op), so
+        // it is opt-in and A/B-able; never changes results.
+        let min_dist_prune = std::env::var("WAM_MIN_DIST_PRUNE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if min_dist_prune {
+            let md = lmdb.load_min_dist().expect("load_min_dist");
+            eprintln!("min_dist_prune: loaded {} node distances", md.len());
+            vm.set_min_dist(&md);
+        }
         let acc = vm.resolve_edge_accessor("category_parent");
         let vm_ref = &vm;
         let acc_ref = &acc;
