@@ -1,0 +1,25 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_24
+    }
+}
+
+application {
+    mainClass = '{{package}}.MainKt'
+}
