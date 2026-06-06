@@ -8,9 +8,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::time::Instant;
 
-use wam_lib::value::Value;
-use wam_lib::state::WamState;
-use wam_lib::{shared_wam_program, setup_foreign_predicates};
+use {{crate_name}}::value::Value;
+use {{crate_name}}::state::WamState;
+use {{crate_name}}::{shared_wam_program, setup_foreign_predicates};
 
 fn load_tsv_pairs(path: &str) -> Vec<(String, String)> {
     let content = fs::read_to_string(path).unwrap_or_default();

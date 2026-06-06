@@ -5543,10 +5543,11 @@ test(cpp_e2e_lmdb_policy_order_by_arg2_desc,
 % awkward because plunit owns it.
 test(cpp_e2e_lmdb_sort_warning_emitted,
      [condition(cpp_lmdb_available)]) :-
-    run_codegen_subprocess(
+    lmdb_subprocess_modules(WamPath, PolicyPath),
+    format(string(Source),
         "
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- use_module('~w').
+        :- use_module('~w').
         :- relation_policy(edge/2, [order([arg(2)])]).
         :- dynamic user:edge/2.
         user:dummy :- edge(_, _).
@@ -5554,16 +5555,18 @@ test(cpp_e2e_lmdb_sort_warning_emitted,
               [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
               '/tmp/sw_warn_emit'), halt.
         ",
-        Stderr),
+        [WamPath, PolicyPath]),
+    run_codegen_subprocess(Source, Stderr),
     assertion(sub_string(Stderr, _, _, _,
                          "requires a runtime sort")).
 
 test(cpp_e2e_lmdb_sort_warning_suppressed,
      [condition(cpp_lmdb_available)]) :-
-    run_codegen_subprocess(
+    lmdb_subprocess_modules(WamPath, PolicyPath),
+    format(string(Source),
         "
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- use_module('~w').
+        :- use_module('~w').
         :- relation_policy(edge/2, [order([arg(2)])]).
         :- dynamic user:edge/2.
         user:dummy :- edge(_, _).
@@ -5572,16 +5575,18 @@ test(cpp_e2e_lmdb_sort_warning_suppressed,
                                   lmdb('/tmp/x', [quiet_sort(true)]))])],
               '/tmp/sw_warn_supp'), halt.
         ",
-        Stderr),
+        [WamPath, PolicyPath]),
+    run_codegen_subprocess(Source, Stderr),
     assertion(\+ sub_string(Stderr, _, _, _,
                             "requires a runtime sort")).
 
 test(cpp_e2e_lmdb_sort_warning_trivial_no_warn,
      [condition(cpp_lmdb_available)]) :-
-    run_codegen_subprocess(
+    lmdb_subprocess_modules(WamPath, PolicyPath),
+    format(string(Source),
         "
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/targets/wam_cpp_target').
-        :- use_module('/home/user/UnifyWeaver/src/unifyweaver/core/relation_policy').
+        :- use_module('~w').
+        :- use_module('~w').
         :- relation_policy(edge/2, [order([arg(1)])]).
         :- dynamic user:edge/2.
         user:dummy :- edge(_, _).
@@ -5589,7 +5594,8 @@ test(cpp_e2e_lmdb_sort_warning_trivial_no_warn,
               [cpp_fact_sources([source(edge/2, lmdb('/tmp/x'))])],
               '/tmp/sw_warn_triv'), halt.
         ",
-        Stderr),
+        [WamPath, PolicyPath]),
+    run_codegen_subprocess(Source, Stderr),
     assertion(\+ sub_string(Stderr, _, _, _,
                             "requires a runtime sort")).
 
@@ -10406,12 +10412,25 @@ cached_wam_runtime_object(RuntimeCpp, CachedObj) :-
     format(atom(CachedObj), '~w/wam_runtime_~w.o', [CacheDir, Hash]),
     (   exists_file(CachedObj)
     ->  true
-    ;   process_create(path('g++'),
+    ;   %% Compile to a unique temp file, then atomically rename into
+        %% place. A direct `g++ -c -o CachedObj` is NOT crash-safe: if the
+        %% compile is interrupted (e.g. the suite is killed by a timeout),
+        %% a truncated .o is left at CachedObj and every later run reuses
+        %% it via exists_file/1, linking a corrupt runtime and producing
+        %% spurious e2e failures. rename/2 on the same filesystem is
+        %% atomic, so the cache only ever holds a complete object.
+        random_between(100000, 999999, Salt),
+        format(atom(TmpObj), '~w/wam_runtime_~w.~w.tmp.o', [CacheDir, Hash, Salt]),
+        process_create(path('g++'),
                        ['-std=c++17', '-O0', '-c',
-                        '-o', CachedObj, RuntimeCpp],
+                        '-o', TmpObj, RuntimeCpp],
                        [stderr(null), process(PID)]),
         process_wait(PID, Status),
-        assertion(Status == exit(0))
+        assertion(Status == exit(0)),
+        catch(rename_file(TmpObj, CachedObj), _,
+              %% Lost a race with a concurrent compile: the winner's
+              %% complete object is already in place; drop our temp.
+              catch(delete_file(TmpObj), _, true))
     ).
 
 run_query(BinPath, PredKey, Args, Expected) :-
@@ -10788,6 +10807,17 @@ lmdb_seed_three_edges(TmpDir, EnvPath, MetaPred, SeedBin) :-
 % its stderr. Used by the sort-warning tests to verify codegen-
 % time messages without interfering with plunit's own
 % user_error.
+% Absolute paths to the two modules a codegen subprocess needs to
+% load. Resolved from the already-loaded modules (use_module at the
+% top of this file) so the subprocess works regardless of where the
+% repo is checked out -- previously these were hard-coded to
+% /home/user/UnifyWeaver/... which only matched one machine.
+lmdb_subprocess_modules(WamPath, PolicyPath) :-
+    module_property(wam_cpp_target, file(WamFile)),
+    module_property(relation_policy, file(PolicyFile)),
+    atom_string(WamFile, WamPath),
+    atom_string(PolicyFile, PolicyPath).
+
 run_codegen_subprocess(Source, Stderr) :-
     tmp_file(codegen_script, ScriptBase),
     atom_concat(ScriptBase, '.pl', ScriptPath),
