@@ -4,15 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-bagof-setof-aggregate-surface` based on `main` at
-  `a493993d` (`Merge pull request #2844 from
-  s243a/investigate/wam-c-inline-nested-findall-lowering`)
+- `investigate/wam-c-bagof-setof-witness-surface` based on `main` at
+  `2a473d77` (`Merge pull request #2846 from
+  s243a/investigate/wam-c-bagof-setof-aggregate-surface`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-bagof-setof-aggregate-surface`
+- `investigate/wam-c-bagof-setof-witness-surface`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -84,6 +84,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `findall/3` nested/template smoke | Done | C now parses compiler temporary `_XTn` registers and the generated executable smoke covers helper-nested `findall/3`, `pair(X, [X])` templates, and `[X, X]` templates |
 | Direct inline nested `findall/3` lowering | Done | Inner-body `findall/3` now lowers to nested aggregate opcodes instead of `call findall/3`; local aggregate result slots are initialized before finalization, and the executable smoke covers `findall(X, (item(X), findall(Y, item(Y), Ys), Ys = [a,b]), L)` |
 | No-witness `bagof/3` and `setof/3` aggregate surface | Done | C parses the shared 4-field no-witness `begin_aggregate bagof/setof` form, `bagof/3` preserves duplicate solution order and fails empty, and `setof/3` sorts/deduplicates and fails empty |
+| Bound-witness `bagof/3` and `setof/3` grouping | Done | C parses witness register lists into aggregate payload arrays, copies witness tuples per aggregate item, selects the caller-bound witness group, and covers grouped `bagof/3` order plus grouped `setof/3` sort/dedup in an executable smoke |
 
 ## Current C Target Baseline
 
@@ -139,7 +140,8 @@ The C target is now a credible small WAM backend:
 - Supports the first aggregate surface: generated `findall/3` lowering through
   `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
   result lists, helper-nested aggregate calls, direct inline nested `findall/3`
-  bodies, compound/list templates, and no-witness `bagof/3` / `setof/3`.
+  bodies, compound/list templates, no-witness `bagof/3` / `setof/3`, and
+  caller-bound witness grouping for `bagof/3` / `setof/3`.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -162,7 +164,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness `bagof/3` / `setof/3`; remaining gaps are witness grouping, existential `^/2` inner-goal lowering, and broader aggregate forms. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness and caller-bound witness `bagof/3` / `setof/3`; remaining gaps are unbound witness group enumeration, existential `^/2` inner-goal lowering, and broader aggregate forms. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -176,6 +178,32 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-bagof-setof-witness-surface`
+
+Goal: extend the no-witness `bagof/3` / `setof/3` C aggregate surface to the
+first grouped witness case where the witness variable is supplied by the caller.
+
+Evidence:
+
+- The C WAM aggregate payload now stores parsed witness register indices instead
+  of a raw witness string.
+- Aggregate frames copy a witness tuple alongside each collected template item.
+- Finalization selects the matching caller-bound witness group, unifies witness
+  registers with the selected key, preserves duplicate order for grouped
+  `bagof/3`, and sorts/deduplicates selected-group items for grouped `setof/3`.
+- The real-Prolog executable smoke compiles `bagof(X, pair(X, Y), L)` and
+  `setof(X, pair(X, Y), L)`, calls them with `Y = red` and `Y = blue`, verifies
+  the grouped bag/set results, and verifies a missing witness fails.
+
+Reason:
+
+- The previous branch proved the no-witness aggregate semantics and stored-term
+  sorting/deduplication path.
+- Full ISO-style unbound witness enumeration would require the C runtime to
+  leave resumable group alternatives. This branch deliberately handles the
+  caller-bound witness case first, which closes a practical grouped lookup
+  surface without expanding the choicepoint model.
 
 ### Completed: `investigate/wam-c-bagof-setof-aggregate-surface`
 
@@ -200,9 +228,9 @@ Reason:
 
 - Direct inline nested `findall/3` proved that nested aggregate frames and local
   aggregate result variables work in C.
-- The next aggregate parity step is the no-witness subset the shared compiler
-  already describes. Grouped/witness `bagof` and `setof`, including inner
-  existential `^/2` lowering, remain a separate larger semantic surface.
+- The follow-up `investigate/wam-c-bagof-setof-witness-surface` branch covers
+  caller-bound witness grouping. Unbound witness group enumeration and inner
+  existential `^/2` lowering remain larger semantic surfaces.
 
 ### Completed: `investigate/wam-c-inline-nested-findall-lowering`
 
