@@ -1,18 +1,18 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-06-05
+Status date: 2026-06-06
 
 Latest branch verification:
 
-- `investigate/wam-c-bagof-setof-witness-surface` based on `main` at
-  `2a473d77` (`Merge pull request #2846 from
-  s243a/investigate/wam-c-bagof-setof-aggregate-surface`)
+- `investigate/wam-c-bagof-setof-existential-surface` based on `main` at
+  `5e9967bc` (`Merge pull request #2850 from
+  s243a/investigate/wam-c-bagof-setof-witness-surface`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-bagof-setof-witness-surface`
+- `investigate/wam-c-bagof-setof-existential-surface`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -85,6 +85,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Direct inline nested `findall/3` lowering | Done | Inner-body `findall/3` now lowers to nested aggregate opcodes instead of `call findall/3`; local aggregate result slots are initialized before finalization, and the executable smoke covers `findall(X, (item(X), findall(Y, item(Y), Ys), Ys = [a,b]), L)` |
 | No-witness `bagof/3` and `setof/3` aggregate surface | Done | C parses the shared 4-field no-witness `begin_aggregate bagof/setof` form, `bagof/3` preserves duplicate solution order and fails empty, and `setof/3` sorts/deduplicates and fails empty |
 | Bound-witness `bagof/3` and `setof/3` grouping | Done | C parses witness register lists into aggregate payload arrays, copies witness tuples per aggregate item, selects the caller-bound witness group, and covers grouped `bagof/3` order plus grouped `setof/3` sort/dedup in an executable smoke |
+| Existential `^/2` aggregate body lowering | Done | Goal-level `^/2` wrappers are transparent in inner call positions, witness discovery still suppresses quantified variables, and the C executable smoke covers flattened existential `bagof/3` plus sorted/deduplicated existential `setof/3` |
 
 ## Current C Target Baseline
 
@@ -140,8 +141,9 @@ The C target is now a credible small WAM backend:
 - Supports the first aggregate surface: generated `findall/3` lowering through
   `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
   result lists, helper-nested aggregate calls, direct inline nested `findall/3`
-  bodies, compound/list templates, no-witness `bagof/3` / `setof/3`, and
-  caller-bound witness grouping for `bagof/3` / `setof/3`.
+  bodies, compound/list templates, no-witness `bagof/3` / `setof/3`,
+  caller-bound witness grouping for `bagof/3` / `setof/3`, and
+  existential `^/2` suppression inside inline `bagof/3` / `setof/3` bodies.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -164,7 +166,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness and caller-bound witness `bagof/3` / `setof/3`; remaining gaps are unbound witness group enumeration, existential `^/2` inner-goal lowering, and broader aggregate forms. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, and existential `^/2` `bagof/3` / `setof/3`; remaining gaps are unbound witness group enumeration, meta-call aggregate dispatch, and broader aggregate forms. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -178,6 +180,33 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-bagof-setof-existential-surface`
+
+Goal: make inline `bagof/3` and `setof/3` treat goal-level `^/2` as
+existential quantification instead of compiling it as a runtime predicate call.
+
+Evidence:
+
+- The shared WAM compiler strips goal-level `^/2` wrappers in inner call
+  positions and compiles the RHS directly.
+- Existing witness discovery still walks the original aggregate goal, so
+  variables on the LHS of `^/2` are excluded from the emitted witness-register
+  list.
+- The real-Prolog executable smoke compiles `bagof(X, Y^pair(X, Y), L)` and
+  `setof(X, Y^pair(X, Y), L)`, verifies the generated WAM has an empty witness
+  field and no `call ^/2`, and checks that C flattens across witness values for
+  `bagof/3` while sorting/deduplicating for `setof/3`.
+
+Reason:
+
+- The previous branch made caller-bound witness groups work when the witness
+  register is supplied by the caller.
+- Existential suppression is the complementary case: it removes a variable from
+  grouping and can reuse the no-witness aggregate finalizer.
+- Full unbound witness group enumeration remains a larger runtime-choicepoint
+  feature, so this branch deliberately avoids introducing resumable aggregate
+  group alternatives.
 
 ### Completed: `investigate/wam-c-bagof-setof-witness-surface`
 
@@ -202,8 +231,9 @@ Reason:
   sorting/deduplication path.
 - Full ISO-style unbound witness enumeration would require the C runtime to
   leave resumable group alternatives. This branch deliberately handles the
-  caller-bound witness case first, which closes a practical grouped lookup
-  surface without expanding the choicepoint model.
+  caller-bound witness case first, while the follow-up
+  `investigate/wam-c-bagof-setof-existential-surface` covers existential
+  suppression without expanding the choicepoint model.
 
 ### Completed: `investigate/wam-c-bagof-setof-aggregate-surface`
 
@@ -228,9 +258,9 @@ Reason:
 
 - Direct inline nested `findall/3` proved that nested aggregate frames and local
   aggregate result variables work in C.
-- The follow-up `investigate/wam-c-bagof-setof-witness-surface` branch covers
-  caller-bound witness grouping. Unbound witness group enumeration and inner
-  existential `^/2` lowering remain larger semantic surfaces.
+- Follow-up branches cover caller-bound witness grouping and inner existential
+  `^/2` suppression. Unbound witness group enumeration remains the larger
+  semantic surface.
 
 ### Completed: `investigate/wam-c-inline-nested-findall-lowering`
 
@@ -1118,19 +1148,20 @@ Evidence:
 
 ## Suggested Immediate Next Step
 
-Result-capped and sampled runs now confirm child-CSR variants agree, and parent
-plus child reachability prefilters remove most avoidable traversal work inside
-each visited article/root pair. Per-article candidate-root filtering plus sparse
-candidate-root scheduling now avoids most impossible root traversals when many
-roots are selected, while staying off for low-root workloads by default and
-preserving dense semantics when an explicit query cap is active. The threshold
-default now has a cost-model resolver, a Prolog option surface, and a repeatable
-calibration wrapper. The boundary-repeatability sweep supports moving `auto` to
-`512`, and the observability follow-up makes future sweep rows display that
-resolved value directly. The next useful work is feeding measured query/artifact
-costs into the resolver only if future datasets show a sharper crossover or if
-manual threshold overrides become common.
-Keep `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
+The aggregate parity sequence now has no-witness, caller-bound witness, and
+existential `^/2` inline `bagof/3` / `setof/3` coverage. The next aggregate
+feature worth considering is full unbound witness group enumeration, using the
+C++ or Elixir iterator/choicepoint designs as references. Keep that as a
+separate branch because it needs resumable aggregate group alternatives rather
+than only compile-time wrapper stripping or single-shot finalization.
+
+For the effective-distance/CSR line, result-capped and sampled runs already
+confirm child-CSR variants agree, and parent plus child reachability prefilters
+remove most avoidable traversal work inside each visited article/root pair. The
+next useful work there is feeding measured query/artifact costs into the
+resolver only if future datasets show a sharper crossover or if manual
+threshold overrides become common. Keep
+`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
 LMDB or a separate artifact by default; add that only behind a cost-analyzer

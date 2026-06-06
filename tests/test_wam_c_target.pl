@@ -1745,6 +1745,16 @@ test_real_prolog_bagof_setof_witness_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_bagof_setof_existential_executable_smoke :-
+    Test = 'WAM-C: real Prolog bagof/3 and setof/3 existential smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_existential_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog existential bagof/3 and setof/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2988,6 +2998,60 @@ cleanup_wam_c_bagof_setof_witness_smoke :-
     retractall(user:wam_c_group_pair(_, _)),
     retractall(user:wam_c_group_bag(_, _)),
     retractall(user:wam_c_group_set(_, _)).
+
+run_real_prolog_bagof_setof_existential_executable_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_exist_pair(b, red) :- true)),
+    assertz((user:wam_c_exist_pair(a, red) :- true)),
+    assertz((user:wam_c_exist_pair(c, blue) :- true)),
+    assertz((user:wam_c_exist_pair(b, blue) :- true)),
+    assertz((user:wam_c_exist_bag(L) :-
+        bagof(X, Y^wam_c_exist_pair(X, Y), L))),
+    assertz((user:wam_c_exist_set(L) :-
+        setof(X, Y^wam_c_exist_pair(X, Y), L))),
+    (   compile_predicate_to_wam(user:wam_c_exist_pair/2, Options, WamPair),
+        compile_predicate_to_wam(user:wam_c_exist_bag/1, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_exist_set/1, Options, WamSet),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "''"),
+        sub_string(WamBag, _, _, _, 'call wam_c_exist_pair/2'),
+        \+ sub_string(WamBag, _, _, _, 'call ^/2'),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "''"),
+        sub_string(WamSet, _, _, _, 'call wam_c_exist_pair/2'),
+        \+ sub_string(WamSet, _, _, _, 'call ^/2'),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        compile_wam_predicate_to_c(user:wam_c_exist_pair/2, WamPair, Options, PairCode),
+        compile_wam_predicate_to_c(user:wam_c_exist_bag/1, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_exist_set/1, WamSet, Options, SetCode),
+        atomic_list_concat([PairCode, BagCode, SetCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_existential_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_existential_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_existential_smoke
+    ;   cleanup_wam_c_bagof_setof_existential_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_existential_smoke :-
+    retractall(user:wam_c_exist_pair(_, _)),
+    retractall(user:wam_c_exist_bag(_)),
+    retractall(user:wam_c_exist_set(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -6383,6 +6447,97 @@ int main(void) {
 }
 ').
 
+wam_c_bagof_setof_existential_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_exist_pair_2(WamState* state);
+void setup_wam_c_exist_bag_1(WamState* state);
+void setup_wam_c_exist_set_1(WamState* state);
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_nil(WamValue *cell) {
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list3(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_nil(tail3);
+}
+
+static bool expect_atom_list4(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third,
+                              const char *fourth) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    int tail3_addr = wam_cons_head_addr(state, tail3);
+    if (tail3_addr < 0) return false;
+    WamValue *tail4 = wam_deref_ptr(state, &state->H_array[tail3_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_atom_slot(state, &state->H_array[tail3_addr], fourth) &&
+           expect_nil(tail4);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_exist_pair_2(&state);
+    setup_wam_c_exist_bag_1(&state);
+    setup_wam_c_exist_set_1(&state);
+
+    WamValue bag_args[1] = { val_unbound("Bag") };
+    int bag_rc = wam_run_predicate(&state, "wam_c_exist_bag/1", bag_args, 1);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list4(&state, state.A[0], "b", "a", "c", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_args[1] = { val_unbound("Set") };
+    int set_rc = wam_run_predicate(&state, "wam_c_exist_set/1", set_args, 1);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -6599,6 +6754,7 @@ run_tests_once :-
     test_real_prolog_findall_executable_smoke,
     test_real_prolog_bagof_setof_executable_smoke,
     test_real_prolog_bagof_setof_witness_executable_smoke,
+    test_real_prolog_bagof_setof_existential_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,
