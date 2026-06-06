@@ -13,6 +13,13 @@
 %%     - dotnet build + run smokes (8 cases including category-ancestor
 %%       end-to-end + NAF micro-benchmark).  Each sub-case skips
 %%       gracefully if `dotnet` isn't on PATH.
+%%   tests/core/test_wam_lmdb_cross_target_conformance.pl
+%%     - builds a tiny int-native LMDB fixture (needs python3 + lmdb) and
+%%       asserts every available target's LMDB category_ancestor benchmark
+%%       agrees with the oracle.  F# eager/lazy/cached run when `dotnet` is
+%%       present; the Rust cursor leg is opt-in (UW_CONFORMANCE_RUST=1 + cargo).
+%%       All legs skip gracefully when their toolchain is absent.  This is the
+%%       guard for the LMDB-mode id-space divergence class (the Rust s2i bug).
 %%
 %% Exit code: 0 iff every spawned test exits 0.
 %%
@@ -34,6 +41,8 @@ fsharp_test('tests/test_wam_fsharp_target.pl',
             'F# WAM codegen tests').
 fsharp_test('tests/core/test_wam_fsharp_dotnet_smoke.pl',
             'F# WAM dotnet runtime smoke').
+fsharp_test('tests/core/test_wam_lmdb_cross_target_conformance.pl',
+            'WAM LMDB cross-target conformance (F# eager/lazy/cached vs oracle; Rust opt-in)').
 
 run_one(RelPath, Label, Status) :-
     repo_root(Root),
