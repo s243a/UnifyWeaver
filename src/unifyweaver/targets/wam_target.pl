@@ -1374,10 +1374,20 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = collect-CollectVar -> AggType = collect, ValueVar = CollectVar
     ;   AggType = collect, ValueVar = Template  % default: direct callers
     ),
-    % Find or allocate the Result register (where output goes)
+    % Find or allocate the Result register (where output goes).  If the
+    % result is a local variable first introduced by this aggregate,
+    % initialize its register before begin_aggregate so finalization has
+    % an unbound cell to unify with; head-bound results are already
+    % initialized by get_variable/get_value.
     (   var(Result), get_var_reg(Result, V0, ResultReg0)
-    ->  V1 = V0
-    ;   allocate_var(Result, V0, V1, ResultReg0)
+    ->  V1 = V0,
+        InitResultCode = ""
+    ;   var(Result)
+    ->  allocate_var(Result, V0, V1, ResultReg0),
+        format(string(InitResultCode), "    put_variable ~w, ~w",
+               [ResultReg0, ResultReg0])
+    ;   allocate_var(Result, V0, V1, ResultReg0),
+        InitResultCode = ""
     ),
     % Compile the Value register (what gets collected per solution)
     (   var(ValueVar)
@@ -1442,10 +1452,17 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % for lookup.
     aggregate_witness_clause(AggType, ValueVar, InnerGoal, Vf,
                              WitnessRegsClause),
-    (   InitValueCode \= ""
+    (   InitResultCode == ""
+    ->  InitAggregateCode = InitValueCode
+    ;   InitValueCode == ""
+    ->  InitAggregateCode = InitResultCode
+    ;   format(string(InitAggregateCode), "~w~n~w",
+               [InitResultCode, InitValueCode])
+    ),
+    (   InitAggregateCode \= ""
     ->  format(string(Code),
             "~w~n    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
-            [InitValueCode, AggType, ValueReg, ResultReg0,
+            [InitAggregateCode, AggType, ValueReg, ResultReg0,
              WitnessRegsClause, FullInnerCode, ValueReg])
     ;   format(string(Code),
             "    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
@@ -1780,6 +1797,10 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ;   Goal = (LeftGoal ; RightGoal),
         \+ (LeftGoal = (_ -> _))
     ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
+    ;   Goal = findall(Template, InnerGoal, Result)
+    ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
     % M93b: \+ G inlining for inner goal positions (if-then-else

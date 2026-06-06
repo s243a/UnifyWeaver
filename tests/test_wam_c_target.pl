@@ -2780,6 +2780,13 @@ run_real_prolog_findall_executable_smoke :-
         findall(Y, wam_c_findall_item(Y), L))),
     assertz((user:wam_c_findall_nested_outer(L) :-
         findall(X, (wam_c_findall_item(X), wam_c_findall_nested_inner(_Ys)), L))),
+    assertz((user:wam_c_findall_inline_nested(L) :-
+        findall(X,
+                (   wam_c_findall_item(X),
+                    findall(Y, wam_c_findall_item(Y), Ys),
+                    Ys = [a, b]
+                ),
+                L))),
     assertz((user:wam_c_findall_struct_template(L) :-
         findall(pair(X, [X]), wam_c_findall_item(X), L))),
     assertz((user:wam_c_findall_list_template(L) :-
@@ -2790,6 +2797,7 @@ run_real_prolog_findall_executable_smoke :-
         compile_predicate_to_wam(user:wam_c_findall_empty/1, [], WamEmpty),
         compile_predicate_to_wam(user:wam_c_findall_nested_inner/1, [], WamNestedInner),
         compile_predicate_to_wam(user:wam_c_findall_nested_outer/1, [], WamNestedOuter),
+        compile_predicate_to_wam(user:wam_c_findall_inline_nested/1, [], WamInlineNested),
         compile_predicate_to_wam(user:wam_c_findall_struct_template/1, [], WamStructTemplate),
         compile_predicate_to_wam(user:wam_c_findall_list_template/1, [], WamListTemplate),
         sub_string(WamAll, _, _, _, 'begin_aggregate collect'),
@@ -2798,6 +2806,8 @@ run_real_prolog_findall_executable_smoke :-
         sub_string(WamEmpty, _, _, _, 'end_aggregate'),
         sub_string(WamNestedInner, _, _, _, 'begin_aggregate collect'),
         sub_string(WamNestedOuter, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamInlineNested, _, _, _, 'begin_aggregate collect'),
+        \+ sub_string(WamInlineNested, _, _, _, 'call findall/3'),
         sub_string(WamStructTemplate, _, _, _, 'begin_aggregate collect'),
         sub_string(WamListTemplate, _, _, _, 'begin_aggregate collect'),
         \+ sub_string(WamAll, _, _, _, 'builtin_call findall/3'),
@@ -2807,10 +2817,12 @@ run_real_prolog_findall_executable_smoke :-
         compile_wam_predicate_to_c(user:wam_c_findall_empty/1, WamEmpty, [], EmptyCode),
         compile_wam_predicate_to_c(user:wam_c_findall_nested_inner/1, WamNestedInner, [], NestedInnerCode),
         compile_wam_predicate_to_c(user:wam_c_findall_nested_outer/1, WamNestedOuter, [], NestedOuterCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_inline_nested/1, WamInlineNested, [], InlineNestedCode),
         compile_wam_predicate_to_c(user:wam_c_findall_struct_template/1, WamStructTemplate, [], StructTemplateCode),
         compile_wam_predicate_to_c(user:wam_c_findall_list_template/1, WamListTemplate, [], ListTemplateCode),
         atomic_list_concat([ItemCode, NoneCode, AllCode, EmptyCode,
                             NestedInnerCode, NestedOuterCode,
+                            InlineNestedCode,
                             StructTemplateCode, ListTemplateCode],
                            '\n\n',
                            PredCode),
@@ -2841,6 +2853,7 @@ cleanup_wam_c_findall_smoke :-
     retractall(user:wam_c_findall_empty(_)),
     retractall(user:wam_c_findall_nested_inner(_)),
     retractall(user:wam_c_findall_nested_outer(_)),
+    retractall(user:wam_c_findall_inline_nested(_)),
     retractall(user:wam_c_findall_struct_template(_)),
     retractall(user:wam_c_findall_list_template(_)).
 
@@ -5855,6 +5868,7 @@ void setup_wam_c_findall_all_1(WamState* state);
 void setup_wam_c_findall_empty_1(WamState* state);
 void setup_wam_c_findall_nested_inner_1(WamState* state);
 void setup_wam_c_findall_nested_outer_1(WamState* state);
+void setup_wam_c_findall_inline_nested_1(WamState* state);
 void setup_wam_c_findall_struct_template_1(WamState* state);
 void setup_wam_c_findall_list_template_1(WamState* state);
 
@@ -5963,6 +5977,7 @@ int main(void) {
     setup_wam_c_findall_empty_1(&state);
     setup_wam_c_findall_nested_inner_1(&state);
     setup_wam_c_findall_nested_outer_1(&state);
+    setup_wam_c_findall_inline_nested_1(&state);
     setup_wam_c_findall_struct_template_1(&state);
     setup_wam_c_findall_list_template_1(&state);
 
@@ -6000,6 +6015,15 @@ int main(void) {
         state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
         wam_free_state(&state);
         return 40;
+    }
+
+    WamValue inline_nested_args[1] = { val_unbound("InlineNested") };
+    int inline_nested_rc = wam_run_predicate(&state, "wam_c_findall_inline_nested/1", inline_nested_args, 1);
+    if (inline_nested_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 45;
     }
 
     WamValue struct_args[1] = { val_unbound("Struct") };
