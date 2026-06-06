@@ -2459,6 +2459,32 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M107: directory_files/2 -- opendir/readdir loop, list of entry atoms.
+
+:- dynamic test_df_tmp_nonempty/2.
+test_df_tmp_nonempty(_, R) :-
+    % /tmp always contains at least . and .. -- result list is non-empty.
+    directory_files('/tmp', Fs),
+    ( Fs = [_ | _] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_df_contains_dot/2.
+test_df_contains_dot(_, R) :-
+    % readdir always yields ''.'' and ''..'' for a real directory.
+    directory_files('/tmp', Fs),
+    ( memberchk('.', Fs), memberchk('..', Fs) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_df_missing_dir/2.
+test_df_missing_dir(_, R) :-
+    % opendir fails on non-existent path.
+    ( directory_files('/tmp/uw_m107_definitely_not_a_dir', _) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_df_bad_arg/2.
+test_df_bad_arg(_, R) :-
+    % Non-atom Dir fails the type guard.
+    ( directory_files(42, _) -> R is 0 ; R is 1 ).   % 1
+
 % M106: access/2 -- libc access(path, mode_bits). Mode is the libc
 % bitmask: F_OK=0, R_OK=4, W_OK=2, X_OK=1.
 
@@ -5180,6 +5206,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M107 directory_files/2 ---~n'),
+       run_test_r0('directory_files(/tmp, [_|_]) -> 1',
+                   test_df_tmp_nonempty, 0, 1),
+       run_test_r0('memberchk(., Fs), memberchk(.., Fs) -> 1',
+                   test_df_contains_dot, 0, 1),
+       run_test_r0('directory_files on missing dir fails -> 1',
+                   test_df_missing_dir, 0, 1),
+       run_test_r0('directory_files(42, _) fails (non-atom) -> 1',
+                   test_df_bad_arg, 0, 1),
        format('--- M106 access/2 ---~n'),
        run_test_r0('access(/tmp, F_OK=0) -> 1',
                    test_access_tmp_exists, 0, 1),
