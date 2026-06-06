@@ -2459,6 +2459,36 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M110: realpath/2 -- libc realpath wrapper for canonical absolute paths.
+
+:- dynamic test_rp_tmp/2.
+test_rp_tmp(_, R) :-
+    % /tmp is its own canonical absolute path -- realpath returns
+    % the same atom (no symlinks involved here).
+    realpath('/tmp', Abs),
+    ( Abs == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rp_relative/2.
+test_rp_relative(_, R) :-
+    % realpath resolves . to the CWD; just check the result is a
+    % non-empty atom starting with /.
+    realpath('.', Abs),
+    atom_length(Abs, L),
+    atom_chars(Abs, [First | _]),
+    ( L > 0, First == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rp_missing/2.
+test_rp_missing(_, R) :-
+    % realpath on a non-existent path fails (ENOENT).
+    ( realpath('/tmp/uw_m110_definitely_not_here', _) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_rp_bad_arg/2.
+test_rp_bad_arg(_, R) :-
+    % Non-atom Path fails the type guard.
+    ( realpath(42, _) -> R is 0 ; R is 1 ).   % 1
+
 % M109: getpgrp/1 -- libc process group id wrapper.
 
 :- dynamic test_pgrp_positive/2.
@@ -5230,6 +5260,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M110 realpath/2 ---~n'),
+       run_test_r0('realpath(/tmp, Abs), Abs == /tmp -> 1',
+                   test_rp_tmp, 0, 1),
+       run_test_r0('realpath(., Abs), starts with / -> 1',
+                   test_rp_relative, 0, 1),
+       run_test_r0('realpath on missing path fails -> 1',
+                   test_rp_missing, 0, 1),
+       run_test_r0('realpath(42, _) fails (non-atom) -> 1',
+                   test_rp_bad_arg, 0, 1),
        format('--- M109 getpgrp/1 ---~n'),
        run_test_r0('getpgrp(PG), PG > 0 -> 1',
                    test_pgrp_positive, 0, 1),

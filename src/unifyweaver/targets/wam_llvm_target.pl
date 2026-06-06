@@ -1510,6 +1510,7 @@ declare i32 @getgid()
 declare i32 @getegid()
 declare i32 @getppid()
 declare i32 @getpgrp()
+declare i8* @realpath(i8*, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3599,6 +3600,7 @@ entry:
     i32 125, label %builtin_access
     i32 126, label %builtin_directory_files
     i32 127, label %builtin_getpgrp
+    i32 128, label %builtin_realpath
   ]
 
 builtin_is:
@@ -5687,6 +5689,46 @@ builtin_getpgrp:
   %gpg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gpg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpg.raw1, %Value %gpg.v)
   ret i1 %gpg.ok
+
+builtin_realpath:
+  ; M110: realpath(+Path, -Abs) -- libc realpath wrapper.
+  ; Stack-alloc a PATH_MAX-sized (4096) buffer for the result.
+  ; realpath returns NULL on failure (ENOENT for missing path,
+  ; EACCES for unreadable parent dir, etc.); we map that to a
+  ; Prolog fail. Non-atom Path also fails the type guard. On
+  ; success, the resolved path is copied into the arena, interned,
+  ; and the resulting atom is unified with reg 1.
+  %rp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rp.t1 = call i32 @value_tag(%Value %rp.a1)
+  %rp.is_atom = icmp eq i32 %rp.t1, 0
+  br i1 %rp.is_atom, label %rp.go, label %rp.fail
+rp.fail:
+  ret i1 false
+rp.go:
+  %rp.aid = call i64 @value_payload(%Value %rp.a1)
+  %rp.path = call i8* @wam_atom_to_string(i64 %rp.aid)
+  %rp.path_null = icmp eq i8* %rp.path, null
+  br i1 %rp.path_null, label %rp.fail, label %rp.do
+rp.do:
+  %rp.buf = alloca [4096 x i8]
+  %rp.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %rp.buf, i32 0, i32 0
+  %rp.res = call i8* @realpath(i8* %rp.path, i8* %rp.buf_ptr)
+  %rp.res_null = icmp eq i8* %rp.res, null
+  br i1 %rp.res_null, label %rp.fail, label %rp.intern
+rp.intern:
+  %rp.len = call i64 @strlen(i8* %rp.buf_ptr)
+  call void @wam_arena_ensure()
+  %rp.bufsize = add i64 %rp.len, 1
+  %rp.arena = call i8* @wam_arena_alloc(i64 %rp.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rp.arena, i8* %rp.buf_ptr, i64 %rp.len, i1 false)
+  %rp.term = getelementptr i8, i8* %rp.arena, i64 %rp.len
+  store i8 0, i8* %rp.term
+  %rp.atom_id = call i64 @wam_intern_atom(i8* %rp.arena, i64 %rp.len)
+  %rp.v0 = insertvalue %Value undef, i32 0, 0
+  %rp.v = insertvalue %Value %rp.v0, i64 %rp.atom_id, 1
+  %rp.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rp.raw2, %Value %rp.v)
+  ret i1 %rp.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12760,6 +12802,7 @@ builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
 builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
 builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
 builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
+builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
