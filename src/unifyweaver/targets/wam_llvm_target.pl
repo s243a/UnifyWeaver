@@ -1509,6 +1509,7 @@ declare i32 @geteuid()
 declare i32 @getgid()
 declare i32 @getegid()
 declare i32 @getppid()
+declare i32 @getpgrp()
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3597,6 +3598,7 @@ entry:
     i32 124, label %builtin_numbervars
     i32 125, label %builtin_access
     i32 126, label %builtin_directory_files
+    i32 127, label %builtin_getpgrp
   ]
 
 builtin_is:
@@ -5674,6 +5676,17 @@ dirf.close:
   %dirf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %dirf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %dirf.raw2, %Value %dirf.acc)
   ret i1 %dirf.ok
+
+builtin_getpgrp:
+  ; M109: getpgrp(?PGid) -- process group id via libc getpgrp().
+  ; pid_t is signed 32 bits on Linux; sext to i64 for the Integer
+  ; payload. Always succeeds (getpgrp cannot fail).
+  %gpg.pid = call i32 @getpgrp()
+  %gpg.pid64 = sext i32 %gpg.pid to i64
+  %gpg.v = call %Value @value_integer(i64 %gpg.pid64)
+  %gpg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpg.raw1, %Value %gpg.v)
+  ret i1 %gpg.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12746,6 +12759,7 @@ builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
 builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
 builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
 builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
+builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

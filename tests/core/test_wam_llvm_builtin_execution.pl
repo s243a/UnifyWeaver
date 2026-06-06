@@ -2459,6 +2459,20 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M109: getpgrp/1 -- libc process group id wrapper.
+
+:- dynamic test_pgrp_positive/2.
+test_pgrp_positive(_, R) :-
+    getpgrp(PG),
+    ( PG > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pgrp_stable/2.
+test_pgrp_stable(_, R) :-
+    % Two calls in the same process return the same group id.
+    getpgrp(PG1),
+    getpgrp(PG2),
+    ( PG1 =:= PG2 -> R is 1 ; R is 0 ).   % 1
+
 % M107: directory_files/2 -- opendir/readdir loop, list of entry atoms.
 
 :- dynamic test_df_tmp_nonempty/2.
@@ -5216,6 +5230,11 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M109 getpgrp/1 ---~n'),
+       run_test_r0('getpgrp(PG), PG > 0 -> 1',
+                   test_pgrp_positive, 0, 1),
+       run_test_r0('two getpgrp calls match -> 1',
+                   test_pgrp_stable, 0, 1),
        format('--- M107 directory_files/2 ---~n'),
        run_test_r0('directory_files(/tmp, [_|_]) -> 1',
                    test_df_tmp_nonempty, 0, 1),
