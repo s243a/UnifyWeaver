@@ -1494,6 +1494,9 @@ declare i32 @setenv(i8*, i8*, i32)
 declare i32 @unsetenv(i8*)
 declare i32 @chmod(i8*, i32)
 declare i32 @access(i8*, i32)
+declare i8* @opendir(i8*)
+declare i8* @readdir(i8*)
+declare i32 @closedir(i8*)
 declare i64 @strlen(i8*)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
@@ -3584,6 +3587,7 @@ entry:
     i32 123, label %builtin_term_variables
     i32 124, label %builtin_numbervars
     i32 125, label %builtin_access
+    i32 126, label %builtin_directory_files
   ]
 
 builtin_is:
@@ -5586,6 +5590,81 @@ ax.do:
   %ax.ret = call i32 @access(i8* %ax.path, i32 %ax.mode)
   %ax.ok = icmp eq i32 %ax.ret, 0
   ret i1 %ax.ok
+
+builtin_directory_files:
+  ; M107: directory_files(+Dir, -Files) -- list every entry name
+  ; in Dir (including . and ..) as a list of atoms. Opens via libc
+  ; opendir, loops readdir until NULL, pulls d_name from each
+  ; struct dirent (offset 19 on x86-64 Linux glibc), copies to the
+  ; arena, interns as atom, prepends onto an accumulator. Resulting
+  ; list is in REVERSE readdir order (most-recent entry first);
+  ; SWI does not promise a particular order so this is fine.
+  ; Fails on non-atom Dir, opendir failure (ENOENT/EACCES etc.),
+  ; or unifying the result against a non-list shape.
+  %dirf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dirf.t1 = call i32 @value_tag(%Value %dirf.a1)
+  %dirf.is_atom = icmp eq i32 %dirf.t1, 0
+  br i1 %dirf.is_atom, label %dirf.go, label %dirf.fail
+dirf.fail:
+  ret i1 false
+dirf.go:
+  %dirf.aid = call i64 @value_payload(%Value %dirf.a1)
+  %dirf.path = call i8* @wam_atom_to_string(i64 %dirf.aid)
+  %dirf.path_null = icmp eq i8* %dirf.path, null
+  br i1 %dirf.path_null, label %dirf.fail, label %dirf.open
+dirf.open:
+  %dirf.dir = call i8* @opendir(i8* %dirf.path)
+  %dirf.open_null = icmp eq i8* %dirf.dir, null
+  br i1 %dirf.open_null, label %dirf.fail, label %dirf.init
+dirf.init:
+  ; Seed accumulator with id-based [] atom (matches M100 atom rep).
+  %dirf.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %dirf.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %dirf.empty = insertvalue %Value %dirf.empty_v0, i64 %dirf.empty_aid, 1
+  call void @wam_arena_ensure()
+  br label %dirf.loop
+dirf.loop:
+  %dirf.acc = phi %Value [ %dirf.empty, %dirf.init ], [ %dirf.acc_next, %dirf.append ]
+  %dirf.entry = call i8* @readdir(i8* %dirf.dir)
+  %dirf.entry_null = icmp eq i8* %dirf.entry, null
+  br i1 %dirf.entry_null, label %dirf.close, label %dirf.append
+dirf.append:
+  ; Build a new cons cell [|](Atom, acc) on the arena.
+  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 19
+  %dirf.name_len = call i64 @strlen(i8* %dirf.name_ptr)
+  %dirf.bufsize = add i64 %dirf.name_len, 1
+  %dirf.buf = call i8* @wam_arena_alloc(i64 %dirf.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dirf.buf, i8* %dirf.name_ptr, i64 %dirf.name_len, i1 false)
+  %dirf.term = getelementptr i8, i8* %dirf.buf, i64 %dirf.name_len
+  store i8 0, i8* %dirf.term
+  %dirf.atom_id = call i64 @wam_intern_atom(i8* %dirf.buf, i64 %dirf.name_len)
+  %dirf.atom_v0 = insertvalue %Value undef, i32 0, 0
+  %dirf.atom_v = insertvalue %Value %dirf.atom_v0, i64 %dirf.atom_id, 1
+  ; Compound cell.
+  %dirf.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %dirf.cp_mem = call i8* @wam_arena_alloc(i64 %dirf.cp_size)
+  %dirf.cp = bitcast i8* %dirf.cp_mem to %Compound*
+  %dirf.fn_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %dirf.fn_slot
+  %dirf.ar_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 1
+  store i32 2, i32* %dirf.ar_slot
+  %dirf.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %dirf.args = bitcast i8* %dirf.args_mem to %Value*
+  %dirf.args_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 2
+  store %Value* %dirf.args, %Value** %dirf.args_slot
+  %dirf.head_ptr = getelementptr %Value, %Value* %dirf.args, i32 0
+  store %Value %dirf.atom_v, %Value* %dirf.head_ptr
+  %dirf.tail_ptr = getelementptr %Value, %Value* %dirf.args, i32 1
+  store %Value %dirf.acc, %Value* %dirf.tail_ptr
+  %dirf.cp_i64 = ptrtoint %Compound* %dirf.cp to i64
+  %dirf.cell_v0 = insertvalue %Value undef, i32 3, 0
+  %dirf.acc_next = insertvalue %Value %dirf.cell_v0, i64 %dirf.cp_i64, 1
+  br label %dirf.loop
+dirf.close:
+  call i32 @closedir(i8* %dirf.dir)
+  %dirf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dirf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %dirf.raw2, %Value %dirf.acc)
+  ret i1 %dirf.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12657,6 +12736,7 @@ builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
 builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
 builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
 builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
+builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
