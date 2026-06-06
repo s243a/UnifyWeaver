@@ -4280,6 +4280,7 @@ miss:
     % stack-limit OOM around test_write_rem. Force a GC + trim of
     % stack/heap between tests to keep memory bounded.
     garbage_collect,
+    garbage_collect_atoms,
     trim_stacks,
     assertion(ExitCode =:= Expected).
 
@@ -4374,6 +4375,7 @@ miss:
     % stack-limit OOM around test_write_rem. Force a GC + trim of
     % stack/heap between tests to keep memory bounded.
     garbage_collect,
+    garbage_collect_atoms,
     trim_stacks,
     assertion(ExitCode =:= Expected).
 
