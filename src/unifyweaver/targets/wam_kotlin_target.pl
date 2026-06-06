@@ -157,66 +157,72 @@ indent_join([One,Two|Rest], Indent, Sep, Joined) :-
     format(string(Joined), '~w~w~w~w', [Indent, One, Sep, Tail]).
 
 %% wam_instruction_to_kotlin_literal(+Instruction, -Literal)
-wam_instruction_to_kotlin_literal(get_constant(C, Ai), Lit) :- instr_lit('get_constant', [value(C), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_variable(Xn, Ai), Lit) :- instr_lit('get_variable', [reg(Xn), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_value(Xn, Ai), Lit) :- instr_lit('get_value', [reg(Xn), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_structure(F, Ai), Lit) :- instr_lit('get_structure', [string(F), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_list(Ai), Lit) :- instr_lit('get_list', [reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_nil(Ai), Lit) :- instr_lit('get_nil', [value('[]'), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_integer(N, Ai), Lit) :- instr_lit('get_integer', [value(N), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(get_float(F, Ai), Lit) :- instr_lit('get_float', [value(F), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(unify_variable(Xn), Lit) :- instr_lit('unify_variable', [reg(Xn)], Lit).
-wam_instruction_to_kotlin_literal(unify_value(Xn), Lit) :- instr_lit('unify_value', [reg(Xn)], Lit).
-wam_instruction_to_kotlin_literal(unify_constant(C), Lit) :- instr_lit('unify_constant', [value(C)], Lit).
-wam_instruction_to_kotlin_literal(unify_nil, Lit) :- instr_lit('unify_nil', [], Lit).
-wam_instruction_to_kotlin_literal(unify_void(N), Lit) :- instr_lit('unify_void', [int(N)], Lit).
-wam_instruction_to_kotlin_literal(put_variable(Xn, Ai), Lit) :- instr_lit('put_variable', [reg(Xn), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_value(Xn, Ai), Lit) :- instr_lit('put_value', [reg(Xn), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_unsafe_value(Yn, Ai), Lit) :- instr_lit('put_unsafe_value', [reg(Yn), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_constant(C, Ai), Lit) :- instr_lit('put_constant', [value(C), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_nil(Ai), Lit) :- instr_lit('put_nil', [value('[]'), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_integer(N, Ai), Lit) :- instr_lit('put_integer', [value(N), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_float(F, Ai), Lit) :- instr_lit('put_float', [value(F), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_structure(F, Ai), Lit) :- instr_lit('put_structure', [string(F), reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(put_list(Ai), Lit) :- instr_lit('put_list', [reg(Ai)], Lit).
-wam_instruction_to_kotlin_literal(set_variable(Xn), Lit) :- instr_lit('set_variable', [reg(Xn)], Lit).
-wam_instruction_to_kotlin_literal(set_value(Xn), Lit) :- instr_lit('set_value', [reg(Xn)], Lit).
-wam_instruction_to_kotlin_literal(set_local_value(Xn), Lit) :- instr_lit('set_local_value', [reg(Xn)], Lit).
-wam_instruction_to_kotlin_literal(set_constant(C), Lit) :- instr_lit('set_constant', [value(C)], Lit).
-wam_instruction_to_kotlin_literal(set_nil, Lit) :- instr_lit('set_nil', [], Lit).
-wam_instruction_to_kotlin_literal(set_integer(N), Lit) :- instr_lit('set_integer', [int(N)], Lit).
-wam_instruction_to_kotlin_literal(set_void(N), Lit) :- instr_lit('set_void', [int(N)], Lit).
-wam_instruction_to_kotlin_literal(call(P, N), Lit) :- instr_lit('call', [pred(P), int(N)], Lit).
-wam_instruction_to_kotlin_literal(execute(P), Lit) :- instr_lit('execute', [pred(P)], Lit).
-wam_instruction_to_kotlin_literal(proceed, Lit) :- instr_lit('proceed', [], Lit).
-wam_instruction_to_kotlin_literal(fail, Lit) :- instr_lit('fail', [], Lit).
-wam_instruction_to_kotlin_literal(allocate, Lit) :- instr_lit('allocate', [], Lit).
-wam_instruction_to_kotlin_literal(deallocate, Lit) :- instr_lit('deallocate', [], Lit).
-wam_instruction_to_kotlin_literal(builtin_call(Op, Ar), Lit) :- instr_lit('builtin_call', [string(Op), int(Ar)], Lit).
-wam_instruction_to_kotlin_literal(call_foreign(P, Ar), Lit) :- instr_lit('call_foreign', [pred(P), int(Ar)], Lit).
-wam_instruction_to_kotlin_literal(arg(N, Reg, Out), Lit) :- instr_lit('arg', [int(N), reg(Reg), reg(Out)], Lit).
-wam_instruction_to_kotlin_literal(try_me_else(L), Lit) :- instr_lit('try_me_else', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(retry_me_else(L), Lit) :- instr_lit('retry_me_else', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(trust_me, Lit) :- instr_lit('trust_me', [], Lit).
-wam_instruction_to_kotlin_literal(try(L), Lit) :- instr_lit('try', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(retry(L), Lit) :- instr_lit('retry', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(trust(L), Lit) :- instr_lit('trust', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(jump(L), Lit) :- instr_lit('jump', [label(L)], Lit).
-wam_instruction_to_kotlin_literal(cut_ite, Lit) :- instr_lit('cut_ite', [], Lit).
-wam_instruction_to_kotlin_literal(get_level(Yn), Lit) :- instr_lit('get_level', [reg(Yn)], Lit).
-wam_instruction_to_kotlin_literal(cut(Yn), Lit) :- instr_lit('cut', [reg(Yn)], Lit).
-wam_instruction_to_kotlin_literal(begin_aggregate(K,V,R), Lit) :- instr_lit('begin_aggregate', [string(K), reg(V), reg(R)], Lit).
-wam_instruction_to_kotlin_literal(begin_aggregate(K,V,R,W), Lit) :- instr_lit('begin_aggregate', [string(K), reg(V), reg(R), reg(W)], Lit).
-wam_instruction_to_kotlin_literal(end_aggregate(R), Lit) :- instr_lit('end_aggregate', [reg(R)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_constant(Es), Lit) :- instr_lit('switch_on_constant', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_constant_fallthrough(Es), Lit) :- instr_lit('switch_on_constant_fallthrough', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_constant_a2(Es), Lit) :- instr_lit('switch_on_constant_a2', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_constant_a2_fallthrough(Es), Lit) :- instr_lit('switch_on_constant_a2_fallthrough', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_structure(Es), Lit) :- instr_lit('switch_on_structure', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_structure_a2(Es), Lit) :- instr_lit('switch_on_structure_a2', [strings(Es)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_term(Ts), Lit) :- instr_lit('switch_on_term', [strings(Ts)], Lit).
-wam_instruction_to_kotlin_literal(switch_on_term_a2(Ts), Lit) :- instr_lit('switch_on_term_a2', [strings(Ts)], Lit).
-wam_instruction_to_kotlin_literal(Other, Lit) :-
+%  Deterministic public wrapper.  The catch-all unsupported clause is kept for
+%  forward-compatible code generation, but must not be returned after a known
+%  instruction on backtracking.
+wam_instruction_to_kotlin_literal(Instr, Lit) :-
+    once(wam_instruction_to_kotlin_literal_det(Instr, Lit)).
+
+wam_instruction_to_kotlin_literal_det(get_constant(C, Ai), Lit) :- instr_lit('get_constant', [value(C), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_variable(Xn, Ai), Lit) :- instr_lit('get_variable', [reg(Xn), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_value(Xn, Ai), Lit) :- instr_lit('get_value', [reg(Xn), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_structure(F, Ai), Lit) :- instr_lit('get_structure', [string(F), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_list(Ai), Lit) :- instr_lit('get_list', [reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_nil(Ai), Lit) :- instr_lit('get_nil', [value('[]'), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_integer(N, Ai), Lit) :- instr_lit('get_integer', [value(N), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(get_float(F, Ai), Lit) :- instr_lit('get_float', [value(F), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(unify_variable(Xn), Lit) :- instr_lit('unify_variable', [reg(Xn)], Lit).
+wam_instruction_to_kotlin_literal_det(unify_value(Xn), Lit) :- instr_lit('unify_value', [reg(Xn)], Lit).
+wam_instruction_to_kotlin_literal_det(unify_constant(C), Lit) :- instr_lit('unify_constant', [value(C)], Lit).
+wam_instruction_to_kotlin_literal_det(unify_nil, Lit) :- instr_lit('unify_nil', [], Lit).
+wam_instruction_to_kotlin_literal_det(unify_void(N), Lit) :- instr_lit('unify_void', [int(N)], Lit).
+wam_instruction_to_kotlin_literal_det(put_variable(Xn, Ai), Lit) :- instr_lit('put_variable', [reg(Xn), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_value(Xn, Ai), Lit) :- instr_lit('put_value', [reg(Xn), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_unsafe_value(Yn, Ai), Lit) :- instr_lit('put_unsafe_value', [reg(Yn), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_constant(C, Ai), Lit) :- instr_lit('put_constant', [value(C), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_nil(Ai), Lit) :- instr_lit('put_nil', [value('[]'), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_integer(N, Ai), Lit) :- instr_lit('put_integer', [value(N), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_float(F, Ai), Lit) :- instr_lit('put_float', [value(F), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_structure(F, Ai), Lit) :- instr_lit('put_structure', [string(F), reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(put_list(Ai), Lit) :- instr_lit('put_list', [reg(Ai)], Lit).
+wam_instruction_to_kotlin_literal_det(set_variable(Xn), Lit) :- instr_lit('set_variable', [reg(Xn)], Lit).
+wam_instruction_to_kotlin_literal_det(set_value(Xn), Lit) :- instr_lit('set_value', [reg(Xn)], Lit).
+wam_instruction_to_kotlin_literal_det(set_local_value(Xn), Lit) :- instr_lit('set_local_value', [reg(Xn)], Lit).
+wam_instruction_to_kotlin_literal_det(set_constant(C), Lit) :- instr_lit('set_constant', [value(C)], Lit).
+wam_instruction_to_kotlin_literal_det(set_nil, Lit) :- instr_lit('set_nil', [], Lit).
+wam_instruction_to_kotlin_literal_det(set_integer(N), Lit) :- instr_lit('set_integer', [int(N)], Lit).
+wam_instruction_to_kotlin_literal_det(set_void(N), Lit) :- instr_lit('set_void', [int(N)], Lit).
+wam_instruction_to_kotlin_literal_det(call(P, N), Lit) :- instr_lit('call', [pred(P), int(N)], Lit).
+wam_instruction_to_kotlin_literal_det(execute(P), Lit) :- instr_lit('execute', [pred(P)], Lit).
+wam_instruction_to_kotlin_literal_det(proceed, Lit) :- instr_lit('proceed', [], Lit).
+wam_instruction_to_kotlin_literal_det(fail, Lit) :- instr_lit('fail', [], Lit).
+wam_instruction_to_kotlin_literal_det(allocate, Lit) :- instr_lit('allocate', [], Lit).
+wam_instruction_to_kotlin_literal_det(deallocate, Lit) :- instr_lit('deallocate', [], Lit).
+wam_instruction_to_kotlin_literal_det(builtin_call(Op, Ar), Lit) :- instr_lit('builtin_call', [string(Op), int(Ar)], Lit).
+wam_instruction_to_kotlin_literal_det(call_foreign(P, Ar), Lit) :- instr_lit('call_foreign', [pred(P), int(Ar)], Lit).
+wam_instruction_to_kotlin_literal_det(arg(N, Reg, Out), Lit) :- instr_lit('arg', [int(N), reg(Reg), reg(Out)], Lit).
+wam_instruction_to_kotlin_literal_det(try_me_else(L), Lit) :- instr_lit('try_me_else', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(retry_me_else(L), Lit) :- instr_lit('retry_me_else', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(trust_me, Lit) :- instr_lit('trust_me', [], Lit).
+wam_instruction_to_kotlin_literal_det(try(L), Lit) :- instr_lit('try', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(retry(L), Lit) :- instr_lit('retry', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(trust(L), Lit) :- instr_lit('trust', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(jump(L), Lit) :- instr_lit('jump', [label(L)], Lit).
+wam_instruction_to_kotlin_literal_det(cut_ite, Lit) :- instr_lit('cut_ite', [], Lit).
+wam_instruction_to_kotlin_literal_det(get_level(Yn), Lit) :- instr_lit('get_level', [reg(Yn)], Lit).
+wam_instruction_to_kotlin_literal_det(cut(Yn), Lit) :- instr_lit('cut', [reg(Yn)], Lit).
+wam_instruction_to_kotlin_literal_det(begin_aggregate(K,V,R), Lit) :- instr_lit('begin_aggregate', [string(K), reg(V), reg(R)], Lit).
+wam_instruction_to_kotlin_literal_det(begin_aggregate(K,V,R,W), Lit) :- instr_lit('begin_aggregate', [string(K), reg(V), reg(R), reg(W)], Lit).
+wam_instruction_to_kotlin_literal_det(end_aggregate(R), Lit) :- instr_lit('end_aggregate', [reg(R)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_constant(Es), Lit) :- instr_lit('switch_on_constant', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_constant_fallthrough(Es), Lit) :- instr_lit('switch_on_constant_fallthrough', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_constant_a2(Es), Lit) :- instr_lit('switch_on_constant_a2', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_constant_a2_fallthrough(Es), Lit) :- instr_lit('switch_on_constant_a2_fallthrough', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_structure(Es), Lit) :- instr_lit('switch_on_structure', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_structure_a2(Es), Lit) :- instr_lit('switch_on_structure_a2', [strings(Es)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_term(Ts), Lit) :- instr_lit('switch_on_term', [strings(Ts)], Lit).
+wam_instruction_to_kotlin_literal_det(switch_on_term_a2(Ts), Lit) :- instr_lit('switch_on_term_a2', [strings(Ts)], Lit).
+wam_instruction_to_kotlin_literal_det(Other, Lit) :-
     term_string(Other, S),
     instr_lit('unsupported', [string(S)], Lit).
 

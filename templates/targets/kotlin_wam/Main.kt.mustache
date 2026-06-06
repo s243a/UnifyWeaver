@@ -20,6 +20,9 @@ fun main(args: Array<String>) {
         return
     }
     val runtime = WamRuntime(program)
-    runtime.run(predicate)
+    val state = runtime.run(predicate, stateFromCliArgs(args.drop(1)))
     println("Ran $predicate")
+    state.snapshotRegisters().forEach { (name, value) ->
+        println("$name=$value")
+    }
 }
