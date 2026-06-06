@@ -47,10 +47,35 @@ them literally.
 - **`max_depth(D)`** — contributions beyond `D` hops from the root are not
   counted. Bounds cost and makes cyclic graphs well-defined.
 - **`cycles(Policy)`** — `bounded` (default; rely on `max_depth`), `scc`
-  (condense strongly-connected components first), or `ignore` (assume acyclic;
-  undefined behaviour on a cycle — only for known DAGs).
+  (condense strongly-connected components first), `ignore` (assume acyclic;
+  undefined behaviour on a cycle — only for known DAGs), or `visited`
+  (per-path visited set: never revisit a node *on the current path* — the
+  simple-path semantics; see §4.1). `bounded` and `visited` both terminate on
+  cyclic graphs but for `max`/`sum` they compute **different quantities**
+  (walks vs simple paths); for `min` they agree.
 - **`materialize(Where)`** — `kernel` (default; recompute per run as a node-DP)
   or `ingest` (precompute once, store `node → value`; see §6).
+
+### Presets and the default metric
+
+So a user need not spell out the algorithm fields, a directive may carry
+`preset(Name)`, which fills `combine`/`aggregate`/`max_depth`; any explicit
+option of the same kind overrides the preset. The user then declares only the
+graph-specific `edge` + `boundary`:
+
+```prolog
+:- root_metric(min_dist_to_root/3, [ edge(parent/2, up), boundary(Root, 0), preset(min_dist) ]).
+```
+
+Built-in presets: `min_dist` → `(succ, min)`, `max_dist` → `(succ, max)`,
+`effective` → `(scale(0.2), sum)`, each with `max_depth(10)`. **`min_dist` is the
+default metric** — `default_root_metric(EdgePred/2, Direction, RootTerm, Spec)`
+yields the canonical minimum-distance spec from just the edge + root, so the
+common case is effectively zero-config. (A fully implicit default that also
+infers `edge`/`boundary` from domain conventions — e.g. `parent/2` + a
+`root_category/1` fact — is a possible further step, deferred pending a
+convention decision; `edge`/`boundary` stay explicit for now because they are
+graph-specific, not algorithmic.)
 
 ## 2. The three canonical instances
 
@@ -134,6 +159,33 @@ and its direction are required. Nodes unreachable from the root within
 Determinism: results must be independent of node visitation order (the semiring
 operations are associative/commutative). This is the same purity contract the
 existing kernels rely on (`purity_certificate`).
+
+### 4.1 Walks vs simple paths — `cycles(bounded)` vs `cycles(visited)`
+
+The default node-DP counts **walks** (a node may recur within the depth budget),
+sharing one memoised value per node — this is what makes it linear. The
+`visited` policy instead carries a **per-path visited set** (the classic
+`\+ member(N, Visited)` constraint; see `PER_PATH_VISITED_RECURSION.md`,
+`visited_set/2`, and the IntSet-visited work) and counts only **simple paths**
+(no repeated node on a path). The distinction matters per aggregate:
+
+- **`min`** — shortest paths are always simple, so `bounded` and `visited`
+  produce the *same* value. `bounded` (shared memo) is strictly cheaper; prefer
+  it. `visited` is available for parity with existing simple-path kernels.
+- **`max`** — `visited` gives the longest **simple** path (the "true" longest
+  path), but that is NP-hard in general and reintroduces per-path state, so it
+  does not share the node-DP's linearity. `bounded` gives the longest **walk**
+  ≤ depth (tractable). Choose per intent: exactness vs cost.
+- **`sum`/flux** — `visited` sums over **simple paths only** and is exactly the
+  semantics of the current path-enumerating kernel — which is precisely the
+  exponential blow-up this design exists to avoid. `bounded` sums over **walks**
+  (the linear node-DP). On an acyclic subgraph the two coincide; on a cyclic one
+  they differ, and `bounded` is the supported tractable default.
+
+In short: `visited` is the faithful simple-path semantics (and the escape hatch
+to the existing kernel behaviour), while `bounded` is the walk semantics that the
+node-DP computes in linear time. For `min` they are equal; for `max`/`sum` they
+are a genuine semantic *and* cost choice, which is why both are first-class.
 
 ## 5. Equivalence to the existing effective-distance kernel
 
