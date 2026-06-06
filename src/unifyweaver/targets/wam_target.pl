@@ -1841,6 +1841,11 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    ;   nonvar(Goal),
+        Goal = _ExistentialVars^ExistentialGoal
+    ->  flatten_conjunction(ExistentialGoal, ExistentialGoals),
+        append(ExistentialGoals, Rest, ExpandedGoals),
+        compile_inner_call_goals(ExpandedGoals, V0, Vf, Code)
     ;   Goal = (CondGoal -> ThenGoal)
     ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
