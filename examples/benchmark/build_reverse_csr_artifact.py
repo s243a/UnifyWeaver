@@ -53,7 +53,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--index-backend",
         choices=["sorted_array", "lmdb_offset"],
         default="sorted_array",
-        help="parent -> offset/count lookup backend to emit",
+        help="key -> offset/count lookup backend to emit",
+    )
+    parser.add_argument(
+        "--direction",
+        choices=["reverse", "forward"],
+        default="reverse",
+        help=(
+            "reverse (default): group category_parent BY VALUE -> a "
+            "category_child (parent->children) CSR, keyed by parent. "
+            "forward: group BY KEY -> a category_parent (child->parents) CSR, "
+            "keyed by child (for the upward category_ancestor kernel walk)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -74,7 +85,13 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    forward = (args.direction == "forward")
+    # reverse: out relation category_child, grouped BY VALUE (parent->children).
+    # forward: out relation category_parent, grouped BY KEY  (child->parents).
+    out_rel = "category_parent" if forward else "category_child"
+    value_field = "parent" if forward else "child"
+
+    groups: dict[int, list[int]] = defaultdict(list)
     edge_count = 0
     max_id = 0
 
@@ -88,16 +105,20 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 child = I32.unpack(key)[0]
                 parent = I32.unpack(value)[0]
-                children_by_parent[parent].append(child)
+                if forward:
+                    groups[child].append(parent)   # key=child -> parents
+                else:
+                    groups[parent].append(child)   # key=parent -> children
                 edge_count += 1
                 max_id = max(max_id, child, parent)
     finally:
         env.close()
 
-    idx_path = out_dir / "category_child.csr.idx"
-    val_path = out_dir / "category_child.csr.val"
-    offset_lmdb_path = out_dir / "category_child.csr.offsets.lmdb"
-    meta_path = out_dir / "category_child.csr.meta"
+    children_by_parent = groups
+    idx_path = out_dir / f"{out_rel}.csr.idx"
+    val_path = out_dir / f"{out_rel}.csr.val"
+    offset_lmdb_path = out_dir / f"{out_rel}.csr.offsets.lmdb"
+    meta_path = out_dir / f"{out_rel}.csr.meta"
 
     offset_edges = 0
     parent_count = 0
@@ -133,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "format": "unifyweaver.reverse_csr.v1",
         "schema_version": 1,
-        "relation": "category_child/2",
+        "relation": f"{out_rel}/2",
         "source_relation": "category_parent/2",
         "source_environment_path": str(src_dir),
         "storage_kind": "csr_pread_artifact",
@@ -147,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         "offset_index_database": "offsets" if args.index_backend == "lmdb_offset" else None,
         "index_record_format": "int32_le parent, uint64_le offset_edges, uint32_le count_edges",
         "offset_index_record_format": "uint64_le offset_edges, uint32_le count_edges",
-        "value_record_format": "int32_le child",
+        "value_record_format": f"int32_le {value_field}",
         "index_record_bytes": IDX_RECORD.size,
         "offset_index_record_bytes": OFFSET_RECORD.size,
         "value_record_bytes": I32.size,
