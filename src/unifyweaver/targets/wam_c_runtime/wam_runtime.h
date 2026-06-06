@@ -85,6 +85,7 @@ typedef enum {
     INSTR_CALL, INSTR_EXECUTE, INSTR_PROCEED,
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
+    INSTR_GET_LEVEL, INSTR_CUT, INSTR_CUT_ITE, INSTR_JUMP,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
     INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
     INSTR_NOOP
@@ -225,6 +226,10 @@ typedef struct {
 } WamChoiceInstr;
 
 typedef struct {
+    int target_pc;
+} WamJumpInstr;
+
+typedef struct {
     int reg;
     HashEntry *hash_table;
     int hash_size;
@@ -241,6 +246,7 @@ typedef union {
     WamFunctorInstr functor;
     WamPredInstr pred;
     WamChoiceInstr choice;
+    WamJumpInstr jump;
     WamSwitchInstr switch_index;
 } InstructionPayload;
 

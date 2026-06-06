@@ -4,17 +4,16 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-candidate-filter-observability` based on `main` at
-  `eb5f5353` (`Merge pull request #2801 from
-  s243a/investigate/wam-c-candidate-filter-boundary-repeatability`)
-- `python3 -m py_compile examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py tests/test_wam_c_candidate_filter_threshold_sweep.py`
-- `python3 tests/test_wam_c_candidate_filter_threshold_sweep.py`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales dev --profiles low --thresholds auto,off --repetitions 1 --run-timeout-seconds 120`
+- `investigate/wam-c-control-builtins-parity` based on `main` at `a3a279f9`
+  (`Merge pull request #2805 from
+  s243a/investigate/wam-c-candidate-filter-observability`)
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-candidate-filter-observability`
+- `investigate/wam-c-control-builtins-parity`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -78,6 +77,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over weighted and direct-distance edges |
 | Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.065-0.071s with output parity versus Prolog at 0.202s |
 | Native weighted-kernel float output | Done | C runtime has `VAL_FLOAT`, numeric unification, double weighted/direct edge storage, and executable weighted/A* smokes for fractional 1.5 results while preserving exact-integer outputs as `VAL_INT` |
+| Control instruction parity smoke | Done | `INSTR_GET_LEVEL`, `INSTR_CUT`, `INSTR_CUT_ITE`, and `INSTR_JUMP` now parse, emit, and execute; generated executable smoke covers `\+/1` and if-then-else success/failure paths |
 
 ## Current C Target Baseline
 
@@ -88,8 +88,9 @@ The C target is now a credible small WAM backend:
   structures, lists, and unification.
 - Supports `set_variable`, `set_value`, and `set_constant` for generated body
   term construction.
-- Supports `call`, `execute`, `proceed`, `allocate`, `deallocate`, and
-  choice-point instructions.
+- Supports `call`, `execute`, `proceed`, `allocate`, `deallocate`,
+  choice-point instructions, and control opcodes for `get_level`, `cut`,
+  `cut_ite`, and `jump`.
 - Supports `switch_on_constant`, `switch_on_structure`, `switch_on_term`,
   second-argument constant dispatch, and direct list dispatch.
 - Uses a tagged `InstructionPayload` union instead of a single wide instruction
@@ -125,8 +126,8 @@ The C target is now a credible small WAM backend:
   `kernels_on` / `kernels_off` accumulated target pairs.
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
-  results, real multi-clause predicates, structure indexing, `is_list/1`, and
-  `=/2`.
+  results, real multi-clause predicates, structure indexing, `is_list/1`,
+  `=/2`, negation, and if-then-else.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -150,7 +151,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
-| Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
+| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1` and if-then-else; residual work is broader cut/control interaction coverage. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
@@ -163,6 +164,27 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-control-builtins-parity`
+
+Goal: close the immediate C control-instruction parity gap for the shared WAM
+compiler opcodes used by negation and if-then-else lowering.
+
+Evidence:
+
+- C runtime tags, payloads, parser support, generated literals, and dispatch
+  arms now cover `get_level`, `cut`, `cut_ite`, and `jump`.
+- Generated executable smoke coverage exercises `\+/1` and if-then-else for
+  both success and failure paths.
+- The focused WAM-C target suite and effective-distance benchmark suite pass.
+
+Reason:
+
+- The C target already had choice points and builtin dispatch, but generated
+  Prolog control constructs could still emit unsupported shared WAM opcodes.
+- Supporting these opcodes is a narrow parity step with Rust/Haskell behavior
+  and keeps the next benchmark-driven gaps from being blocked by control-flow
+  lowering.
 
 ### Completed: `feat/wam-c-native-kernel-float-output`
 

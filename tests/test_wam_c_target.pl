@@ -127,6 +127,35 @@ test_control_flow_instructions :-
     ;   fail_test(Test, 'missing control flow instruction arms')
     ).
 
+test_control_cut_jump_instructions :-
+    Test = 'WAM-C: cut and jump control instructions present',
+    (   implemented_wam_c_cases(Cases),
+        member(get_level, Cases),
+        member(cut, Cases),
+        member(cut_ite, Cases),
+        member(jump, Cases),
+        compile_step_wam_to_c([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_prune_choice_points(state, target_b)'),
+        sub_string(S, _, _, _, 'state->P = target')
+    ->  pass(Test)
+    ;   fail_test(Test, 'missing cut/jump control instruction arms')
+    ).
+
+test_control_instruction_parsing :-
+    Test = 'WAM-C: cut and jump instructions parse to typed payloads',
+    WamCode = 'wam_c_ctrl_parse/1:\n    get_level Y1\n    try_me_else L_else\n    cut Y1\n    cut_ite\n    jump L_done\nL_else:\n    trust_me\nL_done:\n    proceed',
+    (   compile_wam_predicate_to_c(user:wam_c_ctrl_parse/1, WamCode, [], CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_GET_LEVEL'),
+        sub_string(S, _, _, _, 'INSTR_CUT'),
+        sub_string(S, _, _, _, 'INSTR_CUT_ITE'),
+        sub_string(S, _, _, _, 'INSTR_JUMP'),
+        sub_string(S, _, _, _, '.as.jump = { .target_pc = base_pc +')
+    ->  pass(Test)
+    ;   fail_test(Test, 'cut/jump instruction parsing missing typed payloads')
+    ).
+
 test_choice_point_instructions :-
     Test = 'WAM-C: choice point instructions present',
     (   implemented_wam_c_cases(Cases),
@@ -1600,6 +1629,16 @@ test_real_prolog_unify_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_control_executable_smoke :-
+    Test = 'WAM-C: real Prolog negation and if-then-else executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_control_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog control executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2432,6 +2471,52 @@ run_real_prolog_unify_executable_smoke :-
     ;   retractall(user:wam_c_real_unify(_, _)),
         fail
     ).
+
+run_real_prolog_control_executable_smoke :-
+    assertz((user:wam_c_ctrl_known(a) :- true)),
+    assertz((user:wam_c_ctrl_neg(X, ok) :- \+ wam_c_ctrl_known(X))),
+    assertz((user:wam_c_ctrl_if_known(X, yes) :-
+        (wam_c_ctrl_known(X) -> true ; fail))),
+    assertz((user:wam_c_ctrl_if_missing(X, no) :-
+        (wam_c_ctrl_known(X) -> fail ; true))),
+    (   compile_predicate_to_wam(user:wam_c_ctrl_known/1, [], WamKnown),
+        compile_predicate_to_wam(user:wam_c_ctrl_neg/2, [], WamNeg),
+        compile_predicate_to_wam(user:wam_c_ctrl_if_known/2, [], WamIfKnown),
+        compile_predicate_to_wam(user:wam_c_ctrl_if_missing/2, [], WamIfMissing),
+        sub_string(WamNeg, _, _, _, 'jump '),
+        sub_string(WamIfKnown, _, _, _, 'cut_ite'),
+        sub_string(WamIfKnown, _, _, _, 'jump '),
+        sub_string(WamIfMissing, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_known/1, WamKnown, [], KnownCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_neg/2, WamNeg, [], NegCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_if_known/2, WamIfKnown, [], IfKnownCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_if_missing/2, WamIfMissing, [], IfMissingCode),
+        atomic_list_concat([KnownCode, NegCode, IfKnownCode, IfMissingCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_real_control_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_control_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_real_control_smoke
+    ;   cleanup_wam_c_real_control_smoke,
+        fail
+    ).
+
+cleanup_wam_c_real_control_smoke :-
+    retractall(user:wam_c_ctrl_known(_)),
+    retractall(user:wam_c_ctrl_neg(_, _)),
+    retractall(user:wam_c_ctrl_if_known(_, _)),
+    retractall(user:wam_c_ctrl_if_missing(_, _)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5206,6 +5291,69 @@ int main(void) {
 }
 ').
 
+wam_c_real_control_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_ctrl_known_1(WamState* state);
+void setup_wam_c_ctrl_neg_2(WamState* state);
+void setup_wam_c_ctrl_if_known_2(WamState* state);
+void setup_wam_c_ctrl_if_missing_2(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_ctrl_known_1(&state);
+    setup_wam_c_ctrl_neg_2(&state);
+    setup_wam_c_ctrl_if_known_2(&state);
+    setup_wam_c_ctrl_if_missing_2(&state);
+
+    WamValue neg_success_args[2] = { val_atom("b"), val_atom("ok") };
+    int neg_success_rc = wam_run_predicate(&state, "wam_c_ctrl_neg/2", neg_success_args, 2);
+    if (neg_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue neg_fail_args[2] = { val_atom("a"), val_atom("ok") };
+    int neg_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_neg/2", neg_fail_args, 2);
+    if (neg_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue if_known_success_args[2] = { val_atom("a"), val_atom("yes") };
+    int if_known_success_rc = wam_run_predicate(&state, "wam_c_ctrl_if_known/2", if_known_success_args, 2);
+    if (if_known_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue if_known_fail_args[2] = { val_atom("b"), val_atom("yes") };
+    int if_known_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_if_known/2", if_known_fail_args, 2);
+    if (if_known_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue if_missing_success_args[2] = { val_atom("b"), val_atom("no") };
+    int if_missing_success_rc = wam_run_predicate(&state, "wam_c_ctrl_if_missing/2", if_missing_success_args, 2);
+    if (if_missing_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue if_missing_fail_args[2] = { val_atom("a"), val_atom("no") };
+    int if_missing_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_if_missing/2", if_missing_fail_args, 2);
+    if (if_missing_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -5282,6 +5430,10 @@ implemented_case(call_foreign, 'case INSTR_CALL_FOREIGN').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
+implemented_case(get_level, 'case INSTR_GET_LEVEL').
+implemented_case(cut, 'case INSTR_CUT').
+implemented_case(cut_ite, 'case INSTR_CUT_ITE').
+implemented_case(jump, 'case INSTR_JUMP').
 implemented_case(switch_on_constant, 'case INSTR_SWITCH_ON_CONSTANT').
 implemented_case(switch_on_structure, 'case INSTR_SWITCH_ON_STRUCTURE').
 implemented_case(switch_on_term, 'case INSTR_SWITCH_ON_TERM').
@@ -5315,6 +5467,8 @@ run_tests_once :-
     test_body_construction_instructions,
     test_unification_instructions,
     test_control_flow_instructions,
+    test_control_cut_jump_instructions,
+    test_control_instruction_parsing,
     test_choice_point_instructions,
     test_choice_point_content,
     test_switch_on_term_list_dispatch,
@@ -5404,6 +5558,7 @@ run_tests_once :-
     test_real_prolog_structure_index_executable_smoke,
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
+    test_real_prolog_control_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,

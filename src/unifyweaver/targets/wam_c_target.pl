@@ -1615,6 +1615,15 @@ wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [Op, N]).
 wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [P, N]).
+wam_instruction_to_c_literal(get_level(Reg), Code) :-
+    c_reg_index(Reg, IsY, Idx),
+    format(atom(Code), '{ .tag = INSTR_GET_LEVEL, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_instruction_to_c_literal(cut(Reg), Code) :-
+    c_reg_index(Reg, IsY, Idx),
+    format(atom(Code), '{ .tag = INSTR_CUT, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_instruction_to_c_literal(cut_ite, '{ .tag = INSTR_CUT_ITE }').
+wam_instruction_to_c_literal(jump(_Label), _) :-
+    throw(error(context_error(missing_label_map, "jump/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -1634,6 +1643,9 @@ wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(jump(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
@@ -1756,6 +1768,18 @@ wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
 wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [CP, CN]).
+wam_line_to_c_instr(["get_level", Reg], Instr) :-
+    clean_comma(Reg, CReg),
+    c_reg_index(CReg, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_LEVEL, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_line_to_c_instr(["cut", Reg], Instr) :-
+    clean_comma(Reg, CReg),
+    c_reg_index(CReg, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_CUT, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_line_to_c_instr(["jump", L], LabelMap, _Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
@@ -1765,6 +1789,7 @@ wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
+wam_line_to_c_instr(["cut_ite"], _, '{ .tag = INSTR_CUT_ITE }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
 wam_line_to_c_instr(["allocate"], _, '{ .tag = INSTR_ALLOCATE }').
 wam_line_to_c_instr(["deallocate"], _, '{ .tag = INSTR_DEALLOCATE }').
@@ -2090,6 +2115,33 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRUST_ME: {
                 pop_choice_point(state);
                 state->P++;
+                return true;
+            }
+            case INSTR_GET_LEVEL: {
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
+                *cell = val_int(state->B);
+                state->P++;
+                return true;
+            }
+            case INSTR_CUT: {
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg));
+                if (cell->tag != VAL_INT) return false;
+                int target_b = cell->data.integer;
+                if (target_b < 0 || target_b > state->B) return false;
+                wam_prune_choice_points(state, target_b);
+                state->P++;
+                return true;
+            }
+            case INSTR_CUT_ITE: {
+                if (state->B <= 0) return false;
+                pop_choice_point(state);
+                state->P++;
+                return true;
+            }
+            case INSTR_JUMP: {
+                int target = instr->as.jump.target_pc;
+                if (target < 0) return false;
+                state->P = target;
                 return true;
             }
             case INSTR_SWITCH_ON_CONSTANT: {
