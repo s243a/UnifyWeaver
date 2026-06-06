@@ -67,6 +67,25 @@ jobs:
           python3 -m unittest tests/test_csharp_query_policy_review_wrapper.py
           python3 examples/benchmark/review_csharp_query_effective_distance_policy.py --dry-run
 
+      - name: Set up .NET (for F# WAM target tests)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install python lmdb (for F# LMDB cross-target conformance fixture)
+        run: pip3 install --user lmdb
+
+      - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          DOTNET_NOLOGO: '1'
+          # Belt-and-suspenders: the generated fsproj targets net8.0 and
+          # setup-dotnet installs the matching runtime, but Major roll-forward
+          # keeps the dotnet legs launchable if the runner's SDK ever drifts.
+          DOTNET_ROLL_FORWARD: 'Major'
+        run: |
+          swipl -q -g main -t halt tests/run_wam_fsharp_tests.pl
+
       - name: Generate and run inference test runner
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
@@ -98,6 +117,7 @@ jobs:
           echo "✓ Advanced recursion tests (24/24)"
           echo "✓ Constraint integration tests"
           echo "✓ Control plane tests (5/5)"
+          echo "✓ F# WAM target tests (codegen + dotnet smoke + LMDB conformance)"
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
           echo "✓ Visualization glue tests (478 tests)"
