@@ -269,6 +269,7 @@ typedef struct {
     int template_is_y;
     int result_reg;
     int result_is_y;
+    char *witness_regs;
 } WamAggregateInstr;
 
 typedef union {

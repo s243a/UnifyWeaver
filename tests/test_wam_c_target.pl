@@ -1725,6 +1725,16 @@ test_real_prolog_findall_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_bagof_setof_executable_smoke :-
+    Test = 'WAM-C: real Prolog bagof/3 and setof/3 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog bagof/3 and setof/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2856,6 +2866,69 @@ cleanup_wam_c_findall_smoke :-
     retractall(user:wam_c_findall_inline_nested(_)),
     retractall(user:wam_c_findall_struct_template(_)),
     retractall(user:wam_c_findall_list_template(_)).
+
+run_real_prolog_bagof_setof_executable_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_bagset_item(b) :- true)),
+    assertz((user:wam_c_bagset_item(a) :- true)),
+    assertz((user:wam_c_bagset_none(_) :- fail)),
+    assertz((user:wam_c_bagset_bag(L) :-
+        bagof(X, (wam_c_bagset_item(X) ; wam_c_bagset_item(X)), L))),
+    assertz((user:wam_c_bagset_set(L) :-
+        setof(X, (wam_c_bagset_item(X) ; wam_c_bagset_item(X)), L))),
+    assertz((user:wam_c_bagset_bag_empty(L) :-
+        bagof(X, wam_c_bagset_none(X), L))),
+    assertz((user:wam_c_bagset_set_empty(L) :-
+        setof(X, wam_c_bagset_none(X), L))),
+    (   compile_predicate_to_wam(user:wam_c_bagset_item/1, Options, WamItem),
+        compile_predicate_to_wam(user:wam_c_bagset_none/1, Options, WamNone),
+        compile_predicate_to_wam(user:wam_c_bagset_bag/1, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_bagset_set/1, Options, WamSet),
+        compile_predicate_to_wam(user:wam_c_bagset_bag_empty/1, Options, WamBagEmpty),
+        compile_predicate_to_wam(user:wam_c_bagset_set_empty/1, Options, WamSetEmpty),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "''"),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "''"),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        compile_wam_predicate_to_c(user:wam_c_bagset_item/1, WamItem, Options, ItemCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_none/1, WamNone, Options, NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_bag/1, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_set/1, WamSet, Options, SetCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_bag_empty/1, WamBagEmpty, Options, BagEmptyCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_set_empty/1, WamSetEmpty, Options, SetEmptyCode),
+        atomic_list_concat([ItemCode, NoneCode, BagCode, SetCode,
+                            BagEmptyCode, SetEmptyCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_smoke
+    ;   cleanup_wam_c_bagof_setof_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_smoke :-
+    retractall(user:wam_c_bagset_item(_)),
+    retractall(user:wam_c_bagset_none(_)),
+    retractall(user:wam_c_bagset_bag(_)),
+    retractall(user:wam_c_bagset_set(_)),
+    retractall(user:wam_c_bagset_bag_empty(_)),
+    retractall(user:wam_c_bagset_set_empty(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -6049,6 +6122,113 @@ int main(void) {
 }
 ').
 
+wam_c_bagof_setof_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_bagset_item_1(WamState* state);
+void setup_wam_c_bagset_none_1(WamState* state);
+void setup_wam_c_bagset_bag_1(WamState* state);
+void setup_wam_c_bagset_set_1(WamState* state);
+void setup_wam_c_bagset_bag_empty_1(WamState* state);
+void setup_wam_c_bagset_set_empty_1(WamState* state);
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_nil(WamValue *cell) {
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_nil(tail2);
+}
+
+static bool expect_atom_list4(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third,
+                              const char *fourth) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    int tail3_addr = wam_cons_head_addr(state, tail3);
+    if (tail3_addr < 0) return false;
+    WamValue *tail4 = wam_deref_ptr(state, &state->H_array[tail3_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_atom_slot(state, &state->H_array[tail3_addr], fourth) &&
+           expect_nil(tail4);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_bagset_item_1(&state);
+    setup_wam_c_bagset_none_1(&state);
+    setup_wam_c_bagset_bag_1(&state);
+    setup_wam_c_bagset_set_1(&state);
+    setup_wam_c_bagset_bag_empty_1(&state);
+    setup_wam_c_bagset_set_empty_1(&state);
+
+    WamValue bag_args[1] = { val_unbound("Bag") };
+    int bag_rc = wam_run_predicate(&state, "wam_c_bagset_bag/1", bag_args, 1);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list4(&state, state.A[0], "b", "a", "b", "a") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_args[1] = { val_unbound("Set") };
+    int set_rc = wam_run_predicate(&state, "wam_c_bagset_set/1", set_args, 1);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue bag_empty_args[1] = { val_unbound("BagEmpty") };
+    int bag_empty_rc = wam_run_predicate(&state, "wam_c_bagset_bag_empty/1", bag_empty_args, 1);
+    if (bag_empty_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue set_empty_args[1] = { val_unbound("SetEmpty") };
+    int set_empty_rc = wam_run_predicate(&state, "wam_c_bagset_set_empty/1", set_empty_args, 1);
+    if (set_empty_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -6263,6 +6443,7 @@ run_tests_once :-
     test_real_prolog_explicit_cut_executable_smoke,
     test_real_prolog_forall_executable_smoke,
     test_real_prolog_findall_executable_smoke,
+    test_real_prolog_bagof_setof_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,

@@ -1618,11 +1618,18 @@ wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
 wam_instruction_to_c_literal(begin_aggregate(Kind, TemplateReg, ResultReg), Code) :-
     c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
     c_reg_index(ResultReg, ResultIsY, ResultIdx),
-    format(atom(Code), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w } }',
+    format(atom(Code), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_regs = "" } }',
+           [Kind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
+wam_instruction_to_c_literal(begin_aggregate(Kind, TemplateReg, ResultReg, WitnessRegs), Code) :-
+    clean_aggregate_witness(WitnessRegs, WitnessString),
+    ensure_supported_aggregate_witness(WitnessString),
+    c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(ResultReg, ResultIsY, ResultIdx),
+    format(atom(Code), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_regs = "" } }',
            [Kind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
 wam_instruction_to_c_literal(end_aggregate(TemplateReg), Code) :-
     c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
-    format(atom(Code), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0 } }',
+    format(atom(Code), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0, .witness_regs = "" } }',
            [TemplateIdx, TemplateIsY]).
 wam_instruction_to_c_literal(get_level(Reg), Code) :-
     c_reg_index(Reg, IsY, Idx),
@@ -1786,12 +1793,21 @@ wam_line_to_c_instr(["begin_aggregate", Kind, TemplateReg, ResultReg], Instr) :-
     clean_comma(ResultReg, CResultReg), c_escape_atom(CKind0, CKind),
     c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
     c_reg_index(CResultReg, ResultIsY, ResultIdx),
-    format(atom(Instr), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w } }',
+    format(atom(Instr), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_regs = "" } }',
+           [CKind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
+wam_line_to_c_instr(["begin_aggregate", Kind, TemplateReg, ResultReg, WitnessRegs], Instr) :-
+    clean_comma(Kind, CKind0), clean_comma(TemplateReg, CTemplateReg),
+    clean_comma(ResultReg, CResultReg), c_escape_atom(CKind0, CKind),
+    clean_aggregate_witness(WitnessRegs, WitnessString),
+    ensure_supported_aggregate_witness(WitnessString),
+    c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(CResultReg, ResultIsY, ResultIdx),
+    format(atom(Instr), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_regs = "" } }',
            [CKind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
 wam_line_to_c_instr(["end_aggregate", TemplateReg], Instr) :-
     clean_comma(TemplateReg, CTemplateReg),
     c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
-    format(atom(Instr), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0 } }',
+    format(atom(Instr), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0, .witness_regs = "" } }',
            [TemplateIdx, TemplateIsY]).
 wam_line_to_c_instr(["get_level", Reg], Instr) :-
     clean_comma(Reg, CReg),
@@ -1826,6 +1842,24 @@ clean_comma(S, Clean) :-
     ->  sub_string(S, 0, _, 1, Clean)
     ;   Clean = S
     ).
+
+clean_aggregate_witness(Witness0, Witness) :-
+    clean_comma(Witness0, Clean0),
+    (   string(Clean0)
+    ->  S0 = Clean0
+    ;   atom(Clean0)
+    ->  atom_string(Clean0, S0)
+    ;   term_string(Clean0, S0)
+    ),
+    (   sub_string(S0, 0, 1, _, "'"),
+        sub_string(S0, _, 1, 0, "'")
+    ->  sub_string(S0, 1, _, 1, Witness)
+    ;   Witness = S0
+    ).
+
+ensure_supported_aggregate_witness("") :- !.
+ensure_supported_aggregate_witness(Witness) :-
+    throw(error(wam_c_target_error(unsupported_bagof_setof_witnesses(Witness)), _)).
 
 %% c_escape_atom(+Atom, -Escaped)
 %  Escape backslashes and double quotes so the value is safe inside a C
@@ -2665,6 +2699,128 @@ static bool wam_materialize_stored_term(WamState *state,
     return false;
 }
 
+static int wam_stored_term_tag_rank(WamValueTag tag) {
+    switch (tag) {
+        case VAL_UNBOUND: return 0;
+        case VAL_INT: return 1;
+        case VAL_FLOAT: return 2;
+        case VAL_ATOM: return 3;
+        case VAL_LIST: return 4;
+        case VAL_STR: return 5;
+        case VAL_REF: return 6;
+        default: return 7;
+    }
+}
+
+static int wam_compare_ints(int left, int right) {
+    return (left > right) - (left < right);
+}
+
+static int wam_compare_doubles(double left, double right) {
+    return (left > right) - (left < right);
+}
+
+static int wam_compare_stored_value(const WamStoredTerm *left_term,
+                                    WamValue left,
+                                    const WamStoredTerm *right_term,
+                                    WamValue right) {
+    int left_rank = wam_stored_term_tag_rank(left.tag);
+    int right_rank = wam_stored_term_tag_rank(right.tag);
+    if (left_rank != right_rank) return wam_compare_ints(left_rank, right_rank);
+
+    switch (left.tag) {
+        case VAL_UNBOUND:
+            return 0;
+        case VAL_INT:
+            return wam_compare_ints(left.data.integer, right.data.integer);
+        case VAL_FLOAT:
+            return wam_compare_doubles(left.data.floating, right.data.floating);
+        case VAL_ATOM:
+            return strcmp(left.data.atom, right.data.atom);
+        case VAL_LIST: {
+            int left_base = left.data.ref_addr;
+            int right_base = right.data.ref_addr;
+            if (left_base < 0 || left_base + 1 >= left_term->cell_count ||
+                right_base < 0 || right_base + 1 >= right_term->cell_count) {
+                return wam_compare_ints(left_base, right_base);
+            }
+            int head_cmp =
+                wam_compare_stored_value(left_term, left_term->cells[left_base],
+                                         right_term, right_term->cells[right_base]);
+            if (head_cmp != 0) return head_cmp;
+            return wam_compare_stored_value(left_term, left_term->cells[left_base + 1],
+                                            right_term, right_term->cells[right_base + 1]);
+        }
+        case VAL_STR: {
+            int left_base = left.data.ref_addr;
+            int right_base = right.data.ref_addr;
+            if (left_base < 0 || left_base >= left_term->cell_count ||
+                right_base < 0 || right_base >= right_term->cell_count) {
+                return wam_compare_ints(left_base, right_base);
+            }
+            WamValue left_functor = left_term->cells[left_base];
+            WamValue right_functor = right_term->cells[right_base];
+            int functor_cmp =
+                wam_compare_stored_value(left_term, left_functor,
+                                         right_term, right_functor);
+            if (functor_cmp != 0) return functor_cmp;
+            if (left_functor.tag != VAL_ATOM || right_functor.tag != VAL_ATOM) {
+                return 0;
+            }
+            int left_arity = 0;
+            int right_arity = 0;
+            if (!wam_parse_functor_arity(left_functor.data.atom, &left_arity) ||
+                !wam_parse_functor_arity(right_functor.data.atom, &right_arity)) {
+                return 0;
+            }
+            int arity_cmp = wam_compare_ints(left_arity, right_arity);
+            if (arity_cmp != 0) return arity_cmp;
+            for (int i = 0; i < left_arity; i++) {
+                int arg_cmp =
+                    wam_compare_stored_value(left_term, left_term->cells[left_base + 1 + i],
+                                             right_term, right_term->cells[right_base + 1 + i]);
+                if (arg_cmp != 0) return arg_cmp;
+            }
+            return 0;
+        }
+        case VAL_REF:
+            return wam_compare_ints(left.data.ref_addr, right.data.ref_addr);
+        default:
+            return 0;
+    }
+}
+
+static int wam_compare_stored_terms_for_qsort(const void *left,
+                                              const void *right) {
+    const WamStoredTerm *left_term = (const WamStoredTerm *)left;
+    const WamStoredTerm *right_term = (const WamStoredTerm *)right;
+    return wam_compare_stored_value(left_term, left_term->root,
+                                    right_term, right_term->root);
+}
+
+static void wam_aggregate_sort_dedup_items(WamAggregateFrame *frame) {
+    if (frame->item_count < 2) return;
+    qsort(frame->items, (size_t)frame->item_count, sizeof(WamStoredTerm),
+          wam_compare_stored_terms_for_qsort);
+
+    int out = 1;
+    for (int i = 1; i < frame->item_count; i++) {
+        WamStoredTerm *previous = &frame->items[out - 1];
+        WamStoredTerm *current = &frame->items[i];
+        if (wam_compare_stored_value(previous, previous->root,
+                                     current, current->root) == 0) {
+            wam_stored_term_free(current);
+        } else {
+            if (out != i) {
+                frame->items[out] = *current;
+                memset(current, 0, sizeof(WamStoredTerm));
+            }
+            out++;
+        }
+    }
+    frame->item_count = out;
+}
+
 static void wam_aggregate_frame_free(WamAggregateFrame *frame) {
     for (int i = 0; i < frame->item_count; i++) {
         wam_stored_term_free(&frame->items[i]);
@@ -2737,7 +2893,10 @@ static int wam_find_matching_end_aggregate(WamState *state, int begin_pc) {
 
 static bool wam_finalize_aggregate_frame(WamState *state,
                                          WamAggregateFrame *frame) {
-    if (strcmp(frame->kind, "collect") != 0) return false;
+    bool is_collect = strcmp(frame->kind, "collect") == 0;
+    bool is_bagof = strcmp(frame->kind, "bagof") == 0;
+    bool is_setof = strcmp(frame->kind, "setof") == 0;
+    if (!is_collect && !is_bagof && !is_setof) return false;
     int next_pc = frame->end_pc + 1;
     int frame_index = state->aggregate_top - 1;
     if (frame->sentinel_b > 0 && frame->sentinel_b <= state->B) {
@@ -2745,6 +2904,16 @@ static bool wam_finalize_aggregate_frame(WamState *state,
         restore_choice_point(state, sentinel);
     }
     wam_prune_choice_points(state, frame->base_b);
+
+    if ((is_bagof || is_setof) && frame->item_count == 0) {
+        wam_aggregate_frame_free(frame);
+        state->aggregate_top = frame_index;
+        state->P = next_pc;
+        return false;
+    }
+    if (is_setof) {
+        wam_aggregate_sort_dedup_items(frame);
+    }
 
     WamValue result_list;
     if (!wam_build_aggregate_list(state, frame, &result_list)) return false;
@@ -2759,7 +2928,11 @@ static bool wam_finalize_aggregate_frame(WamState *state,
 }
 
 static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
-    if (strcmp(instr->as.aggregate.kind, "collect") != 0) return false;
+    if (strcmp(instr->as.aggregate.kind, "collect") != 0 &&
+        strcmp(instr->as.aggregate.kind, "bagof") != 0 &&
+        strcmp(instr->as.aggregate.kind, "setof") != 0) return false;
+    if (instr->as.aggregate.witness_regs &&
+        instr->as.aggregate.witness_regs[0] != 0) return false;
     if (state->aggregate_top > 0) {
         WamAggregateFrame *top = &state->aggregate_frames[state->aggregate_top - 1];
         if (top->begin_pc == state->P && top->sentinel_b == state->B) {
@@ -2789,7 +2962,9 @@ static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
 static bool wam_end_aggregate(WamState *state, Instruction *instr) {
     if (state->aggregate_top <= 0) return false;
     WamAggregateFrame *frame = &state->aggregate_frames[state->aggregate_top - 1];
-    if (strcmp(frame->kind, "collect") != 0) return false;
+    if (strcmp(frame->kind, "collect") != 0 &&
+        strcmp(frame->kind, "bagof") != 0 &&
+        strcmp(frame->kind, "setof") != 0) return false;
     WamValue *template_cell =
         resolve_reg(state, instr->as.aggregate.template_reg,
                     instr->as.aggregate.template_is_y);
