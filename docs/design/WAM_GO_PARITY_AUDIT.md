@@ -66,9 +66,10 @@ current cross-target builtin/runtime baseline.
   parsing.
 - Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
   covered by the generated builtin E2E test for literal `~~`, newline `~n`,
-  `~w` argument substitution, and missing-argument failure. Stream capture,
-  destination-aware `format/3`, and broader formatting directives remain
-  separate from this small R/C++/Python output-parity slice.
+  `~w`, `~a`, `~d`, `~p`, and `~q` argument substitution, and
+  missing-argument failure. Stream capture, destination-aware `format/3`,
+  `~s`, tab directives, and richer canonical quoting remain separate from
+  this small R/C++/Python output-parity slice.
 - Deterministic `subtract/3` is now covered by the generated Go WAM builtin
   E2E test for filtering all right-list matches from the left list, preserving
   left-list order, empty-list behavior, all-removed results, duplicate removal,

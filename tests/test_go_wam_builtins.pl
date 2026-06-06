@@ -689,6 +689,7 @@ test(builtins_execution) :-
           assertz(user:test_format_builtin :-
             (   format('fmt_one ~~ ok~n'),
                 format('fmt_two ~w ~w~~~n', [go, 42]),
+                format('fmt_more ~a ~d ~p ~q~n', [atom_arg, 17, pair(a,b), quoted_atom]),
                 \+ format('fmt_missing ~w', [])
             )),
           assertz(user:test_set_aggregate :-
@@ -1298,6 +1299,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "OUTPUT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_one ~ ok")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_two go 42~")),
+        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair/2/2 quoted_atom")),
         assertion(sub_string(FullOutput, _, _, _, "FORMAT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "UNIFY_SUCCESS")),
