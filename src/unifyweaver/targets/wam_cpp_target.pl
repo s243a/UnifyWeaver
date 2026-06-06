@@ -320,12 +320,24 @@ wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R, W), _, Code) :-
-    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS),
+    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS0),
+    % The witness spec is emitted as a quoted atom in the WAM text (e.g.
+    % 'Y3' or 'Y1;Y2'), so the parser token keeps the surrounding single
+    % quotes. Strip them — otherwise witness_regs holds "'Y3'" and the
+    % runtime's get_cell("'Y3'") fails, leaving witness_cells empty and
+    % silently degrading bagof/setof grouping to a flat findall.
+    strip_surrounding_squotes(WS0, WS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV),
     escape_cpp_string(RS, ER), escape_cpp_string(WS, EW),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w", "~w")',
            [EK, EV, ER, EW]).
+strip_surrounding_squotes(S0, S) :-
+    string_chars(S0, Cs),
+    (   Cs = ['\''|Rest], append(Mid, ['\''], Rest)
+    ->  string_chars(S, Mid)
+    ;   S = S0
+    ).
 wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
