@@ -82,7 +82,7 @@ class WamCCandidateFilterThresholdSweepTests(unittest.TestCase):
             "scale\ttarget\tcategory\tstatus\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tmessage\n"
             "50k_cats\tc-wam-accumulated-child-csr\thybrid-wam-child-search\tok\t0.1\t0.1\t0.1\t"
             "1\tabcdef123456\twam_c_effective_setup selected_articles=50 selected_roots=41 "
-            "candidate_filter_min_roots=256 setup_ms=1.0; wam_c_effective_runtime queries=2050 "
+            "candidate_filter_min_roots=512 setup_ms=1.0; wam_c_effective_runtime queries=2050 "
             "results=1 category_visits=2050 candidate_filter_articles=0 "
             "candidate_schedule_roots=0 query_ms=26.435\n"
         )
@@ -95,7 +95,36 @@ class WamCCandidateFilterThresholdSweepTests(unittest.TestCase):
         self.assertEqual(rows[0].median_s, 0.1)
         self.assertEqual(rows[0].rows, 1)
         self.assertEqual(rows[0].metrics["selected_roots"], "41")
+        self.assertEqual(rows[0].metrics["candidate_filter_min_roots"], "512")
         self.assertEqual(rows[0].metrics["query_ms"], "26.435")
+
+    def test_summary_reports_resolved_auto_threshold(self) -> None:
+        output = (
+            "scale\ttarget\tcategory\tstatus\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tmessage\n"
+            "50k_cats\tc-wam-accumulated-child-csr\thybrid-wam-child-search\tok\t0.1\t0.1\t0.1\t"
+            "1\thash1\twam_c_effective_setup selected_articles=50 selected_roots=406 "
+            "candidate_filter_min_roots=512; wam_c_effective_runtime query_ms=120.000 "
+            "candidate_filter_articles=0 candidate_schedule_roots=0 category_visits=20300\n"
+        )
+
+        summary = summarize_rows(parse_matrix_output(output, "medium", ThresholdSpec("auto", None)))
+
+        self.assertEqual(summary[0]["threshold"], "auto")
+        self.assertEqual(summary[0]["threshold_min_roots"], "512")
+
+    def test_summary_prefers_explicit_threshold_over_message_metric(self) -> None:
+        output = (
+            "scale\ttarget\tcategory\tstatus\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tmessage\n"
+            "50k_cats\tc-wam-accumulated-child-csr\thybrid-wam-child-search\tok\t0.1\t0.1\t0.1\t"
+            "1\thash1\twam_c_effective_setup selected_articles=50 selected_roots=406 "
+            "candidate_filter_min_roots=512; wam_c_effective_runtime query_ms=120.000 "
+            "candidate_filter_articles=0 candidate_schedule_roots=0 category_visits=20300\n"
+        )
+
+        summary = summarize_rows(parse_matrix_output(output, "medium", ThresholdSpec("256", 256)))
+
+        self.assertEqual(summary[0]["threshold"], "256")
+        self.assertEqual(summary[0]["threshold_min_roots"], "256")
 
     def test_summary_compares_rows_to_dense_off_baseline(self) -> None:
         dense_output = (

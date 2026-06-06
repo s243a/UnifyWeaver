@@ -339,7 +339,7 @@ def summarize_rows(rows: list[SweepRow]) -> list[dict[str, str]]:
                 "scale": row.scale,
                 "profile": row.profile,
                 "threshold": row.threshold_label,
-                "threshold_min_roots": "" if row.threshold_min_roots is None else str(row.threshold_min_roots),
+                "threshold_min_roots": threshold_min_roots_text(row),
                 "status": row.status,
                 "policy": row_policy(row),
                 "selected_articles": row.metrics.get("selected_articles", ""),
@@ -358,6 +358,12 @@ def summarize_rows(rows: list[SweepRow]) -> list[dict[str, str]]:
             }
         )
     return summaries
+
+
+def threshold_min_roots_text(row: SweepRow) -> str:
+    if row.threshold_min_roots is not None:
+        return str(row.threshold_min_roots)
+    return row.metrics.get("candidate_filter_min_roots", "")
 
 
 def dense_baselines_by_group(rows: list[SweepRow]) -> dict[tuple[str, str], SweepRow]:

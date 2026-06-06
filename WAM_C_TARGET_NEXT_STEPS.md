@@ -4,20 +4,17 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-candidate-filter-boundary-repeatability` based on `main`
-  at `f1b9402b` (`Merge pull request #2799 from
-  s243a/investigate/wam-c-candidate-filter-calibration`)
+- `investigate/wam-c-candidate-filter-observability` based on `main` at
+  `eb5f5353` (`Merge pull request #2801 from
+  s243a/investigate/wam-c-candidate-filter-boundary-repeatability`)
 - `python3 -m py_compile examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py tests/test_wam_c_candidate_filter_threshold_sweep.py`
 - `python3 tests/test_wam_c_candidate_filter_threshold_sweep.py`
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --dry-run --scales 50k_cats --profiles boundary-250,medium,boundary-500,boundary-800 --thresholds auto,256,512,off`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles boundary-250,medium,boundary-500,boundary-800 --thresholds auto,256,512,off --repetitions 3 --run-timeout-seconds 180`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles medium,boundary-800 --thresholds auto,off --repetitions 1 --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales dev --profiles low --thresholds auto,off --repetitions 1 --run-timeout-seconds 120`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-candidate-filter-boundary-repeatability`
+- `investigate/wam-c-candidate-filter-observability`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -832,7 +829,7 @@ Evidence:
   `110.546`, and `off` at `130.339`. Treat this as the noisy boundary region,
   not as a reason to move the default yet.
 
-### Active: `investigate/wam-c-candidate-filter-boundary-repeatability`
+### Completed Investigation: `investigate/wam-c-candidate-filter-boundary-repeatability`
 
 Goal: pin the noisy candidate-root filter crossover with repeatable boundary
 profiles and change the generated `auto` threshold only when boundary evidence
@@ -863,6 +860,27 @@ Evidence:
   `226c7fdad57d`, while `boundary-800` (`811` selected roots) used sparse
   scheduling with matching hash `92be2a9b5ac1`.
 
+### Active: `investigate/wam-c-candidate-filter-observability`
+
+Goal: make threshold sweep output self-describing enough that future
+calibration rows show both the requested policy and the resolved runtime
+threshold.
+
+Implemented so far:
+
+- The candidate-filter sweep summary now fills `threshold_min_roots` for
+  `auto` rows from the generated runner's `candidate_filter_min_roots` metric.
+- Explicit threshold rows still report the requested override, even when the
+  runner message also includes the resolved threshold metric.
+- Unit coverage pins `auto -> 512` observability and explicit-threshold
+  precedence in the summary renderer.
+
+Evidence:
+
+- The low-profile `dev` sweep over `auto,off` is enough to verify the rendered
+  `auto` row reports `threshold_min_roots=512` without rerunning the larger
+  boundary matrix.
+
 ## Suggested Immediate Next Step
 
 Result-capped and sampled runs now confirm child-CSR variants agree, and parent
@@ -873,11 +891,10 @@ roots are selected, while staying off for low-root workloads by default and
 preserving dense semantics when an explicit query cap is active. The threshold
 default now has a cost-model resolver, a Prolog option surface, and a repeatable
 calibration wrapper. The boundary-repeatability sweep supports moving `auto` to
-`512`: low-root workloads remain dense, the 406-root profile avoids forced
-sparse scheduling, the 507-root profile is near parity, and the 811-root profile
-still uses sparse scheduling. The next useful work is either a PR for this
-threshold adjustment or feeding measured query/artifact costs into the resolver
-if future datasets show a sharper crossover.
+`512`, and the observability follow-up makes future sweep rows display that
+resolved value directly. The next useful work is feeding measured query/artifact
+costs into the resolver only if future datasets show a sharper crossover or if
+manual threshold overrides become common.
 Keep `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
