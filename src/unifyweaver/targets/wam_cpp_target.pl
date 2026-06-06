@@ -320,12 +320,24 @@ wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R, W), _, Code) :-
-    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS),
+    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS0),
+    % The witness spec is emitted as a quoted atom in the WAM text (e.g.
+    % 'Y3' or 'Y1;Y2'), so the parser token keeps the surrounding single
+    % quotes. Strip them — otherwise witness_regs holds "'Y3'" and the
+    % runtime's get_cell("'Y3'") fails, leaving witness_cells empty and
+    % silently degrading bagof/setof grouping to a flat findall.
+    strip_surrounding_squotes(WS0, WS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV),
     escape_cpp_string(RS, ER), escape_cpp_string(WS, EW),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w", "~w")',
            [EK, EV, ER, EW]).
+strip_surrounding_squotes(S0, S) :-
+    string_chars(S0, Cs),
+    (   Cs = ['\''|Rest], append(Mid, ['\''], Rest)
+    ->  string_chars(S, Mid)
+    ;   S = S0
+    ).
 wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
@@ -3308,6 +3320,15 @@ struct TrailEntry {
 // nested calls that both use Y1 don''t clobber each other.
 struct EnvFrame {
     std::size_t saved_cp = 0;
+    // B0: the choicepoint-stack height when this clause''s predicate was
+    // called (captured by Allocate from cut_barrier, which Call/Execute
+    // set to choice_points.size() before transferring control). A plain
+    // cut (!/0) in this clause truncates choicepoints back to b0, so it
+    // removes only this predicate''s own alternatives and body CPs, never
+    // a caller''s choicepoint. Survives nested calls because each callee
+    // gets its own frame; restored on backtrack via ChoicePoint''s
+    // saved_env_stack snapshot.
+    std::size_t b0 = 0;
     std::unordered_map<std::string, CellPtr> y_regs;
 };
 
@@ -4495,7 +4516,20 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     if (op == "true/0") { pc += 1; return true; }
     if (op == "fail/0") { return false; }
     if (op == "!/0")    {
-        if (choice_points.size() > cut_barrier) choice_points.resize(cut_barrier);
+        // Cut to this clause''s B0 (the choicepoint height when its
+        // predicate was called), held in the current env frame. This
+        // keeps a cut local to the predicate: it prunes this predicate''s
+        // own alternatives and the body CPs it created, but never a
+        // caller''s choicepoint (e.g. the choicepoint of an enclosing
+        // negation or if-then-else whose condition called this
+        // predicate). Envless
+        // clauses (no Allocate) can only contain neck cuts -- they have
+        // no in-body call to clobber cut_barrier -- so the global
+        // cut_barrier (set to call-time height by Call/Execute) is the
+        // correct fallback.
+        std::size_t level = env_stack.empty() ? cut_barrier
+                                              : env_stack.back().b0;
+        if (choice_points.size() > level) choice_points.resize(level);
         pc += 1; return true;
     }
 
@@ -7658,6 +7692,12 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Allocate: {
             EnvFrame f;
             f.saved_cp = cp;
+            // Capture B0 for this clause: cut_barrier was set to the
+            // caller-time choicepoint height by the Call/Execute that
+            // entered this predicate (and is restored on backtrack via
+            // the choicepoint snapshot), so it is the correct cut level
+            // for a plain cut in this clause body.
+            f.b0 = cut_barrier;
             env_stack.push_back(std::move(f));
             pc += 1; return true;
         }
@@ -7719,6 +7759,11 @@ bool WamState::step(const Instruction& instr) {
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
                 cp = pc + 1;
+                // Record B0 for the callee: a plain cut in the callee
+                // cuts back to this choicepoint height (see EnvFrame::b0
+                // / Allocate). Saved/restored across backtracking by the
+                // callee''s try_me_else choicepoint snapshot of cut_barrier.
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }
@@ -7772,6 +7817,8 @@ bool WamState::step(const Instruction& instr) {
             }
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
+                // Record B0 for the tail-called callee (see Op::Call).
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }
