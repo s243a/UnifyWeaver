@@ -1351,19 +1351,42 @@ fn main() {
     });
 
     let max_depth_limit = 10usize;
-    let reachable_ids: HashSet<i32> = lmdb
-        .reachable_to_root(root_id, max_depth_limit)
-        .expect("reachable_to_root");
+    // WAM_DEMAND=off skips the reachable_to_root BFS: the DB is assumed to be a
+    // pre-scoped subtree (built by build_scoped_subtree_lmdb.py), so every node
+    // is already in scope and query-time demand filtering is redundant. An
+    // empty reachable_ids set leaves the kernel demand filter a no-op (it
+    // guards on !is_empty), so lazy/cached need no further change; the eager
+    // branch below loads all edges instead of the demand-filtered subset.
+    let demand_enabled = std::env::var("WAM_DEMAND")
+        .map(|v| v != "off")
+        .unwrap_or(true);
+    let reachable_ids: HashSet<i32> = if demand_enabled {
+        lmdb.reachable_to_root(root_id, max_depth_limit)
+            .expect("reachable_to_root")
+    } else {
+        HashSet::new()
+    };
 
-    // Build runtime_category_parents by iterating each reachable child and
-    // looking up its parents.  Only edges where BOTH endpoints are in the
-    // demand set are kept, matching TSV-mode filtering semantics.
+    // Build runtime_category_parents (eager materialisation). With demand
+    // enabled, iterate each reachable child and keep only edges where BOTH
+    // endpoints are in the demand set (matches TSV-mode filtering). With demand
+    // disabled (pre-scoped DB), every edge is in scope, so load them all.
     let mut runtime_category_parents: Vec<(String, String)> = Vec::new();
-    for child_id in &reachable_ids {
-        let parents = lmdb.lookup_parents(*child_id).unwrap_or_default();
-        for parent_id in parents {
-            if reachable_ids.contains(&parent_id) {
-                if let (Some(c), Some(p)) = (i2s.get(child_id), i2s.get(&parent_id)) {
+    if demand_enabled {
+        for child_id in &reachable_ids {
+            let parents = lmdb.lookup_parents(*child_id).unwrap_or_default();
+            for parent_id in parents {
+                if reachable_ids.contains(&parent_id) {
+                    if let (Some(c), Some(p)) = (i2s.get(child_id), i2s.get(&parent_id)) {
+                        runtime_category_parents.push((c.clone(), p.clone()));
+                    }
+                }
+            }
+        }
+    } else {
+        for (child_id, c) in &i2s {
+            for parent_id in lmdb.lookup_parents(*child_id).unwrap_or_default() {
+                if let Some(p) = i2s.get(&parent_id) {
                     runtime_category_parents.push((c.clone(), p.clone()));
                 }
             }
