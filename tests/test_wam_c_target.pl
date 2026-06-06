@@ -127,6 +127,15 @@ test_control_flow_instructions :-
     ;   fail_test(Test, 'missing control flow instruction arms')
     ).
 
+test_aggregate_instructions :-
+    Test = 'WAM-C: aggregate instructions present',
+    (   implemented_wam_c_cases(Cases),
+        member(begin_aggregate, Cases),
+        member(end_aggregate, Cases)
+    ->  pass(Test)
+    ;   fail_test(Test, 'missing aggregate instruction arms')
+    ).
+
 test_control_cut_jump_instructions :-
     Test = 'WAM-C: cut and jump control instructions present',
     (   implemented_wam_c_cases(Cases),
@@ -148,7 +157,8 @@ test_explicit_cut_uses_current_call_barrier :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'state->call_bases[state->call_base_top - 1]'),
         sub_string(S, _, _, _, 'wam_prune_choice_points(state, target_b)'),
-        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top++] = base_b'),
+        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top] = base_b'),
+        sub_string(S, _, _, _, 'state->call_base_preserve_choice[state->call_base_top] = false'),
         \+ sub_string(S, _, _, _, 'state->B = 0')
     ->  pass(Test)
     ;   fail_test(Test, 'explicit !/0 still clears all choice points instead of pruning to the current barrier')
@@ -1705,6 +1715,16 @@ test_real_prolog_forall_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_findall_executable_smoke :-
+    Test = 'WAM-C: real Prolog findall/3 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_findall_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog findall/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2747,6 +2767,56 @@ cleanup_wam_c_forall_smoke :-
     retractall(user:wam_c_forall_fail(_)),
     retractall(user:wam_c_forall_subset(_)),
     retractall(user:wam_c_forall_empty_ok(_)).
+
+run_real_prolog_findall_executable_smoke :-
+    assertz((user:wam_c_findall_item(a) :- true)),
+    assertz((user:wam_c_findall_item(b) :- true)),
+    assertz((user:wam_c_findall_none(_) :- fail)),
+    assertz((user:wam_c_findall_all(L) :-
+        findall(X, wam_c_findall_item(X), L))),
+    assertz((user:wam_c_findall_empty(L) :-
+        findall(X, wam_c_findall_none(X), L))),
+    (   compile_predicate_to_wam(user:wam_c_findall_item/1, [], WamItem),
+        compile_predicate_to_wam(user:wam_c_findall_none/1, [], WamNone),
+        compile_predicate_to_wam(user:wam_c_findall_all/1, [], WamAll),
+        compile_predicate_to_wam(user:wam_c_findall_empty/1, [], WamEmpty),
+        sub_string(WamAll, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamAll, _, _, _, 'end_aggregate'),
+        sub_string(WamEmpty, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamEmpty, _, _, _, 'end_aggregate'),
+        \+ sub_string(WamAll, _, _, _, 'builtin_call findall/3'),
+        compile_wam_predicate_to_c(user:wam_c_findall_item/1, WamItem, [], ItemCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_none/1, WamNone, [], NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_all/1, WamAll, [], AllCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_empty/1, WamEmpty, [], EmptyCode),
+        atomic_list_concat([ItemCode, NoneCode, AllCode, EmptyCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_findall_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_findall_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_findall_smoke
+    ;   cleanup_wam_c_findall_smoke,
+        fail
+    ).
+
+cleanup_wam_c_findall_smoke :-
+    retractall(user:wam_c_findall_item(_)),
+    retractall(user:wam_c_findall_none(_)),
+    retractall(user:wam_c_findall_all(_)),
+    retractall(user:wam_c_findall_empty(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5750,6 +5820,93 @@ int main(void) {
 }
 ').
 
+wam_c_findall_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_findall_item_1(WamState* state);
+void setup_wam_c_findall_none_1(WamState* state);
+void setup_wam_c_findall_all_1(WamState* state);
+void setup_wam_c_findall_empty_1(WamState* state);
+
+static bool expect_atom(WamState *state, WamValue value, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_atom_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_LIST) return false;
+    WamValue *head1 = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr]);
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell->data.ref_addr + 1]);
+    if (head1->tag != VAL_ATOM || strcmp(head1->data.atom, first) != 0) return false;
+    if (tail1->tag != VAL_LIST) return false;
+    WamValue *head2 = wam_deref_ptr(state, &state->H_array[tail1->data.ref_addr]);
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1->data.ref_addr + 1]);
+    return head2->tag == VAL_ATOM &&
+           strcmp(head2->data.atom, second) == 0 &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static WamValue make_atom_list2(WamState *state,
+                                const char *first,
+                                const char *second) {
+    WamValue tail = val_atom("[]");
+    int base_second = state->H;
+    state->H_array[state->H++] = val_atom(second);
+    state->H_array[state->H++] = tail;
+    tail.tag = VAL_LIST;
+    tail.data.ref_addr = base_second;
+    int base_first = state->H;
+    state->H_array[state->H++] = val_atom(first);
+    state->H_array[state->H++] = tail;
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = base_first;
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_findall_item_1(&state);
+    setup_wam_c_findall_none_1(&state);
+    setup_wam_c_findall_all_1(&state);
+    setup_wam_c_findall_empty_1(&state);
+
+    WamValue all_args[1] = { val_unbound("All") };
+    int all_rc = wam_run_predicate(&state, "wam_c_findall_all/1", all_args, 1);
+    if (all_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue empty_args[1] = { val_unbound("Empty") };
+    int empty_rc = wam_run_predicate(&state, "wam_c_findall_empty/1", empty_args, 1);
+    if (empty_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom(&state, state.A[0], "[]") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue expected = make_atom_list2(&state, "a", "b");
+    WamValue bound_args[1] = { expected };
+    int bound_rc = wam_run_predicate(&state, "wam_c_findall_all/1", bound_args, 1);
+    if (bound_rc != 0 || state.P != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -5823,6 +5980,8 @@ implemented_case(call, 'case INSTR_CALL').
 implemented_case(execute, 'case INSTR_EXECUTE').
 implemented_case(builtin_call, 'case INSTR_BUILTIN_CALL').
 implemented_case(call_foreign, 'case INSTR_CALL_FOREIGN').
+implemented_case(begin_aggregate, 'case INSTR_BEGIN_AGGREGATE').
+implemented_case(end_aggregate, 'case INSTR_END_AGGREGATE').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
@@ -5863,6 +6022,7 @@ run_tests_once :-
     test_body_construction_instructions,
     test_unification_instructions,
     test_control_flow_instructions,
+    test_aggregate_instructions,
     test_control_cut_jump_instructions,
     test_explicit_cut_uses_current_call_barrier,
     test_control_instruction_parsing,
@@ -5960,6 +6120,7 @@ run_tests_once :-
     test_real_prolog_precise_ite_executable_smoke,
     test_real_prolog_explicit_cut_executable_smoke,
     test_real_prolog_forall_executable_smoke,
+    test_real_prolog_findall_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,

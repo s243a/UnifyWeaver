@@ -22,6 +22,7 @@
 #define WAM_INITIAL_ATOM_HASH_SIZE 512
 #define WAM_FOREIGN_HASH_SIZE 256
 #define WAM_CALL_STACK_SIZE 1024
+#define WAM_AGGREGATE_STACK_SIZE 32
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -61,6 +62,28 @@ typedef struct {
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
 
+typedef struct {
+    WamValue root;
+    WamValue *cells;
+    int cell_count;
+    int cell_cap;
+} WamStoredTerm;
+
+typedef struct {
+    const char *kind;
+    int begin_pc;
+    int end_pc;
+    int base_b;
+    int sentinel_b;
+    int template_reg;
+    int template_is_y;
+    int result_reg;
+    int result_is_y;
+    WamStoredTerm *items;
+    int item_count;
+    int item_cap;
+} WamAggregateFrame;
+
 /* Environment Frame */
 typedef struct {
     int cp;
@@ -88,6 +111,7 @@ typedef enum {
     INSTR_GET_LEVEL, INSTR_CUT, INSTR_CUT_ITE, INSTR_JUMP,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
     INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
+    INSTR_BEGIN_AGGREGATE, INSTR_END_AGGREGATE,
     INSTR_NOOP
 } WamInstrTag;
 
@@ -239,6 +263,14 @@ typedef struct {
     bool no_match_fallthrough;
 } WamSwitchInstr;
 
+typedef struct {
+    char *kind;
+    int template_reg;
+    int template_is_y;
+    int result_reg;
+    int result_is_y;
+} WamAggregateInstr;
+
 typedef union {
     WamConstantInstr constant;
     WamRegPairInstr reg_pair;
@@ -248,6 +280,7 @@ typedef union {
     WamChoiceInstr choice;
     WamJumpInstr jump;
     WamSwitchInstr switch_index;
+    WamAggregateInstr aggregate;
 } InstructionPayload;
 
 /* Instruction */
@@ -305,7 +338,12 @@ struct WamState {
 
     /* First-solution call pruning */
     int call_bases[WAM_CALL_STACK_SIZE];
+    bool call_base_preserve_choice[WAM_CALL_STACK_SIZE];
     int call_base_top;
+
+    /* Aggregate/findall frames */
+    WamAggregateFrame aggregate_frames[WAM_AGGREGATE_STACK_SIZE];
+    int aggregate_top;
 
     /* Native category_ancestor kernel data */
     CategoryEdge *category_edges;
