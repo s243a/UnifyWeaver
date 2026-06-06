@@ -66,9 +66,15 @@ split_commit(Path, Cond, Then) :-
     !.
 
 %% is_commit(+Instr)
-%  The commit that separates a condition from its then-branch: cut_ite for
-%  if-then-else, the !/0 builtin for negation. Builtin arity is carried as a
-%  string by some targets and a number by others, hence both literals.
+%  The commit that separates a condition from its then-branch:
+%    - cut_ite      : the soft-cut marker (default ITE compilation), or
+%    - cut(Yn)      : the Y-level soft cut emitted under ite_use_y_level(true)
+%                     (the C++ target's mode; get_level Yn captures the level
+%                     in the clause prefix, cut Yn commits to it), or
+%    - the !/0 builtin : negation's commit.
+%  Builtin arity is carried as a string by some targets and a number by
+%  others, hence both literals.
 is_commit(cut_ite).
+is_commit(cut(_)).
 is_commit(builtin_call("!/0", _)).
 is_commit(builtin_call('!/0', _)).
