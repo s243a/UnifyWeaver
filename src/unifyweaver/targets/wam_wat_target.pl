@@ -6564,26 +6564,48 @@ pairs_codes_pairs([], [], []).
 pairs_codes_pairs([Code-Pair|Rest], [Code|Codes], [Pair|Pairs]) :-
     pairs_codes_pairs(Rest, Codes, Pairs).
 
+% Mirrors the dual-mode lowering seam in the F#/Haskell/Scala WAM
+% targets. Keep the default as interpreter mode so existing WAM-WAT output is
+% bytecode-only unless callers explicitly opt into lowered fast paths.
+%   emit_mode(interpreter)  — default; all predicates run in $run_loop.
+%   emit_mode(functions)    — every lowerable predicate gets a fast path.
+%   emit_mode(mixed(auto))  — every lowerable predicate gets a fast path.
+%   emit_mode(mixed([P/A])) — only listed predicates get fast paths.
+% Back-compat aliases: emit_mode(bytecode) => interpreter,
+% emit_mode(lowered) / lowered(true) => functions, lowered(false) => interpreter.
+% Resolution order: Options, user:wam_wat_emit_mode/1, default.
+:- multifile user:wam_wat_emit_mode/1.
+
 wat_resolve_emit_mode(Options, Mode) :-
     (   option(emit_mode(Mode0), Options)
-    ->  wat_normalize_emit_mode(Mode0, Mode)
-    ;   option(lowered(false), Options)
-    ->  Mode = interpreter
-    ;   Mode = mixed(auto)
+    ->  wat_validate_emit_mode(Mode0, Mode)
+    ;   option(lowered(Lowered), Options)
+    ->  wat_lowered_option_emit_mode(Lowered, Mode)
+    ;   catch(user:wam_wat_emit_mode(Mode1), _, fail)
+    ->  wat_validate_emit_mode(Mode1, Mode)
+    ;   Mode = interpreter
     ).
 
-wat_normalize_emit_mode(interpreter, interpreter) :- !.
-wat_normalize_emit_mode(bytecode, interpreter) :- !.
-wat_normalize_emit_mode(lowered, mixed(auto)) :- !.
-wat_normalize_emit_mode(mixed(List), mixed(List)) :- !.
-wat_normalize_emit_mode(_, mixed(auto)).
+wat_lowered_option_emit_mode(true, functions) :- !.
+wat_lowered_option_emit_mode(false, interpreter) :- !.
+wat_lowered_option_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_wat_lowered_option, Other),
+                wat_resolve_emit_mode/2)).
 
+wat_validate_emit_mode(interpreter, interpreter) :- !.
+wat_validate_emit_mode(bytecode, interpreter) :- !.
+wat_validate_emit_mode(functions, functions) :- !.
+wat_validate_emit_mode(lowered, functions) :- !.
+wat_validate_emit_mode(mixed(auto), mixed(auto)) :- !.
+wat_validate_emit_mode(mixed(List), mixed(List)) :- is_list(List), !.
+wat_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_wat_emit_mode, Other),
+                wat_resolve_emit_mode/2)).
+
+wat_mode_allows_lowering(functions, _) :- !.
 wat_mode_allows_lowering(mixed(auto), _) :- !.
 wat_mode_allows_lowering(mixed(List), Pred/Arity) :-
-    (   List == auto
-    ->  true
-    ;   memberchk(Pred/Arity, List)
-    ).
+    memberchk(Pred/Arity, List).
 
 %% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
 %%                     +LoweredPairs, -Funcs, -Exports)

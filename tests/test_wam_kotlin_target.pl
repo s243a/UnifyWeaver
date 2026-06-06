@@ -52,14 +52,14 @@ test(atom_literal_preserves_quoted_numeric_atom) :-
 test(integer_literal_uses_value_intval) :-
     wam_kotlin_target:wam_instruction_to_kotlin_literal(put_integer("42", "A2"), Lit),
     assertion(has_substring(Lit, 'Value.IntVal(42L)')),
-    assertion(has_substring(Lit, 'Instruction("put_integer"')).
+    assertion(has_substring(Lit, "Instruction(\"put_integer\",")).
 
 test(wam_predicate_registrar_skips_labels, [nondet]) :-
     WamText = "demo/1:\nput_integer 42, A1\nproceed\n",
     wam_kotlin_target:compile_wam_predicate_to_kotlin(demo/1, WamText, [], Code),
     assertion(has_substring(Code, 'fun register_demo(program: WamProgram)')),
-    assertion(has_substring(Code, 'program.register("demo/1"')),
-    assertion(has_substring(Code, 'Instruction("put_integer"')),
+    assertion(has_substring(Code, "program.register(\"demo/1\",")),
+    assertion(has_substring(Code, "Instruction(\"put_integer\",")),
     assertion(\+ sub_string(Code, _, _, _, 'demo/1:')).
 
 test(runtime_template_exposes_executable_wam_abi) :-
@@ -138,7 +138,7 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             assertion(has_substring(WrapOut, 'A2=Struct(functor=box/1, args=[Atom(name=alpha)])')),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_make_list/3 alpha beta'], ListOut, _ListErr, ListStatus),
             assertion(ListStatus == exit(0)),
-            assertion(has_substring(ListOut, 'A3=Struct(functor=[|]/2')),
+            assertion(has_substring(ListOut, "A3=Struct(functor=[|]/2,")),
             assertion(has_substring(ListOut, 'Atom(name=beta)')),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_match_pair/3 pair(alpha,beta) alpha beta'], PairOut, _PairErr, PairStatus),
             assertion(PairStatus == exit(0)),

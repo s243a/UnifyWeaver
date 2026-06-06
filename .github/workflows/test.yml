@@ -94,6 +94,10 @@ jobs:
         run: |
           python3 -m unittest tests.test_build_scoped_subtree_lmdb
 
+      - name: Run root-metric query tool test
+        run: |
+          python3 -m unittest tests.test_query_root_metric
+
       - name: Run WAM Rust matrix-bench demand-flag codegen test
         run: |
           python3 -m unittest tests.test_wam_rust_matrix_demand_flag

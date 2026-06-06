@@ -23,6 +23,7 @@
 #define WAM_FOREIGN_HASH_SIZE 256
 #define WAM_CALL_STACK_SIZE 1024
 #define WAM_AGGREGATE_STACK_SIZE 32
+#define WAM_AGGREGATE_MAX_WITNESSES 8
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -80,8 +81,12 @@ typedef struct {
     int result_reg;
     int result_is_y;
     WamStoredTerm *items;
+    WamStoredTerm *witnesses;
     int item_count;
     int item_cap;
+    int witness_count;
+    int witness_regs[WAM_AGGREGATE_MAX_WITNESSES];
+    int witness_is_y[WAM_AGGREGATE_MAX_WITNESSES];
 } WamAggregateFrame;
 
 /* Environment Frame */
@@ -269,6 +274,9 @@ typedef struct {
     int template_is_y;
     int result_reg;
     int result_is_y;
+    int witness_count;
+    int witness_regs[WAM_AGGREGATE_MAX_WITNESSES];
+    int witness_is_y[WAM_AGGREGATE_MAX_WITNESSES];
 } WamAggregateInstr;
 
 typedef union {
