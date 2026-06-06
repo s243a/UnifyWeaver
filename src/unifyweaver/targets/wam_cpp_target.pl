@@ -8180,6 +8180,17 @@ bool WamState::step(const Instruction& instr) {
                 pc = it->second;
                 return true;
             }
+            // Nondeterministic / CP-aware builtins need their own dispatch
+            // arms (mirroring the Call opcode) because builtin() only
+            // handles the deterministic ops. The shared WAM compiler emits
+            // these as builtin_call, so without these arms they fall
+            // through to builtin() and silently fail.
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
+            if (instr.a == "retract/1") return dispatch_retract(pc + 1);
+            if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
             return builtin(instr.a, instr.n);
         }
         case Instruction::Op::CallForeign:
