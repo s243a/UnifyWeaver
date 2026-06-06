@@ -1211,8 +1211,24 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     ;   nonvar(Goal),
         Goal = \+(NotGoal),
         wam_inline_not_enabled
-    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
-                      V0, HasEnv, Vf, Code)
+    ->  (   wam_ite_use_y_level_enabled
+        % M17 targets (get_level/cut): use the soft-cut form
+        % (NotGoal -> fail ; true). cut Yn truncates choicepoints back to
+        % the snapshot taken BEFORE the negation try_me_else, so it wipes
+        % the negation CP AND any CPs NotGoal pushed above it -- the same
+        % correctness the hard-cut form gives, but WITHOUT a clause-scope
+        % `!`. That matters because a clause-scope cut would (via the
+        % runtime''s B0 mechanism) cut to the enclosing clause''s level and
+        % wrongly prune sibling choicepoints created before the \+. The
+        % soft cut is scoped to the negation alone.
+        ->  compile_goals([((NotGoal -> fail ; true)) | Rest],
+                          V0, HasEnv, Vf, Code)
+        % Legacy targets (no get_level/cut): keep the hard-cut rewrite
+        % ((G, !, fail) ; true) -- see note below on why soft-cut+cut_ite
+        % gets the wrong CP when G is nondeterministic on these targets.
+        ;   compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                          V0, HasEnv, Vf, Code)
+        )
     % M71: forall(Cond, Action) inlines as
     %   ((Cond, (Action -> fail ; true)) -> fail ; true)
     % i.e., \+ (Cond, \+ Action) using soft-cut (-> form) for BOTH
