@@ -4,16 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-explicit-cut-scope` based on `main` at `d1b94363`
-  (`Merge pull request #2813 from
-  s243a/investigate/wam-c-precise-ite-cut-scope`)
+- `investigate/wam-c-forall-control-smoke` based on `main` at `9e997ed5`
+  (`Merge pull request #2814 from
+  s243a/investigate/wam-c-explicit-cut-scope`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-explicit-cut-scope`
+- `investigate/wam-c-forall-control-smoke`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -80,6 +79,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Control instruction parity smoke | Done | `INSTR_GET_LEVEL`, `INSTR_CUT`, `INSTR_CUT_ITE`, and `INSTR_JUMP` now parse, emit, and execute; generated executable smoke covers `\+/1` and if-then-else success/failure paths |
 | Precise if-then-else cut scope smoke | Done | C target tests now compile `ite_use_y_level(true)` WAM with `get_level`/`cut` and run a nondeterministic-condition scope regression that must not backtrack into the else branch after commit |
 | Explicit cut call-scope fix | Done | `!/0` now prunes to the current call barrier instead of clearing all choice points; generated executable smoke preserves an outer disjunction alternative across an inner predicate cut |
+| `forall/2` control smoke | Done | Generated executable smoke covers the shared nested soft-cut rewrite for `forall/2` all-pass, action-fail, subset, and empty-generator cases |
 
 ## Current C Target Baseline
 
@@ -130,7 +130,8 @@ The C target is now a credible small WAM backend:
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`,
   `=/2`, negation, legacy `cut_ite` if-then-else, and precise
-  `get_level`/`cut` if-then-else, plus explicit `!/0` call-scope behavior.
+  `get_level`/`cut` if-then-else, explicit `!/0` call-scope behavior, and
+  `forall/2`'s generated soft-cut rewrite.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -154,7 +155,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
-| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, and explicit `!/0` scoped to the current predicate call barrier; residual work is broader meta-control coverage such as `forall/2` as demanded. |
+| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
@@ -167,6 +168,28 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-forall-control-smoke`
+
+Goal: prove that C executes the shared WAM compiler's nested soft-cut rewrite
+for `forall/2`.
+
+Evidence:
+
+- Generated WAM coverage asserts `forall/2` compiles through `cut_ite` control
+  flow rather than a runtime `forall/2` builtin.
+- Executable smoke coverage runs all-pass, action-fail, subset, and
+  empty-generator `forall/2` cases over nondeterministic user predicates.
+- Each generated C run checks that public calls leave the choice-point and
+  call-barrier stacks balanced.
+
+Reason:
+
+- Recent C control branches fixed and covered the underlying cut and soft-cut
+  semantics. `forall/2` was the next higher-level meta-control construct that
+  reuses those paths.
+- This branch confirms parity without adding new runtime surface area; future
+  control work should come from concrete benchmark or conformance demand.
 
 ### Completed: `investigate/wam-c-explicit-cut-scope`
 
