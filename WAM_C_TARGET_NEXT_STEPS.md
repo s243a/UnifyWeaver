@@ -4,16 +4,15 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-control-builtins-parity` based on `main` at `a3a279f9`
-  (`Merge pull request #2805 from
-  s243a/investigate/wam-c-candidate-filter-observability`)
+- `investigate/wam-c-precise-ite-cut-scope` based on `main` at `040de10c`
+  (`Merge pull request #2809 from
+  s243a/investigate/wam-c-control-builtins-parity`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-control-builtins-parity`
+- `investigate/wam-c-precise-ite-cut-scope`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -78,6 +77,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.065-0.071s with output parity versus Prolog at 0.202s |
 | Native weighted-kernel float output | Done | C runtime has `VAL_FLOAT`, numeric unification, double weighted/direct edge storage, and executable weighted/A* smokes for fractional 1.5 results while preserving exact-integer outputs as `VAL_INT` |
 | Control instruction parity smoke | Done | `INSTR_GET_LEVEL`, `INSTR_CUT`, `INSTR_CUT_ITE`, and `INSTR_JUMP` now parse, emit, and execute; generated executable smoke covers `\+/1` and if-then-else success/failure paths |
+| Precise if-then-else cut scope smoke | Done | C target tests now compile `ite_use_y_level(true)` WAM with `get_level`/`cut` and run a nondeterministic-condition scope regression that must not backtrack into the else branch after commit |
 
 ## Current C Target Baseline
 
@@ -127,7 +127,8 @@ The C target is now a credible small WAM backend:
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
   results, real multi-clause predicates, structure indexing, `is_list/1`,
-  `=/2`, negation, and if-then-else.
+  `=/2`, negation, legacy `cut_ite` if-then-else, and precise
+  `get_level`/`cut` if-then-else.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -151,7 +152,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
 | Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
-| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1` and if-then-else; residual work is broader cut/control interaction coverage. |
+| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, and precise `get_level`/`cut` if-then-else; residual work is broader explicit `!/0` cut coverage outside compiler-lowered control forms. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
@@ -164,6 +165,30 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-precise-ite-cut-scope`
+
+Goal: prove that the C target can execute the newer shared WAM
+`ite_use_y_level(true)` if-then-else lowering that commits with
+`get_level`/`cut` rather than the legacy single-pop `cut_ite`.
+
+Evidence:
+
+- Codegen coverage asserts precise ITE WAM contains `get_level` and `cut`
+  while omitting `cut_ite`.
+- Generated C coverage asserts those WAM instructions emit typed
+  `INSTR_GET_LEVEL` and `INSTR_CUT` payloads.
+- Executable smoke coverage runs success/failure ITE cases plus a
+  nondeterministic-condition scope regression where a later guard must not
+  backtrack into the else branch after the commit.
+
+Reason:
+
+- The previous control branch implemented all needed opcodes, but default C
+  coverage still mostly exercised the legacy `cut_ite` path.
+- This branch closes the immediate proof gap for the precise cut-barrier mode
+  already used by the LLVM hybrid WAM path and available to future C target
+  options.
 
 ### Completed: `investigate/wam-c-control-builtins-parity`
 
