@@ -2105,6 +2105,7 @@ is_builtin_pred(getegid, 1).            % getegid(-EGid).
 is_builtin_pred(getppid, 1).            % getppid(-PPid).
 is_builtin_pred(getpgrp, 1).            % getpgrp(-PGid) -- process group id.
 is_builtin_pred(realpath, 2).           % realpath(+Path, -Abs) -- canonical absolute path.
+is_builtin_pred(kill, 2).               % kill(+Pid, +Sig) -- signal 0 = existence check.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

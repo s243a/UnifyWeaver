@@ -1511,6 +1511,7 @@ declare i32 @getegid()
 declare i32 @getppid()
 declare i32 @getpgrp()
 declare i8* @realpath(i8*, i8*)
+declare i32 @kill(i32, i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3601,6 +3602,7 @@ entry:
     i32 126, label %builtin_directory_files
     i32 127, label %builtin_getpgrp
     i32 128, label %builtin_realpath
+    i32 129, label %builtin_kill
   ]
 
 builtin_is:
@@ -5729,6 +5731,33 @@ rp.intern:
   %rp.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %rp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rp.raw2, %Value %rp.v)
   ret i1 %rp.ok
+
+builtin_kill:
+  ; M111: kill(+Pid, +Sig) -- libc kill wrapper. Both args must be
+  ; Integer. Most common usage is Sig=0 which sends no signal but
+  ; returns 0 iff the process exists and the caller has permission
+  ; to signal it -- a cheap existence/permission probe. Succeeds
+  ; iff libc kill returns 0; failure modes (ESRCH for missing pid,
+  ; EPERM for forbidden) all map to a Prolog fail.
+  %kl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %kl.t1 = call i32 @value_tag(%Value %kl.a1)
+  %kl.is_int1 = icmp eq i32 %kl.t1, 1
+  br i1 %kl.is_int1, label %kl.check2, label %kl.fail
+kl.fail:
+  ret i1 false
+kl.check2:
+  %kl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %kl.t2 = call i32 @value_tag(%Value %kl.a2)
+  %kl.is_int2 = icmp eq i32 %kl.t2, 1
+  br i1 %kl.is_int2, label %kl.go, label %kl.fail
+kl.go:
+  %kl.pid64 = call i64 @value_payload(%Value %kl.a1)
+  %kl.pid = trunc i64 %kl.pid64 to i32
+  %kl.sig64 = call i64 @value_payload(%Value %kl.a2)
+  %kl.sig = trunc i64 %kl.sig64 to i32
+  %kl.ret = call i32 @kill(i32 %kl.pid, i32 %kl.sig)
+  %kl.ok = icmp eq i32 %kl.ret, 0
+  ret i1 %kl.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12803,6 +12832,7 @@ builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
 builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
 builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
 builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
+builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

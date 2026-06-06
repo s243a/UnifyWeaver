@@ -2459,6 +2459,29 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M111: kill/2 -- libc kill wrapper. Sig=0 is the standard existence
+% probe (no signal sent, just check process exists + permission).
+
+:- dynamic test_kill_self_probe/2.
+test_kill_self_probe(_, R) :-
+    % kill(0, 0) sends signal 0 to ALL processes in the caller''s
+    % group -- succeeds iff at least one exists and we have
+    % permission. Effectively a no-op self-check.
+    ( kill(0, 0) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_kill_missing_pid/2.
+test_kill_missing_pid(_, R) :-
+    % Some pid that''s almost certainly not running. ESRCH.
+    ( kill(99999999, 0) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_kill_bad_args/2.
+test_kill_bad_args(_, R) :-
+    % Non-int args fail the type guards.
+    ( kill(not_int, 0) -> R is 0
+    ; kill(0, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M110: realpath/2 -- libc realpath wrapper for canonical absolute paths.
 
 :- dynamic test_rp_tmp/2.
@@ -5260,6 +5283,13 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M111 kill/2 ---~n'),
+       run_test_r0('kill(0, 0) self-probe -> 1',
+                   test_kill_self_probe, 0, 1),
+       run_test_r0('kill on missing pid fails -> 1',
+                   test_kill_missing_pid, 0, 1),
+       run_test_r0('kill with non-int args fails -> 1',
+                   test_kill_bad_args, 0, 1),
        format('--- M110 realpath/2 ---~n'),
        run_test_r0('realpath(/tmp, Abs), Abs == /tmp -> 1',
                    test_rp_tmp, 0, 1),
