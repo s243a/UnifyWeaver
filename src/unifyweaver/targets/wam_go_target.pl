@@ -238,6 +238,28 @@ go_strip_line_comments(Code, Stripped) :-
 go_strip_line_comment(Line, Out) :-
     ( sub_string(Line, B, _, _, "//") -> sub_string(Line, 0, B, _, Out) ; Out = Line ).
 
+%% go_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses ->, ; (disjunction / if-then-else), \+, or
+%  once. The native Go strategy mis-compiles these (interface{} comparisons
+%  for ->, an unwrapped stdin-pipeline fragment for \+); the WAM-lowered
+%  path handles them correctly, so such predicates are routed to WAM.
+%  See docs/GO_TARGET.md "Native control-construct codegen (deferred)" for
+%  what is blocked and what a proper native implementation could add.
+go_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    go_body_has_control(Body),
+    !.
+
+go_body_has_control(G) :- var(G), !, fail.
+go_body_has_control((_ -> _)) :- !.
+go_body_has_control((_ ; _)) :- !.
+go_body_has_control(\+ _) :- !.
+go_body_has_control(not(_)) :- !.
+go_body_has_control(once(_)) :- !.
+go_body_has_control((A , B)) :- !, ( go_body_has_control(A) -> true ; go_body_has_control(B) ).
+go_body_has_control(_) :- fail.
+
 %% go_std_import(+UsageMarker, -ImportPath)
 go_std_import("fmt.",     "fmt").
 go_std_import("context.", "context").
@@ -375,7 +397,13 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
-    ;   catch(
+    ;   % The native Go strategy mis-compiles control constructs: (C->T;E)
+        % becomes an `interface{} > 0` comparison (a type error) and \+ an
+        % unwrapped stdin-pipeline fragment. These are handled correctly by
+        % the WAM-lowered path, so decline native here and fall through to
+        % the WAM fallback branch below.
+        \+ go_pred_has_control_constructs(Module:Pred/Arity),
+        catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
             _, fail)
