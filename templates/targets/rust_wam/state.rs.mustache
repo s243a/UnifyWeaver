@@ -751,6 +751,33 @@ impl WamState {
         self.bindings.insert(var_name.to_string(), val);
     }
 
+    /// Unwind the trail back to `mark`, undoing every binding (and any
+    /// register entry) recorded since the mark. Used by lowered
+    /// if-then-else: when the condition fails, its partial bindings are
+    /// discarded before the else branch runs. Because get_reg derefs
+    /// through `bindings`, reverting these entries fully restores the
+    /// pre-condition view of every variable.
+    pub fn unwind_trail_to(&mut self, mark: usize) {
+        while self.trail.len() > mark {
+            let entry = match self.trail.pop() {
+                Some(e) => e,
+                None => break,
+            };
+            if let Some(var) = entry.key.strip_prefix("__binding__") {
+                match entry.old_value {
+                    Some(v) => { self.bindings.insert(var.to_string(), v); }
+                    None => { self.bindings.remove(var); }
+                }
+            } else {
+                // Register trail entry: key is a register name.
+                match entry.old_value {
+                    Some(v) => self.put_reg(&entry.key, v),
+                    None => self.put_reg(&entry.key, Value::Uninit),
+                }
+            }
+        }
+    }
+
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
         self.regs.fill(Value::Uninit);

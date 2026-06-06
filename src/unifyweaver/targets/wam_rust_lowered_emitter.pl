@@ -83,21 +83,116 @@ instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
 
 % =====================================================================
+% Label-preserving parse + if-then-else structuring
+% =====================================================================
+%
+%  The base parser drops label lines, so the boundaries of an
+%  (C -> T ; E) / \+ / once block are lost. The previous emitter simply
+%  no-op'd try_me_else/cut_ite/jump/trust_me, which dropped the structure
+%  entirely and emitted the condition, then- and else-branches as one flat
+%  conjunction (e.g. unifying the output with BOTH branch values), so the
+%  lowered function always failed.
+%
+%  parse_wam_text_labeled keeps label(Name) markers (and cut_ite) so
+%  structure_ite_rust can fold each block into an ite(Cond,Then,Else) term.
+%  Rust's get_reg derefs through the binding table, so trail save/undo
+%  alone restores a failed condition's bindings — no register snapshot is
+%  needed (unlike the Go backend). Mirrors structure_ite_scala.
+
+parse_wam_text_labeled(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled(Lines, Instrs).
+
+parse_lines_labeled([], []).
+parse_lines_labeled([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  parse_lines_labeled(Rest, Instrs)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelStr),
+            Instrs = [label(LabelStr)|More],   % keep as string to match try_me_else/jump args
+            parse_lines_labeled(Rest, More)
+        ;   instr_from_parts(CleanParts, Instr)
+        ->  Instrs = [Instr|More],
+            parse_lines_labeled(Rest, More)
+        ;   parse_lines_labeled(Rest, Instrs)
+        )
+    ).
+
+%% structure_ite_rust(+Flat, -Structured) is semidet.
+structure_ite_rust([], []).
+structure_ite_rust([try_me_else(LE)|Rest0], [ite(CondS,ThenS,ElseS)|Out]) :-
+    !,
+    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
+    \+ member(label(LE), ThenWithJump),
+    append(ThenPath, [jump(LC)], ThenWithJump),
+    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
+    \+ member(label(LC), ElsePath),
+    split_commit_rust(ThenPath, Cond, Then),
+    structure_ite_rust(Cond, CondS),
+    structure_ite_rust(Then, ThenS),
+    structure_ite_rust(ElsePath, ElseS),
+    structure_ite_rust(AfterCont, Out).
+structure_ite_rust([label(_)|Rest], Out) :- !,
+    structure_ite_rust(Rest, Out).
+structure_ite_rust([I|Rest], [I|Out]) :-
+    structure_ite_rust(Rest, Out).
+
+%% split_commit_rust(+ThenPath, -Cond, -Then)  — split at cut_ite (->) or !/0 (\+).
+split_commit_rust(Path, Cond, Then) :-
+    append(Cond, [Commit|Then], Path),
+    is_commit_rust(Commit),
+    \+ ( member(C0, Cond), is_commit_rust(C0) ),
+    !.
+
+is_commit_rust(cut_ite).
+is_commit_rust(builtin_call("!/0", _)).
+is_commit_rust(builtin_call('!/0', _)).
+
+%% rust_base_instrs(+WamCode, -Instrs)  — base (label-stripped) parse or list.
+rust_base_instrs(WamCode, Instrs) :-
+    ( is_list(WamCode) -> Instrs = WamCode ; parse_wam_text(WamCode, Instrs) ).
+
+%% rust_structured_clause1(+WamCode, -Structured) is semidet.
+rust_structured_clause1(WamCode, Structured) :-
+    ( is_list(WamCode) -> LInstrs = WamCode ; parse_wam_text_labeled(WamCode, LInstrs) ),
+    \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
+    take_to_proceed(LInstrs, C1L),
+    structure_ite_rust(C1L, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+%% rust_supported_structured(+StructuredInstr)
+rust_supported_structured(ite(C, T, E)) :- !,
+    forall(member(I, C), rust_supported_structured(I)),
+    forall(member(I, T), rust_supported_structured(I)),
+    forall(member(I, E), rust_supported_structured(I)).
+rust_supported_structured(I) :- rust_supported(I).
+
+% =====================================================================
 % Lowerability
 % =====================================================================
 
 %% wam_rust_lowerable(+Pred/Arity, +WamCode, -Reason)
 %  True if the predicate can be lowered to a direct Rust function.
 wam_rust_lowerable(PI, WamCode, Reason) :-
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
-    ;   atom_string(WamCode, _), parse_wam_text(WamCode, Instrs)
-    ),
+    rust_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
-    forall(member(I, C1), rust_supported(I)),
-    (   is_deterministic_pred_rust(Instrs)
-    ->  Reason = deterministic
-    ;   Reason = multi_clause_1
+    (   % No internal ITE: existing deterministic / multi-clause path.
+        \+ member(try_me_else(_), C1),
+        forall(member(I, C1), rust_supported(I))
+    ->  ( is_deterministic_pred_rust(Instrs) -> Reason = deterministic
+        ; Reason = multi_clause_1 )
+    ;   % Clause-1 has an inner choice point: lower only if it is a pure
+        % (C -> T ; E) / \+ / once block whose pieces are all supported.
+        \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
+        rust_structured_clause1(WamCode, Structured),
+        forall(member(I, Structured), rust_supported_structured(I)),
+        Reason = ite_lowered
     ),
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
 
@@ -184,15 +279,20 @@ rust_safe_code(_, 0'_).
 lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     rust_lowered_func_name(Pred/Arity, FuncName),
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   parse_wam_text(WamCode, Instrs)
-    ),
+    rust_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1Instrs),
     (   member(foreign_pred_keys(ForeignPreds0), Options)
     ->  maplist(foreign_key_string, ForeignPreds0, ForeignPreds)
     ;   ForeignPreds = []
     ),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "    ", ForeignPreds)),
+    % Emit the plain clause-1 when it has no inner choice point; otherwise
+    % fold its ITE block(s) into structured form (ite/3) first.
+    (   \+ member(try_me_else(_), C1Instrs)
+    ->  EmitInstrs = C1Instrs
+    ;   rust_structured_clause1(WamCode, EmitInstrs)
+    ),
+    nb_setval(rust_ite_ctr, 0),
+    with_output_to(string(Body), emit_instrs(EmitInstrs, "    ", ForeignPreds)),
     format(string(Header),
 '// ~w — lowered from ~w/~w
 pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
@@ -219,6 +319,26 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
     format("~w// execute ~w via foreign kernel~n", [I, PredStr]),
     format("~wreturn vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w));~n",
            [I, PredStr, Arity]).
+% --- If-then-else (structured; see structure_ite_rust) ---
+% The condition runs in an immediately-invoked closure so its `return
+% false` means "condition failed"; inside then/else, `return false`
+% returns from the lowered function. Rust's get_reg derefs through the
+% binding table, so unwinding the trail before the else branch restores
+% any partial bindings the condition made (no register snapshot needed).
+emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
+    nb_getval(rust_ite_ctr, N0), N is N0 + 1, nb_setval(rust_ite_ctr, N),
+    string_concat(I, "    ", I2),
+    format("~wlet _ite_mark~w = vm.trail.len();~n", [I, N]),
+    format("~wlet _ite_cond~w = (|vm: &mut WamState| -> bool {~n", [I, N]),
+    emit_instrs(Cond, I2, ForeignPreds),
+    format("~w    true~n", [I]),
+    format("~w})(vm);~n", [I]),
+    format("~wif _ite_cond~w {~n", [I, N]),
+    emit_instrs(Then, I2, ForeignPreds),
+    format("~w} else {~n", [I]),
+    format("~w    vm.unwind_trail_to(_ite_mark~w);~n", [I, N]),
+    emit_instrs(Else, I2, ForeignPreds),
+    format("~w}~n", [I]).
 emit_one(Instr, I, _) :-
     emit_one(Instr, I).
 
