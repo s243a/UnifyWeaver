@@ -4,15 +4,15 @@ Status date: 2026-06-06
 
 Latest branch verification:
 
-- `investigate/wam-c-bagof-setof-unbound-witness-groups` based on `main` at
-  `fff202ad` (`Merge pull request #2858 from
-  s243a/investigate/wam-c-bagof-setof-existential-surface`)
+- `investigate/wam-c-meta-aggregate-dispatch` based on `main` at `993ff338`
+  (`Merge pull request #2861 from
+  s243a/investigate/wam-c-bagof-setof-unbound-witness-groups`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-bagof-setof-unbound-witness-groups`
+- `investigate/wam-c-meta-aggregate-dispatch`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -87,6 +87,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Bound-witness `bagof/3` and `setof/3` grouping | Done | C parses witness register lists into aggregate payload arrays, copies witness tuples per aggregate item, selects the caller-bound witness group, and covers grouped `bagof/3` order plus grouped `setof/3` sort/dedup in an executable smoke |
 | Existential `^/2` aggregate body lowering | Done | Goal-level `^/2` wrappers are transparent in inner call positions, witness discovery still suppresses quantified variables, and the C executable smoke covers flattened existential `bagof/3` plus sorted/deduplicated existential `setof/3` |
 | Unbound-witness `bagof/3` and `setof/3` group enumeration | Done | C retains aggregate groups behind a backtrackable iterator, binds each witness/result group through a synthetic aggregate-group choicepoint, and covers outer `findall/3` consuming all grouped `bagof/3` and `setof/3` alternatives |
+| Runtime aggregate meta-call dispatch | Done | C dispatches non-inline runtime `findall/3`, `bagof/3`, and `setof/3` calls through meta aggregate frames, invokes simple callable goal terms, and covers non-inline `bagof/3` / `setof/3` executable smoke without `inline_bagof_setof(true)` |
 
 ## Current C Target Baseline
 
@@ -139,13 +140,14 @@ The C target is now a credible small WAM backend:
   `=/2`, negation, legacy `cut_ite` if-then-else, and precise
   `get_level`/`cut` if-then-else, explicit `!/0` call-scope behavior, and
   `forall/2`'s generated soft-cut rewrite.
-- Supports the first aggregate surface: generated `findall/3` lowering through
+- Supports aggregate surfaces: generated `findall/3` lowering through
   `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
   result lists, helper-nested aggregate calls, direct inline nested `findall/3`
   bodies, compound/list templates, no-witness `bagof/3` / `setof/3`,
   caller-bound witness grouping for `bagof/3` / `setof/3`, and
   existential `^/2` suppression plus unbound witness group enumeration inside
-  inline `bagof/3` / `setof/3` bodies.
+  inline `bagof/3` / `setof/3` bodies. It also has runtime meta-call dispatch
+  for non-inline aggregate calls over simple callable goal terms.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -168,7 +170,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, existential `^/2`, and unbound witness group enumeration for inline `bagof/3` / `setof/3`; remaining gaps are meta-call aggregate dispatch and broader aggregate forms. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, existential `^/2`, and unbound witness group enumeration for inline `bagof/3` / `setof/3`; runtime meta-call aggregate dispatch now covers simple callable goals, while conjunction/disjunction and broader meta-goal forms remain gaps. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -182,6 +184,35 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-meta-aggregate-dispatch`
+
+Goal: route non-inline runtime calls to `findall/3`, `bagof/3`, and `setof/3`
+through C aggregate machinery instead of failing normal predicate lookup.
+
+Evidence:
+
+- The C step loop now intercepts `call` and `execute` for `findall/3`,
+  `bagof/3`, and `setof/3` before predicate-hash lookup.
+- Meta aggregate frames store heap-reference template/result values directly,
+  preserving variable sharing after the wrapper predicate reuses A-registers
+  for aggregate arguments.
+- Synthetic meta collect/finalize continuations collect each goal solution,
+  retry the goal through normal backtracking, and finalize empty/non-empty
+  `findall/3`, `bagof/3`, and `setof/3` results through the existing aggregate
+  list and grouping code.
+- The real-Prolog executable smoke compiles `bagof/3` and `setof/3` without
+  `inline_bagof_setof(true)`, verifies the generated WAM contains
+  `execute bagof/3` / `execute setof/3` rather than inline aggregate opcodes,
+  and checks ordered `bagof/3`, sorted/deduplicated `setof/3`, and empty
+  `bagof/3` failure.
+
+Remaining gaps:
+
+- The first meta-call implementation invokes atoms, module-qualified simple
+  predicate terms, `^/2`, direct builtins, and nested aggregate terms. It does
+  not yet cover conjunction, disjunction, if-then-else, or general `call/N`
+  goal composition in the C runtime.
 
 ### Completed: `investigate/wam-c-bagof-setof-unbound-witness-groups`
 
@@ -1177,14 +1208,13 @@ Evidence:
 
 ## Suggested Immediate Next Step
 
-The aggregate parity sequence now has no-witness, caller-bound witness,
-existential `^/2`, and unbound witness group enumeration coverage for inline
-`bagof/3` / `setof/3`. The next aggregate feature worth considering is
-meta-call aggregate dispatch, where runtime calls to `findall/3`, `bagof/3`,
-and `setof/3` execute through the aggregate machinery even without
-`inline_bagof_setof(true)`. Keep that separate because it needs goal-term
-dispatch and witness discovery at runtime rather than only generated WAM
-aggregate opcodes.
+The aggregate parity sequence now has inline no-witness, caller-bound witness,
+existential `^/2`, unbound witness group enumeration, and a first runtime
+meta-call aggregate path for simple callable goals. The next aggregate feature
+worth considering is broader C goal-term dispatch for meta aggregate bodies:
+conjunction, disjunction, if-then-else, and `call/N` composition. Keep that
+separate because it changes general meta-call control flow, not just aggregate
+frame finalization.
 
 For the effective-distance/CSR line, result-capped and sampled runs already
 confirm child-CSR variants agree, and parent plus child reachability prefilters
