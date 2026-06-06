@@ -1257,7 +1257,7 @@ wam_lines_to_instrs([Line|Rest], PC, Instrs, Labels) :-
         wam_lines_to_instrs(Rest, PC, Instrs, RestLabels)
     ;   split_string(Trimmed, " \t", " \t", Parts),
         Parts \== []
-    ->  wam_parts_to_instr(Parts, Instr),
+    ->  once(wam_parts_to_instr(Parts, Instr)),
         (   Instr = multi(Is)
         ->  length(Is, N),
             PC1 is PC + N,
@@ -1285,7 +1285,7 @@ wam_lines_to_instrs_with_labels([Line|Rest], C, Result) :-
         wam_lines_to_instrs_with_labels(Rest, C, RestResult)
     ;   split_string(Trimmed, " \t", " \t", Parts),
         Parts \== []
-    ->  wam_parts_to_instr(Parts, Instr),
+    ->  once(wam_parts_to_instr(Parts, Instr)),
         (   Instr = multi(Is)
         ->  length(Is, N),
             C1 is C + N,

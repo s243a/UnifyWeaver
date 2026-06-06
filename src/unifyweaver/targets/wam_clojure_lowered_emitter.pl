@@ -21,6 +21,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 % =====================================================================
 % Parsing
@@ -30,6 +31,31 @@ parse_wam_text(WamText, Instrs) :-
     atom_string(WamText, S),
     split_string(S, "\n", "", Lines),
     parse_lines(Lines, Instrs).
+
+% Label-preserving parse: keeps label(Name) markers so structure_ite can
+% locate the else/cont boundaries of an (C -> T ; E) / \+ / once block.
+parse_wam_text_labeled(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled(Lines, Instrs).
+
+parse_lines_labeled([], []).
+parse_lines_labeled([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  parse_lines_labeled(Rest, Instrs)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelStr),
+            Instrs = [label(LabelStr)|More],
+            parse_lines_labeled(Rest, More)
+        ;   instr_from_parts(CleanParts, Instr)
+        ->  Instrs = [Instr|More],
+            parse_lines_labeled(Rest, More)
+        ;   parse_lines_labeled(Rest, Instrs)
+        )
+    ).
 
 parse_lines([], []).
 parse_lines([Line|Rest], Instrs) :-
@@ -181,10 +207,16 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     ),
     clause1_instrs(Instrs, C1Instrs0),
     (   is_deterministic_pred_clojure(Instrs)
-    ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs)
-    ;   C1Instrs = []
+    ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs),
+        with_output_to(string(Body), emit_instrs(C1Instrs, "  "))
+    ;   clojure_structured_clause1(WamCode, Structured)
+    ->  % Single-clause if-then-else / negation / once: emit native
+        % branching instead of the no-op stub (which delegated to run-wam).
+        with_output_to(string(Body), emit_struct_clj_body(Structured, "  "))
+    ;   % Multi-clause or unstructurable: keep the no-op stub; run-wam
+        % interprets the predicate from start-pc (sound fallback).
+        with_output_to(string(Body), emit_instrs([], "  "))
     ),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "  ")),
     format(string(ClojureCode),
 ';; ~w — lowered from ~w/~w
 (defn ~w [state]
@@ -210,6 +242,76 @@ emit_instr_bindings([Instr|Rest], Index, Indent) :-
     format("~w      s~w (if (= :running (:status ~w)) ~w ~w)~n",
            [Indent, NextIndex, InState, Expr, InState]),
     emit_instr_bindings(Rest, NextIndex, Indent).
+
+% =====================================================================
+% Structured ITE emission (shared nesting-aware structurer)
+% =====================================================================
+%
+%  Clojure's flat `(let [s0 state s1 ...] sN)` threading cannot express an
+%  if-then-else (there is no jump), so the previous emitter produced a
+%  no-op stub for any predicate containing try_me_else and relied on
+%  run-wam (the interpreter) to execute it. This adds native branching:
+%  clause 1 is folded by the shared structurer into ite(Cond,Then,Else)
+%  and emitted as a let whose binding for the block is
+%      (if (= :running (:status sCond)) <then from sCond> <else from sPre>)
+%  i.e. run the condition; on success take Then (inheriting the condition's
+%  bindings), else take Else from the PRE-condition state (discarding them)
+%  — the same Maybe-style discipline as the Haskell/F# backends. A failed
+%  condition builtin calls runtime/backtrack with no choice point in scope,
+%  which yields :status :failed (not :running), so the `if` routes to Else.
+
+%% clojure_structured_clause1(+WamCode, -Structured) is semidet.
+clojure_structured_clause1(WamCode, Structured) :-
+    \+ is_list(WamCode),                       % need the text to recover labels
+    parse_wam_text_labeled(WamCode, LInstrs0),
+    ( LInstrs0 = [label(_)|LInstrs1] -> true ; LInstrs1 = LInstrs0 ),
+    \+ ( LInstrs1 = [try_me_else(_)|_] ),       % single-clause predicates only
+    take_to_terminal(LInstrs1, C1L),
+    structure_ite(C1L, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured),
+    once(member(ite(_, _, _), Structured)).     % must actually contain an ITE
+
+%% emit_struct_clj_body(+Structured, +Indent)
+emit_struct_clj_body(Structured, Indent) :-
+    nb_setval(clj_sv_ctr, 0),
+    with_output_to(string(Bindings), emit_clj_bindings(Structured, "state", FinalSV, Indent)),
+    format("~w(let [~n~w~w      ]~n~w  ~w)~n", [Indent, Bindings, Indent, Indent, FinalSV]).
+
+fresh_clj_sv(SV) :-
+    nb_getval(clj_sv_ctr, N), N1 is N + 1, nb_setval(clj_sv_ctr, N1),
+    format(atom(SV), 's~w', [N1]).
+
+%% emit_clj_bindings(+Structured, +InSV, -OutSV, +Indent)
+emit_clj_bindings([], InSV, InSV, _Ind).
+emit_clj_bindings([ite(C, T, E)|Rest], InSV, OutSV, Ind) :- !,
+    emit_clj_bindings(C, InSV, CondSV, Ind),
+    fresh_clj_sv(IteSV),
+    emit_clj_branch(T, CondSV, ThenExpr, Ind),
+    emit_clj_branch(E, InSV, ElseExpr, Ind),
+    format("~w      ;; if-then-else~n", [Ind]),
+    format("~w      ~w (if (= :running (:status ~w))~n", [Ind, IteSV, CondSV]),
+    format("~w            ~w~n", [Ind, ThenExpr]),
+    format("~w            ~w)~n", [Ind, ElseExpr]),
+    emit_clj_bindings(Rest, IteSV, OutSV, Ind).
+emit_clj_bindings([Instr|Rest], InSV, OutSV, Ind) :-
+    fresh_clj_sv(SV),
+    emit_lowered_expr(Instr, InSV, Expr),
+    instr_comment(Instr, Comment),
+    format("~w      ;; ~w~n", [Ind, Comment]),
+    format("~w      ~w (if (= :running (:status ~w)) ~w ~w)~n", [Ind, SV, InSV, Expr, InSV]),
+    emit_clj_bindings(Rest, SV, OutSV, Ind).
+
+%% emit_clj_branch(+Instrs, +InSV, -Expr, +Indent)
+%  A branch body as a self-contained Clojure expression (nested let, or
+%  just InSV when the branch is empty).
+emit_clj_branch(Instrs, InSV, Expr, Ind) :-
+    with_output_to(string(B), emit_clj_bindings(Instrs, InSV, FSV, Ind)),
+    (   B == ""
+    ->  Expr = FSV
+    ;   format(atom(Expr), '(let [~n~w~w            ] ~w)', [B, Ind, FSV])
+    ).
 
 lowered_direct_prefix(Instrs, Prefix) :-
     lowered_direct_prefix(Instrs, allow_control, Prefix).
