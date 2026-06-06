@@ -217,6 +217,31 @@ impl LmdbFactSource {
         }
         Ok(reachable)
     }
+
+    /// True if this DB carries the `scoped` marker written at ingest by
+    /// build_scoped_subtree_lmdb.py — i.e. it is a pre-scoped subtree where
+    /// every node is already in scope, so the query-time reachable_to_root BFS
+    /// is redundant. Full-graph DBs have no `meta` sub-db; opening it fails
+    /// (NOTFOUND) and we report not-scoped. Used by WAM_DEMAND=auto.
+    pub fn is_scoped(&self) -> bool {
+        let meta = match lmdb::Database::open(
+            Arc::clone(&self.env),
+            Some("meta"),
+            &lmdb::DatabaseOptions::new(lmdb::db::Flags::empty()),
+        ) {
+            Ok(db) => db,
+            Err(_) => return false,
+        };
+        let txn = match lmdb::ReadTransaction::new(&*self.env) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let access = txn.access();
+        match access.get::<[u8], [u8]>(&meta, b"scoped") {
+            Ok(v) => v == b"1",
+            Err(_) => false,
+        }
+    }
 }
 
 fn decode_i32(bytes: &[u8]) -> i32 {

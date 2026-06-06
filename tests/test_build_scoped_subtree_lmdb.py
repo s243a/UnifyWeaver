@@ -128,6 +128,22 @@ class TestBuildScopedSubtreeLmdb(unittest.TestCase):
         env.close()
         self.assertEqual(ids, {2, 3, 4, 5})
 
+    def test_scoped_meta_marker(self):
+        # The `meta` marker lets the runtime auto-detect a pre-scoped DB
+        # (WAM_DEMAND=auto) and skip the redundant reachable_to_root BFS.
+        self._run_builder(root=2, max_depth=7)
+        env = lmdb.open(str(self.out), max_dbs=16, readonly=True, subdir=True,
+                        lock=False)
+        meta = env.open_db(b"meta", create=False)
+        with env.begin() as txn:
+            scoped = txn.get(b"scoped", db=meta)
+            root = txn.get(b"scoped_root", db=meta)
+            depth = txn.get(b"scoped_max_depth", db=meta)
+        env.close()
+        self.assertEqual(scoped, b"1")
+        self.assertEqual(root, b"2")
+        self.assertEqual(depth, b"7")
+
 
 if __name__ == "__main__":
     unittest.main()
