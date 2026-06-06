@@ -241,6 +241,10 @@ wam_recognise_instruction(["retry", L],                retry(L)).
 wam_recognise_instruction(["trust", L],                trust(L)).
 wam_recognise_instruction(["jump", L],                 jump(L)).
 wam_recognise_instruction(["cut_ite"],                 cut_ite).
+% M17 soft-cut for if-then-else / negation: get_level Yn snapshots the
+% choicepoint level into Yn; cut Yn truncates choicepoints back to it.
+wam_recognise_instruction(["get_level", Yn],           get_level(Yn)).
+wam_recognise_instruction(["cut", Yn],                 cut(Yn)).
 wam_recognise_instruction(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
 wam_recognise_instruction(["begin_aggregate", K, V, R, W],
                                                        begin_aggregate(K, V, R, W)).

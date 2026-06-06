@@ -308,6 +308,12 @@ wam_instruction_to_cpp_literal_det(jump(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::Jump(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(cut_ite, _, 'Instruction::CutIte()').
+wam_instruction_to_cpp_literal_det(get_level(Yn), _, Code) :-
+    to_string(Yn, YS),
+    format(atom(Code), 'Instruction::GetLevel("~w")', [YS]).
+wam_instruction_to_cpp_literal_det(cut(Yn), _, Code) :-
+    to_string(Yn, YS),
+    format(atom(Code), 'Instruction::Cut("~w")', [YS]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     to_string(K, KS), to_string(V, VS), to_string(R, RS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV), escape_cpp_string(RS, ER),
@@ -418,7 +424,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     findall(Items, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
               parse_pred_blocks(WamText, Items0),
               iso_errors_rewrite(IsoConfig, PI, Items0, Items)
             ),
@@ -1404,7 +1410,7 @@ wam_cpp_iso_audit(Predicates, Options, Audit) :-
 
 iso_errors_audit_predicate(PI, Mode, Sites) :-
     (   catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
               parse_pred_blocks(WamText, Items)
             ),
             _, fail)
@@ -2620,7 +2626,7 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     findall(Code, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamCode),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
             Err,
@@ -3095,6 +3101,7 @@ struct Instruction {
         TryMeElse, RetryMeElse, TrustMe,
         Try, Retry, Trust,                                   // chain ops (#2400)
         Jump, CutIte,
+        GetLevel, Cut,                                       // M17 soft cut
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnConstantA2,
         SwitchOnStructure, SwitchOnStructureA2,
@@ -3200,6 +3207,10 @@ struct Instruction {
     static Instruction Jump(std::size_t target)
         { Instruction i; i.op = Op::Jump; i.target = target; return i; }
     static Instruction CutIte()     { Instruction i; i.op = Op::CutIte;     return i; }
+    static Instruction GetLevel(std::string yn)
+        { Instruction i; i.op = Op::GetLevel; i.a = std::move(yn); return i; }
+    static Instruction Cut(std::string yn)
+        { Instruction i; i.op = Op::Cut; i.a = std::move(yn); return i; }
     static Instruction BeginAggregate(std::string kind, std::string vreg, std::string rreg)
         { Instruction i; i.op = Op::BeginAggregate; i.a = std::move(kind);
           i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg)); return i; }
@@ -8165,6 +8176,32 @@ bool WamState::step(const Instruction& instr) {
                     choice_points[top_idx].cut_barrier;
                 choice_points.resize(top_idx);
                 cut_barrier = saved_barrier;
+            }
+            pc += 1; return true;
+        }
+        // M17 soft cut. get_level snapshots the choicepoint level into a
+        // Y register BEFORE the if-then-else / negation try_me_else; cut
+        // truncates choicepoints back to that level at the commit site,
+        // removing the ITE/negation CP AND every CP the condition (or a
+        // negated goals generator) pushed above it. This fixes the legacy
+        // cut_ite, which only dropped the single topmost CP and so could
+        // not cut a negation over a generator (e.g. the forall negative
+        // case left the generators CP alive).
+        case Instruction::Op::GetLevel: {
+            CellPtr c = get_cell(instr.a);
+            bind_cell(c, Value::Integer(
+                static_cast<std::int64_t>(choice_points.size())));
+            pc += 1; return true;
+        }
+        case Instruction::Op::Cut: {
+            CellPtr c = get_cell(instr.a);
+            Value v = deref(*c);
+            if (v.tag == Value::Tag::Integer) {
+                std::size_t target = static_cast<std::size_t>(v.i);
+                if (choice_points.size() > target) {
+                    choice_points.resize(target);
+                }
+                if (cut_barrier > target) cut_barrier = target;
             }
             pc += 1; return true;
         }
