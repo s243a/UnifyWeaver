@@ -5036,6 +5036,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     generate_lookup_sources_expr_fs(Options, LookupSourcesExpr),
     (option(csr_path(_), Options) -> HasCsr = true ; HasCsr = false),
+    (option(csr_kernel(true), Options) -> HasCsrKernel = true ; HasCsrKernel = false),
     (option(lmdb_path(_), Options) -> HasLmdb = true ; HasLmdb = false),
     option(lmdb_materialisation(Materialisation), Options, cached),
     option(lmdb_l2_capacity(L2Cap), Options, 4096),
@@ -5053,6 +5054,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
         has_csr = HasCsr,
+        has_csr_kernel = HasCsrKernel,
         has_lmdb = HasLmdb,
         has_bidirectional = HasBidir,
         branch_factor = BranchFactor,
@@ -5082,6 +5084,10 @@ generate_lookup_sources_expr_fs(Options, Expr) :-
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_path(CsrPath), Options),
+    % csr_kernel mode constructs its CSR source directly in the kernel branch
+    % (forward category_parent CSR), so skip the auto WcLookupSources entry --
+    % its default category_child relation would point at a non-existent file.
+    \+ option(csr_kernel(true), Options),
     option(csr_relation(Rel), Options, category_child),
     % Resolve the CSR artifact dir against factsDir at runtime (a relative
     % csr_path like "csr" would otherwise be opened against the process CWD,

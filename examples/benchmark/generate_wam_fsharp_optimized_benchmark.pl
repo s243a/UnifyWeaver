@@ -84,8 +84,10 @@ generate(VariantAtom, OutputDir) :-
         % `*_csr` variants build the demand set from a category_child CSR
         % artifact at <factsDir>/csr (binary-searched, int-native) instead of
         % the LMDB cursor; csr_path triggers has_csr + CsrReader.fs compilation.
-        (   sub_atom(VariantAtom, _, _, 0, csr)
-        ->  CsrOpts = [csr_path('csr')]
+        (   sub_atom(VariantAtom, _, _, _, csr_kernel)
+        ->  CsrOpts = [csr_path('csr'), csr_kernel(true)]   % forward CSR for the kernel
+        ;   sub_atom(VariantAtom, _, _, 0, csr)
+        ->  CsrOpts = [csr_path('csr')]                     % reverse CSR for the demand BFS
         ;   CsrOpts = []
         ),
         append([lmdb_path('lmdb'), lmdb_materialisation(Materialisation)], CsrOpts, LmdbOpts)
@@ -132,12 +134,18 @@ parse_variant(lmdb_eager_csr, [
     branch_pruning(false),
     min_closure(false)
 ]).
+parse_variant(lmdb_csr_kernel, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
 
 %% variant_materialisation(+Variant, -Mode)
 variant_materialisation(lmdb_eager,     eager).
 variant_materialisation(lmdb_lazy,      lazy).
 variant_materialisation(lmdb_cached,    cached).
 variant_materialisation(lmdb_eager_csr, eager).
+variant_materialisation(lmdb_csr_kernel, lazy).
 variant_materialisation(_,              eager).
 
 %% collect_wam_predicates(+Variant, -Predicates)
@@ -162,6 +170,10 @@ collect_wam_predicates(lmdb_cached, [
     user:category_ancestor/4
 ]).
 collect_wam_predicates(lmdb_eager_csr, [
+    user:max_depth/1,
+    user:category_ancestor/4
+]).
+collect_wam_predicates(lmdb_csr_kernel, [
     user:max_depth/1,
     user:category_ancestor/4
 ]).
