@@ -164,6 +164,24 @@ let main argv =
         | Some l -> int (l.Trim())
         | None -> 0
 
+{{#has_csr_kernel}}
+    // Forward-CSR kernel path: the kernel's UPWARD category_parent lookup reads
+    // a forward (child->parents) CSR artifact at <factsDir>/csr -- a lazy-class
+    // path (per-lookup binary search + .val file seek), but via a raw
+    // FileStream rather than LightningDB's managed cursor. Demand set is built
+    // from the LMDB category_child cursor (load-time); lookups are
+    // demand-filtered so the upward walk never leaves it. No LMDB in the kernel
+    // hot path. Hypothesis: beats LMDB-lazy by avoiding the managed per-call
+    // P/Invoke overhead.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let csrParent =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_parent")
+        :> ILookupSource
+    let lmdbLookupFn (k: int) : int list =
+        if demandSet.Contains k then csrParent.Lookup k |> List.filter demandSet.Contains
+        else []
+{{/has_csr_kernel}}
+{{^has_csr_kernel}}
 {{match materialisation}}
 {{case eager}}
 {{#has_csr}}
@@ -237,6 +255,7 @@ let main argv =
     // O(log n) F# Set lookup from every kernel call -- the last gap to eager.
     let lmdbLookupFn (k: int) : int list = cachedSource.Lookup k
 {{/match}}
+{{/has_csr_kernel}}
     eprintfn "demand_set=%d" demandSet.Count
     let parentsInterned : Map<int, int list> = Map.empty
 
