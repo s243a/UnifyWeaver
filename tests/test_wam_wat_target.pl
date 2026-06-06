@@ -1,6 +1,7 @@
 :- encoding(utf8).
 :- use_module(library(plunit)).
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
+:- use_module('../src/unifyweaver/targets/wam_wat_lowered_emitter').
 
 :- begin_tests(wam_wat_target).
 
@@ -65,6 +66,24 @@ test(encode_get_value) :-
     wam_instruction_to_wat_bytes(get_value('X1', 'A2'), [], Hex),
     assertion(atom(Hex)),
     assertion(sub_string(Hex, 0, _, _, "\\02")).  % tag=2
+
+test(operand_helper_decodes_canonical_encoding) :-
+    wam_instruction_to_wat_operands(put_constant(42, 'A1'), [], put_constant, Op1, Op2),
+    assertion(Op1 == 42),
+    assertion(Op2 =:= (1 << 32)).
+
+test(lowered_emitter_accepts_deterministic_clause) :-
+    WamCode = 'put_constant 42 A1
+builtin_call integer/1 1
+proceed
+',
+    wam_wat_lowerable(answer/0, WamCode, Reason),
+    assertion(Reason == single_clause),
+    lower_predicate_to_wat(answer/0, WamCode, [], lowered('answer/0', FuncName, Code)),
+    assertion(FuncName == lowered_answer_0),
+    assertion(sub_atom(Code, _, _, _, '(func $lowered_answer_0')),
+    assertion(sub_atom(Code, _, _, _, '(call $do_put_constant')),
+    assertion(sub_atom(Code, _, _, _, '(call $do_builtin_call')).
 
 test(encode_get_structure) :-
     wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
