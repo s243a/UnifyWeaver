@@ -143,14 +143,16 @@ fn main() {
         let root_id = vm.intern_atom(&root);
         for cat in &seed_cats {
             let cat_id = vm.intern_atom(cat);
-            let visited_ids = vec![cat_id];
+            let mut visited_ids = vec![cat_id];
             let mut hops: Vec<i64> = Vec::new();
+            let acc = vm.resolve_edge_accessor("category_parent");
             vm.collect_native_category_ancestor_hops(
                 cat_id,
                 root_id,
-                &visited_ids,
+                &mut visited_ids,
                 max_depth_limit,
-                "category_parent",
+                &acc,
+                0,
                 &mut hops,
             );
             let weight_sum: f64 = hops.iter()

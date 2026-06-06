@@ -56,9 +56,24 @@ test(ite_exec_parity) :-
     write_wam_go_project(
         [user:gite/2, user:gneg/1, user:gseqite/3, user:gnestite/2, user:gundoite/2],
         [module_name('iteexec'), wam_fallback(true)], Proj),
-    % 2. Copy the WAM runtime + lowered sources into a clean module. lib.go
-    %    is the separate native-strategy artifact (not the WAM path) and is
-    %    intentionally excluded.
+    % 1b. The whole generated project must compile. This guards lib.go's
+    %     computed imports, the clause-parallel goroutine template, and the
+    %     routing of -> / \+ predicates away from the broken native strategy
+    %     to WAM (go_pred_has_control_constructs/1).
+    format(atom(BuildCmd), 'cd ~w && go build ./... 2>&1', [Proj]),
+    process_create(path(sh), ['-c', BuildCmd],
+                   [stdout(pipe(BOut)), stderr(std), process(BPid)]),
+    read_string(BOut, _, BOutStr), close(BOut),
+    process_wait(BPid, BStatus),
+    ( BStatus == exit(0)
+    ->  true
+    ;   format(user_error, "~n[go build ./... output]~n~w~n", [BOutStr]),
+        throw(go_project_build_failed(BStatus))
+    ),
+    % 2. Copy the WAM runtime + lowered sources into a clean module to call
+    %    the lowered functions directly. lib.go is excluded only because the
+    %    direct-call harness needs no WAM entry points, not because it is
+    %    broken (1b already proved the whole project builds).
     atomic_list_concat(
         ['cp ', Proj, '/*.go ', Dir, '/ && rm -f ', Dir, '/lib.go'], CpCmd),
     shell_ok(CpCmd),

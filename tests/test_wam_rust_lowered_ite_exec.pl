@@ -54,21 +54,15 @@ test(ite_exec_parity) :-
     write_wam_rust_project(
         [user:rite/2, user:rneg/1, user:rseqite/3, user:rnestite/2, user:rundoite/2],
         [module_name('iterust'), wam_fallback(true), emit_mode(functions)], Dir),
-    % 2. Drop the bench bin (a separate generated artifact unrelated to the
-    %    lowered library, which does not compile for these toy predicates)
-    %    so cargo only has to build the lib + our integration test.
-    atomic_list_concat(
-        ['cd ', Dir,
-         ' && sed -i ''/^\\[\\[bin\\]\\]/,/^path = "src\\/main.rs"/d'' Cargo.toml',
-         ' && rm -f src/main.rs'], FixCmd),
-    shell_ok(FixCmd),
-    % 3. Integration test source.
+    % 2. Integration test source. `cargo test` also builds the bench bin
+    %    (src/main.rs), so this run additionally guards that the whole
+    %    generated project compiles, not just the lowered library.
     atomic_list_concat([Dir, '/tests'], TestsDir),
     make_directory_path(TestsDir),
     atomic_list_concat([Dir, '/tests/ite_exec.rs'], TestPath),
     rust_test_source(RustSrc),
     write_file(TestPath, RustSrc),
-    % 4. Compile + run only this test target.
+    % 3. Compile (lib + bench bin + test) and run the integration test.
     format(atom(TestCmd), 'cd ~w && cargo test --test ite_exec 2>&1', [Dir]),
     process_create(path(sh), ['-c', TestCmd],
                    [stdout(pipe(Out)), stderr(std), process(Pid)]),
@@ -81,10 +75,6 @@ test(ite_exec_parity) :-
     ).
 
 :- end_tests(wam_rust_lowered_ite_exec).
-
-shell_ok(Cmd) :-
-    process_create(path(sh), ['-c', Cmd], [process(Pid)]),
-    process_wait(Pid, exit(0)).
 
 write_file(Path, Text) :-
     setup_call_cleanup(open(Path, write, S), write(S, Text), close(S)).
