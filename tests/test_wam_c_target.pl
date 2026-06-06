@@ -1695,6 +1695,16 @@ test_real_prolog_explicit_cut_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_forall_executable_smoke :-
+    Test = 'WAM-C: real Prolog forall/2 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_forall_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog forall/2 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2667,6 +2677,76 @@ cleanup_wam_c_explicit_cut_smoke :-
     retractall(user:wam_c_cut_choice(_)),
     retractall(user:wam_c_inner_cut),
     retractall(user:wam_c_outer_cut(_)).
+
+run_real_prolog_forall_executable_smoke :-
+    assertz((user:wam_c_forall_num(1) :- true)),
+    assertz((user:wam_c_forall_num(2) :- true)),
+    assertz((user:wam_c_forall_positive(1) :- true)),
+    assertz((user:wam_c_forall_positive(2) :- true)),
+    assertz((user:wam_c_forall_only_two(2) :- true)),
+    assertz((user:wam_c_forall_empty(_) :- fail)),
+    assertz((user:wam_c_forall_all(ok) :-
+        forall(wam_c_forall_num(X), wam_c_forall_positive(X)))),
+    assertz((user:wam_c_forall_fail(ok) :-
+        forall(wam_c_forall_num(X), wam_c_forall_only_two(X)))),
+    assertz((user:wam_c_forall_subset(ok) :-
+        forall(wam_c_forall_only_two(X), wam_c_forall_positive(X)))),
+    assertz((user:wam_c_forall_empty_ok(ok) :-
+        forall(wam_c_forall_empty(X), wam_c_forall_positive(X)))),
+    (   compile_predicate_to_wam(user:wam_c_forall_num/1, [], WamNum),
+        compile_predicate_to_wam(user:wam_c_forall_positive/1, [], WamPositive),
+        compile_predicate_to_wam(user:wam_c_forall_only_two/1, [], WamOnlyTwo),
+        compile_predicate_to_wam(user:wam_c_forall_empty/1, [], WamEmpty),
+        compile_predicate_to_wam(user:wam_c_forall_all/1, [], WamAll),
+        compile_predicate_to_wam(user:wam_c_forall_fail/1, [], WamFail),
+        compile_predicate_to_wam(user:wam_c_forall_subset/1, [], WamSubset),
+        compile_predicate_to_wam(user:wam_c_forall_empty_ok/1, [], WamEmptyOk),
+        sub_string(WamAll, _, _, _, 'cut_ite'),
+        sub_string(WamFail, _, _, _, 'cut_ite'),
+        sub_string(WamSubset, _, _, _, 'cut_ite'),
+        sub_string(WamEmptyOk, _, _, _, 'cut_ite'),
+        \+ sub_string(WamAll, _, _, _, 'builtin_call forall/2'),
+        compile_wam_predicate_to_c(user:wam_c_forall_num/1, WamNum, [], NumCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_positive/1, WamPositive, [], PositiveCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_only_two/1, WamOnlyTwo, [], OnlyTwoCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_empty/1, WamEmpty, [], EmptyCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_all/1, WamAll, [], AllCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_fail/1, WamFail, [], FailCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_subset/1, WamSubset, [], SubsetCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_empty_ok/1, WamEmptyOk, [], EmptyOkCode),
+        atomic_list_concat([NumCode, PositiveCode, OnlyTwoCode, EmptyCode,
+                            AllCode, FailCode, SubsetCode, EmptyOkCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_forall_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_forall_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_forall_smoke
+    ;   cleanup_wam_c_forall_smoke,
+        fail
+    ).
+
+cleanup_wam_c_forall_smoke :-
+    retractall(user:wam_c_forall_num(_)),
+    retractall(user:wam_c_forall_positive(_)),
+    retractall(user:wam_c_forall_only_two(_)),
+    retractall(user:wam_c_forall_empty(_)),
+    retractall(user:wam_c_forall_all(_)),
+    retractall(user:wam_c_forall_fail(_)),
+    retractall(user:wam_c_forall_subset(_)),
+    retractall(user:wam_c_forall_empty_ok(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5606,6 +5686,70 @@ int main(void) {
 }
 ').
 
+wam_c_forall_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_forall_num_1(WamState* state);
+void setup_wam_c_forall_positive_1(WamState* state);
+void setup_wam_c_forall_only_two_1(WamState* state);
+void setup_wam_c_forall_empty_1(WamState* state);
+void setup_wam_c_forall_all_1(WamState* state);
+void setup_wam_c_forall_fail_1(WamState* state);
+void setup_wam_c_forall_subset_1(WamState* state);
+void setup_wam_c_forall_empty_ok_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_forall_num_1(&state);
+    setup_wam_c_forall_positive_1(&state);
+    setup_wam_c_forall_only_two_1(&state);
+    setup_wam_c_forall_empty_1(&state);
+    setup_wam_c_forall_all_1(&state);
+    setup_wam_c_forall_fail_1(&state);
+    setup_wam_c_forall_subset_1(&state);
+    setup_wam_c_forall_empty_ok_1(&state);
+
+    WamValue all_args[1] = { val_atom("ok") };
+    int all_rc = wam_run_predicate(&state, "wam_c_forall_all/1", all_args, 1);
+    if (all_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue fail_args[1] = { val_atom("ok") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_forall_fail/1", fail_args, 1);
+    if (fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue subset_args[1] = { val_atom("ok") };
+    int subset_rc = wam_run_predicate(&state, "wam_c_forall_subset/1", subset_args, 1);
+    if (subset_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue empty_args[1] = { val_atom("ok") };
+    int empty_rc = wam_run_predicate(&state, "wam_c_forall_empty_ok/1", empty_args, 1);
+    if (empty_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue bad_args[1] = { val_atom("bad") };
+    int bad_rc = wam_run_predicate(&state, "wam_c_forall_all/1", bad_args, 1);
+    if (bad_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -5815,6 +5959,7 @@ run_tests_once :-
     test_real_prolog_control_executable_smoke,
     test_real_prolog_precise_ite_executable_smoke,
     test_real_prolog_explicit_cut_executable_smoke,
+    test_real_prolog_forall_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,
