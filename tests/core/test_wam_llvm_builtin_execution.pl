@@ -2459,6 +2459,45 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M112: truncate/2 -- libc truncate wrapper for file resizing.
+
+:- dynamic test_truncate_grow/2.
+test_truncate_grow(_, R) :-
+    % Create a tiny file via shell, truncate it to 100 bytes,
+    % verify size_file reports 100.
+    Path = '/tmp/uw_m112_truncate_test',
+    shell('touch /tmp/uw_m112_truncate_test', _),
+    truncate(Path, 100),
+    size_file(Path, Sz),
+    shell('rm -f /tmp/uw_m112_truncate_test', _),
+    ( Sz =:= 100 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_truncate_zero/2.
+test_truncate_zero(_, R) :-
+    % Truncating to 0 is a no-op on a freshly-created file but
+    % should still succeed.
+    Path = '/tmp/uw_m112_truncate_zero',
+    shell('touch /tmp/uw_m112_truncate_zero', _),
+    truncate(Path, 0),
+    size_file(Path, Sz),
+    shell('rm -f /tmp/uw_m112_truncate_zero', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_truncate_missing/2.
+test_truncate_missing(_, R) :-
+    % truncate on a non-existent path fails (ENOENT).
+    ( truncate('/tmp/uw_m112_does_not_exist', 0) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_truncate_bad_args/2.
+test_truncate_bad_args(_, R) :-
+    % Non-atom Path or non-Integer Length fail the type guards.
+    ( truncate(42, 0) -> R is 0
+    ; truncate('/tmp/x', not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M111: kill/2 -- libc kill wrapper. Sig=0 is the standard existence
 % probe (no signal sent, just check process exists + permission).
 
@@ -5283,6 +5322,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M112 truncate/2 ---~n'),
+       run_test_r0('touch + truncate 100 + size_file -> 1',
+                   test_truncate_grow, 0, 1),
+       run_test_r0('truncate 0 -> size 0 -> 1',
+                   test_truncate_zero, 0, 1),
+       run_test_r0('truncate on missing path fails -> 1',
+                   test_truncate_missing, 0, 1),
+       run_test_r0('truncate with non-atom path / non-int length fails -> 1',
+                   test_truncate_bad_args, 0, 1),
        format('--- M111 kill/2 ---~n'),
        run_test_r0('kill(0, 0) self-probe -> 1',
                    test_kill_self_probe, 0, 1),
