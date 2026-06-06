@@ -22,6 +22,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_rust_target, [escape_rust_string/2]).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 
@@ -94,10 +95,10 @@ instr_from_parts(["cut_ite"], cut_ite).
 %  lowered function always failed.
 %
 %  parse_wam_text_labeled keeps label(Name) markers (and cut_ite) so
-%  structure_ite_rust can fold each block into an ite(Cond,Then,Else) term.
+%  structure_ite can fold each block into an ite(Cond,Then,Else) term.
 %  Rust's get_reg derefs through the binding table, so trail save/undo
 %  alone restores a failed condition's bindings — no register snapshot is
-%  needed (unlike the Go backend). Mirrors structure_ite_scala.
+%  needed (unlike the Go backend). Mirrors the shared wam_ite_structurer.
 
 parse_wam_text_labeled(WamText, Instrs) :-
     atom_string(WamText, S),
@@ -122,35 +123,8 @@ parse_lines_labeled([Line|Rest], Instrs) :-
         )
     ).
 
-%% structure_ite_rust(+Flat, -Structured) is semidet.
-structure_ite_rust([], []).
-structure_ite_rust([try_me_else(LE)|Rest0], [ite(CondS,ThenS,ElseS)|Out]) :-
-    !,
-    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
-    \+ member(label(LE), ThenWithJump),
-    append(ThenPath, [jump(LC)], ThenWithJump),
-    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
-    \+ member(label(LC), ElsePath),
-    split_commit_rust(ThenPath, Cond, Then),
-    structure_ite_rust(Cond, CondS),
-    structure_ite_rust(Then, ThenS),
-    structure_ite_rust(ElsePath, ElseS),
-    structure_ite_rust(AfterCont, Out).
-structure_ite_rust([label(_)|Rest], Out) :- !,
-    structure_ite_rust(Rest, Out).
-structure_ite_rust([I|Rest], [I|Out]) :-
-    structure_ite_rust(Rest, Out).
-
-%% split_commit_rust(+ThenPath, -Cond, -Then)  — split at cut_ite (->) or !/0 (\+).
-split_commit_rust(Path, Cond, Then) :-
-    append(Cond, [Commit|Then], Path),
-    is_commit_rust(Commit),
-    \+ ( member(C0, Cond), is_commit_rust(C0) ),
-    !.
-
-is_commit_rust(cut_ite).
-is_commit_rust(builtin_call("!/0", _)).
-is_commit_rust(builtin_call('!/0', _)).
+% structure_ite/2, split_commit/3 and is_commit/1 are shared across the
+% lowered backends — see wam_ite_structurer.pl.
 
 %% rust_base_instrs(+WamCode, -Instrs)  — base (label-stripped) parse or list.
 rust_base_instrs(WamCode, Instrs) :-
@@ -161,7 +135,7 @@ rust_structured_clause1(WamCode, Structured) :-
     ( is_list(WamCode) -> LInstrs = WamCode ; parse_wam_text_labeled(WamCode, LInstrs) ),
     \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
     take_to_proceed(LInstrs, C1L),
-    structure_ite_rust(C1L, Structured),
+    structure_ite(C1L, Structured),
     \+ member(try_me_else(_), Structured),
     \+ member(trust_me, Structured),
     \+ member(retry_me_else(_), Structured).
@@ -319,7 +293,7 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
     format("~w// execute ~w via foreign kernel~n", [I, PredStr]),
     format("~wreturn vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w));~n",
            [I, PredStr, Arity]).
-% --- If-then-else (structured; see structure_ite_rust) ---
+% --- If-then-else (structured; see wam_ite_structurer) ---
 % The condition runs in an immediately-invoked closure so its `return
 % false` means "condition failed"; inside then/else, `return false`
 % returns from the lowered function. Rust's get_reg derefs through the
