@@ -120,7 +120,7 @@ haven't yet hit the kernel-or-LMDB inflection point.
 
 | Target | Source size | Status | Notes |
 |---|---|---|---|
-| **WAT** (WebAssembly text) | `wam_wat_target.pl` + `wam_wat_lowered_emitter.pl` | Substantial WAM-instruction lowering pipeline plus deterministic clause-1 lowered fast paths | Hybrid mode now mirrors Rust/Scala-style public-entry replay: lowered success returns immediately; lowered failure reinitialises and falls back to `$run_loop`. Browser-deployment angle remains the differentiator |
+| **WAT** (WebAssembly text) | `wam_wat_target.pl` + `wam_wat_lowered_emitter.pl` | Substantial WAM-instruction lowering pipeline plus deterministic clause-1 lowered fast paths | Opt-in hybrid mode now mirrors Rust/Scala-style public-entry replay: lowered success returns immediately; lowered failure reinitialises and falls back to `$run_loop`. Browser-deployment angle remains the differentiator |
 | **C** | `wam_c_target.pl` (907 lines) + `wam_c_runtime/wam_runtime.h` | Has a C runtime header | Smaller surface; useful as a portable substrate for FFI kernels (Rust/Go FFI kernels could share C glue) |
 | **JVM** | `wam_jvm_target.pl` (711 lines) | Smaller than the Scala/Clojure entries | Generic JVM bytecode emit; both Scala and Clojure target the JVM via different routes — this is the third |
 
