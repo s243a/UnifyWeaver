@@ -4,21 +4,20 @@ Status date: 2026-06-05
 
 Latest branch verification:
 
-- `investigate/wam-c-candidate-filter-calibration` based on `main` at
-  `718d1a79` (`Merge pull request #2776 from
-  s243a/investigate/wam-c-child-search-scale-ceiling`)
+- `investigate/wam-c-candidate-filter-boundary-repeatability` based on `main`
+  at `f1b9402b` (`Merge pull request #2799 from
+  s243a/investigate/wam-c-candidate-filter-calibration`)
 - `python3 -m py_compile examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py tests/test_wam_c_candidate_filter_threshold_sweep.py`
 - `python3 tests/test_wam_c_candidate_filter_threshold_sweep.py`
 - `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --dry-run --scales 50k_cats --profiles low,high-capped --thresholds auto,always,off`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales dev --profiles low --thresholds auto,always,off --run-timeout-seconds 120`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles low,medium,high-capped --thresholds auto,always,16,64,256,1024,off --run-timeout-seconds 180`
-- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles medium --thresholds auto,256,512,1024,off --repetitions 3 --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --dry-run --scales 50k_cats --profiles boundary-250,medium,boundary-500,boundary-800 --thresholds auto,256,512,off`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles boundary-250,medium,boundary-500,boundary-800 --thresholds auto,256,512,off --repetitions 3 --run-timeout-seconds 180`
+- `python3 examples/benchmark/benchmark_wam_c_candidate_filter_threshold_sweep.py --scales 50k_cats --profiles medium,boundary-800 --thresholds auto,off --repetitions 1 --run-timeout-seconds 180`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-candidate-filter-calibration`
+- `investigate/wam-c-candidate-filter-boundary-repeatability`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -528,15 +527,16 @@ Evidence:
   scheduling and dense traversal both produced `1` row with hash
   `e2bde0c720fe`, but dense traversal was faster (`query_ms=25.390`) than
   sparse scheduling (`query_ms=100.436`) because candidate discovery cost
-  dominated at only `41` roots. With the default `candidate_filter_min_roots=256`,
-  the same sample now stays dense by default, preserves the hash, and reports
-  `candidate_filter_articles=0` with `query_ms=26.435`. This is why the default
-  root threshold is conservative and the CLI override exists.
+  dominated at only `41` roots. With the then-default
+  `candidate_filter_min_roots=256`, the same sample stayed dense by default,
+  preserved the hash, and reported `candidate_filter_articles=0` with
+  `query_ms=26.435`. This is why the default root threshold is conservative and
+  the CLI override exists.
 - The generated runner now resolves the default candidate-root threshold through
   `cost_model:resolve_candidate_filter_min_roots/2`, so Prolog workload options
   can declare `candidate_filter_min_roots(N)`, `always`, `off`, or `auto`.
   `auto` currently preserves the measured dense-root ceiling by generating
-  `256`, while `UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS` remains a runtime
+  `512`, while `UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS` remains a runtime
   override for sweeps.
 - Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
   project generation at `10k` showed `100` warm-cache sampled queries over one
@@ -787,7 +787,7 @@ After hash-bucket row dispatch but before compact row tables:
 | `100x` | 1600 | match | 0.004s | 0.008s | 1.81x |
 | `1k` | 4000 | match | 0.005s | 0.031s | 5.79x |
 
-### Active: `investigate/wam-c-candidate-filter-calibration`
+### Completed Investigation: `investigate/wam-c-candidate-filter-calibration`
 
 Goal: make the candidate-root filter threshold calibration repeatable enough to
 decide whether `auto` should stay at the current dense-root ceiling or consume
@@ -832,6 +832,37 @@ Evidence:
   `110.546`, and `off` at `130.339`. Treat this as the noisy boundary region,
   not as a reason to move the default yet.
 
+### Active: `investigate/wam-c-candidate-filter-boundary-repeatability`
+
+Goal: pin the noisy candidate-root filter crossover with repeatable boundary
+profiles and change the generated `auto` threshold only when boundary evidence
+supports it.
+
+Implemented so far:
+
+- Added boundary calibration profiles around the crossover band:
+  `boundary-250`, `boundary-500`, and `boundary-800`.
+- Changed the cost-model `auto` dense-root ceiling from `255` to `511`, so the
+  generated default `candidate_filter_min_roots` becomes `512`.
+- Kept `candidate_filter_min_roots(N)`, `always`, `off`, and the environment
+  override available for workloads whose measured crossover differs.
+
+Evidence:
+
+- Dry-run coverage confirms the boundary profiles pass the expected root
+  strides into the existing effective-distance matrix runner.
+- A 3-repetition `50k_cats` boundary sweep over
+  `boundary-250,medium,boundary-500,boundary-800` and `auto,256,512,off`
+  preserved output hashes for every row.
+- Explicit `512` is the simulated new `auto` threshold on the old build:
+  `254` selected roots stay dense, `406` roots stay in the noisy dense-favored
+  boundary band, `507` roots are near parity, and `811` roots choose sparse
+  scheduling with much lower query time than dense traversal.
+- After changing the generated default to `512`, a focused sanity sweep showed
+  `medium` (`406` selected roots) staying dense with matching hash
+  `226c7fdad57d`, while `boundary-800` (`811` selected roots) used sparse
+  scheduling with matching hash `92be2a9b5ac1`.
+
 ## Suggested Immediate Next Step
 
 Result-capped and sampled runs now confirm child-CSR variants agree, and parent
@@ -841,15 +872,13 @@ candidate-root scheduling now avoids most impossible root traversals when many
 roots are selected, while staying off for low-root workloads by default and
 preserving dense semantics when an explicit query cap is active. The threshold
 default now has a cost-model resolver, a Prolog option surface, and a repeatable
-calibration wrapper. The `50k_cats` sweep supports keeping `auto` at `256` for
-now: low-root workloads remain dense, high-root workloads get the sparse
-candidate schedule, and the 406-root profile is close/noisy enough that a more
-complex resolver is not justified yet. The next useful work is either a
-repeatability sweep around the 400-1000 root boundary or feeding measured
-query/artifact costs into the resolver if future datasets show a sharper
-crossover.
-Keep
-`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
+calibration wrapper. The boundary-repeatability sweep supports moving `auto` to
+`512`: low-root workloads remain dense, the 406-root profile avoids forced
+sparse scheduling, the 507-root profile is near parity, and the 811-root profile
+still uses sparse scheduling. The next useful work is either a PR for this
+threshold adjustment or feeding measured query/artifact costs into the resolver
+if future datasets show a sharper crossover.
+Keep `benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
 category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
 only when changing CSR lookup storage. Do not persist root-distance maps to
 LMDB or a separate artifact by default; add that only behind a cost-analyzer

@@ -269,7 +269,7 @@ resolve_reverse_index_spec(Spec, _Options, ReverseIndex) :-
 %
 %  Resolve the root-count threshold for WAM-C candidate-root filtering.
 %  The current auto policy encodes the measured low-root dense ceiling:
-%  keep candidate discovery off until at least 256 selected roots unless
+%  keep candidate discovery off until at least 512 selected roots unless
 %  an explicit workload option overrides it.
 resolve_candidate_filter_min_roots(Options, MinRoots) :-
     option(candidate_filter_min_roots(Spec), Options, auto),
@@ -277,7 +277,7 @@ resolve_candidate_filter_min_roots(Options, MinRoots) :-
 
 resolve_candidate_filter_min_roots_spec(auto, Options, MinRoots) :-
     !,
-    option(candidate_filter_dense_root_ceiling(DenseRootCeiling), Options, 255),
+    option(candidate_filter_dense_root_ceiling(DenseRootCeiling), Options, 511),
     validate_nonnegative_integer(candidate_filter_dense_root_ceiling,
                                  DenseRootCeiling),
     MinRoots is DenseRootCeiling + 1.

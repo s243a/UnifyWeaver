@@ -82,6 +82,36 @@ PROFILES: dict[str, Profile] = {
             "10",
         ),
     ),
+    "boundary-250": Profile(
+        "boundary-250",
+        "sampled articles and about 250 roots; probes below the noisy boundary",
+        (
+            "--wam-c-article-stride",
+            "1000",
+            "--wam-c-root-stride",
+            "16",
+        ),
+    ),
+    "boundary-500": Profile(
+        "boundary-500",
+        "sampled articles and about 500 roots; probes just above the noisy boundary",
+        (
+            "--wam-c-article-stride",
+            "1000",
+            "--wam-c-root-stride",
+            "8",
+        ),
+    ),
+    "boundary-800": Profile(
+        "boundary-800",
+        "sampled articles and about 800 roots; probes the upper boundary band",
+        (
+            "--wam-c-article-stride",
+            "1000",
+            "--wam-c-root-stride",
+            "5",
+        ),
+    ),
     "high-capped": Profile(
         "high-capped",
         "all roots with a result cap; validates sparse scheduling at high fanout",

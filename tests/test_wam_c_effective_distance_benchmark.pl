@@ -20,7 +20,7 @@ fail_test(Test, Reason) :-
 
 test_candidate_filter_cost_model_resolver :-
     Test = 'WAM-C effective-distance: candidate filter threshold resolver handles policy modes',
-    (   resolve_candidate_filter_min_roots([], 256),
+    (   resolve_candidate_filter_min_roots([], 512),
         resolve_candidate_filter_min_roots([candidate_filter_dense_root_ceiling(31)], 32),
         resolve_candidate_filter_min_roots([candidate_filter_min_roots(always)], 0),
         resolve_candidate_filter_min_roots([candidate_filter_min_roots(off)], Off),

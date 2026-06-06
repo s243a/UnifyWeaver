@@ -64,6 +64,19 @@ class WamCCandidateFilterThresholdSweepTests(unittest.TestCase):
         self.assertNotIn("--wam-c-candidate-filter-min-roots", command)
         self.assertEqual(command[command.index("--wam-c-max-results") + 1], "50")
 
+    def test_boundary_profiles_select_expected_root_strides(self) -> None:
+        expected = {
+            "boundary-250": "16",
+            "boundary-500": "8",
+            "boundary-800": "5",
+        }
+
+        for profile_name, root_stride in expected.items():
+            with self.subTest(profile=profile_name):
+                command = matrix_command("50k_cats", PROFILES[profile_name], ThresholdSpec("auto", None))
+                self.assertEqual(command[command.index("--wam-c-article-stride") + 1], "1000")
+                self.assertEqual(command[command.index("--wam-c-root-stride") + 1], root_stride)
+
     def test_parse_matrix_output_extracts_metrics(self) -> None:
         output = (
             "scale\ttarget\tcategory\tstatus\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tmessage\n"
