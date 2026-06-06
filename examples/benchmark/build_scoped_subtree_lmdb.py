@@ -58,7 +58,11 @@ def reachable_to_root(txn, cc_db, root: int, max_depth: int) -> set:
     within `max_depth` hops, i.e. the set of nodes that can reach `root` going
     UP through category_parent.
     """
-    visited = {root}
+    # The BFS layer at which a node is first reached (going DOWN category_child
+    # from root) IS its minimum distance to root going UP category_parent, since
+    # category_child is the reverse of category_parent. So this same pass yields
+    # the min_dist_to_root metric for free (root has dist 0).
+    dist = {root: 0}
     frontier = [root]
     cur = txn.cursor(db=cc_db)
     depth = 0
@@ -68,12 +72,15 @@ def reachable_to_root(txn, cc_db, root: int, max_depth: int) -> set:
             if cur.set_key(enc(node)):
                 for v in cur.iternext_dup(keys=False, values=True):
                     child = dec(v)
-                    if child not in visited:
-                        visited.add(child)
+                    if child not in dist:
+                        dist[child] = depth + 1
                         nxt.append(child)
         frontier = nxt
         depth += 1
-    return visited
+    # Keys are the reachable demand set; values are min distance to root.
+    # Dict membership / len / sorted() behave like the prior set, so callers
+    # that use the return value as a demand set are unaffected.
+    return dist
 
 
 def main() -> int:
@@ -88,6 +95,10 @@ def main() -> int:
                     help="output map size in GiB (default 2)")
     ap.add_argument("--fixture-dir", default=None,
                     help="dir for sidecar files (default: parent of --out)")
+    ap.add_argument("--min-dist", dest="min_dist", action="store_true", default=True,
+                    help="materialise the min_dist_to_root metric sub-db (default on)")
+    ap.add_argument("--no-min-dist", dest="min_dist", action="store_false",
+                    help="skip the min_dist_to_root metric sub-db")
     args = ap.parse_args()
 
     src_dir = Path(args.src)
@@ -182,6 +193,23 @@ def main() -> int:
         wtxn.put(b"scoped_root", str(args.root).encode(), db=meta_db)
         wtxn.put(b"scoped_max_depth", str(args.max_depth).encode(), db=meta_db)
 
+    # 3c. materialise the min_dist_to_root metric (ROOT_ANCHORED_METRICS Phase 1,
+    #     ingest-materialised path). `demand` already maps node -> min distance
+    #     to root (the BFS layer index); store it as a node->int32 sub-db so a
+    #     query is a keyed lookup and the branch-prune is a single get. Mirrors
+    #     the metric_<name> layout in ROOT_ANCHORED_METRICS_SPECIFICATION.md §6.
+    metric_count = 0
+    if args.min_dist:
+        metric_db = out_env.open_db(b"metric_min_dist_to_root", create=True)
+        with out_env.begin(write=True) as wtxn:
+            for node, d in demand.items():
+                wtxn.put(enc(node), enc(d), db=metric_db)
+                metric_count += 1
+            wtxn.put(b"metric_min_dist_to_root.root", str(args.root).encode(), db=meta_db)
+            wtxn.put(b"metric_min_dist_to_root.max_depth", str(args.max_depth).encode(), db=meta_db)
+            wtxn.put(b"metric_min_dist_to_root.aggregate", b"min", db=meta_db)
+        sys.stderr.write(f"min_dist_to_root: materialised {metric_count} node distances\n")
+
     out_env.sync()
     out_env.close()
     src_env.close()
@@ -205,6 +233,8 @@ def main() -> int:
             "edge_count": kept_edges,
             "children_in_scope": len(children_in_scope),
             "out_lmdb": str(out_dir),
+            "min_dist_materialised": bool(args.min_dist),
+            "min_dist_count": metric_count,
             "build_seconds": round(time.time() - t0, 2),
         }, f, indent=2)
 

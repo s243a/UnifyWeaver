@@ -144,6 +144,27 @@ class TestBuildScopedSubtreeLmdb(unittest.TestCase):
         self.assertEqual(root, b"2")
         self.assertEqual(depth, b"7")
 
+    def _read_min_dist(self):
+        env = lmdb.open(str(self.out), max_dbs=16, readonly=True, subdir=True,
+                        lock=False)
+        m = env.open_db(b"metric_min_dist_to_root", create=False)
+        out = {}
+        with env.begin() as txn:
+            for k, v in txn.cursor(db=m):
+                out[dec(k)] = dec(v)
+        env.close()
+        return out
+
+    def test_min_dist_metric_matches_bfs_oracle(self):
+        # Graph 2->{3,4}, 3->{5}: min hops to root 2 are 2:0, 3:1, 4:1, 5:2.
+        self._run_builder(root=2, max_depth=10)
+        self.assertEqual(self._read_min_dist(), {2: 0, 3: 1, 4: 1, 5: 2})
+
+    def test_min_dist_respects_depth_bound(self):
+        # max_depth=1 keeps only root + direct children; 5 (depth 2) excluded.
+        self._run_builder(root=2, max_depth=1)
+        self.assertEqual(self._read_min_dist(), {2: 0, 3: 1, 4: 1})
+
 
 if __name__ == "__main__":
     unittest.main()
