@@ -23,6 +23,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_go_target, [
     escape_go_string/2,
@@ -98,10 +99,10 @@ instr_from_parts(["cut_ite"], cut_ite).
 %  else branch, silently miscompiling the clause.
 %
 %  parse_wam_text_labeled keeps label(Name) markers (and cut_ite) so
-%  structure_ite_go can fold each block into an ite(Cond,Then,Else) term
+%  structure_ite can fold each block into an ite(Cond,Then,Else) term
 %  using the real else/cont labels. The continuation is then emitted as a
 %  sibling of the if/else (not nested in the else), fixing sequential and
-%  nested blocks. Mirrors structure_ite_scala.
+%  nested blocks. Mirrors the shared wam_ite_structurer.
 
 parse_wam_text_labeled(WamText, Instrs) :-
     atom_string(WamText, S),
@@ -126,40 +127,8 @@ parse_lines_labeled([Line|Rest], Instrs) :-
         )
     ).
 
-%% structure_ite_go(+Flat, -Structured) is semidet.
-%  Folds each well-formed ITE block into ite(Cond,Then,Else); drops the
-%  structural markers (try_me_else/trust_me/cut_ite/jump/label). Fails if a
-%  try_me_else cannot be matched to a clean block.
-structure_ite_go([], []).
-structure_ite_go([try_me_else(LE)|Rest0], [ite(CondS,ThenS,ElseS)|Out]) :-
-    !,
-    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
-    \+ member(label(LE), ThenWithJump),          % first (matching) else label
-    append(ThenPath, [jump(LC)], ThenWithJump),  % then-path ends in its jump
-    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
-    \+ member(label(LC), ElsePath),
-    split_commit_go(ThenPath, Cond, Then),
-    structure_ite_go(Cond, CondS),
-    structure_ite_go(Then, ThenS),
-    structure_ite_go(ElsePath, ElseS),
-    structure_ite_go(AfterCont, Out).
-structure_ite_go([label(_)|Rest], Out) :- !,
-    structure_ite_go(Rest, Out).
-structure_ite_go([I|Rest], [I|Out]) :-
-    structure_ite_go(Rest, Out).
-
-%% split_commit_go(+ThenPath, -Cond, -Then)
-%  Splits a then-path at its commit instruction (cut_ite for ->, the !/0
-%  builtin for \+). The commit itself is dropped.
-split_commit_go(Path, Cond, Then) :-
-    append(Cond, [Commit|Then], Path),
-    is_commit_go(Commit),
-    \+ ( member(C0, Cond), is_commit_go(C0) ),   % split at the first commit
-    !.
-
-is_commit_go(cut_ite).
-is_commit_go(builtin_call("!/0", _)).
-is_commit_go(builtin_call('!/0', _)).
+% structure_ite/2, split_commit/3 and is_commit/1 are shared across the
+% lowered backends — see wam_ite_structurer.pl.
 
 %% go_base_instrs(+WamCode, -Instrs)  — base (label-stripped) parse or list.
 go_base_instrs(WamCode, Instrs) :-
@@ -173,7 +142,7 @@ go_structured_clause1(WamCode, Structured) :-
     ( is_list(WamCode) -> LInstrs = WamCode ; parse_wam_text_labeled(WamCode, LInstrs) ),
     \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
     take_to_proceed(LInstrs, C1L),
-    structure_ite_go(C1L, Structured),
+    structure_ite(C1L, Structured),
     \+ member(try_me_else(_), Structured),  % every block consumed
     \+ member(trust_me, Structured),
     \+ member(retry_me_else(_), Structured).
@@ -332,7 +301,7 @@ emit_instrs([Instr|Rest], Ind) :-
 
 %% has_internal_ite_pattern(+Instrs)
 %  True if the (clause-1 of the) given instruction stream contains a
-%  well-formed if-then-else block, i.e. structure_ite_go folds out at
+%  well-formed if-then-else block, i.e. structure_ite folds out at
 %  least one ite/3 term. Used by tests to assert that ITE lowering fires.
 has_internal_ite_pattern(Instrs) :-
     catch(go_structured_clause1(Instrs, Structured), _, fail),

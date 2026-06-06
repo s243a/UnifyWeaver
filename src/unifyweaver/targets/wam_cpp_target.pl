@@ -3729,6 +3729,16 @@ struct WamState {
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
+    // Create one fresh unbound variable cell and alias it into BOTH
+    // registers, so they share identity (binding one binds the other).
+    // Used by lowered put_variable: copying a Value into two registers
+    // would give two independent cells, losing variable identity.
+    void    put_variable_reg(const std::string& a, const std::string& b);
+    // Assign a register to a fresh cell holding v (repoint, do NOT mutate
+    // the existing cell — any register aliasing this one must not see the
+    // new value). Mirrors the interpreter PutConstant. Used by lowered
+    // put_constant.
+    void    assign_reg(const std::string& name, Value v);
 
     // Deref through Unbound chains until a concrete value (or a terminal
     // unbound cell) is reached. Returns by value (snapshot).
@@ -3737,6 +3747,10 @@ struct WamState {
     // bind_cell mutates *cell, recording the previous content on the trail.
     void    bind_cell(CellPtr cell, Value v);
     void    trail_binding(const std::string& name); // legacy reg-name trail
+    // Undo all bindings recorded since `mark` (trail.size() at the mark).
+    // Used by lowered if-then-else when the condition fails, before the
+    // else branch runs.
+    void    unwind_trail_to(std::size_t mark);
 
     // Unification: takes Cell pointers so binding works correctly.
     bool    unify_cells(CellPtr a, CellPtr b);
@@ -4117,6 +4131,16 @@ void WamState::set_cell(const std::string& name, CellPtr c) {
     regs[name] = std::move(c);
 }
 
+void WamState::put_variable_reg(const std::string& a, const std::string& b) {
+    CellPtr c = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+    set_cell(a, c);
+    set_cell(b, c);
+}
+
+void WamState::assign_reg(const std::string& name, Value v) {
+    set_cell(name, make_cell(std::move(v)));
+}
+
 Value WamState::get_reg(const std::string& name) const {
     if (is_y_reg(name)) {
         if (env_stack.empty()) return Value{};
@@ -4151,6 +4175,14 @@ void WamState::trail_binding(const std::string& name) {
     e.cell = it->second;
     e.prev = *it->second;
     trail.push_back(std::move(e));
+}
+
+void WamState::unwind_trail_to(std::size_t mark) {
+    while (trail.size() > mark) {
+        TrailEntry t = std::move(trail.back());
+        trail.pop_back();
+        *t.cell = std::move(t.prev);
+    }
 }
 
 void WamState::bind_cell(CellPtr cell, Value v) {
