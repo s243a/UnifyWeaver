@@ -2459,6 +2459,39 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M105: numbervars/3 -- bind free vars to $VAR(N) compounds.
+
+:- dynamic test_nv_basic/2.
+test_nv_basic(_, R) :-
+    Term = foo(X, Y, Z),
+    numbervars(Term, 0, End),
+    X = '$VAR'(N0), Y = '$VAR'(N1), Z = '$VAR'(N2),
+    ( N0 =:= 0, N1 =:= 1, N2 =:= 2, End =:= 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nv_shared/2.
+test_nv_shared(_, R) :-
+    % Same var twice gets the same $VAR(N) -- exercises the M104
+    % aliasing fix: binding through one Ref propagates to all
+    % occurrences of the var.
+    Term = bar(X, X),
+    numbervars(Term, 0, End),
+    X = '$VAR'(N),
+    ( N =:= 0, End =:= 1 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nv_ground/2.
+test_nv_ground(_, R) :-
+    numbervars(foo(1, 2, 3), 5, End),
+    ( End =:= 5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nv_nested/2.
+test_nv_nested(_, R) :-
+    Term = outer(X, inner(Y), Z),
+    numbervars(Term, 0, End),
+    X = '$VAR'(0),
+    Y = '$VAR'(1),
+    Z = '$VAR'(2),
+    ( End =:= 3 -> R is 1 ; R is 0 ).   % 1
+
 % M104: wam_unify_value bind path now aliases two unbound vars
 % via Ref-to-Ref instead of writing the Unbound sentinel. So after
 % X = Y, var(X) and var(Y) both still hold but X == Y is now true.
@@ -5121,6 +5154,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M105 numbervars/3 ---~n'),
+       run_test_r0('foo(X,Y,Z), nv 0 -> 3, vars 0/1/2 -> 1',
+                   test_nv_basic, 0, 1),
+       run_test_r0('bar(X,X) shared, single $VAR(0), End=1 -> 1',
+                   test_nv_shared, 0, 1),
+       run_test_r0('ground term, End == Start -> 1',
+                   test_nv_ground, 0, 1),
+       run_test_r0('nested compound DFS L-to-R -> 1',
+                   test_nv_nested, 0, 1),
        format('--- M104 wam_unify_value Ref-to-Ref aliasing ---~n'),
        run_test_r0('X = Y, X == Y -> 1',
                    test_unify_aliases_vars, 0, 1),
