@@ -358,19 +358,19 @@ let main argv =
         for cat in seedCats do
             let varId = 1000000
             let regs = Array.create MaxRegs (Unbound -1)
-            // Register layout depends on which queryPred resolved.  The /3
-            // candidates are lowered aggregate variants whose semantics fold
-            // a target root into the call shape, so A2 is the root and A3
-            // accumulates the result.  The /4 variant dispatches straight to
-            // the native category_ancestor kernel, whose register layout
-            // (recursive_kernel_detection.pl) is input(1)=cat, input(2)=ROOT,
-            // output(3)=hops, input(4)=visited.  So A2 must be the BOUND root
-            // (not an unbound output) or the kernel's `| Atom rootS ->`
-            // scrutinee never matches and every seed reports 0; A4 is seeded
-            // with [Cat] so the cycle-detection guard sees a real list.
+            // NON-LMDB path: facts live in WcFfiFacts (in-memory), so
+            // category_ancestor/4 runs as compiled WAM bytecode via
+            // dispatchCall, with the raw /4 shape category_ancestor(+Cat,
+            // -Ancestor, -Hops, +Visited): A2 and A3 are OUTPUTs (Unbound) and
+            // A4 is seeded with [Cat] for the cycle-detection guard. The /3
+            // lowered aggregates fold a target root in, so they use A2=root.
+            // (The LMDB int-native path does NOT use this loop -- it calls the
+            // native kernel directly in the has_lmdb branch above, where A2=root
+            // is the kernel's input(2). Conflating the two here regressed the
+            // non-LMDB category-ancestor smoke to solutions=0.)
             if queryPred.EndsWith "/4" then
                 regs.[1] <- Atom cat
-                regs.[2] <- Atom root
+                regs.[2] <- Unbound varId
                 regs.[3] <- Unbound (varId + 1)
                 regs.[4] <- VList [ Atom cat ]
             else
@@ -378,17 +378,7 @@ let main argv =
                 regs.[2] <- Atom root
                 regs.[3] <- Unbound varId
             let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
-            // The /4 entry IS the native category_ancestor kernel: route it
-            // straight to executeForeign (via callForeign).  dispatchCall would
-            // instead run the compiled WAM bytecode for category_ancestor/4
-            // (it is present in WcLabels), which cannot resolve the
-            // category_parent fact source and so always fails.  The /3 lowered
-            // aggregates already wrap the kernel internally, so they keep the
-            // normal dispatchCall path.
-            let result =
-                if queryPred.EndsWith "/4" then callForeign ctx queryPred s0
-                else dispatchCall ctx queryPred s0
-            match result with
+            match dispatchCall ctx queryPred s0 with
             | Some s1 ->
                 repSolutions <- repSolutions + 1
             | None -> ()
