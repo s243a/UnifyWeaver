@@ -5083,14 +5083,17 @@ generate_lookup_sources_expr_fs(Options, Expr) :-
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_path(CsrPath), Options),
     option(csr_relation(Rel), Options, category_child),
+    % Resolve the CSR artifact dir against factsDir at runtime (a relative
+    % csr_path like "csr" would otherwise be opened against the process CWD,
+    % not the fixture dir). Path.Combine leaves an absolute csr_path unchanged.
     format(atom(Entry),
-        '("~w", CsrReader.CsrLookupSource("~w", "~w") :> ILookupSource)',
+        '("~w", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "~w") :> ILookupSource)',
         [Rel, CsrPath, Rel]).
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_parent_path(CsrParentPath), Options),
     format(atom(Entry),
-        '("category_parent", CsrReader.CsrLookupSource("~w", "category_parent") :> ILookupSource)',
+        '("category_parent", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "category_parent") :> ILookupSource)',
         [CsrParentPath]).
 
 %% generate_fsproj(+ModName, +Options, -Code)

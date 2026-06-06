@@ -139,6 +139,23 @@ let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
 /// (no full materialisation of the child relation).  Bounded by `maxDepth`
 /// to match the kernel's depth bound; pass Int32.MaxValue for an unbounded
 /// (always-safe, never-over-prunes) demand set.
+/// Generic demand-set BFS over any `childrenOf` closure (int -> int list),
+/// unbounded.  Lets the demand set be built from any reverse-edge source --
+/// the LMDB category_child cursor OR a CSR `category_child` artifact's
+/// ILookupSource -- without this module depending on the CSR module (which is
+/// compiled after it). Used by the F# CSR mode.
+let reachableToRootVia (childrenOf: int -> int list) (root: int) : Set<int> =
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            for c in childrenOf node do
+                if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+    Set.ofSeq visited
+
 let reachableToRoot (env: LightningEnvironment) (root: int) (maxDepth: int) : Set<int> =
     use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
     let db = tx.OpenDatabase("category_child", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))

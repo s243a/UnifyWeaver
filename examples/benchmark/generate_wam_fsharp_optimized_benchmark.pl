@@ -81,7 +81,14 @@ generate(VariantAtom, OutputDir) :-
     %         root via category_child).  The runtime opens <factsDir>/lmdb.
     (   sub_atom(VariantAtom, 0, _, _, lmdb)
     ->  variant_materialisation(VariantAtom, Materialisation),
-        LmdbOpts = [lmdb_path('lmdb'), lmdb_materialisation(Materialisation)]
+        % `*_csr` variants build the demand set from a category_child CSR
+        % artifact at <factsDir>/csr (binary-searched, int-native) instead of
+        % the LMDB cursor; csr_path triggers has_csr + CsrReader.fs compilation.
+        (   sub_atom(VariantAtom, _, _, 0, csr)
+        ->  CsrOpts = [csr_path('csr')]
+        ;   CsrOpts = []
+        ),
+        append([lmdb_path('lmdb'), lmdb_materialisation(Materialisation)], CsrOpts, LmdbOpts)
     ;   LmdbOpts = []
     ),
     Options = [module_name('wam-fsharp-optimized-bench'),
@@ -120,12 +127,18 @@ parse_variant(lmdb_cached, [
     branch_pruning(false),
     min_closure(false)
 ]).
+parse_variant(lmdb_eager_csr, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
 
 %% variant_materialisation(+Variant, -Mode)
-variant_materialisation(lmdb_eager,  eager).
-variant_materialisation(lmdb_lazy,   lazy).
-variant_materialisation(lmdb_cached, cached).
-variant_materialisation(_,           eager).
+variant_materialisation(lmdb_eager,     eager).
+variant_materialisation(lmdb_lazy,      lazy).
+variant_materialisation(lmdb_cached,    cached).
+variant_materialisation(lmdb_eager_csr, eager).
+variant_materialisation(_,              eager).
 
 %% collect_wam_predicates(+Variant, -Predicates)
 %  Collect the predicate list to compile through WAM, including
@@ -145,6 +158,10 @@ collect_wam_predicates(lmdb_lazy, [
     user:category_ancestor/4
 ]).
 collect_wam_predicates(lmdb_cached, [
+    user:max_depth/1,
+    user:category_ancestor/4
+]).
+collect_wam_predicates(lmdb_eager_csr, [
     user:max_depth/1,
     user:category_ancestor/4
 ]).
