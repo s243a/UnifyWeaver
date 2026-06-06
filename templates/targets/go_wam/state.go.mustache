@@ -875,6 +875,46 @@ func (vm *WamState) selectSolutions(items []Value) []SelectSolution {
 	return solutions
 }
 
+func (vm *WamState) formatTemplate(template string, args []Value) (string, bool) {
+	var b strings.Builder
+	argIdx := 0
+	for i := 0; i < len(template); i++ {
+		ch := template[i]
+		if ch != '~' || i+1 >= len(template) {
+			b.WriteByte(ch)
+			continue
+		}
+		i++
+		switch template[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case '~':
+			b.WriteByte('~')
+		case 'w':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			b.WriteString(vm.deref(args[argIdx]).String())
+			argIdx++
+		default:
+			b.WriteByte('~')
+			b.WriteByte(template[i])
+		}
+	}
+	return b.String(), true
+}
+
+func formatTemplateText(v Value) (string, bool) {
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, true
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10), true
+	default:
+		return "", false
+	}
+}
+
 func (vm *WamState) applySelectSolution(solution SelectSolution) bool {
 	mark := vm.TrailLen
 	if !vm.Unify(vm.getReg(0), solution.Elem) {
@@ -1317,6 +1357,32 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return true
 	case "print/1":
 		fmt.Print(vm.deref(arg1).String())
+		return true
+	case "format/1":
+		template, ok := formatTemplateText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		out, ok := vm.formatTemplate(template, nil)
+		if !ok {
+			return false
+		}
+		fmt.Print(out)
+		return true
+	case "format/2":
+		template, ok := formatTemplateText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		args, ok := vm.listToSlice(arg2)
+		if !ok {
+			return false
+		}
+		out, ok := vm.formatTemplate(template, args)
+		if !ok {
+			return false
+		}
+		fmt.Print(out)
 		return true
 	case "nl/0":
 		fmt.Println()
