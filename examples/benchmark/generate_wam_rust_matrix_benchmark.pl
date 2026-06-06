@@ -68,7 +68,13 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
-    append([[module_name(wam_rust_matrix_bench), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
+    % module_name MUST be wam_lib: the matrix-bench main.rs (write_matrix_main)
+    % imports the runtime via `use wam_lib::...`, and the shared
+    % Cargo.toml.mustache no longer forces `[lib] name = "wam_lib"` (removed in
+    % PR #2754 so the *main* wam_rust target can import via <module_name>::).
+    % With no [lib] override the lib crate takes the package name, so the
+    % package must be named wam_lib for the matrix bench's imports to resolve.
+    append([[module_name(wam_lib), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
             KernelOptions, LmdbOptions, LmdbCrateOptions, LmdbMaterialisationOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
     write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity),
