@@ -24,7 +24,10 @@
 #define WAM_CALL_STACK_SIZE 1024
 #define WAM_AGGREGATE_STACK_SIZE 32
 #define WAM_AGGREGATE_MAX_WITNESSES 8
+#define WAM_AGGREGATE_META_MAX_VARS 64
 #define WAM_AGGREGATE_NEXT_GROUP -3
+#define WAM_AGGREGATE_META_COLLECT -4
+#define WAM_AGGREGATE_META_DONE -5
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -74,14 +77,19 @@ typedef struct {
 
 typedef struct {
     const char *kind;
+    bool is_meta;
     int begin_pc;
     int end_pc;
+    int return_pc;
     int base_b;
     int sentinel_b;
     int template_reg;
     int template_is_y;
     int result_reg;
     int result_is_y;
+    WamValue meta_template;
+    WamValue meta_result;
+    WamValue meta_witnesses[WAM_AGGREGATE_MAX_WITNESSES];
     WamStoredTerm *items;
     WamStoredTerm *witnesses;
     int item_count;
@@ -93,9 +101,12 @@ typedef struct {
 
 typedef struct {
     const char *kind;
+    bool is_meta;
     int return_pc;
     int result_reg;
     int result_is_y;
+    WamValue meta_result;
+    WamValue meta_witnesses[WAM_AGGREGATE_MAX_WITNESSES];
     WamStoredTerm *items;
     WamStoredTerm *witnesses;
     int item_count;
