@@ -890,11 +890,33 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 			b.WriteByte('\n')
 		case '~':
 			b.WriteByte('~')
-		case 'w':
+		case 'w', 'p', 'q':
 			if argIdx >= len(args) {
 				return "", false
 			}
 			b.WriteString(vm.deref(args[argIdx]).String())
+			argIdx++
+		case 'a':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			value := vm.deref(args[argIdx])
+			if atom, ok := value.(*Atom); ok {
+				b.WriteString(atom.Name)
+			} else {
+				b.WriteString(value.String())
+			}
+			argIdx++
+		case 'd':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			value := vm.deref(args[argIdx])
+			if integer, ok := value.(*Integer); ok {
+				b.WriteString(strconv.FormatInt(integer.Val, 10))
+			} else {
+				b.WriteString(value.String())
+			}
 			argIdx++
 		default:
 			b.WriteByte('~')
