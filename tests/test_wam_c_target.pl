@@ -156,6 +156,30 @@ test_control_instruction_parsing :-
     ;   fail_test(Test, 'cut/jump instruction parsing missing typed payloads')
     ).
 
+test_precise_ite_y_level_generation :-
+    Test = 'WAM-C: precise if-then-else lowers to get_level/cut',
+    assertz((user:wam_c_precise_codegen(X, R) :-
+        (X = a -> R = then ; R = else))),
+    (   compile_predicate_to_wam(user:wam_c_precise_codegen/2,
+                                 [ite_use_y_level(true)],
+                                 WamCode),
+        sub_string(WamCode, _, _, _, 'get_level '),
+        sub_string(WamCode, _, _, _, 'cut Y'),
+        \+ sub_string(WamCode, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_precise_codegen/2,
+                                   WamCode,
+                                   [ite_use_y_level(true)],
+                                   CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_GET_LEVEL'),
+        sub_string(S, _, _, _, 'INSTR_CUT'),
+        \+ sub_string(S, _, _, _, 'INSTR_CUT_ITE')
+    ->  retractall(user:wam_c_precise_codegen(_, _)),
+        pass(Test)
+    ;   retractall(user:wam_c_precise_codegen(_, _)),
+        fail_test(Test, 'precise ITE mode did not emit get_level/cut-only control flow')
+    ).
+
 test_choice_point_instructions :-
     Test = 'WAM-C: choice point instructions present',
     (   implemented_wam_c_cases(Cases),
@@ -1639,6 +1663,16 @@ test_real_prolog_control_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_precise_ite_executable_smoke :-
+    Test = 'WAM-C: real Prolog precise if-then-else executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_precise_ite_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog precise if-then-else executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -2517,6 +2551,61 @@ cleanup_wam_c_real_control_smoke :-
     retractall(user:wam_c_ctrl_neg(_, _)),
     retractall(user:wam_c_ctrl_if_known(_, _)),
     retractall(user:wam_c_ctrl_if_missing(_, _)).
+
+run_real_prolog_precise_ite_executable_smoke :-
+    assertz((user:wam_c_precise_choice(a) :- true)),
+    assertz((user:wam_c_precise_choice(a) :- true)),
+    assertz((user:wam_c_precise_then(X, then) :-
+        (wam_c_precise_choice(X) -> true ; fail))),
+    assertz((user:wam_c_precise_else(X, else) :-
+        (wam_c_precise_choice(X) -> fail ; true))),
+    assertz((user:wam_c_precise_scope(X) :-
+        (wam_c_precise_choice(X) -> R = then ; R = else),
+        R = else)),
+    Options = [ite_use_y_level(true)],
+    (   compile_predicate_to_wam(user:wam_c_precise_choice/1, Options, WamChoice),
+        compile_predicate_to_wam(user:wam_c_precise_then/2, Options, WamThen),
+        compile_predicate_to_wam(user:wam_c_precise_else/2, Options, WamElse),
+        compile_predicate_to_wam(user:wam_c_precise_scope/1, Options, WamScope),
+        sub_string(WamThen, _, _, _, 'get_level '),
+        sub_string(WamThen, _, _, _, 'cut Y'),
+        \+ sub_string(WamThen, _, _, _, 'cut_ite'),
+        sub_string(WamElse, _, _, _, 'get_level '),
+        sub_string(WamElse, _, _, _, 'cut Y'),
+        \+ sub_string(WamElse, _, _, _, 'cut_ite'),
+        sub_string(WamScope, _, _, _, 'get_level '),
+        sub_string(WamScope, _, _, _, 'cut Y'),
+        \+ sub_string(WamScope, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_precise_choice/1, WamChoice, Options, ChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_then/2, WamThen, Options, ThenCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_else/2, WamElse, Options, ElseCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_scope/1, WamScope, Options, ScopeCode),
+        atomic_list_concat([ChoiceCode, ThenCode, ElseCode, ScopeCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_precise_ite_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_precise_ite_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_precise_ite_smoke
+    ;   cleanup_wam_c_precise_ite_smoke,
+        fail
+    ).
+
+cleanup_wam_c_precise_ite_smoke :-
+    retractall(user:wam_c_precise_choice(_)),
+    retractall(user:wam_c_precise_then(_, _)),
+    retractall(user:wam_c_precise_else(_, _)),
+    retractall(user:wam_c_precise_scope(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -5354,6 +5443,69 @@ int main(void) {
 }
 ').
 
+wam_c_precise_ite_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_precise_choice_1(WamState* state);
+void setup_wam_c_precise_then_2(WamState* state);
+void setup_wam_c_precise_else_2(WamState* state);
+void setup_wam_c_precise_scope_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_precise_choice_1(&state);
+    setup_wam_c_precise_then_2(&state);
+    setup_wam_c_precise_else_2(&state);
+    setup_wam_c_precise_scope_1(&state);
+
+    WamValue then_success_args[2] = { val_atom("a"), val_atom("then") };
+    int then_success_rc = wam_run_predicate(&state, "wam_c_precise_then/2", then_success_args, 2);
+    if (then_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue then_fail_args[2] = { val_atom("b"), val_atom("then") };
+    int then_fail_rc = wam_run_predicate(&state, "wam_c_precise_then/2", then_fail_args, 2);
+    if (then_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue else_success_args[2] = { val_atom("b"), val_atom("else") };
+    int else_success_rc = wam_run_predicate(&state, "wam_c_precise_else/2", else_success_args, 2);
+    if (else_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue else_fail_args[2] = { val_atom("a"), val_atom("else") };
+    int else_fail_rc = wam_run_predicate(&state, "wam_c_precise_else/2", else_fail_args, 2);
+    if (else_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue scope_fail_args[1] = { val_atom("a") };
+    int scope_fail_rc = wam_run_predicate(&state, "wam_c_precise_scope/1", scope_fail_args, 1);
+    if (scope_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue scope_success_args[1] = { val_atom("b") };
+    int scope_success_rc = wam_run_predicate(&state, "wam_c_precise_scope/1", scope_success_args, 1);
+    if (scope_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -5469,6 +5621,7 @@ run_tests_once :-
     test_control_flow_instructions,
     test_control_cut_jump_instructions,
     test_control_instruction_parsing,
+    test_precise_ite_y_level_generation,
     test_choice_point_instructions,
     test_choice_point_content,
     test_switch_on_term_list_dispatch,
@@ -5559,6 +5712,7 @@ run_tests_once :-
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
     test_real_prolog_control_executable_smoke,
+    test_real_prolog_precise_ite_executable_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,
