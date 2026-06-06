@@ -918,10 +918,42 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 				b.WriteString(value.String())
 			}
 			argIdx++
+		case 's':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			text, ok := vm.formatStringDirective(vm.deref(args[argIdx]))
+			if !ok {
+				return "", false
+			}
+			b.WriteString(text)
+			argIdx++
 		default:
 			b.WriteByte('~')
 			b.WriteByte(template[i])
 		}
+	}
+	return b.String(), true
+}
+
+func (vm *WamState) formatStringDirective(value Value) (string, bool) {
+	if isEmptyListValue(value) {
+		return "", true
+	}
+	if atom, ok := value.(*Atom); ok {
+		return atom.Name, true
+	}
+	items, ok := vm.listToSlice(value)
+	if !ok {
+		return "", false
+	}
+	var b strings.Builder
+	for _, item := range items {
+		code, ok := vm.deref(item).(*Integer)
+		if !ok || code.Val < 0 || code.Val > 0x10ffff {
+			return "", false
+		}
+		b.WriteRune(rune(code.Val))
 	}
 	return b.String(), true
 }
