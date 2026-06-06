@@ -2459,6 +2459,32 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M106: access/2 -- libc access(path, mode_bits). Mode is the libc
+% bitmask: F_OK=0, R_OK=4, W_OK=2, X_OK=1.
+
+:- dynamic test_access_tmp_exists/2.
+test_access_tmp_exists(_, R) :-
+    % /tmp exists -- F_OK (0) succeeds.
+    ( access('/tmp', 0) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_access_missing_file/2.
+test_access_missing_file(_, R) :-
+    % A path that doesn''t exist -- F_OK fails.
+    ( access('/tmp/uw_m106_definitely_not_here', 0) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_access_tmp_writable/2.
+test_access_tmp_writable(_, R) :-
+    % /tmp is world-writable -- W_OK (2) succeeds.
+    ( access('/tmp', 2) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_access_bad_args/2.
+test_access_bad_args(_, R) :-
+    % Non-atom path or non-int mode fail the type guards.
+    ( access(42, 0) -> R is 0
+    ; access('/tmp', not_an_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M105: numbervars/3 -- bind free vars to $VAR(N) compounds.
 
 :- dynamic test_nv_basic/2.
@@ -5154,6 +5180,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M106 access/2 ---~n'),
+       run_test_r0('access(/tmp, F_OK=0) -> 1',
+                   test_access_tmp_exists, 0, 1),
+       run_test_r0('access on missing path fails -> 1',
+                   test_access_missing_file, 0, 1),
+       run_test_r0('access(/tmp, W_OK=2) -> 1',
+                   test_access_tmp_writable, 0, 1),
+       run_test_r0('access with non-atom path / non-int mode fails -> 1',
+                   test_access_bad_args, 0, 1),
        format('--- M105 numbervars/3 ---~n'),
        run_test_r0('foo(X,Y,Z), nv 0 -> 3, vars 0/1/2 -> 1',
                    test_nv_basic, 0, 1),

@@ -2093,6 +2093,7 @@ is_builtin_pred(getenv, 2).             % getenv(+Name, -Value).
 is_builtin_pred(setenv, 2).             % setenv(+Name, +Value).
 is_builtin_pred(unsetenv, 1).           % unsetenv(+Name).
 is_builtin_pred(chmod, 2).              % chmod(+Path, +Mode).
+is_builtin_pred(access, 2).             % access(+Path, +ModeBits) -- F_OK=0, R_OK=4, W_OK=2, X_OK=1.
 is_builtin_pred(shell, 1).              % shell(+Command).
 is_builtin_pred(shell, 2).              % shell(+Command, -Status).
 is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).

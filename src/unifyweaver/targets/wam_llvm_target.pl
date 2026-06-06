@@ -1493,6 +1493,7 @@ declare i8* @getenv(i8*)
 declare i32 @setenv(i8*, i8*, i32)
 declare i32 @unsetenv(i8*)
 declare i32 @chmod(i8*, i32)
+declare i32 @access(i8*, i32)
 declare i64 @strlen(i8*)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
@@ -3582,6 +3583,7 @@ entry:
     i32 122, label %builtin_chmod
     i32 123, label %builtin_term_variables
     i32 124, label %builtin_numbervars
+    i32 125, label %builtin_access
   ]
 
 builtin_is:
@@ -5555,6 +5557,35 @@ nv.go:
   %nv.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %nv.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %nv.raw3, %Value %nv.end_v)
   ret i1 %nv.ok
+
+builtin_access:
+  ; M106: access(+Path, +ModeBits) -- Path Atom, ModeBits Integer.
+  ; libc access(path, mode) returns 0 iff the calling process has
+  ; the requested permission. Mode is the standard libc bitmask:
+  ; F_OK=0 (exists), R_OK=4, W_OK=2, X_OK=1, or any OR of those.
+  ; Non-atom Path or non-Integer ModeBits fail the type guards.
+  %ax.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ax.t1 = call i32 @value_tag(%Value %ax.a1)
+  %ax.is_atom = icmp eq i32 %ax.t1, 0
+  br i1 %ax.is_atom, label %ax.check2, label %ax.fail
+ax.fail:
+  ret i1 false
+ax.check2:
+  %ax.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ax.t2 = call i32 @value_tag(%Value %ax.a2)
+  %ax.is_int = icmp eq i32 %ax.t2, 1
+  br i1 %ax.is_int, label %ax.go, label %ax.fail
+ax.go:
+  %ax.aid = call i64 @value_payload(%Value %ax.a1)
+  %ax.path = call i8* @wam_atom_to_string(i64 %ax.aid)
+  %ax.path_null = icmp eq i8* %ax.path, null
+  br i1 %ax.path_null, label %ax.fail, label %ax.do
+ax.do:
+  %ax.mode64 = call i64 @value_payload(%Value %ax.a2)
+  %ax.mode = trunc i64 %ax.mode64 to i32
+  %ax.ret = call i32 @access(i8* %ax.path, i32 %ax.mode)
+  %ax.ok = icmp eq i32 %ax.ret, 0
+  ret i1 %ax.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -12625,6 +12656,7 @@ builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
 builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
 builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
 builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
+builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
