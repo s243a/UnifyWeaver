@@ -3614,9 +3614,12 @@ stepST !ctx regs !pw instr@(BuiltinCall op _)
 stepST _ regs !pw (BuiltinCall "succ/2" _) = succLaxST regs pw
 stepST _ regs !pw (BuiltinCall "succ_lax/2" _) = succLaxST regs pw
 
--- succ_iso/2, throw/1, catch/3: delegate to pure bridge.
--- These use throwIsoError/WamException which need the pure WamState,
--- or (catch/3) run sub-goals via unsafePerformIO + try.
+-- succ_iso/2: native ST with ISO error throws.
+stepST _ regs !pw (BuiltinCall "succ_iso/2" _) = succIsoST regs pw
+
+-- throw/1, catch/3: delegate to pure bridge.
+-- These use WamException via unsafePerformIO + try, which need the
+-- pure WamState for catch/3 sub-goal restart semantics.
 
 stepST !ctx regs !pw (ParTryMeElse label) = stepST ctx regs pw (TryMeElse label)
 stepST !ctx regs !pw (ParRetryMeElse label) = stepST ctx regs pw (RetryMeElse label)
@@ -5178,6 +5181,50 @@ succLaxST regs pw = do
     (Just (Integer n), _) | n >= 0 -> bindReg 2 (Integer (n + 1))
     (_, Just (Integer m)) | m > 0  -> bindReg 1 (Integer (m - 1))
     _ -> return Nothing
+
+-- | ST-mode succIso: native ISO-strict successor with error throws.
+-- Throws instantiation_error if both args unbound, type_error(integer, ...)
+-- on non-integers, type_error(not_less_than_zero, ...) on negative X,
+-- domain_error(not_less_than_zero, ...) on non-positive Y. Otherwise
+-- binds Y=X+1 or X=Y-1.
+succIsoST :: STA.STArray s Int Value -> PureWamState -> ST s (Maybe PureWamState)
+succIsoST regs pw = do
+  v1 <- readArray regs 1
+  v2 <- readArray regs 2
+  let a = derefVar (pwBindings pw) v1
+      b = derefVar (pwBindings pw) v2
+      aUnbound = case a of { Unbound _ -> True; _ -> False }
+      bUnbound = case b of { Unbound _ -> True; _ -> False }
+      bindReg reg value = do
+        rv <- readArray regs reg
+        case derefVar (pwBindings pw) rv of
+          Unbound vid -> do
+            writeArray regs reg value
+            return $ Just pw { pwPC = pwPC pw + 1
+                             , pwBindings = IM.insert vid value (pwBindings pw)
+                             , pwTrail = TrailEntry vid (IM.lookup vid (pwBindings pw)) : pwTrail pw
+                             , pwTrailLen = pwTrailLen pw + 1 }
+          bound | bound == value -> return $ Just pw { pwPC = pwPC pw + 1 }
+          _ -> return Nothing
+  if aUnbound && bUnbound
+    then throwIsoErrorPure pw makeInstantiationError
+    else do
+      case a of
+        Integer _ -> return ()
+        _ | aUnbound -> return ()
+        _ -> throwIsoErrorPure pw (makeTypeError atomIntegerTy a)
+      case b of
+        Integer _ -> return ()
+        _ | bUnbound -> return ()
+        _ -> throwIsoErrorPure pw (makeTypeError atomIntegerTy b)
+      case (a, b) of
+        (Integer n, _) | n < 0 ->
+          throwIsoErrorPure pw (makeTypeError atomNotLessThanZero (Integer n))
+        (_, Integer m) | m <= 0 ->
+          throwIsoErrorPure pw (makeDomainError atomNotLessThanZero (Integer m))
+        (Integer n, _) -> bindReg 2 (Integer (n + 1))
+        (_, Integer m) -> bindReg 1 (Integer (m - 1))
+        _ -> return Nothing
 
 -- | Restore the top builder from the stack.
 popBuilderStack :: WamState -> WamState

@@ -159,6 +159,17 @@ test_codegen_has_iso_builtins :-
     ;   fail_test(Test, 'generated WamRuntime.hs missing ISO builtin handlers')
     ).
 
+test_codegen_succ_iso_native_stepST :-
+    Test = 'Phase 5: succ_iso/2 has native stepST handler (no pure bridge)',
+    tmp_project_dir(Dir),
+    atom_concat(Dir, '/src/WamRuntime.hs', RuntimePath),
+    read_file_to_string(RuntimePath, S),
+    (   sub_string(S, _, _, _, "succIsoST :: STA.STArray"),
+        sub_string(S, _, _, _, "stepST _ regs !pw (BuiltinCall \"succ_iso/2\" _) = succIsoST regs pw")
+    ->  pass(Test)
+    ;   fail_test(Test, 'succ_iso/2 still uses pure bridge instead of native ST')
+    ).
+
 %% =====================================================================
 %% ISO atom interning
 %% =====================================================================
@@ -223,6 +234,7 @@ run_tests :-
     test_codegen_has_iso_helpers,
     test_codegen_has_iso_atoms,
     test_codegen_has_iso_builtins,
+    test_codegen_succ_iso_native_stepST,
     test_iso_atoms_interned,
     format('~n', []),
     (   test_failed
