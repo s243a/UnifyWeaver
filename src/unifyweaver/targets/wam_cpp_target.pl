@@ -3713,6 +3713,11 @@ struct WamState {
     // Used by lowered put_variable: copying a Value into two registers
     // would give two independent cells, losing variable identity.
     void    put_variable_reg(const std::string& a, const std::string& b);
+    // Assign a register to a fresh cell holding v (repoint, do NOT mutate
+    // the existing cell — any register aliasing this one must not see the
+    // new value). Mirrors the interpreter PutConstant. Used by lowered
+    // put_constant.
+    void    assign_reg(const std::string& name, Value v);
 
     // Deref through Unbound chains until a concrete value (or a terminal
     // unbound cell) is reached. Returns by value (snapshot).
@@ -4109,6 +4114,10 @@ void WamState::put_variable_reg(const std::string& a, const std::string& b) {
     CellPtr c = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
     set_cell(a, c);
     set_cell(b, c);
+}
+
+void WamState::assign_reg(const std::string& name, Value v) {
+    set_cell(name, make_cell(std::move(v)));
 }
 
 Value WamState::get_reg(const std::string& name) const {

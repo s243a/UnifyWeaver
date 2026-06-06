@@ -332,7 +332,9 @@ emit_one(get_nil(AiStr), I) :-
 emit_one(get_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
     format("~w// get_variable ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", vm->get_reg(\"~w\"));~n", [I, Xn, Ai]).
+    % Repoint Xn to share Ai's cell (matches interpreter GetVariable);
+    % put_reg would mutate Xn's cell and corrupt any register aliasing it.
+    format("~wvm->set_cell(\"~w\", vm->get_cell(\"~w\"));~n", [I, Xn, Ai]).
 
 emit_one(get_value(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
@@ -360,7 +362,9 @@ emit_one(put_constant(CStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
     cpp_val_literal(CStr, CppVal),
     format("~w// put_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]).
+    % Repoint Ai to a fresh cell (matches interpreter PutConstant); mutating
+    % would corrupt any register aliasing Ai (e.g. via a prior put_variable).
+    format("~wvm->assign_reg(\"~w\", ~w);~n", [I, Ai, CppVal]).
 
 emit_one(put_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
@@ -373,7 +377,8 @@ emit_one(put_variable(XnStr, AiStr), I) :-
 emit_one(put_value(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
     format("~w// put_value ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm->put_reg(\"~w\", vm->get_reg(\"~w\"));~n", [I, Ai, Xn]).
+    % Repoint Ai to share Xn's cell (matches interpreter PutValue).
+    format("~wvm->set_cell(\"~w\", vm->get_cell(\"~w\"));~n", [I, Ai, Xn]).
 
 emit_one(put_structure(FStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
