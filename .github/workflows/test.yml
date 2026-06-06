@@ -90,6 +90,10 @@ jobs:
         run: |
           python3 -m unittest tests.test_build_scoped_subtree_lmdb
 
+      - name: Run WAM Rust matrix-bench demand-flag codegen test
+        run: |
+          python3 -m unittest tests.test_wam_rust_matrix_demand_flag
+
       - name: Generate and run inference test runner
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
