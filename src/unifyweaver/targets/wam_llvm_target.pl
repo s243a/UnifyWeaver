@@ -5652,7 +5652,7 @@ dirf.loop:
   br i1 %dirf.entry_null, label %dirf.close, label %dirf.append
 dirf.append:
   ; Build a new cons cell [|](Atom, acc) on the arena.
-  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 __M113_DIRENT_NAME_OFF__
+__M113_DIRENT_NAME_PTR__
   %dirf.name_len = call i64 @strlen(i8* %dirf.name_ptr)
   %dirf.bufsize = add i64 %dirf.name_len, 1
   %dirf.buf = call i8* @wam_arena_alloc(i64 %dirf.bufsize)
@@ -10760,13 +10760,19 @@ mb.bool_no:
 unknown:
   ret i1 false
 }',
-    % Splice DirentNameOff into the placeholder. atomic_list_concat
-    % in reverse mode splits Template at every placeholder occurrence,
-    % then forward mode joins with the replacement between segments.
-    % Avoids format/2''s ~ escaping problem (the IR template has many
-    % `~'' chars in comments that format would treat as directives).
-    atomic_list_concat(Parts, '__M113_DIRENT_NAME_OFF__', Template),
-    atomic_list_concat(Parts, DirentNameOff, Code).
+    % M113/M114: substitute the dirent-d_name lookup IR. For static
+    % OS modes this is a single getelementptr with a literal offset.
+    % For target_os(adapt), it is a call to the runtime probe helper
+    % plus a getelementptr that uses the returned offset.
+    target_dirent_name_ptr_ir(OS, DirentNameOff, NamePtrIR),
+    atomic_list_concat(Parts, '__M113_DIRENT_NAME_PTR__', Template),
+    atomic_list_concat(Parts, NamePtrIR, ExecuteIR),
+    % Append the M114 runtime probe helper. Always emitted -- it is
+    % dead code when no caller is in adapt mode, which llc / clang
+    % link-time DCE strips. Keeping it unconditional means the IR
+    % template stays the same shape regardless of mode.
+    target_dirent_probe_helper_ir(HelperIR),
+    atomic_list_concat([ExecuteIR, HelperIR], '\n\n', Code).
 
 compile_eval_arith_to_llvm(Code) :-
     Code = '; Evaluate arithmetic expression
@@ -12792,7 +12798,78 @@ target_dirent_d_name_offset(freebsd, 21).
 target_dirent_d_name_offset(netbsd,  21).
 target_dirent_d_name_offset(openbsd, 21).
 target_dirent_d_name_offset(wasi,    19).
-target_dirent_d_name_offset(_, 19).   % fall-back
+target_dirent_d_name_offset(adapt,   0).   % unused -- adapt uses helper.
+target_dirent_d_name_offset(_, 19).        % fall-back
+
+%% target_dirent_name_ptr_ir(+OS, +StaticOff, -IR) is det.
+%  Produce the IR snippet that defines %dirf.name_ptr from
+%  %dirf.entry. For static OS modes this is one getelementptr with a
+%  literal byte offset. For target_os(adapt) it calls the runtime
+%  probe helper @wam_dirent_d_name_offset (always emitted in the
+%  module) and uses the i64 it returns.
+target_dirent_name_ptr_ir(adapt, _Off, IR) :- !,
+    atomic_list_concat([
+        '  %dirf.dno = call i64 @wam_dirent_d_name_offset()',
+        '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 %dirf.dno'
+    ], '\n', IR).
+target_dirent_name_ptr_ir(_OS, Off, IR) :-
+    format(atom(IR), '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 ~w', [Off]).
+
+%% target_dirent_probe_helper_ir(-IR) is det.
+%  M114: emit the runtime probe helper that discovers struct dirent''s
+%  d_name byte offset for the current process. Strategy: opendir("."),
+%  readdir once (always returns the "." entry first), scan the buffer
+%  for the first ''.'' byte (256 bytes max -- d_name is bounded by
+%  NAME_MAX on every supported platform), closedir. Cache the result
+%  in a private i64 global so subsequent calls reuse the probe. On
+%  failure (opendir/readdir error), fall back to 19 (Linux default)
+%  so callers continue with sane semantics even in chroots without /.
+target_dirent_probe_helper_ir(IR) :-
+    IR = '; === M114 runtime dirent::d_name offset probe ===
+@.uw_dot_dir = private constant [2 x i8] c".\\00"
+@uw_dirent_d_name_offset_cache = private global i64 -1
+
+define i64 @wam_dirent_d_name_offset() {
+entry:
+  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
+  %unset = icmp slt i64 %cached, 0
+  br i1 %unset, label %probe, label %done
+done:
+  ret i64 %cached
+probe:
+  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
+  %dir = call i8* @opendir(i8* %dot_ptr)
+  %dir_null = icmp eq i8* %dir, null
+  br i1 %dir_null, label %fallback, label %read
+read:
+  %entry_ptr = call i8* @readdir(i8* %dir)
+  %entry_null = icmp eq i8* %entry_ptr, null
+  br i1 %entry_null, label %fallback_close, label %scan_init
+scan_init:
+  br label %scan_loop
+scan_loop:
+  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
+  %too_far = icmp uge i64 %i, 256
+  br i1 %too_far, label %fallback_close, label %scan_check
+scan_check:
+  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
+  %b = load i8, i8* %byte_ptr
+  %is_dot = icmp eq i8 %b, 46
+  br i1 %is_dot, label %scan_found, label %scan_step
+scan_step:
+  %i_next = add i64 %i, 1
+  br label %scan_loop
+scan_found:
+  %close_ret = call i32 @closedir(i8* %dir)
+  store i64 %i, i64* @uw_dirent_d_name_offset_cache
+  ret i64 %i
+fallback_close:
+  %close_ret2 = call i32 @closedir(i8* %dir)
+  br label %fallback
+fallback:
+  store i64 19, i64* @uw_dirent_d_name_offset_cache
+  ret i64 19
+}'.
 
 %% target_struct_tm_size(+OS, -SizeBytes) is det.
 %  Glibc struct tm is 56 bytes; Darwin/BSD also 56 with same field
