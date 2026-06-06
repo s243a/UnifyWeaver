@@ -4806,4 +4806,73 @@ cross-target table); F# CSR end-to-end; Rust lazy seed-level demand pre-guard
 (F#'s guard skips the 13,710 non-demand seeds before any cursor open — Rust lazy
 lacks it); LMDB-mode coverage in the cross-target conformance harness.
 
+## Phase F appendix #20: F# CSR fact source — demand-BFS-CSR + forward-kernel-CSR, and the footprint story (2026-06-05)
+
+Follow-on to #19: wire the F# target's `CsrReader` (a binary CSR artifact from
+`build_reverse_csr_artifact.py`) into the int-native `category_ancestor` path,
+in two roles, and characterise where CSR actually pays off. Same fixture
+(`simplewiki_articles`, root 2, 14,680 seeds, serial). All variants answer 970
+(the conformance anchor); the tiny int-native fixture answers 3.
+
+### Stage 3a — CSR-backed demand BFS (PR #2798)
+
+The demand set (descendants of root) is built by walking DOWN `category_child`
+via the compact, binary-searched CSR (sorted `{parent, offset, count}` index)
+instead of an LMDB cursor; the kernel's `category_parent` map is then
+materialised from LMDB, demand-pruned. CSR is keyed by raw page ids (sorted
+index + binary search), so it stays int-native — no dense remap, no `s2i`
+hazard. New `reachableToRootVia` (generic BFS over any `int->int list` closure)
++ `lmdb_eager_csr` generator variant. Also fixed `lookup_source_entry_fs` to
+resolve the CSR dir against `factsDir` at runtime (a relative `csr_path` was
+opened against the process CWD, crashing the eager `WcLookupSources` ctor).
+
+Result: load ~325 ms (≈/slightly slower than single-scan eager's ~255 ms) — it's
+two passes (CSR down-walk + a separate LMDB parent scan) vs the one LMDB scan
+that builds both. So CSR demand-BFS is **not** a load win at simplewiki.
+
+### Stage 3b — forward `category_parent` CSR kernel (PR #2800)
+
+`build_reverse_csr_artifact.py --direction forward` groups `category_parent` BY
+KEY (child) instead of by value, emitting a `category_parent` (child→parents)
+CSR keyed by child — the forward index the upward kernel walk needs. The kernel
+then reads parents from that CSR (`csr_kernel(true)` → `has_csr_kernel`;
+`lmdb_csr_kernel` variant), a **lazy-class** path: per-lookup binary search +
+`.val` file seek via a raw `FileStream`, demand-filtered, with no LMDB in the
+kernel hot path.
+
+Result (warm): load ~155 ms, query ~15 ms — **tied with LMDB-lazy** (~150/~15).
+The hypothesis that a raw-`FileStream` CSR kernel would beat LMDB-lazy by dodging
+LightningDB's managed per-call overhead **did not hold**: the .NET `FileStream`
+seek+read + binary search per lookup costs about the same as the LMDB cursor.
+
+### The footprint story (the real CSR win)
+
+CSR is tied on *time* with lazy and slightly slower than eager — but its value
+is **memory**. `CsrLookupSource` loads only the idx/offsets array into RAM
+(~1.8 MB for 91,514 keys here) and reads edge *values* from disk on demand;
+eager holds the entire demand-pruned edge set in a `Dictionary`. Measured peak
+RSS (`/usr/bin/time -v`, simplewiki, all 970):
+
+| mode | peak RSS | load | query |
+| --- | ---: | ---: | ---: |
+| eager      | ~84.5 MB | ~275 ms | ~3 ms  |
+| lazy       | ~71.5 MB | ~150 ms | ~15 ms |
+| csr_kernel | ~73.0 MB | ~165 ms | ~15 ms |
+
+The ~70 MB floor is the .NET runtime; the meaningful figure is the **gap**:
+eager carries ~13 MB more than lazy/CSR — the in-memory edge `Dictionary`. That
+gap **scales with edge count**: ~13 MB at simplewiki's 297k edges, but GBs at
+enwiki's ~10M edges, where eager cannot fit in RAM while CSR/lazy stay flat
+(idx-only / cursor-only).
+
+### Verdict
+
+CSR is **not faster** than the LMDB modes on this box. Its niche is
+(1) **footprint** — idx-in-RAM + values-on-disk, so it scales to graphs whose
+edge set won't fit in memory (where eager fails), and (2) **portability** — a
+self-contained on-disk file format with no LMDB dependency in the kernel hot
+path. At small/medium scale where the edge map fits RAM, eager's in-memory
+`Dictionary` wins on query and CSR offers no speed advantage; CSR earns its keep
+at the scales and deployments where holding all edges resident is not an option.
+
 
