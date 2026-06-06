@@ -131,6 +131,12 @@
 :- dynamic user:wam_msort_guard/2.
 :- dynamic user:wam_msort_bad_list/1.
 :- dynamic user:wam_msort_unbound_list/1.
+:- dynamic user:wam_keysort_guard/2.
+:- dynamic user:wam_keysort_stable/0.
+:- dynamic user:wam_keysort_atom_keys/0.
+:- dynamic user:wam_keysort_empty/0.
+:- dynamic user:wam_keysort_bad_list/1.
+:- dynamic user:wam_keysort_bad_pair/0.
 :- dynamic user:wam_copy_term_guard/2.
 :- dynamic user:wam_copy_term_sharing_fail/0.
 :- dynamic user:wam_copy_term_independent_ok/0.
@@ -451,6 +457,12 @@ user:wam_sort_unbound_list(S) :- sort(L, S), is_list(L).
 user:wam_msort_guard(L, S) :- msort(L, S).
 user:wam_msort_bad_list(S) :- msort([a|b], S).
 user:wam_msort_unbound_list(S) :- msort(L, S), is_list(L).
+user:wam_keysort_guard(Pairs, Sorted) :- keysort(Pairs, Sorted).
+user:wam_keysort_stable :- keysort([2-first,1-x,2-second,1-y], Sorted), Sorted = [1-x,1-y,2-first,2-second].
+user:wam_keysort_atom_keys :- keysort([banana-2,apple-1,cherry-3], Sorted), Sorted = [apple-1,banana-2,cherry-3].
+user:wam_keysort_empty :- keysort([], Sorted), Sorted = [].
+user:wam_keysort_bad_list(_) :- keysort([a|b], _).
+user:wam_keysort_bad_pair :- keysort([not_a_pair], _).
 user:wam_copy_term_guard(A, B) :- copy_term(A, B).
 user:wam_copy_term_sharing_fail :- user:wam_unbound_arg(X), copy_term(f(X, X), f(a, b)).
 user:wam_copy_term_independent_ok :- copy_term(f(_, _), f(a, b)).
@@ -776,6 +788,12 @@ run_smoke :-
           user:wam_msort_guard/2,
           user:wam_msort_bad_list/1,
           user:wam_msort_unbound_list/1,
+          user:wam_keysort_guard/2,
+          user:wam_keysort_stable/0,
+          user:wam_keysort_atom_keys/0,
+          user:wam_keysort_empty/0,
+          user:wam_keysort_bad_list/1,
+          user:wam_keysort_bad_pair/0,
           user:wam_copy_term_guard/2,
           user:wam_copy_term_sharing_fail/0,
           user:wam_copy_term_independent_ok/0,
@@ -1007,6 +1025,7 @@ run_smoke :-
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
+    assert_lowered_keysort_builtin_emitted(TmpDir),
     assert_lowered_copy_term_builtin_emitted(TmpDir),
     assert_lowered_term_variables_builtin_emitted(TmpDir),
     assert_lowered_variant_builtin_emitted(TmpDir),
@@ -1254,6 +1273,13 @@ smoke_cases([
     case('wam_msort_bad_list/1', '[a,b,c]', "false"),
     case('wam_msort_unbound_list/1', '[a,b,c]', "true"),
     case('wam_msort_unbound_list/1', '[a,a,b,c]', "true"),
+    case('wam_keysort_guard/2', args('[3-a,1-b,2-c]', '[1-b,2-c,3-a]'), "true"),
+    case('wam_keysort_guard/2', args('[3-a,1-b,2-c]', '[1-b,3-a,2-c]'), "false"),
+    case('wam_keysort_stable/0', no_args, "true"),
+    case('wam_keysort_atom_keys/0', no_args, "true"),
+    case('wam_keysort_empty/0', no_args, "true"),
+    case('wam_keysort_bad_list/1', a, "false"),
+    case('wam_keysort_bad_pair/0', no_args, "false"),
     case('wam_copy_term_guard/2', args(a, a), "true"),
     case('wam_copy_term_guard/2', args(a, b), "false"),
     case('wam_copy_term_guard/2', args('f(a)', 'f(a)'), "true"),
@@ -1760,6 +1786,14 @@ assert_lowered_msort_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-msort-unbound-list-1"),
     has(CoreCode, "runtime/apply-msort-solution").
 
+assert_lowered_keysort_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-keysort-guard-2"),
+    has(CoreCode, "defn lowered-wam-keysort-stable-0"),
+    has(CoreCode, "defn lowered-wam-keysort-bad-pair-0"),
+    has(CoreCode, "runtime/apply-keysort-solution").
+
 assert_lowered_copy_term_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -2090,6 +2124,9 @@ prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 
 prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2,3]', "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[3-a,1-b,2-c]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[1-b,2-c,3-a]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[1-b,3-a,2-c]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[f,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[f,o,o]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[''4'']', "{:tag :struct :functor \"[|]/2\" :args [\"4\" \"[]\"]}") :- !.
@@ -2123,6 +2160,9 @@ prolog_term_string_to_edn("[102,111,111]", "{:tag :struct :functor \"[|]/2\" :ar
 prolog_term_string_to_edn("[1,2,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[2]", "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[3-a,1-b,2-c]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[1-b,2-c,3-a]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[1-b,3-a,2-c]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[f,o]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[f,o,o]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"o\" {:tag :struct :functor \"[|]/2\" :args [\"o\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("['4']", "{:tag :struct :functor \"[|]/2\" :args [\"4\" \"[]\"]}") :- !.

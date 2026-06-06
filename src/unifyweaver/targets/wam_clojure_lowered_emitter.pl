@@ -432,6 +432,10 @@ clojure_direct_builtin("msort/2", "2").
 clojure_direct_builtin("msort/2", 2).
 clojure_direct_builtin('msort/2', "2").
 clojure_direct_builtin('msort/2', 2).
+clojure_direct_builtin("keysort/2", "2").
+clojure_direct_builtin("keysort/2", 2).
+clojure_direct_builtin('keysort/2', "2").
+clojure_direct_builtin('keysort/2', 2).
 clojure_direct_builtin("copy_term/2", "2").
 clojure_direct_builtin("copy_term/2", 2).
 clojure_direct_builtin('copy_term/2', "2").
@@ -848,6 +852,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "msort/2" ; Op == 'msort/2'),
     !,
     format(atom(Expr), '(runtime/apply-msort-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "keysort/2" ; Op == 'keysort/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-keysort-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "copy_term/2" ; Op == 'copy_term/2'),
