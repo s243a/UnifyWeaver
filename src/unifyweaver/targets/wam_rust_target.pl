@@ -3375,6 +3375,31 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
         format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
     ).
 
+%% rust_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses a backtracking-driven control construct
+%  (\+, ->, ;, once, forall, or a cut). The native Rust emitter
+%  (rust_target.pl) targets deterministic shapes (tail-recursion kernels,
+%  fact lookups) and does NOT model these: it mis-lowers them into a whole
+%  stdin-driven program whose body, under include_main(false), dangles at
+%  module level (syntax error). Mirrors go_pred_has_control_constructs/1;
+%  used to decline native and route such predicates to the lowered/WAM path.
+rust_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    rust_body_has_control(Body),
+    !.
+
+rust_body_has_control(G) :- var(G), !, fail.
+rust_body_has_control((_ -> _)) :- !.
+rust_body_has_control((_ ; _)) :- !.
+rust_body_has_control(\+ _) :- !.
+rust_body_has_control(not(_)) :- !.
+rust_body_has_control(once(_)) :- !.
+rust_body_has_control(forall(_, _)) :- !.
+rust_body_has_control(!) :- !.
+rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
+rust_body_has_control(_) :- fail.
+
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
 classify_predicates([], _, []).
@@ -3392,7 +3417,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
     ;   % Try native Rust lowering (disable WAM fallback inside rust_target
-        % so we can distinguish truly-native from WAM-needing predicates)
+        % so we can distinguish truly-native from WAM-needing predicates).
+        % Decline native for backtracking control constructs (\+, ->, ;,
+        % once, forall, cut): the native emitter mis-lowers them (see
+        % rust_pred_has_control_constructs/1), so route them to the
+        % lowered/WAM path which models choicepoints correctly.
+        \+ rust_pred_has_control_constructs(Module:Pred/Arity),
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
                 [include_main(false), wam_fallback(false)|Options], PredCode),
