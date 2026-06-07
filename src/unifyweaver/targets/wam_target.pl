@@ -2236,6 +2236,8 @@ is_builtin_pred(ground, 1).             % ground(+Term) -- true iff no unbound v
 is_builtin_pred(file_base_name, 2).     % file_base_name(+Path, -Base).
 is_builtin_pred(file_directory_name, 2).% file_directory_name(+Path, -Dir).
 is_builtin_pred(file_name_extension, 3).% file_name_extension(?Base, ?Ext, ?File).
+is_builtin_pred(read_link, 2).          % read_link(+Path, -Target) -- libc readlink.
+is_builtin_pred(symlink, 2).            % symlink(+Target, +LinkPath) -- libc symlink.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

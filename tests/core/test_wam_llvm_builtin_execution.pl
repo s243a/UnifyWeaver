@@ -2707,6 +2707,61 @@ test_fne_insufficient(_, R) :-
     % All vars: insufficient instantiation, fails.
     ( file_name_extension(_, _, _) -> R is 0 ; R is 1 ).   % 1
 
+% M120: read_link/2 + symlink/2 -- libc symlink ops.
+
+:- dynamic test_symlink_create_and_read/2.
+test_symlink_create_and_read(_, R) :-
+    % Clean any leftover, create a symlink, read it back.
+    shell('rm -f /tmp/uw_m120_link', _),
+    symlink('/etc/hostname', '/tmp/uw_m120_link'),
+    read_link('/tmp/uw_m120_link', T),
+    shell('rm -f /tmp/uw_m120_link', _),
+    ( T == '/etc/hostname' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_symlink_dangling/2.
+test_symlink_dangling(_, R) :-
+    % Dangling symlink (target doesn''t exist) is legal; libc
+    % stores the path verbatim. read_link still returns the
+    % literal target string.
+    shell('rm -f /tmp/uw_m120_dangling', _),
+    symlink('/this/does/not/exist', '/tmp/uw_m120_dangling'),
+    read_link('/tmp/uw_m120_dangling', T),
+    shell('rm -f /tmp/uw_m120_dangling', _),
+    ( T == '/this/does/not/exist' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_read_link_not_symlink/2.
+test_read_link_not_symlink(_, R) :-
+    % read_link on a regular file fails (EINVAL).
+    shell('touch /tmp/uw_m120_regular', _),
+    ( read_link('/tmp/uw_m120_regular', _) -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m120_regular', _),
+    R is Tmp.   % 1
+
+:- dynamic test_read_link_missing/2.
+test_read_link_missing(_, R) :-
+    % read_link on a non-existent path fails (ENOENT).
+    ( read_link('/tmp/uw_m120_never_existed', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_symlink_exists_fail/2.
+test_symlink_exists_fail(_, R) :-
+    % Creating a symlink at an already-existing path fails (EEXIST).
+    shell('rm -f /tmp/uw_m120_busy', _),
+    symlink('/etc/hostname', '/tmp/uw_m120_busy'),
+    ( symlink('/another/target', '/tmp/uw_m120_busy') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m120_busy', _),
+    R is Tmp.   % 1
+
+:- dynamic test_read_link_bad_arg/2.
+test_read_link_bad_arg(_, R) :-
+    ( read_link(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_symlink_bad_arg/2.
+test_symlink_bad_arg(_, R) :-
+    ( symlink(42, '/tmp/x') -> R is 0
+    ; symlink('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5660,6 +5715,21 @@ test_all :-
                    test_fne_join_check_disagree, 0, 1),
        run_test_r0('all vars fails (insufficient instantiation) -> 1',
                    test_fne_insufficient, 0, 1),
+       format('--- M120 read_link/2 + symlink/2 ---~n'),
+       run_test_r0('symlink + read_link round-trip -> 1',
+                   test_symlink_create_and_read, 0, 1),
+       run_test_r0('dangling symlink read_link -> 1',
+                   test_symlink_dangling, 0, 1),
+       run_test_r0('read_link on regular file fails -> 1',
+                   test_read_link_not_symlink, 0, 1),
+       run_test_r0('read_link on missing path fails -> 1',
+                   test_read_link_missing, 0, 1),
+       run_test_r0('symlink at existing path fails -> 1',
+                   test_symlink_exists_fail, 0, 1),
+       run_test_r0('read_link(42, _) fails -> 1',
+                   test_read_link_bad_arg, 0, 1),
+       run_test_r0('symlink with non-atom args fails -> 1',
+                   test_symlink_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

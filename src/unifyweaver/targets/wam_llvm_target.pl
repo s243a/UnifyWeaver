@@ -1560,6 +1560,8 @@ declare i8* @realpath(i8*, i8*)
 declare i32 @kill(i32, i32)
 declare i32 @truncate(i8*, i64)
 declare i32 @chown(i8*, i32, i32)
+declare i64 @readlink(i8*, i8*, i64)
+declare i32 @symlink(i8*, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3662,6 +3664,8 @@ entry:
     i32 133, label %builtin_file_base_name
     i32 134, label %builtin_file_directory_name
     i32 135, label %builtin_file_name_extension
+    i32 136, label %builtin_read_link
+    i32 137, label %builtin_symlink
   ]
 
 builtin_is:
@@ -6198,6 +6202,81 @@ fne.join_unify:
   %fne.j_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %fne.j_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.j_raw3, %Value %fne.j_v)
   ret i1 %fne.j_ok
+
+builtin_read_link:
+  ; M120: read_link(+Path, -Target) -- libc readlink wrapper.
+  ; Reads the target of a symbolic link. Path must be Atom. Fails
+  ; if Path is not a symlink (EINVAL), doesn''t exist (ENOENT),
+  ; or any other libc error. Returns the link target as an atom
+  ; (not null-terminated by libc, so we null-terminate ourselves).
+  ; PATH_MAX-sized stack buffer (4096) covers any portable path.
+  %rl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rl.t1 = call i32 @value_tag(%Value %rl.a1)
+  %rl.is_atom = icmp eq i32 %rl.t1, 0
+  br i1 %rl.is_atom, label %rl.go, label %rl.fail
+rl.fail:
+  ret i1 false
+rl.go:
+  %rl.aid = call i64 @value_payload(%Value %rl.a1)
+  %rl.path = call i8* @wam_atom_to_string(i64 %rl.aid)
+  %rl.path_null = icmp eq i8* %rl.path, null
+  br i1 %rl.path_null, label %rl.fail, label %rl.do
+rl.do:
+  %rl.buf = alloca [4096 x i8]
+  %rl.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %rl.buf, i32 0, i32 0
+  %rl.n = call i64 @readlink(i8* %rl.path, i8* %rl.buf_ptr, i64 4096)
+  %rl.ok = icmp sgt i64 %rl.n, -1
+  br i1 %rl.ok, label %rl.intern, label %rl.fail
+rl.intern:
+  ; readlink does NOT null-terminate. n is the byte count actually
+  ; written (clamped at bufsiz). Copy into the arena and add a
+  ; null. n may legitimately be 0 (empty target -- rare but legal).
+  call void @wam_arena_ensure()
+  %rl.bufsize = add i64 %rl.n, 1
+  %rl.arena = call i8* @wam_arena_alloc(i64 %rl.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rl.arena, i8* %rl.buf_ptr, i64 %rl.n, i1 false)
+  %rl.term = getelementptr i8, i8* %rl.arena, i64 %rl.n
+  store i8 0, i8* %rl.term
+  %rl.atom_id = call i64 @wam_intern_atom(i8* %rl.arena, i64 %rl.n)
+  %rl.v0 = insertvalue %Value undef, i32 0, 0
+  %rl.v = insertvalue %Value %rl.v0, i64 %rl.atom_id, 1
+  %rl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rl.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %rl.raw2, %Value %rl.v)
+  ret i1 %rl.uok
+
+builtin_symlink:
+  ; M120: symlink(+Target, +LinkPath) -- libc symlink wrapper.
+  ; Creates LinkPath as a symbolic link pointing to Target.
+  ; Both args must be Atom; any non-atom fails the type guard.
+  ; Succeeds iff libc returns 0; EEXIST (LinkPath already exists),
+  ; EACCES, ENOENT (parent dir missing) etc. all map to Prolog fail.
+  ; Target is stored verbatim -- libc does not resolve it; a
+  ; dangling symlink is permitted.
+  %sym.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sym.t1 = call i32 @value_tag(%Value %sym.a1)
+  %sym.is_atom1 = icmp eq i32 %sym.t1, 0
+  br i1 %sym.is_atom1, label %sym.check2, label %sym.fail
+sym.fail:
+  ret i1 false
+sym.check2:
+  %sym.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %sym.t2 = call i32 @value_tag(%Value %sym.a2)
+  %sym.is_atom2 = icmp eq i32 %sym.t2, 0
+  br i1 %sym.is_atom2, label %sym.go, label %sym.fail
+sym.go:
+  %sym.tgt_aid = call i64 @value_payload(%Value %sym.a1)
+  %sym.tgt = call i8* @wam_atom_to_string(i64 %sym.tgt_aid)
+  %sym.tgt_null = icmp eq i8* %sym.tgt, null
+  br i1 %sym.tgt_null, label %sym.fail, label %sym.have_tgt
+sym.have_tgt:
+  %sym.lnk_aid = call i64 @value_payload(%Value %sym.a2)
+  %sym.lnk = call i8* @wam_atom_to_string(i64 %sym.lnk_aid)
+  %sym.lnk_null = icmp eq i8* %sym.lnk, null
+  br i1 %sym.lnk_null, label %sym.fail, label %sym.do
+sym.do:
+  %sym.ret = call i32 @symlink(i8* %sym.tgt, i8* %sym.lnk)
+  %sym.ok = icmp eq i32 %sym.ret, 0
+  ret i1 %sym.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13487,6 +13566,8 @@ builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound
 builtin_op_to_id('file_base_name/2', 133).    % basename(1): part after last ''/''.
 builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last ''/'' (or ''.'').
 builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''.'' (basename-scoped).
+builtin_op_to_id('read_link/2', 136).         % libc readlink -- symlink target as atom.
+builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
