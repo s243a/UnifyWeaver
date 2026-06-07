@@ -1,9 +1,10 @@
 # WAM Lowering Taxonomy & Target Matrix
 
-**Status:** working planning doc. The matrix cells were populated by surveying
-the lowered emitters and targets (grep-level + spot reading), not exhaustive
-per-cell verification — cells marked `~` or with `?` notes should be confirmed
-against the code before committing to work on them.
+**Status:** working planning doc. Matrix cells for T1–T7, T9–T11 were verified
+by reading each emitter's lowerability gate and emit code; the T8 (native
+kernels) column is roadmap-derived and approximate (it's a curated library
+feature, orthogonal to the generic-lowering plan). `~` marks a partial,
+scaffold, or architecturally-distinct implementation (see the per-cell notes).
 
 **Purpose.** The hybrid WAM targets each ship a "lowered" path: instead of
 running every predicate through the bytecode step-loop interpreter, certain
@@ -88,34 +89,52 @@ unexplored.
 
 ## 2. Target × type matrix
 
-Legend: ✓ implemented · `~` partial / scaffold / unverified · ✗ absent ·
-n/a not applicable.
+Legend: ✓ present (verified in code) · `~` partial / scaffold / distinct
+mechanism · ✗ absent. (T1–T7, T9–T11 verified by reading each emitter's
+lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
-| scala   | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ~? | ✗ | ✗ |
-| cpp     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ~? | ✗ | ✗ | ✗ |
-| go      | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ~ clause-parallel | ✓ | ✗ | ✗ | ✗ |
-| haskell | ✓ | ✓ T2a | ~? | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ~? | ✗ | ✗ | ✗ | ✗ | ~? | ✗ | ✗ | ✗ |
-| clojure | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ~ `_branch` scaffold | ~? | ✗ | ✗ | ✗ |
-| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ~ `musttail` |
-| lua     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ~? | ✗ | ✓ | ✗ | ~ `_branch` scaffold | ~? | ✗ | ✗ | ✗ |
-| r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ✓ | ✓ | **✓** | ✗ |
-| elixir  | ✓ | ✓ T2b | ✓ (CP) | ✓ (CP) | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | **✗** | ✓ | ✗ | ✗ | ✗ | ✗ | ~? | ✗ | ✗ | ✗ |
+| scala   | ✓ | ✓ T2a | ✓ | ✗ | **✗** | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| cpp     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| go      | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| haskell | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
+| clojure | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
+| lua     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✗ | ✗ | **✓** | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
+| elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
+| wat     | ✓ | **✗** | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-Notes / things to verify before acting:
-- T8 "kernels": `kernel_dispatch` plumbing appears in many targets, but full
-  validated kernel parity (per `docs/WAM_TARGET_ROADMAP.md`) is Rust /
-  Haskell / Elixir / Go / Scala. The `~?` cells are unconfirmed depth.
-- T3 for haskell/fsharp/python marked `~?`: they lower clause 1 but the
-  exact multi-clause-fallback shape wasn't re-verified here.
-- elixir's T3/T4 are via the choice-point model (genuine CPs + cut barrier),
-  not the closure-per-clause shape R uses — counted as ✓ but architecturally
-  distinct.
+Verification notes:
+- **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
+  back to the interpreter for clauses 2+ — documented in their lowerability
+  gates). **python T3 = ✗**: `is_deterministic_pred_py` rejects *any*
+  `try_me_else`, so a try-chain predicate stays in the interpreter; python's
+  only multi-clause lowering is T5 (its `is_ite_block_py` detection of the
+  switch-indexed, no-`try_me_else` shape → `if/elif/else`).
+- **T5** is python-only and is the form wanted for Scala (the "`->` form").
+- **T7**: elixir is the only real implementation (`Task.async_stream` +
+  `par_wrap_segment`); clojure/python have `_branch` scaffolds (counted `~`).
+  go's clause-parallel goroutines live in the *non-WAM* `go_target.pl` direct
+  compiler, not the WAM lowered emitter → go T7 = ✗ here.
+- **T9**: rust and scala's lowered *emitters* emit no fact tables; scala's
+  ✓ is the target-level fact-source backend (auto-inline ≤128 rows, then
+  CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's emitter-level
+  inline tables, but it is fact-table inlining, so ✓. rust = ✗.
+- **T8** (native kernels) is a curated library feature dispatched via shared
+  `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
+  the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /
+  Scala); `~` marks targets with kernel references of unconfirmed depth
+  (fsharp, clojure, llvm, python, r); ✗ where none found (cpp, wat, lua).
+  This column is approximate and orthogonal to the T1–T6 plan below.
+- **T11**: llvm uses `musttail` for `execute` into lowered kernels (`~`);
+  no target does general recursion→loop.
+- elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
+  R's closure-per-clause shape — counted ✓ but architecturally distinct.
 
 ---
 
@@ -161,20 +180,34 @@ Score each candidate gap on four axes, then sequence:
 
 ### Suggested sequencing
 
-1. **WAT T2 (ITE).** Closes the last ITE cell; small, gated, exec-testable
-   (`wat2wasm` + `node`). Finishes the column.
-2. **T5 (multi-clause → `->` chain), shared front-end.** Build a shared
-   clause-head→guard-chain analyser (mirroring the structurer), then wire
-   Scala first (the original ask), then the other structurer targets. Each
-   lands behind the existing `emit_mode(functions)` gate with interpreter
-   fallback, so it's low-risk and reuses the 15-case exec harness pattern.
+1. **T5 (multi-clause → `->` chain) — Scala first.** This is the start
+   (the original ask). Build a shared clause-head→guard-chain analyser
+   (a front-end mirroring how `wam_ite_structurer` is shared for T2):
+   input a multi-clause predicate's clauses, output an
+   `ite(Guard,Body,Rest)` cascade when the heads are a clean
+   first-argument discrimination; decline (fall back) otherwise. Wire the
+   Scala lowered emitter's back-end first, validate with a per-backend exec
+   test (the ITE sweep's 15-case harness is the template), then port the
+   back-end to the other structurer targets. Python already has a back-end
+   (`is_ite_block_py`) to cross-check the shared front-end against. Lands
+   behind the existing `emit_mode(functions)` gate with interpreter
+   fallback → low risk.
+2. **WAT T2 (ITE).** Closes the last ITE cell; small, gated, exec-testable
+   (`wat2wasm` + `node`). Finishes the T2 column.
 3. **T4 (multi-clause all-clauses)** for the structurer targets, reusing R's
    iter-CP shape as the reference. Removes the interpreter hop for fully
-   supported predicates.
-4. **T6 (first-arg indexing)** once T5's clause-head analyser exists — it's
-   the same front-end with a `switch` back-end.
+   supported predicates that aren't first-arg-discriminable (so don't get
+   T5).
+4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
+   `switch` back-end instead of an `->` cascade.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
+
+Relationship of T4/T5/T6: all three are "do something smarter with a
+multi-clause predicate." A shared clause-shape classifier could pick per
+predicate — T5/T6 when the heads cleanly discriminate on arg 1, T4
+otherwise — so the back-ends implement a *chosen* strategy rather than each
+re-deciding (see §5).
 
 ---
 
