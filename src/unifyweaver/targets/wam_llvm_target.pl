@@ -1562,6 +1562,7 @@ declare i32 @truncate(i8*, i64)
 declare i32 @chown(i8*, i32, i32)
 declare i64 @readlink(i8*, i8*, i64)
 declare i32 @symlink(i8*, i8*)
+declare i32 @link(i8*, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3666,6 +3667,7 @@ entry:
     i32 135, label %builtin_file_name_extension
     i32 136, label %builtin_read_link
     i32 137, label %builtin_symlink
+    i32 138, label %builtin_link
   ]
 
 builtin_is:
@@ -6277,6 +6279,41 @@ sym.do:
   %sym.ret = call i32 @symlink(i8* %sym.tgt, i8* %sym.lnk)
   %sym.ok = icmp eq i32 %sym.ret, 0
   ret i1 %sym.ok
+
+builtin_link:
+  ; M121: link(+OldPath, +NewPath) -- libc link wrapper, creates a
+  ; hard link at NewPath that refers to the same inode as OldPath.
+  ; Both args must be Atom. Succeeds iff libc returns 0; EXDEV
+  ; (cross-device), EEXIST (NewPath already exists), ENOENT
+  ; (OldPath missing or NewPath''s parent missing), EPERM (not
+  ; allowed on this fs) etc. all map to Prolog fail. Unlike
+  ; symlink, OldPath must exist (no dangling-hardlink concept --
+  ; the kernel bumps the inode''s link count immediately).
+  %lnk.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %lnk.t1 = call i32 @value_tag(%Value %lnk.a1)
+  %lnk.is_atom1 = icmp eq i32 %lnk.t1, 0
+  br i1 %lnk.is_atom1, label %lnk.check2, label %lnk.fail
+lnk.fail:
+  ret i1 false
+lnk.check2:
+  %lnk.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %lnk.t2 = call i32 @value_tag(%Value %lnk.a2)
+  %lnk.is_atom2 = icmp eq i32 %lnk.t2, 0
+  br i1 %lnk.is_atom2, label %lnk.go, label %lnk.fail
+lnk.go:
+  %lnk.old_aid = call i64 @value_payload(%Value %lnk.a1)
+  %lnk.old = call i8* @wam_atom_to_string(i64 %lnk.old_aid)
+  %lnk.old_null = icmp eq i8* %lnk.old, null
+  br i1 %lnk.old_null, label %lnk.fail, label %lnk.have_old
+lnk.have_old:
+  %lnk.new_aid = call i64 @value_payload(%Value %lnk.a2)
+  %lnk.new = call i8* @wam_atom_to_string(i64 %lnk.new_aid)
+  %lnk.new_null = icmp eq i8* %lnk.new, null
+  br i1 %lnk.new_null, label %lnk.fail, label %lnk.do
+lnk.do:
+  %lnk.ret = call i32 @link(i8* %lnk.old, i8* %lnk.new)
+  %lnk.ok = icmp eq i32 %lnk.ret, 0
+  ret i1 %lnk.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13568,6 +13605,7 @@ builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last
 builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''.'' (basename-scoped).
 builtin_op_to_id('read_link/2', 136).         % libc readlink -- symlink target as atom.
 builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
+builtin_op_to_id('link/2', 138).              % libc link(old, new) -- hard link.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

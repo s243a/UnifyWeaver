@@ -2762,6 +2762,50 @@ test_symlink_bad_arg(_, R) :-
     ; R is 1
     ).   % 1
 
+% M121: link/2 -- libc hard link wrapper.
+
+:- dynamic test_link_create/2.
+test_link_create(_, R) :-
+    % Create a source file via shell, hard-link it via libc link/2,
+    % verify the link exists, clean up.
+    shell('echo hello > /tmp/uw_m121_src', _),
+    shell('rm -f /tmp/uw_m121_link', _),
+    link('/tmp/uw_m121_src', '/tmp/uw_m121_link'),
+    shell('test -f /tmp/uw_m121_link', St),
+    shell('rm -f /tmp/uw_m121_src /tmp/uw_m121_link', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_link_same_inode/2.
+test_link_same_inode(_, R) :-
+    % Hard links share the same inode. Compare via "stat -c %i".
+    shell('echo data > /tmp/uw_m121_orig', _),
+    shell('rm -f /tmp/uw_m121_hard', _),
+    link('/tmp/uw_m121_orig', '/tmp/uw_m121_hard'),
+    shell('test "$(stat -c %i /tmp/uw_m121_orig)" = "$(stat -c %i /tmp/uw_m121_hard)"', St),
+    shell('rm -f /tmp/uw_m121_orig /tmp/uw_m121_hard', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_link_missing_old/2.
+test_link_missing_old(_, R) :-
+    % link from non-existent source fails (ENOENT).
+    ( link('/tmp/uw_m121_never_existed', '/tmp/uw_m121_new') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_link_exists_new/2.
+test_link_exists_new(_, R) :-
+    % link to a path that already exists fails (EEXIST).
+    shell('echo a > /tmp/uw_m121_a', _),
+    shell('echo b > /tmp/uw_m121_b', _),
+    ( link('/tmp/uw_m121_a', '/tmp/uw_m121_b') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m121_a /tmp/uw_m121_b', _),
+    R is Tmp.   % 1
+
+:- dynamic test_link_bad_arg/2.
+test_link_bad_arg(_, R) :-
+    ( link(42, '/tmp/x') -> R is 0
+    ; link('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5730,6 +5774,17 @@ test_all :-
                    test_read_link_bad_arg, 0, 1),
        run_test_r0('symlink with non-atom args fails -> 1',
                    test_symlink_bad_arg, 0, 1),
+       format('--- M121 link/2 ---~n'),
+       run_test_r0('link + test -f -> 1',
+                   test_link_create, 0, 1),
+       run_test_r0('hard link shares inode -> 1',
+                   test_link_same_inode, 0, 1),
+       run_test_r0('link from missing path fails -> 1',
+                   test_link_missing_old, 0, 1),
+       run_test_r0('link to existing path fails -> 1',
+                   test_link_exists_new, 0, 1),
+       run_test_r0('link with non-atom args fails -> 1',
+                   test_link_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
