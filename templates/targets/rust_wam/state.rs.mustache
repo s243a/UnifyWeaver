@@ -364,6 +364,14 @@ pub struct WamState {
     /// path must filter identically or the kernel over-explores
     /// non-reachable ancestor branches. Empty = no filter (eager/other).
     pub demand_set: FxSet<i32>,
+    /// ROOT_ANCHORED_METRICS min-distance prune: maps each in-scope node (raw
+    /// LMDB/page id) to its minimum hop-distance to root, materialised at
+    /// ingest (metric_min_dist_to_root). The category_ancestor kernel uses it
+    /// as an admissible A*-style cut: at depth `c`, a node `n` with
+    /// `c + min_dist[n] > max_depth` cannot reach root within budget, so the
+    /// whole branch is skipped (and a node absent from the table can't reach
+    /// root at all). Empty = prune disabled (default). Never changes results.
+    pub min_dist: FxMap<i32, i32>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -436,6 +444,7 @@ impl WamState {
             lmdb_to_wam: FxMap::default(),
             int_native_edges: false,
             demand_set: FxSet::default(),
+            min_dist: FxMap::default(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -628,6 +637,12 @@ impl WamState {
         // FxHash-backed demand_set so the hot `contains` on the kernel
         // path avoids SipHash.
         self.demand_set = demand.iter().copied().collect();
+    }
+
+    /// Load the materialised min_dist_to_root table (node -> min hops to root)
+    /// used by the kernel's admissible prune. Empty = prune disabled.
+    pub fn set_min_dist(&mut self, dist: &HashMap<i32, i32>) {
+        self.min_dist = dist.iter().map(|(&k, &v)| (k, v)).collect();
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
