@@ -585,7 +585,15 @@ lua_wam_segments([_|Rest], Segments) :-
 lua_segment_instrs([], [], []).
 lua_segment_instrs([label(_)|Rest], [], [label(_)|Rest]) :- !.
 lua_segment_instrs([Item|Rest], [Parts|More], Remaining) :-
-    wam_item_parts(Item, Parts),
+    % once/1: wam_item_parts/2 has a catch-all clause that overlaps every
+    % specific clause, so each item yields multiple solutions. Without
+    % committing to the first (specific) one, lua_inline_fact_tuples
+    % backtracks through every item's choicepoint when a segment turns out
+    % not to be fact-only (any predicate containing a builtin_call), which
+    % is exponential in the number of segments — a nested if-then-else
+    % (5 segments) effectively hangs. The first solution is always the
+    % intended one, so the segmentation is unchanged.
+    once(wam_item_parts(Item, Parts)),
     lua_segment_instrs(Rest, More, Remaining).
 
 lua_fact_only_segments(Segments) :-
@@ -817,7 +825,12 @@ lua_predicate_clause(Name/Arity, Head, Body) :-
     clause(user:Head, Body).
 
 write_file(Path, Content) :-
-    setup_call_cleanup(open(Path, write, Stream), write(Stream, Content), close(Stream)).
+    % UTF-8 so the runtime/generated sources (which contain non-ASCII
+    % characters) write correctly regardless of the process locale
+    % (POSIX/ASCII in many CI containers); otherwise write/2 raises an
+    % encoding error.
+    setup_call_cleanup(open(Path, write, Stream, [encoding(utf8)]),
+                       write(Stream, Content), close(Stream)).
 
 find_template(RelPath, Template) :-
     (   source_file(wam_lua_target, SrcFile)
