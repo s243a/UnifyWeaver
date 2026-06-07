@@ -201,6 +201,14 @@ step(final_decision, Strategy, [decided_by(Name), overridden(_), trace_summary(.
 
 The `passed` outcome is added to every resolution step (no_intent, intent_matches, third_option, scope_disambiguation, satisfiability, caller_wins). It records that the step was reached during the hierarchy walk but did not fire — typically because its precondition didn't hold. Including `passed` steps in the trace preserves the complete walk history (which steps were considered before the resolving step fired). A trace renderer can elide `passed` steps for brevity if desired; the structured trace itself records them all.
 
+**Relationship between `passed` and the step-specific non-firing atoms (`no_scope_overlap`, `not_found`).** The schema includes both generic `passed` and step-specific named non-firing outcomes (`no_scope_overlap` for `step_scope_disambiguation`, `not_found` for `step_third_option`). These are **named-reason variants of `passed` for specific steps**, not a separate resolution category:
+
+- `step_scope_disambiguation` returns `no_scope_overlap` when it ran but neither intent refines the other — semantically equivalent to "passed with reason = no refinement relation"
+- `step_third_option` returns `not_found` when it ran a search but found no compatible third option — semantically equivalent to "passed with reason = search exhausted"
+- `passed` (without a step-specific reason) is for steps whose precondition wasn't met, so they didn't run at all
+
+In all three cases, the hierarchy walks to the next step. The distinction is just *whether the step ran and exhausted its search* (`no_scope_overlap`, `not_found`) versus *whether the step was skipped because its trigger wasn't present* (`passed`). Trace renderers may treat all three equivalently for brevity; the structured trace distinguishes them for debuggability.
+
 **Important note on adjustments.** There is no standalone `step(adjustment, ...)` entry type. Adjustments (`build_csr_at_compile_time`, `degrade_to_compatible`, etc.) are recorded as `adjustment(...)` **detail fields** of whichever step caused them — typically `step_cost_model_choice` for rule-level adjustments (a cost-model rule whose preferred strategy includes an adjustment), or `step_satisfiability` for resolution-driven adjustments (an unmet intent that the satisfiability adjuster resolves by building CSR at compile time). The `adjustment(...)?` annotation on those step lines marks the field as optional. This preserves the per-step single-entry fold contract: each resolution step contributes exactly one trace entry.
 
 Target adapters that need to execute adjustments walk the trace looking for `adjustment(...)` detail fields on *any* step, not for a separate step type.
@@ -280,7 +288,9 @@ Rules that fire (signal-value preconditions evaluated regardless of tier; tier c
 - `prefer_bidirectional_csr_buildable` — all preconditions match: `csr_buildable(true)` ✓, `cardinality(large)` ✓, `query_frequency(high)` ✓. Raw score +2. Confidence per signal: `csr_buildable(true)` is inferred (0.8), `cardinality(large)` is declared (1.0), `query_frequency(high)` is declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
 - `prefer_unidirectional_no_csr` — `csr_available(false)` precondition matches (the signal is in the workload, tier-irrelevant for firing). But `csr_buildable(false)` does *not* match — we have `csr_buildable(true)` in the workload. Rule does not fire on value mismatch.
 
-  *Reader note:* this rule's non-firing in the worked example is the common case rather than an edge case. Most real workloads where CSR is missing also have the CSR-buildable signal (the static analyser typically infers `csr_buildable(true)` whenever the edge predicate has a buildable inverse, which is most of the time on Wikipedia-style categorisation graphs). So `prefer_unidirectional_no_csr` is the rule that fires when the system is told "no CSR, and don't try to build one either" — a relatively rare combination in practice. The `default_fallback` rule plus `prefer_bidirectional_csr_buildable` cover the more typical scenarios.
+  *Reader note:* this rule's non-firing in the worked example is the common case **in graph configurations where the edge predicate has a buildable inverse** (the static analyser typically infers `csr_buildable(true)` whenever this holds, which is most of the time on Wikipedia-style categorisation graphs). So `prefer_unidirectional_no_csr` typically fires when the system is told "no CSR, and don't try to build one either" — a relatively rare combination in those configurations. The `default_fallback` rule plus `prefer_bidirectional_csr_buildable` cover the more typical scenarios there.
+
+  For graph configurations where the edge predicate has *no* buildable inverse — e.g. embedded environments with restricted schemas, streaming sources where CSR construction is infeasible, or graphs where the inverse would be too large to materialise — `prefer_unidirectional_no_csr` becomes the typical firing rule, not the rare one. The "common case" characterisation depends on the workload's CSR-buildability profile.
 - `default_fallback` — fires. Raw score +0.
 
 Winner: `per_query(bidirectional)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The build-CSR adjustment is recorded as a detail field of the cost-model-choice trace entry (rule-level adjustments live where the rule fired, not as a separate step); the trace looks like `step(cost_model_choice, chosen(per_query(bidirectional), 1.87, prefer_bidirectional_csr_buildable), [adjustment(build_csr_at_compile_time), ...])`. Likewise, if a `step_satisfiability` resolution had triggered the adjustment (different scenario), the adjustment would live as a detail field of the satisfiability step. **Adjustments are detail fields of whatever step caused them, not separate trace steps**, so the per-step single-entry fold contract is preserved.
@@ -315,6 +325,8 @@ If every intent signal is satisfied by `CostModelChoice` (using the [intent-comp
 
 Iterate over `admissible_strategies(Recurrence, Admissible)` looking for any strategy that satisfies *all* intent signals (using the intent-compatibility matrix). If found, return it. Trace step: `step(third_option, found(Strategy) | not_found, [candidates_considered(...)])`.
 
+**`monotone(false)` cross-class restriction is applied here too.** When `monotone(Recurrence, false)`, `step_third_option` narrows its candidate set to strategies in the same class as `CostModelChoice` before searching, mirroring the cross-class restriction applied in `step_satisfiability`. Without this, the third-option search could find a cross-class strategy and return it before `step_satisfiability` ever ran — bypassing the cross-class refusal. Applying the restriction here (and at any other resolution step that could pick from `admissible_strategies` directly) ensures the restriction is enforced uniformly across the hierarchy. The narrowed candidate list is recorded in the trace: `step(third_option, ..., [monotone_false_narrowed_candidates(...)])`.
+
 #### `step_scope_disambiguation` — refinement (narrower strategy-set wins)
 
 If two intent signals come from different scopes (manifest vs caller) and one *refines* the other in strategy-space, the refined (narrower) intent wins without it being treated as conflict. This is normal scoping rules, not an override.
@@ -343,10 +355,10 @@ The two sets are disjoint — neither refines the other. `step_scope_disambiguat
 
 If the intent is structurally unmet (e.g. caller wants `bidirectional` but declared `csr_available(false)` AND inferred `csr_buildable(false)`):
 
-- Determine if an adjustment makes it satisfiable. Concrete adjustments in priority order:
+- Determine if an adjustment makes it satisfiable. Concrete adjustments in priority order, each with an explicit precondition that distinguishes when it applies:
   - `build_csr_at_compile_time` — applicable when `csr_buildable(true)` (inferred or declared) **AND** the workload signals satisfy the same preconditions as `prefer_bidirectional_csr_buildable` (specifically `cardinality(large)` and `query_frequency(high)`). If those preconditions are unmet, building CSR isn't cost-justified — fall through to the next adjustment.
-  - `degrade_to_compatible` — fall back to a strategy that satisfies the intent's broader class (e.g. `bidirectional` → `astar` if astar admissible) with a warning recorded in the trace
-  - `degrade_with_warning` — fall back to a strategy that contradicts the intent but warns loud
+  - `degrade_to_compatible` — applicable when there exists an admissible strategy in the *same strategy class* as the caller's intent that differs only in algorithm (e.g. caller asked for `per_query(bidirectional)` and `per_query(astar)` is admissible — both are `per_query`-class). The adjuster picks the closest same-class alternative and emits a warning. If no same-class compatible strategy exists, fall through.
+  - `degrade_with_warning` — applicable as a last-resort fallback when neither of the above applies. Falls back to a strategy that contradicts the intent's class outright (e.g. `fixed_point(semi_naive)` when caller asked for `per_query(bidirectional)`) and warns loud in the trace.
 
 - Selector picks the first adjustment whose precondition holds.
 
@@ -377,6 +389,18 @@ The matrix used by `step_intent_matches` and `step_third_option` to decide wheth
 | `force_search_algorithm(A)` | any strategy whose inner algorithm matches A |
 
 **Asymmetry note on bidirectional vs astar.** The matrix is deliberately asymmetric: `kernel_mode(bidirectional)` is *broader* and matches both plain bidirectional A\* search and `per_query(astar)` (since A\* with admissible heuristic is a bidirectional-flavour algorithm); `kernel_mode(astar)` is *narrower* and matches only `per_query(astar)`. The asymmetry reflects user intent: someone asking for `kernel_mode(bidirectional)` is expressing a class preference (bidirectional-flavour search), so A\* counts; someone asking for `kernel_mode(astar)` is specifically requesting A\* (with its heuristic-driven behaviour), so plain bidirectional doesn't count. If a user wants either bidirectional-or-astar, they should use `kernel_mode(bidirectional)`.
+
+**Trace snippet illustrating the asymmetric match.** A user passing `kernel_mode(bidirectional)` who ends up with `per_query(astar)` (e.g. when no CSR is present but a heuristic predicate is available) might be surprised. The reasoning trace makes the asymmetric match explicit:
+
+```
+[evaluation-strategy] selecting for category_ancestor/4
+[evaluation-strategy]   classify_signals: intent=[kernel_mode(bidirectional)], declared=[cardinality(large), heuristic_predicate_available(true), heuristic_predicate(my_heuristic/2)], inferred=[csr_available(false), csr_buildable(false)]
+[evaluation-strategy]   cost_model_choice: per_query(astar), score=1.0, deciding-rule=prefer_astar_heuristic_available
+[evaluation-strategy]   intent_matches: applied (kernel_mode(bidirectional) is satisfied by per_query(astar) per intent-compatibility matrix: A* counts as bidirectional-flavour)
+[evaluation-strategy]   final_decision: per_query(astar), decided_by=intent_matches
+```
+
+The generated-code comment will include the same `intent_matches` line, so a reader of the generated F# source can see that `kernel_mode(bidirectional)` was satisfied by `per_query(astar)` and why.
 
 This matrix is defined as a predicate `intent_compatible_with_strategy/2` in the module. Adding a new intent signal type means adding entries to the matrix.
 
@@ -459,9 +483,11 @@ The detector produces `recursive_kernel(KernelKind, Pred/Arity, ConfigOps)`. The
 
 - `KernelKind` → maps to admissible strategies (via the internal kernel-kind-to-strategies table — see [Admissibility](#admissibility))
 - `Pred/Arity` → passes through to the Recurrence term
-- `ConfigOps` → fed into `Recurrence` properties
+- `ConfigOps` → fed into `Recurrence` properties (selectively — see below)
 
 The selector does not call the detector; the caller (target adapter) is responsible for invoking detection first and passing the result.
+
+**Note on ConfigOps → Recurrence properties mapping.** The caller (typically `build_recurrence_term/3` in `recurrence_inputs.pl`) maps detector-emitted `ConfigOps` keys into the `Recurrence` properties list. **Callers must NOT populate `directions_admissible` in the Recurrence properties list** — it was removed from the user-facing properties in an earlier revision because it could disagree silently with the kernel-kind-to-strategies table maintained inside the selector. If a `ConfigOps` entry uses the key `directions_admissible`, `build_recurrence_term/3` drops it with a stderr warning rather than passing it through. The selector derives admissible directions from KernelKind alone — single source of truth.
 
 **Maintenance note**: when a new kernel detector is added to `recursive_kernel_detection.pl`, the corresponding entry in the kernel-kind-to-strategies table inside `recurrence_evaluation_strategy.pl` must also be added. This is an undocumented maintenance surface in the current codebase; the implementation plan adds a `TODO` comment in both files referencing the other.
 
