@@ -1567,6 +1567,9 @@ declare i32 @mkstemp(i8*)
 declare i32 @mkfifo(i8*, i32)
 declare i32 @close(i32)
 declare i32 @umask(i32)
+declare i32 @nice(i32)
+declare i32 @getpriority(i32, i32)
+declare i32 @setpriority(i32, i32, i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3678,6 +3681,9 @@ entry:
     i32 142, label %builtin_mkfifo
     i32 143, label %builtin_umask
     i32 144, label %builtin_monotonic_time
+    i32 145, label %builtin_nice
+    i32 146, label %builtin_getpriority
+    i32 147, label %builtin_setpriority
   ]
 
 builtin_is:
@@ -6564,6 +6570,56 @@ builtin_monotonic_time:
   %mt.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %mt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mt.raw1, %Value %mt.v)
   ret i1 %mt.ok
+
+builtin_nice:
+  ; M125: nice(+Inc) -- libc nice wrapper; adjust process priority
+  ; by Inc (positive = lower priority, negative = higher; requires
+  ; privilege for negative). Always succeeds in Prolog regardless
+  ; of libc''s -1-on-error since we can''t distinguish -1-as-prio
+  ; from -1-as-error without errno. Inc must be Integer.
+  %nic.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nic.t1 = call i32 @value_tag(%Value %nic.a1)
+  %nic.is_int = icmp eq i32 %nic.t1, 1
+  br i1 %nic.is_int, label %nic.go, label %nic.fail
+nic.fail:
+  ret i1 false
+nic.go:
+  %nic.inc64 = call i64 @value_payload(%Value %nic.a1)
+  %nic.inc = trunc i64 %nic.inc64 to i32
+  call i32 @nice(i32 %nic.inc)
+  ret i1 true
+
+builtin_getpriority:
+  ; M125: getpriority(-Prio) -- libc getpriority(PRIO_PROCESS, 0)
+  ; reads the current process'' niceness. PRIO_PROCESS = 0, who = 0
+  ; (self) on Linux. Returns a signed value in [-20, 19]. We
+  ; always succeed; the libc -1-vs-error ambiguity is benign for
+  ; self-read on a live process.
+  %gpr.p = call i32 @getpriority(i32 0, i32 0)
+  %gpr.p64 = sext i32 %gpr.p to i64
+  %gpr.v = call %Value @value_integer(i64 %gpr.p64)
+  %gpr.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpr.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpr.raw1, %Value %gpr.v)
+  ret i1 %gpr.ok
+
+builtin_setpriority:
+  ; M125: setpriority(+Prio) -- libc setpriority(PRIO_PROCESS, 0,
+  ; Prio) sets the current process'' niceness. Prio must be
+  ; Integer (typically [-20, 19]; clamped by the kernel).
+  ; Succeeds iff libc returns 0; EPERM (raising priority beyond
+  ; RLIMIT_NICE), EACCES, etc. fail.
+  %spr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %spr.t1 = call i32 @value_tag(%Value %spr.a1)
+  %spr.is_int = icmp eq i32 %spr.t1, 1
+  br i1 %spr.is_int, label %spr.go, label %spr.fail
+spr.fail:
+  ret i1 false
+spr.go:
+  %spr.p64 = call i64 @value_payload(%Value %spr.a1)
+  %spr.p = trunc i64 %spr.p64 to i32
+  %spr.ret = call i32 @setpriority(i32 0, i32 0, i32 %spr.p)
+  %spr.ok = icmp eq i32 %spr.ret, 0
+  ret i1 %spr.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13862,6 +13918,9 @@ builtin_op_to_id('tmp_file/2', 141).          % mkstemp-based race-free temp fil
 builtin_op_to_id('mkfifo/2', 142).            % libc mkfifo(path, mode).
 builtin_op_to_id('umask/2', 143).             % libc umask(?Old, +New).
 builtin_op_to_id('monotonic_time/1', 144).    % clock_gettime(CLOCK_MONOTONIC) as Float.
+builtin_op_to_id('nice/1', 145).              % libc nice(inc) -- adjust priority.
+builtin_op_to_id('getpriority/1', 146).       % libc getpriority(PRIO_PROCESS, 0).
+builtin_op_to_id('setpriority/1', 147).       % libc setpriority(PRIO_PROCESS, 0, prio).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
