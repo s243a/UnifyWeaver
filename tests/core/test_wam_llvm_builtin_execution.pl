@@ -2459,6 +2459,48 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M115: chown/3 -- libc chown wrapper. Non-root callers can only
+% chown to their OWN uid/gid (-1 means "leave that side unchanged").
+
+:- dynamic test_chown_self_self/2.
+test_chown_self_self(_, R) :-
+    % Create a temp file, chown to (our own uid, our own gid).
+    % Non-root caller can only chown a file to their own credentials,
+    % and this combination always succeeds.
+    Path = '/tmp/uw_m115_chown_self',
+    shell('touch /tmp/uw_m115_chown_self', _),
+    getuid(U),
+    getgid(G),
+    chown(Path, U, G),
+    shell('rm -f /tmp/uw_m115_chown_self', _),
+    R is 1.   % 1
+
+:- dynamic test_chown_noop/2.
+test_chown_noop(_, R) :-
+    % Passing -1 for both uid and gid is a libc no-op that
+    % succeeds iff the file exists and the caller can access it.
+    Path = '/tmp/uw_m115_chown_noop',
+    shell('touch /tmp/uw_m115_chown_noop', _),
+    chown(Path, -1, -1),
+    shell('rm -f /tmp/uw_m115_chown_noop', _),
+    R is 1.   % 1
+
+:- dynamic test_chown_missing/2.
+test_chown_missing(_, R) :-
+    % chown on a non-existent path fails (ENOENT).
+    ( chown('/tmp/uw_m115_does_not_exist', -1, -1) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_chown_bad_args/2.
+test_chown_bad_args(_, R) :-
+    % Non-atom path or non-int uid/gid fail the type guards.
+    ( chown(42, 0, 0) -> R is 0
+    ; chown('/tmp/x', not_int, 0) -> R is 0
+    ; chown('/tmp/x', 0, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5322,6 +5364,15 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M115 chown/3 ---~n'),
+       run_test_r0('chown to own (uid, gid) -> 1',
+                   test_chown_self_self, 0, 1),
+       run_test_r0('chown(-1, -1) no-op -> 1',
+                   test_chown_noop, 0, 1),
+       run_test_r0('chown on missing path fails -> 1',
+                   test_chown_missing, 0, 1),
+       run_test_r0('chown with non-atom path / non-int uid/gid fails -> 1',
+                   test_chown_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
