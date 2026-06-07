@@ -25,6 +25,37 @@ The fourth row (B = 15 fixed) was an earlier intermediate result captured
 in the same script `v1_v3_root_targeted_depth_probe.py` (commented config
 toggle); the corresponding results file is preserved separately.
 
+### V3 budget from the materialised `max_dist_to_root` metric
+
+V3's budget `B` (max acyclic parent distance to root) *is* the
+`max_dist_to_root` root-anchored metric (docs/design/ROOT_ANCHORED_METRICS_*).
+`scripts/max_dist_budget.py` holds that quantity as two cross-checked
+implementations, and V3 can now read the **ingest-materialised** lookup instead
+of recomputing it:
+
+```bash
+# 1. build a Phase-1 scoped LMDB rooted at the V3 root, then materialise the
+#    metric UNBOUNDED (max_depth >= graph diameter so it isn't truncated):
+python3 examples/benchmark/build_scoped_subtree_lmdb.py --src <phase1_lmdb> \
+    --root 137597 --out /tmp/sw_scoped --max-depth 100
+python3 benchmarks/root-metrics/prototype/build_max_distance.py \
+    --lmdb /tmp/sw_scoped --max-depth 100
+# 2. point V3 at it:
+python3 scripts/v3_max_parent_distance_probe.py --max-dist-metric /tmp/sw_scoped
+```
+
+**Finding (characterised by `max_dist_budget.py`'s self-check):** the metric and
+the probe's original in-line DP compute *different* budgets. The DP assumed
+"every parent has a smaller BFS depth" and so only follows shortest-depth-
+decreasing parents — it **undercounts** any node that has a near-root shortcut
+parent *and* a longer ancestor chain through a deeper parent. On a diamond
+(`4->{1,3}`, `3->2`, `2->1`) the DP gives `max_dist[4]=1` while the true longest
+acyclic path `4->3->2->1` is `3` (what the metric gives). So `--max-dist-metric`
+is **not** a drop-in: it grows `B` and changes V3's results. The default still
+runs the original DP, so committed results stay reproducible; the materialised
+path is the corrected (true-longest) budget. Run
+`python3 scripts/max_dist_budget.py` to see the divergence.
+
 ## Headline empirical findings
 
 See `docs/reports/depth_likeness_budget_variants.md` for the full
