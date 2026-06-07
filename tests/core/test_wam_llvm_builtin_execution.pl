@@ -2501,6 +2501,51 @@ test_chown_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M117: ground/1 -- succeeds iff term has no unbound variables.
+
+:- dynamic test_ground_atom/2.
+test_ground_atom(_, R) :-
+    ( ground(foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_int/2.
+test_ground_int(_, R) :-
+    ( ground(42) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_compound_closed/2.
+test_ground_compound_closed(_, R) :-
+    ( ground(foo(a, b, c)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_nested_closed/2.
+test_ground_nested_closed(_, R) :-
+    ( ground(pair(p(1, 2), q(3, [4, 5]))) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_list_closed/2.
+test_ground_list_closed(_, R) :-
+    ( ground([1, 2, 3, foo]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_bare_var/2.
+test_ground_bare_var(_, R) :-
+    ( ground(_X) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_compound_with_var/2.
+test_ground_compound_with_var(_, R) :-
+    ( ground(foo(a, _Y, c)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_nested_with_var/2.
+test_ground_nested_with_var(_, R) :-
+    ( ground(pair(p(1, _Z), q(3, [4, 5]))) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_list_open_tail/2.
+test_ground_list_open_tail(_, R) :-
+    % Partial list [1, 2 | _T] has an unbound tail var, so not ground.
+    ( ground([1, 2 | _T]) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_after_bind/2.
+test_ground_after_bind(_, R) :-
+    % Binding the var makes the term ground.
+    X = bound_atom,
+    ( ground(foo(a, X, c)) -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5373,6 +5418,27 @@ test_all :-
                    test_chown_missing, 0, 1),
        run_test_r0('chown with non-atom path / non-int uid/gid fails -> 1',
                    test_chown_bad_args, 0, 1),
+       format('--- M117 ground/1 ---~n'),
+       run_test_r0('ground(atom) -> 1',
+                   test_ground_atom, 0, 1),
+       run_test_r0('ground(42) -> 1',
+                   test_ground_int, 0, 1),
+       run_test_r0('ground(foo(a,b,c)) -> 1',
+                   test_ground_compound_closed, 0, 1),
+       run_test_r0('ground(pair(p(1,2),q(3,[4,5]))) -> 1',
+                   test_ground_nested_closed, 0, 1),
+       run_test_r0('ground([1,2,3,foo]) -> 1',
+                   test_ground_list_closed, 0, 1),
+       run_test_r0('ground(_X) fails -> 1',
+                   test_ground_bare_var, 0, 1),
+       run_test_r0('ground(foo(a,_,c)) fails -> 1',
+                   test_ground_compound_with_var, 0, 1),
+       run_test_r0('ground with nested var fails -> 1',
+                   test_ground_nested_with_var, 0, 1),
+       run_test_r0('ground([1,2|_T]) fails -> 1',
+                   test_ground_list_open_tail, 0, 1),
+       run_test_r0('ground after binding var -> 1',
+                   test_ground_after_bind, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
