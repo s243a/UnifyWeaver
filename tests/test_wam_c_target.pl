@@ -3147,30 +3147,69 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
     assertz((user:wam_c_meta_dup(a) :- true)),
     assertz((user:wam_c_meta_dup(b) :- true)),
     assertz((user:wam_c_meta_none(_) :- fail)),
+    assertz((user:wam_c_meta_conj_item(a) :- true)),
+    assertz((user:wam_c_meta_conj_item(b) :- true)),
+    assertz((user:wam_c_meta_conj_item(c) :- true)),
+    assertz((user:wam_c_meta_conj_keep(a) :- true)),
+    assertz((user:wam_c_meta_conj_keep(c) :- true)),
+    assertz((user:wam_c_meta_conj_dup(b) :- true)),
+    assertz((user:wam_c_meta_conj_dup(a) :- true)),
+    assertz((user:wam_c_meta_conj_dup(b) :- true)),
+    assertz((user:wam_c_meta_conj_set_keep(a) :- true)),
+    assertz((user:wam_c_meta_conj_set_keep(b) :- true)),
     assertz((user:wam_c_meta_bag(L) :-
         bagof(X, wam_c_meta_item(X), L))),
     assertz((user:wam_c_meta_set(L) :-
         setof(X, wam_c_meta_dup(X), L))),
     assertz((user:wam_c_meta_empty_bag(L) :-
         bagof(X, wam_c_meta_none(X), L))),
+    assertz((user:wam_c_meta_conj_bag(L) :-
+        bagof(X,
+              (wam_c_meta_conj_item(X), wam_c_meta_conj_keep(X)),
+              L))),
+    assertz((user:wam_c_meta_conj_set(L) :-
+        setof(X,
+              (wam_c_meta_conj_dup(X), wam_c_meta_conj_set_keep(X)),
+              L))),
     (   compile_predicate_to_wam(user:wam_c_meta_item/1, [], WamItem),
         compile_predicate_to_wam(user:wam_c_meta_dup/1, [], WamDup),
         compile_predicate_to_wam(user:wam_c_meta_none/1, [], WamNone),
+        compile_predicate_to_wam(user:wam_c_meta_conj_item/1, [], WamConjItem),
+        compile_predicate_to_wam(user:wam_c_meta_conj_keep/1, [], WamConjKeep),
+        compile_predicate_to_wam(user:wam_c_meta_conj_dup/1, [], WamConjDup),
+        compile_predicate_to_wam(user:wam_c_meta_conj_set_keep/1, [], WamConjSetKeep),
         compile_predicate_to_wam(user:wam_c_meta_bag/1, [], WamBag),
         compile_predicate_to_wam(user:wam_c_meta_set/1, [], WamSet),
         compile_predicate_to_wam(user:wam_c_meta_empty_bag/1, [], WamEmptyBag),
+        compile_predicate_to_wam(user:wam_c_meta_conj_bag/1, [], WamConjBag),
+        compile_predicate_to_wam(user:wam_c_meta_conj_set/1, [], WamConjSet),
         sub_string(WamBag, _, _, _, 'execute bagof/3'),
         \+ sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
         sub_string(WamSet, _, _, _, 'execute setof/3'),
         \+ sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamConjBag, _, _, _, 'put_structure ,/2'),
+        sub_string(WamConjBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamConjBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamConjSet, _, _, _, 'put_structure ,/2'),
+        sub_string(WamConjSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamConjSet, _, _, _, 'begin_aggregate setof'),
         compile_wam_predicate_to_c(user:wam_c_meta_item/1, WamItem, [], ItemCode),
         compile_wam_predicate_to_c(user:wam_c_meta_dup/1, WamDup, [], DupCode),
         compile_wam_predicate_to_c(user:wam_c_meta_none/1, WamNone, [], NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_item/1, WamConjItem, [], ConjItemCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_keep/1, WamConjKeep, [], ConjKeepCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_dup/1, WamConjDup, [], ConjDupCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_set_keep/1, WamConjSetKeep, [], ConjSetKeepCode),
         compile_wam_predicate_to_c(user:wam_c_meta_bag/1, WamBag, [], BagCode),
         compile_wam_predicate_to_c(user:wam_c_meta_set/1, WamSet, [], SetCode),
         compile_wam_predicate_to_c(user:wam_c_meta_empty_bag/1, WamEmptyBag, [], EmptyBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_bag/1, WamConjBag, [], ConjBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_set/1, WamConjSet, [], ConjSetCode),
         atomic_list_concat([ItemCode, DupCode, NoneCode,
-                            BagCode, SetCode, EmptyBagCode],
+                            ConjItemCode, ConjKeepCode, ConjDupCode,
+                            ConjSetKeepCode,
+                            BagCode, SetCode, EmptyBagCode,
+                            ConjBagCode, ConjSetCode],
                            '\n\n',
                            PredCode),
         compile_wam_runtime_to_c([], RuntimeCode),
@@ -3197,9 +3236,15 @@ cleanup_wam_c_bagof_setof_meta_call_smoke :-
     retractall(user:wam_c_meta_item(_)),
     retractall(user:wam_c_meta_dup(_)),
     retractall(user:wam_c_meta_none(_)),
+    retractall(user:wam_c_meta_conj_item(_)),
+    retractall(user:wam_c_meta_conj_keep(_)),
+    retractall(user:wam_c_meta_conj_dup(_)),
+    retractall(user:wam_c_meta_conj_set_keep(_)),
     retractall(user:wam_c_meta_bag(_)),
     retractall(user:wam_c_meta_set(_)),
-    retractall(user:wam_c_meta_empty_bag(_)).
+    retractall(user:wam_c_meta_empty_bag(_)),
+    retractall(user:wam_c_meta_conj_bag(_)),
+    retractall(user:wam_c_meta_conj_set(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -6731,9 +6776,15 @@ wam_c_bagof_setof_meta_call_main(
 void setup_wam_c_meta_item_1(WamState* state);
 void setup_wam_c_meta_dup_1(WamState* state);
 void setup_wam_c_meta_none_1(WamState* state);
+void setup_wam_c_meta_conj_item_1(WamState* state);
+void setup_wam_c_meta_conj_keep_1(WamState* state);
+void setup_wam_c_meta_conj_dup_1(WamState* state);
+void setup_wam_c_meta_conj_set_keep_1(WamState* state);
 void setup_wam_c_meta_bag_1(WamState* state);
 void setup_wam_c_meta_set_1(WamState* state);
 void setup_wam_c_meta_empty_bag_1(WamState* state);
+void setup_wam_c_meta_conj_bag_1(WamState* state);
+void setup_wam_c_meta_conj_set_1(WamState* state);
 
 static bool wam_c_meta_expect_atom_list2(WamState *state, WamValue value,
                                          const char *first,
@@ -6760,9 +6811,15 @@ int main(void) {
     setup_wam_c_meta_item_1(&state);
     setup_wam_c_meta_dup_1(&state);
     setup_wam_c_meta_none_1(&state);
+    setup_wam_c_meta_conj_item_1(&state);
+    setup_wam_c_meta_conj_keep_1(&state);
+    setup_wam_c_meta_conj_dup_1(&state);
+    setup_wam_c_meta_conj_set_keep_1(&state);
     setup_wam_c_meta_bag_1(&state);
     setup_wam_c_meta_set_1(&state);
     setup_wam_c_meta_empty_bag_1(&state);
+    setup_wam_c_meta_conj_bag_1(&state);
+    setup_wam_c_meta_conj_set_1(&state);
 
     WamValue bag_args[1] = { val_unbound("Bag") };
     int bag_rc = wam_run_predicate(&state, "wam_c_meta_bag/1", bag_args, 1);
@@ -6792,6 +6849,30 @@ int main(void) {
         state.aggregate_top != 0 || state.aggregate_group_top != 0) {
         wam_free_state(&state);
         return 30;
+    }
+
+    WamValue conj_bag_args[1] = { val_unbound("ConjBag") };
+    int conj_bag_rc = wam_run_predicate(&state, "wam_c_meta_conj_bag/1",
+                                        conj_bag_args, 1);
+    if (conj_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "c") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue conj_set_args[1] = { val_unbound("ConjSet") };
+    int conj_set_rc = wam_run_predicate(&state, "wam_c_meta_conj_set/1",
+                                        conj_set_args, 1);
+    if (conj_set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0) {
+        wam_free_state(&state);
+        return 50;
     }
 
     wam_free_state(&state);
