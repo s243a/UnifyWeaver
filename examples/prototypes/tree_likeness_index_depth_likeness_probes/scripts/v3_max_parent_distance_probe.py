@@ -22,8 +22,18 @@ What this should show:
 - If d_wPow ≈ avg + 1: metric averages over chains (depth-like-on-average)
 - If d_wPow < min_dist + 1: shortcuts dominate even at this looser budget
 """
-import lmdb, math, random, time, sys
+import argparse, lmdb, math, os, random, time, sys
 from collections import defaultdict, deque
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from max_dist_budget import dp_max_dist, load_metric_max_dist
+
+_ap = argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--max-dist-metric", default=None,
+                 help="Phase-1 scoped LMDB dir holding metric_max_dist_to_root; "
+                      "use the materialised true-longest budget instead of the "
+                      "in-probe DP (which undercounts — see max_dist_budget.py)")
+MAX_DIST_METRIC = _ap.parse_known_args()[0].max_dist_metric
 
 LMDB_PATH = '/tmp/sw_post_fix_lmdb'
 ROOT_ID = 137597
@@ -82,20 +92,32 @@ print(f"  Reachable: {len(reachable):,}")
 # DP for max acyclic parent distance to root
 # ============================================================
 
-print("[3/6] DP for max acyclic parent distance to root...", flush=True)
-# Build nodes_at_depth (sorted by BFS depth ascending)
+print("[3/6] max acyclic parent distance to root...", flush=True)
+# Build nodes_at_depth (sorted by BFS depth ascending) — used by the sampler.
 nodes_at_depth = defaultdict(list)
 for n, d in min_dist.items():
     nodes_at_depth[d].append(n)
-max_dist = {ROOT_ID: 0}
-max_depth = max(nodes_at_depth.keys())
-for d in range(1, max_depth + 1):
-    for n in nodes_at_depth[d]:
-        # parents of n with smaller BFS depth (acyclic guarantee in topological order)
-        candidate_parents = [p for p in parents_of.get(n, ()) if p in max_dist]
-        if not candidate_parents:
-            continue
-        max_dist[n] = 1 + max(max_dist[p] for p in candidate_parents)
+
+if MAX_DIST_METRIC:
+    # Use the ingest-materialised budget (true longest acyclic parent path).
+    print(f"  using materialised max_dist_to_root from {MAX_DIST_METRIC}", flush=True)
+    max_dist = load_metric_max_dist(MAX_DIST_METRIC, expected_root=ROOT_ID)
+    missing = [n for n in reachable if n not in max_dist]
+    if missing:
+        # Node ids absent from the metric (e.g. metric scoped to a subtree) fall
+        # back to the in-probe DP so the sampler still has a budget for them.
+        print(f"  WARNING: {len(missing):,} reachable nodes absent from metric; "
+              f"falling back to DP for those", flush=True)
+        dp = dp_max_dist(min_dist, parents_of)
+        for n in missing:
+            if n in dp:
+                max_dist[n] = dp[n]
+else:
+    # Default: the probe's original BFS-depth-monotone DP. NOTE this undercounts
+    # nodes whose longest ancestor chain runs through a deeper-BFS parent; pass
+    # --max-dist-metric for the corrected (true-longest) budget. See
+    # max_dist_budget.py for the characterised divergence.
+    max_dist = dp_max_dist(min_dist, parents_of)
 
 # Stats on max_dist vs min_dist
 ratios = []
