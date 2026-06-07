@@ -92,6 +92,31 @@ def recompute_min_dist(env, cc_db, root, max_depth):
     return dist
 
 
+def recompute_max_dist(env, cp_db, root, max_depth):
+    """Independent oracle for max_dist_to_root: length-bucketed node-DP over
+    category_parent (matches build_max_distance.py). max_dist(N) = largest L
+    with N reachable from root by a walk of L parent-hops, capped at max_depth;
+    root -> 0."""
+    children, parents = [], []
+    with env.begin() as txn:
+        for k, v in txn.cursor(db=cp_db):
+            children.append(dec(k))
+            parents.append(dec(v))
+    layer = {root}
+    maxd = {root: 0}
+    for depth in range(1, max_depth + 1):
+        nxt = set()
+        for i in range(len(children)):
+            if parents[i] in layer:
+                nxt.add(children[i])
+        if not nxt:
+            break
+        for node in nxt:
+            maxd[node] = depth
+        layer = nxt
+    return maxd
+
+
 def recompute_effective_distance(env, cp_db, root, max_depth, exponent):
     """Independent node-DP recompute (matches build_effective_distance.py):
     S(N) = Σ_L count[N][L]·(L+1)^(-exponent), count over walks up category_parent.
@@ -210,6 +235,11 @@ def main():
             oracle = recompute_min_dist(env, cc_db, root, max_depth)
             def matches(stored, want):
                 return want == stored
+        elif args.metric == "max_dist_to_root":
+            cp_db = env.open_db(b"category_parent", dupsort=True, create=False)
+            oracle = recompute_max_dist(env, cp_db, root, max_depth)
+            def matches(stored, want):
+                return want == stored
         elif args.metric == "effective_distance":
             exponent = float(meta.get("exponent", 5))
             cp_db = env.open_db(b"category_parent", dupsort=True, create=False)
@@ -217,8 +247,8 @@ def main():
             def matches(stored, want):
                 return abs(want - stored) <= 1e-6 * max(1.0, abs(want))
         else:
-            sys.stderr.write(f"--verify supports min_dist_to_root and "
-                             f"effective_distance (got {args.metric})\n")
+            sys.stderr.write(f"--verify supports min_dist_to_root, max_dist_to_root "
+                             f"and effective_distance (got {args.metric})\n")
             return 2
         mismatches = 0
         checked = 0
