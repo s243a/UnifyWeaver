@@ -13,6 +13,8 @@
 :- dynamic kt_make_list/3.
 :- dynamic kt_match_pair/3.
 :- dynamic kt_color/1.
+:- dynamic kt_parent/2.
+:- dynamic kt_grandparent/2.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -69,7 +71,9 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, 'sealed class Value')),
     assertion(has_substring(Code, 'sealed class WamContext')),
     assertion(has_substring(Code, 'data class PredicateCode')),
+    assertion(has_substring(Code, 'data class CallFrame')),
     assertion(has_substring(Code, 'fun restoreChoicePoint(): Boolean')),
+    assertion(has_substring(Code, 'fun enterPredicate(state: WamState, predicate: String')),
     assertion(has_substring(Code, 'fun unify(left: Value?, right: Value?): Boolean')),
     assertion(has_substring(Code, 'fun beginStructure(functor: String, register: String): Boolean')),
     assertion(has_substring(Code, '"get_structure"')),
@@ -108,6 +112,8 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             retractall(user:kt_make_list(_, _, _)),
             retractall(user:kt_match_pair(_, _, _)),
             retractall(user:kt_color(_)),
+            retractall(user:kt_parent(_, _)),
+            retractall(user:kt_grandparent(_, _)),
             assertz(user:kt_fact(alpha, beta)),
             assertz(user:kt_same(X, X)),
             assertz(user:(kt_eq(X, Y) :- Y = X)),
@@ -115,7 +121,10 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             assertz(user:kt_make_list(X, Y, [X, Y])),
             assertz(user:kt_match_pair(pair(X, Y), X, Y)),
             assertz(user:kt_color(red)),
-            assertz(user:kt_color(blue))
+            assertz(user:kt_color(blue)),
+            assertz(user:kt_parent(alice, bob)),
+            assertz(user:kt_parent(bob, carol)),
+            assertz(user:(kt_grandparent(X, Z) :- kt_parent(X, Y), kt_parent(Y, Z)))
         ),
         (   wam_kotlin_target:write_wam_kotlin_project(
                 [ user:kt_fact/2,
@@ -124,7 +133,9 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
                   user:kt_wrap/2,
                   user:kt_make_list/3,
                   user:kt_match_pair/3,
-                  user:kt_color/1
+                  user:kt_color/1,
+                  user:kt_parent/2,
+                  user:kt_grandparent/2
                 ],
                 [emit_mode(interpreter)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
@@ -154,7 +165,13 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_color/1 blue'], ColorOut, _ColorErr, ColorStatus),
             assertion(ColorStatus == exit(0)),
             assertion(has_substring(ColorOut, 'Ran kt_color/1')),
-            assertion(has_substring(ColorOut, 'A1=Atom(name=blue)'))
+            assertion(has_substring(ColorOut, 'A1=Atom(name=blue)')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_grandparent/2 alice carol'], GrandOut, _GrandErr, GrandStatus),
+            assertion(GrandStatus == exit(0)),
+            assertion(has_substring(GrandOut, 'Ran kt_grandparent/2')),
+            assertion(has_substring(GrandOut, 'X3=Atom(name=alice)')),
+            assertion(has_substring(GrandOut, 'Y1=Atom(name=bob)')),
+            assertion(has_substring(GrandOut, 'Y2=Atom(name=carol)'))
         ),
         (   retractall(user:kt_fact(_, _)),
             retractall(user:kt_same(_, _)),
@@ -162,7 +179,9 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             retractall(user:kt_wrap(_, _)),
             retractall(user:kt_make_list(_, _, _)),
             retractall(user:kt_match_pair(_, _, _)),
-            retractall(user:kt_color(_))
+            retractall(user:kt_color(_)),
+            retractall(user:kt_parent(_, _)),
+            retractall(user:kt_grandparent(_, _))
         )
     ).
 

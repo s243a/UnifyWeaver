@@ -20,10 +20,14 @@ sealed class Value {
 
 data class Instruction(val op: String, val args: List<Any?> = emptyList())
 
-data class ChoicePoint(
-    val pc: Int,
-    val registers: MutableMap<String, Value?>,
-    val trailSize: Int,
+data class PredicateCode(
+    val instructions: List<Instruction>,
+    val labels: Map<String, Int>,
+)
+
+data class CallFrame(
+    val code: PredicateCode,
+    val returnPc: Int,
     val context: WamContext?,
 )
 
@@ -37,12 +41,22 @@ sealed class WamContext {
     ) : WamContext()
 }
 
+data class ChoicePoint(
+    val code: PredicateCode,
+    val pc: Int,
+    val registers: MutableMap<String, Value?>,
+    val trailSize: Int,
+    val context: WamContext?,
+    val callStack: List<CallFrame>,
+)
+
 class WamState(
     var pc: Int = 0,
     val registers: MutableMap<String, Value?> = linkedMapOf(),
     val heap: MutableList<Value?> = mutableListOf(),
     val trail: MutableList<String> = mutableListOf(),
     val choicePoints: MutableList<ChoicePoint> = mutableListOf(),
+    val callStack: MutableList<CallFrame> = mutableListOf(),
     var context: WamContext? = null,
 ) {
     fun deref(value: Value?): Value? = when (value) {
@@ -128,27 +142,26 @@ class WamState(
         return value
     }
 
-    fun saveChoicePoint(pc: Int) {
-        choicePoints.add(ChoicePoint(pc, LinkedHashMap(registers), trail.size, context))
+    fun saveChoicePoint(code: PredicateCode, pc: Int) {
+        choicePoints.add(ChoicePoint(code, pc, LinkedHashMap(registers), trail.size, context, callStack.toList()))
     }
 
-    fun restoreChoicePoint(): Boolean {
-        val cp = choicePoints.removeLastOrNull() ?: return false
+    fun restoreChoicePointFrame(): ChoicePoint? {
+        val cp = choicePoints.removeLastOrNull() ?: return null
         registers.clear()
         registers.putAll(cp.registers)
         while (trail.size > cp.trailSize) {
             trail.removeAt(trail.lastIndex)
         }
+        callStack.clear()
+        callStack.addAll(cp.callStack)
         context = cp.context
         pc = cp.pc
-        return true
+        return cp
     }
-}
 
-data class PredicateCode(
-    val instructions: List<Instruction>,
-    val labels: Map<String, Int>,
-)
+    fun restoreChoicePoint(): Boolean = restoreChoicePointFrame() != null
+}
 
 class WamProgram {
     private val predicates: MutableMap<String, PredicateCode> = linkedMapOf()
@@ -163,8 +176,10 @@ class WamProgram {
         predicates[name] = PredicateCode(instructions, labels)
     }
 
+    fun findCode(name: String): PredicateCode? = predicates[name]
+
     fun codeFor(name: String): PredicateCode =
-        predicates[name] ?: error("Unknown WAM predicate: $name")
+        findCode(name) ?: error("Unknown WAM predicate: $name")
 
     fun instructionsFor(name: String): List<Instruction> = codeFor(name).instructions
 
@@ -179,11 +194,36 @@ class WamRuntime(private val program: WamProgram) {
         initialState.pc = 0
         while (initialState.pc in currentCode.instructions.indices) {
             val instruction = currentCode.instructions[initialState.pc]
-            if (!step(initialState, instruction) && !initialState.restoreChoicePoint()) {
+            if (!step(initialState, instruction) && !restoreChoicePoint(initialState)) {
                 error("WAM instruction failed at pc=${initialState.pc}: $instruction")
             }
         }
         return initialState
+    }
+
+    fun restoreChoicePoint(state: WamState): Boolean {
+        val cp = state.restoreChoicePointFrame() ?: return false
+        currentCode = cp.code
+        return true
+    }
+
+    fun enterPredicate(state: WamState, predicate: String, returnPc: Int? = null): Boolean {
+        val nextCode = program.findCode(predicate) ?: return false
+        if (returnPc != null) {
+            state.callStack.add(CallFrame(currentCode, returnPc, state.context))
+        }
+        currentCode = nextCode
+        state.context = null
+        state.pc = 0
+        return true
+    }
+
+    fun returnFromPredicate(state: WamState): Boolean {
+        val frame = state.callStack.removeLastOrNull() ?: return false
+        currentCode = frame.code
+        state.context = frame.context
+        state.pc = frame.returnPc
+        return true
     }
 
     fun jumpToLabel(state: WamState, label: String): Boolean {
@@ -230,14 +270,14 @@ class WamRuntime(private val program: WamProgram) {
             "try_me_else" -> {
                 val label = instruction.args.getOrNull(0) as? String ?: return false
                 val target = currentCode.labels[label] ?: return false
-                state.saveChoicePoint(target)
+                state.saveChoicePoint(currentCode, target)
                 state.pc += 1
                 return true
             }
             "retry_me_else" -> {
                 val label = instruction.args.getOrNull(0) as? String ?: return false
                 val target = currentCode.labels[label] ?: return false
-                state.saveChoicePoint(target)
+                state.saveChoicePoint(currentCode, target)
                 state.pc += 1
                 return true
             }
@@ -436,12 +476,22 @@ class WamRuntime(private val program: WamProgram) {
                 }
                 return false
             }
-            "call", "execute", "allocate", "deallocate" -> {
+            "call" -> {
+                val predicate = instruction.args.getOrNull(0) as? String ?: return false
+                return enterPredicate(state, predicate, returnPc = state.pc + 1)
+            }
+            "execute" -> {
+                val predicate = instruction.args.getOrNull(0) as? String ?: return false
+                return enterPredicate(state, predicate)
+            }
+            "allocate", "deallocate" -> {
                 state.pc += 1
                 return true
             }
             "proceed" -> {
-                state.pc = Int.MAX_VALUE
+                if (!returnFromPredicate(state)) {
+                    state.pc = Int.MAX_VALUE
+                }
                 return true
             }
             "fail" -> {
