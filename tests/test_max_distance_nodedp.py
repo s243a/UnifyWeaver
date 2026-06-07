@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2025 John William Creighton (s243a)
-"""Equivalence test for examples/benchmark/build_max_distance.py.
+"""Equivalence test for benchmarks/root-metrics/prototype/build_max_distance.py.
 
 max_dist_to_root is the (max,+) longest-walk-to-root metric. On a DAG it must
 equal the longest simple path (in parent hops) to the root. Builds a tiny
@@ -26,7 +26,7 @@ except ImportError:
     HAVE_LMDB = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TOOL = REPO_ROOT / "examples" / "benchmark" / "build_max_distance.py"
+TOOL = REPO_ROOT / "benchmarks" / "root-metrics" / "prototype" / "build_max_distance.py"
 I32 = struct.Struct("<i")
 
 

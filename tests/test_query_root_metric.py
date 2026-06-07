@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2025 John William Creighton (s243a)
-"""Unit test for examples/benchmark/query_root_metric.py.
+"""Unit test for benchmarks/root-metrics/prototype/query_root_metric.py.
 
 Builds a tiny scoped LMDB (with the metric_min_dist_to_root sub-db) via
 build_scoped_subtree_lmdb.py, then checks that query_root_metric.py answers
@@ -24,10 +24,13 @@ except ImportError:
     HAVE_LMDB = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PROTO = REPO_ROOT / "benchmarks" / "root-metrics" / "prototype"
+# build_scoped_subtree_lmdb.py stays under examples/benchmark/ (it is the
+# demand-set scoping tool, used by the matrix-bench generator + ingest path).
 BUILDER = REPO_ROOT / "examples" / "benchmark" / "build_scoped_subtree_lmdb.py"
-EFFDIST = REPO_ROOT / "examples" / "benchmark" / "build_effective_distance.py"
-MAXDIST = REPO_ROOT / "examples" / "benchmark" / "build_max_distance.py"
-QUERY = REPO_ROOT / "examples" / "benchmark" / "query_root_metric.py"
+EFFDIST = PROTO / "build_effective_distance.py"
+MAXDIST = PROTO / "build_max_distance.py"
+QUERY = PROTO / "query_root_metric.py"
 I32 = struct.Struct("<i")
 
 
