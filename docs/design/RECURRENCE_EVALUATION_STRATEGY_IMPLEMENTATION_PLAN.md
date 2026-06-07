@@ -96,7 +96,7 @@ Implement the six initial cost-model rules from the [Specification §Phase B](RE
 - `admissible_strategies/2` with the *two-condition* admissibility test from the SPEC: KernelKind permits + termination-guarantee permits. Termination-guarantee logic splits by `value_domain(combinatorial|numeric)` (combinatorial+monotone is sufficient; numeric needs contraction-rate < 1). The monotonicity-cross-class restriction is *not* applied here — it depends on intent context and is applied in Phase C resolution.
 - A kernel-kind-to-strategies static table (Prolog facts) mapping each `KernelKind` to its admissible strategy list. *Maintenance note*: this table must be kept in sync with `recursive_kernel_detection.pl`'s detector registry. Add a TODO comment in both files referencing the other.
 - `apply_cost_model/3` wrapping the above.
-- Unit tests in `tests/core/test_res_cost_model.pl` covering: each rule individually; the SPEC worked-scoring example; rule-interaction cases (multiple rules firing; priority tiebreaks; confidence weighting for inferred-only rules); the contraction-rate-gating of fixed_point strategies; `monotone(false)` restricting cross-class selection.
+- Unit tests in `tests/core/test_res_cost_model.pl` covering: each rule individually; the SPEC worked-scoring example; rule-interaction cases (multiple rules firing; priority tiebreaks; confidence weighting for inferred-only rules); the contraction-rate-gating of `fixed_point` strategies for numeric recurrences. (The `monotone(false)` cross-class restriction is tested in Phase 3 with the conflict-resolution machine — *not* here, because admissibility deliberately does not apply that restriction.)
 
 ### Scope notes
 
@@ -111,8 +111,9 @@ Implement the six initial cost-model rules from the [Specification §Phase B](RE
 - `cardinality(large)` + `csr_available(true)` triggers `prefer_bidirectional_csr_present`.
 - Empty data signals trigger `default_fallback` and return `per_query(unidirectional)`.
 - Two rules with the same score resolve to the higher-Priority one with the tie noted in the trace.
-- `numeric_contraction_rate(none)` causes `admissible_strategies/2` to omit all `fixed_point(_)` strategies regardless of KernelKind.
-- `monotone(false)` causes `admissible_strategies/2` to restrict to a single strategy class (the kernel's primary).
+- For `value_domain(numeric)` recurrences, `numeric_contraction_rate(none)` causes `admissible_strategies/2` to omit all `fixed_point(_)` strategies regardless of KernelKind.
+- For `value_domain(combinatorial)` recurrences, `fixed_point` strategies remain admissible regardless of `numeric_contraction_rate` value (the contraction rate is not consulted for combinatorial).
+- `monotone(false)` does *not* affect `admissible_strategies/2` output — the monotonicity-cross-class restriction is applied in Phase 3's conflict-resolution machine where intent is in scope. A unit test verifies that `admissible_strategies/2` returns the *same* list for `monotone(true)` and `monotone(false)` recurrences with otherwise-identical properties.
 
 ### Estimated effort
 
@@ -128,7 +129,7 @@ Implement `resolve_against_intent/5` with the six-step hierarchy from the [Speci
 
 - `resolve_against_intent/5` with each step as a separate helper predicate using semantic names: `step_no_intent/4`, `step_intent_matches/4`, `step_third_option/4`, `step_scope_disambiguation/4`, `step_satisfiability/4`, `step_caller_wins/4`. Each step takes the same inputs and produces either `resolved(Strategy, TraceEntry)` or `next_step`.
 - The `intent_compatible_with_strategy/2` predicate implementing the [intent-compatibility matrix](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#intent-compatibility-matrix) from the SPEC. Each row of the matrix is a clause; adding intent types means adding clauses.
-- The satisfiability adjuster — handles `build_csr_at_compile_time`, `degrade_to_compatible`, `degrade_with_warning`. The adjuster emits `step(adjustment, ...)` entries into the trace (separate from `step(satisfiability, ...)`); the strategy term remains the post-adjustment destination.
+- The satisfiability adjuster — handles `build_csr_at_compile_time`, `degrade_to_compatible`, `degrade_with_warning`. The adjuster records the chosen adjustment as a **detail field** of the `step_satisfiability` trace entry (e.g. `step(satisfiability, adjusted, [adjustment(build_csr_at_compile_time), unmet_intent(...), reason(...)])`), NOT as a separate `step(adjustment, ...)` entry — the per-step single-entry fold contract requires each step to contribute exactly one trace entry. The strategy term remains the post-adjustment destination.
 - Unit tests in `tests/core/test_res_conflict.pl` covering each step in isolation, the full hierarchy walked through, every step exiting both via `resolved` and via `next_step`, and the SPEC's full scoping-example.
 
 ### Scope notes
@@ -136,7 +137,7 @@ Implement `resolve_against_intent/5` with the six-step hierarchy from the [Speci
 - Each step is small and individually testable.
 - The full hierarchy is just a fold over the steps — `resolve_against_intent/5` walks the list of steps in order, taking the first `resolved`.
 - The trace entry for each step records what fired and why; `next_step` returns an empty trace entry (the step is skipped but does not appear in the trace).
-- "Build CSR at compile time" is a `step(adjustment, build_csr_at_compile_time, ...)` trace entry. The strategy module does *not* execute the build; the target adapter reads the adjustment from the trace and emits the build-CSR step in its generated code.
+- "Build CSR at compile time" is recorded as `adjustment(build_csr_at_compile_time)` in the **detail field** of whatever step caused it (typically `step_satisfiability` for unmet-intent adjustments, or `step_cost_model_choice` for rule-level adjustments — see [SPEC §scoring-example](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#scoring-example)). The strategy module does *not* execute the build; the target adapter walks the trace looking for `adjustment(...)` detail fields on any step and emits the build-CSR step in its generated code.
 - The intent-compatibility matrix is a finite table. Adding intent signal types means adding rows. Document the matrix's existence in the module file's header comments so future contributors know to update it.
 
 ### Hidden-scope notes (flagged by review)
@@ -212,7 +213,7 @@ Wire `select_evaluation_strategy/3` into `src/unifyweaver/targets/wam_fsharp_tar
   1. Build inputs via `recurrence_inputs:build_recurrence_term/3` and `recurrence_inputs:build_workload_signals/2`.
   2. Call `recurrence_evaluation_strategy:select_evaluation_strategy/3`.
   3. Dispatch on the returned `Strategy`. The existing upgrade path becomes one branch of the dispatch.
-  4. Execute any `step(adjustment, ...)` entries from the trace (e.g. emit a build-CSR step into the generated F# project).
+  4. Walk the trace looking for `adjustment(...)` detail fields on any step (typically on `step_satisfiability` or `step_cost_model_choice`); execute each adjustment by emitting the corresponding code into the generated F# project (e.g. a build-CSR step).
   5. Call `recurrence_evaluation_strategy:format_trace_for_comment(Trace, "// ", Comment)` and insert at the kernel call site.
   6. Optionally call `recurrence_evaluation_strategy:render_trace_for_stderr/2` and write to stderr; quiet-mode skips this.
 - Backwards-compat: existing tests (`tests/core/test_wam_fsharp_bidirectional_e2e.pl`) pass without modification because explicit `kernel_mode(bidirectional)` is honoured by the conflict-resolution hierarchy.
@@ -226,7 +227,8 @@ Wire `select_evaluation_strategy/3` into `src/unifyweaver/targets/wam_fsharp_tar
 
 - `tests/core/test_wam_fsharp_bidirectional_e2e.pl` passes unchanged.
 - A new variant of the test (`tests/core/test_wam_fsharp_strategy_autoselect_e2e.pl`) calls without explicit `kernel_mode(bidirectional)`, relying on cost-model selection, and produces bidirectional code when the workload signals support it.
-- **Trace-inspection assertion**: the new test reads the generated F# file, parses the comment header, and asserts the trace's `final_decision` step contains `per_query(bidirectional)` and was decided by `prefer_bidirectional_csr_present` (or equivalent rule). This proves the selector was actually invoked, not bypassed.
+- **Trace-inspection assertion (positive)**: the new test reads the generated F# file, parses the comment header, and asserts the trace's `final_decision` step contains `per_query(bidirectional)` and was decided by `prefer_bidirectional_csr_present` (or equivalent cost-model rule). This proves the selector was actually invoked, not bypassed.
+- **Trace-inspection assertion (negative)**: the same test asserts the trace contains **no** `step(caller_wins, ...)` entry, and the `final_decision`'s `decided_by` field is NOT `caller_wins`. A resolution machine that incorrectly walks all the way to the caller-wins fallback when it should have resolved earlier (e.g. via `step_intent_matches` or `step_scope_disambiguation`) would produce a `caller_wins` step in the trace; the negative assertion catches this. Without this assertion, a buggy resolution machine that always falls through to caller-wins would pass the positive trace-inspection test (the right strategy gets chosen, but for the wrong reason).
 - **Stub-leak assertion**: same test asserts that *no* trace step has `Name = stub`. Stub steps from Phase 0 should never appear in real selections; if they do, Phases 1–4 have an incomplete implementation.
 - The load-isolation test (`tests/core/test_recurrence_inputs_isolated.pl`) loads `recurrence_inputs.pl` without any target modules and confirms it loads cleanly. Catches transitive target dependencies.
 - The grep tripwire test (`tests/core/test_recurrence_inputs_grep.pl`) verifies `recurrence_inputs.pl` has no target-specific atoms in its body. Faster than load-isolation; kept as a tripwire for the cases grep catches.
