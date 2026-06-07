@@ -1311,9 +1311,13 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
 
-    % Assemble full module
+    % M116: stream the module IR straight to the output file rather
+    % than calling render_template/3 to build one multi-MB Prolog
+    % atom and then writing it in one shot. The single big atom was
+    % the dominant per-compile allocation that drove the suite into
+    % SWI''s 4 GB global-stack cap around test 675.
     read_template_file('templates/targets/llvm_wam/module.ll.mustache', ModuleTemplate),
-    render_template(ModuleTemplate, [
+    Substitutions = [
         module_name=ModuleName,
         date=Date,
         target_datalayout=DataLayout,
@@ -1326,12 +1330,10 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         native_predicates=FinalNativeCode,
         wam_predicates=WamCode,
         interop_bridge=""
-    ], FullModule),
-
-    % Write output file
+    ],
     setup_call_cleanup(
         open(OutputFile, write, Stream),
-        format(Stream, "~w", [FullModule]),
+        stream_render_mustache(Stream, ModuleTemplate, Substitutions),
         close(Stream)
     ),
     format('WAM LLVM module created at: ~w~n', [OutputFile]).
@@ -1406,6 +1408,46 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
 %  For native targets: declare malloc, free, snprintf, strcmp, printf.
 %  For wasm32: define malloc/free as bump allocator (self-contained),
 %  omit snprintf/strcmp/printf (not available in standalone WASM).
+%% stream_render_mustache(+Stream, +Template, +Substitutions) is det.
+%
+%  M116: streaming counterpart to render_template/3 for the
+%  module.ll.mustache top-level assembly. Walks the template scanning
+%  for {{key}} placeholders, writes each literal segment directly to
+%  Stream, looks up Key in Substitutions, writes the corresponding
+%  value. No full-IR atom is ever materialised in the Prolog atom
+%  table, which is what was driving the per-test SWI-stack pressure.
+%
+%  Only supports the flat {{key}} form -- the module.ll.mustache
+%  template doesn''t use sections or match blocks, so the simpler
+%  implementation is sufficient. Falls back to writing the rest of
+%  the template literally when no more placeholders are found.
+stream_render_mustache(Stream, Template, Subs) :-
+    atom_string(Template, S),
+    stream_render_loop(Stream, S, Subs).
+
+stream_render_loop(Stream, S, Subs) :-
+    ( sub_string(S, Before, 2, _, "{{")
+    -> sub_string(S, 0, Before, _, Prefix),
+       write(Stream, Prefix),
+       AfterOpen is Before + 2,
+       sub_string(S, AfterOpen, _, 0, Rest1),
+       ( sub_string(Rest1, KeyEnd, 2, _, "}}")
+       -> sub_string(Rest1, 0, KeyEnd, _, KeyStr),
+          atom_string(Key, KeyStr),
+          ( member(Key=Value, Subs)
+          -> write(Stream, Value)
+          ;  format(Stream, '{{~w}}', [Key])
+          ),
+          AfterClose is KeyEnd + 2,
+          sub_string(Rest1, AfterClose, _, 0, Rest2),
+          stream_render_loop(Stream, Rest2, Subs)
+       ;  % Unclosed {{ -- write the rest verbatim and stop.
+          write(Stream, '{{'),
+          write(Stream, Rest1)
+       )
+    ;  write(Stream, S)
+    ).
+
 generate_external_declarations(Triple, Decls) :-
     ( sub_atom(Triple, 0, _, _, wasm32)
     -> Decls = '
