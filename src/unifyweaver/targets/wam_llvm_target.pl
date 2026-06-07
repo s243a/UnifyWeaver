@@ -3668,6 +3668,8 @@ entry:
     i32 136, label %builtin_read_link
     i32 137, label %builtin_symlink
     i32 138, label %builtin_link
+    i32 139, label %builtin_is_absolute_file_name
+    i32 140, label %builtin_same_file
   ]
 
 builtin_is:
@@ -6314,6 +6316,84 @@ lnk.do:
   %lnk.ret = call i32 @link(i8* %lnk.old, i8* %lnk.new)
   %lnk.ok = icmp eq i32 %lnk.ret, 0
   ret i1 %lnk.ok
+
+builtin_is_absolute_file_name:
+  ; M122: is_absolute_file_name(+Path) -- true iff Path is an
+  ; absolute path (starts with ''/'' on POSIX). Empty atom is NOT
+  ; absolute. Path must be Atom; non-atom fails the type guard.
+  %iaf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %iaf.t1 = call i32 @value_tag(%Value %iaf.a1)
+  %iaf.is_atom = icmp eq i32 %iaf.t1, 0
+  br i1 %iaf.is_atom, label %iaf.go, label %iaf.fail
+iaf.fail:
+  ret i1 false
+iaf.go:
+  %iaf.aid = call i64 @value_payload(%Value %iaf.a1)
+  %iaf.path = call i8* @wam_atom_to_string(i64 %iaf.aid)
+  %iaf.path_null = icmp eq i8* %iaf.path, null
+  br i1 %iaf.path_null, label %iaf.fail, label %iaf.read
+iaf.read:
+  %iaf.c0 = load i8, i8* %iaf.path
+  %iaf.eq = icmp eq i8 %iaf.c0, 47
+  ret i1 %iaf.eq
+
+builtin_same_file:
+  ; M122: same_file(+Path1, +Path2) -- true iff both paths refer
+  ; to the same underlying file (same st_dev + st_ino). Hard links
+  ; and following-symlink (libc stat() resolves symlinks) both
+  ; produce same_file = true. Both args must be Atom; either stat
+  ; failing maps to Prolog fail. Linux glibc struct stat: st_dev
+  ; at offset 0, st_ino at offset 8 (both i64), matches what
+  ; M76 size_file/2 + M76 time_file/2 already assume.
+  %samf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %samf.t1 = call i32 @value_tag(%Value %samf.a1)
+  %samf.is_atom1 = icmp eq i32 %samf.t1, 0
+  br i1 %samf.is_atom1, label %samf.check2, label %samf.fail
+samf.fail:
+  ret i1 false
+samf.check2:
+  %samf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %samf.t2 = call i32 @value_tag(%Value %samf.a2)
+  %samf.is_atom2 = icmp eq i32 %samf.t2, 0
+  br i1 %samf.is_atom2, label %samf.go, label %samf.fail
+samf.go:
+  %samf.aid1 = call i64 @value_payload(%Value %samf.a1)
+  %samf.path1 = call i8* @wam_atom_to_string(i64 %samf.aid1)
+  %samf.p1_null = icmp eq i8* %samf.path1, null
+  br i1 %samf.p1_null, label %samf.fail, label %samf.have1
+samf.have1:
+  %samf.aid2 = call i64 @value_payload(%Value %samf.a2)
+  %samf.path2 = call i8* @wam_atom_to_string(i64 %samf.aid2)
+  %samf.p2_null = icmp eq i8* %samf.path2, null
+  br i1 %samf.p2_null, label %samf.fail, label %samf.stat1
+samf.stat1:
+  %samf.buf1 = alloca [256 x i8]
+  %samf.buf1_ptr = getelementptr [256 x i8], [256 x i8]* %samf.buf1, i32 0, i32 0
+  %samf.ret1 = call i32 @stat(i8* %samf.path1, i8* %samf.buf1_ptr)
+  %samf.stat1_ok = icmp eq i32 %samf.ret1, 0
+  br i1 %samf.stat1_ok, label %samf.stat2, label %samf.fail
+samf.stat2:
+  %samf.buf2 = alloca [256 x i8]
+  %samf.buf2_ptr = getelementptr [256 x i8], [256 x i8]* %samf.buf2, i32 0, i32 0
+  %samf.ret2 = call i32 @stat(i8* %samf.path2, i8* %samf.buf2_ptr)
+  %samf.stat2_ok = icmp eq i32 %samf.ret2, 0
+  br i1 %samf.stat2_ok, label %samf.read, label %samf.fail
+samf.read:
+  ; st_dev at offset 0, st_ino at offset 8.
+  %samf.dev1_ptr = bitcast i8* %samf.buf1_ptr to i64*
+  %samf.dev1 = load i64, i64* %samf.dev1_ptr
+  %samf.dev2_ptr = bitcast i8* %samf.buf2_ptr to i64*
+  %samf.dev2 = load i64, i64* %samf.dev2_ptr
+  %samf.dev_eq = icmp eq i64 %samf.dev1, %samf.dev2
+  %samf.ino1_pi8 = getelementptr i8, i8* %samf.buf1_ptr, i64 8
+  %samf.ino1_ptr = bitcast i8* %samf.ino1_pi8 to i64*
+  %samf.ino1 = load i64, i64* %samf.ino1_ptr
+  %samf.ino2_pi8 = getelementptr i8, i8* %samf.buf2_ptr, i64 8
+  %samf.ino2_ptr = bitcast i8* %samf.ino2_pi8 to i64*
+  %samf.ino2 = load i64, i64* %samf.ino2_ptr
+  %samf.ino_eq = icmp eq i64 %samf.ino1, %samf.ino2
+  %samf.both = and i1 %samf.dev_eq, %samf.ino_eq
+  ret i1 %samf.both
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13606,6 +13686,8 @@ builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''
 builtin_op_to_id('read_link/2', 136).         % libc readlink -- symlink target as atom.
 builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
 builtin_op_to_id('link/2', 138).              % libc link(old, new) -- hard link.
+builtin_op_to_id('is_absolute_file_name/1', 139). % true iff first char is ''/''.
+builtin_op_to_id('same_file/2', 140).         % stat both, compare st_dev + st_ino.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
