@@ -64,11 +64,19 @@ admissible(fixed_point, Recurrence) :-
     termination_guarantee(Recurrence).
 
 termination_guarantee(Recurrence) :-
-    value_domain(Recurrence, combinatorial), !.    % finite-state iteration always halts
+    value_domain(Recurrence, combinatorial), !.    % finite-state iteration always halts:
+                                                   %   - monotone: reaches LFP in <= |L| steps (Tarski + finite)
+                                                   %   - non-monotone: may oscillate, but in a detectable cycle
+                                                   %     on finite state — evaluator stops + reports cycle
+                                                   % Either way: termination is guaranteed; semantic meaning of
+                                                   % the result is monotone-dependent (handled in Phase C).
 termination_guarantee(Recurrence) :-
     value_domain(Recurrence, numeric),
     numeric_contraction_rate(Recurrence, R),
-    R < 1.0.
+    R < 1.0.                                       % continuous lattice needs contraction; monotonicity is
+                                                   % orthogonal to termination here too (a contraction
+                                                   % terminates regardless of monotonicity, but the result-
+                                                   % semantics again depends on monotonicity).
 ```
 
 Note the pseudocode does *not* gate on `monotone(true)`. Admissibility is about whether the strategy will terminate; for combinatorial recurrences over a finite state space, iteration always terminates (either at a fixed point if monotone, or at a detectable cycle if not). For numeric recurrences, termination requires contraction. Monotonicity affects whether the iteration converges to the *least fixed point*, which is what fixed_point evaluation usually intends — but that's a *semantic* concern, not a termination concern, and it's handled at the conflict-resolution phase (Phase C) where the cross-class restriction lives.

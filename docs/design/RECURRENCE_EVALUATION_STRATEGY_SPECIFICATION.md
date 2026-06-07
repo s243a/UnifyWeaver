@@ -136,9 +136,9 @@ Inferred-data carries explicit uncertainty; cost-model rules can downweight it v
 `admissible_strategies(+Recurrence, -List)` returns the strategies the selector may pick from, based on properties of the recurrence alone (no intent context). A strategy is admissible iff *both* of the following hold:
 
 1. **KernelKind permits it** — read from a kernel-kind-to-strategies static table. Concrete examples:
-   - `bidirectional_ancestor` — `value_domain(combinatorial)` — permits `per_query(bidirectional)` and `per_query(astar)`. fixed_point not in this kernel's permitted set (the kernel template is per-query-only).
+   - `bidirectional_ancestor` — `value_domain(combinatorial)` — permits `per_query(bidirectional)` and `per_query(astar)`. fixed_point not in this kernel's permitted set. *Rationale*: the kernel's design intent is per-pair single-query lookup (bidirectional A\* between a source and a target); the existing F# WAM template (`templates/targets/fsharp_wam/kernel_bidirectional_ancestor.fs.mustache`) emits per-query code with no provision for batch fixed-point evaluation. Adding fixed_point to this kernel's permitted set would be a structural change (new template + cost-model rules); it's a registry gap by deliberate choice, not by oversight.
    - `transitive_closure2` — `value_domain(combinatorial)` — permits `per_query(unidirectional)`, `per_query(bidirectional)` (via upgrade), and `fixed_point(semi_naive)`. The fixed_point branch is structurally permitted; whether it's auto-selected depends on cost-model rules and is currently stubbed.
-   - `weighted_shortest_path3` — `value_domain(numeric)` — permits `per_query(dijkstra)`. fixed_point not in this kernel's permitted set in the current registry.
+   - `weighted_shortest_path3` — `value_domain(numeric)` — permits `per_query(dijkstra)`. fixed_point not in this kernel's permitted set in the current registry. *Rationale*: same as `bidirectional_ancestor` — the existing template is per-query Dijkstra; fixed_point would require either Bellman-Ford or a new value-iteration template.
 
 2. **Termination guarantee permits it** — for any `fixed_point(...)` strategy, the recurrence must have a termination guarantee. Two cases by value domain:
    - `value_domain(combinatorial)` — finite-state iteration always halts (state-space is finite; iteration either reaches a fixed point or enters a detectable cycle in bounded time). **No contraction-rate guarantee needed.** Datalog-shape recurrences and Bellman-Ford-with-visited-set fall in this case.
@@ -172,9 +172,9 @@ SearchAlgo: unidirectional | bidirectional | astar | dijkstra
 IterAlgo:   semi_naive | naive | top_down | bottom_up
 ```
 
-The `Strategy` term represents only the *destination* — what the target will emit code for. Any pre-strategy adjustments (e.g. building CSR at compile time, building a calibration cache) are tracked separately in the `Trace` as `adjustment(...)` step entries, not folded into the strategy term.
+The `Strategy` term represents only the *destination* — what the target will emit code for. Any pre-strategy adjustments (e.g. building CSR at compile time, building a calibration cache) are tracked in the `Trace` as `adjustment(...)` **detail fields** of whichever step caused them (cost-model rule or satisfiability resolution), not as separate step entries and not folded into the strategy term.
 
-This split is deliberate: it keeps the `Strategy` type clean and machine-checkable, and it lets the trace fully describe the side-effects the target must perform before the strategy code runs.
+This split is deliberate: it keeps the `Strategy` type clean and machine-checkable, and it lets the trace fully describe the side-effects the target must perform before the strategy code runs — without breaking the per-step single-entry fold contract that the trace renderers rely on.
 
 ### Decision trace
 
@@ -186,16 +186,19 @@ trace(Steps)
 
 ```prolog
 step(classify_signals, classified(Intent, Declared, Inferred), [])
-step(cost_model_choice, chosen(Strategy, Score, DecidingRule), [signal(...), reason(...)])
+step(cost_model_choice, chosen(Strategy, Score, DecidingRule), [signal(...), reason(...), adjustment(...)?])
 step(no_intent, applied, [no_intent_signals])                     % only fires if Intent = []
-step(intent_matches, applied, [matched_class(...)])               % only fires if intent matches CM
+step(intent_matches, applied, [matched_class(...)])               % only fires if all intents match CM
 step(third_option, found(Alt) | not_found, [signals_considered(...)])
-step(scope_disambiguation, resolved(Strategy, By(Scope)) | no_scope_overlap, [intent_a(...), intent_b(...)])
-step(satisfiability, satisfiable | adjusted(Action) | degraded(Action), [unmet_intent(...)])
+step(scope_disambiguation, resolved(Strategy, by(...)) | no_scope_overlap, [intent_a(...), intent_b(...)])
+step(satisfiability, satisfiable | adjusted | degraded(Action), [unmet_intent(...), adjustment(...)?])
 step(caller_wins, applied, [caller_intent(...), overridden_manifest(...)])
-step(adjustment, build_csr_at_compile_time | other_adjustment, [reason(...)])
 step(final_decision, Strategy, [decided_by(Name), overridden(_), trace_summary(...)])
 ```
+
+**Important note on adjustments.** There is no standalone `step(adjustment, ...)` entry type. Adjustments (`build_csr_at_compile_time`, `degrade_to_compatible`, etc.) are recorded as `adjustment(...)` **detail fields** of whichever step caused them — typically `step_cost_model_choice` for rule-level adjustments (a cost-model rule whose preferred strategy includes an adjustment), or `step_satisfiability` for resolution-driven adjustments (an unmet intent that the satisfiability adjuster resolves by building CSR at compile time). The `adjustment(...)?` annotation on those step lines marks the field as optional. This preserves the per-step single-entry fold contract: each resolution step contributes exactly one trace entry.
+
+Target adapters that need to execute adjustments walk the trace looking for `adjustment(...)` detail fields on *any* step, not for a separate step type.
 
 Each step's `Outcome` is one of a small enumeration; the renderers (below) know how to display each.
 
@@ -217,6 +220,10 @@ classify_signals(Workload, IntentSignals, DeclaredDataSignals, InferredDataSigna
 ```
 
 Each workload term is matched against the intent / declared-data / inferred-data dispatch table. The result is three lists. Anything unrecognised goes into `InferredDataSignals` with a warning logged via the trace (forward-compat: new signal types should be acknowledged, not silently dropped). The selector itself does not write the warning to stderr; the trace renderer does.
+
+**Deduplication of contradictory same-key signals.** When the workload contains two signals with the same key but contradictory values from different tiers — e.g. caller passes `csr_available(true)` (declared) AND static analysis infers `csr_available(false)` (inferred) — `classify_signals/4` resolves the conflict in favour of the declared signal and drops the inferred one. The trace records this with a `step(classify_signals, ..., [resolved_contradiction(csr_available, declared(true), inferred(false), dropped(inferred))])` detail entry so the user can see what happened.
+
+Rationale: declared signals are user-stated facts; inferred signals are compiler estimates. When the user explicitly disagrees with the compiler's inference, the user wins by definition. Without this resolution, downstream rule-firing would see both signals and produce ambiguous behaviour (depending on which the rule matches first). Same-key contradictions *between two declared signals*, or *between two inferred signals*, are not currently expected (the producers — `relation_policy` declarations, static analysis passes — should be internally consistent within each tier); if observed, the trace records a `step(classify_signals, ..., [ambiguous_signal(...)])` warning and the first occurrence wins as a last-resort tiebreak.
 
 ### Phase B — cost model evaluation
 
