@@ -1,5 +1,7 @@
 # Recurrence Evaluation Strategy — Specification
 
+> *Design-document-set: recurrence-evaluation-strategy v1 (philosophy / specification / implementation-plan).*
+
 This document specifies the API, data structures, decision logic, and outputs of the recurrence-evaluation-strategy selector. For the why, see [`RECURRENCE_EVALUATION_STRATEGY_PHILOSOPHY.md`](RECURRENCE_EVALUATION_STRATEGY_PHILOSOPHY.md). For the work plan, see [`RECURRENCE_EVALUATION_STRATEGY_IMPLEMENTATION_PLAN.md`](RECURRENCE_EVALUATION_STRATEGY_IMPLEMENTATION_PLAN.md).
 
 ## Module
@@ -72,7 +74,7 @@ where `KernelKind` is the kernel atom from `recursive_kernel_detection` (e.g. `b
 | Property | Type | Meaning |
 |----------|------|---------|
 | `value_domain(D)` | atom | `combinatorial` (boolean / finite Herbrand-base lattice — Datalog case) or `numeric` (continuous real-valued lattice — `d_wPow`, PageRank case). Drives whether `fixed_point` admissibility needs a contraction rate (see [Admissibility](#admissibility)) |
-| `has_combinatorial_loop_break(B)` | boolean | `true` if the user's clauses include `\+ member` or equivalent visited-set tracking. This is a **per-query traversal safety** signal, *not* a fixed_point enabler |
+| `has_combinatorial_loop_break(B)` | boolean | `true` if the user's clauses include `\+ member` or equivalent visited-set tracking. This is a **per-query traversal safety** signal, *not* a fixed_point enabler. **Absent vs `false`**: a recurrence that omits this property entirely (e.g. Dijkstra-family kernels whose per-query safety comes from priority-queue monotonicity rather than from a visited-set) is treated as "not applicable" — the selector neither requires nor benefits from the signal for that kernel. A recurrence that explicitly declares `has_combinatorial_loop_break(false)` is treated as "user-stated unsafe on cyclic input" — the selector emits a warning if it would auto-select a per-query strategy that traverses cycles. The two cases are semantically distinct |
 | `numeric_contraction_rate(R)` | maybe Float | An upper bound on the iteration contraction rate. `none` if unknown or non-numeric; a float `< 1` if known to converge. Only consulted when `value_domain(numeric)` — combinatorial recurrences don't need it |
 | `monotone(B)` | boolean | `true` if the recurrence operator is monotone over its solution lattice (default `true` for Datalog-shaped recurrences). `false` disables cross-class strategy auto-selection (applied in Phase C, not in admissibility) |
 | `result_layout(L)` | term | The output-tuple layout from `recursive_kernel_detection:kernel_result_layout/2` |
@@ -103,7 +105,7 @@ Intent signals express the user's required outcome. They bypass the cost model w
 
 | Signal | Source | Meaning |
 |--------|--------|---------|
-| `csr_path(_)` | caller option | CSR (child-direction index) is available at this path |
+| `csr_path(_)` | caller option | CSR (child-direction index) is available at this path. **Most commonly used by the F# WAM target** (which consumes the on-disk CSR via LightningDB cursors); other targets may use `csr_available(true)` without a path, or extend with target-specific path-resolution. Targets that don't need an on-disk CSR path should use `csr_available(true)` instead of `csr_path(_)` — the implementation plan's Phase 5 mock-second-caller test (`tests/core/test_recurrence_inputs_mock_caller.pl`) deliberately exercises the no-`csr_path` route to verify the helpers don't assume an F#-WAM-specific shape |
 | `csr_available(true)` | caller option | Explicit assertion of CSR availability |
 | `cardinality(C)` | `relation_policy` declaration | `small` / `medium` / `large` / `unknown` for the edge predicate |
 | `determinism(D)` | `relation_policy` | `det` / `semidet` / `nondet` / `multi` |
@@ -273,7 +275,17 @@ cost_model_rule(+RuleName, +Priority, +Recurrence, +DataSignals, -Score, -Chosen
 
 #### Confidence weighting for inferred signals
 
-A rule that depends only on inferred data takes a confidence multiplier: its raw score is multiplied by 0.8 before being summed. A rule that depends on a mix of declared and inferred data gets a per-signal weighting averaged (declared = 1.0, inferred = 0.8). This is a soft mechanism; future tuning may adjust the constants.
+The confidence-weighting formula is a single expression that subsumes both the all-inferred and mixed cases:
+
+```
+weighted_score = raw_score × (sum of per-signal weights) / (number of matching signals)
+
+where each signal contributes:
+  - 1.0 if declared
+  - 0.8 if inferred
+```
+
+Equivalently: the multiplier is the *mean* per-signal weight across the rule's matching signals. The all-inferred case reduces to `raw × (0.8 + ... + 0.8) / N = raw × 0.8`; the mixed case averages weights as shown. The single-formula presentation prevents an implementer from applying the averaged form to all-inferred (numerically equivalent here, but fragile if the constants change). The constants (`1.0`, `0.8`) are soft and future tuning may adjust them.
 
 #### Scoring example
 
@@ -331,7 +343,13 @@ Iterate over `admissible_strategies(Recurrence, Admissible)` looking for any str
 
 If two intent signals come from different scopes (manifest vs caller) and one *refines* the other in strategy-space, the refined (narrower) intent wins without it being treated as conflict. This is normal scoping rules, not an override.
 
-**Formal definition.** Intent A **refines** intent B iff A's strategy-set is a (non-empty) subset of B's strategy-set. A is the more specific intent; A wins. The relation is asymmetric — if neither A refines B nor B refines A (e.g. their strategy-sets are *disjoint*, or *partially overlapping*), this step does *not* fire, and resolution falls through to the next steps.
+**Formal definition.** Intent A **refines** intent B iff A's strategy-set is a (non-empty) **proper** subset of B's strategy-set — i.e. A ⊊ B (A is contained in B and A ≠ B). A is the more specific intent; A wins. The relation is asymmetric — if neither A refines B nor B refines A (e.g. their strategy-sets are *disjoint*, *partially overlapping*, or *equal*), this step does *not* fire, and resolution falls through to the next steps.
+
+**Why proper-subset and not loose subset.** The equal-set case (e.g. manifest says `strategy(per_query(unidirectional))` and caller says `kernel_mode(unidirectional)` — both resolve to `{per_query(unidirectional)}`) should *not* fire `step_scope_disambiguation` because there's nothing to disambiguate; the two intents agree exactly and the resolution belongs at `step_intent_matches` (which fires earlier in the hierarchy). The proper-subset definition makes equal-set a no-op for this step explicitly.
+
+**Open-ended strategy-sets from unbound terms.** Intents with unbound variables produce conceptually-infinite strategy-sets — e.g. `strategy(per_query(_))` denotes the set of all valid concrete groundings of `per_query(X)`. The `refines` check on such intents uses *symbolic* subset testing rather than enumeration: A's set is a proper subset of B's iff every ground term matching A also matches B AND there exists some ground term matching B that does not match A. For the common cases — `strategy(per_query(X))` (unbound) refined by `kernel_mode(bidirectional)` (concrete `{per_query(bidirectional), per_query(astar)}`) — the symbolic check resolves cleanly. For pathological cases (intents referencing arbitrary predicates over strategies), the implementation should fail-safe by treating the relation as `unknown` and falling through to the next step rather than committing to a refinement it can't verify.
+
+(Terminology note: earlier drafts used "subsumes" — switched to "refines" because the natural reading of "A subsumes B" varies between type-theory convention and natural-language convention. "A refines B" is unambiguous: A is more specific.)
 
 (Terminology note: earlier drafts used "subsumes" — switched to "refines" because the natural reading of "A subsumes B" varies between type-theory convention and natural-language convention. "A refines B" is unambiguous: A is more specific.)
 
@@ -380,7 +398,7 @@ The matrix used by `step_intent_matches` and `step_third_option` to decide wheth
 |---------------|----------------------|
 | `kernel_mode(bidirectional)` | `per_query(bidirectional)`, `per_query(astar)` (astar is bidirectional-flavour: see asymmetry note below) |
 | `kernel_mode(unidirectional)` | `per_query(unidirectional)`, `per_query(bfs)`, `per_query(dfs)` |
-| `kernel_mode(astar)` | `per_query(astar)` only |
+| `kernel_mode(astar)` | `per_query(astar)` **only**. **Does NOT match `per_query(bidirectional)`**. If a user passes `kernel_mode(astar)` and the cost model prefers `per_query(bidirectional)`, `step_intent_matches` does *not* fire (the intent isn't satisfied) and resolution falls through to `step_third_option` (looking for any admissible `per_query(astar)`) or `step_caller_wins` (if astar is not admissible for the kernel). This asymmetry is the most common confusion when extending the matrix; check the negative case carefully when adding a new intent type |
 | `kernel_mode(dijkstra)` | `per_query(dijkstra)` |
 | `strategy(per_query(X))` | `per_query(X)` if X is ground; any `per_query(_)` if X is unbound |
 | `strategy(fixed_point(X))` | `fixed_point(X)` if X is ground; any `fixed_point(_)` if X is unbound |
@@ -487,7 +505,9 @@ The detector produces `recursive_kernel(KernelKind, Pred/Arity, ConfigOps)`. The
 
 The selector does not call the detector; the caller (target adapter) is responsible for invoking detection first and passing the result.
 
-**Note on ConfigOps → Recurrence properties mapping.** The caller (typically `build_recurrence_term/3` in `recurrence_inputs.pl`) maps detector-emitted `ConfigOps` keys into the `Recurrence` properties list. **Callers must NOT populate `directions_admissible` in the Recurrence properties list** — it was removed from the user-facing properties in an earlier revision because it could disagree silently with the kernel-kind-to-strategies table maintained inside the selector. If a `ConfigOps` entry uses the key `directions_admissible`, `build_recurrence_term/3` drops it with a stderr warning rather than passing it through. The selector derives admissible directions from KernelKind alone — single source of truth.
+**Note on ConfigOps → Recurrence properties mapping.** The caller (typically `build_recurrence_term/3` in `recurrence_inputs.pl`) maps detector-emitted `ConfigOps` keys into the `Recurrence` properties list. **Callers must NOT populate `directions_admissible` in the Recurrence properties list** — it was removed from the user-facing properties in an earlier revision because it could disagree silently with the kernel-kind-to-strategies table maintained inside the selector. If a `ConfigOps` entry uses the key `directions_admissible`, `build_recurrence_term/3` drops it (and emits a `step(classify_signals, ..., [dropped_property(directions_admissible, reason(removed_from_spec))])` trace entry — not a stderr write, since the selector module is pure-functional) rather than passing it through. The selector derives admissible directions from KernelKind alone — single source of truth.
+
+The full signature of `build_recurrence_term/3` and the wider `recurrence_inputs.pl` module is specified in the [implementation plan §Phase 5](RECURRENCE_EVALUATION_STRATEGY_IMPLEMENTATION_PLAN.md#phase-5--f-wam-target-integration--shared-input-construction-helpers); the SPEC mentions it here as the canonical site where the `directions_admissible` drop happens.
 
 **Maintenance note**: when a new kernel detector is added to `recursive_kernel_detection.pl`, the corresponding entry in the kernel-kind-to-strategies table inside `recurrence_evaluation_strategy.pl` must also be added. This is an undocumented maintenance surface in the current codebase; the implementation plan adds a `TODO` comment in both files referencing the other.
 
