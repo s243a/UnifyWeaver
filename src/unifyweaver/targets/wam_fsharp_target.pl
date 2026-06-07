@@ -4595,53 +4595,85 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
 
 %% maybe_upgrade_bidirectional(+KV0, -KV)
 %  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+%
+%  NOTE: as of the bidirectional-not-default fix, no longer called
+%  from any compile-time path. Kept for backwards-compatibility of
+%  external callers that may use it directly. The decision to swap
+%  kernel kinds in the F# WAM target's emission pipeline now flows
+%  through wam_fsharp_apply_strategy_choice/4 (below), which gates
+%  on the allow_bidirectional_kernel_swap/1 flag.
 maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
                             Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
 maybe_upgrade_bidirectional(KV, KV).
 
-%% wam_fsharp_apply_strategy_selector(+ResWorkload, +KV0, -KV)
+%% wam_fsharp_apply_strategy_selector(+ResWorkload, +Options, +KV0, -KV)
 %
 %  Phase 5a: per-kernel strategy-selector decision. Builds a
 %  Recurrence from the detected kernel, calls
 %  recurrence_evaluation_strategy:select_evaluation_strategy/3,
-%  then applies the resulting Strategy as a kernel upgrade if
-%  appropriate.
-%
-%  Currently the only auto-upgrade is category_ancestor →
-%  bidirectional_ancestor when the selector returns
-%  per_query(bidirectional). All other Strategy values leave the
-%  kernel unchanged. Phase 5b will additionally extract the
-%  Trace for the generated-F# comment header.
+%  then applies the resulting Strategy as a kernel upgrade IF the
+%  caller has set allow_bidirectional_kernel_swap(true).
 %
 %  ResWorkload is the workload signal list built once per compile
 %  via recurrence_inputs:build_workload_signals/2.
+%
+%  Options carries the raw caller-provided options for the
+%  bidirectional-not-default flag check.
 wam_fsharp_apply_strategy_selector(ResWorkload,
+                                   Options,
                                    Key-DetectedKernel,
                                    Key-MaybeUpgraded) :-
     recurrence_inputs:build_recurrence_term(DetectedKernel, [], Recurrence),
     recurrence_evaluation_strategy:select_evaluation_strategy(
         Recurrence, ResWorkload,
         strategy_choice(Strategy, _Trace)),
-    wam_fsharp_apply_strategy_choice(Strategy, DetectedKernel, MaybeUpgraded).
+    wam_fsharp_apply_strategy_choice(Strategy, Options, DetectedKernel, MaybeUpgraded).
 
-%% wam_fsharp_apply_strategy_choice(+Strategy, +DetectedKernel, -UpgradedKernel)
+%% wam_fsharp_apply_strategy_choice(+Strategy, +Options, +DetectedKernel,
+%%                                  -EmittedKernel)
 %
-%  Apply the selector's chosen strategy as a kernel-kind transformation.
+%  Apply the selector's chosen strategy as a kernel-kind transformation
+%  ONLY when the caller has explicitly opted in via
+%  allow_bidirectional_kernel_swap(true).
 %
-%  Only one transformation is currently wired:
-%    per_query(bidirectional) + category_ancestor → bidirectional_ancestor
+%  Why opt-in by default:
 %
+%  templates/targets/fsharp_wam/program.fs.mustache has a hardcoded
+%  call to nativeKernel_category_ancestor with the unidirectional
+%  6-argument signature. The bidirectional kernel
+%  (nativeKernel_bidirectional_ancestor) takes 7 arguments with a
+%  different signature (parent/child lookup pair + cost/budget
+%  floats). When the kernel-kind swap fires without a corresponding
+%  Program.fs template update, the generated F# fails to compile
+%  with FS0039 ('nativeKernel_category_ancestor' is not defined).
+%
+%  Until program.fs.mustache is parameterised to emit kernel-specific
+%  benchmark loops (the template-system supports conditional
+%  rendering — see docs/design/WAM_TEMPLATE_MATCH_CASE_TESTING.md
+%  and docs/design/TEMPLATE_ENGINE.md), the swap is opt-in. The
+%  cost-model decision is still computed and recorded in the trace;
+%  this gate just suppresses the actual kernel-kind transformation.
+%
+%  Currently the only auto-upgrade wired is category_ancestor →
+%  bidirectional_ancestor when the selector returns per_query(bidirectional).
 %  All other (Strategy, KernelKind) combinations leave the kernel
-%  unchanged (the kernel's existing per_query(unidirectional)
-%  template handles them).
+%  unchanged regardless of the flag.
 wam_fsharp_apply_strategy_choice(strategy(per_query(bidirectional)),
+                                 Options,
                                  recursive_kernel(category_ancestor, PI, Config),
-                                 recursive_kernel(bidirectional_ancestor, PI, Config)) :-
+                                 EmittedKernel) :-
     !,
-    format(user_error,
-           '[WAM-FSharp] strategy-selector upgraded category_ancestor -> bidirectional_ancestor (~w)~n',
-           [PI]).
-wam_fsharp_apply_strategy_choice(_, Kernel, Kernel).
+    (   option(allow_bidirectional_kernel_swap(true), Options)
+    ->  EmittedKernel = recursive_kernel(bidirectional_ancestor, PI, Config),
+        format(user_error,
+               '[WAM-FSharp] strategy-selector upgraded category_ancestor -> bidirectional_ancestor (~w) [allow_bidirectional_kernel_swap(true)]~n',
+               [PI])
+    ;   EmittedKernel = recursive_kernel(category_ancestor, PI, Config),
+        format(user_error,
+               '[WAM-FSharp] strategy-selector would upgrade ~w to bidirectional_ancestor but the swap is suppressed by default (see allow_bidirectional_kernel_swap/1 in wam_fsharp_target.pl docstring)~n',
+               [PI])
+    ).
+wam_fsharp_apply_strategy_choice(_, _Options, Kernel, Kernel).
 
 %% =====================================================================
 %% Cost-based auto-resolvers for F# WAM target
@@ -4837,7 +4869,7 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
         % (fallback). When the caller passes neither but workload
         % signals support bidirectional, the selector auto-selects.
         recurrence_inputs:build_workload_signals(Options, ResWorkload),
-        maplist(wam_fsharp_apply_strategy_selector(ResWorkload),
+        maplist(wam_fsharp_apply_strategy_selector(ResWorkload, Options),
                 DetectedKernels0, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
