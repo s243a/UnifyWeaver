@@ -142,11 +142,15 @@ nonblank_line(Line) :-
     normalize_space(string(Trimmed), Line),
     Trimmed \= "".
 
+wam_line_instruction(Line, label(Label)) :-
+    normalize_space(string(Trimmed), Line),
+    \+ sub_string(Trimmed, 0, 1, _, "%"),
+    wam_tokenize_line(Trimmed, Tokens),
+    wam_recognise_label(Tokens, Label), !.
 wam_line_instruction(Line, Instr) :-
     normalize_space(string(Trimmed), Line),
     \+ sub_string(Trimmed, 0, 1, _, "%"),
     wam_tokenize_line(Trimmed, Tokens),
-    \+ wam_recognise_label(Tokens, _),
     wam_recognise_instruction(Tokens, Instr).
 
 indent_join([], _Indent, _Sep, '').
@@ -163,6 +167,7 @@ indent_join([One,Two|Rest], Indent, Sep, Joined) :-
 wam_instruction_to_kotlin_literal(Instr, Lit) :-
     once(wam_instruction_to_kotlin_literal_det(Instr, Lit)).
 
+wam_instruction_to_kotlin_literal_det(label(L), Lit) :- instr_lit('label', [label(L)], Lit).
 wam_instruction_to_kotlin_literal_det(get_constant(C, Ai), Lit) :- instr_lit('get_constant', [value(C), reg(Ai)], Lit).
 wam_instruction_to_kotlin_literal_det(get_variable(Xn, Ai), Lit) :- instr_lit('get_variable', [reg(Xn), reg(Ai)], Lit).
 wam_instruction_to_kotlin_literal_det(get_value(Xn, Ai), Lit) :- instr_lit('get_value', [reg(Xn), reg(Ai)], Lit).
@@ -190,7 +195,7 @@ wam_instruction_to_kotlin_literal_det(set_value(Xn), Lit) :- instr_lit('set_valu
 wam_instruction_to_kotlin_literal_det(set_local_value(Xn), Lit) :- instr_lit('set_local_value', [reg(Xn)], Lit).
 wam_instruction_to_kotlin_literal_det(set_constant(C), Lit) :- instr_lit('set_constant', [value(C)], Lit).
 wam_instruction_to_kotlin_literal_det(set_nil, Lit) :- instr_lit('set_nil', [], Lit).
-wam_instruction_to_kotlin_literal_det(set_integer(N), Lit) :- instr_lit('set_integer', [int(N)], Lit).
+wam_instruction_to_kotlin_literal_det(set_integer(N), Lit) :- instr_lit('set_integer', [value(N)], Lit).
 wam_instruction_to_kotlin_literal_det(set_void(N), Lit) :- instr_lit('set_void', [int(N)], Lit).
 wam_instruction_to_kotlin_literal_det(call(P, N), Lit) :- instr_lit('call', [pred(P), int(N)], Lit).
 wam_instruction_to_kotlin_literal_det(execute(P), Lit) :- instr_lit('execute', [pred(P)], Lit).

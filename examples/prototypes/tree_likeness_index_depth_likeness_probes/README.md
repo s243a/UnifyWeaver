@@ -1,8 +1,9 @@
 # Tree-likeness index — depth-likeness probes
 
-**Status:** Python prototype, research-grade. Designed to be ported to a
-proper hybrid-WAM target (F# / Rust / Haskell) before quantitative claims
-land in production code.
+**Status:** Python prototypes + F# probe (validated against Python on
+simplewiki). The F# probe in `fsharp_v1_v3_probe/` is the production-
+quality counterpart: it uses LightningDB cursors, reuses calibration
+across seeds, and scales to enwiki (2.26M nodes).
 
 ## What this is
 
@@ -90,12 +91,50 @@ test infrastructure).
 - **One-off**: no harness integration with the test infrastructure. The
   scripts run as standalone Python programs.
 
-## Next step
+## F# probe (`fsharp_v1_v3_probe/`)
 
-Port the per-node `d_wPow` probe into the F# WAM target. The existing
-`kernel_bidirectional_ancestor` does most of the work for (seed, root)
-queries; generalising to arbitrary (u, v) pairs is a small extension.
-That would unblock:
-- Deep arbitrary-pair sampling (V2 at scale)
-- enwiki-scale measurements (Conjecture 3.4 verification)
-- Direct comparison with the design note's standard certificate measurements
+A standalone F# project that bundles the bidirectional kernel template
+(with mustache var resolved) and runs V1 (B = depth) or V3 (B = max
+parent dist) on any LMDB. Built with `dotnet build -c Release`, takes
+~5 seconds.
+
+Key extensions over the production kernel:
+- `nativeKernel_bidirectional_ancestor_withMinDist` — a variant that
+  accepts a precomputed BFS distance map, so calibration is done once
+  and reused across many seed queries. Without this, each seed call
+  re-runs a full graph BFS — fine on simplewiki (~0.3s per seed) but
+  prohibitive on enwiki (~31s per seed).
+- Per-seed harness reads a TSV of seed ids, loops over them, writes
+  TSV output.
+- `--variant v3` switch enables max-parent-distance budget (with DP
+  to compute max_dist in children-BFS-depth order).
+
+Cross-target parity validated: F# V1 simplewiki matches Python V1
+simplewiki to floating-point precision (same calibration constants
+D=4.914, b_eff=14.828; same per-seed d_wPow values).
+
+### enwiki measurement
+
+The F# probe was the unblocker for enwiki scale. The post-fix
+enwiki LMDB rooted at `Category:Main_topic_classifications`
+(page_id 7345184) has 2.26M reachable nodes, 6.7M edges — 30×
+larger than simplewiki Articles. Per-seed query is ~0.05s after
+the one-time 8s calibration.
+
+V1 results (`results/enwiki_v1_fsharp_B_equals_min_depth.tsv`):
+0% shortcuts at depths 1-11, 20% at depth 12. Stronger
+tree-likeness than simplewiki at the same depth range — see
+`docs/reports/depth_likeness_budget_variants.md` for the full
+discussion.
+
+## Remaining work (lower priority)
+
+- V2 (arbitrary-pair) on enwiki — requires a generalised A*
+  heuristic for arbitrary targets (the current kernel's heuristic
+  assumes target is an ancestor). Not done.
+- Cross-target parity on enwiki — only simplewiki was directly
+  compared. enwiki F# results are accepted on the strength of the
+  simplewiki parity validation.
+- Port to Rust/Haskell — once F# results are interpreted, repeating
+  with a faster target may be useful for full-graph-scan
+  measurements.
