@@ -113,10 +113,11 @@ if MAX_DIST_METRIC:
             if n in dp:
                 max_dist[n] = dp[n]
 else:
-    # Default: the probe's original BFS-depth-monotone DP. NOTE this undercounts
-    # nodes whose longest ancestor chain runs through a deeper-BFS parent; pass
-    # --max-dist-metric for the corrected (true-longest) budget. See
-    # max_dist_budget.py for the characterised divergence.
+    # Default: the corrected longest-path DP (topological order over the
+    # parent-DAG). This equals the materialised max_dist_to_root metric on a
+    # DAG; --max-dist-metric just reads the precomputed table instead. (It
+    # supersedes the earlier BFS-depth-monotone DP, which undercounted nodes
+    # whose longest ancestor chain ran through a deeper-BFS parent.)
     max_dist = dp_max_dist(min_dist, parents_of)
 
 # Stats on max_dist vs min_dist
