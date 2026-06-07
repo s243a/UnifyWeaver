@@ -53,6 +53,12 @@ function I.TrustMe() return instr("TrustMe") end
 function I.Jump(label) return instr("Jump", { label = label }) end
 function I.JumpPc(pc) return instr("JumpPc", { pc = pc }) end
 function I.CutIte() return instr("CutIte") end
+-- M17 soft cut: GetLevel snapshots the choicepoint-stack height into a Y
+-- register before an if-then-else / negation try_me_else; Cut truncates the
+-- choicepoint stack back to that snapshot at the commit site, removing the
+-- ITE/negation choicepoint AND any CPs the condition pushed above it.
+function I.GetLevel(yn) return instr("GetLevel", { yn = yn }) end
+function I.Cut(yn) return instr("Cut", { yn = yn }) end
 function I.BuiltinCall(p, n) return instr("BuiltinCall", { pred = p, arity = n }) end
 function I.ArgInstr(n, ai, out) return instr("ArgInstr", { n = n, ai = ai, out = out }) end
 function I.SwitchOnConstant(cases) return instr("SwitchOnConstant", { cases = cases }) end
@@ -1079,6 +1085,18 @@ function Runtime.step(program, state, instr)
   end
   if op == "CutIte" then
     if #state.cps > 0 then table.remove(state.cps) end
+    state.pc = state.pc + 1
+    return true
+  end
+  if op == "GetLevel" then
+    Runtime.put_reg(state, instr.yn, #state.cps)
+    state.pc = state.pc + 1
+    return true
+  end
+  if op == "Cut" then
+    local lvl = Runtime.get_reg(state, instr.yn)
+    if type(lvl) ~= "number" then lvl = 0 end
+    while #state.cps > lvl do table.remove(state.cps) end
     state.pc = state.pc + 1
     return true
   end
