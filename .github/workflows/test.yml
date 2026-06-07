@@ -104,6 +104,14 @@ jobs:
             tests.test_effective_distance_nodedp \
             tests.test_max_distance_nodedp
 
+      - name: Run root-metric query tool test
+        run: |
+          python3 -m unittest tests.test_query_root_metric
+
+      - name: Run effective-distance node-DP test
+        run: |
+          python3 -m unittest tests.test_effective_distance_nodedp
+
       - name: Run WAM Rust matrix-bench demand-flag codegen test
         run: |
           python3 -m unittest tests.test_wam_rust_matrix_demand_flag
