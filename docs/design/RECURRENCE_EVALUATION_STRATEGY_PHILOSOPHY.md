@@ -57,6 +57,38 @@ The two axes interact with fixed_point admissibility in different ways:
 
 **Bellman-Ford-style algorithms are a different case.** Bellman-Ford computes single-source shortest paths via |V|−1 iterations of edge-relaxation; it is *numeric* (real-valued distances), *monotone* (distances only decrease), and terminates in a bounded number of iterations because no shortest path has more than |V|−1 edges (assuming no negative cycles). Its termination guarantee comes from this **iteration-count bound from graph structure**, not from contraction-rate and not from the user's visited-set tracking. UnifyWeaver does not currently capture this admissibility path — there is no `iteration_bound(N)` recurrence property (the SPEC's [Recurrence properties table](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#recurrence-properties) does not include it); supporting Bellman-Ford-style fixed_point evaluation would require adding `iteration_bound(N)` to the SPEC's property table first, then adding a corresponding `termination_guarantee/1` clause that admits it. The current kernel registry has no Bellman-Ford kernels, so this is a documented future-work gap rather than an immediate concern. The reviewers' suggestion to admit Bellman-Ford via the user's visited-set signal is technically off — that signal is about per-query top-down traversal safety; bottom-up Bellman-Ford fixed_point doesn't consult it.
 
+### A second numeric-recurrence gap: oscillatory iterations with windowed-RMS convergence
+
+A class of numeric recurrences oscillates around a fixed point with decreasing amplitude rather than monotonically approaching it. Typical examples:
+
+- **Damped iterative solvers** for linear systems (successive over-relaxation with ω > 1, momentum methods in optimisation)
+- **Stochastic gradient descent** where individual iterates are noisy estimates of the true gradient and the iteration "converges in distribution" rather than to a single point
+- **Power-iteration variants** for non-Hermitian operators, where complex eigenvalues cause the iterate to spiral around the fixed point in the eigenvector basis
+- **Sign-aware graph metrics** — variants of PageRank or `d_wPow` with negative-feedback edges where the iteration's per-step update can change sign
+
+For these, the standard residual-norm stopping criterion (`‖x_{k+1} − x_k‖ < ε`) — universal in iterative solvers — is too noisy. Individual iterate updates can be large even when the iteration is settling, because the iteration sign-changes between steps. A *single* iteration's residual doesn't tell you whether the iteration is converging.
+
+**The windowed-RMS criterion.** Compute the root-mean-square of recent iterate updates over a sliding window of `W` iterations. If the windowed RMS is decreasing over successive windows, the iteration's *amplitude* is decreasing even though no individual residual is small. The criterion generalises the residual-norm stopping rule from "single-iteration residual" to "windowed-RMS of recent residuals", which is robust to per-iteration sign noise.
+
+This is closely related to convergence-in-distribution criteria from stochastic approximation theory and to Cauchy-sequence-like tests in functional analysis: the iteration is "Cauchy in windowed RMS" if the windowed RMS forms a decreasing sequence.
+
+**Why "bandpass" is the wrong framing.** An earlier framing of this idea reached for "bandpass filter applied to the iterate waveform". That's the wrong tool: bandpass filters have a bandwidth-vs-response-time uncertainty (narrower band ⇔ longer response time), so a useful bandpass needs many iterations to give a verdict. A short-time-constant low-pass filter (or equivalently, a small sliding-window RMS) gives a verdict over a small number of iterations and is the right tool for convergence detection.
+
+**Implementation cost scales with window size.** Computing windowed RMS at each iteration costs O(W) naively, or O(1) amortised with a deque plus running sum-of-squares. Total per-iteration overhead is proportional to W. For W ~ 5–10, the overhead is negligible against the work of the iteration itself; for larger W, the cost becomes meaningful. A first-pass implementation, if any, should keep W small and the bookkeeping cheap. Sophisticated spectral techniques (FFT-based dominant-frequency extraction, multi-resolution analysis) are tempting but scale poorly per iteration and shouldn't be the first implementation.
+
+**Where it would fit in the admissibility framework.** A future `numeric_windowed_rms_bound(WindowSize, RmsThreshold)` recurrence property could be added to the SPEC alongside the existing `numeric_contraction_rate(R)`. The admissibility test would gain a fourth termination path:
+
+```
+termination_guarantee(Recurrence) :-
+    value_domain(Recurrence, numeric),
+    numeric_windowed_rms_bound(Recurrence, W, Eps),
+    W < some_max_window_size.        % bound on detection cost
+```
+
+This would unlock the oscillatory-numeric kernels currently excluded by the contraction-only test. The evaluator would need to implement the windowed-RMS bookkeeping per iteration (cheap if W is small) and report termination when the criterion is met.
+
+**Status.** Future-work-not-blocking. The current RES design proceeds with three termination paths (combinatorial, numeric+contraction, and the hypothetical numeric+iteration_bound). The oscillatory-numeric case is a noted gap; when a kernel that needs it enters the registry, this design discussion is the starting point for adding the fourth path. The implementation-priority guidance — keep first-pass implementations cheap, prefer sliding-window RMS over spectral techniques — is documented here so future contributors don't over-engineer the initial support.
+
 **Monotonicity-cross-class restriction.** A separate concern: when `monotone(false)`, no strategy class can be *auto-selected across classes* — the selector restricts to whichever class the user explicitly declares via intent. Non-monotone recurrences may have evaluation-order-dependent semantics; the compiler does not pick between classes without guidance. This restriction is applied in the conflict-resolution phase (where intent is in scope), not at the admissibility check (which sees only the recurrence).
 
 **Putting it together — fixed_point admissibility test (termination only):**
