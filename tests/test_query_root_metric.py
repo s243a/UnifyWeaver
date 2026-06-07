@@ -26,6 +26,7 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILDER = REPO_ROOT / "examples" / "benchmark" / "build_scoped_subtree_lmdb.py"
 EFFDIST = REPO_ROOT / "examples" / "benchmark" / "build_effective_distance.py"
+MAXDIST = REPO_ROOT / "examples" / "benchmark" / "build_max_distance.py"
 QUERY = REPO_ROOT / "examples" / "benchmark" / "query_root_metric.py"
 I32 = struct.Struct("<i")
 
@@ -134,6 +135,32 @@ class TestQueryRootMetric(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
         self.assertEqual(rows.get("count"), "3")  # nodes 3,4,5
+
+    def _build_max_distance(self):
+        env_os = dict(os.environ)
+        env_os.setdefault("LANG", "C.UTF-8")
+        proc = subprocess.run(
+            [sys.executable, str(MAXDIST), "--lmdb", str(self.out)],
+            capture_output=True, text=True, env=env_os)
+        self.assertEqual(proc.returncode, 0, f"build_max_distance failed:\n{proc.stderr}")
+
+    def test_max_distance_lookup(self):
+        # Scoped graph is a tree (3->2, 4->2, 5->3) so longest walk == shortest:
+        #   root 2 -> 0, 3 -> 1, 4 -> 1, 5 -> 2.
+        self._build_max_distance()
+        proc = self._query("--metric", "max_dist_to_root", "2", "3", "4", "5")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertEqual(rows["2"], "0")
+        self.assertEqual(rows["3"], "1")
+        self.assertEqual(rows["4"], "1")
+        self.assertEqual(rows["5"], "2")
+
+    def test_max_distance_verify(self):
+        self._build_max_distance()
+        proc = self._query("--metric", "max_dist_to_root", "--verify")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verify: OK", proc.stderr)
 
 
 if __name__ == "__main__":
