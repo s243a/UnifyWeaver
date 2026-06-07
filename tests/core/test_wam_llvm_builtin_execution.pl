@@ -2990,6 +2990,52 @@ test_monotonic_elapsed(_, R) :-
     Diff is T1 - T0,
     ( Diff >= 0.04 -> R is 1 ; R is 0 ).   % 1
 
+% M125: nice/1 + getpriority/1 + setpriority/1.
+
+:- dynamic test_getpriority_in_range/2.
+test_getpriority_in_range(_, R) :-
+    % Default priority is typically 0; allow [-20, 19] sanity range.
+    getpriority(P),
+    ( integer(P), P >= -20, P =< 19 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_zero/2.
+test_nice_zero(_, R) :-
+    % nice(0) doesn''t change priority. Always succeeds.
+    getpriority(Before),
+    nice(0),
+    getpriority(After),
+    ( Before =:= After -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_positive_raises/2.
+test_nice_positive_raises(_, R) :-
+    % nice(+5) increases the niceness value (lowers priority).
+    % Unprivileged users can ALWAYS go nicer; only root can become
+    % less nice. Restore by setpriority on the way out.
+    getpriority(Before),
+    nice(5),
+    getpriority(After),
+    setpriority(Before),
+    ( After > Before -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setpriority_roundtrip/2.
+test_setpriority_roundtrip(_, R) :-
+    % Set to a known nice value (must be >= current to avoid EPERM
+    % for unprivileged), confirm getpriority reflects it, restore.
+    getpriority(Before),
+    Target is Before + 3,
+    setpriority(Target),
+    getpriority(Read),
+    setpriority(Before),
+    ( Read =:= Target -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_bad_arg/2.
+test_nice_bad_arg(_, R) :-
+    ( nice(not_int) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_setpriority_bad_arg/2.
+test_setpriority_bad_arg(_, R) :-
+    ( setpriority(not_int) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6024,6 +6070,19 @@ test_all :-
                    test_monotonic_advances, 0, 1),
        run_test_r0('monotonic_time elapsed >= 0.04 -> 1',
                    test_monotonic_elapsed, 0, 1),
+       format('--- M125 nice/1 + getpriority/1 + setpriority/1 ---~n'),
+       run_test_r0('getpriority in [-20, 19] -> 1',
+                   test_getpriority_in_range, 0, 1),
+       run_test_r0('nice(0) preserves priority -> 1',
+                   test_nice_zero, 0, 1),
+       run_test_r0('nice(+5) raises niceness -> 1',
+                   test_nice_positive_raises, 0, 1),
+       run_test_r0('setpriority round-trip -> 1',
+                   test_setpriority_roundtrip, 0, 1),
+       run_test_r0('nice(not_int) fails -> 1',
+                   test_nice_bad_arg, 0, 1),
+       run_test_r0('setpriority(not_int) fails -> 1',
+                   test_setpriority_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
