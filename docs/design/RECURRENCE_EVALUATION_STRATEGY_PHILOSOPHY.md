@@ -55,7 +55,7 @@ The two axes interact with fixed_point admissibility in different ways:
 
 **Visited-set loop-breaking is about per-query termination, not fixed-point admissibility.** The user's `\+ member(N, Visited)` clauses are a top-down-traversal safety mechanism — they let a Prolog query terminate on cyclic input. Bottom-up Datalog evaluation doesn't consult them; it adds tuples until fixpoint and doesn't loop because the universe is finite. So the combinatorial loop-breaking signal `has_combinatorial_loop_break(true)` tells the selector that *per-query* strategies are safe on cyclic graphs; it doesn't directly enable `fixed_point` (the value-domain and monotonicity properties do that independently).
 
-**Bellman-Ford-style algorithms are a different case.** Bellman-Ford computes single-source shortest paths via |V|−1 iterations of edge-relaxation; it is *numeric* (real-valued distances), *monotone* (distances only decrease), and terminates in a bounded number of iterations because no shortest path has more than |V|−1 edges (assuming no negative cycles). Its termination guarantee comes from this **iteration-count bound from graph structure**, not from contraction-rate and not from the user's visited-set tracking. UnifyWeaver does not currently capture this admissibility path — there is no `iteration_bound(N)` recurrence property; supporting Bellman-Ford-style fixed_point evaluation would require adding one, plus a corresponding `termination_guarantee/1` clause that admits it. The current kernel registry has no Bellman-Ford kernels, so this is a documented future-work gap rather than an immediate concern. The reviewers' suggestion to admit Bellman-Ford via the user's visited-set signal is technically off — that signal is about per-query top-down traversal safety; bottom-up Bellman-Ford fixed_point doesn't consult it.
+**Bellman-Ford-style algorithms are a different case.** Bellman-Ford computes single-source shortest paths via |V|−1 iterations of edge-relaxation; it is *numeric* (real-valued distances), *monotone* (distances only decrease), and terminates in a bounded number of iterations because no shortest path has more than |V|−1 edges (assuming no negative cycles). Its termination guarantee comes from this **iteration-count bound from graph structure**, not from contraction-rate and not from the user's visited-set tracking. UnifyWeaver does not currently capture this admissibility path — there is no `iteration_bound(N)` recurrence property (the SPEC's [Recurrence properties table](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#recurrence-properties) does not include it); supporting Bellman-Ford-style fixed_point evaluation would require adding `iteration_bound(N)` to the SPEC's property table first, then adding a corresponding `termination_guarantee/1` clause that admits it. The current kernel registry has no Bellman-Ford kernels, so this is a documented future-work gap rather than an immediate concern. The reviewers' suggestion to admit Bellman-Ford via the user's visited-set signal is technically off — that signal is about per-query top-down traversal safety; bottom-up Bellman-Ford fixed_point doesn't consult it.
 
 **Monotonicity-cross-class restriction.** A separate concern: when `monotone(false)`, no strategy class can be *auto-selected across classes* — the selector restricts to whichever class the user explicitly declares via intent. Non-monotone recurrences may have evaluation-order-dependent semantics; the compiler does not pick between classes without guidance. This restriction is applied in the conflict-resolution phase (where intent is in scope), not at the admissibility check (which sees only the recurrence).
 
@@ -66,12 +66,16 @@ admissible(fixed_point, Recurrence) :-
     termination_guarantee(Recurrence).
 
 termination_guarantee(Recurrence) :-
-    value_domain(Recurrence, combinatorial), !.    % finite-state iteration always halts:
+    value_domain(Recurrence, combinatorial), !.    % finite-state iteration always halts (in principle):
                                                    %   - monotone: reaches LFP in <= |L| steps (Tarski + finite)
                                                    %   - non-monotone: may oscillate, but in a detectable cycle
-                                                   %     on finite state — evaluator stops + reports cycle
-                                                   % Either way: termination is guaranteed; semantic meaning of
-                                                   % the result is monotone-dependent (handled in Phase C).
+                                                   %     on finite state — IFF the evaluator implements
+                                                   %     cycle-detection. NOTE: not yet implemented in any
+                                                   %     UnifyWeaver fixed_point template; see caveat below
+                                                   %     before relying on this branch for non-monotone inputs.
+                                                   % Either way (in principle): termination is guaranteed; the
+                                                   % semantic meaning of the result is monotone-dependent
+                                                   % (handled in Phase C).
 termination_guarantee(Recurrence) :-
     value_domain(Recurrence, numeric),
     numeric_contraction_rate(Recurrence, R),
@@ -79,6 +83,12 @@ termination_guarantee(Recurrence) :-
                                                    % orthogonal to termination here too (a contraction
                                                    % terminates regardless of monotonicity, but the result-
                                                    % semantics again depends on monotonicity).
+                                                   % NOTE: has_combinatorial_loop_break(true) does NOT bypass
+                                                   % this contraction-rate requirement. The visited-set is a
+                                                   % per-query traversal safety mechanism, not a fixed_point
+                                                   % enabler — on numeric recurrences, the contraction-rate
+                                                   % gating is independent of any combinatorial loop-break
+                                                   % signal that may also be present.
 ```
 
 Note the pseudocode does *not* gate on `monotone(true)`. Admissibility is about whether the strategy will terminate; for combinatorial recurrences over a finite state space, iteration always terminates (either at a fixed point if monotone, or at a detectable cycle if not). For numeric recurrences, termination requires contraction. Monotonicity affects whether the iteration converges to the *least fixed point*, which is what fixed_point evaluation usually intends — but that's a *semantic* concern, not a termination concern, and it's handled at the conflict-resolution phase (Phase C) where the cross-class restriction lives.
@@ -103,7 +113,9 @@ This is also why the strategy selector takes the recurrence's contraction rate a
 
 For readers approaching this from linear algebra rather than graph theory: an iteration `x_{k+1} = B·x_k + c` converges iff the **spectral radius** of `B` is less than 1 (spectral radius = largest absolute eigenvalue). **Diagonal dominance** is one sufficient condition for spectral radius < 1; the **condition number** governs how fast convergence happens — high condition number means slow even though convergence is guaranteed. All three are aspects of *spectral analysis* — properties of the operator's eigenvalue structure.
 
-A scoping note on the condition number specifically: the definition `κ(B) = λ_max/λ_min` is the standard form for **symmetric positive-definite (SPD)** matrices. The `d_wPow` iteration operator is a *directed* weighted-graph operator and is generally non-symmetric; for non-symmetric / non-SPD operators, the relevant convergence-rate quantity is the ratio of the spectral abscissa to the minimum singular value (or equivalently, properties of the singular-value spectrum rather than the eigenvalue spectrum). The intuition — "well-conditioned converges fast, ill-conditioned converges slow" — carries over, but the exact formula does not. For UnifyWeaver's purposes, the relevant quantity in the asymptotic bound `r/(1−r)` is the geometric-series rate, which is the spectral-radius-analog (not the condition-number-analog) — so the condition-number aside is informational about adjacent ideas, not directly load-bearing for the design.
+> **Aside — condition number is SPD-specific; not directly load-bearing here.**
+>
+> The definition `κ(B) = λ_max/λ_min` is the standard form for **symmetric positive-definite (SPD)** matrices. The `d_wPow` iteration operator is a *directed* weighted-graph operator and is generally non-symmetric; for non-symmetric / non-SPD operators, the relevant convergence-rate quantity is the ratio of the spectral abscissa to the minimum singular value (or equivalently, properties of the singular-value spectrum rather than the eigenvalue spectrum). The intuition — "well-conditioned converges fast, ill-conditioned converges slow" — carries over, but the exact formula does not. For UnifyWeaver's purposes, the relevant quantity in the asymptotic bound `r/(1−r)` is the geometric-series rate, which is the spectral-radius-analog (not the condition-number-analog) — so the condition-number aside is informational about adjacent ideas, not directly load-bearing for the design.
 
 The conjecture we depend on: the friendship-paradox-corrected `b_eff` plays the spectral-radius role for the `d_wPow` iteration operator; `r = b'/(b_eff·D)` is the contraction rate; the bound `r/(1−r)` from theorem 2.3 is the geometric-series convergence rate. Rigorous identification is future work; the operational consequences of the conjecture (per-iteration residual bound, contraction-rate gating for fixed_point) are what the selector relies on.
 
