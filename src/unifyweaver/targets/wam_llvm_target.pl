@@ -1577,6 +1577,8 @@ declare i32 @uname(i8*)
 declare i32 @open(i8*, i32, i32)
 declare i64 @read(i32, i8*, i64)
 declare i64 @write(i32, i8*, i64)
+declare i32* @__errno_location()
+declare i8* @strerror(i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3700,6 +3702,8 @@ entry:
     i32 154, label %builtin_read_file_to_atom
     i32 155, label %builtin_write_atom_to_file
     i32 156, label %builtin_append_atom_to_file
+    i32 157, label %builtin_errno
+    i32 158, label %builtin_strerror
   ]
 
 builtin_is:
@@ -7037,6 +7041,56 @@ afa.close_fail:
 afa.success:
   call i32 @close(i32 %afa.fd)
   ret i1 true
+
+builtin_errno:
+  ; M131: errno(-N) -- reads the thread-local errno value via
+  ; __errno_location(). Useful right after a failing libc-wrapper
+  ; predicate to find out WHY: a typical pattern is
+  ;     ( delete_file(P) ; errno(E), strerror(E, M), format(...) )
+  ; Note that any libc call between the failure and errno/1 will
+  ; clobber the value -- so call errno BEFORE any other diagnostic
+  ; predicate. Always succeeds (returns 0 when no error pending).
+  %ern.loc = call i32* @__errno_location()
+  %ern.val32 = load i32, i32* %ern.loc
+  %ern.val64 = sext i32 %ern.val32 to i64
+  %ern.v = call %Value @value_integer(i64 %ern.val64)
+  %ern.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ern.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ern.raw1, %Value %ern.v)
+  ret i1 %ern.ok
+
+builtin_strerror:
+  ; M131: strerror(+Errno, -Message) -- libc strerror wrapper.
+  ; Returns the human-readable description of Errno as an atom
+  ; ("No such file or directory", "Permission denied", etc.).
+  ; Errno must be Integer; non-int fails type guard. libc returns
+  ; a pointer into static thread-local storage that''s safe to
+  ; intern immediately.
+  %ser.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ser.t1 = call i32 @value_tag(%Value %ser.a1)
+  %ser.is_int = icmp eq i32 %ser.t1, 1
+  br i1 %ser.is_int, label %ser.go, label %ser.fail
+ser.fail:
+  ret i1 false
+ser.go:
+  %ser.e64 = call i64 @value_payload(%Value %ser.a1)
+  %ser.e = trunc i64 %ser.e64 to i32
+  %ser.s = call i8* @strerror(i32 %ser.e)
+  %ser.s_null = icmp eq i8* %ser.s, null
+  br i1 %ser.s_null, label %ser.fail, label %ser.intern
+ser.intern:
+  %ser.len = call i64 @strlen(i8* %ser.s)
+  call void @wam_arena_ensure()
+  %ser.bufsize = add i64 %ser.len, 1
+  %ser.arena = call i8* @wam_arena_alloc(i64 %ser.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ser.arena, i8* %ser.s, i64 %ser.len, i1 false)
+  %ser.term = getelementptr i8, i8* %ser.arena, i64 %ser.len
+  store i8 0, i8* %ser.term
+  %ser.aid = call i64 @wam_intern_atom(i8* %ser.arena, i64 %ser.len)
+  %ser.v0 = insertvalue %Value undef, i32 0, 0
+  %ser.v = insertvalue %Value %ser.v0, i64 %ser.aid, 1
+  %ser.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ser.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ser.raw2, %Value %ser.v)
+  ret i1 %ser.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14347,6 +14401,8 @@ builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
 builtin_op_to_id('read_file_to_atom/2', 154). % stat + open + read loop -> intern as atom.
 builtin_op_to_id('write_atom_to_file/2', 155). % open(O_TRUNC) + write loop + close.
 builtin_op_to_id('append_atom_to_file/2', 156). % open(O_APPEND) + write loop + close.
+builtin_op_to_id('errno/1', 157).             % thread-local errno via __errno_location.
+builtin_op_to_id('strerror/2', 158).          % libc strerror(errno) as atom.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

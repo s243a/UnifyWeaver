@@ -3310,6 +3310,48 @@ test_afa_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M131: errno/1 + strerror/2 -- diagnostics for libc-wrapper failures.
+
+:- dynamic test_errno_returns_int/2.
+test_errno_returns_int(_, R) :-
+    % errno/1 always succeeds and returns an Integer (often 0).
+    errno(E),
+    ( integer(E) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_errno_after_open_fail/2.
+test_errno_after_open_fail(_, R) :-
+    % After a deliberately-failing open (via delete_file on missing
+    % path), errno should be set to a non-zero value (ENOENT = 2).
+    ( delete_file('/tmp/uw_m131_never_existed') -> R is 0
+    ; errno(E),
+      ( E =\= 0 -> R is 1 ; R is 0 )
+    ).   % 1
+
+:- dynamic test_strerror_known_errno/2.
+test_strerror_known_errno(_, R) :-
+    % ENOENT = 2 -> "No such file or directory".
+    strerror(2, M),
+    ( atom(M), atom_length(M, L), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_zero/2.
+test_strerror_zero(_, R) :-
+    % strerror(0) is typically "Success".
+    strerror(0, M),
+    ( atom(M), atom_length(M, L), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_round_trip/2.
+test_strerror_round_trip(_, R) :-
+    % errno -> strerror should yield a non-empty atom even for
+    % errno=0 ("Success" / "No error").
+    errno(E),
+    strerror(E, M),
+    atom_length(M, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_bad_arg/2.
+test_strerror_bad_arg(_, R) :-
+    ( strerror(not_int, _) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6426,6 +6468,19 @@ test_all :-
                    test_afa_extends, 0, 1),
        run_test_r0('append with non-atom args fails -> 1',
                    test_afa_bad_args, 0, 1),
+       format('--- M131 errno/1 + strerror/2 ---~n'),
+       run_test_r0('errno returns Integer -> 1',
+                   test_errno_returns_int, 0, 1),
+       run_test_r0('errno after failing delete_file != 0 -> 1',
+                   test_errno_after_open_fail, 0, 1),
+       run_test_r0('strerror(2) non-empty atom -> 1',
+                   test_strerror_known_errno, 0, 1),
+       run_test_r0('strerror(0) non-empty atom -> 1',
+                   test_strerror_zero, 0, 1),
+       run_test_r0('errno -> strerror round-trip non-empty -> 1',
+                   test_strerror_round_trip, 0, 1),
+       run_test_r0('strerror(not_int, _) fails -> 1',
+                   test_strerror_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
