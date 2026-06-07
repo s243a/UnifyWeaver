@@ -37,6 +37,8 @@ The compiler's job is to pick an **evaluation strategy** for that recurrence. Di
 
 These are *not different computations*. They are different evaluation orders for the same recurrence. Datalog made this point sixty years ago in distinguishing top-down SLD from bottom-up semi-naive — same program, different evaluation strategy, same answer.
 
+**The collapse holds under specific conditions.** Strictly, lazy and eager strategies compute the same relation when the recurrence is **monotone over a complete lattice** — the setting of Datalog and of Tarski's fixed-point theorem. Non-monotone recurrences, probabilistic recurrences, and recurrences whose semantics depend on traversal order (e.g. some Prolog programs that rely on cut for correctness) may not admit both strategies. The selector treats `monotone(true)` as a precondition for any level-1 decision that crosses strategy classes; non-monotone recurrences fall back to whatever strategy the user explicitly declares, with no auto-selection across classes.
+
 The implication for compiler design: pick the strategy *separately* from defining the recurrence. The user writes the recurrence (Prolog clauses); the compiler picks the strategy (via cost-model rule + optional user hints). The two concerns separate cleanly.
 
 ### The orthogonality is not complete
@@ -48,43 +50,62 @@ A subtlety worth naming. Strategy classes are **structurally** orthogonal — yo
 
 So the strategy selector needs to know about the recurrence's loop-breaking mechanism — combinatorial or numeric — because the choice constrains which strategies are admissible. This is the *one* place where strategy class and recurrence properties interact.
 
-## Theory connection: `r` is the diagonal-dominance condition
+**Contraction-rate gating for fixed-point.** When the recurrence's `numeric_contraction_rate` is `none` (unknown) or `≥ 1` (no convergence guarantee), *all* `fixed_point` strategies are inadmissible regardless of what `KernelKind` would otherwise permit. The selector treats this as a hard precondition: there is no honest way to pick fixed-point evaluation when convergence isn't guaranteed. (Combinatorial loop-breaking via explicit visited-set is a separate, always-terminating mechanism; it constrains nothing about contraction rate, but it also doesn't make fixed-point admissible — it makes per-query admissible.)
 
-The convergence ratio `r = b'/(b_eff · D)` from [`TREE_LIKENESS_INDEX.md`](TREE_LIKENESS_INDEX.md) §2 and [`TREE_LIKENESS_INDEX_THEORY.md`](TREE_LIKENESS_INDEX_THEORY.md) §2.3 is *exactly* the diagonal-dominance / contraction condition for the `d_wPow` recurrence. Theorem 2.3's bound `r/(1−r)` on the per-step contribution from longer paths is the geometric-series bound from a contraction with rate `r`. The "shortcuts are rare" empirical observation (design note §3.3) and the "iteration converges fast" theoretical observation are the same observation, viewed through the two lenses of metric structure and numeric contraction.
+## Theory connection: `r` is conjectured to be the contraction rate
 
-This is why the strategy selector takes the recurrence's contraction rate as input even when the chosen strategy is per-query. The contraction rate is the *property of the recurrence* that bounds the per-iteration residual for any iterative method — including lazy on-demand iteration like A* search exploring partial paths. The selector uses it as a signal for "how aggressive can the budget cap be?" and "how cheap will fixed-point iteration be when it lands?"
+The convergence ratio `r = b'/(b_eff · D)` from [`TREE_LIKENESS_INDEX.md`](TREE_LIKENESS_INDEX.md) §2 and [`TREE_LIKENESS_INDEX_THEORY.md`](TREE_LIKENESS_INDEX_THEORY.md) §2.3 plays the role of the **spectral contraction rate** for the linearised `d_wPow` iteration operator. Theorem 2.3's bound `r/(1−r)` on the per-step contribution from longer paths is the geometric-series bound from a contraction with rate `r`. The "shortcuts are rare" empirical observation (design note §3.3) and the "iteration converges fast" theoretical observation are the same observation, viewed through the two lenses of metric structure and numeric contraction.
 
-For a deeper treatment, see [book-18-graph-algorithms appendix B.7](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md) (convergence robustness — feature and trap).
+**This identification is a conjecture, not a theorem.** Rigorously identifying `r` with the spectral radius of the iteration operator requires a norm-specific argument that has not been constructed in the project to date. The intuition is sound — the friendship-paradox quantity `E[d²]/E[d]` is a known estimator for the spectral radius of a configuration-model random graph's adjacency matrix, and `b_eff` is a directional extension of this — but a precise proof would tighten which norm, which operator linearisation, and which assumptions about the underlying graph distribution. The rigorous identification is tracked theory work, named explicitly as a future-work item in [book-18-graph-algorithms appendix B.7](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md) (convergence robustness — feature and trap). Not blocking; this PR proceeds on the conjecture, with the hedge documented and the dependence on the conjecture made operationally visible (see below).
 
-## Signals: intent versus data
+**Why this matters operationally.** The contraction-rate gating in the previous section (`numeric_contraction_rate ≥ 1` disqualifies fixed_point) makes `r` operationally consequential, not just rhetorical. The selector can refuse to choose fixed-point if `r ≥ 1`, which only makes sense if `r` reliably tracks what the iteration operator actually does. The conjecture, even pending verification, is the strongest concrete relationship between graph statistics and iteration-convergence we currently have. The cost-model rules treat `r` as an upper-bound estimator of contraction rate — robust to small estimator errors in the standard way (see [book-18 appendix B.7 §convergence-robustness](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md)) — but the entire chain becomes more brittle if the conjecture is wrong in a substantive way. Tightening the proof is a real follow-up.
 
-Workload signals come from several sources at compile time. The selector must distinguish two kinds:
+This is also why the strategy selector takes the recurrence's contraction rate as input even when the chosen strategy is per-query. The selector uses it as a signal for "how aggressive can the budget cap be?" and "how cheap will fixed-point iteration be when it lands?" — both of which are calibrated under the conjecture.
 
-- **Data signals** describe properties of the world the cost model reasons over. Examples: graph statistics (`b_eff`, `D`, `r`), CSR availability, relation-policy declarations (`cardinality(...)`, `determinism(...)`), query-shape inference (single-pair vs all-pairs).
-- **Intent signals** express the user's required outcome. Examples: caller's `kernel_mode(bidirectional)` option, manifest's `strategy(...)` entries.
+### Spectral connection in plainer terms
 
-Most "conflicts" between signals dissolve when this distinction is applied. A manifest hint `cardinality(small)` and a caller option `kernel_mode(bidirectional)` are not in conflict — the cardinality is data feeding the cost model (which would have preferred unidirectional), while the kernel-mode is intent overriding the cost model's preference. The cost model still consumed the cardinality; it just didn't get the final word.
+For readers approaching this from linear algebra rather than graph theory: an iteration `x_{k+1} = B·x_k + c` converges iff the **spectral radius** of `B` is less than 1 (spectral radius = largest absolute eigenvalue). **Diagonal dominance** is one sufficient condition for spectral radius < 1; the **condition number** (`λ_max/λ_min` for SPD matrices) governs how fast convergence happens — high condition number means slow even though convergence is guaranteed. All three are aspects of *spectral analysis* — properties of the operator's eigenvalue structure.
+
+The conjecture we depend on: the friendship-paradox-corrected `b_eff` plays the spectral-radius role for the `d_wPow` iteration operator; `r = b'/(b_eff·D)` is the contraction rate; the bound `r/(1−r)` from theorem 2.3 is the geometric-series convergence rate. Rigorous identification is future work; the operational consequences of the conjecture (per-iteration residual bound, contraction-rate gating for fixed_point) are what the selector relies on.
+
+## Signals: intent, declared data, inferred data
+
+Workload signals come from several sources at compile time. The selector distinguishes three tiers:
+
+- **Intent signals** — explicit user-stated requirements about the outcome. Examples: caller's `kernel_mode(bidirectional)` option, manifest's `strategy(...)` entries. Intent overrides the cost model. High confidence; the user is responsible for the meaning.
+- **Declared data signals** — facts the user has *explicitly stated* about the world the cost model reasons over. Examples: `cardinality(large)` from a `relation_policy` declaration, an explicit `csr_path(_)` option naming a file the user has prepared. Declared data has high confidence; the cost model treats it as fact.
+- **Inferred data signals** — facts the compiler has *inferred* from static analysis or the absence of declarations. Examples: `csr_buildable(true)` (inferred by checking the edge predicate has a buildable inverse), `query_pattern(single_pair)` (inferred from the predicate's mode declarations or call-site analysis). Inferred data has lower confidence; the cost model treats it as soft evidence with explicit confidence weights.
+
+Most "conflicts" between signals dissolve when these tiers are applied. A manifest's `cardinality(small)` and a caller's `kernel_mode(bidirectional)` are not in conflict — the cardinality is declared-data feeding the cost model (which would have preferred unidirectional), while the kernel-mode is intent overriding the cost model's preference. The cost model still consumed the cardinality; it just didn't get the final word.
 
 Only when *two intent signals* point at incompatible outcomes is there a real conflict — and even then the conflict-avoidance hierarchy (below) tries several non-trivial resolutions before treating caller-wins as the fallback.
 
+**Inferred signals carry uncertainty.** The compiler's inferences can be wrong: a `csr_buildable(true)` based on static analysis might fail at runtime if the underlying data source is unreachable; a `query_pattern(single_pair)` inferred from mode declarations might be contradicted by how the predicate is actually called. The cost-model rules treat inferred data as soft evidence — they contribute to scoring but with explicit confidence weights, and the reasoning trace records the tier of each signal so a user reading the trace can see which signals were inferences and override them by adding a corresponding declared-data signal to their relation-policy or manifest.
+
 ## Conflict-avoidance hierarchy
 
-When intent signals appear to conflict, the selector walks a hierarchy:
+The selector walks a hierarchy of resolution steps. The step labels below match the semantic names in [`RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md` §Phase C](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#phase-c--conflict-resolution); a separate signal-classification preprocessing step (`classify_signals`) and an always-on trace-emission invariant bracket the hierarchy.
 
-1. **Classify signals.** Data versus intent. Most apparent conflicts dissolve here.
+**Preprocessing — `classify_signals`.** Workload signals are partitioned into intent / declared-data / inferred-data tiers (per the previous section). This is a static sort, not a resolution step; it just sets up the inputs.
 
-2. **Look for a compatible third option.** If intent A points at strategy X and intent B points at strategy Y, but there exists a strategy Z that satisfies both intents, pick Z. Concrete example: caller's implicit "fast" + manifest's explicit "exact-only" → A* with admissible heuristic is both fast and exact; no conflict.
+**Resolution steps**, walked in order. The first one that resolves wins:
 
-3. **Disambiguate by scope.** If one intent applies at the algorithm-name scope (manifest) and another at the compile-call scope (caller option), the more specific scope can override the broader one without it being treated as conflict — that's just normal scoping rules.
+1. **`step_no_intent`** — If there are no intent signals at all, the cost-model output wins immediately. Trace: "no intent signals; cost-model preference applies."
 
-4. **Make the unsatisfiable satisfiable.** If an intent is structurally unmet (caller wants bidirectional but no CSR), look for adjustments:
-   - CSR buildable + workload large enough to amortise → emit a build-CSR step
+2. **`step_intent_matches`** — If the single intent signal points at the same strategy class the cost model picked, no conflict. Trace: "intent and cost-model agree."
+
+3. **`step_third_option`** — Look for a compatible third option. If intent A points at strategy X and intent B points at strategy Y, but there exists a strategy Z that satisfies both intents, pick Z. Concrete example: caller's implicit "fast" + manifest's explicit "exact-only" → A* with admissible heuristic is both fast and exact; no conflict.
+
+4. **`step_scope_disambiguation`** — If one intent applies at the algorithm-name scope (manifest) and another at the compile-call scope (caller option), the more specific scope can override the broader one *without it being treated as conflict*. Definition: the narrower strategy term subsumes the broader one (e.g. manifest says `strategy(per_query(_))`, caller says `kernel_mode(bidirectional)` — `bidirectional` is per_query, no real conflict; caller wins by specificity, not by override).
+
+5. **`step_satisfiability`** — If an intent is structurally unmet (caller wants bidirectional but no CSR), look for adjustments:
+   - CSR buildable + workload large enough to amortise → emit a build-CSR adjustment step in the trace; the chosen strategy is `per_query(bidirectional)` with the build-CSR step as a precondition
    - CSR unbuildable → warn loud and fall back to unidirectional (warn-not-silent is important here; the caller stated intent and we couldn't honour it)
    - The silent fallback mode is for when *no* preference was stated, not when an unmet intent was
 
-5. **Surface the decision trace.** Every selection emits a reasoning trace (stderr at compile-time, comment in generated code): chosen strategy, deciding factor, what was overridden, what alternatives were considered. Even when the next step (caller-wins) is the final answer, the trace explains *why* caller overrode the cost model.
+6. **`step_caller_wins`** — The actual fallback — only when steps 1–5 fail to resolve. Caller-wins-with-loud-warning. Trace records: "caller's `kernel_mode(bidirectional)` overrode manifest's `strategy(unidirectional)`; reason for override unknown; consider reconciling."
 
-6. **Caller-wins-with-loud-warning** is the actual fallback — only when steps 1–5 fail to resolve. Trace records: "caller's `kernel_mode(bidirectional)` overrode manifest's `strategy(unidirectional)`; reason for override unknown; consider reconciling."
+**Always-on invariant — trace emission.** Every selection produces a reasoning trace. Even when an early step (e.g. `step_no_intent`) resolves immediately, the trace records what fired and why. The trace is what makes the selector debuggable; see the next section for its structure and persistence.
 
 This is more involved than a simple "caller wins" precedence rule, but it pays for itself the first time someone gets a surprising compilation choice and looks at the trace.
 
@@ -92,12 +113,18 @@ This is more involved than a simple "caller wins" precedence rule, but it pays f
 
 A compiler that picks strategies behind the user's back is debuggable *only if* the user can ask "why did you pick this?" and get a structured answer. The reasoning trace is the answer.
 
-The trace is **structured data**, not freeform text. Each step in the conflict-avoidance hierarchy contributes a structured entry: which signal triggered, which rule fired, what alternative was considered and rejected. The trace is emitted both:
+The trace is **structured data**, not freeform text. Each step in the conflict-avoidance hierarchy contributes a structured entry: which signal triggered, which rule fired, what alternative was considered and rejected.
 
-- **At compile time**, to stderr, as a human-readable rendering (one line per selection decision, with the deciding signal named).
-- **In the generated code**, as a comment header on the kernel call site (so reading the generated code reveals the strategy and its reasoning without consulting the compiler log).
+**The selector returns the trace; the caller decides what to do with it.** The selector module itself does *not* write to stderr. It produces the structured trace as part of its return value. Target adapters (or thin wrappers around them) decide whether to emit the trace to stderr, to a logfile, to a structured-output channel, or nowhere at all. This keeps the selector pure-functional and testable; quiet-mode operation (no stderr output) is the default for tests and library use, while CLI invocations turn emission on.
 
-A later `unifyweaver explain <pred>` command can render the trace nicely (this is one of the gaps named in book-18 chapter 9 §user-discovery). For now, the structured trace exists and is emitted; the rendering is human-readable but not yet interactive.
+Two renderings are provided as helpers:
+
+- **Compile-time stderr rendering**, human-readable, one line per selection decision, with the deciding signal named. Adapter calls a helper predicate that takes the trace and writes to stderr.
+- **Generated-code comment**, multi-line, inserted as a comment header on the kernel call site so reading the generated code reveals the strategy and its reasoning without consulting the compiler log. Target inserts this via a syntax-appropriate comment-prefix.
+
+**Persistence note.** The structured trace is *in-process only* — it lives in the compiler's memory during compilation and is not persisted between runs. The generated-code comment is the *only* persistent artefact of the strategy decision. The stderr rendering, when emitted, is human-readable but ephemeral; the canonical record of "what strategy was chosen for this kernel" is the comment in the generated code. The eventual `unifyweaver explain <pred>` command would either re-derive the trace from a fresh compilation or parse the comment from the generated code, not consult a persistent trace store.
+
+This is one of the gaps named in book-18 chapter 9 §user-discovery. For now, the structured trace exists and the rendering helpers exist; an interactive `explain` command is future work.
 
 ## Architectural alternatives considered
 
@@ -127,7 +154,11 @@ See book-18 chapter 10 §rule-based-vs-ml-based for the longer argument.
 
 A new module `src/unifyweaver/core/recurrence_evaluation_strategy.pl` exposing `select_evaluation_strategy/3`. F# WAM target is the first consumer. The module is target-agnostic; later WAM targets (Haskell, C) consume it without modification. The level-1 decision tree (per-query / fixed-point / cached / hybrid) is structurally present in the API, but only the per-query branch is populated with real logic in the first round — fixed-point compilation for F# WAM is a separate (larger) piece of work, and adding the level-1 selector now would be wiring up a switch with no second position.
 
-The conflict-avoidance hierarchy is implemented as a six-step resolution machine. The reasoning trace is structured and emitted at both compile-time (stderr) and runtime (generated-code comment).
+The conflict-avoidance hierarchy is implemented as a six-step resolution machine returning a structured trace; the selector is pure-functional. Target adapters render the trace (to stderr at compile time, into generated-code comments) per their needs.
+
+**Dependency direction.** The new module depends on `cost_model.pl`, `cost_function.pl`, `relation_policy.pl`, and `algorithm_manifest.pl` as inputs; it depends on `recursive_kernel_detection.pl` for the detected-kernel terms it consumes. The reverse direction never holds — none of those modules depends on `recurrence_evaluation_strategy.pl`. This one-directional dependency prevents circular loading at startup. F# WAM target (and future Haskell-WAM and C-WAM targets) call into the new module after running kernel detection; they do not get called back from it.
+
+**Planned future consumers.** The C# parameterised query target (`csharp_query_target.pl`) is the existing realisation of bottom-up fixed-point compilation in the codebase. When the level-1 decision tree's `fixed_point(...)` branch gets a real chooser, the C# query target becomes the natural second consumer of `select_evaluation_strategy/3`. The selector's API is sized to accommodate this; the integration itself is future work.
 
 ## When this matters
 
