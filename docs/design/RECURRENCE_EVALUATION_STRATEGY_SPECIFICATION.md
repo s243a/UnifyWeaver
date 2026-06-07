@@ -111,7 +111,8 @@ Intent signals express the user's required outcome. They bypass the cost model w
 | `query_pattern(P)` | manifest | `single_pair` / `all_pairs` / `all_from_source` / `sample` |
 | `query_frequency(F)` | manifest | `low` / `high` / `sustained` |
 | `graph_mutability(M)` | manifest | `static` / `append_only` / `mutable` |
-| `heuristic_predicate_available(B)` | manifest / caller option | `true` if an admissible heuristic predicate is declared (precondition for `prefer_astar_heuristic_available` rule) |
+| `heuristic_predicate_available(B)` | manifest / caller option | `true` if an admissible heuristic predicate is declared. The corresponding caller-option key is `heuristic_predicate(+Pred/Arity)` — when this option is passed, `build_workload_signals/2` derives `heuristic_predicate_available(true)` and records the predicate indicator in a separate `heuristic_predicate(...)` workload signal so cost-model rules can name it. Precondition for `prefer_astar_heuristic_available` rule |
+| `heuristic_predicate(Pred/Arity)` | derived from caller option `heuristic_predicate(Pred/Arity)` | The specific heuristic predicate to use; carried alongside `heuristic_predicate_available(true)` for downstream code-generation |
 | `b_eff(F)` | calibration declaration | Friendship-paradox-corrected effective branching factor |
 | `branching_d(F)` | calibration declaration | Mean child branching factor `D` |
 | `contraction_r(F)` | calibration declaration | Convergence ratio `r = b'/(b_eff·D)` |
@@ -138,7 +139,9 @@ Inferred-data carries explicit uncertainty; cost-model rules can downweight it v
 1. **KernelKind permits it** — read from a kernel-kind-to-strategies static table. Concrete examples:
    - `bidirectional_ancestor` — `value_domain(combinatorial)` — permits `per_query(bidirectional)` and `per_query(astar)`. fixed_point not in this kernel's permitted set. *Rationale*: the kernel's design intent is per-pair single-query lookup (bidirectional A\* between a source and a target); the existing F# WAM template (`templates/targets/fsharp_wam/kernel_bidirectional_ancestor.fs.mustache`) emits per-query code with no provision for batch fixed-point evaluation. Adding fixed_point to this kernel's permitted set would be a structural change (new template + cost-model rules); it's a registry gap by deliberate choice, not by oversight.
    - `transitive_closure2` — `value_domain(combinatorial)` — permits `per_query(unidirectional)`, `per_query(bidirectional)` (via upgrade), and `fixed_point(semi_naive)`. The fixed_point branch is structurally permitted; whether it's auto-selected depends on cost-model rules and is currently stubbed.
-   - `weighted_shortest_path3` — `value_domain(numeric)` — permits `per_query(dijkstra)`. fixed_point not in this kernel's permitted set in the current registry. *Rationale*: same as `bidirectional_ancestor` — the existing template is per-query Dijkstra; fixed_point would require either Bellman-Ford or a new value-iteration template.
+   - `weighted_shortest_path3` — `value_domain(numeric)` — permits `per_query(dijkstra)`. fixed_point not in this kernel's permitted set in the current registry. *Rationale*: the kernel's existing template is per-query Dijkstra with a priority-queue traversal; Dijkstra's correctness depends on non-negative edge weights, which the kernel's admissibility precondition enforces. A fixed_point variant would be Bellman-Ford (numeric + iteration-count bound from graph diameter — see philosophy doc's Bellman-Ford gap note) or a value-iteration template; neither template exists yet. This is a *different* gap from `bidirectional_ancestor`'s per-query-only nature: `bidirectional_ancestor` is structurally pair-oriented (source + target are both inputs), while `weighted_shortest_path3` is single-source-many-targets — different algorithmic shapes, both currently per-query-only by template design.
+
+   *Loop-breaking note for `weighted_shortest_path3`*: Dijkstra is *inherently* safe on non-negative-weight graphs without an explicit visited-set — the priority-queue's monotonic-extraction property guarantees each node is finalised once. So `has_combinatorial_loop_break` is *not applicable* for this kernel rather than `false`: the per-query traversal safety comes from a different mechanism (priority-queue monotonicity + non-negative weights). The selector treats absence of `has_combinatorial_loop_break` as "not applicable; safety guaranteed by other kernel-specific means" for kernels in the Dijkstra family, distinct from `has_combinatorial_loop_break(false)` which would indicate "unsafe on cyclic input." Future framing may introduce a `loop_break_mechanism(Mechanism)` property to capture this distinction explicitly.
 
 2. **Termination guarantee permits it** — for any `fixed_point(...)` strategy, the recurrence must have a termination guarantee. Two cases by value domain:
    - `value_domain(combinatorial)` — finite-state iteration always halts (state-space is finite; iteration either reaches a fixed point or enters a detectable cycle in bounded time). **No contraction-rate guarantee needed.** Datalog-shape recurrences and Bellman-Ford-with-visited-set fall in this case.
@@ -185,16 +188,18 @@ trace(Steps)
 `Steps` is a list of `step/3` terms. Each step has `step(Name, Outcome, Details)` where `Name` is one of the semantic step names, `Outcome` records what happened, and `Details` is a list of supporting facts:
 
 ```prolog
-step(classify_signals, classified(Intent, Declared, Inferred), [])
+step(classify_signals, classified(Intent, Declared, Inferred), [resolved_contradiction(...)?])
 step(cost_model_choice, chosen(Strategy, Score, DecidingRule), [signal(...), reason(...), adjustment(...)?])
-step(no_intent, applied, [no_intent_signals])                     % only fires if Intent = []
-step(intent_matches, applied, [matched_class(...)])               % only fires if all intents match CM
-step(third_option, found(Alt) | not_found, [signals_considered(...)])
-step(scope_disambiguation, resolved(Strategy, by(...)) | no_scope_overlap, [intent_a(...), intent_b(...)])
-step(satisfiability, satisfiable | adjusted | degraded(Action), [unmet_intent(...), adjustment(...)?])
-step(caller_wins, applied, [caller_intent(...), overridden_manifest(...)])
+step(no_intent, applied | passed, [no_intent_signals?])           % applied if Intent = []; passed otherwise
+step(intent_matches, applied | passed, [matched_class(...)?])     % applied if all intents match CM
+step(third_option, found(Alt) | not_found | passed, [signals_considered(...)?])
+step(scope_disambiguation, resolved(Strategy, by(...)) | no_scope_overlap | passed, [intent_a(...)?, intent_b(...)?])
+step(satisfiability, satisfiable | adjusted | degraded(Action) | passed, [unmet_intent(...)?, adjustment(...)?])
+step(caller_wins, applied | passed, [caller_intent(...)?, overridden_manifest(...)?])
 step(final_decision, Strategy, [decided_by(Name), overridden(_), trace_summary(...)])
 ```
+
+The `passed` outcome is added to every resolution step (no_intent, intent_matches, third_option, scope_disambiguation, satisfiability, caller_wins). It records that the step was reached during the hierarchy walk but did not fire — typically because its precondition didn't hold. Including `passed` steps in the trace preserves the complete walk history (which steps were considered before the resolving step fired). A trace renderer can elide `passed` steps for brevity if desired; the structured trace itself records them all.
 
 **Important note on adjustments.** There is no standalone `step(adjustment, ...)` entry type. Adjustments (`build_csr_at_compile_time`, `degrade_to_compatible`, etc.) are recorded as `adjustment(...)` **detail fields** of whichever step caused them — typically `step_cost_model_choice` for rule-level adjustments (a cost-model rule whose preferred strategy includes an adjustment), or `step_satisfiability` for resolution-driven adjustments (an unmet intent that the satisfiability adjuster resolves by building CSR at compile time). The `adjustment(...)?` annotation on those step lines marks the field as optional. This preserves the per-step single-entry fold contract: each resolution step contributes exactly one trace entry.
 
@@ -274,6 +279,8 @@ Rules that fire (signal-value preconditions evaluated regardless of tier; tier c
 
 - `prefer_bidirectional_csr_buildable` — all preconditions match: `csr_buildable(true)` ✓, `cardinality(large)` ✓, `query_frequency(high)` ✓. Raw score +2. Confidence per signal: `csr_buildable(true)` is inferred (0.8), `cardinality(large)` is declared (1.0), `query_frequency(high)` is declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
 - `prefer_unidirectional_no_csr` — `csr_available(false)` precondition matches (the signal is in the workload, tier-irrelevant for firing). But `csr_buildable(false)` does *not* match — we have `csr_buildable(true)` in the workload. Rule does not fire on value mismatch.
+
+  *Reader note:* this rule's non-firing in the worked example is the common case rather than an edge case. Most real workloads where CSR is missing also have the CSR-buildable signal (the static analyser typically infers `csr_buildable(true)` whenever the edge predicate has a buildable inverse, which is most of the time on Wikipedia-style categorisation graphs). So `prefer_unidirectional_no_csr` is the rule that fires when the system is told "no CSR, and don't try to build one either" — a relatively rare combination in practice. The `default_fallback` rule plus `prefer_bidirectional_csr_buildable` cover the more typical scenarios.
 - `default_fallback` — fires. Raw score +0.
 
 Winner: `per_query(bidirectional)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The build-CSR adjustment is recorded as a detail field of the cost-model-choice trace entry (rule-level adjustments live where the rule fired, not as a separate step); the trace looks like `step(cost_model_choice, chosen(per_query(bidirectional), 1.87, prefer_bidirectional_csr_buildable), [adjustment(build_csr_at_compile_time), ...])`. Likewise, if a `step_satisfiability` resolution had triggered the adjustment (different scenario), the adjustment would live as a detail field of the satisfiability step. **Adjustments are detail fields of whatever step caused them, not separate trace steps**, so the per-step single-entry fold contract is preserved.
@@ -337,11 +344,13 @@ The two sets are disjoint — neither refines the other. `step_scope_disambiguat
 If the intent is structurally unmet (e.g. caller wants `bidirectional` but declared `csr_available(false)` AND inferred `csr_buildable(false)`):
 
 - Determine if an adjustment makes it satisfiable. Concrete adjustments in priority order:
-  - `build_csr_at_compile_time` — if `csr_buildable(true)` (inferred or declared)
+  - `build_csr_at_compile_time` — applicable when `csr_buildable(true)` (inferred or declared) **AND** the workload signals satisfy the same preconditions as `prefer_bidirectional_csr_buildable` (specifically `cardinality(large)` and `query_frequency(high)`). If those preconditions are unmet, building CSR isn't cost-justified — fall through to the next adjustment.
   - `degrade_to_compatible` — fall back to a strategy that satisfies the intent's broader class (e.g. `bidirectional` → `astar` if astar admissible) with a warning recorded in the trace
   - `degrade_with_warning` — fall back to a strategy that contradicts the intent but warns loud
 
 - Selector picks the first adjustment whose precondition holds.
+
+**`monotone(false)` cross-class restriction in the adjuster.** Under `monotone(false)`, the adjuster explicitly *refuses* any adjustment that would cross strategy classes. Concrete mechanism: before committing an adjustment, the adjuster checks whether the candidate post-adjustment strategy and the caller's stated intent are in the same strategy class (both `per_query(...)`, or both `fixed_point(...)`, etc.). If they're not, the adjustment is rejected and the adjuster falls through to the next adjustment (or to `step_caller_wins` if none remain). This is mechanism (b) — *refuse cross-class adjustment* — rather than (a) (post-hoc re-check). Refusal is preferred because it short-circuits earlier: the user gets a clearer trace ("adjustment rejected: would cross strategy class under monotone(false)") and the resolution moves on without the wasted-work appearance of an adjustment that was computed and then discarded.
 
 Trace step (single entry per resolution, per the fold contract): `step(satisfiability, adjusted, [adjustment(build_csr_at_compile_time), unmet_intent(kernel_mode(bidirectional)), reason(no_csr_present_but_buildable)])`. The adjustment is recorded as a *detail field* of the satisfiability step, not as a separate step — this preserves the invariant that each resolution step contributes exactly one trace entry. The target adapter reads the adjustment detail and executes the side-effect (e.g. emitting a build-CSR step into the generated code) before the kernel call.
 
@@ -357,15 +366,17 @@ The matrix used by `step_intent_matches` and `step_third_option` to decide wheth
 
 | Intent signal | Satisfied by strategy |
 |---------------|----------------------|
-| `kernel_mode(bidirectional)` | `per_query(bidirectional)`, `per_query(astar)` (astar is bidirectional-flavour) |
+| `kernel_mode(bidirectional)` | `per_query(bidirectional)`, `per_query(astar)` (astar is bidirectional-flavour: see asymmetry note below) |
 | `kernel_mode(unidirectional)` | `per_query(unidirectional)`, `per_query(bfs)`, `per_query(dfs)` |
-| `kernel_mode(astar)` | `per_query(astar)` |
+| `kernel_mode(astar)` | `per_query(astar)` only |
 | `kernel_mode(dijkstra)` | `per_query(dijkstra)` |
 | `strategy(per_query(X))` | `per_query(X)` if X is ground; any `per_query(_)` if X is unbound |
 | `strategy(fixed_point(X))` | `fixed_point(X)` if X is ground; any `fixed_point(_)` if X is unbound |
 | `strategy(cached)` | `cached` |
 | `strategy(hybrid(_))` | any `hybrid(_)` |
 | `force_search_algorithm(A)` | any strategy whose inner algorithm matches A |
+
+**Asymmetry note on bidirectional vs astar.** The matrix is deliberately asymmetric: `kernel_mode(bidirectional)` is *broader* and matches both plain bidirectional A\* search and `per_query(astar)` (since A\* with admissible heuristic is a bidirectional-flavour algorithm); `kernel_mode(astar)` is *narrower* and matches only `per_query(astar)`. The asymmetry reflects user intent: someone asking for `kernel_mode(bidirectional)` is expressing a class preference (bidirectional-flavour search), so A\* counts; someone asking for `kernel_mode(astar)` is specifically requesting A\* (with its heuristic-driven behaviour), so plain bidirectional doesn't count. If a user wants either bidirectional-or-astar, they should use `kernel_mode(bidirectional)`.
 
 This matrix is defined as a predicate `intent_compatible_with_strategy/2` in the module. Adding a new intent signal type means adding entries to the matrix.
 
@@ -403,9 +414,11 @@ Conflict example — disjoint intents, fall through to caller-wins:
 [evaluation-strategy] selecting for category_ancestor/4
 [evaluation-strategy]   classify_signals: intent=[kernel_mode(bidirectional), strategy(per_query(unidirectional))], declared=[csr_available(true)], inferred=[]
 [evaluation-strategy]   cost_model_choice: per_query(bidirectional), score=3.0, deciding-rule=prefer_bidirectional_csr_present
-[evaluation-strategy]   third_option: not_found (no admissible strategy satisfies both intent signals)
-[evaluation-strategy]   scope_disambiguation: passed (intents have disjoint strategy-sets; neither refines the other)
-[evaluation-strategy]   satisfiability: not_applicable (no structurally-unmet intent)
+[evaluation-strategy]   no_intent: passed (intent signals present)
+[evaluation-strategy]   intent_matches: passed (cost-model choice satisfies kernel_mode(bidirectional) but not strategy(per_query(unidirectional)))
+[evaluation-strategy]   third_option: not_found (no admissible strategy satisfies both intent signals — intents are mutually exclusive)
+[evaluation-strategy]   scope_disambiguation: no_scope_overlap (intents have disjoint strategy-sets; neither refines the other)
+[evaluation-strategy]   satisfiability: passed (no structurally-unmet intent — both are achievable individually, just not jointly)
 [evaluation-strategy] WARNING: caller_wins applied — caller's kernel_mode(bidirectional) overrode manifest's strategy(per_query(unidirectional)); reason for override unknown; consider reconciling
 [evaluation-strategy]   final_decision: per_query(bidirectional), decided_by=caller_wins, overridden=[manifest:strategy(per_query(unidirectional))]
 ```
