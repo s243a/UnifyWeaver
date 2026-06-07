@@ -83,9 +83,9 @@ write_file(Path, Text) :-
 % A-registers and asserts the boolean outcome. rseqite(10,pos,small)=false
 % and rundoite(c,els)=true are the discriminating cases.
 rust_test_source(
-"use wam_lib::state::WamState;
-use wam_lib::value::Value;
-use wam_lib::{lowered_rite_2, lowered_rneg_1, lowered_rseqite_3, lowered_rnestite_2, lowered_rundoite_2};
+"use iterust::state::WamState;
+use iterust::value::Value;
+use iterust::{lowered_rite_2, lowered_rneg_1, lowered_rseqite_3, lowered_rnestite_2, lowered_rundoite_2};
 use std::collections::HashMap;
 
 fn call(setup: &dyn Fn(&mut WamState), f: fn(&mut WamState) -> bool) -> bool {
