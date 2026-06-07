@@ -43,20 +43,42 @@ The implication for compiler design: pick the strategy *separately* from definin
 
 ### The orthogonality is not complete
 
-A subtlety worth naming. Strategy classes are **structurally** orthogonal — you can imagine them as independent axes — but **convergence properties** of the recurrence cross-cut the classes:
+A subtlety worth naming. Strategy classes are **structurally** orthogonal — you can imagine them as independent axes — but two properties of the recurrence cross-cut the classes and determine which strategies are admissible for that recurrence:
 
-- A recurrence with **combinatorial loop-breaking** (explicit visited set) terminates by construction. Any strategy that doesn't drop the visited tracking will terminate.
-- A recurrence with **numeric loop-breaking** (contraction via diagonal dominance) terminates *iff* the operator is a contraction with rate strictly less than 1. The contraction rate determines iteration count under iterative strategies; it determines admissibility under direct-solve strategies; it bounds the residual under per-query strategies.
+- **Value domain** — whether the recurrence's output lives in a *combinatorial* lattice (boolean, finite set of tuples — the Datalog case) or a *numeric* lattice (real-valued, continuous — the PageRank / `d_wPow` case). The two classes have different termination criteria.
+- **Loop-breaking mechanism** — how the recurrence avoids non-termination on cyclic inputs. Either *combinatorially* via an explicit visited-set (`\+ member` in the user's clauses) or *numerically* via contraction (the iteration operator is a contraction map with rate < 1).
 
-So the strategy selector needs to know about the recurrence's loop-breaking mechanism — combinatorial or numeric — because the choice constrains which strategies are admissible. This is the *one* place where strategy class and recurrence properties interact.
+The two axes interact with fixed_point admissibility in different ways:
 
-**Contraction-rate gating for fixed-point.** When the recurrence's `numeric_contraction_rate` is `none` (unknown) or `≥ 1` (no convergence guarantee), *all* `fixed_point` strategies are inadmissible regardless of what `KernelKind` would otherwise permit. The selector treats this as a hard precondition: there is no honest way to pick fixed-point evaluation when convergence isn't guaranteed. (Combinatorial loop-breaking via explicit visited-set is a separate, always-terminating mechanism; it constrains nothing about contraction rate, but it also doesn't make fixed-point admissible — it makes per-query admissible.)
+- For **combinatorial recurrences** (boolean lattice, finite Herbrand base — the standard Datalog case), `fixed_point` is admissible whenever the recurrence is `monotone(true)`. Tarski's theorem on a finite lattice guarantees the least fixed point exists and is reached by bottom-up iteration in at most |L| steps. **No contraction-rate guarantee is needed.** Bellman-Ford-style algorithms with a visited set are the canonical example: combinatorial, monotone, terminates without any `r < 1` requirement.
+- For **numeric recurrences** (continuous lattice — `d_wPow`, PageRank, weighted graph statistics), `monotone(true)` alone is not enough — convergence over a continuous lattice requires a contraction guarantee. The recurrence must have `numeric_contraction_rate(R)` with `R < 1.0` for `fixed_point` to be admissible.
+
+**Visited-set loop-breaking is about per-query termination, not fixed-point admissibility.** The user's `\+ member(N, Visited)` clauses are a top-down-traversal safety mechanism — they let a Prolog query terminate on cyclic input. Bottom-up Datalog evaluation doesn't consult them; it adds tuples until fixpoint and doesn't loop because the universe is finite. So the combinatorial loop-breaking signal `has_combinatorial_loop_break(true)` tells the selector that *per-query* strategies are safe on cyclic graphs; it doesn't directly enable `fixed_point` (the value-domain and monotonicity properties do that independently).
+
+**Monotonicity-cross-class restriction.** A separate concern: when `monotone(false)`, no strategy class can be *auto-selected across classes* — the selector restricts to whichever class the user explicitly declares via intent. Non-monotone recurrences may have evaluation-order-dependent semantics; the compiler does not pick between classes without guidance. This restriction is applied in the conflict-resolution phase (where intent is in scope), not at the admissibility check (which sees only the recurrence).
+
+**Putting it together — fixed_point admissibility test:**
+
+```
+admissible(fixed_point, Recurrence) :-
+    monotone(Recurrence, true),
+    termination_guarantee(Recurrence).
+
+termination_guarantee(Recurrence) :-
+    value_domain(Recurrence, combinatorial), !.    % finite lattice; Tarski + finite universe
+termination_guarantee(Recurrence) :-
+    value_domain(Recurrence, numeric),
+    numeric_contraction_rate(Recurrence, R),
+    R < 1.0.
+```
+
+For Phase 1 of the implementation, almost all kernels are combinatorial (TC, ancestor, BFS variants), so the contraction-rate check rarely applies. The contraction-rate machinery is set up for when `d_wPow`-style numeric recurrences enter the picture (book-18 ch7's territory).
 
 ## Theory connection: `r` is conjectured to be the contraction rate
 
 The convergence ratio `r = b'/(b_eff · D)` from [`TREE_LIKENESS_INDEX.md`](TREE_LIKENESS_INDEX.md) §2 and [`TREE_LIKENESS_INDEX_THEORY.md`](TREE_LIKENESS_INDEX_THEORY.md) §2.3 plays the role of the **spectral contraction rate** for the linearised `d_wPow` iteration operator. Theorem 2.3's bound `r/(1−r)` on the per-step contribution from longer paths is the geometric-series bound from a contraction with rate `r`. The "shortcuts are rare" empirical observation (design note §3.3) and the "iteration converges fast" theoretical observation are the same observation, viewed through the two lenses of metric structure and numeric contraction.
 
-**This identification is a conjecture, not a theorem.** Rigorously identifying `r` with the spectral radius of the iteration operator requires a norm-specific argument that has not been constructed in the project to date. The intuition is sound — the friendship-paradox quantity `E[d²]/E[d]` is a known estimator for the spectral radius of a configuration-model random graph's adjacency matrix, and `b_eff` is a directional extension of this — but a precise proof would tighten which norm, which operator linearisation, and which assumptions about the underlying graph distribution. The rigorous identification is tracked theory work, named explicitly as a future-work item in [book-18-graph-algorithms appendix B.7](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md) (convergence robustness — feature and trap). Not blocking; this PR proceeds on the conjecture, with the hedge documented and the dependence on the conjecture made operationally visible (see below).
+**This identification is a conjecture, not a theorem.** Rigorously identifying `r` with the spectral radius of the iteration operator requires a norm-specific argument that has not been constructed in the project to date. The intuition is sound — the friendship-paradox quantity `E[d²]/E[d]` is a known estimator for the spectral radius of a configuration-model random graph's adjacency matrix, and `b_eff` is a directional extension of this — but a precise proof would tighten three things at once: (i) which norm the spectral analysis is being done in, (ii) which operator linearisation of the `d_wPow` iteration is being analysed, and (iii) the assumption that the **weighted-degree distribution is approximately uncorrelated** (i.e. the configuration-model assumption applies to the weighted directed graph the iteration operator is built from — without this, the friendship-paradox estimator may diverge from the spectral radius even in expectation). The rigorous identification is tracked theory work, named explicitly as a future-work item in [book-18-graph-algorithms appendix B.7](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md) (convergence robustness — feature and trap). Not blocking; this PR proceeds on the conjecture, with the hedge documented and the dependence on the conjecture made operationally visible (see below).
 
 **Why this matters operationally.** The contraction-rate gating in the previous section (`numeric_contraction_rate ≥ 1` disqualifies fixed_point) makes `r` operationally consequential, not just rhetorical. The selector can refuse to choose fixed-point if `r ≥ 1`, which only makes sense if `r` reliably tracks what the iteration operator actually does. The conjecture, even pending verification, is the strongest concrete relationship between graph statistics and iteration-convergence we currently have. The cost-model rules treat `r` as an upper-bound estimator of contraction rate — robust to small estimator errors in the standard way (see [book-18 appendix B.7 §convergence-robustness](../../education/book-18-graph-algorithms/13_appendix_b_internal_theory.md)) — but the entire chain becomes more brittle if the conjecture is wrong in a substantive way. Tightening the proof is a real follow-up.
 
@@ -92,11 +114,11 @@ The selector walks a hierarchy of resolution steps. The step labels below match 
 
 1. **`step_no_intent`** — If there are no intent signals at all, the cost-model output wins immediately. Trace: "no intent signals; cost-model preference applies."
 
-2. **`step_intent_matches`** — If the single intent signal points at the same strategy class the cost model picked, no conflict. Trace: "intent and cost-model agree."
+2. **`step_intent_matches`** — If *every* intent signal is satisfied by the cost-model choice (per the intent-compatibility matrix in the SPEC), no conflict. Trace: "intent and cost-model agree." This step handles the multi-intent-all-matching case, not only the single-intent case.
 
 3. **`step_third_option`** — Look for a compatible third option. If intent A points at strategy X and intent B points at strategy Y, but there exists a strategy Z that satisfies both intents, pick Z. Concrete example: caller's implicit "fast" + manifest's explicit "exact-only" → A* with admissible heuristic is both fast and exact; no conflict.
 
-4. **`step_scope_disambiguation`** — If one intent applies at the algorithm-name scope (manifest) and another at the compile-call scope (caller option), the more specific scope can override the broader one *without it being treated as conflict*. Definition: the narrower strategy term subsumes the broader one (e.g. manifest says `strategy(per_query(_))`, caller says `kernel_mode(bidirectional)` — `bidirectional` is per_query, no real conflict; caller wins by specificity, not by override).
+4. **`step_scope_disambiguation`** — If one intent applies at the algorithm-name scope (manifest) and another at the compile-call scope (caller option), the *more specific* (refined) scope wins *without it being treated as conflict*. Definition: intent A **refines** intent B iff A's strategy-set is a subset of B's strategy-set; A is the more specific intent and wins. Concrete example: manifest says `strategy(per_query(_))` (matches *any* per_query strategy — broad), caller says `kernel_mode(bidirectional)` (matches `per_query(bidirectional)` and `per_query(astar)` only — narrow); caller's strategy-set is a subset of manifest's, so caller refines manifest, and caller wins by specificity, not by override. When the two intents have **disjoint** strategy-sets (neither refines the other) this step does *not* fire — the resolution falls through to the satisfiability and caller-wins steps. (Terminology note: earlier drafts said "subsumes" — switched to "refines" because the natural reading of "A subsumes B" varies between type-theory and natural-language conventions; "A refines B" is unambiguous: A is more specific.)
 
 5. **`step_satisfiability`** — If an intent is structurally unmet (caller wants bidirectional but no CSR), look for adjustments:
    - CSR buildable + workload large enough to amortise → emit a build-CSR adjustment step in the trace; the chosen strategy is `per_query(bidirectional)` with the build-CSR step as a precondition
@@ -122,7 +144,13 @@ Two renderings are provided as helpers:
 - **Compile-time stderr rendering**, human-readable, one line per selection decision, with the deciding signal named. Adapter calls a helper predicate that takes the trace and writes to stderr.
 - **Generated-code comment**, multi-line, inserted as a comment header on the kernel call site so reading the generated code reveals the strategy and its reasoning without consulting the compiler log. Target inserts this via a syntax-appropriate comment-prefix.
 
-**Persistence note.** The structured trace is *in-process only* — it lives in the compiler's memory during compilation and is not persisted between runs. The generated-code comment is the *only* persistent artefact of the strategy decision. The stderr rendering, when emitted, is human-readable but ephemeral; the canonical record of "what strategy was chosen for this kernel" is the comment in the generated code. The eventual `unifyweaver explain <pred>` command would either re-derive the trace from a fresh compilation or parse the comment from the generated code, not consult a persistent trace store.
+**Persistence note.** The structured trace is *in-process only* — it lives in the compiler's memory during compilation and is not persisted between runs. The generated-code comment is the only *human-readable* persistent artefact of the strategy decision. The stderr rendering, when emitted, is human-readable but ephemeral.
+
+For a future `unifyweaver explain <pred>` command, the **primary path** is re-compilation in explain-mode: the explain tool re-runs the strategy selector with the same inputs and reads the structured trace directly from the selector's return value. This gives the explain tool full access to the structured data — every step name, every signal, every alternative considered — without the lossy round-trip through human-readable text.
+
+Parsing the generated-code comment back into a structured trace is *not* the primary path. The comment is intentionally human-readable and not designed to be machine-parsed; treating it as a serialisation format would be fragile (whitespace, formatting drift, locale-dependent renderings would all break parsing). The comment is the user-facing record of "what was chosen"; the structured trace from re-compilation is the tool-facing one.
+
+When the explain tool needs to *consult* historical decisions (e.g. "what did the compiler decide last time?"), the right design is a separate explicit cache — keyed by the (Recurrence, Workload) inputs — not parsing of generated comments. That cache is out of scope for this iteration.
 
 This is one of the gaps named in book-18 chapter 9 §user-discovery. For now, the structured trace exists and the rendering helpers exist; an interactive `explain` command is future work.
 
