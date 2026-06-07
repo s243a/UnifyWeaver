@@ -73,6 +73,10 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/recurrence_evaluation_strategy',
+              [select_evaluation_strategy/3]).
+:- use_module('../core/recurrence_inputs',
+              [build_recurrence_term/3, build_workload_signals/2]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
               kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
@@ -4595,6 +4599,50 @@ maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
                             Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
 maybe_upgrade_bidirectional(KV, KV).
 
+%% wam_fsharp_apply_strategy_selector(+ResWorkload, +KV0, -KV)
+%
+%  Phase 5a: per-kernel strategy-selector decision. Builds a
+%  Recurrence from the detected kernel, calls
+%  recurrence_evaluation_strategy:select_evaluation_strategy/3,
+%  then applies the resulting Strategy as a kernel upgrade if
+%  appropriate.
+%
+%  Currently the only auto-upgrade is category_ancestor →
+%  bidirectional_ancestor when the selector returns
+%  per_query(bidirectional). All other Strategy values leave the
+%  kernel unchanged. Phase 5b will additionally extract the
+%  Trace for the generated-F# comment header.
+%
+%  ResWorkload is the workload signal list built once per compile
+%  via recurrence_inputs:build_workload_signals/2.
+wam_fsharp_apply_strategy_selector(ResWorkload,
+                                   Key-DetectedKernel,
+                                   Key-MaybeUpgraded) :-
+    recurrence_inputs:build_recurrence_term(DetectedKernel, [], Recurrence),
+    recurrence_evaluation_strategy:select_evaluation_strategy(
+        Recurrence, ResWorkload,
+        strategy_choice(Strategy, _Trace)),
+    wam_fsharp_apply_strategy_choice(Strategy, DetectedKernel, MaybeUpgraded).
+
+%% wam_fsharp_apply_strategy_choice(+Strategy, +DetectedKernel, -UpgradedKernel)
+%
+%  Apply the selector's chosen strategy as a kernel-kind transformation.
+%
+%  Only one transformation is currently wired:
+%    per_query(bidirectional) + category_ancestor → bidirectional_ancestor
+%
+%  All other (Strategy, KernelKind) combinations leave the kernel
+%  unchanged (the kernel's existing per_query(unidirectional)
+%  template handles them).
+wam_fsharp_apply_strategy_choice(strategy(per_query(bidirectional)),
+                                 recursive_kernel(category_ancestor, PI, Config),
+                                 recursive_kernel(bidirectional_ancestor, PI, Config)) :-
+    !,
+    format(user_error,
+           '[WAM-FSharp] strategy-selector upgraded category_ancestor -> bidirectional_ancestor (~w)~n',
+           [PI]).
+wam_fsharp_apply_strategy_choice(_, Kernel, Kernel).
+
 %% =====================================================================
 %% Cost-based auto-resolvers for F# WAM target
 %% =====================================================================
@@ -4779,14 +4827,18 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     ->  DetectedKernels = [],
         format(user_error, '[WAM-FSharp] kernel detection suppressed~n', [])
     ;   detect_kernels_fs(ProjectPredicates, DetectedKernels0),
-        % Upgrade category_ancestor to bidirectional when CSR child
-        % lookup is available (csr_path provides category_child).
-        (   option(kernel_mode(bidirectional), Options),
-            option(csr_path(_), Options)
-        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
-            format(user_error, '[WAM-FSharp] bidirectional kernel upgrade enabled~n', [])
-        ;   DetectedKernels = DetectedKernels0
-        ),
+        % Phase 5a: replace the option-driven upgrade gate with the
+        % recurrence-evaluation-strategy selector. Caller options flow
+        % into the workload; the selector decides per-kernel whether
+        % to upgrade. Backwards-compatible: when caller passes
+        % kernel_mode(bidirectional) + csr_path(_) explicitly, the
+        % selector resolves to per_query(bidirectional) via either
+        % step_third_option (search admissible) or step_caller_wins
+        % (fallback). When the caller passes neither but workload
+        % signals support bidirectional, the selector auto-selects.
+        recurrence_inputs:build_workload_signals(Options, ResWorkload),
+        maplist(wam_fsharp_apply_strategy_selector(ResWorkload),
+                DetectedKernels0, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
