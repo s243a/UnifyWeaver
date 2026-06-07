@@ -1,5 +1,7 @@
 # Recurrence Evaluation Strategy — Implementation Plan
 
+> *Design-document-set: recurrence-evaluation-strategy v1 (philosophy / specification / implementation-plan).*
+
 This document is the work plan for implementing the recurrence-evaluation-strategy selector. For the why, see [`RECURRENCE_EVALUATION_STRATEGY_PHILOSOPHY.md`](RECURRENCE_EVALUATION_STRATEGY_PHILOSOPHY.md). For the API and behaviour, see [`RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md`](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md).
 
 ## Sequencing summary
@@ -155,7 +157,11 @@ Both are documented in this implementation plan, in the SPEC, and as in-code com
 - Each step's individual tests pass.
 - Integration tests walk realistic decision scenarios end-to-end, including the conflict + override case.
 - The trace for each decision is complete and accurate (matches the SPEC's example outputs to the structural level — actual atom values may differ for non-stable rules).
-- **`monotone(false)` + cross-class adjustment edge case** — a dedicated test exercises the scenario: a `monotone(false)` recurrence where the cost-model's preferred strategy is, say, `per_query(bidirectional)` (in-class for per-query intents) but the **caller's intent** is `strategy(fixed_point(_))` — i.e. *the caller's intent is the cross-class request*, not the cost-model's preference. The test exercises `step_satisfiability` (and also `step_third_option` — since both apply the cross-class restriction under `monotone(false)`) and verifies that the adjuster refuses to cross from per-query (cost-model class) into fixed_point (caller-intent class), per the SPEC's [`monotone(false)` mechanism note](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#step_satisfiability--adjust-the-unsatisfiable). Resolution falls through to `step_caller_wins` with a cross-class warning. This is the only place where admissibility and the cross-class restriction interact at runtime; without explicit coverage it's an untested edge. *(Earlier draft of this success criterion had the test scenario direction inverted: it described "caller asks for kernel_mode(bidirectional) which is per-query but cost-model preferred fixed_point" — but in that direction, the caller intent is per-query, not cross-class; the cost-model is the cross-class one from the caller's perspective. The corrected framing above puts the cross-class burden on the caller's intent, which is the side that triggers the restriction.)*
+- **`monotone(false)` + cross-class adjustment edge case** — a dedicated test exercises the scenario: a `monotone(false)` recurrence where the cost-model's preferred strategy is `per_query(bidirectional)` (in-class for per-query intents) but the **caller's intent** is `strategy(fixed_point(_))` — i.e. *the caller's intent is the cross-class request*, not the cost-model's preference. The test exercises two distinct cross-class-restriction mechanisms:
+  - `step_third_option` — under `monotone(false)`, narrows its candidate set to strategies in the same class as `CostModelChoice` (per_query). The search for a candidate satisfying the caller's `fixed_point(_)` intent **returns `not_found`** (the narrowed candidate set contains no fixed_point strategies — the candidate set was restricted *before* the search ran). Test verifies the `step(third_option, not_found, [monotone_false_narrowed_candidates(...)])` trace entry appears.
+  - `step_satisfiability` — *actively refuses* any adjustment that would cross strategy classes. Concrete check: the adjuster computes a candidate post-adjustment strategy, sees it would be cross-class, rejects it. Test verifies the `step(satisfiability, ..., [adjustment_rejected(reason(would_cross_class_under_monotone_false)), ...])` trace entry appears.
+
+  Note the linguistic distinction: `step_third_option` *finds no candidate* (search exhausted on a narrowed set); `step_satisfiability` *refuses an adjustment* (active rejection of a candidate it computed). Both are correct outcomes for the cross-class restriction; both should be tested. Resolution falls through to `step_caller_wins` with a cross-class warning. This is the only place where admissibility and the cross-class restriction interact at runtime; without explicit coverage it's an untested edge. *(Earlier draft of this success criterion had the test scenario direction inverted: it described "caller asks for kernel_mode(bidirectional) which is per-query but cost-model preferred fixed_point" — but in that direction, the caller intent is per-query, not cross-class; the cost-model is the cross-class one from the caller's perspective. The corrected framing above puts the cross-class burden on the caller's intent, which is the side that triggers the restriction.)*
 
 ### Estimated effort
 
@@ -271,7 +277,11 @@ Comprehensive unit and integration tests. Some are scoped into Phases 1–5 abov
 ### Success criteria
 
 - All tests pass on a clean checkout.
-- **Structural coverage criterion (replaces "80% by visual inspection").** Every named exported predicate has at least one positive test (returns expected output for valid input) and at least one negative test (throws expected error, or returns expected sentinel for malformed input). Internal helpers (`step_*`, `intent_compatible_with_strategy/2`, cost-model rules) each have at least one positive test exercising the success path. This is structural and verifiable by reading the test file; doesn't require a coverage tool but isn't satisfied by trivially exercising the entry point either. *Optional CI deliverable*: integrate `library(test_cover)` in SWI-Prolog when CI is in place, then re-add a numeric coverage threshold backed by the tool.
+- **Structural coverage criterion (replaces "80% by visual inspection").** Every named exported predicate has at least one positive test (returns expected output for valid input) and at least one negative test (throws expected error, or returns expected sentinel for malformed input). Internal helpers (`step_*`, `intent_compatible_with_strategy/2`, cost-model rules) each have at least one positive test exercising the success path. This is structural and verifiable by reading the test file; doesn't require a coverage tool but isn't satisfied by trivially exercising the entry point either.
+
+  **Tests in earlier phases count toward this criterion.** The trace renderers (`render_trace_for_stderr/2`, `format_trace_for_comment/3`) are exported by the module but their tests are written in Phase 4 (`tests/core/test_res_trace.pl`), not duplicated in Phase 6. The Phase 6 structural-coverage check is satisfied as long as *some* test file in the project exercises each exported predicate with both positive and negative cases — wherever in the phased plan that test was written. Phase 6's role is to backfill anything not covered by earlier phases and to add the end-to-end integration scenarios; it is not "the test phase" exclusively.
+
+  *Optional CI deliverable*: integrate `library(test_cover)` in SWI-Prolog when CI is in place, then re-add a numeric coverage threshold backed by the tool.
 - The trace-inspection helpers are reused in `test_wam_fsharp_strategy_autoselect_e2e.pl` (verified by import).
 
 ### Estimated effort
@@ -298,7 +308,22 @@ Update [`book-18-graph-algorithms`](https://github.com/s243a/UnifyWeaver_Educati
 - New entry in `book-18-graph-algorithms/13_appendix_b_internal_theory.md`:
   - `B.13 — r = b'/(b_eff·D) as contraction rate: conjecture and tracked theory work`. (Title uses the explicit formula to match the philosophy doc's framing — the formula spelled out lets a reader of the book's table of contents match the entry to the SPEC/philosophy without resolving terminology.) Records that the design depends on identifying `r = b'/(b_eff·D)` with the spectral contraction rate of the linearised `d_wPow` iteration operator; documents that this is a conjecture pending verification, points to the philosophy doc's hedge, names the rigorous identification as future theory work.
 
-  *Markdown rendering caveat.* The title contains `·` (middle dot, U+00B7) and `'` (apostrophe used for prime). In GitHub Markdown anchor-link generation, the apostrophe is preserved literally but the middle dot is stripped, producing an anchor like `#b13--r--bbeffd-as-contraction-rate-conjecture-and-tracked-theory-work`. This works for in-page navigation in GitHub but may render oddly in some PDF generators or in cross-renderer environments. **The reference to B.13 in the SPEC/PHIL cross-links should use the GitHub-rendered anchor verbatim** — the existing B.13 entry in `book-18-graph-algorithms/13_appendix_b_internal_theory.md` (added in the companion education-repo PR) uses this title; the anchor follows GitHub's rules. If a future PDF build of book-18 mangles the anchor, the fix is to substitute ASCII-safe alternatives (`b_eff * D`, `b_prime/(b_eff*D)`) in the title; not currently needed.
+  *Markdown rendering caveat.* The title contains `·` (middle dot, U+00B7) and `'` (apostrophe used for prime). GitHub's anchor-generation rules: lowercase everything, replace spaces with `-`, strip most punctuation (including middle dot and apostrophe), collapse runs of `-`. The resulting GitHub anchor for the current title is approximately:
+
+  ```
+  #b13--r--bbeffd-as-contraction-rate-conjecture-and-tracked-theory-work
+  ```
+
+  (the prime in `b'` is stripped, becoming `b`; the middle dot is stripped; the slash is dropped). This works for in-page navigation in GitHub but may render oddly in some PDF generators or cross-renderer environments.
+
+  **If a future PDF build of book-18 mangles the anchor**, the fix is to substitute ASCII-safe alternatives in the title. The reviewer-suggested substitutes produce these GitHub anchors:
+
+  ```
+  Title: "B.13 — r = b_prime / (b_eff * D) as contraction rate: conjecture and tracked theory work"
+  Anchor: #b13--r--b_prime--b_eff--d-as-contraction-rate-conjecture-and-tracked-theory-work
+  ```
+
+  (note underscores are preserved in GitHub anchors; spaces around `*` and `/` collapse to `-`). The SPEC/PHIL cross-links would need updating to the new anchor in tandem with any title change. **Not currently needed** — the GitHub anchor works for in-page navigation, and no PDF build is in scope; the substitution guidance exists for the day someone needs it.
 - Bump the "Status" line of book-18's README.md if appropriate (currently says "Initial — this book is a starting point").
 
 ### Scope notes
@@ -329,6 +354,12 @@ The philosophy doc names several gaps the design accommodates but the implementa
 - **Numeric-loop-breaking detection.** The infrastructure passes `numeric_contraction_rate(R)` through to the selector, but the *detector* that infers `r` from clause structure for a PageRank-style predicate is future work. For now, `r` is supplied via algorithm-manifest hints or omitted.
 - **ML-based pattern-to-strategy classifier.** Explicitly rejected for this iteration (see philosophy §Alternatives). Revisit if the pattern space grows beyond hand-enumeration.
 - **Rigorous identification of `r` with the spectral contraction rate.** The philosophy doc hedges this as a conjecture; appendix B.13 in book-18 names it as tracked theory work. Not blocking this iteration.
+- **Windowed-RMS termination criterion for oscillatory numeric recurrences** (philosophy doc §Bellman-Ford gap names this). Future-work-not-blocking. If implemented, the implementation should:
+  - Add a new recurrence property `numeric_windowed_rms_bound(WindowSize, RmsThreshold)` to the SPEC's properties table (alongside `numeric_contraction_rate`).
+  - Extend the `termination_guarantee/1` set in the philosophy doc with a fourth clause admitting numeric recurrences with a windowed-RMS bound.
+  - Keep the implementation cheap: small window (`W ~ 5–10`), O(1) amortised per-iteration bookkeeping via a deque plus running sum-of-squares. Avoid FFT-based spectral techniques and multi-resolution analysis in a first pass — they scale poorly per iteration and aren't justified before the simpler implementation has shipped.
+  - Make the window user-configurable: per-recurrence via the `WindowSize` argument; global default settable via something like `set_default_windowed_rms_window_size(+N)` for workload-level tuning.
+  - No kernel in the current registry needs this; the design is captured here so a future contributor adding a kernel that needs it has a starting point.
 
 Each item is independently work-itemisable. None blocks this iteration.
 
