@@ -12,6 +12,7 @@
 :- dynamic kt_wrap/2.
 :- dynamic kt_make_list/3.
 :- dynamic kt_match_pair/3.
+:- dynamic kt_color/1.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -54,11 +55,12 @@ test(integer_literal_uses_value_intval) :-
     assertion(has_substring(Lit, 'Value.IntVal(42L)')),
     assertion(has_substring(Lit, "Instruction(\"put_integer\",")).
 
-test(wam_predicate_registrar_skips_labels, [nondet]) :-
+test(wam_predicate_registrar_converts_labels_to_metadata, [nondet]) :-
     WamText = "demo/1:\nput_integer 42, A1\nproceed\n",
     wam_kotlin_target:compile_wam_predicate_to_kotlin(demo/1, WamText, [], Code),
     assertion(has_substring(Code, 'fun register_demo(program: WamProgram)')),
     assertion(has_substring(Code, "program.register(\"demo/1\",")),
+    assertion(has_substring(Code, "Instruction(\"label\",")),
     assertion(has_substring(Code, "Instruction(\"put_integer\",")),
     assertion(\+ sub_string(Code, _, _, _, 'demo/1:')).
 
@@ -66,6 +68,8 @@ test(runtime_template_exposes_executable_wam_abi) :-
     wam_kotlin_target:compile_wam_runtime_to_kotlin([], Code),
     assertion(has_substring(Code, 'sealed class Value')),
     assertion(has_substring(Code, 'sealed class WamContext')),
+    assertion(has_substring(Code, 'data class PredicateCode')),
+    assertion(has_substring(Code, 'fun restoreChoicePoint(): Boolean')),
     assertion(has_substring(Code, 'fun unify(left: Value?, right: Value?): Boolean')),
     assertion(has_substring(Code, 'fun beginStructure(functor: String, register: String): Boolean')),
     assertion(has_substring(Code, '"get_structure"')),
@@ -103,12 +107,15 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             retractall(user:kt_wrap(_, _)),
             retractall(user:kt_make_list(_, _, _)),
             retractall(user:kt_match_pair(_, _, _)),
+            retractall(user:kt_color(_)),
             assertz(user:kt_fact(alpha, beta)),
             assertz(user:kt_same(X, X)),
             assertz(user:(kt_eq(X, Y) :- Y = X)),
             assertz(user:kt_wrap(X, box(X))),
             assertz(user:kt_make_list(X, Y, [X, Y])),
-            assertz(user:kt_match_pair(pair(X, Y), X, Y))
+            assertz(user:kt_match_pair(pair(X, Y), X, Y)),
+            assertz(user:kt_color(red)),
+            assertz(user:kt_color(blue))
         ),
         (   wam_kotlin_target:write_wam_kotlin_project(
                 [ user:kt_fact/2,
@@ -116,7 +123,8 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
                   user:kt_eq/2,
                   user:kt_wrap/2,
                   user:kt_make_list/3,
-                  user:kt_match_pair/3
+                  user:kt_match_pair/3,
+                  user:kt_color/1
                 ],
                 [emit_mode(interpreter)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
@@ -142,14 +150,19 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             assertion(has_substring(ListOut, 'Atom(name=beta)')),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_match_pair/3 pair(alpha,beta) alpha beta'], PairOut, _PairErr, PairStatus),
             assertion(PairStatus == exit(0)),
-            assertion(has_substring(PairOut, 'Ran kt_match_pair/3'))
+            assertion(has_substring(PairOut, 'Ran kt_match_pair/3')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_color/1 blue'], ColorOut, _ColorErr, ColorStatus),
+            assertion(ColorStatus == exit(0)),
+            assertion(has_substring(ColorOut, 'Ran kt_color/1')),
+            assertion(has_substring(ColorOut, 'A1=Atom(name=blue)'))
         ),
         (   retractall(user:kt_fact(_, _)),
             retractall(user:kt_same(_, _)),
             retractall(user:kt_eq(_, _)),
             retractall(user:kt_wrap(_, _)),
             retractall(user:kt_make_list(_, _, _)),
-            retractall(user:kt_match_pair(_, _, _))
+            retractall(user:kt_match_pair(_, _, _)),
+            retractall(user:kt_color(_))
         )
     ).
 

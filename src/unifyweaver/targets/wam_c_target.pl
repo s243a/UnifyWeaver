@@ -2136,6 +2136,9 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_PROCEED: {
                 int continuation = state->CP;
+                if (continuation == WAM_AGGREGATE_META_COLLECT) {
+                    return wam_collect_meta_aggregate_success(state);
+                }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
                     int barrier_index = --state->call_base_top;
                     int target_b = state->call_bases[barrier_index];
@@ -2147,6 +2150,15 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_CALL: {
+                if (strcmp(instr->as.pred.pred, "findall/3") == 0) {
+                    return wam_dispatch_aggregate_meta(state, "collect", state->P + 1);
+                }
+                if (strcmp(instr->as.pred.pred, "bagof/3") == 0 ||
+                    strcmp(instr->as.pred.pred, "setof/3") == 0) {
+                    const char *kind =
+                        strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
+                    return wam_dispatch_aggregate_meta(state, kind, state->P + 1);
+                }
                 if (state->call_base_top >= WAM_CALL_STACK_SIZE) return false;
                 state->call_bases[state->call_base_top] = state->B;
                 state->call_base_preserve_choice[state->call_base_top] =
@@ -2159,6 +2171,15 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_EXECUTE: {
+                if (strcmp(instr->as.pred.pred, "findall/3") == 0) {
+                    return wam_dispatch_aggregate_meta(state, "collect", state->CP);
+                }
+                if (strcmp(instr->as.pred.pred, "bagof/3") == 0 ||
+                    strcmp(instr->as.pred.pred, "setof/3") == 0) {
+                    const char *kind =
+                        strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
+                    return wam_dispatch_aggregate_meta(state, kind, state->CP);
+                }
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
@@ -2528,12 +2549,24 @@ compile_step_wam_to_c(_Options, CCode) :-
         while (state->P >= 0 && state->P < state->code_size) {
             Instruction* instr = &state->code[state->P];
             if (!step_wam(state, instr)) {
-                if (state->B == 0) {
+                bool recovered = false;
+                while (state->B > 0 && !recovered) {
+                    ChoicePoint* cp = &state->B_array[state->B - 1];
+                    int next_pc = cp->next_pc;
+                    restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
+                    if (next_pc == WAM_AGGREGATE_NEXT_GROUP) {
+                        pop_choice_point(state);
+                        recovered = wam_bind_next_aggregate_group(state);
+                    } else if (next_pc == WAM_AGGREGATE_META_DONE) {
+                        recovered = wam_finalize_meta_aggregate(state);
+                    } else {
+                        state->P = next_pc; // Explicitly jump to alternative
+                        recovered = true;
+                    }
+                }
+                if (!recovered) {
                     return WAM_HALT; // Failure, no choice points left
                 }
-                ChoicePoint* cp = &state->B_array[state->B - 1];
-                restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
-                state->P = cp->next_pc; // Explicitly jump to alternative
             }
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
@@ -2550,6 +2583,12 @@ compile_wam_helpers_to_c(_Options, CCode) :-
 #include <unistd.h>
 
 static void wam_bidirectional_distance_cache_clear(WamState *state);
+static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
+                                        int return_pc);
+static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
+                                    int return_pc);
+static bool wam_collect_meta_aggregate_success(WamState *state);
+static bool wam_finalize_meta_aggregate(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -2603,6 +2642,251 @@ static bool wam_parse_functor_arity(const char *functor, int *arity_out) {
     if (!end || *end != 0 || arity < 0 || arity > 255) return false;
     *arity_out = (int)arity;
     return true;
+}
+
+static bool wam_ref_addr(WamState *state, WamValue value, int *addr_out) {
+    if (value.tag != VAL_REF) return false;
+    int addr = value.data.ref_addr;
+    for (int steps = 0; steps < state->H_cap; steps++) {
+        if (addr < 0 || addr >= state->H) return false;
+        WamValue cell = state->H_array[addr];
+        if (cell.tag == VAL_UNBOUND) {
+            *addr_out = addr;
+            return true;
+        }
+        if (cell.tag != VAL_REF) return false;
+        if (cell.data.ref_addr == addr) {
+            *addr_out = addr;
+            return true;
+        }
+        addr = cell.data.ref_addr;
+    }
+    return false;
+}
+
+static bool wam_ref_array_contains(WamState *state, WamValue *values,
+                                   int count, WamValue value) {
+    int addr = -1;
+    if (!wam_ref_addr(state, value, &addr)) return false;
+    for (int i = 0; i < count; i++) {
+        int other = -1;
+        if (wam_ref_addr(state, values[i], &other) && other == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool wam_ref_array_append_unique_limit(WamState *state, WamValue *values,
+                                              int *count, int max_count,
+                                              WamValue value) {
+    if (wam_ref_array_contains(state, values, *count, value)) return true;
+    if (*count >= max_count) return false;
+    values[*count] = value;
+    (*count)++;
+    return true;
+}
+
+static bool wam_ref_array_append_unique(WamState *state, WamValue *values,
+                                        int *count, WamValue value) {
+    return wam_ref_array_append_unique_limit(state, values, count,
+                                             WAM_AGGREGATE_MAX_WITNESSES,
+                                             value);
+}
+
+static bool wam_collect_term_vars(WamState *state, WamValue value,
+                                  WamValue *vars, int *count,
+                                  int max_count) {
+    if (value.tag == VAL_REF) {
+        int addr = -1;
+        if (wam_ref_addr(state, value, &addr)) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = addr;
+            return wam_ref_array_append_unique_limit(state, vars, count,
+                                                     max_count, ref);
+        }
+    }
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag == VAL_LIST) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base + 1 >= state->H) return false;
+        return wam_collect_term_vars(state, state->H_array[base], vars,
+                                     count, max_count) &&
+               wam_collect_term_vars(state, state->H_array[base + 1], vars,
+                                     count, max_count);
+    }
+    if (cell->tag == VAL_STR) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H) return false;
+        WamValue *functor = &state->H_array[base];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (base + arity >= state->H) return false;
+        for (int i = 0; i < arity; i++) {
+            if (!wam_collect_term_vars(state, state->H_array[base + 1 + i],
+                                       vars, count, max_count)) return false;
+        }
+    }
+    return true;
+}
+
+static bool wam_collect_goal_witnesses(WamState *state, WamValue goal,
+                                       WamValue *exclude, int *exclude_count,
+                                       int exclude_max,
+                                       WamValue *witnesses,
+                                       int *witness_count) {
+    if (goal.tag == VAL_REF) {
+        int addr = -1;
+        if (wam_ref_addr(state, goal, &addr)) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = addr;
+            if (!wam_ref_array_contains(state, exclude, *exclude_count, ref)) {
+                if (!wam_ref_array_append_unique(state, witnesses,
+                                                 witness_count, ref)) return false;
+                return wam_ref_array_append_unique_limit(state, exclude,
+                                                         exclude_count,
+                                                         exclude_max, ref);
+            }
+            return true;
+        }
+    }
+    WamValue *cell = wam_deref_ptr(state, &goal);
+    if (cell->tag == VAL_LIST) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base + 1 >= state->H) return false;
+        return wam_collect_goal_witnesses(state, state->H_array[base],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count) &&
+               wam_collect_goal_witnesses(state, state->H_array[base + 1],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count);
+    }
+    if (cell->tag != VAL_STR) return true;
+    int base = cell->data.ref_addr;
+    if (base < 0 || base >= state->H) return false;
+    WamValue *functor = &state->H_array[base];
+    if (functor->tag != VAL_ATOM) return false;
+    int arity = 0;
+    if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+    if (base + arity >= state->H) return false;
+    if (strcmp(functor->data.atom, "^/2") == 0 && arity == 2) {
+        if (!wam_collect_term_vars(state, state->H_array[base + 1],
+                                   exclude, exclude_count,
+                                   exclude_max)) return false;
+        return wam_collect_goal_witnesses(state, state->H_array[base + 2],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count);
+    }
+    for (int i = 0; i < arity; i++) {
+        if (!wam_collect_goal_witnesses(state, state->H_array[base + 1 + i],
+                                        exclude, exclude_count, exclude_max,
+                                        witnesses, witness_count)) return false;
+    }
+    return true;
+}
+
+static WamValue *wam_aggregate_result_cell(WamState *state,
+                                           WamAggregateFrame *frame) {
+    if (frame->is_meta) return &frame->meta_result;
+    return resolve_reg(state, frame->result_reg, frame->result_is_y);
+}
+
+static WamValue *wam_aggregate_witness_cell(WamState *state,
+                                            WamAggregateFrame *frame,
+                                            int index) {
+    if (index < 0 || index >= frame->witness_count) return NULL;
+    if (frame->is_meta) return &frame->meta_witnesses[index];
+    return resolve_reg(state, frame->witness_regs[index],
+                       frame->witness_is_y[index]);
+}
+
+static bool wam_goal_structure(WamState *state, WamValue goal,
+                               const char **functor_out, int *base_out) {
+    WamValue current = goal;
+    for (int strip = 0; strip < 8; strip++) {
+        WamValue *cell = wam_deref_ptr(state, &current);
+        if (cell->tag != VAL_STR) return false;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H) return false;
+        WamValue *functor = &state->H_array[base];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (base + arity >= state->H) return false;
+        if (strcmp(functor->data.atom, ":/2") == 0 && arity == 2) {
+            current = state->H_array[base + 2];
+            continue;
+        }
+        *functor_out = functor->data.atom;
+        *base_out = base;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
+                                    int return_pc) {
+    WamValue *cell = wam_deref_ptr(state, &goal);
+    if (cell->tag == VAL_ATOM) {
+        if (strcmp(cell->data.atom, "true") == 0) {
+            if (return_pc == WAM_AGGREGATE_META_COLLECT) {
+                return wam_collect_meta_aggregate_success(state);
+            }
+            state->P = return_pc;
+            return true;
+        }
+        if (strcmp(cell->data.atom, "fail") == 0 ||
+            strcmp(cell->data.atom, "false") == 0) {
+            return false;
+        }
+        char key[256];
+        int written = snprintf(key, sizeof(key), "%s/0", cell->data.atom);
+        if (written <= 0 || written >= (int)sizeof(key)) return false;
+        int target = resolve_predicate_hash(state, key);
+        if (target < 0) return false;
+        state->CP = return_pc;
+        state->P = target;
+        return true;
+    }
+    const char *functor = NULL;
+    int base = -1;
+    if (!wam_goal_structure(state, goal, &functor, &base)) return false;
+    int arity = 0;
+    if (!wam_parse_functor_arity(functor, &arity)) return false;
+    if (arity > WAM_MAX_REGS) return false;
+    if (strcmp(functor, "^/2") == 0 && arity == 2) {
+        return wam_invoke_goal_as_call(state, state->H_array[base + 2],
+                                       return_pc);
+    }
+    for (int i = 0; i < arity; i++) {
+        state->A[i] = state->H_array[base + 1 + i];
+    }
+    if (strcmp(functor, "findall/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "collect", return_pc);
+    }
+    if (strcmp(functor, "bagof/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "bagof", return_pc);
+    }
+    if (strcmp(functor, "setof/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "setof", return_pc);
+    }
+    int target = resolve_predicate_hash(state, functor);
+    if (target >= 0) {
+        state->CP = return_pc;
+        state->P = target;
+        return true;
+    }
+    if (wam_execute_builtin(state, functor, arity)) {
+        if (return_pc == WAM_AGGREGATE_META_COLLECT) {
+            return wam_collect_meta_aggregate_success(state);
+        }
+        state->P = return_pc;
+        return true;
+    }
+    return false;
 }
 
 static bool wam_copy_term_to_stored(WamState *state,
@@ -2903,15 +3187,15 @@ static bool wam_copy_current_witness_tuple(WamState *state,
         return true;
     }
     if (frame->witness_count == 1) {
-        WamValue *cell =
-            resolve_reg(state, frame->witness_regs[0], frame->witness_is_y[0]);
+        WamValue *cell = wam_aggregate_witness_cell(state, frame, 0);
+        if (!cell) return false;
         return wam_copy_term_to_stored(state, term, *cell, &term->root);
     }
 
     WamValue tail = val_atom("[]");
     for (int i = frame->witness_count - 1; i >= 0; i--) {
-        WamValue *cell =
-            resolve_reg(state, frame->witness_regs[i], frame->witness_is_y[i]);
+        WamValue *cell = wam_aggregate_witness_cell(state, frame, i);
+        if (!cell) return false;
         WamValue head;
         if (!wam_copy_term_to_stored(state, term, *cell, &head)) return false;
         if (!wam_stored_term_reserve(term, 2)) return false;
@@ -2929,9 +3213,9 @@ static bool wam_copy_current_witness_tuple(WamState *state,
 static bool wam_witness_regs_are_bound(WamState *state,
                                        WamAggregateFrame *frame) {
     for (int i = 0; i < frame->witness_count; i++) {
-        WamValue *cell =
-            wam_deref_ptr(state, resolve_reg(state, frame->witness_regs[i],
-                                             frame->witness_is_y[i]));
+        WamValue *witness = wam_aggregate_witness_cell(state, frame, i);
+        if (!witness) return false;
+        WamValue *cell = wam_deref_ptr(state, witness);
         if (val_is_unbound(*cell)) return false;
     }
     return true;
@@ -2981,6 +3265,38 @@ static bool wam_build_witness_group_indices(WamAggregateFrame *frame,
     return true;
 }
 
+static bool wam_build_witness_group_reps(WamAggregateFrame *frame,
+                                         int **reps_out,
+                                         int *group_count_out) {
+    if (frame->item_count <= 0) {
+        *reps_out = NULL;
+        *group_count_out = 0;
+        return true;
+    }
+    int *reps = malloc(sizeof(int) * (size_t)frame->item_count);
+    if (!reps) return false;
+    int group_count = 0;
+    for (int i = 0; i < frame->item_count; i++) {
+        bool seen = false;
+        for (int g = 0; g < group_count; g++) {
+            int rep = reps[g];
+            if (wam_compare_stored_value(&frame->witnesses[rep],
+                                         frame->witnesses[rep].root,
+                                         &frame->witnesses[i],
+                                         frame->witnesses[i].root) == 0) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            reps[group_count++] = i;
+        }
+    }
+    *reps_out = reps;
+    *group_count_out = group_count;
+    return true;
+}
+
 static bool wam_materialize_witness_component(WamState *state,
                                               WamStoredTerm *witness,
                                               int witness_count,
@@ -3015,10 +3331,129 @@ static bool wam_unify_witness_registers_from_group(WamState *state,
         if (!wam_materialize_witness_component(state, witness,
                                                frame->witness_count,
                                                i, &value)) return false;
-        WamValue *target =
-            resolve_reg(state, frame->witness_regs[i], frame->witness_is_y[i]);
+        WamValue *target = wam_aggregate_witness_cell(state, frame, i);
+        if (!target) return false;
         if (!wam_unify(state, target, &value)) return false;
     }
+    return true;
+}
+
+static bool wam_bind_aggregate_group(WamState *state,
+                                     WamAggregateGroupIterator *iter,
+                                     int group_index) {
+    if (group_index < 0 || group_index >= iter->group_count) return false;
+    int selected_index = iter->group_reps[group_index];
+    WamAggregateFrame frame_view;
+    memset(&frame_view, 0, sizeof(WamAggregateFrame));
+    frame_view.kind = iter->kind;
+    frame_view.is_meta = iter->is_meta;
+    frame_view.result_reg = iter->result_reg;
+    frame_view.result_is_y = iter->result_is_y;
+    frame_view.meta_result = iter->meta_result;
+    frame_view.items = iter->items;
+    frame_view.witnesses = iter->witnesses;
+    frame_view.item_count = iter->item_count;
+    frame_view.item_cap = iter->item_cap;
+    frame_view.witness_count = iter->witness_count;
+    for (int i = 0; i < iter->witness_count; i++) {
+        frame_view.witness_regs[i] = iter->witness_regs[i];
+        frame_view.witness_is_y[i] = iter->witness_is_y[i];
+        frame_view.meta_witnesses[i] = iter->meta_witnesses[i];
+    }
+
+    int *indices = NULL;
+    int index_count = 0;
+    if (!wam_build_witness_group_indices(&frame_view, selected_index,
+                                         &indices, &index_count)) return false;
+    if (strcmp(iter->kind, "setof") == 0) {
+        wam_sort_aggregate_item_indices(&frame_view, indices, index_count);
+        index_count =
+            wam_dedup_sorted_aggregate_item_indices(&frame_view, indices,
+                                                    index_count);
+    }
+
+    WamValue result_list;
+    bool witness_ok =
+        wam_unify_witness_registers_from_group(state, &frame_view,
+                                               selected_index);
+    bool list_ok = witness_ok &&
+        wam_build_aggregate_list_from_indices(state, &frame_view, indices,
+                                              index_count, &result_list);
+    free(indices);
+    if (!list_ok) return false;
+
+    WamValue *result_cell = wam_aggregate_result_cell(state, &frame_view);
+    if (!wam_unify(state, result_cell, &result_list)) return false;
+    if (frame_view.is_meta) {
+        WamValue *meta_result = wam_deref_ptr(state, &frame_view.meta_result);
+        state->A[0] = *meta_result;
+    }
+    state->P = iter->return_pc;
+    return true;
+}
+
+static bool wam_bind_next_aggregate_group(WamState *state) {
+    if (state->aggregate_group_top <= 0) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top - 1];
+    if (iter->next_group >= iter->group_count) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+        return false;
+    }
+
+    int group_index = iter->next_group++;
+    bool has_more = iter->next_group < iter->group_count;
+    int return_pc = iter->return_pc;
+    if (has_more) {
+        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+    }
+
+    bool ok = wam_bind_aggregate_group(state, iter, group_index);
+    if (!has_more) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+    }
+    if (ok) {
+        state->P = return_pc;
+    }
+    return ok;
+}
+
+static bool wam_push_aggregate_group_iterator(WamState *state,
+                                              WamAggregateFrame *frame,
+                                              int *group_reps,
+                                              int group_count,
+                                              int return_pc) {
+    if (state->aggregate_group_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top];
+    wam_aggregate_group_iterator_free(iter);
+    iter->kind = frame->kind;
+    iter->is_meta = frame->is_meta;
+    iter->return_pc = return_pc;
+    iter->result_reg = frame->result_reg;
+    iter->result_is_y = frame->result_is_y;
+    iter->meta_result = frame->meta_result;
+    iter->items = frame->items;
+    iter->witnesses = frame->witnesses;
+    iter->item_count = frame->item_count;
+    iter->item_cap = frame->item_cap;
+    iter->witness_count = frame->witness_count;
+    for (int i = 0; i < frame->witness_count; i++) {
+        iter->witness_regs[i] = frame->witness_regs[i];
+        iter->witness_is_y[i] = frame->witness_is_y[i];
+        iter->meta_witnesses[i] = frame->meta_witnesses[i];
+    }
+    iter->group_reps = group_reps;
+    iter->group_count = group_count;
+    iter->next_group = 0;
+    state->aggregate_group_top++;
+
+    frame->items = NULL;
+    frame->witnesses = NULL;
+    frame->item_count = 0;
+    frame->item_cap = 0;
     return true;
 }
 
@@ -3039,6 +3474,7 @@ static void wam_aggregate_clear_all(WamState *state) {
         state->aggregate_top--;
         wam_aggregate_frame_free(&state->aggregate_frames[state->aggregate_top]);
     }
+    wam_trim_aggregate_group_iters(state, 0);
 }
 
 static bool wam_aggregate_append_item(WamState *state,
@@ -3121,7 +3557,7 @@ static bool wam_finalize_aggregate_frame(WamState *state,
     bool is_bagof = strcmp(frame->kind, "bagof") == 0;
     bool is_setof = strcmp(frame->kind, "setof") == 0;
     if (!is_collect && !is_bagof && !is_setof) return false;
-    int next_pc = frame->end_pc + 1;
+    int next_pc = frame->is_meta ? frame->return_pc : frame->end_pc + 1;
     int frame_index = state->aggregate_top - 1;
     if (frame->sentinel_b > 0 && frame->sentinel_b <= state->B) {
         ChoicePoint *sentinel = &state->B_array[frame->sentinel_b - 1];
@@ -3138,6 +3574,27 @@ static bool wam_finalize_aggregate_frame(WamState *state,
 
     WamValue result_list;
     if (frame->witness_count > 0) {
+        if (!wam_witness_regs_are_bound(state, frame)) {
+            int *group_reps = NULL;
+            int group_count = 0;
+            if (!wam_build_witness_group_reps(frame, &group_reps,
+                                              &group_count)) return false;
+            if (group_count <= 0) {
+                free(group_reps);
+                wam_aggregate_frame_free(frame);
+                state->aggregate_top = frame_index;
+                state->P = next_pc;
+                return false;
+            }
+            if (!wam_push_aggregate_group_iterator(state, frame, group_reps,
+                                                   group_count, next_pc)) {
+                free(group_reps);
+                return false;
+            }
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            state->aggregate_top = frame_index;
+            return wam_bind_next_aggregate_group(state);
+        }
         int selected_index = wam_select_aggregate_witness_group(state, frame);
         if (selected_index < 0) {
             wam_aggregate_frame_free(frame);
@@ -3167,14 +3624,79 @@ static bool wam_finalize_aggregate_frame(WamState *state,
         }
         if (!wam_build_aggregate_list(state, frame, &result_list)) return false;
     }
-    WamValue *result_cell =
-        resolve_reg(state, frame->result_reg, frame->result_is_y);
+    WamValue *result_cell = wam_aggregate_result_cell(state, frame);
     bool ok = wam_unify(state, result_cell, &result_list);
+    if (ok && frame->is_meta) {
+        WamValue *meta_result = wam_deref_ptr(state, &frame->meta_result);
+        state->A[0] = *meta_result;
+    }
     wam_aggregate_frame_free(frame);
     state->aggregate_top = frame_index;
     if (!ok) return false;
     state->P = next_pc;
     return true;
+}
+
+static bool wam_collect_meta_aggregate_success(WamState *state) {
+    if (state->aggregate_top <= 0) return false;
+    WamAggregateFrame *frame =
+        &state->aggregate_frames[state->aggregate_top - 1];
+    if (!frame->is_meta) return false;
+    (void)wam_aggregate_append_item(state, frame, frame->meta_template);
+    return false;
+}
+
+static bool wam_finalize_meta_aggregate(WamState *state) {
+    if (state->aggregate_top <= 0) return false;
+    WamAggregateFrame *frame =
+        &state->aggregate_frames[state->aggregate_top - 1];
+    if (!frame->is_meta) return false;
+    return wam_finalize_aggregate_frame(state, frame);
+}
+
+static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
+                                        int return_pc) {
+    if (strcmp(kind, "collect") != 0 &&
+        strcmp(kind, "bagof") != 0 &&
+        strcmp(kind, "setof") != 0) return false;
+    if (state->aggregate_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+
+    WamAggregateFrame *frame = &state->aggregate_frames[state->aggregate_top++];
+    memset(frame, 0, sizeof(WamAggregateFrame));
+    frame->kind = kind;
+    frame->is_meta = true;
+    frame->begin_pc = state->P;
+    frame->end_pc = return_pc - 1;
+    frame->return_pc = return_pc;
+    frame->base_b = state->B;
+    frame->sentinel_b = state->B + 1;
+    frame->meta_template = state->A[0];
+    frame->meta_result = state->A[2];
+
+    if (strcmp(kind, "bagof") == 0 || strcmp(kind, "setof") == 0) {
+        WamValue exclude[WAM_AGGREGATE_META_MAX_VARS];
+        int exclude_count = 0;
+        if (!wam_collect_term_vars(state, state->A[0], exclude,
+                                   &exclude_count,
+                                   WAM_AGGREGATE_META_MAX_VARS)) {
+            state->aggregate_top--;
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            return false;
+        }
+        if (!wam_collect_goal_witnesses(state, state->A[1], exclude,
+                                        &exclude_count,
+                                        WAM_AGGREGATE_META_MAX_VARS,
+                                        frame->meta_witnesses,
+                                        &frame->witness_count)) {
+            state->aggregate_top--;
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            return false;
+        }
+    }
+
+    push_choice_point(state, WAM_AGGREGATE_META_DONE, 32);
+    return wam_invoke_goal_as_call(state, state->A[1],
+                                   WAM_AGGREGATE_META_COLLECT);
 }
 
 static bool wam_begin_aggregate(WamState *state, Instruction *instr) {

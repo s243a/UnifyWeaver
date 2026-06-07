@@ -24,6 +24,7 @@ data class ChoicePoint(
     val pc: Int,
     val registers: MutableMap<String, Value?>,
     val trailSize: Int,
+    val context: WamContext?,
 )
 
 sealed class WamContext {
@@ -126,35 +127,144 @@ class WamState(
         if (ctx.index >= ctx.args.size) context = null
         return value
     }
-}
 
-class WamProgram {
-    private val predicates: MutableMap<String, List<Instruction>> = linkedMapOf()
-
-    fun register(name: String, instructions: List<Instruction>) {
-        predicates[name] = instructions
+    fun saveChoicePoint(pc: Int) {
+        choicePoints.add(ChoicePoint(pc, LinkedHashMap(registers), trail.size, context))
     }
 
-    fun instructionsFor(name: String): List<Instruction> =
+    fun restoreChoicePoint(): Boolean {
+        val cp = choicePoints.removeLastOrNull() ?: return false
+        registers.clear()
+        registers.putAll(cp.registers)
+        while (trail.size > cp.trailSize) {
+            trail.removeAt(trail.lastIndex)
+        }
+        context = cp.context
+        pc = cp.pc
+        return true
+    }
+}
+
+data class PredicateCode(
+    val instructions: List<Instruction>,
+    val labels: Map<String, Int>,
+)
+
+class WamProgram {
+    private val predicates: MutableMap<String, PredicateCode> = linkedMapOf()
+
+    fun register(name: String, instructions: List<Instruction>) {
+        val labels = linkedMapOf<String, Int>()
+        instructions.forEachIndexed { index, instruction ->
+            if (instruction.op == "label") {
+                (instruction.args.getOrNull(0) as? String)?.let { labels[it] = index }
+            }
+        }
+        predicates[name] = PredicateCode(instructions, labels)
+    }
+
+    fun codeFor(name: String): PredicateCode =
         predicates[name] ?: error("Unknown WAM predicate: $name")
+
+    fun instructionsFor(name: String): List<Instruction> = codeFor(name).instructions
 
     fun predicateNames(): Set<String> = predicates.keys
 }
 
 class WamRuntime(private val program: WamProgram) {
+    private lateinit var currentCode: PredicateCode
+
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
-        val instructions = program.instructionsFor(predicate)
+        currentCode = program.codeFor(predicate)
         initialState.pc = 0
-        while (initialState.pc in instructions.indices) {
-            if (!step(initialState, instructions[initialState.pc])) {
-                error("WAM instruction failed at pc=${initialState.pc}: ${instructions[initialState.pc]}")
+        while (initialState.pc in currentCode.instructions.indices) {
+            val instruction = currentCode.instructions[initialState.pc]
+            if (!step(initialState, instruction) && !initialState.restoreChoicePoint()) {
+                error("WAM instruction failed at pc=${initialState.pc}: $instruction")
             }
         }
         return initialState
     }
 
+    fun jumpToLabel(state: WamState, label: String): Boolean {
+        val target = currentCode.labels[label] ?: return false
+        state.pc = target
+        return true
+    }
+
+    fun parseSwitchEntries(rawEntries: Any?): Map<String, String> {
+        val entries = rawEntries as? List<*> ?: return emptyMap()
+        return entries.mapNotNull { raw ->
+            val entry = raw as? String ?: return@mapNotNull null
+            val parts = entry.split(":", limit = 2)
+            if (parts.size == 2) parts[0] to parts[1] else null
+        }.toMap()
+    }
+
+    fun valueSwitchKey(value: Value?): String? = when (val resolved = value) {
+        is Value.Atom -> resolved.name
+        is Value.IntVal -> resolved.value.toString()
+        is Value.FloatVal -> resolved.value.toString()
+        is Value.Struct -> resolved.functor
+        else -> null
+    }
+
+    fun switchOn(state: WamState, register: String, rawEntries: Any?, structureMode: Boolean = false): Boolean {
+        val entries = parseSwitchEntries(rawEntries)
+        val value = state.deref(state.registers[register])
+        val key = if (structureMode) (value as? Value.Struct)?.functor else valueSwitchKey(value)
+        val target = key?.let { entries[it] } ?: entries["default"]
+        if (target == null || target == "default") {
+            state.pc += 1
+            return true
+        }
+        return jumpToLabel(state, target)
+    }
+
     fun step(state: WamState, instruction: Instruction): Boolean {
         when (instruction.op) {
+            "label" -> {
+                state.pc += 1
+                return true
+            }
+            "try_me_else" -> {
+                val label = instruction.args.getOrNull(0) as? String ?: return false
+                val target = currentCode.labels[label] ?: return false
+                state.saveChoicePoint(target)
+                state.pc += 1
+                return true
+            }
+            "retry_me_else" -> {
+                val label = instruction.args.getOrNull(0) as? String ?: return false
+                val target = currentCode.labels[label] ?: return false
+                state.saveChoicePoint(target)
+                state.pc += 1
+                return true
+            }
+            "trust_me" -> {
+                state.pc += 1
+                return true
+            }
+            "try", "retry", "trust", "jump" -> {
+                val label = instruction.args.getOrNull(0) as? String ?: return false
+                return jumpToLabel(state, label)
+            }
+            "switch_on_constant", "switch_on_constant_fallthrough" -> {
+                return switchOn(state, "A1", instruction.args.getOrNull(0))
+            }
+            "switch_on_constant_a2", "switch_on_constant_a2_fallthrough" -> {
+                return switchOn(state, "A2", instruction.args.getOrNull(0))
+            }
+            "switch_on_structure" -> {
+                return switchOn(state, "A1", instruction.args.getOrNull(0), structureMode = true)
+            }
+            "switch_on_structure_a2" -> {
+                return switchOn(state, "A2", instruction.args.getOrNull(0), structureMode = true)
+            }
+            "switch_on_term", "switch_on_term_a2" -> {
+                state.pc += 1
+                return true
+            }
             "put_constant", "put_integer", "put_float", "put_nil" -> {
                 val value = instruction.args.getOrNull(0) as? Value ?: return false
                 val register = instruction.args.getOrNull(1) as? String ?: return false
