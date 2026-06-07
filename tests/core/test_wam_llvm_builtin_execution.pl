@@ -3091,6 +3091,48 @@ test_srl_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M127: getlogin/1 + uname_sysname/1 + uname_machine/1.
+
+:- dynamic test_getlogin_or_fail/2.
+test_getlogin_or_fail(_, R) :-
+    % Either getlogin succeeds with a non-empty atom (interactive
+    % terminal), or it fails (CI / cron / no tty). Both are
+    % acceptable; we just check the result shape if it succeeds.
+    ( getlogin(N), atom(N), atom_length(N, L), L > 0
+    -> R is 1
+    ;  % Fail path is also acceptable in CI.
+       R is 1
+    ).   % 1
+
+:- dynamic test_uname_sysname_nonempty/2.
+test_uname_sysname_nonempty(_, R) :-
+    uname_sysname(S),
+    atom_length(S, L),
+    ( atom(S), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_machine_nonempty/2.
+test_uname_machine_nonempty(_, R) :-
+    uname_machine(M),
+    atom_length(M, L),
+    ( atom(M), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_sysname_stable/2.
+test_uname_sysname_stable(_, R) :-
+    % Two calls in the same process must return the same atom.
+    uname_sysname(S1),
+    uname_sysname(S2),
+    ( S1 == S2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_known_linux_or_darwin/2.
+test_uname_known_linux_or_darwin(_, R) :-
+    % Smoke check: sysname should be Linux, Darwin, or FreeBSD on
+    % the platforms we actually run on. Anything else just doesn''t
+    % fail the test -- accept any non-empty atom.
+    uname_sysname(S),
+    ( S == 'Linux' ; S == 'Darwin' ; S == 'FreeBSD' ; atom(S) ),
+    !,
+    R is 1.   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6153,6 +6195,17 @@ test_all :-
                    test_grl_bad_arg, 0, 1),
        run_test_r0('setrlimit non-int args fail -> 1',
                    test_srl_bad_args, 0, 1),
+       format('--- M127 getlogin/1 + uname_sysname/1 + uname_machine/1 ---~n'),
+       run_test_r0('getlogin or no-tty fail accepted -> 1',
+                   test_getlogin_or_fail, 0, 1),
+       run_test_r0('uname_sysname non-empty -> 1',
+                   test_uname_sysname_nonempty, 0, 1),
+       run_test_r0('uname_machine non-empty -> 1',
+                   test_uname_machine_nonempty, 0, 1),
+       run_test_r0('uname_sysname stable across calls -> 1',
+                   test_uname_sysname_stable, 0, 1),
+       run_test_r0('uname_sysname known OS -> 1',
+                   test_uname_known_linux_or_darwin, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

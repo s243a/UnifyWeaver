@@ -2250,6 +2250,9 @@ is_builtin_pred(getpriority, 1).        % getpriority(-Prio) -- read self priori
 is_builtin_pred(setpriority, 1).        % setpriority(+Prio) -- set self priority.
 is_builtin_pred(getrlimit, 2).          % getrlimit(+Resource, -SoftLimit).
 is_builtin_pred(setrlimit, 2).          % setrlimit(+Resource, +SoftLimit).
+is_builtin_pred(getlogin, 1).           % getlogin(-Name) -- libc getlogin.
+is_builtin_pred(uname_sysname, 1).      % uname_sysname(-Sysname).
+is_builtin_pred(uname_machine, 1).      % uname_machine(-Machine).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

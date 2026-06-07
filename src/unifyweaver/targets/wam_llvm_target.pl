@@ -1572,6 +1572,8 @@ declare i32 @getpriority(i32, i32)
 declare i32 @setpriority(i32, i32, i32)
 declare i32 @getrlimit(i32, i8*)
 declare i32 @setrlimit(i32, i8*)
+declare i8* @getlogin()
+declare i32 @uname(i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3688,6 +3690,9 @@ entry:
     i32 147, label %builtin_setpriority
     i32 148, label %builtin_getrlimit
     i32 149, label %builtin_setrlimit
+    i32 150, label %builtin_getlogin
+    i32 151, label %builtin_uname_sysname
+    i32 152, label %builtin_uname_machine
   ]
 
 builtin_is:
@@ -6695,6 +6700,89 @@ srl.write:
   %srl.set = call i32 @setrlimit(i32 %srl.res, i8* %srl.buf_ptr)
   %srl.ok = icmp eq i32 %srl.set, 0
   ret i1 %srl.ok
+
+builtin_getlogin:
+  ; M127: getlogin(-Name) -- libc getlogin wrapper. Returns the
+  ; login name associated with the controlling terminal as an
+  ; atom. Fails if not running under a terminal (e.g. cron, CI
+  ; containers without a tty) -- libc returns NULL in that case.
+  %gln.s = call i8* @getlogin()
+  %gln.null = icmp eq i8* %gln.s, null
+  br i1 %gln.null, label %gln.fail, label %gln.intern
+gln.fail:
+  ret i1 false
+gln.intern:
+  %gln.len = call i64 @strlen(i8* %gln.s)
+  call void @wam_arena_ensure()
+  %gln.bufsize = add i64 %gln.len, 1
+  %gln.arena = call i8* @wam_arena_alloc(i64 %gln.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gln.arena, i8* %gln.s, i64 %gln.len, i1 false)
+  %gln.term = getelementptr i8, i8* %gln.arena, i64 %gln.len
+  store i8 0, i8* %gln.term
+  %gln.aid = call i64 @wam_intern_atom(i8* %gln.arena, i64 %gln.len)
+  %gln.v0 = insertvalue %Value undef, i32 0, 0
+  %gln.v = insertvalue %Value %gln.v0, i64 %gln.aid, 1
+  %gln.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gln.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gln.raw1, %Value %gln.v)
+  ret i1 %gln.ok
+
+builtin_uname_sysname:
+  ; M127: uname_sysname(-Sysname) -- returns the kernel name
+  ; (typically ''Linux'', ''Darwin'', ''FreeBSD'') from libc uname.
+  ; struct utsname on Linux glibc: 6 fields of 65 bytes each
+  ; (sysname/nodename/release/version/machine/domainname). Offsets
+  ; on other POSIX OSes differ (macOS uses 256-byte fields) -- a
+  ; 512-byte buffer covers Linux/glibc; portable handling would
+  ; need target_os routing (see M113).
+  %uns.buf = alloca [512 x i8]
+  %uns.buf_ptr = getelementptr [512 x i8], [512 x i8]* %uns.buf, i32 0, i32 0
+  %uns.ret = call i32 @uname(i8* %uns.buf_ptr)
+  %uns.ok_call = icmp eq i32 %uns.ret, 0
+  br i1 %uns.ok_call, label %uns.intern, label %uns.fail
+uns.fail:
+  ret i1 false
+uns.intern:
+  ; sysname at offset 0.
+  %uns.len = call i64 @strlen(i8* %uns.buf_ptr)
+  call void @wam_arena_ensure()
+  %uns.bufsize = add i64 %uns.len, 1
+  %uns.arena = call i8* @wam_arena_alloc(i64 %uns.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %uns.arena, i8* %uns.buf_ptr, i64 %uns.len, i1 false)
+  %uns.term = getelementptr i8, i8* %uns.arena, i64 %uns.len
+  store i8 0, i8* %uns.term
+  %uns.aid = call i64 @wam_intern_atom(i8* %uns.arena, i64 %uns.len)
+  %uns.v0 = insertvalue %Value undef, i32 0, 0
+  %uns.v = insertvalue %Value %uns.v0, i64 %uns.aid, 1
+  %uns.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uns.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uns.raw1, %Value %uns.v)
+  ret i1 %uns.uok
+
+builtin_uname_machine:
+  ; M127: uname_machine(-Machine) -- returns the hardware arch
+  ; (typically ''x86_64'', ''aarch64'', ''arm64'') from libc uname.
+  ; machine field is at offset 4*65 = 260 on Linux glibc.
+  %unm.buf = alloca [512 x i8]
+  %unm.buf_ptr = getelementptr [512 x i8], [512 x i8]* %unm.buf, i32 0, i32 0
+  %unm.ret = call i32 @uname(i8* %unm.buf_ptr)
+  %unm.ok_call = icmp eq i32 %unm.ret, 0
+  br i1 %unm.ok_call, label %unm.intern, label %unm.fail
+unm.fail:
+  ret i1 false
+unm.intern:
+  %unm.field = getelementptr i8, i8* %unm.buf_ptr, i64 260
+  %unm.len = call i64 @strlen(i8* %unm.field)
+  call void @wam_arena_ensure()
+  %unm.bufsize = add i64 %unm.len, 1
+  %unm.arena = call i8* @wam_arena_alloc(i64 %unm.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %unm.arena, i8* %unm.field, i64 %unm.len, i1 false)
+  %unm.term = getelementptr i8, i8* %unm.arena, i64 %unm.len
+  store i8 0, i8* %unm.term
+  %unm.aid = call i64 @wam_intern_atom(i8* %unm.arena, i64 %unm.len)
+  %unm.v0 = insertvalue %Value undef, i32 0, 0
+  %unm.v = insertvalue %Value %unm.v0, i64 %unm.aid, 1
+  %unm.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %unm.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %unm.raw1, %Value %unm.v)
+  ret i1 %unm.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13998,6 +14086,9 @@ builtin_op_to_id('getpriority/1', 146).       % libc getpriority(PRIO_PROCESS, 0
 builtin_op_to_id('setpriority/1', 147).       % libc setpriority(PRIO_PROCESS, 0, prio).
 builtin_op_to_id('getrlimit/2', 148).         % libc getrlimit(Res, &rlim) -- soft limit.
 builtin_op_to_id('setrlimit/2', 149).         % libc setrlimit(Res, &rlim) -- soft limit only.
+builtin_op_to_id('getlogin/1', 150).          % libc getlogin() as atom.
+builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as atom.
+builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
