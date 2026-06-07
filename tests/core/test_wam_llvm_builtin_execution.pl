@@ -2624,6 +2624,89 @@ test_fdn_empty(_, R) :-
 test_fdn_bad_arg(_, R) :-
     ( file_directory_name(42, _) -> R is 0 ; R is 1 ).   % 1
 
+% M119: file_name_extension/3 -- split/join at last basename dot.
+
+:- dynamic test_fne_split_simple/2.
+test_fne_split_simple(_, R) :-
+    file_name_extension(B, E, 'foo.txt'),
+    ( B == foo, E == txt -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_no_ext/2.
+test_fne_split_no_ext(_, R) :-
+    file_name_extension(B, E, 'README'),
+    ( B == 'README', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_path/2.
+test_fne_split_path(_, R) :-
+    file_name_extension(B, E, '/usr/bin/foo.sh'),
+    ( B == '/usr/bin/foo', E == sh -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_dot_in_dir/2.
+test_fne_split_dot_in_dir(_, R) :-
+    % Dot lives in directory portion, not basename.
+    file_name_extension(B, E, '/usr/foo.bar/baz'),
+    ( B == '/usr/foo.bar/baz', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_hidden/2.
+test_fne_split_hidden(_, R) :-
+    % Leading dot (hidden file) is NOT an extension separator.
+    file_name_extension(B, E, '.bashrc'),
+    ( B == '.bashrc', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_hidden_in_dir/2.
+test_fne_split_hidden_in_dir(_, R) :-
+    % Same hidden-file rule applies after a ''/''.
+    file_name_extension(B, E, '/home/u/.bashrc'),
+    ( B == '/home/u/.bashrc', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_multi_dot/2.
+test_fne_split_multi_dot(_, R) :-
+    % Split at LAST dot in basename.
+    file_name_extension(B, E, 'archive.tar.gz'),
+    ( B == 'archive.tar', E == gz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_trailing_dot/2.
+test_fne_split_trailing_dot(_, R) :-
+    % "foo." -- dot at end, ext is empty string.
+    file_name_extension(B, E, 'foo.'),
+    ( B == foo, E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_empty/2.
+test_fne_split_empty(_, R) :-
+    file_name_extension(B, E, ''),
+    ( B == '', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_simple/2.
+test_fne_join_simple(_, R) :-
+    file_name_extension(foo, txt, F),
+    ( F == 'foo.txt' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_empty_ext/2.
+test_fne_join_empty_ext(_, R) :-
+    % Empty Ext -> no dot, just Base.
+    file_name_extension(foo, '', F),
+    ( F == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_with_path/2.
+test_fne_join_with_path(_, R) :-
+    file_name_extension('/tmp/data', csv, F),
+    ( F == '/tmp/data.csv' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_check/2.
+test_fne_join_check(_, R) :-
+    % All three bound: succeed iff they agree.
+    ( file_name_extension(foo, txt, 'foo.txt') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_check_disagree/2.
+test_fne_join_check_disagree(_, R) :-
+    % Disagreeing all-bound case fails.
+    ( file_name_extension(foo, txt, 'bar.txt') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_fne_insufficient/2.
+test_fne_insufficient(_, R) :-
+    % All vars: insufficient instantiation, fails.
+    ( file_name_extension(_, _, _) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5546,6 +5629,37 @@ test_all :-
                    test_fdn_empty, 0, 1),
        run_test_r0('file_directory_name(42, _) fails -> 1',
                    test_fdn_bad_arg, 0, 1),
+       format('--- M119 file_name_extension/3 ---~n'),
+       run_test_r0('split foo.txt -> foo+txt -> 1',
+                   test_fne_split_simple, 0, 1),
+       run_test_r0('split README -> README+'''' -> 1',
+                   test_fne_split_no_ext, 0, 1),
+       run_test_r0('split /usr/bin/foo.sh -> /usr/bin/foo+sh -> 1',
+                   test_fne_split_path, 0, 1),
+       run_test_r0('split /usr/foo.bar/baz (dot in dir) -> baz+'''' -> 1',
+                   test_fne_split_dot_in_dir, 0, 1),
+       run_test_r0('split .bashrc (hidden) -> .bashrc+'''' -> 1',
+                   test_fne_split_hidden, 0, 1),
+       run_test_r0('split /home/u/.bashrc (hidden in dir) -> +'''' -> 1',
+                   test_fne_split_hidden_in_dir, 0, 1),
+       run_test_r0('split archive.tar.gz -> archive.tar+gz -> 1',
+                   test_fne_split_multi_dot, 0, 1),
+       run_test_r0('split foo. (trailing dot) -> foo+'''' -> 1',
+                   test_fne_split_trailing_dot, 0, 1),
+       run_test_r0('split '''' -> ''''+'''' -> 1',
+                   test_fne_split_empty, 0, 1),
+       run_test_r0('join foo+txt -> foo.txt -> 1',
+                   test_fne_join_simple, 0, 1),
+       run_test_r0('join foo+'''' -> foo -> 1',
+                   test_fne_join_empty_ext, 0, 1),
+       run_test_r0('join /tmp/data+csv -> /tmp/data.csv -> 1',
+                   test_fne_join_with_path, 0, 1),
+       run_test_r0('check foo+txt vs foo.txt -> 1',
+                   test_fne_join_check, 0, 1),
+       run_test_r0('check foo+txt vs bar.txt fails -> 1',
+                   test_fne_join_check_disagree, 0, 1),
+       run_test_r0('all vars fails (insufficient instantiation) -> 1',
+                   test_fne_insufficient, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
