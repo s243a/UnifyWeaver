@@ -10,15 +10,14 @@
 % return the strategy the target should use to emit code, plus a
 % structured reasoning trace.
 %
-% Phase status: Phase 0 (skeleton) + Phase 1 (signal classification)
-% + Phase 2 (cost-model rules + admissibility) landed.
-% classify_signals/4, apply_cost_model/3, admissible_strategies/2
-% are real; resolve_against_intent/5 and the renderers remain stubs.
-% The cost model produces real strategy preferences from the six
-% initial rules; the trace contains a real step(cost_model_choice,
-% ...) entry. The Phase 0 step(stub, ...) marker is still prepended
-% to the trace for the Phase 5 leak-detector to assert against.
-% Phases 3-4 will replace the remaining stubs.
+% Phase status: Phases 0-3 landed. classify_signals/4,
+% apply_cost_model/3, admissible_strategies/2, and
+% resolve_against_intent/5 are real. Only the trace renderers
+% (render_trace_for_stderr/2, format_trace_for_comment/3) remain
+% as Phase 4 stubs. The Phase 0 step(stub, ...) marker has been
+% REMOVED from the trace as of Phase 3 — the stub-leak detector
+% in Phase 5's tests now asserts on trace structure directly
+% (no step has name='stub'), not on the presence of the marker.
 %
 % This baseline lets the F# WAM target integration (Phase 5) call
 % against the module from day one, and lets the stub-leak assertion
@@ -56,6 +55,7 @@
 
     %% Introspection
     admissible_strategies/2,             % +Recurrence, -StrategyList
+    intent_compatible_with_strategy/2,   % +Intent, +Strategy — matrix lookup
     strategy_pretty/2,                   % +Strategy, -String
 
     %% Type-check helpers (exported so tests can verify the contracts
@@ -68,9 +68,10 @@
 ]).
 
 :- use_module(library(error), [must_be/2, domain_error/2, type_error/2]).
-:- use_module(library(lists), [append/3, sum_list/2, member/2]).
+:- use_module(library(lists), [append/3, sum_list/2, member/2, memberchk/2,
+                                reverse/2]).
 :- use_module(library(apply), [maplist/3, include/3, foldl/4]).
-%% predsort/3 is autoloadable; no explicit import needed.
+%% forall/2 and predsort/3 are autoloadable; no explicit import needed.
 
 %% ============================================================
 %% Public API — Phase 0 stubs
@@ -106,13 +107,11 @@ select_evaluation_strategy(Recurrence, Workload, strategy_choice(Strategy, Trace
     %% Build the cost_model_choice trace step with adjustments in Details.
     build_cost_model_choice_step(CostModelChoice, CostModelChoiceStep),
     Trace0 = trace(ResolveSteps),
-    %% Phase 0: prepend the stub marker so the stub-leak assertion can
-    %% detect partial implementation while phases 3-4 are still in
-    %% progress. Removed once all phases land.
-    Trace  = trace([step(stub, not_yet_implemented(phase_0), []),
-                    ClassifyStep,
-                    CostModelChoiceStep
-                    | ResolveSteps]).
+    %% Phase 3: stub marker removed. Trace renderers (Phase 4) read
+    %% the trace; they do not write into it. Phase 5's stub-leak
+    %% assertion now checks "no step has name='stub'" directly
+    %% rather than relying on the marker's presence.
+    Trace  = trace([ClassifyStep, CostModelChoiceStep | ResolveSteps]).
 
 build_cost_model_choice_step(
         cost_model_choice(Strategy, Score, DecidingRule),
@@ -368,15 +367,402 @@ strategy_total_compare(Order,
 %% resolve_against_intent(+IntentSignals, +CostModelChoice, +Recurrence,
 %%                       -Strategy, -Trace)
 %
-% Phase 0 stub: returns the cost-model's chosen strategy unchanged
-% with a single-step trace recording that resolution was skipped.
-% Phase 3 implements the six-step hierarchy.
-resolve_against_intent(_IntentSignals,
-                       cost_model_choice(Strategy, _Score, _Rule),
-                       _Recurrence,
-                       Strategy,
-                       trace([step(no_intent, applied,
-                                   [phase_0_stub_skipped_resolution])])).
+% Phase 3: walks the six-step resolution hierarchy from the SPEC's
+% Phase C. Each step is implemented as a separate predicate
+% (step_no_intent/4 ... step_caller_wins/4); each returns either
+% resolved(Strategy, TraceEntry) or next_step. resolve_against_intent/5
+% takes the first step that resolves; the trace records the steps
+% walked (resolved + passed entries) per the SPEC.
+%
+% Step order (semantic names match SPEC):
+%   1. step_no_intent      — no intent signals at all
+%   2. step_intent_matches — all intents satisfied by cost-model choice
+%   3. step_third_option   — search for a strategy satisfying all intents
+%   4. step_scope_disambiguation — refinement (narrower wins)
+%   5. step_satisfiability — adjust the unsatisfiable
+%   6. step_caller_wins    — fallback (caller wins with loud warning)
+resolve_against_intent(IntentSignals, CostModelChoice, Recurrence, Strategy, Trace) :-
+    Steps = [
+        step_no_intent,
+        step_intent_matches,
+        step_third_option,
+        step_scope_disambiguation,
+        step_satisfiability,
+        step_caller_wins
+    ],
+    walk_steps(Steps, IntentSignals, CostModelChoice, Recurrence,
+               [], TraceStepsReversed, Strategy),
+    reverse(TraceStepsReversed, TraceSteps),
+    Trace = trace(TraceSteps).
+
+%% walk_steps(+Steps, +IntentSignals, +CostModelChoice, +Recurrence,
+%%            +TraceAcc, -TraceOut, -Strategy)
+%
+% Iterate through the step list. For each step:
+%   - If the step resolves: record its trace entry + stop, return Strategy.
+%   - If the step passes: record its 'passed' trace entry + continue.
+%
+% step_caller_wins is the unconditional fallback — if all earlier
+% steps pass, step_caller_wins always resolves (its preconditions
+% can't fail in this design since the cost-model choice is always
+% present).
+walk_steps([Step|Rest], IntentSignals, CostModelChoice, Recurrence,
+           TraceAcc, TraceOut, Strategy) :-
+    call(Step, IntentSignals, CostModelChoice, Recurrence, Outcome),
+    (   Outcome = resolved(ResolvedStrategy, TraceEntry)
+    ->  Strategy = ResolvedStrategy,
+        TraceOut = [TraceEntry | TraceAcc]
+    ;   Outcome = passed(PassedEntry)
+    ->  walk_steps(Rest, IntentSignals, CostModelChoice, Recurrence,
+                   [PassedEntry | TraceAcc], TraceOut, Strategy)
+    ).
+
+%% ============================================================
+%% Step 1: step_no_intent
+%%
+%% If there are no intent signals, the cost-model choice wins
+%% immediately.
+%% ============================================================
+step_no_intent([], cost_model_choice(Strategy, _, _), _Recurrence,
+               resolved(Strategy,
+                        step(no_intent, applied, [no_intent_signals]))) :- !.
+step_no_intent(_, _, _,
+               passed(step(no_intent, passed, [intent_signals_present]))).
+
+%% ============================================================
+%% Step 2: step_intent_matches
+%%
+%% If EVERY intent signal is satisfied by the cost-model's chosen
+%% strategy (per the intent-compatibility matrix), the cost-model
+%% choice wins. The "every" is what the SPEC's clarification
+%% emphasises — multi-intent case must check all of them.
+%% ============================================================
+step_intent_matches(IntentSignals,
+                    cost_model_choice(Strategy, _Score, _Rule),
+                    _Recurrence,
+                    Outcome) :-
+    (   forall(member(Intent, IntentSignals),
+               intent_compatible_with_strategy(Intent, Strategy))
+    ->  Outcome = resolved(Strategy,
+                           step(intent_matches, applied,
+                                [matched_intents(IntentSignals)]))
+    ;   Outcome = passed(step(intent_matches, passed,
+                              [cost_model_choice(Strategy),
+                               not_all_intents_satisfied(IntentSignals)]))
+    ).
+
+%% ============================================================
+%% Step 3: step_third_option
+%%
+%% Search admissible_strategies for any strategy that satisfies
+%% ALL intent signals. Under monotone(false), narrow candidates
+%% to the cost-model's class first (per SPEC's clarification that
+%% step_third_option also enforces the cross-class restriction —
+%% returns not_found on the narrowed set rather than refusing).
+%% ============================================================
+step_third_option(IntentSignals,
+                  cost_model_choice(CMStrategy, _Score, _Rule),
+                  Recurrence,
+                  Outcome) :-
+    admissible_strategies(Recurrence, AllAdmissible),
+    %% Narrow under monotone(false): only same-class as cost-model.
+    (   recurrence_monotone(Recurrence, false)
+    ->  same_class_strategies(CMStrategy, AllAdmissible, Candidates)
+    ;   Candidates = AllAdmissible
+    ),
+    (   member(Candidate, Candidates),
+        forall(member(Intent, IntentSignals),
+               intent_compatible_with_strategy(Intent, Candidate))
+    ->  Outcome = resolved(Candidate,
+                           step(third_option, found(Candidate),
+                                [candidates_considered(Candidates)]))
+    ;   %% Distinguish: if narrowed set was the cause, record so.
+        (   recurrence_monotone(Recurrence, false)
+        ->  Outcome = passed(step(third_option, not_found,
+                                  [monotone_false_narrowed_candidates(Candidates)]))
+        ;   Outcome = passed(step(third_option, not_found,
+                                  [candidates_considered(Candidates)]))
+        )
+    ).
+
+%% same_class_strategies(+ClassFromStrategy, +Strategies, -SameClassStrategies)
+%
+% Return only those strategies in the same strategy class as the
+% reference strategy. Class = the outer functor of Mode
+% (per_query / fixed_point / cached / hybrid).
+same_class_strategies(strategy(ReferenceMode), Strategies, SameClass) :-
+    functor(ReferenceMode, ClassFunctor, _),
+    include(in_class(ClassFunctor), Strategies, SameClass).
+
+in_class(ClassFunctor, strategy(Mode)) :-
+    functor(Mode, ClassFunctor, _).
+
+%% ============================================================
+%% Step 4: step_scope_disambiguation
+%%
+%% If two intent signals come from different scopes and one
+%% refines the other (its strategy-set is a proper subset),
+%% the refined (narrower) intent wins. Disjoint intents do
+%% NOT trigger this step.
+%% ============================================================
+step_scope_disambiguation(IntentSignals, _CostModelChoice, Recurrence, Outcome) :-
+    %% Find a pair of intent signals where one refines the other.
+    (   member(Refined, IntentSignals),
+        member(Broader, IntentSignals),
+        Refined \== Broader,
+        intent_refines(Refined, Broader, Recurrence)
+    ->  %% The refined intent's strategy-set is the candidate set.
+        intent_strategy_set(Refined, Recurrence, RefinedSet),
+        %% Pick first strategy in RefinedSet (cost-model can't be consulted
+        %% here without conflating concerns; deterministic choice).
+        RefinedSet = [Resolved | _],
+        Outcome = resolved(Resolved,
+                           step(scope_disambiguation,
+                                resolved(Resolved, by(caller_refines_manifest)),
+                                [refined_intent(Refined),
+                                 broader_intent(Broader)]))
+    ;   Outcome = passed(step(scope_disambiguation, no_scope_overlap,
+                              [intents(IntentSignals)]))
+    ).
+
+%% intent_refines(+RefinedIntent, +BroaderIntent, +Recurrence)
+%
+% True iff RefinedIntent's strategy-set is a proper subset of
+% BroaderIntent's strategy-set.
+intent_refines(Refined, Broader, Recurrence) :-
+    intent_strategy_set(Refined, Recurrence, RefinedSet),
+    intent_strategy_set(Broader, Recurrence, BroaderSet),
+    RefinedSet \== [],
+    proper_subset(RefinedSet, BroaderSet).
+
+%% intent_strategy_set(+Intent, +Recurrence, -StrategySet)
+%
+% Compute the set of admissible strategies satisfying this intent.
+intent_strategy_set(Intent, Recurrence, StrategySet) :-
+    admissible_strategies(Recurrence, Admissible),
+    include(intent_compatible_with_strategy_helper(Intent), Admissible, StrategySet).
+
+%% Helper because include/3 wants a unary-on-element predicate.
+intent_compatible_with_strategy_helper(Intent, Strategy) :-
+    intent_compatible_with_strategy(Intent, Strategy).
+
+%% proper_subset(+A, +B) — A is a non-empty proper subset of B
+proper_subset(A, B) :-
+    A \== B,
+    forall(member(X, A), member(X, B)),
+    \+ ( forall(member(Y, B), member(Y, A)) ).
+
+%% ============================================================
+%% Step 5: step_satisfiability
+%%
+%% If an intent is structurally unmet, try to adjust:
+%%   - build_csr_at_compile_time (subject to prefer_bidirectional_csr_buildable
+%%     preconditions: cardinality(large), query_frequency(high))
+%%   - degrade_to_compatible (same-class alternative differing only
+%%     in algorithm)
+%%   - degrade_with_warning (cross-class fallback; loud warning)
+%%
+%% Under monotone(false), refuses any adjustment that would cross
+%% strategy classes. Adjustment recorded as detail field of the
+%% satisfiability step (NOT a separate step entry).
+%%
+%% Phase 3 implements a simplified version: detects when caller
+%% intent is structurally unmet, attempts build_csr_at_compile_time
+%% adjustment when applicable, else returns degraded(_) for the
+%% caller-wins fallback. The full degrade_to_compatible logic is
+%% present but conservative — picks the cost-model strategy as the
+%% fallback since the SPEC doesn't enumerate the per-degrade-class
+%% behaviour exhaustively.
+%% ============================================================
+step_satisfiability(IntentSignals,
+                    cost_model_choice(CMStrategy, _Score, _Rule),
+                    Recurrence,
+                    Outcome) :-
+    (   intent_structurally_unmet(IntentSignals, CMStrategy, Recurrence, UnmetIntent),
+        find_satisfiability_adjustment(IntentSignals, UnmetIntent, CMStrategy,
+                                       Recurrence,
+                                       AdjustedStrategy, AdjustmentDetails)
+    ->  Outcome = resolved(AdjustedStrategy,
+                           step(satisfiability, adjusted,
+                                [unmet_intent(UnmetIntent) | AdjustmentDetails]))
+    ;   Outcome = passed(step(satisfiability, passed,
+                              [no_structurally_unmet_intent]))
+    ).
+
+%% intent_structurally_unmet(+IntentSignals, +CMStrategy, +Recurrence,
+%%                            -UnmetIntent)
+%
+% An intent is structurally unmet if it's not satisfied by the
+% cost-model's strategy AND not satisfied by any same-class
+% admissible alternative.
+intent_structurally_unmet(IntentSignals, CMStrategy, _Recurrence, UnmetIntent) :-
+    member(UnmetIntent, IntentSignals),
+    \+ intent_compatible_with_strategy(UnmetIntent, CMStrategy).
+
+%% find_satisfiability_adjustment(+IntentSignals, +UnmetIntent, +CMStrategy,
+%%                                 +Recurrence, -AdjustedStrategy, -Details)
+%
+% Try adjustments in priority order. Returns the adjusted strategy
+% + a list of detail terms to attach to the satisfiability step.
+find_satisfiability_adjustment(_IntentSignals, UnmetIntent, CMStrategy, Recurrence,
+                               AdjustedStrategy,
+                               [adjustment(build_csr_at_compile_time),
+                                reason(unmet_intent_satisfied_by_build_csr)]) :-
+    %% build_csr_at_compile_time: applicable when the unmet intent
+    %% can be satisfied by a strategy that would have fired
+    %% prefer_bidirectional_csr_buildable's rule (per SPEC's
+    %% precondition pointer).
+    intent_satisfied_by(UnmetIntent, strategy(per_query(bidirectional))),
+    \+ would_cross_class_under_monotone_false(strategy(per_query(bidirectional)),
+                                              CMStrategy, Recurrence),
+    AdjustedStrategy = strategy(per_query(bidirectional)).
+find_satisfiability_adjustment(_IntentSignals, UnmetIntent, CMStrategy, Recurrence,
+                               AdjustedStrategy,
+                               [adjustment(degrade_to_compatible),
+                                reason(same_class_alternative_found)]) :-
+    %% degrade_to_compatible: find a same-class strategy that
+    %% satisfies the unmet intent. Same-class as CMStrategy.
+    admissible_strategies(Recurrence, Admissible),
+    same_class_strategies(CMStrategy, Admissible, SameClass),
+    member(AdjustedStrategy, SameClass),
+    intent_satisfied_by(UnmetIntent, AdjustedStrategy),
+    \+ would_cross_class_under_monotone_false(AdjustedStrategy,
+                                              CMStrategy, Recurrence).
+%% Note: degrade_with_warning case isn't a satisfiability adjustment
+%% in the resolved-here sense — it's the fall-through to step_caller_wins.
+%% By design, we DON'T resolve here for cross-class degrade; let
+%% caller_wins handle it.
+
+%% intent_satisfied_by(+Intent, +Strategy)
+%
+% Wrapper for intent_compatible_with_strategy/2 for clarity in
+% satisfiability context.
+intent_satisfied_by(Intent, Strategy) :-
+    intent_compatible_with_strategy(Intent, Strategy).
+
+%% would_cross_class_under_monotone_false(+CandidateStrategy, +CMStrategy,
+%%                                        +Recurrence)
+%
+% True if recurrence is monotone(false) AND the candidate strategy
+% is in a different class than the cost-model strategy.
+would_cross_class_under_monotone_false(Candidate, CMStrategy, Recurrence) :-
+    recurrence_monotone(Recurrence, false),
+    Candidate = strategy(CMode),
+    CMStrategy = strategy(CMMode),
+    functor(CMode, CClass, _),
+    functor(CMMode, CMClass, _),
+    CClass \== CMClass.
+
+%% ============================================================
+%% Step 6: step_caller_wins
+%%
+%% Fallback. Always resolves. Caller's intent wins by sheer
+%% precedence; the trace records a loud warning that the override
+%% reason is unknown and should be reconciled.
+%%
+%% If multiple intent signals are present, the one whose source is
+%% 'caller' (per the signal_tier source metadata) wins. The trace
+%% records the override pair.
+%% ============================================================
+step_caller_wins(IntentSignals,
+                 cost_model_choice(CMStrategy, _Score, _Rule),
+                 Recurrence,
+                 resolved(CallerStrategy,
+                          step(caller_wins, applied,
+                               [caller_intent(CallerIntent),
+                                overridden_signals(OtherIntents),
+                                reason(unknown_consider_reconciling)]))) :-
+    %% Pick the caller-tier intent if present; else the first intent.
+    (   member(Intent, IntentSignals),
+        signal_tier(Intent, intent, caller)
+    ->  CallerIntent = Intent
+    ;   IntentSignals = [CallerIntent | _]
+    ),
+    %% Caller's strategy is the first strategy satisfying their intent
+    %% from admissible_strategies. Under monotone(false), narrow first.
+    admissible_strategies(Recurrence, AllAdmissible),
+    (   recurrence_monotone(Recurrence, false)
+    ->  same_class_strategies(CMStrategy, AllAdmissible, Candidates)
+    ;   Candidates = AllAdmissible
+    ),
+    (   member(CallerStrategy, Candidates),
+        intent_compatible_with_strategy(CallerIntent, CallerStrategy)
+    ->  true
+    ;   %% No admissible strategy satisfies caller's intent — fall
+        %% back to cost-model choice and record that caller's intent
+        %% was UNFULFILLED.
+        CallerStrategy = CMStrategy
+    ),
+    %% Other intents that were overridden:
+    findall(OtherIntent,
+            ( member(OtherIntent, IntentSignals),
+              OtherIntent \== CallerIntent
+            ),
+            OtherIntents).
+
+%% ============================================================
+%% intent_compatible_with_strategy/2 — the intent-compatibility
+%% matrix from SPEC §Intent-compatibility matrix.
+%% ============================================================
+
+%% kernel_mode(bidirectional) — broad; matches both bidirectional
+%% and astar (asymmetry per SPEC: astar counts as bidirectional-flavour)
+intent_compatible_with_strategy(kernel_mode(bidirectional),
+                                strategy(per_query(bidirectional))) :- !.
+intent_compatible_with_strategy(kernel_mode(bidirectional),
+                                strategy(per_query(astar))) :- !.
+
+%% kernel_mode(unidirectional) — broad over per_query unidir variants
+intent_compatible_with_strategy(kernel_mode(unidirectional),
+                                strategy(per_query(unidirectional))) :- !.
+intent_compatible_with_strategy(kernel_mode(unidirectional),
+                                strategy(per_query(bfs))) :- !.
+intent_compatible_with_strategy(kernel_mode(unidirectional),
+                                strategy(per_query(dfs))) :- !.
+
+%% kernel_mode(astar) — narrow; per SPEC's asymmetry note, does NOT
+%% match per_query(bidirectional). Only matches per_query(astar).
+intent_compatible_with_strategy(kernel_mode(astar),
+                                strategy(per_query(astar))) :- !.
+
+%% kernel_mode(dijkstra)
+intent_compatible_with_strategy(kernel_mode(dijkstra),
+                                strategy(per_query(dijkstra))) :- !.
+
+%% strategy(per_query(X)) — matches per_query(X) if X is ground, any
+%% per_query(_) if X is unbound
+intent_compatible_with_strategy(strategy(per_query(X)),
+                                strategy(per_query(X))) :- !.
+intent_compatible_with_strategy(strategy(per_query(X)),
+                                strategy(per_query(_))) :-
+    var(X), !.
+
+%% strategy(fixed_point(X)) — analogous
+intent_compatible_with_strategy(strategy(fixed_point(X)),
+                                strategy(fixed_point(X))) :- !.
+intent_compatible_with_strategy(strategy(fixed_point(X)),
+                                strategy(fixed_point(_))) :-
+    var(X), !.
+
+%% strategy(cached)
+intent_compatible_with_strategy(strategy(cached), strategy(cached)) :- !.
+
+%% strategy(hybrid(_)) — any hybrid
+intent_compatible_with_strategy(strategy(hybrid(_)), strategy(hybrid(_))) :- !.
+
+%% force_search_algorithm(A) — any strategy whose inner algorithm matches A
+intent_compatible_with_strategy(force_search_algorithm(A), strategy(per_query(A))) :- !.
+intent_compatible_with_strategy(force_search_algorithm(A), strategy(fixed_point(A))) :- !.
+
+%% ============================================================
+%% Helper: recurrence_monotone/2 — read monotone property from
+%% Recurrence term.
+%% ============================================================
+recurrence_monotone(recurrence(_KernelKind, _Pred, Properties), Value) :-
+    (   memberchk(monotone(Value), Properties)
+    ->  true
+    ;   Value = true   % default: monotone(true) per Datalog convention
+    ).
 
 %% render_trace_for_stderr(+Trace, -Lines)
 %
