@@ -679,17 +679,46 @@ homogeneity precondition of Definition 0.6 holds to a degree
 sufficient for low TLI in practice (within tolerance for $\psi$
 of Conjecture 3.1).
 
-**Partial support.** Design note §4.5 measures
-$b_{\text{eff}}$ on `Category:Articles` (9.59) and on
-`Category:Physics` (9.51), finding ~1% agreement. This is
-evidence that the topical core is *statistically self-similar*
-across different sub-trees — a necessary condition for
-homogeneity (H3 of Definition 0.6).
+**Support.**
 
-**Caveat.** The conjecture has been tested on simplewiki only.
-The enwiki topical-root verification (page_id 7345184 confirmed
-via Wikipedia API, LMDB construction pending) is task #14 in the
-design note.
+*Simplewiki (within-wiki self-similarity).* Design note §4.5
+measures $b_{\text{eff}}$ on `Category:Articles` (9.59) and on
+`Category:Physics` (9.51), finding ~1% agreement — direct
+evidence the topical core is *statistically self-similar* across
+different sub-trees (H3 of Definition 0.6).
+
+*Enwiki (cross-wiki extension, 2026-06-06).* The post-fix
+enwiki LMDB rooted at `Category:Main_topic_classifications`
+(page_id 7345184) was built (2.26M reachable nodes, 6.7M edges,
+30× the size of simplewiki Articles). The F# probe ran V1
+(B = depth) on 240 sampled seeds at depths 1-12 — `d_wPow =
+depth + 1` exactly at depths 1-11 (0/220 nodes show shortcuts),
+20% at depth 12. This is *stronger* tree-likeness than simplewiki
+at the same depth range (where simplewiki saturated at 100%
+shortcuts at depth ≥ 10).
+
+The geometric-series analysis in
+`docs/reports/depth_likeness_budget_variants.md` gives the
+quantitative cross-wiki comparison: estimated convergence ratio
+$r \approx 0.16$ on simplewiki vs $r \approx 0.04$ on enwiki —
+a ~4× larger safety margin on enwiki, despite 30× scale.
+
+**Status: confirmed at both simplewiki and enwiki scale, with
+enwiki showing stronger tree-likeness than simplewiki.** The
+multi-wiki, multi-scale agreement supports promoting
+Conjecture 3.4 from "topical scoping is sufficient for
+homogeneity in practice" to "topical scoping yields verified
+tree-like calibration across two Wikipedia language editions
+spanning 30× scale difference."
+
+**Open questions still standing.** Whether the pattern extends
+to non-Wikipedia DAGs with topical scoping (e.g. dewiki,
+non-Wikipedia hierarchies like DMOZ or schema.org subtrees)
+remains untested. The Wikipedia-specific result alone doesn't
+distinguish "topical scoping works on any well-curated
+hierarchical DAG" from "topical scoping works specifically on
+Wikipedia-style category structures." See §5.3 for follow-up
+suggestions.
 
 ### 3.5 Symmetric DAGs have high TLI under any directional metric
 
@@ -979,6 +1008,15 @@ evaluation at varying $r$ to fit $\alpha$ empirically.
   regime confirmed. Indirectly supports homogeneity: the topical
   subgraph behaves uniformly enough for the Chung-Lu distance
   formula to fit. See `docs/reports/topical_geometric_regime_simplewiki.md`.
+- **Task #17 enwiki extension (2026-06-06)**: F# probe at enwiki
+  scale (2.26M reachable nodes from `Main_topic_classifications`,
+  30× simplewiki). V1 result: $d_\text{wPow} = \text{depth} + 1$
+  exactly at depths 1-11 (220 nodes, zero stdev), 20% shortcut
+  rate only at depth 12. *Stronger* tree-likeness than simplewiki
+  at the same depth range. Conjecture 3.4 promoted from
+  "simplewiki only" to "confirmed at two wikis spanning 30×
+  scale." See `docs/reports/depth_likeness_budget_variants.md`
+  addendum.
 
 ### 4.5 Conjecture 3.5 (symmetric DAG falsification)
 
@@ -1070,6 +1108,34 @@ truncated $L_M, R_M$ sums, or (ii) Monte Carlo evaluation at
 varying $r$ to fit the exponent empirically. Conjecture 3.3 as
 stated is *consistent with* the empirical gap but not yet
 derived from theory.
+
+**Cross-wiki empirical anchor for $r$ (2026-06-06).** Beyond the
+simplewiki-only $r \approx 0.157$ used above, the F# V3 enwiki
+measurement gives a second data point. Treating the per-zig-zag
+empirical shortcut probability $p_\text{child} \approx 0.04$ as
+a proxy for $r$ on enwiki (the geometric series
+$\sum_n p^n = 1/(1-p)$ matches the theoretical
+$r/(1-r)$ contribution-sum form), we get:
+
+| Wiki | Estimated $r$ | Safety margin vs $r = 1$ |
+|---|---|---|
+| simplewiki Articles | $\approx 0.16$ | $\approx 6\times$ |
+| enwiki MTC | $\approx 0.04$ | $\approx 25\times$ |
+
+The 4× larger safety margin on enwiki despite 30× scale is
+counter-intuitive but explainable: more multi-parent topology
+produces more *long* alternate paths (parent-direction shortcuts,
+which the weighting crushes — boosting $b_\text{eff} \cdot D$)
+but *fewer short* child shortcuts (which would inflate $b'$).
+Conjecture 3.1's convergence ratio shrinks even as graph size
+grows, provided topical scoping is enforced.
+
+See `docs/reports/depth_likeness_budget_variants.md` § "Zig-zag
+shortcuts and the geometric series" for the derivation. Both
+empirical $r$ values fall in the comfortable-convergence regime
+($r \ll 1$), supporting the per-step partial-cancellation
+analysis above as the right asymptotic story even if its
+quantitative bound is loose.
 
 ### 5.2 Quantitative homogeneity ↔ calibration error
 

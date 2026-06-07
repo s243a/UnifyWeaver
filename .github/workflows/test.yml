@@ -51,6 +51,10 @@ jobs:
         run: |
           swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), asserta(user:file_search_path(library, 'tests/core')), use_module(library(test_policy)), test_policy, halt."
 
+      - name: Run root-metric directive tests
+        run: |
+          swipl -q -g run_tests -t halt tests/core/test_root_metric.pl
+
       - name: Run C# query target tests (codegen only)
         run: |
           SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt
@@ -89,6 +93,14 @@ jobs:
       - name: Run scoped-subtree LMDB builder test
         run: |
           python3 -m unittest tests.test_build_scoped_subtree_lmdb
+
+      - name: Run root-metric query tool test
+        run: |
+          python3 -m unittest tests.test_query_root_metric
+
+      - name: Run effective-distance node-DP test
+        run: |
+          python3 -m unittest tests.test_effective_distance_nodedp
 
       - name: Run WAM Rust matrix-bench demand-flag codegen test
         run: |

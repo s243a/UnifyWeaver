@@ -2277,6 +2277,15 @@ step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
 
+-- true/0 always succeeds; fail/0 always fails. The WAM compiler emits these
+-- for if-then-else and negation bodies (negation of G compiles to
+-- (G -> fail ; true)), so the lowered and interpreted paths both need them.
+step !ctx s (BuiltinCall "true/0" _) =
+  Just (s { wsPC = wsPC s + 1 })
+
+step !ctx s (BuiltinCall "fail/0" _) =
+  Nothing
+
 -- CutIte: soft cut for if-then-else — pops exactly the top choice point
 -- (the one pushed by try_me_else for the Else branch). Unlike !/0 which
 -- truncates to wsCutBar (clause-level), this only removes the immediately

@@ -245,6 +245,45 @@ exhibit this — we measured exactly this divergence (5.044 → 0.29,
 a 90% drift) before introducing the direction-weighted metric. The
 graph didn't change; the metric did.
 
+#### 3.3.1 Three sub-claims for "shortcuts are rare" (refined 2026-06-06)
+
+The Python and F# per-node measurements in
+`docs/reports/depth_likeness_budget_variants.md` showed that the
+"shortcuts are rare" claim is **direction- and query-dependent**.
+Stated precisely, three distinct sub-claims emerge, each with a
+different empirical answer:
+
+- **(child-to-root shortcuts are rare)** — confirmed empirically.
+  Setting `B = depth(v)` (tightest budget admitting only the
+  carrot), `d_wPow = depth + 1` exactly for 0% shortcut rate on
+  simplewiki Articles at depths 1-9 and on enwiki MTC at depths
+  1-11. Child-direction routes shorter than the BFS-shortest
+  pure-parent route do not exist for shallow-to-moderate seeds
+  under the tightest budget.
+- **(parent-direction shortcuts are abundant)** — *refutes* the
+  naive reading. Setting `B = max parent distance`, ~76% of enwiki
+  nodes have `d_wPow < max_d + 1`. The graph's multi-parent
+  topology provides many alternate ancestor chains shorter than
+  the longest possible pure-parent route. The metric correctly
+  detects this — it just doesn't read as "child shortcut" because
+  no child hop is involved.
+- **(arbitrary-pair shortcuts between topical nodes are common)** —
+  also refutes the naive reading. At least 39% of random topical
+  pairs on simplewiki show `d_wPow < min_carrot + 1` (61% timed
+  out, likely undercount). Cross-topical multi-parent structure
+  provides shortcuts that don't appear when one endpoint is the
+  root.
+
+The original §3.3 claim is *true* under the implicit conditioning
+"child-direction, to topical root, at tight budget" — which
+matches the design note's standard certificate setting (§6.1).
+For other query distributions (pair-to-pair, looser budget,
+deeper seeds) the claim doesn't hold and shortcut rates can be
+substantial.
+
+This refinement preserves the original §3.3 framing for its
+intended scope while documenting where it doesn't apply.
+
 ## 4. Evidence (so far)
 
 ### 4.1 Aggregate, simplewiki rooted at Physics
@@ -805,6 +844,34 @@ cross-paths structurally, and the certificate is honest: it's a
 statistical claim about *this* graph under *this* metric for
 queries from *this* distribution *at this budget*, not a universal
 one.
+
+**Per-node budget-choice tradeoff (refined 2026-06-06).** The
+multi-budget empirical study in
+`docs/reports/depth_likeness_budget_variants.md` shows the
+certificate at different budgets answers different questions:
+
+- **B = depth(v)** (tightest): admits only the carrot. Certificate
+  here is the strictest possible — TLI < 0.1% means the metric
+  cannot find shorter routes via children at all. Empirically:
+  enwiki MTC and simplewiki Articles both pass with 0% shortcuts
+  at depths 1-9 (simplewiki) or 1-11 (enwiki).
+- **B = 15 (or similar fixed)** (standard, this section's
+  recommendation): admits some M ≥ 1 paths within budget. Includes
+  detour contribution that tightens the certificate's interpretation
+  but still validates "tree-search ≈ bidirectional within ε" for
+  reasonable seeds.
+- **B = max parent distance** (loosest reasonable): admits all
+  alternate-ancestor paths plus child shortcuts. Certificate
+  here measures whether the metric tracks the "natural depth
+  range" of the topical hierarchy. Empirically: ~24% of nodes
+  show $d_\text{wPow} \approx \min + 1$ (no parent-shortcut
+  effect), but ~76% on enwiki show $d_\text{wPow}$ below
+  $\max_d + 1$ due to multi-ancestor averaging.
+
+For production, `B = depth + 5` to `B = 2 \cdot \max_d` covers
+the practical range. The standard `B = 15` recommendation in this
+section corresponds to a moderate-budget regime that includes
+detour contribution but isn't dominated by it.
 
 ### 6.2 Drift as a diagnostic
 

@@ -29,6 +29,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 % ============================================================================
 % Parsing — identical to Haskell emitter (WAM text format is target-agnostic)
@@ -73,10 +74,33 @@ tokenize_fs(Line, Term) :-
 %    - CallForeign resolves ambiguity for foreign calls at compile time
 %    - Detected kernels are excluded upstream by wam_fsharp_partition_predicates
 wam_fsharp_lowerable(_PI, WamCode, lowerable) :-
-    parse_wam_text_fs(WamCode, PCInstrs, _),
+    parse_wam_text_fs(WamCode, PCInstrs, LabelMap),
     clause1_instrs_fs(PCInstrs, C1),
-    is_deterministic_pred_fs(C1),
-    forall(member(I, C1), supported_fs(I)).
+    forall(member(I, C1), supported_fs(I)),
+    % Clause 1 must fold cleanly via the shared structurer. This enables
+    % if-then-else / negation lowering (clause 1's internal try_me_else is a
+    % well-formed ITE block, consumed into ite/3) while still rejecting any
+    % stray choice-point markers (predicate-level try/retry/trust that are
+    % not part of a clean block remain in the structured form, failing the
+    % checks below, so such predicates fall back to the interpreter).
+    clause1_pc_fs(PCInstrs, C1PC),
+    struct_stream_fs(C1PC, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+%% clause1_pc_fs(+PCInstrs, -Clause1PCs)
+%  Like clause1_instrs_fs/2 but keeps pc(PC,Instr) form, matching exactly the
+%  clause-1 slice emit_func_fs structures.
+clause1_pc_fs([], []).
+clause1_pc_fs(PCInstrs0, C1) :-
+    strip_switch_prefixes_fs(PCInstrs0, PCInstrs),
+    PCInstrs0 \== PCInstrs, !,
+    clause1_pc_fs(PCInstrs, C1).
+clause1_pc_fs([pc(_, try_me_else(_))|Rest], C1) :- !,
+    take_to_proceed_pc_fs(Rest, C1).
+clause1_pc_fs(PCInstrs, PCInstrs).
 
 % Match Rust/Clojure lowered emitters: only deterministic clause-1 bodies are
 % lowered. Choicepoint-manipulating instructions should stay interpreter-driven.
@@ -238,14 +262,14 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("            WsCPsLen = s_init.WsCPsLen + 1 }~n"),
         format("    let clause1 (s_c1: WamState) : WamState option =~n"),
         take_to_proceed_pc_fs(BodyPCs, Clause1PCs),
-        emit_instrs_lm_fs(Clause1PCs, "s_c1", "        ", ForeignPreds, LabelMap),
+        emit_clause_struct_fs(Clause1PCs, LabelMap, "s_c1", "        ", ForeignPreds),
         format("    match clause1 s_cp with~n"),
         format("    | Some result -> Some result~n"),
         format("    | None ->~n"),
         format("        // Clause 1 failed — backtrack to clause 2+ in the interpreter~n"),
         format("        backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n")
     ;   % Single-clause: straightforward binding chain
-        emit_instrs_lm_fs(PCInstrs1, "s_init", "    ", ForeignPreds, LabelMap)
+        emit_clause_struct_fs(PCInstrs1, LabelMap, "s_init", "    ", ForeignPreds)
     ).
 
 take_to_proceed_pc_fs([], []).
@@ -504,6 +528,113 @@ emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
 is_terminal_instr_fs(proceed).
 is_terminal_instr_fs(fail).
 is_terminal_instr_fs(execute(_)).
+
+% ============================================================================
+% Structured ITE emission (shared nesting-aware structurer)
+% ============================================================================
+%
+%  The flat split_ite_blocks_lm_fs/split_at_jump_fs heuristic is NOT nesting
+%  aware (split_at_jump_fs stops at an inner jump) and only recognises
+%  cut_ite, not the !/0 negation commit. Feed clause 1 through the shared
+%  wam_ite_structurer instead: struct_stream_fs/3 rebuilds a label-marked
+%  stream (control markers bare so the structurer matches them, labels as
+%  strings to match try_me_else/jump args, data instructions keep pc(PC,_)
+%  for emit_one_fs), structure_ite folds every block into ite(Cond,Then,Else),
+%  and emit_structured_fs/4 walks it — reusing the exact F# match-arm
+%  threading (is_match_instr_fs / "| None -> None") so non-ITE predicates
+%  emit byte-identically and nested blocks recurse for free.
+
+emit_clause_struct_fs(ClausePCs, LabelMap, SV, Ind, FP) :-
+    struct_stream_fs(ClausePCs, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    emit_structured_fs(Structured, SV, Ind, FP).
+
+struct_stream_fs([], _LM, []).
+struct_stream_fs([pc(PC, Instr)|Rest], LM, Out) :-
+    findall(label(LStr), (member(L-PC, LM), atom_string(L, LStr)), Labels),
+    struct_item_fs(PC, Instr, Item),
+    append(Labels, [Item|More], Out),
+    struct_stream_fs(Rest, LM, More).
+
+struct_item_fs(_PC, try_me_else(L), try_me_else(L)) :- !.
+struct_item_fs(_PC, jump(L),        jump(L))        :- !.
+struct_item_fs(_PC, trust_me,       trust_me)       :- !.
+struct_item_fs(_PC, cut_ite,        cut_ite)        :- !.
+struct_item_fs(_PC, builtin_call(Op, N), builtin_call(Op, N)) :- neg_commit_op_fs(Op), !.
+struct_item_fs(PC, Instr, pc(PC, Instr)).
+
+neg_commit_op_fs("!/0").
+neg_commit_op_fs('!/0').
+
+%% emit_structured_fs(+Structured, +SV, +Ind, +FP)
+%  Structured is a list of pc(PC,Instr) and ite(Cond,Then,Else). Emits an
+%  F# expression of type WamState option.
+emit_structured_fs([], SV, I, _FP) :-
+    format("~wSome ~w~n", [I, SV]).
+% If-then-else with a continuation — bind the result, then continue.
+emit_structured_fs([ite(C, T, E)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", IteInd),
+    emit_ite_match_struct_fs(SV, C, T, E, IteInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVcont),
+    format("~w| Some ~w ->~n", [Ind, SVcont]),
+    atom_concat(Ind, "    ", ContInd),
+    emit_structured_fs(Rest, SVcont, ContInd, FP),
+    format("~w| None -> None~n", [Ind]).
+% If-then-else as the final expression.
+emit_structured_fs([ite(C, T, E)], SV, Ind, FP) :- !,
+    emit_ite_match_struct_fs(SV, C, T, E, Ind, FP).
+% Terminal: fail
+emit_structured_fs([pc(_PC, fail)|Rest], _SV, Ind, _FP) :- !,
+    (   Rest \= []
+    ->  format("~w// WARNING: fail is not the last instruction — ~w instruction(s) unreachable~n", [Ind, Rest])
+    ;   true
+    ),
+    format("~wNone~n", [Ind]).
+% Terminal: execute (tail call)
+emit_structured_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :- !,
+    (   Rest \= []
+    ->  format("~w// WARNING: execute(~w) is not the last instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
+               [Ind, PredStr, Rest])
+    ;   true
+    ),
+    emit_one_fs(execute(PredStr), PC, SV, _, Ind, FP).
+% Last plain instruction.
+emit_structured_fs([pc(PC, Instr)], SV, Ind, FP) :- !,
+    emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
+    (   is_terminal_instr_fs(Instr) -> true
+    ;   is_match_instr_fs(Instr)
+    ->  format("~wSome ~w~n", [IndInner, SVout]),
+        format("~w| None -> None~n", [Ind])
+    ;   format("~wSome ~w~n", [Ind, SVout])
+    ).
+% Plain instruction with more following.
+emit_structured_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
+    (   is_match_instr_fs(Instr)
+    ->  emit_structured_fs(Rest, SVout, IndInner, FP),
+        format("~w| None -> None~n", [Ind])
+    ;   emit_structured_fs(Rest, SVout, Ind, FP)
+    ).
+
+%% emit_ite_match_struct_fs(+SV, +Cond, +Then, +Else, +Ind, +FP)
+%  F# nested match for one ite/3 block; branches recurse through
+%  emit_structured_fs so nested blocks are handled.
+emit_ite_match_struct_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", CondInd),
+    emit_structured_fs(CondInstrs, SV, CondInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVthen),
+    format("~w| Some ~w ->~n", [Ind, SVthen]),
+    atom_concat(Ind, "    ", ThenInd),
+    emit_structured_fs(ThenInstrs, SVthen, ThenInd, FP),
+    format("~w| None ->~n", [Ind]),
+    atom_concat(Ind, "    ", ElseInd),
+    emit_structured_fs(ElseInstrs, SV, ElseInd, FP).
 
 %% split_ite_blocks_fs/6 — legacy no-LabelMap version
 %  Used inside emit_instrs_fs (4-arg). ContInstrs is always [] here
