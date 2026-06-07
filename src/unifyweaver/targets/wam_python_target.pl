@@ -2102,10 +2102,10 @@ plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
 python_plan_compile_predicate(Options, PredIndicator, Wam) :-
 	python_wam_emit_ir_mode(Options, IrMode),
 	(   IrMode = wam_text
-	->  compile_predicate_to_wam_text(PredIndicator, [], WamText),
+	->  compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamText),
 	    python_wam_text_plan(WamText, Wam)
 	;   IrMode = wam_items_bridge
-	->  compile_predicate_to_wam_items(PredIndicator, [], Items),
+	->  compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], Items),
 	    python_wam_items_plan(Items, Wam)
 	).
 
