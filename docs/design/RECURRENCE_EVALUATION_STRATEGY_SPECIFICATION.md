@@ -27,17 +27,29 @@ This document specifies the API, data structures, decision logic, and outputs of
 ]).
 ```
 
-### Determinism contract
+### Determinism contracts (per predicate)
 
-`select_evaluation_strategy/3` is **deterministic (`det`)**:
-- It always succeeds for a well-formed `Recurrence` and `Workload`.
-- It never fails.
-- It throws on structural error only — `error(no_admissible_strategy(_), _)` is the canonical case.
-- It always binds `StrategyAndTrace` to a ground term.
+Each exported predicate has its own determinism contract. These matter for callers using the predicates inside `if-then-else`, `findall/3`, or other constructs sensitive to determinism.
 
-This matters for callers using the selector inside `if-then-else`, `findall/3`, or other constructs sensitive to determinism. The helper predicates `classify_signals/4`, `apply_cost_model/3`, and `resolve_against_intent/5` are also `det` under the same conditions.
+- **`select_evaluation_strategy/3`** — `det`. Always succeeds for a well-formed `Recurrence` and `Workload`. Never fails. Throws `error(no_admissible_strategy(_), _)` on the structural failure case (no strategy is admissible for the given recurrence). Always binds `StrategyAndTrace` to a ground term.
 
-`admissible_strategies/2` is `det` and may return `[]` (which then causes `select_evaluation_strategy/3` to throw). `strategy_pretty/2` is `det`.
+- **`classify_signals/4`** — `det`. Always succeeds; partitions the input into three lists; never fails. Returns three lists (possibly empty) for any input list (including empty).
+
+- **`apply_cost_model/3`** — `det`. Always succeeds when given a well-formed `Recurrence` and data-signals list. Returns a `cost_model_choice(Strategy, Score, DecidingRule)` term; if no rules fire, returns the `default_fallback` choice. Never fails.
+
+- **`resolve_against_intent/5`** — `det`. Always resolves to one of the six steps; if all earlier steps pass, `step_caller_wins` always resolves. Never fails. Throws only if a step's internal logic encounters a malformed intent (e.g. an intent with no matcher in the intent-compatibility matrix beyond the "unknown intent" fallback).
+
+- **`render_trace_for_stderr/2`** — `det`. Always succeeds for any well-formed trace. Returns a list of strings.
+
+- **`format_trace_for_comment/3`** — `det`. Always succeeds for any well-formed trace and comment prefix. Returns a string.
+
+- **`admissible_strategies/2`** — `det`. May return `[]` (which then causes `select_evaluation_strategy/3` to throw `no_admissible_strategy`). Never fails on a well-formed `Recurrence`.
+
+- **`strategy_pretty/2`** — `det`. Always succeeds for any well-formed `Strategy` term.
+
+### Trace emission is pure-functional
+
+The selector module **does not write to any stream**. It returns the structured trace as part of the `StrategyAndTrace` return value. Target adapters (or thin wrappers around them) call the renderer helpers (`render_trace_for_stderr/2`, `format_trace_for_comment/3`) and decide whether to emit. This keeps the selector pure-functional and testable; quiet-mode is the default for library and test use.
 
 ### Trace emission is pure-functional
 
@@ -63,16 +75,19 @@ where `KernelKind` is the kernel atom from `recursive_kernel_detection` (e.g. `b
 
 | Property | Type | Meaning |
 |----------|------|---------|
-| `has_combinatorial_loop_break(B)` | boolean | `true` if the user's clauses include `\+ member` or equivalent visited-set tracking |
-| `numeric_contraction_rate(R)` | maybe Float | An upper bound on the iteration contraction rate. `none` if unknown or non-numeric; a float `< 1` if known to converge. Values `>= 1.0` or `none` disqualify all `fixed_point` strategies (see [Admissibility](#admissibility)) |
-| `monotone(B)` | boolean | `true` if the recurrence operator is monotone over its solution lattice (default `true` for Datalog-shaped recurrences). `false` disables cross-class strategy auto-selection |
+| `value_domain(D)` | atom | `combinatorial` (boolean / finite Herbrand-base lattice — Datalog case) or `numeric` (continuous real-valued lattice — `d_wPow`, PageRank case). Drives whether `fixed_point` admissibility needs a contraction rate (see [Admissibility](#admissibility)) |
+| `has_combinatorial_loop_break(B)` | boolean | `true` if the user's clauses include `\+ member` or equivalent visited-set tracking. This is a **per-query traversal safety** signal, *not* a fixed_point enabler |
+| `numeric_contraction_rate(R)` | maybe Float | An upper bound on the iteration contraction rate. `none` if unknown or non-numeric; a float `< 1` if known to converge. Only consulted when `value_domain(numeric)` — combinatorial recurrences don't need it |
+| `monotone(B)` | boolean | `true` if the recurrence operator is monotone over its solution lattice (default `true` for Datalog-shaped recurrences). `false` disables cross-class strategy auto-selection (applied in Phase C, not in admissibility) |
 | `result_layout(L)` | term | The output-tuple layout from `recursive_kernel_detection:kernel_result_layout/2` |
 | `result_mode(M)` | atom | `stream` / `deterministic` / `deterministic_collection` — from `kernel_result_mode/2` |
-| `expected_cardinality(C)` | atom | `small` / `medium` / `large` / `unknown` — from relation-policy if declared, else `unknown` |
 
 The `Recurrence` term is constructed once per `select_evaluation_strategy/3` call. The caller's responsibility is to populate it from the detected kernel and clause analysis. The module does not re-detect; it consumes.
 
-**Note on `directions_admissible`.** Earlier drafts of this spec exposed `directions_admissible(Dirs)` as a user-supplied recurrence property. It has been removed from the user-facing properties because it can disagree silently with `admissible_strategies/2` for the same `KernelKind`. The selector now *derives* admissible directions internally from the kernel-kind-to-strategies table — single source of truth, no inconsistency possible. If a future kernel-kind needs per-instance variation in admissible directions (e.g. a kernel where the direction depends on the underlying graph's properties), this property can be reintroduced with an assertion that it intersects with the kernel-kind table.
+**Note on removed properties.**
+
+- `directions_admissible(Dirs)` was removed because it can disagree silently with `admissible_strategies/2` for the same `KernelKind`. The selector now *derives* admissible directions internally from the kernel-kind-to-strategies table — single source of truth, no inconsistency possible.
+- `expected_cardinality(C)` was removed because it duplicates the `cardinality(C)` workload signal (which comes from the same `relation_policy` declaration). Two sources for the same fact would create a silent sync requirement between `build_recurrence_term/3` and `build_workload_signals/2`. The cost model reads `cardinality` from the workload signals only; recurrence properties hold only what is intrinsic to the recurrence's *structure* (loop-break, contraction rate, value domain, monotonicity, result shape), not properties of the *data* the recurrence runs over.
 
 ### Workload signals
 
@@ -100,6 +115,7 @@ Intent signals express the user's required outcome. They bypass the cost model w
 | `query_pattern(P)` | manifest | `single_pair` / `all_pairs` / `all_from_source` / `sample` |
 | `query_frequency(F)` | manifest | `low` / `high` / `sustained` |
 | `graph_mutability(M)` | manifest | `static` / `append_only` / `mutable` |
+| `heuristic_predicate_available(B)` | manifest / caller option | `true` if an admissible heuristic predicate is declared (precondition for `prefer_astar_heuristic_available` rule) |
 | `b_eff(F)` | calibration declaration | Friendship-paradox-corrected effective branching factor |
 | `branching_d(F)` | calibration declaration | Mean child branching factor `D` |
 | `contraction_r(F)` | calibration declaration | Convergence ratio `r = b'/(b_eff·D)` |
@@ -121,13 +137,22 @@ Inferred-data carries explicit uncertainty; cost-model rules can downweight it v
 
 ### Admissibility
 
-`admissible_strategies(+Recurrence, -List)` returns the strategies the selector may pick from. A strategy is admissible iff *all* of the following hold:
+`admissible_strategies(+Recurrence, -List)` returns the strategies the selector may pick from, based on properties of the recurrence alone (no intent context). A strategy is admissible iff *both* of the following hold:
 
 1. **KernelKind permits it** — read from a kernel-kind-to-strategies static table. E.g. `bidirectional_ancestor` permits `per_query(bidirectional)` and `per_query(astar)`; `transitive_closure2` permits `per_query(unidirectional)`, `per_query(bidirectional)` (via upgrade), and `fixed_point(semi_naive)`.
-2. **Recurrence-convergence permits it** — for any `fixed_point(...)` strategy, the recurrence must have `numeric_contraction_rate(R)` with `R < 1.0`. If `R` is `none` or `R >= 1.0`, all `fixed_point` strategies are *removed* from admissibility regardless of what KernelKind would permit.
-3. **Monotonicity permits cross-class selection** — when `monotone(false)`, cross-class auto-selection is disabled. The selector restricts to whichever strategy class is explicitly requested by intent; if no class is requested, it defaults to the kernel's primary strategy.
+
+2. **Termination guarantee permits it** — for any `fixed_point(...)` strategy, the recurrence must have a termination guarantee. Two cases by value domain:
+   - `value_domain(combinatorial)` AND `monotone(true)` — finite Herbrand-base lattice plus monotonicity gives Tarski-finite-lattice termination in at most |L| iterations. **No contraction-rate guarantee needed.** Datalog-shape recurrences and Bellman-Ford-with-visited-set fall in this case.
+   - `value_domain(numeric)` AND `monotone(true)` AND `numeric_contraction_rate(R)` with `R < 1.0` — continuous lattice needs contraction. `d_wPow` and PageRank-style recurrences fall in this case.
+   - If neither condition holds, all `fixed_point(_)` strategies are removed from admissibility regardless of what KernelKind would permit.
+
+   For `per_query(...)` strategies, no convergence guarantee is required from the recurrence — per-query traversal terminates by combinatorial visited-set tracking (`has_combinatorial_loop_break(true)` is the relevant safety property, separate from fixed_point admissibility).
 
 If the resulting list is empty, `select_evaluation_strategy/3` throws `error(no_admissible_strategy(Recurrence), _)`.
+
+**Why `monotone(false)` cross-class restriction is NOT applied here.** A separate concern: when `monotone(false)`, the selector should not auto-select *across* strategy classes — picking `per_query` when `fixed_point` was the cost-model default could change observable behaviour because non-monotone recurrences can be evaluation-order-sensitive. But this restriction depends on the user's intent (which class they're asking for), and `admissible_strategies/2` sees only the recurrence — no intent context. The cross-class restriction is therefore applied in Phase C (conflict resolution), where intent is in scope. Admissibility returns the full kernel+termination admissible set; Phase C narrows it under `monotone(false)` + cross-class intent.
+
+This split (kernel+termination in admissibility; monotonicity-cross-class in resolution) keeps `admissible_strategies/2` a pure function of the recurrence — testable in isolation, no intent dependency. The cost the split pays: there is a brief window inside `step_satisfiability` where a strategy is admissible-by-recurrence but inadmissible-by-monotonicity-cross-class-restriction. The step's satisfiability-adjuster respects the cross-class restriction explicitly to avoid this phantom window.
 
 ### Strategy
 
@@ -231,17 +256,19 @@ A rule that depends only on inferred data takes a confidence multiplier: its raw
 
 A worked example to anchor future rule additions. Suppose the workload is:
 
-- Declared: `cardinality(large)`, `query_pattern(single_pair)`
+- Declared: `cardinality(large)`, `query_pattern(single_pair)`, **`query_frequency(high)`**
 - Inferred: `csr_buildable(true)`, `csr_available(false)`
 - (No intent signals)
 
 Rules that fire:
 
-- `prefer_bidirectional_csr_buildable` — all preconditions match. Raw score +2. Confidence: `csr_buildable` is inferred (0.8), the other two are declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
+- `prefer_bidirectional_csr_buildable` — all preconditions match: inferred `csr_buildable(true)` ✓, declared `cardinality(large)` ✓, declared `query_frequency(high)` ✓. Raw score +2. Confidence: `csr_buildable` is inferred (0.8), the other two are declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
 - `prefer_unidirectional_no_csr` — declared `csr_available(false)` matches; inferred `csr_buildable(false)` does *not* match (we have `csr_buildable(true)`). Rule does not fire.
 - `default_fallback` — fires. Raw score +0.
 
-Winner: `per_query(bidirectional)` + `adjustment(build_csr_at_compile_time)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The adjustment becomes a `step(adjustment, build_csr_at_compile_time, ...)` entry in the trace; the strategy is `per_query(bidirectional)` (the adjustment is *not* part of the strategy term).
+Winner: `per_query(bidirectional)` + `adjustment(build_csr_at_compile_time)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The adjustment is recorded as a detail field of the `step_satisfiability` trace entry (when satisfiability is what triggered the adjustment); when the cost model itself wants the adjustment as part of its preferred strategy, it adds the adjustment to the trace via a `step(adjustment, build_csr_at_compile_time, [...])` entry that immediately follows the `cost_model_choice` step. Either way, the `Strategy` term is `per_query(bidirectional)` — the adjustment is metadata, not part of the strategy term.
+
+(*Earlier draft note:* a previous version of this example omitted `query_frequency(high)` from the workload, which would have prevented `prefer_bidirectional_csr_buildable` from firing because its precondition list requires it. Fixed in this revision; the example is now self-consistent.)
 
 If a contradiction had appeared — e.g. `prefer_unidirectional_small` also firing with declared `cardinality(small)` (which contradicts `cardinality(large)`) — the cost model would treat this as malformed input and let the conflict-resolution phase deal with it. (In practice the declared-data tier should be internally consistent because relation-policy declarations are deduplicated; if the inferred-data tier produces a contradiction with declared-data, the inferred value loses.)
 
@@ -269,13 +296,29 @@ If every intent signal is satisfied by `CostModelChoice` (using the [intent-comp
 
 Iterate over `admissible_strategies(Recurrence, Admissible)` looking for any strategy that satisfies *all* intent signals (using the intent-compatibility matrix). If found, return it. Trace step: `step(third_option, found(Strategy) | not_found, [candidates_considered(...)])`.
 
-#### `step_scope_disambiguation` — narrower strategy term subsumes broader
+#### `step_scope_disambiguation` — refinement (narrower strategy-set wins)
 
-If two intent signals come from different scopes (manifest vs caller) and the narrower-strategy intent is *subsumed by* the broader-strategy intent (i.e. the narrower picks a specific point within the strategy class the broader names), the narrower wins without it being treated as conflict. This is normal scoping rules, not an override.
+If two intent signals come from different scopes (manifest vs caller) and one *refines* the other in strategy-space, the refined (narrower) intent wins without it being treated as conflict. This is normal scoping rules, not an override.
 
-Formal definition: intent A *subsumes* intent B if every strategy satisfying B also satisfies A (B's strategy-set is a subset of A's strategy-set). Example: manifest says `strategy(per_query(_))` (broad; matches any per_query algorithm), caller says `kernel_mode(bidirectional)` (narrow; matches only `per_query(bidirectional)`). Caller subsumes manifest in the strategy-space sense; caller wins by specificity.
+**Formal definition.** Intent A **refines** intent B iff A's strategy-set is a (non-empty) subset of B's strategy-set. A is the more specific intent; A wins. The relation is asymmetric — if neither A refines B nor B refines A (e.g. their strategy-sets are *disjoint*, or *partially overlapping*), this step does *not* fire, and resolution falls through to the next steps.
 
-Trace step: `step(scope_disambiguation, resolved(Strategy, by(narrower_subsumes_broader)), [narrower(...), broader(...)])`.
+(Terminology note: earlier drafts used "subsumes" — switched to "refines" because the natural reading of "A subsumes B" varies between type-theory convention and natural-language convention. "A refines B" is unambiguous: A is more specific.)
+
+**Correct worked example.** Suppose:
+- Manifest intent: `strategy(per_query(_))` — broad, matches every per_query strategy (set: `{per_query(unidirectional), per_query(bidirectional), per_query(astar), per_query(dijkstra)}`)
+- Caller intent: `kernel_mode(bidirectional)` — narrow, matches `{per_query(bidirectional), per_query(astar)}` per the [intent-compatibility matrix](#intent-compatibility-matrix)
+
+Caller's strategy-set is a subset of manifest's. Caller **refines** manifest. Caller wins by specificity. The cost model picks within caller's set (probably `per_query(bidirectional)` if CSR is available, else `per_query(astar)` if a heuristic is available, etc.).
+
+Trace step: `step(scope_disambiguation, resolved(per_query(bidirectional), by(caller_refines_manifest)), [refined_intent(kernel_mode(bidirectional)), broader_intent(strategy(per_query(_)))])`.
+
+**Disjoint-intents counter-example (this step does NOT apply).** If instead:
+- Manifest intent: `strategy(per_query(unidirectional))` (set: `{per_query(unidirectional)}`)
+- Caller intent: `kernel_mode(bidirectional)` (set: `{per_query(bidirectional), per_query(astar)}`)
+
+The two sets are disjoint — neither refines the other. `step_scope_disambiguation` does not fire. Resolution falls through to `step_satisfiability` (if adjustments could help) and then to `step_caller_wins` (caller's intent wins by fallback, with a loud warning recorded in the trace).
+
+(*Earlier draft note:* a previous version of this section presented the disjoint-intents case as if it resolved via scope_disambiguation, which contradicted the step's own rule. The fix is to use the subset example above for the rule's worked illustration, and to name the disjoint case as a fall-through.)
 
 #### `step_satisfiability` — adjust the unsatisfiable
 
@@ -288,7 +331,9 @@ If the intent is structurally unmet (e.g. caller wants `bidirectional` but decla
 
 - Selector picks the first adjustment whose precondition holds.
 
-Trace steps: `step(satisfiability, adjusted(BuildCsrAtCompileTime), ...)` for the adjustment proper, plus `step(adjustment, build_csr_at_compile_time, [reason(unmet_intent_kernel_mode_bidirectional)])` recording the side-effect the target must perform. The chosen strategy is the post-adjustment one (e.g. `per_query(bidirectional)`); the adjustment is *not* folded into the strategy term.
+Trace step (single entry per resolution, per the fold contract): `step(satisfiability, adjusted, [adjustment(build_csr_at_compile_time), unmet_intent(kernel_mode(bidirectional)), reason(no_csr_present_but_buildable)])`. The adjustment is recorded as a *detail field* of the satisfiability step, not as a separate step — this preserves the invariant that each resolution step contributes exactly one trace entry. The target adapter reads the adjustment detail and executes the side-effect (e.g. emitting a build-CSR step into the generated code) before the kernel call.
+
+The chosen strategy is the post-adjustment one (e.g. `per_query(bidirectional)`); the adjustment lives in the trace as detail metadata, *not* folded into the strategy term.
 
 #### `step_caller_wins` — fallback
 
@@ -424,7 +469,12 @@ If `admissible_strategies(Recurrence, [])`, `select_evaluation_strategy/3` throw
 
 ### Intent signals reference an unknown strategy
 
-If `kernel_mode(quantum)` is passed, the selector adds a `step(classify_signals, ..., [unknown_intent(kernel_mode(quantum))])` warning to the trace and treats it as if no kernel_mode signal was present (i.e. skips it). Forward-compat principle: unknown intent should not break compilation, only be ignored with a warning in the trace.
+If `kernel_mode(quantum)` is passed, the selector treats it as if no `kernel_mode` signal was present (i.e. skips it) and records the skip via *two* trace mechanisms:
+
+1. A `step(classify_signals, ..., [unknown_intent(kernel_mode(quantum))])` entry in the trace, for the machine-readable record.
+2. A *prominent* unknown-intent surfacing in the trace renderers: `render_trace_for_stderr/2` emits the unknown-intent warning as a top-level line prefixed `[evaluation-strategy] WARNING:`, *not* buried in a step's details. `format_trace_for_comment/3` includes an `Unknown intents skipped:` line in the comment header when any unknown intents were classified. A typo-caused skip should be impossible to miss when reading either rendering.
+
+Forward-compat principle: unknown intent should not break compilation, only be ignored with prominent warnings so the user notices a typo before relying on the wrong strategy.
 
 ### Multiple cost-model rules tie at the same score
 
@@ -432,9 +482,11 @@ Resolved by the explicit `Priority` argument of `cost_model_rule/6` (higher wins
 
 ### Recurrence properties inconsistent
 
-If `numeric_contraction_rate(R)` with `R >= 1.0`, the selector removes all `fixed_point(...)` strategies from admissibility (as specified above) and proceeds with the remaining admissible strategies. If no strategies remain admissible after this filtering, the previous case ("no admissible strategy") applies.
+If `value_domain(numeric)` AND `numeric_contraction_rate(R)` with `R >= 1.0` (or `R = none`), the selector removes all `fixed_point(...)` strategies from admissibility (as specified above) and proceeds with the remaining admissible strategies. If no strategies remain admissible after this filtering, the previous case ("no admissible strategy") applies.
 
-If `monotone(false)` is combined with intent that requests cross-class auto-selection, the selector honours the intent (caller-wins) but records a warning in the trace that auto-selection across classes is disabled and the chosen strategy may not have its convergence properties verified.
+If `value_domain(combinatorial)` AND `monotone(true)`, `fixed_point` strategies are admissible regardless of contraction rate — combinatorial monotone recurrences over finite lattices terminate by Tarski's theorem.
+
+If `monotone(false)` is combined with intent that requests cross-class auto-selection, the conflict-resolution phase narrows the candidate set to the kernel's primary strategy class (no cross-class auto-selection under non-monotonicity). The trace records the narrowing in the relevant step's details. If the user's intent forces a different class explicitly via `step_caller_wins`, the caller wins but the trace records a warning that auto-selection was disabled and the chosen strategy may not have its convergence properties verified for this recurrence.
 
 ## Versioning and compatibility
 
