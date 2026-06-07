@@ -1655,6 +1655,14 @@ compile_go_step_case(CaseCode) :-
 
 wam_go_case('GetConstant', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        // Dereference before inspecting: the register may hold a *Ref or a
+        // bound *Unbound (bound via the Bindings table), e.g. the tail of a
+        // partial list carried through a recursive call. Without the deref,
+        // isUnbound() sees the raw *Unbound as unbound and rebinds it to the
+        // constant -- silently corrupting an already-bound value (get_constant
+        // [] would overwrite a bound [H|T] tail with []). Mirrors the deref
+        // GetStructure / GetList already do.
+        val = vm.deref(val)
         if isUnbound(val) {
             u := val.(*Unbound)
             vm.bindUnbound(u, i.C)
