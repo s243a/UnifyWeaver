@@ -3658,6 +3658,7 @@ entry:
     i32 129, label %builtin_kill
     i32 130, label %builtin_truncate
     i32 131, label %builtin_chown
+    i32 132, label %builtin_ground
   ]
 
 builtin_is:
@@ -5881,6 +5882,15 @@ co.do:
   %co.ret = call i32 @chown(i8* %co.path, i32 %co.uid, i32 %co.gid)
   %co.ok = icmp eq i32 %co.ret, 0
   ret i1 %co.ok
+
+builtin_ground:
+  ; M117: ground(+Term) -- succeeds iff Term has no unbound
+  ; variables. Walks Term depth-first; atoms, ints, floats and
+  ; bound refs are ground; any unbound ref fails. Compounds
+  ; recurse over their args. wam_is_ground does the work.
+  %gr.t = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gr.r = call i1 @wam_is_ground(%WamState* %vm, %Value %gr.t)
+  ret i1 %gr.r
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -11860,6 +11870,53 @@ tv.ret_acc:
   ret %Value %acc
 }
 
+; M117: recursive ground check. Returns true iff %term contains no
+; unbound variables. Atomic (atom/int/float) -> true; unbound -> false;
+; compound -> recurse over each arg, false if any arg is non-ground.
+define i1 @wam_is_ground(%WamState* %vm, %Value %term) {
+entry:
+  %ig.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %ig.tag = call i32 @value_tag(%Value %ig.t)
+  switch i32 %ig.tag, label %ig.atomic [
+    i32 6, label %ig.unbound
+    i32 3, label %ig.compound
+  ]
+
+ig.atomic:
+  ret i1 true
+
+ig.unbound:
+  ret i1 false
+
+ig.compound:
+  %ig.cp_bits = call i64 @value_payload(%Value %ig.t)
+  %ig.src_cp = inttoptr i64 %ig.cp_bits to %Compound*
+  %ig.ar_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 1
+  %ig.arity = load i32, i32* %ig.ar_slot
+  %ig.args_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 2
+  %ig.src_args = load %Value*, %Value** %ig.args_slot
+  %ig.has = icmp sgt i32 %ig.arity, 0
+  br i1 %ig.has, label %ig.loop, label %ig.true
+
+ig.loop:
+  %ig.i = phi i32 [ 0, %ig.compound ], [ %ig.i_next, %ig.step ]
+  %ig.arg_ptr = getelementptr %Value, %Value* %ig.src_args, i32 %ig.i
+  %ig.arg = load %Value, %Value* %ig.arg_ptr
+  %ig.sub = call i1 @wam_is_ground(%WamState* %vm, %Value %ig.arg)
+  br i1 %ig.sub, label %ig.step, label %ig.false
+
+ig.step:
+  %ig.i_next = add i32 %ig.i, 1
+  %ig.more = icmp slt i32 %ig.i_next, %ig.arity
+  br i1 %ig.more, label %ig.loop, label %ig.true
+
+ig.true:
+  ret i1 true
+
+ig.false:
+  ret i1 false
+}
+
 ; M105: recursive depth-first left-to-right walk that binds each
 ; Unbound variable encountered to a fresh ''$VAR''(N) compound on
 ; the arena. Counter n is threaded through and returned -- caller
@@ -13119,6 +13176,7 @@ builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
 builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
 builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
 builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
+builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound vars.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

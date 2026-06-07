@@ -2232,6 +2232,7 @@ is_builtin_pred(realpath, 2).           % realpath(+Path, -Abs) -- canonical abs
 is_builtin_pred(kill, 2).               % kill(+Pid, +Sig) -- signal 0 = existence check.
 is_builtin_pred(truncate, 2).           % truncate(+Path, +Length) -- set file size.
 is_builtin_pred(chown, 3).              % chown(+Path, +Uid, +Gid) -- change owner.
+is_builtin_pred(ground, 1).             % ground(+Term) -- true iff no unbound vars.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
