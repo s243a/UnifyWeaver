@@ -46,6 +46,7 @@ Create `src/unifyweaver/core/recurrence_evaluation_strategy.pl` with the public 
 - Every exported predicate exists and is type-checked.
 - Calls to `select_evaluation_strategy/3` return the baseline strategy.
 - A smoke test (`tests/core/test_res_skeleton.pl`) verifies the module loads, the baseline strategy is returned, the trace contains the `stub` step, and the determinism contract holds (called inside `if-then-else` succeeds deterministically; called inside `findall/3` returns exactly one solution).
+- **`valid_strategy/1` must check the outer `strategy/1` wrapper, not just the inner `Mode`.** A `Mode` term passed without the outer wrapper (e.g. `per_query(bidirectional)` directly, not `strategy(per_query(bidirectional))`) should fail validation. The test for `valid_strategy/1` includes both positive cases (well-formed `strategy(_)` terms) and negative cases (bare `Mode` terms, malformed wrappers).
 
 ### Estimated effort
 
@@ -62,6 +63,7 @@ Implement `classify_signals/4` and the underlying intent / declared-data / infer
 - `classify_signals/4` implementation reading the dispatch tables.
 - A static dispatch table (Prolog facts) mapping signal functors to one of `intent` / `declared_data` / `inferred_data` plus the signal's source name (caller / manifest / policy / inferred-by-X).
 - Forward-compat behaviour: unknown signal functors go to `InferredDataSignals` with a trace warning (a `step(classify_signals, ..., [unknown_signal(F)])` entry). The selector module does *not* write to stderr; the trace renderer surfaces the warning.
+- **Concatenation of declared-data + inferred-data before calling `apply_cost_model/3`.** The cost-model's data-signals input is the simple list concatenation of declared-data and inferred-data (declared first, then inferred). This concat happens at the call site in `select_evaluation_strategy/3`, not inside `apply_cost_model/3` (which sees a flat list and treats it as its own input). Rules that need to distinguish the two tiers do so by checking individual signal terms against the dispatch table or by reading the signal's `source` attribute if needed; for Phase 2 rules, the confidence-weighting in the scoring sees per-signal tier directly.
 - Unit tests in `tests/core/test_res_signals.pl` covering: every known signal type in each tier, a mix, an unknown signal (verified to land in `inferred_data` with a trace warning), empty workload, only-intent, only-declared-data, only-inferred-data.
 
 ### Scope notes
@@ -91,7 +93,7 @@ Implement the six initial cost-model rules from the [Specification §Phase B](RE
 
 - The six rules as clauses of a `cost_model_rule/6` predicate (signature: `+RuleName, +Priority, +Recurrence, +DataSignals, -Score, -ChosenStrategy`). The rules are *not multifile* — clause-order-dependent tiebreaking across load orders is fragile; the explicit `Priority` argument replaces it. Future rules add a new in-module clause with their own priority.
 - The scoring aggregator: collect all firing rules, score the cumulative preference per candidate strategy (with confidence weighting for inferred signals — see SPEC), pick the highest-scoring strategy. Tiebreak by `Priority` (higher wins); priority-tie broken by lexicographic `RuleName`.
-- `admissible_strategies/2` with the three-condition admissibility test from the SPEC: KernelKind permits + recurrence-convergence permits + monotonicity permits cross-class.
+- `admissible_strategies/2` with the *two-condition* admissibility test from the SPEC: KernelKind permits + termination-guarantee permits. Termination-guarantee logic splits by `value_domain(combinatorial|numeric)` (combinatorial+monotone is sufficient; numeric needs contraction-rate < 1). The monotonicity-cross-class restriction is *not* applied here — it depends on intent context and is applied in Phase C resolution.
 - A kernel-kind-to-strategies static table (Prolog facts) mapping each `KernelKind` to its admissible strategy list. *Maintenance note*: this table must be kept in sync with `recursive_kernel_detection.pl`'s detector registry. Add a TODO comment in both files referencing the other.
 - `apply_cost_model/3` wrapping the above.
 - Unit tests in `tests/core/test_res_cost_model.pl` covering: each rule individually; the SPEC worked-scoring example; rule-interaction cases (multiple rules firing; priority tiebreaks; confidence weighting for inferred-only rules); the contraction-rate-gating of fixed_point strategies; `monotone(false)` restricting cross-class selection.
@@ -168,10 +170,10 @@ Implement `render_trace_for_stderr/2` (produces list of strings) and `format_tra
 - `format_trace_for_comment/3` — returns a multi-line comment string. Takes a `CommentPrefix` argument (`"// "`, `"-- "`, `"% "`, `"# "`, etc.) and prefixes *every* line, not just the first. Critical: `%` (Prolog) and `#` (Python) are line-level comment syntaxes; prefixing only the first line would produce invalid code.
 - Pretty-printer helpers: `strategy_pretty/2`, `signal_pretty/2`, `step_pretty/2`.
 - Unit tests in `tests/core/test_res_trace.pl` covering rendering of each step type plus end-to-end rendering of full traces from the Phase 3 tests.
-- **Round-trip parse test**: for each supported `CommentPrefix`, render a sample trace as a comment, then parse the result with the actual language parser. Specifically:
-  - F# comments parsed with `swipl` skipping `// ` prefix manually; visual-only check insufficient since F# tooling isn't installed in test env.
-  - Prolog comments parsed by `swipl` directly (`read_term/2` after stripping `% ` prefix) — confirms the result is valid Prolog source.
-  - Haskell, Python: visual check plus pattern-match assertions (no language tooling assumed in test env).
+- **Round-trip parse test**: for each supported `CommentPrefix`, render a sample trace as a comment header followed by a minimal valid source body for that language, then feed the full prefixed output to the language's actual parser and verify zero parse errors. Specifically:
+  - **Prolog**: write the rendered comment + a minimal clause (`test_compiled :- true.`) to a `.pl` file; invoke `swipl --halt -g test_compiled -t halt -s <file>` and assert exit code 0. This catches the failure mode where `%` is not prefixed on every line (Prolog `%` is line-level; missing prefix causes a syntax error on the next line).
+  - F# / Haskell / Python: pattern-match assertions on the rendered string (every non-blank line begins with the prefix; no embedded delimiters from the trace text break out of the comment). Full language-parser round-trips are not assumed here because those toolchains aren't available in the Prolog test environment; the Prolog round-trip catches the most failure-prone case (the line-level-comment-syntax languages).
+- **(Earlier-draft note)** A previous version of this test specification incorrectly proposed using `read_term/2` on the *stripped* content of the comment. That doesn't work — the comment body is human-readable text, not Prolog terms; `read_term/2` would fail to parse it. The correct test is the one above: feed the full prefixed output (with comment prefixes intact) to `swipl --halt` as source code, where Prolog's lexer correctly skips comments and the embedded clause body is what gets parsed.
 
 ### Scope notes
 
@@ -183,8 +185,8 @@ Implement `render_trace_for_stderr/2` (produces list of strings) and `format_tra
 ### Success criteria
 
 - Sample traces render as expected in both forms.
-- The Prolog round-trip test parses the rendered comment with `swipl` and confirms valid syntax.
-- The visual-inspection check from the earlier draft is *replaced* by the round-trip test for Prolog; pattern-match assertions cover the other targets where a parser isn't available.
+- The Prolog round-trip test (feed prefixed output + minimal clause body to `swipl --halt`, assert exit 0) catches the missing-line-prefix failure mode.
+- Pattern-match assertions cover F# / Haskell / Python (no language tooling assumed in the test env).
 - The selector module test suite contains zero `format/2` or `write/1` calls outside the explicit renderers — verified by grep in CI.
 
 ### Estimated effort
@@ -202,7 +204,10 @@ Wire `select_evaluation_strategy/3` into `src/unifyweaver/targets/wam_fsharp_tar
 - New module `src/unifyweaver/core/recurrence_inputs.pl` exporting:
   - `build_recurrence_term/3` — constructs the `Recurrence` term from a detected kernel + manifest + relation-policy lookups.
   - `build_workload_signals/2` — gathers caller options + manifest entries + relation-policy declarations + graph stats into a workload list.
-  - **Constraint**: the helper module must remain *target-agnostic*. No F#-specific (Haskell-specific, C-specific) logic. If a target needs target-specific input transformation, it does so before calling the helpers. This is enforced by grep in the test suite (no target atoms `fsharp`/`haskell`/`csharp` in the module body).
+  - **Constraint**: the helper module must remain *target-agnostic*. No F#-specific (Haskell-specific, C-specific) logic. If a target needs target-specific input transformation, it does so before calling the helpers.
+  - **Enforcement (two layers)**:
+    1. **Load-isolation test** — `tests/core/test_recurrence_inputs_isolated.pl` loads `recurrence_inputs.pl` with no target modules loaded (only the core dependencies `recursive_kernel_detection`, `algorithm_manifest`, `relation_policy`, `cost_model`, `cost_function`). The module must load cleanly. If it depends on a target module, loading without target modules will fail. This is a stronger test than grep because it catches transitive dependencies grep misses (e.g. a helper-of-a-helper that imports F#-specific code).
+    2. **Grep check (secondary)** — `tests/core/test_recurrence_inputs_grep.pl` greps for target atoms (`fsharp`, `haskell`, `csharp`, etc.) in the module body. Faster than load-isolation but doesn't catch transitive deps. Kept as a tripwire because grep is cheap.
 - The existing `maybe_upgrade_bidirectional/2` call site in `wam_fsharp_target.pl` replaced with:
   1. Build inputs via `recurrence_inputs:build_recurrence_term/3` and `recurrence_inputs:build_workload_signals/2`.
   2. Call `recurrence_evaluation_strategy:select_evaluation_strategy/3`.
@@ -223,7 +228,9 @@ Wire `select_evaluation_strategy/3` into `src/unifyweaver/targets/wam_fsharp_tar
 - A new variant of the test (`tests/core/test_wam_fsharp_strategy_autoselect_e2e.pl`) calls without explicit `kernel_mode(bidirectional)`, relying on cost-model selection, and produces bidirectional code when the workload signals support it.
 - **Trace-inspection assertion**: the new test reads the generated F# file, parses the comment header, and asserts the trace's `final_decision` step contains `per_query(bidirectional)` and was decided by `prefer_bidirectional_csr_present` (or equivalent rule). This proves the selector was actually invoked, not bypassed.
 - **Stub-leak assertion**: same test asserts that *no* trace step has `Name = stub`. Stub steps from Phase 0 should never appear in real selections; if they do, Phases 1–4 have an incomplete implementation.
-- A unit test in `test_recurrence_inputs.pl` verifies `recurrence_inputs.pl` has no target-specific atoms in its body (grep-based).
+- The load-isolation test (`tests/core/test_recurrence_inputs_isolated.pl`) loads `recurrence_inputs.pl` without any target modules and confirms it loads cleanly. Catches transitive target dependencies.
+- The grep tripwire test (`tests/core/test_recurrence_inputs_grep.pl`) verifies `recurrence_inputs.pl` has no target-specific atoms in its body. Faster than load-isolation; kept as a tripwire for the cases grep catches.
+- **Mock-second-caller test** (`tests/core/test_recurrence_inputs_mock_caller.pl`): a mock caller imitating a hypothetical Haskell-WAM integration exercises `build_recurrence_term/3` and `build_workload_signals/2` with workload signals that have no F# semantics. Catches the failure mode where the helpers were silently shaped by F# as the only first-iteration caller, freezing the API with implicit F#-specific assumptions before the second target validates it. The mock-second-caller doesn't have to *produce* working Haskell code; it just has to exercise the helpers in a way that proves they're not F#-shaped.
 
 ### Estimated effort
 
@@ -330,6 +337,7 @@ Each item is independently work-itemisable. None blocks this iteration.
 | Intent-compatibility matrix drifts from SPEC's matrix table | Low | Phase 3 documents the matrix as the single source of truth; in-code comment points to the SPEC section. |
 | Cross-repo update for book-18 gets forgotten after main-repo PR merges | Medium | Phase 7 opens a companion issue in `UnifyWeaver_Education` immediately on merge, creating the cross-repo tracking link. |
 | The r = diagonal-dominance conjecture turns out to be wrong in a substantive way | Low | The selector treats `r` as an upper-bound estimator; cost rules are robust to small estimator error. If the conjecture is wrong, the cost rules need recalibration, not rearchitecting. Appendix B.13 tracks the theory work. |
+| `recurrence_inputs.pl` shaped by F# as its only first-iteration caller, freezing the API with implicit F#-specific assumptions before the Haskell or C WAM target validates it | Medium | The Phase 5 mock-second-caller test (`test_recurrence_inputs_mock_caller.pl`) exercises the helpers with non-F# workload signals before Haskell-WAM exists as a real consumer. Catches premature F#-shape calcification. The load-isolation test catches a related failure mode (transitive deps on F# modules). |
 
 ## Definition of done
 
