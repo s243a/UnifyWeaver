@@ -25,9 +25,11 @@
 #define WAM_AGGREGATE_STACK_SIZE 32
 #define WAM_AGGREGATE_MAX_WITNESSES 8
 #define WAM_AGGREGATE_META_MAX_VARS 64
+#define WAM_META_GOAL_STACK_SIZE 64
 #define WAM_AGGREGATE_NEXT_GROUP -3
 #define WAM_AGGREGATE_META_COLLECT -4
 #define WAM_AGGREGATE_META_DONE -5
+#define WAM_META_CONJ_RETURN -6
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -64,6 +66,7 @@ typedef struct {
     int stack_size;
     int call_base_top;
     int aggregate_group_top;
+    int conj_top;
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
@@ -118,6 +121,11 @@ typedef struct {
     int group_count;
     int next_group;
 } WamAggregateGroupIterator;
+
+typedef struct {
+    WamValue second_goal;
+    int return_pc;
+} WamConjFrame;
 
 /* Environment Frame */
 typedef struct {
@@ -384,6 +392,8 @@ struct WamState {
     int aggregate_top;
     WamAggregateGroupIterator aggregate_group_iters[WAM_AGGREGATE_STACK_SIZE];
     int aggregate_group_top;
+    WamConjFrame conj_frames[WAM_META_GOAL_STACK_SIZE];
+    int conj_top;
 
     /* Native category_ancestor kernel data */
     CategoryEdge *category_edges;
@@ -859,6 +869,14 @@ static inline void wam_trim_aggregate_group_iters(WamState *state, int target_to
     }
 }
 
+static inline void wam_trim_conj_frames(WamState *state, int target_top) {
+    if (target_top < 0) target_top = 0;
+    if (target_top > state->conj_top) {
+        target_top = state->conj_top;
+    }
+    state->conj_top = target_top;
+}
+
 static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
         state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
@@ -872,6 +890,7 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->stack_size = state->E;
     cp->call_base_top = state->call_base_top;
     cp->aggregate_group_top = state->aggregate_group_top;
+    cp->conj_top = state->conj_top;
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -892,6 +911,7 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->CP = cp->cp;
     state->call_base_top = cp->call_base_top;
     wam_trim_aggregate_group_iters(state, cp->aggregate_group_top);
+    wam_trim_conj_frames(state, cp->conj_top);
     unwind_trail(state, cp->trail_size);
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
@@ -907,13 +927,16 @@ static inline void pop_choice_point(WamState *state) {
 }
 static inline void wam_prune_choice_points(WamState *state, int target_b) {
     int target_group_top = 0;
+    int target_conj_top = 0;
     if (target_b > 0 && target_b <= state->B) {
         target_group_top = state->B_array[target_b - 1].aggregate_group_top;
+        target_conj_top = state->B_array[target_b - 1].conj_top;
     }
     while (state->B > target_b) {
         pop_choice_point(state);
     }
     wam_trim_aggregate_group_iters(state, target_group_top);
+    wam_trim_conj_frames(state, target_conj_top);
 }
 static inline void update_choice_point(WamState *state, int next_pc) {
     if (state->B > 0) {
