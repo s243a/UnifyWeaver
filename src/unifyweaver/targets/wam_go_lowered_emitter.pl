@@ -24,6 +24,7 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_go_target, [
     escape_go_string/2,
@@ -163,7 +164,12 @@ go_supported_structured(I) :- go_supported(I).
 wam_go_lowerable(PI, WamCode, Reason) :-
     go_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
-    (   % No internal ITE: existing deterministic / multi-clause path.
+    (   % T5: multi-clause predicate discriminating on a distinct
+        % first-argument constant lowers to a bound-checked if-cascade over
+        % ALL clauses (no interpreter hop for clauses 2+ when A1 is bound).
+        go_clause_chain_lowerable(Instrs, _Guards)
+    ->  Reason = clause_chain
+    ;   % No internal ITE: existing deterministic / multi-clause path.
         \+ member(try_me_else(_), C1),
         forall(member(I, C1), go_supported(I))
     ->  ( is_deterministic_pred_go(Instrs) -> Reason = deterministic
@@ -185,6 +191,16 @@ clause1_instrs(Instrs, Instrs).
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
 take_to_proceed([I|Rest], [I|More]) :- take_to_proceed(Rest, More).
+
+%% go_clause_chain_lowerable(+Instrs, -Guards) is semidet.
+%  True when the predicate is a distinct-first-argument-constant clause
+%  chain (T5) and every clause's remainder is a supported deterministic
+%  body. Guards is the shared front-end's guard(Const, Remainder) list.
+go_clause_chain_lowerable(Instrs, Guards) :-
+    clause_chain(Instrs, chain(Guards)),
+    forall(member(guard(_, Rem), Guards),
+           ( is_deterministic_pred_go(Rem),
+             forall(member(I, Rem), go_supported(I)) )).
 
 %% is_deterministic_pred_go(+Instrs)
 %  True if the instruction list has no choice point instructions.
@@ -269,18 +285,51 @@ lower_predicate_to_go(PI, WamCode, _Options, GoLines) :-
     go_func_name(Pred/Arity, FuncName),
     go_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1Instrs),
-    % Emit the plain clause-1 when it has no inner choice point; otherwise
-    % fold its ITE block(s) into structured form (ite/3) first.
-    (   \+ member(try_me_else(_), C1Instrs)
-    ->  EmitInstrs = C1Instrs
-    ;   go_structured_clause1(WamCode, EmitInstrs)
-    ),
-    with_output_to(string(Body), emit_instrs(EmitInstrs, "    ")),
-    format(string(Header),
+    (   % T5 first-argument-constant dispatch takes precedence.
+        go_clause_chain_lowerable(Instrs, Guards)
+    ->  emit_clause_chain_go(FuncName, Pred, Arity, Guards, GoLines)
+    ;   % Emit the plain clause-1 when it has no inner choice point;
+        % otherwise fold its ITE block(s) into structured form (ite/3).
+        (   \+ member(try_me_else(_), C1Instrs)
+        ->  EmitInstrs = C1Instrs
+        ;   go_structured_clause1(WamCode, EmitInstrs)
+        ),
+        with_output_to(string(Body), emit_instrs(EmitInstrs, "    ")),
+        format(string(Header),
 '// ~w — lowered from ~w/~w
 func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
+        format(string(Footer), '}', []),
+        GoLines = [Header, Body, Footer]
+    ).
+
+%% emit_clause_chain_go(+FuncName, +Pred, +Arity, +Guards, -GoLines)
+%  Emit T5: deref the first argument once; if it is still unbound, defer to
+%  the entry wrapper's interpreter fallback (the unbound case is genuinely
+%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
+%  bound value against each clause's distinct discriminator and running that
+%  clause's remainder (which self-terminates: its `proceed` emits
+%  `return true`). A bound value matching no clause returns false (the
+%  predicate fails; the wrapper's fresh re-run also fails — sound).
+emit_clause_chain_go(FuncName, Pred, Arity, Guards, GoLines) :-
+    go_reg_idx("A1", A1Idx),
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T5 first-argument dispatch)
+func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    t5a1 := vm.deref(vm.Regs[~w])~n", [A1Idx]),
+          format("    if _, ok := t5a1.(*Unbound); ok { return false }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+          emit_go_guards(Guards),
+          format("    return false~n") )),
     format(string(Footer), '}', []),
     GoLines = [Header, Body, Footer].
+
+emit_go_guards([]).
+emit_go_guards([guard(V, Rem) | Rest]) :-
+    go_val_literal(V, GoVal),
+    format("    if valueEquals(t5a1, ~w) {~n", [GoVal]),
+    emit_instrs(Rem, "        "),
+    format("    }~n"),
+    emit_go_guards(Rest).
 
 %% emit_instrs(+Instrs, +Indent)
 %  Emit Go code for a list of instructions. Detects the WAM if-then-else
