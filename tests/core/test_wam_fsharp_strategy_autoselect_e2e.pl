@@ -1,27 +1,29 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 %
 % test_wam_fsharp_strategy_autoselect_e2e.pl - End-to-end test for
-% the cost-model-driven auto-selection of bidirectional upgrade in
-% the F# WAM target.
+% the cost-model-driven auto-selection path AND the safe-by-default
+% bidirectional emission policy.
 %
-% Phase 5b deliverable. Companion to test_wam_fsharp_bidirectional_e2e.pl
-% (which exercises the EXPLICIT kernel_mode(bidirectional) path).
-% This test exercises the AUTO-SELECT path: the caller does NOT pass
-% kernel_mode(bidirectional) but passes workload signals that trigger
-% the cost model's prefer_bidirectional_csr_present rule.
+% Phase 5b deliverable + bidirectional-not-default fix verification.
+% Companion to test_wam_fsharp_bidirectional_e2e.pl (which exercises
+% the OPT-IN bidirectional emission path via
+% allow_bidirectional_kernel_swap(true)).
 %
-% Verifies the cost-model auto-selection works end-to-end through the
-% Prolog pipeline. Asserts on the generated F# files (kernel template
-% emitted = bidirectional, not category_ancestor) but DOES NOT run
-% dotnet build, because the existing F# code-gen pipeline has a
-% pre-existing bug where Program.fs's kernel call site is not updated
-% when the kernel template is upgraded (same bug breaks the existing
-% test_wam_fsharp_bidirectional_e2e.pl). Once that bug is fixed in a
-% separate PR, the dotnet-build step can be added here.
+% This test exercises the AUTO-SELECT path with the safe default:
+% the caller passes workload signals that trigger the cost-model's
+% prefer_bidirectional_csr_present rule, but does NOT set
+% allow_bidirectional_kernel_swap(true). The cost-model still
+% recommends bidirectional (logged in the trace + the suppression
+% message), but the actual emission stays as category_ancestor —
+% which matches program.fs.mustache's hardcoded benchmark loop and
+% lets the dotnet build SUCCEED.
+%
+% This is the "safe-by-default" behaviour the fix introduces:
+% advisory cost-model decisions don't break the build.
 %
 % Run: swipl -g main -t halt tests/core/test_wam_fsharp_strategy_autoselect_e2e.pl
-% Prerequisites: python3 + lmdb (NO .NET required — build step is
-% explicitly skipped)
+% Prerequisites: python3 + lmdb + .NET 8 SDK (build step IS run
+% as part of the verification)
 
 :- encoding(utf8).
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target',
@@ -87,16 +89,22 @@ main :-
             '.', CsrExit, CsrOut),
     (CsrExit == 0 -> true ; format('CSR build FAILED: ~w~n', [CsrOut]), halt(1)),
 
-    %% Step 3: Generate F# project WITHOUT kernel_mode(bidirectional).
-    %% Include workload signals that trigger prefer_bidirectional_csr_present:
+    %% Step 3: Generate F# project WITHOUT kernel_mode(bidirectional)
+    %% AND WITHOUT allow_bidirectional_kernel_swap(true). Include
+    %% workload signals that would trigger the cost-model's
+    %% prefer_bidirectional_csr_present rule:
     %%   csr_path(CsrDir)            -> csr_available(true) (via build_workload_signals)
     %%   query_pattern(single_pair)  -> direct workload signal
     %%   cardinality(large)          -> direct workload signal
     %%
-    %% Cost model should select per_query(bidirectional) with weighted
-    %% score 3.0 via prefer_bidirectional_csr_present. The F# WAM
-    %% target then upgrades category_ancestor -> bidirectional_ancestor.
-    format('Step 3: Generating F# project with cost-model auto-select (NO kernel_mode option)...~n'),
+    %% Cost model selects per_query(bidirectional) (advisory) but
+    %% the F# WAM target SUPPRESSES the kernel-kind swap by default
+    %% (because allow_bidirectional_kernel_swap(true) is not set).
+    %% The emitted kernel stays as category_ancestor, which is
+    %% consistent with program.fs.mustache's hardcoded benchmark
+    %% loop — so the dotnet build succeeds.
+    format('Step 3: Generating F# project with cost-model preferring bidirectional (default-safe path)...~n'),
+    format('         The [WAM-FSharp] suppression log line above is the expected behaviour.~n'),
     make_directory_path(ProjectDir),
     catch(
         write_wam_fsharp_project(
@@ -106,6 +114,8 @@ main :-
                 csr_path(CsrDir),                  % implies csr_available(true)
                 query_pattern(single_pair),        % cost-model signal
                 cardinality(large),                % cost-model signal
+                %% NO allow_bidirectional_kernel_swap(true) —
+                %% testing the safe default
                 module_name('uw_autoselect_e2e')
             ],
             ProjectDir),
@@ -113,52 +123,43 @@ main :-
         ( format('F# project generation FAILED: ~w~n', [GenError]), halt(1) )
     ),
 
-    %% Step 4: Verify the cost-model selected bidirectional. The
-    %% generated WamRuntime.fs should contain nativeKernel_bidirectional_ancestor
-    %% (proves the upgrade happened) and should NOT contain
-    %% nativeKernel_category_ancestor (proves the unupgraded kernel
-    %% template was displaced).
-    format('Step 4: Verifying auto-select chose bidirectional...~n'),
+    %% Step 4: Verify the SAFE-DEFAULT path. The generated WamRuntime.fs
+    %% should contain nativeKernel_category_ancestor (proves the
+    %% suppression worked) and should NOT contain
+    %% nativeKernel_bidirectional_ancestor (proves the upgrade was
+    %% NOT applied).
+    format('Step 4: Verifying safe-default emission (category_ancestor, NOT bidirectional)...~n'),
     directory_file_path(ProjectDir, 'WamRuntime.fs', WamRuntimePath),
     read_file_to_string(WamRuntimePath, WamRuntimeSource, []),
 
-    %% Positive assertion: bidirectional kernel template emitted
-    (   sub_string(WamRuntimeSource, _, _, _, "nativeKernel_bidirectional_ancestor")
-    ->  format('  [PASS] WamRuntime.fs contains nativeKernel_bidirectional_ancestor~n')
-    ;   format('  [FAIL] WamRuntime.fs does NOT contain nativeKernel_bidirectional_ancestor~n'),
-        format('         (cost-model did NOT auto-select bidirectional)~n'),
+    %% Positive assertion: category_ancestor kernel template emitted
+    (   sub_string(WamRuntimeSource, _, _, _, "nativeKernel_category_ancestor")
+    ->  format('  [PASS] WamRuntime.fs contains nativeKernel_category_ancestor (safe default)~n')
+    ;   format('  [FAIL] WamRuntime.fs does NOT contain nativeKernel_category_ancestor~n'),
+        format('         (suppression did NOT keep the safe default emission)~n'),
         halt(1)
     ),
 
-    %% Negative assertion: un-upgraded category_ancestor kernel
-    %% template is not also emitted. (If both were present, the
-    %% upgrade would be ambiguous.)
-    (   sub_string(WamRuntimeSource, _, _, _, "let nativeKernel_category_ancestor")
-    ->  format('  [FAIL] WamRuntime.fs ALSO contains let nativeKernel_category_ancestor~n'),
-        format('         (upgrade was supposed to displace it)~n'),
+    %% Negative assertion: bidirectional kernel template NOT emitted
+    (   sub_string(WamRuntimeSource, _, _, _, "let nativeKernel_bidirectional_ancestor")
+    ->  format('  [FAIL] WamRuntime.fs contains let nativeKernel_bidirectional_ancestor~n'),
+        format('         (the kernel-kind swap was supposed to be suppressed by default)~n'),
         halt(1)
-    ;   format('  [PASS] WamRuntime.fs does NOT contain unupgraded category_ancestor kernel template~n')
+    ;   format('  [PASS] WamRuntime.fs does NOT contain bidirectional kernel template (correctly suppressed)~n')
     ),
 
-    %% Step 5: NOTE — dotnet build step is intentionally SKIPPED.
-    %%
-    %% The companion test_wam_fsharp_bidirectional_e2e.pl runs the
-    %% build and currently fails with:
-    %%   Program.fs(260,24): error FS0039: The value or constructor
-    %%   'nativeKernel_category_ancestor' is not defined.
-    %%
-    %% This is a pre-existing bug in the F# code-gen pipeline where
-    %% Program.fs's kernel call site uses the unupgraded kernel name
-    %% even when the kernel template was upgraded. The bug exists
-    %% independent of the strategy-selector work (verified by running
-    %% the existing test on the commit before Phase 5a merged — same
-    %% error).
-    %%
-    %% Once that bug is fixed in a separate PR, this test should be
-    %% extended to run the dotnet build and execute the resulting
-    %% binary against the LMDB fixture, matching the bidir-e2e test's
-    %% pattern.
-    format('Step 5: Dotnet build SKIPPED (pre-existing Program.fs bug — see test header)~n'),
+    %% Step 5: Actually run dotnet build — with the safe default
+    %% (category_ancestor in both WamRuntime.fs and Program.fs),
+    %% the build should succeed.
+    format('Step 5: Running dotnet build (should succeed with safe default)...~n'),
+    run_cmd(dotnet,
+            ['build', '--nologo', '-v', 'minimal', '-c', 'Release'],
+            ProjectDir, BuildExit, BuildOut),
+    (   BuildExit == 0
+    ->  format('  [PASS] dotnet build succeeded — safe default produces a buildable F# project~n')
+    ;   format('  [FAIL] dotnet build FAILED:~n~w~n', [BuildOut]),
+        halt(1)
+    ),
 
     %% Cleanup
     catch(delete_directory_and_contents(LmdbDir), _, true),
@@ -166,6 +167,7 @@ main :-
     catch(delete_directory_and_contents(ProjectDir), _, true),
 
     format('~n========================================~n'),
-    format('Auto-select e2e PASSED~n'),
-    format('Cost-model auto-selected bidirectional upgrade without explicit kernel_mode option~n'),
+    format('Auto-select + safe-default e2e PASSED~n'),
+    format('Cost-model preferred bidirectional but the swap was suppressed by default;~n'),
+    format('the emitted F# project built successfully with category_ancestor.~n'),
     format('========================================~n').
