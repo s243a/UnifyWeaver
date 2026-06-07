@@ -41,6 +41,7 @@
 :- use_module(library(lists)).
 :- use_module('../core/binding_state_analysis').
 :- use_module('../core/demand_analysis').
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 % =====================================================================
 % Emission plan
@@ -88,7 +89,44 @@ skippable_prefix_line(["switch_on_structure"|_]).
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
     wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]), !,
     take_multi_clause_lines(Rest, Clauses).
+% Soft-cut block: a single-clause if-then-else / negation / once. Its
+% try_me_else is internal (preceded by the shared head-arg setup), not a
+% clause separator, so the first real instruction is NOT try_me_else and
+% the multi_clause_n clause above does not fire. Fold it through the shared
+% structurer into ite(Cond,Then,Else) terms.
+classify_clause_shape(Lines, plan(ite, none, Structured)) :-
+    r_parse_terms(Lines, Terms),
+    structure_ite(Terms, Structured),
+    member(ite(_, _, _), Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    !.
 classify_clause_shape(Lines, plan(deterministic, none, Lines)).
+
+% --- Label-preserving term parse (for the shared structurer) -------------
+% Each WAM line becomes a structural term the structurer understands
+% (try_me_else/trust_me/jump/cut_ite/label and the !/0-commit builtin_call),
+% or an opaque line(Parts) leaf that emit_line_parts/2 renders unchanged.
+r_parse_terms([], []).
+r_parse_terms([Line|Rest], Terms) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  r_parse_terms(Rest, Terms)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelName),
+        Terms = [label(LabelName)|More],
+        r_parse_terms(Rest, More)
+    ;   r_line_term(Parts, T),
+        Terms = [T|More],
+        r_parse_terms(Rest, More)
+    ).
+
+r_line_term(["try_me_else", L], try_me_else(L)) :- !.
+r_line_term(["trust_me"], trust_me) :- !.
+r_line_term(["jump", L], jump(L)) :- !.
+r_line_term(["cut_ite"], cut_ite) :- !.
+r_line_term(["builtin_call", Op, Ar], builtin_call(Op, Ar)) :- !.
+r_line_term(Parts, line(Parts)).
 
 % Multi-clause WAM emitted by the shared compiler has the shape:
 %   try_me_else L2, clause1..., L2:, retry_me_else L3, clause2...,
@@ -157,13 +195,27 @@ terminal_clause_parts(["execute", _, _]).
 %  is decided against the emission-plan's clause lines.
 wam_r_lowerable(_PI, WamCode, Reason) :-
     catch(build_emission_plan(WamCode, plan(Mode, _, ClauseData)), _, fail),
-    emission_plan_lines(Mode, ClauseData, Lines),
-    forall(member(Line, Lines), line_supported(Line)),
+    (   Mode == ite
+    ->  forall(member(I, ClauseData), r_struct_supported(I))
+    ;   emission_plan_lines(Mode, ClauseData, Lines),
+        forall(member(Line, Lines), line_supported(Line))
+    ),
     Reason = Mode.
 
 emission_plan_lines(deterministic, Lines, Lines).
 emission_plan_lines(multi_clause_n, Clauses, Lines) :-
     append(Clauses, Lines).
+
+%% r_struct_supported(+StructuredInstr) -- recurse through ite/3; each leaf
+%  must be an instruction emit_struct_r/2 can render.
+r_struct_supported(ite(C, T, E)) :- !,
+    forall(member(I, C), r_struct_supported(I)),
+    forall(member(I, T), r_struct_supported(I)),
+    forall(member(I, E), r_struct_supported(I)).
+r_struct_supported(builtin_call(_, _)) :- !.
+r_struct_supported(line(Parts)) :- !,
+    ( Parts == [] -> true ; parts_supported(Parts) ).
+r_struct_supported(_) :- fail.
 
 line_supported(Line) :-
     wam_r_target:tokenize_wam_line(Line, Parts),
@@ -260,11 +312,61 @@ lower_predicate_to_r(PI, WamCode, Opts,
     (   Mode == deterministic
     ->  emit_deterministic_function(PredName, FuncName, ClauseLines,
                                     ModeHeader, Code)
+    ;   Mode == ite
+    ->  emit_ite_function(PredName, FuncName, ClauseLines, ModeHeader, Code)
     ;   Mode == multi_clause_n
     ->  emit_multi_clause_function(PredName, FuncName, ClauseLines,
                                    ModeHeader, Code)
     ),
     clear_lowered_mode_context.
+
+% If-then-else / negation / once. Same wrapper as the deterministic case,
+% but the body is the structured term list rendered by emit_struct_r/2.
+% R's bind always trails, so undoing the trail to the pre-condition mark
+% before the else branch restores any partial bindings the condition made
+% (no register snapshot needed; mirrors the Rust/Lua emitters). R `{}`
+% blocks do not introduce a scope, so each ite uses a counter-suffixed
+% mark/cond variable to stay safe under nesting and sequencing.
+emit_ite_function(PredName, FuncName, Structured, ModeHeader, Code) :-
+    reset_x_reg_states,
+    b_setval(wam_r_ite_ctr, 0),
+    with_output_to(string(Body), emit_struct_r(Structured, "  ")),
+    format(string(Code),
+'~w# Lowered: ~w  (if-then-else / negation / once)
+~w <- function(program, state) {
+~w  invisible(TRUE)
+}', [ModeHeader, PredName, FuncName, Body]).
+
+fresh_r_ite(N) :-
+    ( catch(b_getval(wam_r_ite_ctr, N0), _, N0 = 0) -> true ; N0 = 0 ),
+    N is N0 + 1,
+    b_setval(wam_r_ite_ctr, N).
+
+emit_struct_r([], _).
+emit_struct_r([Item|Rest], Ind) :-
+    emit_struct_item_r(Item, Ind),
+    emit_struct_r(Rest, Ind).
+
+emit_struct_item_r(ite(Cond, Then, Else), Ind) :- !,
+    fresh_r_ite(N),
+    string_concat(Ind, "  ", I2),
+    format("~w{~n", [Ind]),
+    format("~w  ite_mark_~w <- length(state$trail)~n", [Ind, N]),
+    format("~w  ite_cond_~w <- (function() {~n", [Ind, N]),
+    emit_struct_r(Cond, I2),
+    format("~w    TRUE~n", [Ind]),
+    format("~w  })()~n", [Ind]),
+    format("~w  if (isTRUE(ite_cond_~w)) {~n", [Ind, N]),
+    emit_struct_r(Then, I2),
+    format("~w  } else {~n", [Ind]),
+    format("~w    WamRuntime$undo_trail_to(state, ite_mark_~w)~n", [Ind, N]),
+    emit_struct_r(Else, I2),
+    format("~w  }~n", [Ind]),
+    format("~w}~n", [Ind]).
+emit_struct_item_r(builtin_call(Op, Ar), Ind) :- !,
+    emit_line_parts(["builtin_call", Op, Ar], Ind).
+emit_struct_item_r(line(Parts), Ind) :- !,
+    emit_line_parts(Parts, Ind).
 
 %% set_lowered_mode_context(+Records, +Opts) is det.
 %  Stashes clause 1's `:- mode/1` declaration on a non-backtrackable
@@ -601,10 +703,20 @@ emit_line_parts(["execute", Pred, ArityStr], I) :- !,
 % heap-build state machine, no deref, no unify. The R generated for
 % them is the same code WamRuntime$step would have run, just inline.
 
+% allocate / deallocate must mirror the interpreter's frame layout: Y
+% registers (idx >= 201) live in the frame's `ys` environment, which
+% WamRuntime$put_reg/get_reg read/write, and cut consults `cps_barrier`.
+% The previous emit used a `locals` field with no `ys`, so any lowered
+% predicate with an environment frame (every if-then-else, and any
+% deterministic clause with permanent vars) crashed on the first Y-register
+% access. Deallocate retains the popped frame as `shadow_frame` so a Y read
+% after deallocate (the SWI emit's Call;Deallocate;PutValue Y_n;... shape)
+% still sees the body's writes — matching the interpreter's Deallocate.
 emit_line_parts(["allocate"], I) :- !,
-    format("~wstate$stack <- c(state$stack, list(list(cp = state$cp, locals = new.env(parent = emptyenv()))))~n", [I]).
+    format("~wstate$stack <- c(state$stack, list(list(cp = state$cp, ys = new.env(parent = emptyenv(), hash = TRUE), cps_barrier = state$pending_call_barrier)))~n", [I]),
+    format("~wstate$shadow_frame <- NULL~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,
-    format("~w{ n_ <- length(state$stack); if (n_ > 0L) { state$cp <- state$stack[[n_]]$cp; state$stack <- state$stack[-n_] } }~n", [I]).
+    format("~w{ n_ <- length(state$stack); if (n_ > 0L) { frame_ <- state$stack[[n_]]; state$cp <- frame_$cp; state$shadow_frame <- frame_; state$stack <- state$stack[-n_] } }~n", [I]).
 emit_line_parts(["put_constant", CStr, RegStr], I) :- !,
     wam_r_target:reg_to_int(RegStr, RegIdx),
     wam_r_target:constant_to_r_term(CStr, CTerm),
