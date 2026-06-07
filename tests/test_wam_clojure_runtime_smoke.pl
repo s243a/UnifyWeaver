@@ -135,6 +135,11 @@
 :- dynamic user:wam_intersection_duplicates/0.
 :- dynamic user:wam_intersection_bad_left/1.
 :- dynamic user:wam_intersection_bad_right/1.
+:- dynamic user:wam_union_guard/3.
+:- dynamic user:wam_union_empty_left/0.
+:- dynamic user:wam_union_duplicates/0.
+:- dynamic user:wam_union_bad_left/1.
+:- dynamic user:wam_union_bad_right/1.
 :- dynamic user:wam_list_to_set_guard/2.
 :- dynamic user:wam_list_to_set_empty/0.
 :- dynamic user:wam_list_to_set_singleton/0.
@@ -476,6 +481,11 @@ user:wam_intersection_empty_left :- intersection([], [a], Common), Common = [].
 user:wam_intersection_duplicates :- intersection([a,a,b,c], [a,c], Common), Common = [a,a,c].
 user:wam_intersection_bad_left(_) :- intersection([a|b], [a], _).
 user:wam_intersection_bad_right(_) :- intersection([a], [a|b], _).
+user:wam_union_guard(Left, Right, Union) :- union(Left, Right, Union).
+user:wam_union_empty_left :- union([], [a,b], Union), Union = [a,b].
+user:wam_union_duplicates :- union([a,a], [a,b], Union), Union = [a,a,b].
+user:wam_union_bad_left(_) :- union([a|b], [a], _).
+user:wam_union_bad_right(_) :- union([a], [a|b], _).
 user:wam_list_to_set_guard(List, Set) :- list_to_set(List, Set).
 user:wam_list_to_set_empty :- list_to_set([], Set), Set = [].
 user:wam_list_to_set_singleton :- list_to_set([x], Set), Set = [x].
@@ -822,6 +832,11 @@ run_smoke :-
           user:wam_intersection_duplicates/0,
           user:wam_intersection_bad_left/1,
           user:wam_intersection_bad_right/1,
+          user:wam_union_guard/3,
+          user:wam_union_empty_left/0,
+          user:wam_union_duplicates/0,
+          user:wam_union_bad_left/1,
+          user:wam_union_bad_right/1,
           user:wam_list_to_set_guard/2,
           user:wam_list_to_set_empty/0,
           user:wam_list_to_set_singleton/0,
@@ -1070,6 +1085,7 @@ run_smoke :-
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_subtract_builtin_emitted(TmpDir),
     assert_lowered_intersection_builtin_emitted(TmpDir),
+    assert_lowered_union_builtin_emitted(TmpDir),
     assert_lowered_list_to_set_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
@@ -1321,6 +1337,12 @@ smoke_cases([
     case('wam_intersection_duplicates/0', no_args, "true"),
     case('wam_intersection_bad_left/1', a, "false"),
     case('wam_intersection_bad_right/1', a, "false"),
+    case('wam_union_guard/3', args('[a,b]', '[b,c]', '[a,b,c]'), "true"),
+    case('wam_union_guard/3', args('[a,b]', '[b,c]', '[b,c]'), "false"),
+    case('wam_union_empty_left/0', no_args, "true"),
+    case('wam_union_duplicates/0', no_args, "true"),
+    case('wam_union_bad_left/1', a, "false"),
+    case('wam_union_bad_right/1', a, "false"),
     case('wam_list_to_set_guard/2', args('[a,b,c,a,b,d,a]', '[a,b,c,d]'), "true"),
     case('wam_list_to_set_guard/2', args('[a,b,c,a,b,d,a]', '[a,b,c,a]'), "false"),
     case('wam_list_to_set_empty/0', no_args, "true"),
@@ -1853,6 +1875,15 @@ assert_lowered_intersection_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-intersection-bad-left-1"),
     has(CoreCode, "defn lowered-wam-intersection-bad-right-1"),
     has(CoreCode, "runtime/apply-intersection-solution").
+
+assert_lowered_union_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-union-guard-3"),
+    has(CoreCode, "defn lowered-wam-union-duplicates-0"),
+    has(CoreCode, "defn lowered-wam-union-bad-left-1"),
+    has(CoreCode, "defn lowered-wam-union-bad-right-1"),
+    has(CoreCode, "runtime/apply-union-solution").
 
 assert_lowered_list_to_set_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
