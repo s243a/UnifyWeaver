@@ -55,6 +55,7 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module('../targets/wam_scala_target', [
        scala_lowered_constant_term/2,
        scala_lowered_functor_arity/3,
@@ -237,7 +238,15 @@ structured_clause1_scala(WamCode, Structured) :-
 wam_scala_lowerable(_PI, WamCode, Reason) :-
     parse_wam_text_scala(WamCode, Instrs),
     clause1_instrs_scala(Instrs, C1, MultiClause),
-    (   is_deterministic_pred_scala(C1),
+    (   % T5: a multi-clause predicate that discriminates on a distinct
+        % first-argument constant lowers to a bound-checked if/else cascade
+        % over ALL clauses (no interpreter hop for clauses 2+ when A1 is
+        % bound). Takes precedence over multi_clause_1. Each clause's
+        % remainder must itself be a supported deterministic body.
+        MultiClause == true,
+        scala_clause_chain_lowerable(Instrs, _Guards)
+    ->  Reason = clause_chain
+    ;   is_deterministic_pred_scala(C1),
         forall(member(I, C1), scala_supported(I))
     ->  ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause )
     ;   % Clause-1 has an inner choice point. Lower it only if that point is
@@ -249,6 +258,16 @@ wam_scala_lowerable(_PI, WamCode, Reason) :-
         structured_supported_scala(Structured),
         Reason = ite_lowered
     ).
+
+%% scala_clause_chain_lowerable(+Instrs, -Guards) is semidet.
+%  True when the predicate is a distinct-first-argument-constant clause
+%  chain (T5) AND every clause's remainder is a supported deterministic
+%  body. Guards is the chain front-end's guard(Const, Remainder) list.
+scala_clause_chain_lowerable(Instrs, Guards) :-
+    clause_chain(Instrs, chain(Guards)),
+    forall(member(guard(_, Rem), Guards),
+           ( is_deterministic_pred_scala(Rem),
+             forall(member(I, Rem), scala_supported(I)) )).
 
 %% clause1_instrs_scala(+Instrs, -Clause1, -MultiClause)
 %  Extracts clause 1.  MultiClause is `true` when the predicate opens
@@ -360,15 +379,52 @@ lower_predicate_to_scala(PI, WamCode, Options, lowered(PredName, FuncName, Code)
     ->  maplist(foreign_key_atom, FK0, ForeignKeys)
     ;   ForeignKeys = []
     ),
-    % Emit from the plain clause-1 when it is already fully supported;
-    % otherwise fold its inner ITE block(s) into structured form first.
-    (   is_deterministic_pred_scala(C1),
-        forall(member(I, C1), scala_supported(I))
-    ->  EmitBody = C1
-    ;   structured_clause1_scala(WamCode, EmitBody)
+    % T5 first-argument-constant clause chain takes precedence; otherwise
+    % emit from the plain clause-1 when fully supported, else fold its inner
+    % ITE block(s) into structured form first.
+    (   scala_clause_chain_lowerable(Instrs, Guards)
+    ->  with_output_to(string(Code),
+            emit_clause_chain_scala(FuncName, Guards, ForeignKeys))
+    ;   (   is_deterministic_pred_scala(C1),
+            forall(member(I, C1), scala_supported(I))
+        ->  EmitBody = C1
+        ;   structured_clause1_scala(WamCode, EmitBody)
+        ),
+        with_output_to(string(Code),
+            emit_function_scala(FuncName, EmitBody, MultiClause, ForeignKeys))
+    ).
+
+%% emit_clause_chain_scala(+FuncName, +Guards, +ForeignKeys)
+%  Emit T5: deref the first argument once; if it is still unbound, defer to
+%  the entry wrapper's interpreter fallback (the unbound case is genuinely
+%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
+%  bound value against each clause's distinct discriminator and running that
+%  clause's remainder. A bound value matching no clause returns false (the
+%  predicate fails; the wrapper's fresh re-run also fails — sound).
+emit_clause_chain_scala(FuncName, Guards, FK) :-
+    nb_setval(scala_ite_ctr, 0),
+    format("  /** ~w — T5 first-argument dispatch (generated); entry wrapper handles the unbound-A1 fallback. */~n", [FuncName]),
+    format("  def ~w(s: WamState, program: WamProgram): Boolean = {~n", [FuncName]),
+    format("    val t5a1 = WamRuntime.deref(s.bindings, WamRuntime.getReg(s, 1))~n", []),
+    format("    t5a1 match {~n", []),
+    format("      case Ref(_) => return false  // unbound first arg: defer to interpreter (enumerates all clauses)~n", []),
+    format("      case _ => ()~n", []),
+    format("    }~n", []),
+    emit_guards_scala(Guards, FK),
+    format("    false~n", []),
+    format("  }~n", []).
+
+emit_guards_scala([], _).
+emit_guards_scala([guard(V, Rem) | Rest], FK) :-
+    scala_lowered_constant_term(V, Term),
+    format("    if (t5a1 == ~w) {~n", [Term]),
+    emit_body_scala(Rem, "      ", FK),
+    (   body_falls_through(Rem)
+    ->  format("      return true~n", [])
+    ;   true
     ),
-    with_output_to(string(Code),
-        emit_function_scala(FuncName, EmitBody, MultiClause, ForeignKeys)).
+    format("    }~n", []),
+    emit_guards_scala(Rest, FK).
 
 foreign_key_atom(K, A) :- ( atom(K) -> A = K ; atom_string(A, K) ).
 
