@@ -3661,6 +3661,7 @@ entry:
     i32 132, label %builtin_ground
     i32 133, label %builtin_file_base_name
     i32 134, label %builtin_file_directory_name
+    i32 135, label %builtin_file_name_extension
   ]
 
 builtin_is:
@@ -6036,6 +6037,167 @@ fdn.unify:
   %fdn.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %fdn.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fdn.raw2, %Value %fdn.v)
   ret i1 %fdn.ok
+
+builtin_file_name_extension:
+  ; M119: file_name_extension(?Base, ?Ext, ?File)
+  ; Two modes:
+  ;  - Reverse (split): File is Atom -> scan basename for last ''.''
+  ;    (skipping leading dots and not crossing ''/'' boundary). If
+  ;    found, unify Base with prefix and Ext with suffix. Otherwise
+  ;    Base = File, Ext = '''' (empty atom).
+  ;  - Forward (join): Base and Ext are both Atom -> File = Base
+  ;    ++ ''.'' ++ Ext, or just Base if Ext is empty.
+  ; Insufficient instantiation (e.g. File var with Base or Ext var)
+  ; fails. SWI semantics: dot at position 0 of the path or
+  ; immediately after a ''/'' (leading-dot / hidden-file convention)
+  ; is NOT an extension separator.
+  %fne.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fne.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %fne.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %fne.t3 = call i32 @value_tag(%Value %fne.a3)
+  %fne.is_atom3 = icmp eq i32 %fne.t3, 0
+  br i1 %fne.is_atom3, label %fne.split, label %fne.try_join
+fne.try_join:
+  %fne.t1 = call i32 @value_tag(%Value %fne.a1)
+  %fne.is_atom1 = icmp eq i32 %fne.t1, 0
+  %fne.t2 = call i32 @value_tag(%Value %fne.a2)
+  %fne.is_atom2 = icmp eq i32 %fne.t2, 0
+  %fne.both = and i1 %fne.is_atom1, %fne.is_atom2
+  br i1 %fne.both, label %fne.join, label %fne.fail
+fne.fail:
+  ret i1 false
+
+fne.split:
+  %fne.f_aid = call i64 @value_payload(%Value %fne.a3)
+  %fne.f_str = call i8* @wam_atom_to_string(i64 %fne.f_aid)
+  %fne.f_null = icmp eq i8* %fne.f_str, null
+  br i1 %fne.f_null, label %fne.fail, label %fne.scan_init
+fne.scan_init:
+  %fne.f_len = call i64 @strlen(i8* %fne.f_str)
+  %fne.i_init = sub i64 %fne.f_len, 1
+  %fne.has_loop = icmp sgt i64 %fne.f_len, 1
+  br i1 %fne.has_loop, label %fne.scan, label %fne.no_ext
+
+fne.scan:
+  %fne.i = phi i64 [ %fne.i_init, %fne.scan_init ], [ %fne.i_dec, %fne.step ]
+  %fne.cp = getelementptr i8, i8* %fne.f_str, i64 %fne.i
+  %fne.c = load i8, i8* %fne.cp
+  %fne.is_slash = icmp eq i8 %fne.c, 47
+  br i1 %fne.is_slash, label %fne.no_ext, label %fne.maybe_dot
+fne.maybe_dot:
+  %fne.is_dot = icmp eq i8 %fne.c, 46
+  br i1 %fne.is_dot, label %fne.check_prev, label %fne.step
+fne.check_prev:
+  ; Reject leading dots (path[i-1] == ''/'' or i == 0). Loop bounds
+  ; ensure i >= 1, so prev is in range.
+  %fne.prev_idx = sub i64 %fne.i, 1
+  %fne.prev_cp = getelementptr i8, i8* %fne.f_str, i64 %fne.prev_idx
+  %fne.prev_c = load i8, i8* %fne.prev_cp
+  %fne.prev_is_slash = icmp eq i8 %fne.prev_c, 47
+  br i1 %fne.prev_is_slash, label %fne.step, label %fne.found
+fne.step:
+  %fne.done = icmp eq i64 %fne.i, 1
+  %fne.i_dec = sub i64 %fne.i, 1
+  br i1 %fne.done, label %fne.no_ext, label %fne.scan
+
+fne.found:
+  ; Dot at i. Base = [0..i), Ext = [i+1..f_len).
+  call void @wam_arena_ensure()
+  %fne.base_buflen = add i64 %fne.i, 1
+  %fne.base_buf = call i8* @wam_arena_alloc(i64 %fne.base_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.base_buf, i8* %fne.f_str, i64 %fne.i, i1 false)
+  %fne.base_term = getelementptr i8, i8* %fne.base_buf, i64 %fne.i
+  store i8 0, i8* %fne.base_term
+  %fne.base_aid = call i64 @wam_intern_atom(i8* %fne.base_buf, i64 %fne.i)
+  %fne.ext_off = add i64 %fne.i, 1
+  %fne.ext_start = getelementptr i8, i8* %fne.f_str, i64 %fne.ext_off
+  %fne.ext_len = sub i64 %fne.f_len, %fne.ext_off
+  %fne.ext_buflen = add i64 %fne.ext_len, 1
+  %fne.ext_buf = call i8* @wam_arena_alloc(i64 %fne.ext_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.ext_buf, i8* %fne.ext_start, i64 %fne.ext_len, i1 false)
+  %fne.ext_term = getelementptr i8, i8* %fne.ext_buf, i64 %fne.ext_len
+  store i8 0, i8* %fne.ext_term
+  %fne.ext_aid = call i64 @wam_intern_atom(i8* %fne.ext_buf, i64 %fne.ext_len)
+  br label %fne.split_unify
+
+fne.no_ext:
+  ; Base = whole File, Ext = ''.
+  call void @wam_arena_ensure()
+  %fne.f_buflen = add i64 %fne.f_len, 1
+  %fne.f_buf = call i8* @wam_arena_alloc(i64 %fne.f_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.f_buf, i8* %fne.f_str, i64 %fne.f_len, i1 false)
+  %fne.f_term = getelementptr i8, i8* %fne.f_buf, i64 %fne.f_len
+  store i8 0, i8* %fne.f_term
+  %fne.f_aid_new = call i64 @wam_intern_atom(i8* %fne.f_buf, i64 %fne.f_len)
+  %fne.e_buf = call i8* @wam_arena_alloc(i64 1)
+  store i8 0, i8* %fne.e_buf
+  %fne.e_aid = call i64 @wam_intern_atom(i8* %fne.e_buf, i64 0)
+  br label %fne.split_unify
+
+fne.split_unify:
+  %fne.s_base_aid = phi i64 [ %fne.base_aid, %fne.found ], [ %fne.f_aid_new, %fne.no_ext ]
+  %fne.s_ext_aid = phi i64 [ %fne.ext_aid, %fne.found ], [ %fne.e_aid, %fne.no_ext ]
+  %fne.s_base_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.s_base_v = insertvalue %Value %fne.s_base_v0, i64 %fne.s_base_aid, 1
+  %fne.s_ext_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.s_ext_v = insertvalue %Value %fne.s_ext_v0, i64 %fne.s_ext_aid, 1
+  %fne.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fne.base_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.raw1, %Value %fne.s_base_v)
+  br i1 %fne.base_ok, label %fne.split_unify_ext, label %fne.fail
+fne.split_unify_ext:
+  %fne.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fne.ext_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.raw2, %Value %fne.s_ext_v)
+  ret i1 %fne.ext_ok
+
+fne.join:
+  %fne.j_base_aid = call i64 @value_payload(%Value %fne.a1)
+  %fne.j_base_str = call i8* @wam_atom_to_string(i64 %fne.j_base_aid)
+  %fne.j_b_null = icmp eq i8* %fne.j_base_str, null
+  br i1 %fne.j_b_null, label %fne.fail, label %fne.join_have_base
+fne.join_have_base:
+  %fne.j_ext_aid = call i64 @value_payload(%Value %fne.a2)
+  %fne.j_ext_str = call i8* @wam_atom_to_string(i64 %fne.j_ext_aid)
+  %fne.j_e_null = icmp eq i8* %fne.j_ext_str, null
+  br i1 %fne.j_e_null, label %fne.fail, label %fne.join_lens
+fne.join_lens:
+  %fne.j_base_len = call i64 @strlen(i8* %fne.j_base_str)
+  %fne.j_ext_len = call i64 @strlen(i8* %fne.j_ext_str)
+  %fne.j_ext_empty = icmp eq i64 %fne.j_ext_len, 0
+  br i1 %fne.j_ext_empty, label %fne.join_only_base, label %fne.join_full
+
+fne.join_only_base:
+  call void @wam_arena_ensure()
+  %fne.j_only_buflen = add i64 %fne.j_base_len, 1
+  %fne.j_only_buf = call i8* @wam_arena_alloc(i64 %fne.j_only_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_only_buf, i8* %fne.j_base_str, i64 %fne.j_base_len, i1 false)
+  %fne.j_only_term = getelementptr i8, i8* %fne.j_only_buf, i64 %fne.j_base_len
+  store i8 0, i8* %fne.j_only_term
+  %fne.j_only_aid = call i64 @wam_intern_atom(i8* %fne.j_only_buf, i64 %fne.j_base_len)
+  br label %fne.join_unify
+
+fne.join_full:
+  call void @wam_arena_ensure()
+  %fne.j_full_len_pre = add i64 %fne.j_base_len, 1
+  %fne.j_full_len = add i64 %fne.j_full_len_pre, %fne.j_ext_len
+  %fne.j_full_buflen = add i64 %fne.j_full_len, 1
+  %fne.j_full_buf = call i8* @wam_arena_alloc(i64 %fne.j_full_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_full_buf, i8* %fne.j_base_str, i64 %fne.j_base_len, i1 false)
+  %fne.j_dot_off = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_base_len
+  store i8 46, i8* %fne.j_dot_off
+  %fne.j_ext_off = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_full_len_pre
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_ext_off, i8* %fne.j_ext_str, i64 %fne.j_ext_len, i1 false)
+  %fne.j_full_term = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_full_len
+  store i8 0, i8* %fne.j_full_term
+  %fne.j_full_aid = call i64 @wam_intern_atom(i8* %fne.j_full_buf, i64 %fne.j_full_len)
+  br label %fne.join_unify
+
+fne.join_unify:
+  %fne.j_final_aid = phi i64 [ %fne.j_only_aid, %fne.join_only_base ], [ %fne.j_full_aid, %fne.join_full ]
+  %fne.j_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.j_v = insertvalue %Value %fne.j_v0, i64 %fne.j_final_aid, 1
+  %fne.j_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fne.j_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.j_raw3, %Value %fne.j_v)
+  ret i1 %fne.j_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13324,6 +13486,7 @@ builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
 builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound vars.
 builtin_op_to_id('file_base_name/2', 133).    % basename(1): part after last ''/''.
 builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last ''/'' (or ''.'').
+builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''.'' (basename-scoped).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
