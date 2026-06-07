@@ -3659,6 +3659,8 @@ entry:
     i32 130, label %builtin_truncate
     i32 131, label %builtin_chown
     i32 132, label %builtin_ground
+    i32 133, label %builtin_file_base_name
+    i32 134, label %builtin_file_directory_name
   ]
 
 builtin_is:
@@ -5891,6 +5893,149 @@ builtin_ground:
   %gr.t = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gr.r = call i1 @wam_is_ground(%WamState* %vm, %Value %gr.t)
   ret i1 %gr.r
+
+builtin_file_base_name:
+  ; M118: file_base_name(+Path, -Base) -- basename(1) semantics.
+  ; Scan Path backwards for the last ''/''; return everything
+  ; after it (or the whole string if no ''/''). Special cases:
+  ; ''/'' or any path ending in ''/'' returns ''''. Path must be
+  ; Atom; non-atom fails the type guard.
+  %fbn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fbn.t1 = call i32 @value_tag(%Value %fbn.a1)
+  %fbn.is_atom = icmp eq i32 %fbn.t1, 0
+  br i1 %fbn.is_atom, label %fbn.go, label %fbn.fail
+fbn.fail:
+  ret i1 false
+fbn.go:
+  %fbn.aid = call i64 @value_payload(%Value %fbn.a1)
+  %fbn.path = call i8* @wam_atom_to_string(i64 %fbn.aid)
+  %fbn.path_null = icmp eq i8* %fbn.path, null
+  br i1 %fbn.path_null, label %fbn.fail, label %fbn.scan_init
+fbn.scan_init:
+  %fbn.len = call i64 @strlen(i8* %fbn.path)
+  %fbn.has = icmp sgt i64 %fbn.len, 0
+  %fbn.i_init = sub i64 %fbn.len, 1
+  br i1 %fbn.has, label %fbn.loop, label %fbn.empty
+fbn.empty:
+  ; Empty path -> empty atom.
+  br label %fbn.intern_with_zero
+fbn.loop:
+  ; i counts down from len-1 looking for ''/''. No-slash exit through %step.
+  %fbn.i = phi i64 [ %fbn.i_init, %fbn.scan_init ], [ %fbn.i_dec, %fbn.step ]
+  %fbn.cp = getelementptr i8, i8* %fbn.path, i64 %fbn.i
+  %fbn.c = load i8, i8* %fbn.cp
+  %fbn.is_slash = icmp eq i8 %fbn.c, 47
+  br i1 %fbn.is_slash, label %fbn.found, label %fbn.step
+fbn.step:
+  %fbn.done = icmp eq i64 %fbn.i, 0
+  %fbn.i_dec = sub i64 %fbn.i, 1
+  br i1 %fbn.done, label %fbn.no_slash, label %fbn.loop
+fbn.no_slash:
+  ; No ''/'' anywhere -> base = whole string.
+  %fbn.start_a = phi i8* [ %fbn.path, %fbn.step ]
+  %fbn.baselen_a = phi i64 [ %fbn.len, %fbn.step ]
+  br label %fbn.intern
+fbn.found:
+  ; slash is at index i; base starts at i+1, length = len-(i+1).
+  %fbn.start_off = add i64 %fbn.i, 1
+  %fbn.start_b = getelementptr i8, i8* %fbn.path, i64 %fbn.start_off
+  %fbn.baselen_b = sub i64 %fbn.len, %fbn.start_off
+  br label %fbn.intern
+fbn.intern:
+  %fbn.start = phi i8* [ %fbn.start_a, %fbn.no_slash ], [ %fbn.start_b, %fbn.found ]
+  %fbn.baselen = phi i64 [ %fbn.baselen_a, %fbn.no_slash ], [ %fbn.baselen_b, %fbn.found ]
+  call void @wam_arena_ensure()
+  %fbn.bufsize = add i64 %fbn.baselen, 1
+  %fbn.arena = call i8* @wam_arena_alloc(i64 %fbn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fbn.arena, i8* %fbn.start, i64 %fbn.baselen, i1 false)
+  %fbn.term = getelementptr i8, i8* %fbn.arena, i64 %fbn.baselen
+  store i8 0, i8* %fbn.term
+  %fbn.atom_id = call i64 @wam_intern_atom(i8* %fbn.arena, i64 %fbn.baselen)
+  br label %fbn.unify
+fbn.intern_with_zero:
+  ; Empty-string fast path: intern "" (len 0).
+  call void @wam_arena_ensure()
+  %fbn.arena_e = call i8* @wam_arena_alloc(i64 1)
+  store i8 0, i8* %fbn.arena_e
+  %fbn.atom_id_e = call i64 @wam_intern_atom(i8* %fbn.arena_e, i64 0)
+  br label %fbn.unify
+fbn.unify:
+  %fbn.final_aid = phi i64 [ %fbn.atom_id, %fbn.intern ], [ %fbn.atom_id_e, %fbn.intern_with_zero ]
+  %fbn.v0 = insertvalue %Value undef, i32 0, 0
+  %fbn.v = insertvalue %Value %fbn.v0, i64 %fbn.final_aid, 1
+  %fbn.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fbn.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fbn.raw2, %Value %fbn.v)
+  ret i1 %fbn.ok
+
+builtin_file_directory_name:
+  ; M118: file_directory_name(+Path, -Dir) -- dirname(1)-style.
+  ; Scan Path backwards for last ''/''. If found at index 0 the
+  ; result is ''/'' (root). If found at index >0 the result is the
+  ; prefix [0..i). If no ''/'' (or empty path), the result is ''.''.
+  ; Path must be Atom.
+  %fdn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fdn.t1 = call i32 @value_tag(%Value %fdn.a1)
+  %fdn.is_atom = icmp eq i32 %fdn.t1, 0
+  br i1 %fdn.is_atom, label %fdn.go, label %fdn.fail
+fdn.fail:
+  ret i1 false
+fdn.go:
+  %fdn.aid = call i64 @value_payload(%Value %fdn.a1)
+  %fdn.path = call i8* @wam_atom_to_string(i64 %fdn.aid)
+  %fdn.path_null = icmp eq i8* %fdn.path, null
+  br i1 %fdn.path_null, label %fdn.fail, label %fdn.scan_init
+fdn.scan_init:
+  %fdn.len = call i64 @strlen(i8* %fdn.path)
+  %fdn.has = icmp sgt i64 %fdn.len, 0
+  %fdn.i_init = sub i64 %fdn.len, 1
+  br i1 %fdn.has, label %fdn.loop, label %fdn.dot
+fdn.loop:
+  %fdn.i = phi i64 [ %fdn.i_init, %fdn.scan_init ], [ %fdn.i_dec, %fdn.step ]
+  %fdn.cp = getelementptr i8, i8* %fdn.path, i64 %fdn.i
+  %fdn.c = load i8, i8* %fdn.cp
+  %fdn.is_slash = icmp eq i8 %fdn.c, 47
+  br i1 %fdn.is_slash, label %fdn.found, label %fdn.step
+fdn.step:
+  %fdn.done = icmp eq i64 %fdn.i, 0
+  %fdn.i_dec = sub i64 %fdn.i, 1
+  br i1 %fdn.done, label %fdn.dot, label %fdn.loop
+fdn.dot:
+  ; No ''/'' or empty -> result is ''.''. Intern "." (1 byte + null).
+  call void @wam_arena_ensure()
+  %fdn.dot_buf = call i8* @wam_arena_alloc(i64 2)
+  store i8 46, i8* %fdn.dot_buf
+  %fdn.dot_term = getelementptr i8, i8* %fdn.dot_buf, i64 1
+  store i8 0, i8* %fdn.dot_term
+  %fdn.dot_aid = call i64 @wam_intern_atom(i8* %fdn.dot_buf, i64 1)
+  br label %fdn.unify
+fdn.found:
+  ; Slash at index i. If i == 0 -> root ''/''. Else dir = [0..i).
+  %fdn.is_root = icmp eq i64 %fdn.i, 0
+  br i1 %fdn.is_root, label %fdn.root, label %fdn.prefix
+fdn.root:
+  call void @wam_arena_ensure()
+  %fdn.root_buf = call i8* @wam_arena_alloc(i64 2)
+  store i8 47, i8* %fdn.root_buf
+  %fdn.root_term = getelementptr i8, i8* %fdn.root_buf, i64 1
+  store i8 0, i8* %fdn.root_term
+  %fdn.root_aid = call i64 @wam_intern_atom(i8* %fdn.root_buf, i64 1)
+  br label %fdn.unify
+fdn.prefix:
+  call void @wam_arena_ensure()
+  %fdn.bufsize = add i64 %fdn.i, 1
+  %fdn.arena = call i8* @wam_arena_alloc(i64 %fdn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fdn.arena, i8* %fdn.path, i64 %fdn.i, i1 false)
+  %fdn.term = getelementptr i8, i8* %fdn.arena, i64 %fdn.i
+  store i8 0, i8* %fdn.term
+  %fdn.pref_aid = call i64 @wam_intern_atom(i8* %fdn.arena, i64 %fdn.i)
+  br label %fdn.unify
+fdn.unify:
+  %fdn.final_aid = phi i64 [ %fdn.dot_aid, %fdn.dot ], [ %fdn.root_aid, %fdn.root ], [ %fdn.pref_aid, %fdn.prefix ]
+  %fdn.v0 = insertvalue %Value undef, i32 0, 0
+  %fdn.v = insertvalue %Value %fdn.v0, i64 %fdn.final_aid, 1
+  %fdn.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fdn.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fdn.raw2, %Value %fdn.v)
+  ret i1 %fdn.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13177,6 +13322,8 @@ builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
 builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
 builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
 builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound vars.
+builtin_op_to_id('file_base_name/2', 133).    % basename(1): part after last ''/''.
+builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last ''/'' (or ''.'').
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
