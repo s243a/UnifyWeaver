@@ -2546,6 +2546,84 @@ test_ground_after_bind(_, R) :-
     X = bound_atom,
     ( ground(foo(a, X, c)) -> R is 1 ; R is 0 ).   % 1
 
+% M118: file_base_name/2 + file_directory_name/2 -- path component split.
+
+:- dynamic test_fbn_simple/2.
+test_fbn_simple(_, R) :-
+    file_base_name('/usr/bin/swipl', B),
+    ( B == swipl -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_no_slash/2.
+test_fbn_no_slash(_, R) :-
+    file_base_name(swipl, B),
+    ( B == swipl -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_root/2.
+test_fbn_root(_, R) :-
+    % "/" -> "" (basename of root is empty per SWI).
+    file_base_name('/', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_trailing_slash/2.
+test_fbn_trailing_slash(_, R) :-
+    % "/usr/bin/" -> "".
+    file_base_name('/usr/bin/', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_empty/2.
+test_fbn_empty(_, R) :-
+    file_base_name('', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_nested/2.
+test_fbn_nested(_, R) :-
+    file_base_name('/a/b/c/d/e.txt', B),
+    ( B == 'e.txt' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_bad_arg/2.
+test_fbn_bad_arg(_, R) :-
+    % Non-atom path fails the type guard.
+    ( file_base_name(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_fdn_simple/2.
+test_fdn_simple(_, R) :-
+    file_directory_name('/usr/bin/swipl', D),
+    ( D == '/usr/bin' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_no_slash/2.
+test_fdn_no_slash(_, R) :-
+    % No "/" -> ".".
+    file_directory_name(swipl, D),
+    ( D == '.' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_root/2.
+test_fdn_root(_, R) :-
+    % "/" -> "/".
+    file_directory_name('/', D),
+    ( D == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_root_child/2.
+test_fdn_root_child(_, R) :-
+    % "/etc" -> "/".
+    file_directory_name('/etc', D),
+    ( D == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_trailing_slash/2.
+test_fdn_trailing_slash(_, R) :-
+    % "/usr/bin/" -- last slash at index 8, prefix [0..8) = "/usr/bin".
+    file_directory_name('/usr/bin/', D),
+    ( D == '/usr/bin' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_empty/2.
+test_fdn_empty(_, R) :-
+    % "" -> ".".
+    file_directory_name('', D),
+    ( D == '.' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_bad_arg/2.
+test_fdn_bad_arg(_, R) :-
+    ( file_directory_name(42, _) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5439,6 +5517,35 @@ test_all :-
                    test_ground_list_open_tail, 0, 1),
        run_test_r0('ground after binding var -> 1',
                    test_ground_after_bind, 0, 1),
+       format('--- M118 file_base_name/2 + file_directory_name/2 ---~n'),
+       run_test_r0('file_base_name(/usr/bin/swipl) -> swipl -> 1',
+                   test_fbn_simple, 0, 1),
+       run_test_r0('file_base_name(swipl) -> swipl -> 1',
+                   test_fbn_no_slash, 0, 1),
+       run_test_r0('file_base_name(/) -> '''' -> 1',
+                   test_fbn_root, 0, 1),
+       run_test_r0('file_base_name(/usr/bin/) -> '''' -> 1',
+                   test_fbn_trailing_slash, 0, 1),
+       run_test_r0('file_base_name('''') -> '''' -> 1',
+                   test_fbn_empty, 0, 1),
+       run_test_r0('file_base_name(/a/b/c/d/e.txt) -> e.txt -> 1',
+                   test_fbn_nested, 0, 1),
+       run_test_r0('file_base_name(42, _) fails -> 1',
+                   test_fbn_bad_arg, 0, 1),
+       run_test_r0('file_directory_name(/usr/bin/swipl) -> /usr/bin -> 1',
+                   test_fdn_simple, 0, 1),
+       run_test_r0('file_directory_name(swipl) -> . -> 1',
+                   test_fdn_no_slash, 0, 1),
+       run_test_r0('file_directory_name(/) -> / -> 1',
+                   test_fdn_root, 0, 1),
+       run_test_r0('file_directory_name(/etc) -> / -> 1',
+                   test_fdn_root_child, 0, 1),
+       run_test_r0('file_directory_name(/usr/bin/) -> /usr/bin -> 1',
+                   test_fdn_trailing_slash, 0, 1),
+       run_test_r0('file_directory_name('''') -> . -> 1',
+                   test_fdn_empty, 0, 1),
+       run_test_r0('file_directory_name(42, _) fails -> 1',
+                   test_fdn_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
