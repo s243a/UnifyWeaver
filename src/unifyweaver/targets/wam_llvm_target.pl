@@ -3698,6 +3698,8 @@ entry:
     i32 152, label %builtin_uname_machine
     i32 153, label %builtin_copy_file
     i32 154, label %builtin_read_file_to_atom
+    i32 155, label %builtin_write_atom_to_file
+    i32 156, label %builtin_append_atom_to_file
   ]
 
 builtin_is:
@@ -6925,6 +6927,116 @@ rfta.finalize:
   %rfta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %rfta.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %rfta.raw2, %Value %rfta.v)
   ret i1 %rfta.uok
+
+builtin_write_atom_to_file:
+  ; M130: write_atom_to_file(+Path, +Content) -- writes Content
+  ; (atom) to Path (atom), truncating any existing file. Uses
+  ; O_WRONLY|O_CREAT|O_TRUNC (= 577 on Linux glibc) with mode 0644
+  ; (= 420 decimal). Write-loop handles short writes by tracking
+  ; how many bytes are still outstanding. Closes the fd in both
+  ; success and failure paths.
+  %wfa.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %wfa.t1 = call i32 @value_tag(%Value %wfa.a1)
+  %wfa.is_atom1 = icmp eq i32 %wfa.t1, 0
+  br i1 %wfa.is_atom1, label %wfa.check2, label %wfa.fail
+wfa.fail:
+  ret i1 false
+wfa.check2:
+  %wfa.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wfa.t2 = call i32 @value_tag(%Value %wfa.a2)
+  %wfa.is_atom2 = icmp eq i32 %wfa.t2, 0
+  br i1 %wfa.is_atom2, label %wfa.have_args, label %wfa.fail
+wfa.have_args:
+  %wfa.path_aid = call i64 @value_payload(%Value %wfa.a1)
+  %wfa.path = call i8* @wam_atom_to_string(i64 %wfa.path_aid)
+  %wfa.path_null = icmp eq i8* %wfa.path, null
+  br i1 %wfa.path_null, label %wfa.fail, label %wfa.have_path
+wfa.have_path:
+  %wfa.content_aid = call i64 @value_payload(%Value %wfa.a2)
+  %wfa.content = call i8* @wam_atom_to_string(i64 %wfa.content_aid)
+  %wfa.content_null = icmp eq i8* %wfa.content, null
+  br i1 %wfa.content_null, label %wfa.fail, label %wfa.open
+wfa.open:
+  ; O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577 on Linux glibc.
+  %wfa.fd = call i32 @open(i8* %wfa.path, i32 577, i32 420)
+  %wfa.open_ok = icmp sge i32 %wfa.fd, 0
+  br i1 %wfa.open_ok, label %wfa.size, label %wfa.fail
+wfa.size:
+  %wfa.len = call i64 @strlen(i8* %wfa.content)
+  %wfa.empty = icmp eq i64 %wfa.len, 0
+  br i1 %wfa.empty, label %wfa.success, label %wfa.loop
+wfa.loop:
+  %wfa.off = phi i64 [ 0, %wfa.size ], [ %wfa.off_next, %wfa.advance ]
+  %wfa.remain = sub i64 %wfa.len, %wfa.off
+  %wfa.write_at = getelementptr i8, i8* %wfa.content, i64 %wfa.off
+  %wfa.n = call i64 @write(i32 %wfa.fd, i8* %wfa.write_at, i64 %wfa.remain)
+  %wfa.n_le_zero = icmp sle i64 %wfa.n, 0
+  br i1 %wfa.n_le_zero, label %wfa.close_fail, label %wfa.advance
+wfa.advance:
+  %wfa.off_next = add i64 %wfa.off, %wfa.n
+  %wfa.done = icmp eq i64 %wfa.off_next, %wfa.len
+  br i1 %wfa.done, label %wfa.success, label %wfa.loop
+wfa.close_fail:
+  call i32 @close(i32 %wfa.fd)
+  ret i1 false
+wfa.success:
+  call i32 @close(i32 %wfa.fd)
+  ret i1 true
+
+builtin_append_atom_to_file:
+  ; M130: append_atom_to_file(+Path, +Content) -- writes Content
+  ; to Path, creating it if it doesn''t exist and appending to
+  ; any existing contents. Uses O_WRONLY|O_CREAT|O_APPEND
+  ; (= 1089 on Linux glibc: 1|64|1024) with mode 0644. Same
+  ; short-write loop as write_atom_to_file -- only the open
+  ; flags differ.
+  %afa.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %afa.t1 = call i32 @value_tag(%Value %afa.a1)
+  %afa.is_atom1 = icmp eq i32 %afa.t1, 0
+  br i1 %afa.is_atom1, label %afa.check2, label %afa.fail
+afa.fail:
+  ret i1 false
+afa.check2:
+  %afa.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %afa.t2 = call i32 @value_tag(%Value %afa.a2)
+  %afa.is_atom2 = icmp eq i32 %afa.t2, 0
+  br i1 %afa.is_atom2, label %afa.have_args, label %afa.fail
+afa.have_args:
+  %afa.path_aid = call i64 @value_payload(%Value %afa.a1)
+  %afa.path = call i8* @wam_atom_to_string(i64 %afa.path_aid)
+  %afa.path_null = icmp eq i8* %afa.path, null
+  br i1 %afa.path_null, label %afa.fail, label %afa.have_path
+afa.have_path:
+  %afa.content_aid = call i64 @value_payload(%Value %afa.a2)
+  %afa.content = call i8* @wam_atom_to_string(i64 %afa.content_aid)
+  %afa.content_null = icmp eq i8* %afa.content, null
+  br i1 %afa.content_null, label %afa.fail, label %afa.open
+afa.open:
+  ; O_WRONLY (1) | O_CREAT (64) | O_APPEND (1024) = 1089 on Linux glibc.
+  %afa.fd = call i32 @open(i8* %afa.path, i32 1089, i32 420)
+  %afa.open_ok = icmp sge i32 %afa.fd, 0
+  br i1 %afa.open_ok, label %afa.size, label %afa.fail
+afa.size:
+  %afa.len = call i64 @strlen(i8* %afa.content)
+  %afa.empty = icmp eq i64 %afa.len, 0
+  br i1 %afa.empty, label %afa.success, label %afa.loop
+afa.loop:
+  %afa.off = phi i64 [ 0, %afa.size ], [ %afa.off_next, %afa.advance ]
+  %afa.remain = sub i64 %afa.len, %afa.off
+  %afa.write_at = getelementptr i8, i8* %afa.content, i64 %afa.off
+  %afa.n = call i64 @write(i32 %afa.fd, i8* %afa.write_at, i64 %afa.remain)
+  %afa.n_le_zero = icmp sle i64 %afa.n, 0
+  br i1 %afa.n_le_zero, label %afa.close_fail, label %afa.advance
+afa.advance:
+  %afa.off_next = add i64 %afa.off, %afa.n
+  %afa.done = icmp eq i64 %afa.off_next, %afa.len
+  br i1 %afa.done, label %afa.success, label %afa.loop
+afa.close_fail:
+  call i32 @close(i32 %afa.fd)
+  ret i1 false
+afa.success:
+  call i32 @close(i32 %afa.fd)
+  ret i1 true
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14233,6 +14345,8 @@ builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as at
 builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
 builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
 builtin_op_to_id('read_file_to_atom/2', 154). % stat + open + read loop -> intern as atom.
+builtin_op_to_id('write_atom_to_file/2', 155). % open(O_TRUNC) + write loop + close.
+builtin_op_to_id('append_atom_to_file/2', 156). % open(O_APPEND) + write loop + close.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

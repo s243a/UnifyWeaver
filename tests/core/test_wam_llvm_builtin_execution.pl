@@ -3240,6 +3240,76 @@ test_rfta_size_matches(_, R) :-
     shell('rm -f /tmp/uw_m129_sz', _),
     ( L =:= 11 -> R is 1 ; R is 0 ).   % 1
 
+% M130: write_atom_to_file/2 + append_atom_to_file/2.
+
+:- dynamic test_wfa_basic/2.
+test_wfa_basic(_, R) :-
+    % Write a known atom, read it back via shell + diff.
+    shell('rm -f /tmp/uw_m130_w', _),
+    write_atom_to_file('/tmp/uw_m130_w', 'hello world'),
+    size_file('/tmp/uw_m130_w', Sz),
+    shell('rm -f /tmp/uw_m130_w', _),
+    ( Sz =:= 11 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_empty/2.
+test_wfa_empty(_, R) :-
+    % Empty content -> 0-byte file (size=0 fast path skips loop).
+    shell('rm -f /tmp/uw_m130_we', _),
+    write_atom_to_file('/tmp/uw_m130_we', ''),
+    size_file('/tmp/uw_m130_we', Sz),
+    shell('rm -f /tmp/uw_m130_we', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_truncates/2.
+test_wfa_truncates(_, R) :-
+    % O_TRUNC: existing larger file gets replaced with shorter.
+    shell('printf "lots_of_old_content_here" > /tmp/uw_m130_wt', _),
+    write_atom_to_file('/tmp/uw_m130_wt', new),
+    size_file('/tmp/uw_m130_wt', Sz),
+    shell('rm -f /tmp/uw_m130_wt', _),
+    ( Sz =:= 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_round_trip/2.
+test_wfa_round_trip(_, R) :-
+    % Write then read returns the same atom.
+    shell('rm -f /tmp/uw_m130_rt', _),
+    write_atom_to_file('/tmp/uw_m130_rt', 'abcdefghij'),
+    read_file_to_atom('/tmp/uw_m130_rt', A),
+    shell('rm -f /tmp/uw_m130_rt', _),
+    ( A == 'abcdefghij' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_bad_args/2.
+test_wfa_bad_args(_, R) :-
+    ( write_atom_to_file(42, abc) -> R is 0
+    ; write_atom_to_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_afa_creates/2.
+test_afa_creates(_, R) :-
+    % Append to a non-existent file -> creates it (O_CREAT).
+    shell('rm -f /tmp/uw_m130_ac', _),
+    append_atom_to_file('/tmp/uw_m130_ac', start),
+    size_file('/tmp/uw_m130_ac', Sz),
+    shell('rm -f /tmp/uw_m130_ac', _),
+    ( Sz =:= 5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_afa_extends/2.
+test_afa_extends(_, R) :-
+    % Append to an existing file -> total length is sum.
+    shell('printf "abc" > /tmp/uw_m130_ae', _),
+    append_atom_to_file('/tmp/uw_m130_ae', defg),
+    size_file('/tmp/uw_m130_ae', Sz),
+    shell('rm -f /tmp/uw_m130_ae', _),
+    ( Sz =:= 7 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_afa_bad_args/2.
+test_afa_bad_args(_, R) :-
+    ( append_atom_to_file(42, abc) -> R is 0
+    ; append_atom_to_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6339,6 +6409,23 @@ test_all :-
                    test_rfta_bad_arg, 0, 1),
        run_test_r0('read_file_to_atom length matches stat size -> 1',
                    test_rfta_size_matches, 0, 1),
+       format('--- M130 write_atom_to_file/2 + append_atom_to_file/2 ---~n'),
+       run_test_r0('write 11-byte atom -> size 11 -> 1',
+                   test_wfa_basic, 0, 1),
+       run_test_r0('write empty atom -> size 0 -> 1',
+                   test_wfa_empty, 0, 1),
+       run_test_r0('write O_TRUNC shrinks existing file -> 1',
+                   test_wfa_truncates, 0, 1),
+       run_test_r0('write then read round-trip -> 1',
+                   test_wfa_round_trip, 0, 1),
+       run_test_r0('write with non-atom args fails -> 1',
+                   test_wfa_bad_args, 0, 1),
+       run_test_r0('append creates new file -> 1',
+                   test_afa_creates, 0, 1),
+       run_test_r0('append extends existing file -> 1',
+                   test_afa_extends, 0, 1),
+       run_test_r0('append with non-atom args fails -> 1',
+                   test_afa_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

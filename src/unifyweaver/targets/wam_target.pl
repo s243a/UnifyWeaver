@@ -2255,6 +2255,8 @@ is_builtin_pred(uname_sysname, 1).      % uname_sysname(-Sysname).
 is_builtin_pred(uname_machine, 1).      % uname_machine(-Machine).
 is_builtin_pred(copy_file, 2).          % copy_file(+Src, +Dst) -- open/read/write/close.
 is_builtin_pred(read_file_to_atom, 2).  % read_file_to_atom(+Path, -Atom).
+is_builtin_pred(write_atom_to_file, 2). % write_atom_to_file(+Path, +Content) -- O_TRUNC.
+is_builtin_pred(append_atom_to_file, 2). % append_atom_to_file(+Path, +Content) -- O_APPEND.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
