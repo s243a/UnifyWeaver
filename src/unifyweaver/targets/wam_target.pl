@@ -2239,6 +2239,8 @@ is_builtin_pred(file_name_extension, 3).% file_name_extension(?Base, ?Ext, ?File
 is_builtin_pred(read_link, 2).          % read_link(+Path, -Target) -- libc readlink.
 is_builtin_pred(symlink, 2).            % symlink(+Target, +LinkPath) -- libc symlink.
 is_builtin_pred(link, 2).               % link(+Old, +New) -- libc link (hard link).
+is_builtin_pred(is_absolute_file_name, 1). % is_absolute_file_name(+Path).
+is_builtin_pred(same_file, 2).          % same_file(+Path1, +Path2) -- inode equality.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

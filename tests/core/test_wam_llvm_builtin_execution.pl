@@ -2806,6 +2806,80 @@ test_link_bad_arg(_, R) :-
     ; R is 1
     ).   % 1
 
+% M122: is_absolute_file_name/1 + same_file/2.
+
+:- dynamic test_iaf_absolute/2.
+test_iaf_absolute(_, R) :-
+    ( is_absolute_file_name('/usr/bin/swipl') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_iaf_relative/2.
+test_iaf_relative(_, R) :-
+    ( is_absolute_file_name('foo/bar') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_root/2.
+test_iaf_root(_, R) :-
+    ( is_absolute_file_name('/') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_iaf_empty/2.
+test_iaf_empty(_, R) :-
+    ( is_absolute_file_name('') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_dot/2.
+test_iaf_dot(_, R) :-
+    ( is_absolute_file_name('./foo') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_bad_arg/2.
+test_iaf_bad_arg(_, R) :-
+    ( is_absolute_file_name(42) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_samf_same_path/2.
+test_samf_same_path(_, R) :-
+    % Same path -> same file by tautology.
+    shell('touch /tmp/uw_m122_same', _),
+    ( same_file('/tmp/uw_m122_same', '/tmp/uw_m122_same') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_same', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_hard_link/2.
+test_samf_hard_link(_, R) :-
+    % Hard link shares inode -> same_file should succeed.
+    shell('echo hi > /tmp/uw_m122_orig', _),
+    shell('rm -f /tmp/uw_m122_hl', _),
+    link('/tmp/uw_m122_orig', '/tmp/uw_m122_hl'),
+    ( same_file('/tmp/uw_m122_orig', '/tmp/uw_m122_hl') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_orig /tmp/uw_m122_hl', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_symlink/2.
+test_samf_symlink(_, R) :-
+    % stat follows symlinks, so symlink -> target -> same_file = true.
+    shell('echo hi > /tmp/uw_m122_target', _),
+    shell('rm -f /tmp/uw_m122_sym', _),
+    symlink('/tmp/uw_m122_target', '/tmp/uw_m122_sym'),
+    ( same_file('/tmp/uw_m122_target', '/tmp/uw_m122_sym') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_target /tmp/uw_m122_sym', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_different/2.
+test_samf_different(_, R) :-
+    % Distinct files with distinct inodes -> same_file = false.
+    shell('echo a > /tmp/uw_m122_a', _),
+    shell('echo b > /tmp/uw_m122_b', _),
+    ( same_file('/tmp/uw_m122_a', '/tmp/uw_m122_b') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m122_a /tmp/uw_m122_b', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_missing/2.
+test_samf_missing(_, R) :-
+    ( same_file('/tmp/uw_m122_does_not_exist', '/etc/hostname') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_samf_bad_arg/2.
+test_samf_bad_arg(_, R) :-
+    ( same_file(42, '/tmp/x') -> R is 0
+    ; same_file('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5785,6 +5859,31 @@ test_all :-
                    test_link_exists_new, 0, 1),
        run_test_r0('link with non-atom args fails -> 1',
                    test_link_bad_arg, 0, 1),
+       format('--- M122 is_absolute_file_name/1 + same_file/2 ---~n'),
+       run_test_r0('is_absolute(/usr/bin/swipl) -> 1',
+                   test_iaf_absolute, 0, 1),
+       run_test_r0('is_absolute(foo/bar) fails -> 1',
+                   test_iaf_relative, 0, 1),
+       run_test_r0('is_absolute(/) -> 1',
+                   test_iaf_root, 0, 1),
+       run_test_r0('is_absolute('''') fails -> 1',
+                   test_iaf_empty, 0, 1),
+       run_test_r0('is_absolute(./foo) fails -> 1',
+                   test_iaf_dot, 0, 1),
+       run_test_r0('is_absolute(42) fails -> 1',
+                   test_iaf_bad_arg, 0, 1),
+       run_test_r0('same_file(P, P) -> 1',
+                   test_samf_same_path, 0, 1),
+       run_test_r0('same_file across hard link -> 1',
+                   test_samf_hard_link, 0, 1),
+       run_test_r0('same_file follows symlink -> 1',
+                   test_samf_symlink, 0, 1),
+       run_test_r0('same_file on distinct files fails -> 1',
+                   test_samf_different, 0, 1),
+       run_test_r0('same_file on missing path fails -> 1',
+                   test_samf_missing, 0, 1),
+       run_test_r0('same_file with non-atom args fails -> 1',
+                   test_samf_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
