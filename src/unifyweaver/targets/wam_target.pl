@@ -2243,6 +2243,8 @@ is_builtin_pred(is_absolute_file_name, 1). % is_absolute_file_name(+Path).
 is_builtin_pred(same_file, 2).          % same_file(+Path1, +Path2) -- inode equality.
 is_builtin_pred(tmp_file, 2).           % tmp_file(+Base, -Path) -- mkstemp-based.
 is_builtin_pred(mkfifo, 2).             % mkfifo(+Path, +Mode) -- create named pipe.
+is_builtin_pred(umask, 2).              % umask(?Old, +New) -- libc umask.
+is_builtin_pred(monotonic_time, 1).     % monotonic_time(-Seconds) -- CLOCK_MONOTONIC.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

@@ -1566,6 +1566,7 @@ declare i32 @link(i8*, i8*)
 declare i32 @mkstemp(i8*)
 declare i32 @mkfifo(i8*, i32)
 declare i32 @close(i32)
+declare i32 @umask(i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3675,6 +3676,8 @@ entry:
     i32 140, label %builtin_same_file
     i32 141, label %builtin_tmp_file
     i32 142, label %builtin_mkfifo
+    i32 143, label %builtin_umask
+    i32 144, label %builtin_monotonic_time
   ]
 
 builtin_is:
@@ -6508,6 +6511,59 @@ mkf.do:
   %mkf.ret = call i32 @mkfifo(i8* %mkf.path, i32 %mkf.mode)
   %mkf.ok = icmp eq i32 %mkf.ret, 0
   ret i1 %mkf.ok
+
+builtin_umask:
+  ; M124: umask(?Old, +New) -- libc umask wrapper. Sets the
+  ; process file-creation mask to New and unifies Old with the
+  ; previous mask. New must be Integer (the permission bits to
+  ; mask out, e.g. 0o022 means group/other writes are masked).
+  ; To READ the umask without changing it: umask(Old, Old) --
+  ; libc has no read-only call so we set-and-restore would be
+  ; needed, but unifying Old with itself after the libc call
+  ; gives the same effect when New equals the previous value.
+  ; Non-int New fails the type guard.
+  %um.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %um.t2 = call i32 @value_tag(%Value %um.a2)
+  %um.is_int = icmp eq i32 %um.t2, 1
+  br i1 %um.is_int, label %um.go, label %um.fail
+um.fail:
+  ret i1 false
+um.go:
+  %um.new64 = call i64 @value_payload(%Value %um.a2)
+  %um.new = trunc i64 %um.new64 to i32
+  %um.prev = call i32 @umask(i32 %um.new)
+  %um.prev64 = zext i32 %um.prev to i64
+  %um.v = call %Value @value_integer(i64 %um.prev64)
+  %um.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %um.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %um.raw1, %Value %um.v)
+  ret i1 %um.ok
+
+builtin_monotonic_time:
+  ; M124: monotonic_time(?Time) -- monotonically increasing seconds
+  ; since an unspecified epoch (typically boot) as Float, via
+  ; clock_gettime(CLOCK_MONOTONIC, &ts). Unlike get_time/1
+  ; (CLOCK_REALTIME), this is immune to wall-clock adjustments
+  ; (NTP slew, daylight saving, manual settimeofday) -- ideal
+  ; for measuring elapsed time. CLOCK_MONOTONIC numeric value 1
+  ; on Linux. Same struct timespec layout as get_time.
+  %mt.ts_buf = alloca [16 x i8]
+  %mt.ts_ptr = getelementptr [16 x i8], [16 x i8]* %mt.ts_buf, i32 0, i32 0
+  %mt.cg_ret = call i32 @clock_gettime(i32 1, i8* %mt.ts_ptr)
+  %mt.sec_ptr = bitcast i8* %mt.ts_ptr to i64*
+  %mt.sec = load i64, i64* %mt.sec_ptr
+  %mt.nsec_ptr_i8 = getelementptr i8, i8* %mt.ts_ptr, i64 8
+  %mt.nsec_ptr = bitcast i8* %mt.nsec_ptr_i8 to i64*
+  %mt.nsec = load i64, i64* %mt.nsec_ptr
+  %mt.sec_d = sitofp i64 %mt.sec to double
+  %mt.nsec_d = sitofp i64 %mt.nsec to double
+  %mt.frac = fdiv double %mt.nsec_d, 1.000000e+09
+  %mt.t_d = fadd double %mt.sec_d, %mt.frac
+  %mt.t_bits = bitcast double %mt.t_d to i64
+  %mt.v0 = insertvalue %Value undef, i32 2, 0
+  %mt.v = insertvalue %Value %mt.v0, i64 %mt.t_bits, 1
+  %mt.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %mt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mt.raw1, %Value %mt.v)
+  ret i1 %mt.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13804,6 +13860,8 @@ builtin_op_to_id('is_absolute_file_name/1', 139). % true iff first char is ''/''
 builtin_op_to_id('same_file/2', 140).         % stat both, compare st_dev + st_ino.
 builtin_op_to_id('tmp_file/2', 141).          % mkstemp-based race-free temp file.
 builtin_op_to_id('mkfifo/2', 142).            % libc mkfifo(path, mode).
+builtin_op_to_id('umask/2', 143).             % libc umask(?Old, +New).
+builtin_op_to_id('monotonic_time/1', 144).    % clock_gettime(CLOCK_MONOTONIC) as Float.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

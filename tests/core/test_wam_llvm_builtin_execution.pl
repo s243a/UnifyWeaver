@@ -2942,6 +2942,54 @@ test_mkfifo_bad_path(_, R) :-
 test_mkfifo_bad_mode(_, R) :-
     ( mkfifo('/tmp/uw_m123_bm', not_int) -> R is 0 ; R is 1 ).   % 1
 
+% M124: umask/2 + monotonic_time/1.
+
+:- dynamic test_umask_set_and_restore/2.
+test_umask_set_and_restore(_, R) :-
+    % Set umask to 0o077, capture old value; immediately restore.
+    umask(Old, 0o077),
+    umask(_, Old),
+    % Old should be a non-negative integer.
+    ( integer(Old), Old >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_umask_round_trip/2.
+test_umask_round_trip(_, R) :-
+    % Set umask to a known value, read it back, restore original.
+    umask(Save, 0o022),
+    umask(Read, 0o022),
+    umask(_, Save),
+    % After setting to 0o022, the next umask should read 0o022.
+    ( Read =:= 0o022 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_umask_bad_new/2.
+test_umask_bad_new(_, R) :-
+    ( umask(_, not_int) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_monotonic_nonneg/2.
+test_monotonic_nonneg(_, R) :-
+    monotonic_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_monotonic_advances/2.
+test_monotonic_advances(_, R) :-
+    % Two calls with a tiny sleep between -- the second must be
+    % strictly greater than (or equal to) the first; CLOCK_MONOTONIC
+    % never goes backwards.
+    monotonic_time(T0),
+    sleep(0.01),
+    monotonic_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_monotonic_elapsed/2.
+test_monotonic_elapsed(_, R) :-
+    % After sleep(0.05), elapsed >= 0.04 -- same floor as M88's
+    % sleep_elapsed_float test.
+    monotonic_time(T0),
+    sleep(0.05),
+    monotonic_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.04 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5963,6 +6011,19 @@ test_all :-
                    test_mkfifo_bad_path, 0, 1),
        run_test_r0('mkfifo(_, not_int) fails -> 1',
                    test_mkfifo_bad_mode, 0, 1),
+       format('--- M124 umask/2 + monotonic_time/1 ---~n'),
+       run_test_r0('umask set and restore -> 1',
+                   test_umask_set_and_restore, 0, 1),
+       run_test_r0('umask round-trip -> 1',
+                   test_umask_round_trip, 0, 1),
+       run_test_r0('umask(_, not_int) fails -> 1',
+                   test_umask_bad_new, 0, 1),
+       run_test_r0('monotonic_time >= 0 -> 1',
+                   test_monotonic_nonneg, 0, 1),
+       run_test_r0('monotonic_time advances -> 1',
+                   test_monotonic_advances, 0, 1),
+       run_test_r0('monotonic_time elapsed >= 0.04 -> 1',
+                   test_monotonic_elapsed, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
