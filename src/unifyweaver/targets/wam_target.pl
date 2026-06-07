@@ -2231,6 +2231,37 @@ is_builtin_pred(getpgrp, 1).            % getpgrp(-PGid) -- process group id.
 is_builtin_pred(realpath, 2).           % realpath(+Path, -Abs) -- canonical absolute path.
 is_builtin_pred(kill, 2).               % kill(+Pid, +Sig) -- signal 0 = existence check.
 is_builtin_pred(truncate, 2).           % truncate(+Path, +Length) -- set file size.
+is_builtin_pred(chown, 3).              % chown(+Path, +Uid, +Gid) -- change owner.
+is_builtin_pred(ground, 1).             % ground(+Term) -- true iff no unbound vars.
+is_builtin_pred(file_base_name, 2).     % file_base_name(+Path, -Base).
+is_builtin_pred(file_directory_name, 2).% file_directory_name(+Path, -Dir).
+is_builtin_pred(file_name_extension, 3).% file_name_extension(?Base, ?Ext, ?File).
+is_builtin_pred(read_link, 2).          % read_link(+Path, -Target) -- libc readlink.
+is_builtin_pred(symlink, 2).            % symlink(+Target, +LinkPath) -- libc symlink.
+is_builtin_pred(link, 2).               % link(+Old, +New) -- libc link (hard link).
+is_builtin_pred(is_absolute_file_name, 1). % is_absolute_file_name(+Path).
+is_builtin_pred(same_file, 2).          % same_file(+Path1, +Path2) -- inode equality.
+is_builtin_pred(tmp_file, 2).           % tmp_file(+Base, -Path) -- mkstemp-based.
+is_builtin_pred(mkfifo, 2).             % mkfifo(+Path, +Mode) -- create named pipe.
+is_builtin_pred(umask, 2).              % umask(?Old, +New) -- libc umask.
+is_builtin_pred(monotonic_time, 1).     % monotonic_time(-Seconds) -- CLOCK_MONOTONIC.
+is_builtin_pred(nice, 1).               % nice(+Inc) -- adjust process priority.
+is_builtin_pred(getpriority, 1).        % getpriority(-Prio) -- read self priority.
+is_builtin_pred(setpriority, 1).        % setpriority(+Prio) -- set self priority.
+is_builtin_pred(getrlimit, 2).          % getrlimit(+Resource, -SoftLimit).
+is_builtin_pred(setrlimit, 2).          % setrlimit(+Resource, +SoftLimit).
+is_builtin_pred(getlogin, 1).           % getlogin(-Name) -- libc getlogin.
+is_builtin_pred(uname_sysname, 1).      % uname_sysname(-Sysname).
+is_builtin_pred(uname_machine, 1).      % uname_machine(-Machine).
+is_builtin_pred(copy_file, 2).          % copy_file(+Src, +Dst) -- open/read/write/close.
+is_builtin_pred(read_file_to_atom, 2).  % read_file_to_atom(+Path, -Atom).
+is_builtin_pred(write_atom_to_file, 2). % write_atom_to_file(+Path, +Content) -- O_TRUNC.
+is_builtin_pred(append_atom_to_file, 2). % append_atom_to_file(+Path, +Content) -- O_APPEND.
+is_builtin_pred(errno, 1).              % errno(-N) -- thread-local errno.
+is_builtin_pred(strerror, 2).           % strerror(+Errno, -Message).
+is_builtin_pred(process_max_rss, 1).    % process_max_rss(-KB) -- getrusage ru_maxrss.
+is_builtin_pred(process_user_time, 1).  % process_user_time(-Seconds) -- ru_utime.
+is_builtin_pred(process_system_time, 1).% process_system_time(-Seconds) -- ru_stime.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

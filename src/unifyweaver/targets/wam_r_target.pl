@@ -2010,8 +2010,12 @@ r_predicate_clause(Name/Arity, Head, Body) :-
 % ============================================================================
 
 write_file(Path, Content) :-
+    % UTF-8 so the runtime/generated sources (which contain non-ASCII
+    % characters) write correctly regardless of the process locale
+    % (POSIX/ASCII in many CI containers); otherwise write/2 raises an
+    % encoding error.
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         write(Stream, Content),
         close(Stream)
     ).

@@ -8,6 +8,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)) :-
     atom_string(WamCode, S),
@@ -32,7 +33,42 @@ classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLine
     wam_lua_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]), !,
     atom_string(AltAtom, AltStr),
     take_clause1_lines(Rest, ClauseLines).
+% Soft-cut block: an if-then-else / negation / once whose try_me_else is
+% internal (preceded by the shared head-arg setup), not a clause separator.
+% Fold it through the shared structurer into ite(Cond,Then,Else) terms.
+classify_clause_shape(Lines, plan(ite, none, Structured)) :-
+    lua_parse_terms(Lines, Terms),
+    structure_ite(Terms, Structured),
+    member(ite(_, _, _), Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    !.
 classify_clause_shape(Lines, plan(deterministic, none, Lines)).
+
+% --- Label-preserving term parse (for the shared structurer) -------------
+% Each WAM line becomes a structural term the structurer understands
+% (try_me_else/trust_me/jump/cut_ite/label and the !/0-commit builtin_call),
+% or an opaque line(Parts) leaf that emit_line_parts/2 renders unchanged.
+lua_parse_terms([], []).
+lua_parse_terms([Line|Rest], Terms) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  lua_parse_terms(Rest, Terms)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelName),
+        Terms = [label(LabelName)|More],
+        lua_parse_terms(Rest, More)
+    ;   lua_line_term(Parts, T),
+        Terms = [T|More],
+        lua_parse_terms(Rest, More)
+    ).
+
+lua_line_term(["try_me_else", L], try_me_else(L)) :- !.
+lua_line_term(["trust_me"], trust_me) :- !.
+lua_line_term(["jump", L], jump(L)) :- !.
+lua_line_term(["cut_ite"], cut_ite) :- !.
+lua_line_term(["builtin_call", Op, Ar], builtin_call(Op, Ar)) :- !.
+lua_line_term(Parts, line(Parts)).
 
 take_clause1_lines([], []).
 take_clause1_lines([Line|Rest], Out) :-
@@ -44,8 +80,22 @@ take_clause1_lines([Line|Rest], Out) :-
     ).
 
 wam_lua_lowerable(_PI, WamCode, Reason) :-
-    catch(build_emission_plan(WamCode, plan(Reason, _, Lines)), _, fail),
-    forall(member(Line, Lines), line_supported(Line)).
+    catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
+    (   Reason == ite
+    ->  forall(member(I, Payload), lua_struct_supported(I))
+    ;   forall(member(Line, Payload), line_supported(Line))
+    ).
+
+%% lua_struct_supported(+StructuredInstr) — recurse through ite/3; each leaf
+%  must be an instruction emit_struct_lua/2 can render.
+lua_struct_supported(ite(C, T, E)) :- !,
+    forall(member(I, C), lua_struct_supported(I)),
+    forall(member(I, T), lua_struct_supported(I)),
+    forall(member(I, E), lua_struct_supported(I)).
+lua_struct_supported(builtin_call(_, _)) :- !.
+lua_struct_supported(line(Parts)) :- !,
+    ( Parts == [] -> true ; parts_supported(Parts) ).
+lua_struct_supported(_) :- fail.
 
 line_supported(Line) :-
     wam_lua_target:tokenize_wam_line(Line, Parts),
@@ -94,11 +144,52 @@ lower_predicate_to_lua(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     (PI = _M:Pred/Arity -> true ; PI = Pred/Arity),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     lua_lowered_func_name(Pred/Arity, FuncName),
-    build_emission_plan(WamCode, plan(Mode, AltLabel, Lines)),
+    build_emission_plan(WamCode, plan(Mode, AltLabel, Payload)),
     (   Mode == deterministic
-    ->  emit_deterministic_function(PredName, FuncName, Lines, Code)
-    ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Lines, Code)
+    ->  emit_deterministic_function(PredName, FuncName, Payload, Code)
+    ;   Mode == ite
+    ->  emit_ite_function(PredName, FuncName, Payload, Code)
+    ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code)
     ).
+
+% If-then-else / negation / once. Same wrapper as the deterministic case,
+% but the body is the structured term list rendered by emit_struct_lua/2.
+% lua's bind_var always trails, so undoing the trail to the pre-condition
+% mark before the else branch restores any partial bindings the condition
+% made (no register snapshot needed; mirrors the Rust emitter).
+emit_ite_function(PredName, FuncName, Structured, Code) :-
+    with_output_to(string(Body), emit_struct_lua(Structured, "  ")),
+    format(string(Code),
+'-- Lowered: ~w (if-then-else / negation / once)
+local function ~w(program, state)
+~w  return true
+end
+', [PredName, FuncName, Body]).
+
+emit_struct_lua([], _).
+emit_struct_lua([Item|Rest], Ind) :-
+    emit_struct_item_lua(Item, Ind),
+    emit_struct_lua(Rest, Ind).
+
+emit_struct_item_lua(ite(Cond, Then, Else), Ind) :- !,
+    string_concat(Ind, "    ", Ind4),
+    format("~wdo~n", [Ind]),
+    format("~w  local _ite_mark = #state.trail~n", [Ind]),
+    format("~w  local _ite_cond = (function()~n", [Ind]),
+    emit_struct_lua(Cond, Ind4),
+    format("~w    return true~n", [Ind]),
+    format("~w  end)()~n", [Ind]),
+    format("~w  if _ite_cond then~n", [Ind]),
+    emit_struct_lua(Then, Ind4),
+    format("~w  else~n", [Ind]),
+    format("~w    while #state.trail > _ite_mark do state.bindings[table.remove(state.trail)] = nil end~n", [Ind]),
+    emit_struct_lua(Else, Ind4),
+    format("~w  end~n", [Ind]),
+    format("~wend~n", [Ind]).
+emit_struct_item_lua(builtin_call(Op, Ar), Ind) :- !,
+    emit_line_parts(["builtin_call", Op, Ar], Ind).
+emit_struct_item_lua(line(Parts), Ind) :- !,
+    emit_line_parts(Parts, Ind).
 
 emit_deterministic_function(PredName, FuncName, Lines, Code) :-
     with_output_to(string(Body), emit_lines(Lines, "  ")),

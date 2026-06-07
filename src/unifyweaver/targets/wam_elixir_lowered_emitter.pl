@@ -906,7 +906,18 @@ generate_all_segments(Segments, Labels, Suffix, SegCodes) :-
 
 generate_one_segment(Labels, Suffix, AllSegments, Name-Instrs, ThisSegCodes) :-
     segment_func_name(Name, Suffix, FuncName),
-    classify_segment_head(Instrs, HeadType, BodyInstrs0),
+    % If this segment's body does not end in a control-transfer
+    % instruction, control falls through to the next label in WAM
+    % order. The lowered segments are independent functions, so make
+    % that fall-through explicit by appending a synthetic jump to the
+    % next segment. This is what wires an if-then-else else-branch
+    % (which ends in plain head/body instructions, not a jump) to its
+    % continuation; without it the else segment returned a raw
+    % mid-execution state instead of proceeding. Well-formed clause
+    % segments already end in proceed/execute/fail, so this is a no-op
+    % for every non-ITE predicate (output stays byte-identical).
+    maybe_add_fallthrough(Name, Instrs, AllSegments, Instrs1),
+    classify_segment_head(Instrs1, HeadType, Prefix, BodyInstrs0),
     % When a retry/trust segment has an empty body (all instructions
     % were placed in a sibling _body segment for switch_on_constant
     % dispatch), inject a tail-call to the body function so the
@@ -921,7 +932,47 @@ generate_one_segment(Labels, Suffix, AllSegments, Name-Instrs, ThisSegCodes) :-
     ;   BodyInstrs = BodyInstrs0
     ),
     split_body_at_calls(BodyInstrs, SubSegs),
-    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, Suffix, ThisSegCodes).
+    emit_sub_segments(SubSegs, FuncName, HeadType, Prefix, Labels, Suffix, ThisSegCodes).
+
+%% maybe_add_fallthrough(+Name, +Instrs, +AllSegments, -Instrs1)
+%  Append a synthetic `jump(NextLabel)` when this segment's last
+%  instruction is not a control transfer and another segment follows it
+%  in WAM order — making the implicit PC fall-through explicit for the
+%  independent lowered segment functions. No-op (Instrs1 == Instrs) for
+%  the last segment or any segment that already ends in a terminal, so
+%  every non-ITE predicate is unaffected.
+maybe_add_fallthrough(Name, Instrs, AllSegments, Instrs1) :-
+    (   Instrs \= [],
+        last(Instrs, _-LastInstr),
+        \+ is_terminal_instr(LastInstr),
+        next_segment_label(Name, AllSegments, NextLabel)
+    ->  append(Instrs, [fallthrough-jump(NextLabel)], Instrs1)
+    ;   Instrs1 = Instrs
+    ).
+
+%% is_terminal_instr(+Instr)
+%  Instructions that transfer control away from the straight-line flow,
+%  so the following label is NOT reached by fall-through. call/execute
+%  carry their own continuation; end_aggregate throws fail.
+is_terminal_instr(proceed).
+is_terminal_instr(execute(_)).
+is_terminal_instr(fail).
+is_terminal_instr(halt).
+is_terminal_instr(jump(_)).
+is_terminal_instr(call(_, _)).
+is_terminal_instr(end_aggregate(_)).
+% A segment consisting of (or ending in) a choice-point head dispatches
+% through the CP / empty-body sibling injection, never via PC fall-through,
+% so it must not receive a synthetic jump.
+is_terminal_instr(try_me_else(_)).
+is_terminal_instr(retry_me_else(_)).
+is_terminal_instr(trust_me).
+
+%% next_segment_label(+Name, +AllSegments, -NextLabel)
+%  The label of the segment immediately following Name in WAM order.
+%  Fails when Name is the last segment.
+next_segment_label(Name, AllSegments, NextLabel) :-
+    append(_, [Name-_, NextLabel-_ | _], AllSegments), !.
 
 %% split_body_at_calls(+Instrs, -SubSegs)
 %  Splits a flat instr list into sub-segment lists, cutting after every
@@ -964,17 +1015,28 @@ split_body_at_calls_([Instr | Rest], AccRev, Segs) :-
 %  to lower_instr_list (so switch_on_constant arms pick up the right
 %  target names). BaseFunc is already suffixed by the caller, so the
 %  `_kN` continuation format produces e.g. `clause_main_impl_k1`.
-emit_sub_segments([OnlySeg], BaseFunc, HeadType, Labels, Suffix, [Code]) :-
+emit_sub_segments([OnlySeg], BaseFunc, HeadType, Prefix, Labels, Suffix, [Code]) :-
+    lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode),
     lower_instr_list(OnlySeg, Labels, BaseFunc, Suffix, Exprs),
     atomic_list_concat(Exprs, '\n', BodyCode),
-    wrap_segment(BaseFunc, HeadType, BodyCode, Suffix, Code).
+    wrap_segment(BaseFunc, HeadType, PfxCode, BodyCode, Suffix, Code).
 
-emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Labels, Suffix, [FirstCode | MoreCodes]) :-
+emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Prefix, Labels, Suffix, [FirstCode | MoreCodes]) :-
     MoreSegs = [_|_],
     format(string(NextFunc), '~w_k1', [BaseFunc]),
+    lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode),
     lower_seg_with_continuation(FirstSeg, NextFunc, Labels, BaseFunc, Suffix, FirstBody),
-    wrap_segment(BaseFunc, HeadType, FirstBody, Suffix, FirstCode),
+    wrap_segment(BaseFunc, HeadType, PfxCode, FirstBody, Suffix, FirstCode),
     emit_cont_segments(MoreSegs, BaseFunc, 1, Labels, Suffix, MoreCodes).
+
+%% lower_prefix_code(+Prefix, +Labels, +BaseFunc, +Suffix, -PfxCode)
+%  Lower the pre-head instructions to Elixir source. "" when there is no
+%  prefix (every ordinary clause), which keeps wrap_segment output
+%  byte-for-byte identical to before.
+lower_prefix_code([], _Labels, _BaseFunc, _Suffix, "") :- !.
+lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode) :-
+    lower_instr_list(Prefix, Labels, BaseFunc, Suffix, Exprs),
+    atomic_list_concat(Exprs, '\n', PfxCode).
 
 emit_cont_segments([FinalSeg], BaseFunc, Idx, Labels, Suffix, [Code]) :-
     format(string(FuncName), '~w_k~w', [BaseFunc, Idx]),
@@ -1126,12 +1188,36 @@ segment_func_name(Label, Suffix, Name) :-
     ;   format(string(Name), "~w~w", [BaseName, Suffix])
     ).
 
-classify_segment_head(Instrs, HeadType, BodyInstrs) :-
-    (   select(_PC-try_me_else(L), Instrs, BodyInstrs) -> HeadType = try_me_else(L)
-    ;   select(_PC-retry_me_else(L), Instrs, BodyInstrs) -> HeadType = retry_me_else(L)
-    ;   select(_PC-trust_me, Instrs, BodyInstrs) -> HeadType = trust_me
-    ;   HeadType = none, BodyInstrs = Instrs
-    ), !.
+% classify_segment_head(+Instrs, -HeadType, -Prefix, -BodyInstrs)
+%
+% Prefix holds any instructions that precede the choice-point head
+% (try_me_else / retry_me_else / trust_me). For ordinary clauses the head
+% is the first instruction so Prefix is []. For an if-then-else the WAM
+% emits the shared head-arg setup (allocate, get_variable Y1.., get_level)
+% BEFORE the try_me_else; those must run before the choice point is
+% snapshotted so the else branch (which restores to that snapshot on
+% backtrack) still sees the permanent registers. Using append/3 (rather
+% than the former select/3) preserves that prefix in order.
+classify_segment_head(Instrs, HeadType, Prefix, BodyInstrs) :-
+    (   append(Pre0, [_-try_me_else(L)|Body0], Instrs) -> HeadType = try_me_else(L)
+    ;   append(Pre0, [_-retry_me_else(L)|Body0], Instrs) -> HeadType = retry_me_else(L)
+    ;   append(Pre0, [_-trust_me|Body0], Instrs) -> HeadType = trust_me
+    ;   HeadType = none, Pre0 = [], Body0 = Instrs
+    ), !,
+    % switch_on_* indexing instructions can precede the head try_me_else
+    % (multi-clause first-argument indexing); they manipulate the choice
+    % point this segment pushes, so they must run AFTER it — keep them at
+    % the front of the body, not in the pre-snapshot prefix. The remaining
+    % pre-head instructions (an if-then-else's allocate / get_variable /
+    % get_level head setup) form the real prefix. For ordinary clauses
+    % Pre0 is [] (or all switches), so Prefix is [] and output is
+    % byte-for-byte identical to before.
+    partition(is_switch_instr_pc, Pre0, SwitchPre, Prefix),
+    append(SwitchPre, Body0, BodyInstrs).
+
+is_switch_instr_pc(_-Instr) :-
+    functor(Instr, F, _),
+    atom_concat(switch_on_, _, F).
 
 % Phase 4b.5: _branch variant emission. When Suffix is "_branch" the
 % function is called directly by the Tier-2 super-wrapper as one of
@@ -1141,8 +1227,21 @@ classify_segment_head(Instrs, HeadType, BodyInstrs) :-
 % producing duplicate solutions across branches; the chain-CP
 % finding from Phase 4b's runtime probe). The no-push shape mirrors
 % the existing trust_me / none templates.
-wrap_segment(FuncName, _HeadType, BodyCode, "_branch", Code) :-
+% PfxCode (3rd arg) is the lowered pre-head prefix — empty "" for every
+% ordinary clause (head is the first instruction), non-empty only for an
+% if-then-else's shared head-arg setup. For the choice-point heads
+% (try_me_else / retry_me_else) the prefix is emitted BEFORE the cp
+% snapshot so the snapshot captures the permanent registers the else
+% branch needs; for the no-snapshot heads it is prepended to the body.
+% wrap_pfx_lead/2 and wrap_pfx_body/3 collapse to byte-identical output
+% when PfxCode is "".
+wrap_pfx_body("", Body, Body) :- !.
+wrap_pfx_body(PfxCode, Body, Combined) :-
+    atomic_list_concat([PfxCode, '\n', Body], Combined).
+
+wrap_segment(FuncName, _HeadType, PfxCode, BodyCode0, "_branch", Code) :-
     !,
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1156,7 +1255,10 @@ wrap_segment(FuncName, _HeadType, BodyCode, "_branch", Code) :-
     end
   end', [FuncName, BodyCode]).
 
-wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
+% No prefix (every ordinary clause): the cp snapshot sits before the
+% try, byte-for-byte identical to the pre-change emitter.
+wrap_segment(FuncName, try_me_else(L), "", BodyCode, Suffix, Code) :-
+    !,
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
@@ -1174,8 +1276,33 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
         end
     end
   end', [FuncName, FallbackFunc, BodyCode]).
+% if-then-else prefix: run the shared head setup INSIDE the try and take
+% the cp snapshot after it, so the else branch (which restores to the
+% snapshot on backtrack) sees the permanent registers, and any failing
+% head match in the prefix backtracks cleanly through the existing choice
+% points rather than escaping the function.
+wrap_segment(FuncName, try_me_else(L), PfxCode, BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
+    format(string(Code),
+'  defp ~w(state) do
+    try do
+~w
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}
+~w
+    catch
+      {:fail, s} ->
+        case WamRuntime.backtrack(s) do
+          :fail -> throw({:fail, %{s | choice_points: []}})
+          other -> other
+        end
+    end
+  end', [FuncName, PfxCode, FallbackFunc, BodyCode]).
 
-wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
+wrap_segment(FuncName, retry_me_else(L), "", BodyCode, Suffix, Code) :-
+    !,
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
@@ -1193,13 +1320,33 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
         end
     end
   end', [FuncName, FallbackFunc, BodyCode]).
+wrap_segment(FuncName, retry_me_else(L), PfxCode, BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
+    format(string(Code),
+'  defp ~w(state) do
+    try do
+~w
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}
+~w
+    catch
+      {:fail, s} ->
+        case WamRuntime.backtrack(s) do
+          :fail -> throw({:fail, %{s | choice_points: []}})
+          other -> other
+        end
+    end
+  end', [FuncName, PfxCode, FallbackFunc, BodyCode]).
 
 % Suffix is unused here because trust_me / none clauses have no
 % try_me_else fallback label to resolve through segment_func_name/3
 % — only the try_me_else / retry_me_else arms above need it. Suffix
 % still flows into BodyCode via lower_instr_list/5, so any
 % switch_on_constant inside the body picks the right `_impl` target.
-wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
+wrap_segment(FuncName, trust_me, PfxCode, BodyCode0, _Suffix, Code) :-
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1213,7 +1360,8 @@ wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
     end
   end', [FuncName, BodyCode]).
 
-wrap_segment(FuncName, none, BodyCode, _Suffix, Code) :-
+wrap_segment(FuncName, none, PfxCode, BodyCode0, _Suffix, Code) :-
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1624,6 +1772,13 @@ instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type
 instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, WitnessStr],
                  begin_aggregate(Type, ValReg, ResReg, WitnessStr)).
 instr_from_parts(["end_aggregate", ValReg], end_aggregate(ValReg)).
+% if-then-else / negation / once soft-cut commit and the unconditional
+% jump that ends a then-branch. Previously these fell through to raw/1
+% and raised "TODO" at runtime, so any predicate containing ( C -> T ; E ),
+% \+ G or once/1 crashed (cut_ite) or returned a malformed mid-execution
+% state (the else branch never reached its continuation).
+instr_from_parts(["cut_ite"], cut_ite).
+instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(Parts, raw(Combined)) :-
     atomic_list_concat(Parts, ' ', Combined).
 
@@ -1733,8 +1888,40 @@ wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, _Suffix, Code
       s -> s
     end', [CLit]).
 
-wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
-    Code = '    :ok # Handled by wrap_segment'.
+% cut_ite — the soft-cut commit of ( Cond -> Then ; Else ) / \+ / once.
+% When the condition succeeds we commit to the then-branch by discarding
+% the choice point the ITE's try_me_else pushed (it points at the else
+% segment). Dropping the top CP is the standard cut_ite semantics; the
+% guard keeps it safe if the CP stack is unexpectedly empty.
+wam_elixir_lower_instr(cut_ite, _PC, _Labels, _FuncName, _Suffix, Code) :-
+    Code = '    state = case state.choice_points do
+      [_ite_cp | rest] -> %{state | choice_points: rest}
+      [] -> state
+    end'.
+
+% jump L — unconditional transfer to label L's segment. Ends a then-branch
+% (jump to the continuation) and is also injected as the else branch's
+% fall-through (see maybe_add_fallthrough/4). Tail-calls the segment
+% function, threading the current Suffix so _impl jumps to _impl and
+% _branch to _branch.
+wam_elixir_lower_instr(jump(L), _PC, _Labels, _FuncName, Suffix, Code) :-
+    segment_func_name(L, Suffix, Target),
+    format(string(Code), '    ~w(state)', [Target]).
+
+% A try_me_else reaching this clause is in BODY position (the segment's
+% head try_me_else is removed by classify_segment_head and realised by
+% wrap_segment). That only happens for a NESTED if-then-else, where the
+% inner ITE's try_me_else follows the outer commit with no intervening
+% label. Push its choice point here, pointing at the inner else segment,
+% mirroring wrap_segment's snapshot — without this the inner else is
+% unreachable and the inner condition's failure escapes the predicate.
+wam_elixir_lower_instr(try_me_else(L), _PC, _Labels, _FuncName, Suffix, Code) :-
+    segment_func_name(L, Suffix, ElseFunc),
+    format(string(Code),
+'    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}', [ElseFunc]).
 
 wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.

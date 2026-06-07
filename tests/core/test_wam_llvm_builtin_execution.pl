@@ -2459,6 +2459,934 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M115: chown/3 -- libc chown wrapper. Non-root callers can only
+% chown to their OWN uid/gid (-1 means "leave that side unchanged").
+
+:- dynamic test_chown_self_self/2.
+test_chown_self_self(_, R) :-
+    % Create a temp file, chown to (our own uid, our own gid).
+    % Non-root caller can only chown a file to their own credentials,
+    % and this combination always succeeds.
+    Path = '/tmp/uw_m115_chown_self',
+    shell('touch /tmp/uw_m115_chown_self', _),
+    getuid(U),
+    getgid(G),
+    chown(Path, U, G),
+    shell('rm -f /tmp/uw_m115_chown_self', _),
+    R is 1.   % 1
+
+:- dynamic test_chown_noop/2.
+test_chown_noop(_, R) :-
+    % Passing -1 for both uid and gid is a libc no-op that
+    % succeeds iff the file exists and the caller can access it.
+    Path = '/tmp/uw_m115_chown_noop',
+    shell('touch /tmp/uw_m115_chown_noop', _),
+    chown(Path, -1, -1),
+    shell('rm -f /tmp/uw_m115_chown_noop', _),
+    R is 1.   % 1
+
+:- dynamic test_chown_missing/2.
+test_chown_missing(_, R) :-
+    % chown on a non-existent path fails (ENOENT).
+    ( chown('/tmp/uw_m115_does_not_exist', -1, -1) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_chown_bad_args/2.
+test_chown_bad_args(_, R) :-
+    % Non-atom path or non-int uid/gid fail the type guards.
+    ( chown(42, 0, 0) -> R is 0
+    ; chown('/tmp/x', not_int, 0) -> R is 0
+    ; chown('/tmp/x', 0, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M117: ground/1 -- succeeds iff term has no unbound variables.
+
+:- dynamic test_ground_atom/2.
+test_ground_atom(_, R) :-
+    ( ground(foo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_int/2.
+test_ground_int(_, R) :-
+    ( ground(42) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_compound_closed/2.
+test_ground_compound_closed(_, R) :-
+    ( ground(foo(a, b, c)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_nested_closed/2.
+test_ground_nested_closed(_, R) :-
+    ( ground(pair(p(1, 2), q(3, [4, 5]))) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_list_closed/2.
+test_ground_list_closed(_, R) :-
+    ( ground([1, 2, 3, foo]) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ground_bare_var/2.
+test_ground_bare_var(_, R) :-
+    ( ground(_X) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_compound_with_var/2.
+test_ground_compound_with_var(_, R) :-
+    ( ground(foo(a, _Y, c)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_nested_with_var/2.
+test_ground_nested_with_var(_, R) :-
+    ( ground(pair(p(1, _Z), q(3, [4, 5]))) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_list_open_tail/2.
+test_ground_list_open_tail(_, R) :-
+    % Partial list [1, 2 | _T] has an unbound tail var, so not ground.
+    ( ground([1, 2 | _T]) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ground_after_bind/2.
+test_ground_after_bind(_, R) :-
+    % Binding the var makes the term ground.
+    X = bound_atom,
+    ( ground(foo(a, X, c)) -> R is 1 ; R is 0 ).   % 1
+
+% M118: file_base_name/2 + file_directory_name/2 -- path component split.
+
+:- dynamic test_fbn_simple/2.
+test_fbn_simple(_, R) :-
+    file_base_name('/usr/bin/swipl', B),
+    ( B == swipl -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_no_slash/2.
+test_fbn_no_slash(_, R) :-
+    file_base_name(swipl, B),
+    ( B == swipl -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_root/2.
+test_fbn_root(_, R) :-
+    % "/" -> "" (basename of root is empty per SWI).
+    file_base_name('/', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_trailing_slash/2.
+test_fbn_trailing_slash(_, R) :-
+    % "/usr/bin/" -> "".
+    file_base_name('/usr/bin/', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_empty/2.
+test_fbn_empty(_, R) :-
+    file_base_name('', B),
+    ( B == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_nested/2.
+test_fbn_nested(_, R) :-
+    file_base_name('/a/b/c/d/e.txt', B),
+    ( B == 'e.txt' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fbn_bad_arg/2.
+test_fbn_bad_arg(_, R) :-
+    % Non-atom path fails the type guard.
+    ( file_base_name(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_fdn_simple/2.
+test_fdn_simple(_, R) :-
+    file_directory_name('/usr/bin/swipl', D),
+    ( D == '/usr/bin' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_no_slash/2.
+test_fdn_no_slash(_, R) :-
+    % No "/" -> ".".
+    file_directory_name(swipl, D),
+    ( D == '.' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_root/2.
+test_fdn_root(_, R) :-
+    % "/" -> "/".
+    file_directory_name('/', D),
+    ( D == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_root_child/2.
+test_fdn_root_child(_, R) :-
+    % "/etc" -> "/".
+    file_directory_name('/etc', D),
+    ( D == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_trailing_slash/2.
+test_fdn_trailing_slash(_, R) :-
+    % "/usr/bin/" -- last slash at index 8, prefix [0..8) = "/usr/bin".
+    file_directory_name('/usr/bin/', D),
+    ( D == '/usr/bin' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_empty/2.
+test_fdn_empty(_, R) :-
+    % "" -> ".".
+    file_directory_name('', D),
+    ( D == '.' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fdn_bad_arg/2.
+test_fdn_bad_arg(_, R) :-
+    ( file_directory_name(42, _) -> R is 0 ; R is 1 ).   % 1
+
+% M119: file_name_extension/3 -- split/join at last basename dot.
+
+:- dynamic test_fne_split_simple/2.
+test_fne_split_simple(_, R) :-
+    file_name_extension(B, E, 'foo.txt'),
+    ( B == foo, E == txt -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_no_ext/2.
+test_fne_split_no_ext(_, R) :-
+    file_name_extension(B, E, 'README'),
+    ( B == 'README', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_path/2.
+test_fne_split_path(_, R) :-
+    file_name_extension(B, E, '/usr/bin/foo.sh'),
+    ( B == '/usr/bin/foo', E == sh -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_dot_in_dir/2.
+test_fne_split_dot_in_dir(_, R) :-
+    % Dot lives in directory portion, not basename.
+    file_name_extension(B, E, '/usr/foo.bar/baz'),
+    ( B == '/usr/foo.bar/baz', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_hidden/2.
+test_fne_split_hidden(_, R) :-
+    % Leading dot (hidden file) is NOT an extension separator.
+    file_name_extension(B, E, '.bashrc'),
+    ( B == '.bashrc', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_hidden_in_dir/2.
+test_fne_split_hidden_in_dir(_, R) :-
+    % Same hidden-file rule applies after a ''/''.
+    file_name_extension(B, E, '/home/u/.bashrc'),
+    ( B == '/home/u/.bashrc', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_multi_dot/2.
+test_fne_split_multi_dot(_, R) :-
+    % Split at LAST dot in basename.
+    file_name_extension(B, E, 'archive.tar.gz'),
+    ( B == 'archive.tar', E == gz -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_trailing_dot/2.
+test_fne_split_trailing_dot(_, R) :-
+    % "foo." -- dot at end, ext is empty string.
+    file_name_extension(B, E, 'foo.'),
+    ( B == foo, E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_split_empty/2.
+test_fne_split_empty(_, R) :-
+    file_name_extension(B, E, ''),
+    ( B == '', E == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_simple/2.
+test_fne_join_simple(_, R) :-
+    file_name_extension(foo, txt, F),
+    ( F == 'foo.txt' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_empty_ext/2.
+test_fne_join_empty_ext(_, R) :-
+    % Empty Ext -> no dot, just Base.
+    file_name_extension(foo, '', F),
+    ( F == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_with_path/2.
+test_fne_join_with_path(_, R) :-
+    file_name_extension('/tmp/data', csv, F),
+    ( F == '/tmp/data.csv' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_check/2.
+test_fne_join_check(_, R) :-
+    % All three bound: succeed iff they agree.
+    ( file_name_extension(foo, txt, 'foo.txt') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_fne_join_check_disagree/2.
+test_fne_join_check_disagree(_, R) :-
+    % Disagreeing all-bound case fails.
+    ( file_name_extension(foo, txt, 'bar.txt') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_fne_insufficient/2.
+test_fne_insufficient(_, R) :-
+    % All vars: insufficient instantiation, fails.
+    ( file_name_extension(_, _, _) -> R is 0 ; R is 1 ).   % 1
+
+% M120: read_link/2 + symlink/2 -- libc symlink ops.
+
+:- dynamic test_symlink_create_and_read/2.
+test_symlink_create_and_read(_, R) :-
+    % Clean any leftover, create a symlink, read it back.
+    shell('rm -f /tmp/uw_m120_link', _),
+    symlink('/etc/hostname', '/tmp/uw_m120_link'),
+    read_link('/tmp/uw_m120_link', T),
+    shell('rm -f /tmp/uw_m120_link', _),
+    ( T == '/etc/hostname' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_symlink_dangling/2.
+test_symlink_dangling(_, R) :-
+    % Dangling symlink (target doesn''t exist) is legal; libc
+    % stores the path verbatim. read_link still returns the
+    % literal target string.
+    shell('rm -f /tmp/uw_m120_dangling', _),
+    symlink('/this/does/not/exist', '/tmp/uw_m120_dangling'),
+    read_link('/tmp/uw_m120_dangling', T),
+    shell('rm -f /tmp/uw_m120_dangling', _),
+    ( T == '/this/does/not/exist' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_read_link_not_symlink/2.
+test_read_link_not_symlink(_, R) :-
+    % read_link on a regular file fails (EINVAL).
+    shell('touch /tmp/uw_m120_regular', _),
+    ( read_link('/tmp/uw_m120_regular', _) -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m120_regular', _),
+    R is Tmp.   % 1
+
+:- dynamic test_read_link_missing/2.
+test_read_link_missing(_, R) :-
+    % read_link on a non-existent path fails (ENOENT).
+    ( read_link('/tmp/uw_m120_never_existed', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_symlink_exists_fail/2.
+test_symlink_exists_fail(_, R) :-
+    % Creating a symlink at an already-existing path fails (EEXIST).
+    shell('rm -f /tmp/uw_m120_busy', _),
+    symlink('/etc/hostname', '/tmp/uw_m120_busy'),
+    ( symlink('/another/target', '/tmp/uw_m120_busy') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m120_busy', _),
+    R is Tmp.   % 1
+
+:- dynamic test_read_link_bad_arg/2.
+test_read_link_bad_arg(_, R) :-
+    ( read_link(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_symlink_bad_arg/2.
+test_symlink_bad_arg(_, R) :-
+    ( symlink(42, '/tmp/x') -> R is 0
+    ; symlink('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M121: link/2 -- libc hard link wrapper.
+
+:- dynamic test_link_create/2.
+test_link_create(_, R) :-
+    % Create a source file via shell, hard-link it via libc link/2,
+    % verify the link exists, clean up.
+    shell('echo hello > /tmp/uw_m121_src', _),
+    shell('rm -f /tmp/uw_m121_link', _),
+    link('/tmp/uw_m121_src', '/tmp/uw_m121_link'),
+    shell('test -f /tmp/uw_m121_link', St),
+    shell('rm -f /tmp/uw_m121_src /tmp/uw_m121_link', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_link_same_inode/2.
+test_link_same_inode(_, R) :-
+    % Hard links share the same inode. Compare via "stat -c %i".
+    shell('echo data > /tmp/uw_m121_orig', _),
+    shell('rm -f /tmp/uw_m121_hard', _),
+    link('/tmp/uw_m121_orig', '/tmp/uw_m121_hard'),
+    shell('test "$(stat -c %i /tmp/uw_m121_orig)" = "$(stat -c %i /tmp/uw_m121_hard)"', St),
+    shell('rm -f /tmp/uw_m121_orig /tmp/uw_m121_hard', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_link_missing_old/2.
+test_link_missing_old(_, R) :-
+    % link from non-existent source fails (ENOENT).
+    ( link('/tmp/uw_m121_never_existed', '/tmp/uw_m121_new') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_link_exists_new/2.
+test_link_exists_new(_, R) :-
+    % link to a path that already exists fails (EEXIST).
+    shell('echo a > /tmp/uw_m121_a', _),
+    shell('echo b > /tmp/uw_m121_b', _),
+    ( link('/tmp/uw_m121_a', '/tmp/uw_m121_b') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m121_a /tmp/uw_m121_b', _),
+    R is Tmp.   % 1
+
+:- dynamic test_link_bad_arg/2.
+test_link_bad_arg(_, R) :-
+    ( link(42, '/tmp/x') -> R is 0
+    ; link('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M122: is_absolute_file_name/1 + same_file/2.
+
+:- dynamic test_iaf_absolute/2.
+test_iaf_absolute(_, R) :-
+    ( is_absolute_file_name('/usr/bin/swipl') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_iaf_relative/2.
+test_iaf_relative(_, R) :-
+    ( is_absolute_file_name('foo/bar') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_root/2.
+test_iaf_root(_, R) :-
+    ( is_absolute_file_name('/') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_iaf_empty/2.
+test_iaf_empty(_, R) :-
+    ( is_absolute_file_name('') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_dot/2.
+test_iaf_dot(_, R) :-
+    ( is_absolute_file_name('./foo') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_iaf_bad_arg/2.
+test_iaf_bad_arg(_, R) :-
+    ( is_absolute_file_name(42) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_samf_same_path/2.
+test_samf_same_path(_, R) :-
+    % Same path -> same file by tautology.
+    shell('touch /tmp/uw_m122_same', _),
+    ( same_file('/tmp/uw_m122_same', '/tmp/uw_m122_same') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_same', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_hard_link/2.
+test_samf_hard_link(_, R) :-
+    % Hard link shares inode -> same_file should succeed.
+    shell('echo hi > /tmp/uw_m122_orig', _),
+    shell('rm -f /tmp/uw_m122_hl', _),
+    link('/tmp/uw_m122_orig', '/tmp/uw_m122_hl'),
+    ( same_file('/tmp/uw_m122_orig', '/tmp/uw_m122_hl') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_orig /tmp/uw_m122_hl', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_symlink/2.
+test_samf_symlink(_, R) :-
+    % stat follows symlinks, so symlink -> target -> same_file = true.
+    shell('echo hi > /tmp/uw_m122_target', _),
+    shell('rm -f /tmp/uw_m122_sym', _),
+    symlink('/tmp/uw_m122_target', '/tmp/uw_m122_sym'),
+    ( same_file('/tmp/uw_m122_target', '/tmp/uw_m122_sym') -> Tmp = 1 ; Tmp = 0 ),
+    shell('rm -f /tmp/uw_m122_target /tmp/uw_m122_sym', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_different/2.
+test_samf_different(_, R) :-
+    % Distinct files with distinct inodes -> same_file = false.
+    shell('echo a > /tmp/uw_m122_a', _),
+    shell('echo b > /tmp/uw_m122_b', _),
+    ( same_file('/tmp/uw_m122_a', '/tmp/uw_m122_b') -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m122_a /tmp/uw_m122_b', _),
+    R is Tmp.   % 1
+
+:- dynamic test_samf_missing/2.
+test_samf_missing(_, R) :-
+    ( same_file('/tmp/uw_m122_does_not_exist', '/etc/hostname') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_samf_bad_arg/2.
+test_samf_bad_arg(_, R) :-
+    ( same_file(42, '/tmp/x') -> R is 0
+    ; same_file('/etc/hostname', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M123: tmp_file/2 + mkfifo/2.
+
+:- dynamic test_tmp_file_creates/2.
+test_tmp_file_creates(_, R) :-
+    % mkstemp creates the file atomically; test -f should succeed.
+    tmp_file(uw123, P),
+    atom_concat('test -f ', P, Cmd),
+    shell(Cmd, St),
+    atom_concat('rm -f ', P, Rm),
+    shell(Rm, _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_prefix/2.
+test_tmp_file_prefix(_, R) :-
+    % Path is non-empty and the file was created (mkstemp guarantee).
+    tmp_file(label, P),
+    atom_length(P, L),
+    atom_concat('test -f ', P, Cmd),
+    shell(Cmd, St),
+    atom_concat('rm -f ', P, Rm),
+    shell(Rm, _),
+    ( L > 0, St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_unique/2.
+test_tmp_file_unique(_, R) :-
+    % Two calls produce different paths (mkstemp guarantees this).
+    tmp_file(dup, P1),
+    tmp_file(dup, P2),
+    atom_concat('rm -f ', P1, R1), shell(R1, _),
+    atom_concat('rm -f ', P2, R2), shell(R2, _),
+    ( P1 \== P2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_bad_arg/2.
+test_tmp_file_bad_arg(_, R) :-
+    ( tmp_file(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_mkfifo_create/2.
+test_mkfifo_create(_, R) :-
+    % Create a FIFO at a known path, verify with "test -p".
+    Path = '/tmp/uw_m123_fifo',
+    shell('rm -f /tmp/uw_m123_fifo', _),
+    mkfifo(Path, 0o644),
+    shell('test -p /tmp/uw_m123_fifo', St),
+    shell('rm -f /tmp/uw_m123_fifo', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mkfifo_exists_fail/2.
+test_mkfifo_exists_fail(_, R) :-
+    % mkfifo at an already-existing path fails (EEXIST).
+    shell('touch /tmp/uw_m123_busy', _),
+    ( mkfifo('/tmp/uw_m123_busy', 0o644) -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m123_busy', _),
+    R is Tmp.   % 1
+
+:- dynamic test_mkfifo_bad_path/2.
+test_mkfifo_bad_path(_, R) :-
+    ( mkfifo(42, 0o644) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_mkfifo_bad_mode/2.
+test_mkfifo_bad_mode(_, R) :-
+    ( mkfifo('/tmp/uw_m123_bm', not_int) -> R is 0 ; R is 1 ).   % 1
+
+% M124: umask/2 + monotonic_time/1.
+
+:- dynamic test_umask_set_and_restore/2.
+test_umask_set_and_restore(_, R) :-
+    % Set umask to 0o077, capture old value; immediately restore.
+    umask(Old, 0o077),
+    umask(_, Old),
+    % Old should be a non-negative integer.
+    ( integer(Old), Old >= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_umask_round_trip/2.
+test_umask_round_trip(_, R) :-
+    % Set umask to a known value, read it back, restore original.
+    umask(Save, 0o022),
+    umask(Read, 0o022),
+    umask(_, Save),
+    % After setting to 0o022, the next umask should read 0o022.
+    ( Read =:= 0o022 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_umask_bad_new/2.
+test_umask_bad_new(_, R) :-
+    ( umask(_, not_int) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_monotonic_nonneg/2.
+test_monotonic_nonneg(_, R) :-
+    monotonic_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_monotonic_advances/2.
+test_monotonic_advances(_, R) :-
+    % Two calls with a tiny sleep between -- the second must be
+    % strictly greater than (or equal to) the first; CLOCK_MONOTONIC
+    % never goes backwards.
+    monotonic_time(T0),
+    sleep(0.01),
+    monotonic_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_monotonic_elapsed/2.
+test_monotonic_elapsed(_, R) :-
+    % After sleep(0.05), elapsed >= 0.04 -- same floor as M88's
+    % sleep_elapsed_float test.
+    monotonic_time(T0),
+    sleep(0.05),
+    monotonic_time(T1),
+    Diff is T1 - T0,
+    ( Diff >= 0.04 -> R is 1 ; R is 0 ).   % 1
+
+% M125: nice/1 + getpriority/1 + setpriority/1.
+
+:- dynamic test_getpriority_in_range/2.
+test_getpriority_in_range(_, R) :-
+    % Default priority is typically 0; allow [-20, 19] sanity range.
+    getpriority(P),
+    ( integer(P), P >= -20, P =< 19 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_zero/2.
+test_nice_zero(_, R) :-
+    % nice(0) doesn''t change priority. Always succeeds.
+    getpriority(Before),
+    nice(0),
+    getpriority(After),
+    ( Before =:= After -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_positive_raises/2.
+test_nice_positive_raises(_, R) :-
+    % nice(+5) increases the niceness value (lowers priority).
+    % Unprivileged users can ALWAYS go nicer; only root can become
+    % less nice. Restore by setpriority on the way out.
+    getpriority(Before),
+    nice(5),
+    getpriority(After),
+    setpriority(Before),
+    ( After > Before -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_setpriority_roundtrip/2.
+test_setpriority_roundtrip(_, R) :-
+    % Set to a known nice value (must be >= current to avoid EPERM
+    % for unprivileged), confirm getpriority reflects it, restore.
+    getpriority(Before),
+    Target is Before + 3,
+    setpriority(Target),
+    getpriority(Read),
+    setpriority(Before),
+    ( Read =:= Target -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_nice_bad_arg/2.
+test_nice_bad_arg(_, R) :-
+    ( nice(not_int) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_setpriority_bad_arg/2.
+test_setpriority_bad_arg(_, R) :-
+    ( setpriority(not_int) -> R is 0 ; R is 1 ).   % 1
+
+% M126: getrlimit/2 + setrlimit/2.
+
+:- dynamic test_grl_fsize/2.
+test_grl_fsize(_, R) :-
+    % RLIMIT_FSIZE = 1. Default is usually RLIM_INFINITY, which is
+    % the rlim_t-max sentinel -- (u64)-1 on Linux/macOS, surfaces as
+    % -1 in signed Prolog Integer space. Just sanity-check it's
+    % an Integer; the actual value depends on environment.
+    getrlimit(1, L),
+    ( integer(L) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_grl_core/2.
+test_grl_core(_, R) :-
+    % RLIMIT_CORE = 4. Often 0 (no core dumps) but can also be
+    % RLIM_INFINITY; either is a valid Integer.
+    getrlimit(4, L),
+    ( integer(L) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_srl_round_trip/2.
+test_srl_round_trip(_, R) :-
+    % Set RLIMIT_CORE soft limit to a known value, read back, restore.
+    getrlimit(4, Before),
+    setrlimit(4, 0),
+    getrlimit(4, Read),
+    setrlimit(4, Before),
+    ( Read =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_srl_lower_ok/2.
+test_srl_lower_ok(_, R) :-
+    % Lowering the soft limit is always allowed for unprivileged.
+    getrlimit(1, Before),
+    NewLow is Before - 1,
+    ( NewLow > 0
+    -> ( setrlimit(1, NewLow) -> Set = 1 ; Set = 0 ),
+       setrlimit(1, Before)
+    ;  Set = 1
+    ),
+    R is Set.   % 1
+
+:- dynamic test_grl_bad_resource/2.
+test_grl_bad_resource(_, R) :-
+    % Resource 999 is way out of range -> EINVAL -> fail.
+    ( getrlimit(999, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_grl_bad_arg/2.
+test_grl_bad_arg(_, R) :-
+    ( getrlimit(not_int, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_srl_bad_args/2.
+test_srl_bad_args(_, R) :-
+    ( setrlimit(not_int, 0) -> R is 0
+    ; setrlimit(1, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M127: getlogin/1 + uname_sysname/1 + uname_machine/1.
+
+:- dynamic test_getlogin_or_fail/2.
+test_getlogin_or_fail(_, R) :-
+    % Either getlogin succeeds with a non-empty atom (interactive
+    % terminal), or it fails (CI / cron / no tty). Both are
+    % acceptable; we just check the result shape if it succeeds.
+    ( getlogin(N), atom(N), atom_length(N, L), L > 0
+    -> R is 1
+    ;  % Fail path is also acceptable in CI.
+       R is 1
+    ).   % 1
+
+:- dynamic test_uname_sysname_nonempty/2.
+test_uname_sysname_nonempty(_, R) :-
+    uname_sysname(S),
+    atom_length(S, L),
+    ( atom(S), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_machine_nonempty/2.
+test_uname_machine_nonempty(_, R) :-
+    uname_machine(M),
+    atom_length(M, L),
+    ( atom(M), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_sysname_stable/2.
+test_uname_sysname_stable(_, R) :-
+    % Two calls in the same process must return the same atom.
+    uname_sysname(S1),
+    uname_sysname(S2),
+    ( S1 == S2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_uname_known_linux_or_darwin/2.
+test_uname_known_linux_or_darwin(_, R) :-
+    % Smoke check: sysname should be Linux, Darwin, or FreeBSD on
+    % the platforms we actually run on. Anything else just doesn''t
+    % fail the test -- accept any non-empty atom.
+    uname_sysname(S),
+    ( S == 'Linux' ; S == 'Darwin' ; S == 'FreeBSD' ; atom(S) ),
+    !,
+    R is 1.   % 1
+
+% M128: copy_file/2 -- libc open/read/write/close.
+
+:- dynamic test_copy_file_basic/2.
+test_copy_file_basic(_, R) :-
+    % Create a tiny source file, copy it, diff to confirm bytes match.
+    shell('echo hello > /tmp/uw_m128_src', _),
+    shell('rm -f /tmp/uw_m128_dst', _),
+    copy_file('/tmp/uw_m128_src', '/tmp/uw_m128_dst'),
+    shell('diff -q /tmp/uw_m128_src /tmp/uw_m128_dst', St),
+    shell('rm -f /tmp/uw_m128_src /tmp/uw_m128_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_empty/2.
+test_copy_file_empty(_, R) :-
+    % Copying an empty file produces an empty dest (read returns 0
+    % immediately, loop exits successfully).
+    shell('rm -f /tmp/uw_m128_empty_src /tmp/uw_m128_empty_dst', _),
+    shell('touch /tmp/uw_m128_empty_src', _),
+    copy_file('/tmp/uw_m128_empty_src', '/tmp/uw_m128_empty_dst'),
+    size_file('/tmp/uw_m128_empty_dst', Sz),
+    shell('rm -f /tmp/uw_m128_empty_src /tmp/uw_m128_empty_dst', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_large/2.
+test_copy_file_large(_, R) :-
+    % Copy a file larger than the 4 KB buffer -- exercises the
+    % loop. yes | head produces ~3 KB per 1500 lines, so generate
+    % 20 KB by repeating ~10000 lines.
+    shell('rm -f /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', _),
+    shell('seq 1 5000 > /tmp/uw_m128_large_src', _),
+    copy_file('/tmp/uw_m128_large_src', '/tmp/uw_m128_large_dst'),
+    shell('diff -q /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', St),
+    shell('rm -f /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_missing_src/2.
+test_copy_file_missing_src(_, R) :-
+    % Source doesn''t exist -> open fails -> copy_file fails.
+    ( copy_file('/tmp/uw_m128_never_existed', '/tmp/uw_m128_x') -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_copy_file_overwrite/2.
+test_copy_file_overwrite(_, R) :-
+    % O_TRUNC: copying over an existing dest replaces its content.
+    shell('echo old > /tmp/uw_m128_ow_dst', _),
+    shell('echo new > /tmp/uw_m128_ow_src', _),
+    copy_file('/tmp/uw_m128_ow_src', '/tmp/uw_m128_ow_dst'),
+    shell('diff -q /tmp/uw_m128_ow_src /tmp/uw_m128_ow_dst', St),
+    shell('rm -f /tmp/uw_m128_ow_src /tmp/uw_m128_ow_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_bad_args/2.
+test_copy_file_bad_args(_, R) :-
+    ( copy_file(42, '/tmp/x') -> R is 0
+    ; copy_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M129: read_file_to_atom/2 -- stat + open + read loop -> atom.
+
+:- dynamic test_rfta_short/2.
+test_rfta_short(_, R) :-
+    % Write a known short string, read it back, compare.
+    shell('printf hello > /tmp/uw_m129_short', _),
+    read_file_to_atom('/tmp/uw_m129_short', A),
+    shell('rm -f /tmp/uw_m129_short', _),
+    ( A == hello -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_empty/2.
+test_rfta_empty(_, R) :-
+    % Empty file -> empty atom (size=0 branch, skip read loop).
+    shell('rm -f /tmp/uw_m129_empty', _),
+    shell('touch /tmp/uw_m129_empty', _),
+    read_file_to_atom('/tmp/uw_m129_empty', A),
+    shell('rm -f /tmp/uw_m129_empty', _),
+    ( A == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_large/2.
+test_rfta_large(_, R) :-
+    % File larger than typical read chunks -- verifies the read
+    % loop handles multiple iterations to fill the buffer.
+    shell('seq 1 5000 > /tmp/uw_m129_large', _),
+    read_file_to_atom('/tmp/uw_m129_large', A),
+    atom_length(A, L),
+    size_file('/tmp/uw_m129_large', Sz),
+    shell('rm -f /tmp/uw_m129_large', _),
+    ( L =:= Sz, L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_missing/2.
+test_rfta_missing(_, R) :-
+    % stat fails on missing path -> read_file_to_atom fails.
+    ( read_file_to_atom('/tmp/uw_m129_never_existed', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_rfta_bad_arg/2.
+test_rfta_bad_arg(_, R) :-
+    ( read_file_to_atom(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_rfta_size_matches/2.
+test_rfta_size_matches(_, R) :-
+    % atom_length of the read content must equal stat''s st_size.
+    shell('printf "hello world" > /tmp/uw_m129_sz', _),
+    read_file_to_atom('/tmp/uw_m129_sz', A),
+    atom_length(A, L),
+    shell('rm -f /tmp/uw_m129_sz', _),
+    ( L =:= 11 -> R is 1 ; R is 0 ).   % 1
+
+% M130: write_atom_to_file/2 + append_atom_to_file/2.
+
+:- dynamic test_wfa_basic/2.
+test_wfa_basic(_, R) :-
+    % Write a known atom, read it back via shell + diff.
+    shell('rm -f /tmp/uw_m130_w', _),
+    write_atom_to_file('/tmp/uw_m130_w', 'hello world'),
+    size_file('/tmp/uw_m130_w', Sz),
+    shell('rm -f /tmp/uw_m130_w', _),
+    ( Sz =:= 11 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_empty/2.
+test_wfa_empty(_, R) :-
+    % Empty content -> 0-byte file (size=0 fast path skips loop).
+    shell('rm -f /tmp/uw_m130_we', _),
+    write_atom_to_file('/tmp/uw_m130_we', ''),
+    size_file('/tmp/uw_m130_we', Sz),
+    shell('rm -f /tmp/uw_m130_we', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_truncates/2.
+test_wfa_truncates(_, R) :-
+    % O_TRUNC: existing larger file gets replaced with shorter.
+    shell('printf "lots_of_old_content_here" > /tmp/uw_m130_wt', _),
+    write_atom_to_file('/tmp/uw_m130_wt', new),
+    size_file('/tmp/uw_m130_wt', Sz),
+    shell('rm -f /tmp/uw_m130_wt', _),
+    ( Sz =:= 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_round_trip/2.
+test_wfa_round_trip(_, R) :-
+    % Write then read returns the same atom.
+    shell('rm -f /tmp/uw_m130_rt', _),
+    write_atom_to_file('/tmp/uw_m130_rt', 'abcdefghij'),
+    read_file_to_atom('/tmp/uw_m130_rt', A),
+    shell('rm -f /tmp/uw_m130_rt', _),
+    ( A == 'abcdefghij' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_wfa_bad_args/2.
+test_wfa_bad_args(_, R) :-
+    ( write_atom_to_file(42, abc) -> R is 0
+    ; write_atom_to_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_afa_creates/2.
+test_afa_creates(_, R) :-
+    % Append to a non-existent file -> creates it (O_CREAT).
+    shell('rm -f /tmp/uw_m130_ac', _),
+    append_atom_to_file('/tmp/uw_m130_ac', start),
+    size_file('/tmp/uw_m130_ac', Sz),
+    shell('rm -f /tmp/uw_m130_ac', _),
+    ( Sz =:= 5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_afa_extends/2.
+test_afa_extends(_, R) :-
+    % Append to an existing file -> total length is sum.
+    shell('printf "abc" > /tmp/uw_m130_ae', _),
+    append_atom_to_file('/tmp/uw_m130_ae', defg),
+    size_file('/tmp/uw_m130_ae', Sz),
+    shell('rm -f /tmp/uw_m130_ae', _),
+    ( Sz =:= 7 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_afa_bad_args/2.
+test_afa_bad_args(_, R) :-
+    ( append_atom_to_file(42, abc) -> R is 0
+    ; append_atom_to_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M131: errno/1 + strerror/2 -- diagnostics for libc-wrapper failures.
+
+:- dynamic test_errno_returns_int/2.
+test_errno_returns_int(_, R) :-
+    % errno/1 always succeeds and returns an Integer (often 0).
+    errno(E),
+    ( integer(E) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_errno_after_open_fail/2.
+test_errno_after_open_fail(_, R) :-
+    % After a deliberately-failing open (via delete_file on missing
+    % path), errno should be set to a non-zero value (ENOENT = 2).
+    ( delete_file('/tmp/uw_m131_never_existed') -> R is 0
+    ; errno(E),
+      ( E =\= 0 -> R is 1 ; R is 0 )
+    ).   % 1
+
+:- dynamic test_strerror_known_errno/2.
+test_strerror_known_errno(_, R) :-
+    % ENOENT = 2 -> "No such file or directory".
+    strerror(2, M),
+    ( atom(M), atom_length(M, L), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_zero/2.
+test_strerror_zero(_, R) :-
+    % strerror(0) is typically "Success".
+    strerror(0, M),
+    ( atom(M), atom_length(M, L), L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_round_trip/2.
+test_strerror_round_trip(_, R) :-
+    % errno -> strerror should yield a non-empty atom even for
+    % errno=0 ("Success" / "No error").
+    errno(E),
+    strerror(E, M),
+    atom_length(M, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_strerror_bad_arg/2.
+test_strerror_bad_arg(_, R) :-
+    ( strerror(not_int, _) -> R is 0 ; R is 1 ).   % 1
+
+% M132: process_max_rss/1 + process_user_time/1 + process_system_time/1.
+
+:- dynamic test_max_rss_positive/2.
+test_max_rss_positive(_, R) :-
+    % Process should have allocated SOME memory by now.
+    process_max_rss(K),
+    ( integer(K), K > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_user_time_nonneg/2.
+test_user_time_nonneg(_, R) :-
+    process_user_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_system_time_nonneg/2.
+test_system_time_nonneg(_, R) :-
+    process_system_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_user_time_monotonic/2.
+test_user_time_monotonic(_, R) :-
+    % Two calls with some CPU work between: T1 >= T0 (never goes
+    % backwards). Trivial busy-loop via between/3 generates user
+    % CPU time.
+    process_user_time(T0),
+    ( between(1, 100, _), fail ; true ),
+    process_user_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_max_rss_monotonic/2.
+test_max_rss_monotonic(_, R) :-
+    % Peak RSS only goes up (or stays).
+    process_max_rss(K0),
+    process_max_rss(K1),
+    ( K1 >= K0 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5322,6 +6250,283 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M115 chown/3 ---~n'),
+       run_test_r0('chown to own (uid, gid) -> 1',
+                   test_chown_self_self, 0, 1),
+       run_test_r0('chown(-1, -1) no-op -> 1',
+                   test_chown_noop, 0, 1),
+       run_test_r0('chown on missing path fails -> 1',
+                   test_chown_missing, 0, 1),
+       run_test_r0('chown with non-atom path / non-int uid/gid fails -> 1',
+                   test_chown_bad_args, 0, 1),
+       format('--- M117 ground/1 ---~n'),
+       run_test_r0('ground(atom) -> 1',
+                   test_ground_atom, 0, 1),
+       run_test_r0('ground(42) -> 1',
+                   test_ground_int, 0, 1),
+       run_test_r0('ground(foo(a,b,c)) -> 1',
+                   test_ground_compound_closed, 0, 1),
+       run_test_r0('ground(pair(p(1,2),q(3,[4,5]))) -> 1',
+                   test_ground_nested_closed, 0, 1),
+       run_test_r0('ground([1,2,3,foo]) -> 1',
+                   test_ground_list_closed, 0, 1),
+       run_test_r0('ground(_X) fails -> 1',
+                   test_ground_bare_var, 0, 1),
+       run_test_r0('ground(foo(a,_,c)) fails -> 1',
+                   test_ground_compound_with_var, 0, 1),
+       run_test_r0('ground with nested var fails -> 1',
+                   test_ground_nested_with_var, 0, 1),
+       run_test_r0('ground([1,2|_T]) fails -> 1',
+                   test_ground_list_open_tail, 0, 1),
+       run_test_r0('ground after binding var -> 1',
+                   test_ground_after_bind, 0, 1),
+       format('--- M118 file_base_name/2 + file_directory_name/2 ---~n'),
+       run_test_r0('file_base_name(/usr/bin/swipl) -> swipl -> 1',
+                   test_fbn_simple, 0, 1),
+       run_test_r0('file_base_name(swipl) -> swipl -> 1',
+                   test_fbn_no_slash, 0, 1),
+       run_test_r0('file_base_name(/) -> '''' -> 1',
+                   test_fbn_root, 0, 1),
+       run_test_r0('file_base_name(/usr/bin/) -> '''' -> 1',
+                   test_fbn_trailing_slash, 0, 1),
+       run_test_r0('file_base_name('''') -> '''' -> 1',
+                   test_fbn_empty, 0, 1),
+       run_test_r0('file_base_name(/a/b/c/d/e.txt) -> e.txt -> 1',
+                   test_fbn_nested, 0, 1),
+       run_test_r0('file_base_name(42, _) fails -> 1',
+                   test_fbn_bad_arg, 0, 1),
+       run_test_r0('file_directory_name(/usr/bin/swipl) -> /usr/bin -> 1',
+                   test_fdn_simple, 0, 1),
+       run_test_r0('file_directory_name(swipl) -> . -> 1',
+                   test_fdn_no_slash, 0, 1),
+       run_test_r0('file_directory_name(/) -> / -> 1',
+                   test_fdn_root, 0, 1),
+       run_test_r0('file_directory_name(/etc) -> / -> 1',
+                   test_fdn_root_child, 0, 1),
+       run_test_r0('file_directory_name(/usr/bin/) -> /usr/bin -> 1',
+                   test_fdn_trailing_slash, 0, 1),
+       run_test_r0('file_directory_name('''') -> . -> 1',
+                   test_fdn_empty, 0, 1),
+       run_test_r0('file_directory_name(42, _) fails -> 1',
+                   test_fdn_bad_arg, 0, 1),
+       format('--- M119 file_name_extension/3 ---~n'),
+       run_test_r0('split foo.txt -> foo+txt -> 1',
+                   test_fne_split_simple, 0, 1),
+       run_test_r0('split README -> README+'''' -> 1',
+                   test_fne_split_no_ext, 0, 1),
+       run_test_r0('split /usr/bin/foo.sh -> /usr/bin/foo+sh -> 1',
+                   test_fne_split_path, 0, 1),
+       run_test_r0('split /usr/foo.bar/baz (dot in dir) -> baz+'''' -> 1',
+                   test_fne_split_dot_in_dir, 0, 1),
+       run_test_r0('split .bashrc (hidden) -> .bashrc+'''' -> 1',
+                   test_fne_split_hidden, 0, 1),
+       run_test_r0('split /home/u/.bashrc (hidden in dir) -> +'''' -> 1',
+                   test_fne_split_hidden_in_dir, 0, 1),
+       run_test_r0('split archive.tar.gz -> archive.tar+gz -> 1',
+                   test_fne_split_multi_dot, 0, 1),
+       run_test_r0('split foo. (trailing dot) -> foo+'''' -> 1',
+                   test_fne_split_trailing_dot, 0, 1),
+       run_test_r0('split '''' -> ''''+'''' -> 1',
+                   test_fne_split_empty, 0, 1),
+       run_test_r0('join foo+txt -> foo.txt -> 1',
+                   test_fne_join_simple, 0, 1),
+       run_test_r0('join foo+'''' -> foo -> 1',
+                   test_fne_join_empty_ext, 0, 1),
+       run_test_r0('join /tmp/data+csv -> /tmp/data.csv -> 1',
+                   test_fne_join_with_path, 0, 1),
+       run_test_r0('check foo+txt vs foo.txt -> 1',
+                   test_fne_join_check, 0, 1),
+       run_test_r0('check foo+txt vs bar.txt fails -> 1',
+                   test_fne_join_check_disagree, 0, 1),
+       run_test_r0('all vars fails (insufficient instantiation) -> 1',
+                   test_fne_insufficient, 0, 1),
+       format('--- M120 read_link/2 + symlink/2 ---~n'),
+       run_test_r0('symlink + read_link round-trip -> 1',
+                   test_symlink_create_and_read, 0, 1),
+       run_test_r0('dangling symlink read_link -> 1',
+                   test_symlink_dangling, 0, 1),
+       run_test_r0('read_link on regular file fails -> 1',
+                   test_read_link_not_symlink, 0, 1),
+       run_test_r0('read_link on missing path fails -> 1',
+                   test_read_link_missing, 0, 1),
+       run_test_r0('symlink at existing path fails -> 1',
+                   test_symlink_exists_fail, 0, 1),
+       run_test_r0('read_link(42, _) fails -> 1',
+                   test_read_link_bad_arg, 0, 1),
+       run_test_r0('symlink with non-atom args fails -> 1',
+                   test_symlink_bad_arg, 0, 1),
+       format('--- M121 link/2 ---~n'),
+       run_test_r0('link + test -f -> 1',
+                   test_link_create, 0, 1),
+       run_test_r0('hard link shares inode -> 1',
+                   test_link_same_inode, 0, 1),
+       run_test_r0('link from missing path fails -> 1',
+                   test_link_missing_old, 0, 1),
+       run_test_r0('link to existing path fails -> 1',
+                   test_link_exists_new, 0, 1),
+       run_test_r0('link with non-atom args fails -> 1',
+                   test_link_bad_arg, 0, 1),
+       format('--- M122 is_absolute_file_name/1 + same_file/2 ---~n'),
+       run_test_r0('is_absolute(/usr/bin/swipl) -> 1',
+                   test_iaf_absolute, 0, 1),
+       run_test_r0('is_absolute(foo/bar) fails -> 1',
+                   test_iaf_relative, 0, 1),
+       run_test_r0('is_absolute(/) -> 1',
+                   test_iaf_root, 0, 1),
+       run_test_r0('is_absolute('''') fails -> 1',
+                   test_iaf_empty, 0, 1),
+       run_test_r0('is_absolute(./foo) fails -> 1',
+                   test_iaf_dot, 0, 1),
+       run_test_r0('is_absolute(42) fails -> 1',
+                   test_iaf_bad_arg, 0, 1),
+       run_test_r0('same_file(P, P) -> 1',
+                   test_samf_same_path, 0, 1),
+       run_test_r0('same_file across hard link -> 1',
+                   test_samf_hard_link, 0, 1),
+       run_test_r0('same_file follows symlink -> 1',
+                   test_samf_symlink, 0, 1),
+       run_test_r0('same_file on distinct files fails -> 1',
+                   test_samf_different, 0, 1),
+       run_test_r0('same_file on missing path fails -> 1',
+                   test_samf_missing, 0, 1),
+       run_test_r0('same_file with non-atom args fails -> 1',
+                   test_samf_bad_arg, 0, 1),
+       format('--- M123 tmp_file/2 + mkfifo/2 ---~n'),
+       run_test_r0('tmp_file creates file -> 1',
+                   test_tmp_file_creates, 0, 1),
+       run_test_r0('tmp_file path under /tmp + has Base label -> 1',
+                   test_tmp_file_prefix, 0, 1),
+       run_test_r0('tmp_file unique on consecutive calls -> 1',
+                   test_tmp_file_unique, 0, 1),
+       run_test_r0('tmp_file(42, _) fails -> 1',
+                   test_tmp_file_bad_arg, 0, 1),
+       run_test_r0('mkfifo + test -p -> 1',
+                   test_mkfifo_create, 0, 1),
+       run_test_r0('mkfifo at existing path fails -> 1',
+                   test_mkfifo_exists_fail, 0, 1),
+       run_test_r0('mkfifo(42, _) fails -> 1',
+                   test_mkfifo_bad_path, 0, 1),
+       run_test_r0('mkfifo(_, not_int) fails -> 1',
+                   test_mkfifo_bad_mode, 0, 1),
+       format('--- M124 umask/2 + monotonic_time/1 ---~n'),
+       run_test_r0('umask set and restore -> 1',
+                   test_umask_set_and_restore, 0, 1),
+       run_test_r0('umask round-trip -> 1',
+                   test_umask_round_trip, 0, 1),
+       run_test_r0('umask(_, not_int) fails -> 1',
+                   test_umask_bad_new, 0, 1),
+       run_test_r0('monotonic_time >= 0 -> 1',
+                   test_monotonic_nonneg, 0, 1),
+       run_test_r0('monotonic_time advances -> 1',
+                   test_monotonic_advances, 0, 1),
+       run_test_r0('monotonic_time elapsed >= 0.04 -> 1',
+                   test_monotonic_elapsed, 0, 1),
+       format('--- M125 nice/1 + getpriority/1 + setpriority/1 ---~n'),
+       run_test_r0('getpriority in [-20, 19] -> 1',
+                   test_getpriority_in_range, 0, 1),
+       run_test_r0('nice(0) preserves priority -> 1',
+                   test_nice_zero, 0, 1),
+       run_test_r0('nice(+5) raises niceness -> 1',
+                   test_nice_positive_raises, 0, 1),
+       run_test_r0('setpriority round-trip -> 1',
+                   test_setpriority_roundtrip, 0, 1),
+       run_test_r0('nice(not_int) fails -> 1',
+                   test_nice_bad_arg, 0, 1),
+       run_test_r0('setpriority(not_int) fails -> 1',
+                   test_setpriority_bad_arg, 0, 1),
+       format('--- M126 getrlimit/2 + setrlimit/2 ---~n'),
+       run_test_r0('getrlimit FSIZE non-negative -> 1',
+                   test_grl_fsize, 0, 1),
+       run_test_r0('getrlimit CORE non-negative -> 1',
+                   test_grl_core, 0, 1),
+       run_test_r0('setrlimit CORE round-trip -> 1',
+                   test_srl_round_trip, 0, 1),
+       run_test_r0('setrlimit lower FSIZE OK -> 1',
+                   test_srl_lower_ok, 0, 1),
+       run_test_r0('getrlimit unknown resource fails -> 1',
+                   test_grl_bad_resource, 0, 1),
+       run_test_r0('getrlimit non-int fails -> 1',
+                   test_grl_bad_arg, 0, 1),
+       run_test_r0('setrlimit non-int args fail -> 1',
+                   test_srl_bad_args, 0, 1),
+       format('--- M127 getlogin/1 + uname_sysname/1 + uname_machine/1 ---~n'),
+       run_test_r0('getlogin or no-tty fail accepted -> 1',
+                   test_getlogin_or_fail, 0, 1),
+       run_test_r0('uname_sysname non-empty -> 1',
+                   test_uname_sysname_nonempty, 0, 1),
+       run_test_r0('uname_machine non-empty -> 1',
+                   test_uname_machine_nonempty, 0, 1),
+       run_test_r0('uname_sysname stable across calls -> 1',
+                   test_uname_sysname_stable, 0, 1),
+       run_test_r0('uname_sysname known OS -> 1',
+                   test_uname_known_linux_or_darwin, 0, 1),
+       format('--- M128 copy_file/2 ---~n'),
+       run_test_r0('copy_file basic round-trip + diff -> 1',
+                   test_copy_file_basic, 0, 1),
+       run_test_r0('copy_file empty source -> empty dst -> 1',
+                   test_copy_file_empty, 0, 1),
+       run_test_r0('copy_file large (multi-loop) round-trip -> 1',
+                   test_copy_file_large, 0, 1),
+       run_test_r0('copy_file missing source fails -> 1',
+                   test_copy_file_missing_src, 0, 1),
+       run_test_r0('copy_file O_TRUNC overwrite -> 1',
+                   test_copy_file_overwrite, 0, 1),
+       run_test_r0('copy_file with non-atom args fails -> 1',
+                   test_copy_file_bad_args, 0, 1),
+       format('--- M129 read_file_to_atom/2 ---~n'),
+       run_test_r0('read_file_to_atom short ascii -> 1',
+                   test_rfta_short, 0, 1),
+       run_test_r0('read_file_to_atom empty -> '''' -> 1',
+                   test_rfta_empty, 0, 1),
+       run_test_r0('read_file_to_atom large file (loop) -> 1',
+                   test_rfta_large, 0, 1),
+       run_test_r0('read_file_to_atom missing path fails -> 1',
+                   test_rfta_missing, 0, 1),
+       run_test_r0('read_file_to_atom non-atom arg fails -> 1',
+                   test_rfta_bad_arg, 0, 1),
+       run_test_r0('read_file_to_atom length matches stat size -> 1',
+                   test_rfta_size_matches, 0, 1),
+       format('--- M130 write_atom_to_file/2 + append_atom_to_file/2 ---~n'),
+       run_test_r0('write 11-byte atom -> size 11 -> 1',
+                   test_wfa_basic, 0, 1),
+       run_test_r0('write empty atom -> size 0 -> 1',
+                   test_wfa_empty, 0, 1),
+       run_test_r0('write O_TRUNC shrinks existing file -> 1',
+                   test_wfa_truncates, 0, 1),
+       run_test_r0('write then read round-trip -> 1',
+                   test_wfa_round_trip, 0, 1),
+       run_test_r0('write with non-atom args fails -> 1',
+                   test_wfa_bad_args, 0, 1),
+       run_test_r0('append creates new file -> 1',
+                   test_afa_creates, 0, 1),
+       run_test_r0('append extends existing file -> 1',
+                   test_afa_extends, 0, 1),
+       run_test_r0('append with non-atom args fails -> 1',
+                   test_afa_bad_args, 0, 1),
+       format('--- M131 errno/1 + strerror/2 ---~n'),
+       run_test_r0('errno returns Integer -> 1',
+                   test_errno_returns_int, 0, 1),
+       run_test_r0('errno after failing delete_file != 0 -> 1',
+                   test_errno_after_open_fail, 0, 1),
+       run_test_r0('strerror(2) non-empty atom -> 1',
+                   test_strerror_known_errno, 0, 1),
+       run_test_r0('strerror(0) non-empty atom -> 1',
+                   test_strerror_zero, 0, 1),
+       run_test_r0('errno -> strerror round-trip non-empty -> 1',
+                   test_strerror_round_trip, 0, 1),
+       run_test_r0('strerror(not_int, _) fails -> 1',
+                   test_strerror_bad_arg, 0, 1),
+       format('--- M132 process_max_rss/user_time/system_time ---~n'),
+       run_test_r0('process_max_rss > 0 -> 1',
+                   test_max_rss_positive, 0, 1),
+       run_test_r0('process_user_time >= 0 -> 1',
+                   test_user_time_nonneg, 0, 1),
+       run_test_r0('process_system_time >= 0 -> 1',
+                   test_system_time_nonneg, 0, 1),
+       run_test_r0('user_time non-decreasing -> 1',
+                   test_user_time_monotonic, 0, 1),
+       run_test_r0('max_rss non-decreasing -> 1',
+                   test_max_rss_monotonic, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

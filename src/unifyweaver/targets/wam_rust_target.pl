@@ -1930,6 +1930,23 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         depth: i64,
         out: &mut Vec<i64>,
     ) {
+        // ROOT_ANCHORED_METRICS admissible prune: when a materialised
+        // min_dist_to_root table is loaded, a node whose shortest remaining
+        // distance to root exceeds the remaining depth budget cannot reach
+        // root within max_depth, so the whole branch is cut. A node absent
+        // from the table is unreachable and likewise pruned. Disabled (empty
+        // table) by default; never changes results, only avoids exploring
+        // walks that provably cannot reach root in budget.
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => {
+                    if depth + (d as i64) > max_depth as i64 {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
         // R7: route through self.edge_parents so lazy_lookups is
         // consulted before ffi_facts. This keeps the kernels_on
         // native path working under lmdb_materialisation(lazy).
@@ -3375,6 +3392,31 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
         format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
     ).
 
+%% rust_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses a backtracking-driven control construct
+%  (\+, ->, ;, once, forall, or a cut). The native Rust emitter
+%  (rust_target.pl) targets deterministic shapes (tail-recursion kernels,
+%  fact lookups) and does NOT model these: it mis-lowers them into a whole
+%  stdin-driven program whose body, under include_main(false), dangles at
+%  module level (syntax error). Mirrors go_pred_has_control_constructs/1;
+%  used to decline native and route such predicates to the lowered/WAM path.
+rust_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    rust_body_has_control(Body),
+    !.
+
+rust_body_has_control(G) :- var(G), !, fail.
+rust_body_has_control((_ -> _)) :- !.
+rust_body_has_control((_ ; _)) :- !.
+rust_body_has_control(\+ _) :- !.
+rust_body_has_control(not(_)) :- !.
+rust_body_has_control(once(_)) :- !.
+rust_body_has_control(forall(_, _)) :- !.
+rust_body_has_control(!) :- !.
+rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
+rust_body_has_control(_) :- fail.
+
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
 classify_predicates([], _, []).
@@ -3392,7 +3434,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
     ;   % Try native Rust lowering (disable WAM fallback inside rust_target
-        % so we can distinguish truly-native from WAM-needing predicates)
+        % so we can distinguish truly-native from WAM-needing predicates).
+        % Decline native for backtracking control constructs (\+, ->, ;,
+        % once, forall, cut): the native emitter mis-lowers them (see
+        % rust_pred_has_control_constructs/1), so route them to the
+        % lowered/WAM path which models choicepoints correctly.
+        \+ rust_pred_has_control_constructs(Module:Pred/Arity),
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
                 [include_main(false), wam_fallback(false)|Options], PredCode),

@@ -530,6 +530,14 @@ clojure_direct_builtin("subtract/3", "3").
 clojure_direct_builtin("subtract/3", 3).
 clojure_direct_builtin('subtract/3', "3").
 clojure_direct_builtin('subtract/3', 3).
+clojure_direct_builtin("intersection/3", "3").
+clojure_direct_builtin("intersection/3", 3).
+clojure_direct_builtin('intersection/3', "3").
+clojure_direct_builtin('intersection/3', 3).
+clojure_direct_builtin("union/3", "3").
+clojure_direct_builtin("union/3", 3).
+clojure_direct_builtin('union/3', "3").
+clojure_direct_builtin('union/3', 3).
 clojure_direct_builtin("list_to_set/2", "2").
 clojure_direct_builtin("list_to_set/2", 2).
 clojure_direct_builtin('list_to_set/2', "2").
@@ -957,6 +965,16 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "subtract/3" ; Op == 'subtract/3'),
     !,
     format(atom(Expr), '(runtime/apply-subtract-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "intersection/3" ; Op == 'intersection/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-intersection-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "union/3" ; Op == 'union/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-union-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "list_to_set/2" ; Op == 'list_to_set/2'),

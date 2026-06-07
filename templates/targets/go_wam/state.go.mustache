@@ -16,6 +16,16 @@ type TrailEntry struct {
 	Addr   int
 	Old    Value
 	HadOld bool
+	// Register-restore entry: when RegIdx >= 0, this entry records a
+	// register-alias rewrite done by bindUnbound (Regs[RegIdx] was RegOld,
+	// an Unbound, before being rewritten to the bound value). Backtrack
+	// restores Regs[RegIdx] = RegOld so the register goes back to sharing
+	// the (now-unbound) variable cell -- otherwise a register that aliased
+	// a bound var keeps the stale value across backtracking and a later
+	// rebind of the same var doesn't reach it. RegIdx == -1 for the normal
+	// Bindings-restore entry.
+	RegIdx int
+	RegOld Value
 }
 
 type AtomPair struct {
@@ -102,6 +112,11 @@ type EnvFrame struct {
 	// restore, so reading the restored Y-reg dereferences through the
 	// (still-bound) Unbound to the bound value.
 	SavedYRegs [100]Value
+	// CutB0: the predicate's call-time choicepoint height (copied from
+	// vm.PendingB0 at Allocate). A plain cut truncates choicepoints back
+	// to CutB0. Kept separate from B0 (allocate-time) because B0 drives
+	// Deallocate's physical-pop heuristic and must not change meaning.
+	CutB0 int
 }
 
 type UnifyCtx struct {
@@ -149,6 +164,12 @@ type WamState struct {
 	Ctx          *WamContext
 	PC           int
 	CP           int
+	// PendingB0: choicepoint-stack height captured by Call/Execute just
+	// before transferring to a user predicate (BEFORE its try_me_else
+	// pushes the clause-chain CP). Allocate copies it into EnvFrame.CutB0
+	// so a plain cut (!/0) truncates back to the callee's entry level --
+	// its own clause alternatives, not a caller's choicepoint.
+	PendingB0    int
 	// Regs holds A/X/Y registers in a single flat array.
 	//   * A1..A8: indices 0..7 (argument registers)
 	//   * X-regs: 8..199  (clause-local temporaries)
@@ -331,7 +352,7 @@ func (vm *WamState) setBinding(addr int, val Value) {
 
 func (vm *WamState) trailBinding(addr int) {
 	old := vm.getBinding(addr)
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil, RegIdx: -1})
 	vm.TrailLen++
 }
 
@@ -354,6 +375,14 @@ func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
+			// Trail the rewrite so backtrack restores this register to the
+			// (now-unbound) variable cell. Without this, a register that
+			// aliased u keeps the stale bound value after backtrack and a
+			// later rebind of u (e.g. a generator yielding its next
+			// solution) never reaches it -- which made forall over a
+			// generator see only the first element.
+			vm.Trail = append(vm.Trail, TrailEntry{RegIdx: idx, RegOld: reg})
+			vm.TrailLen++
 			vm.Regs[idx] = val
 		}
 	}
@@ -918,10 +947,42 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 				b.WriteString(value.String())
 			}
 			argIdx++
+		case 's':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			text, ok := vm.formatStringDirective(vm.deref(args[argIdx]))
+			if !ok {
+				return "", false
+			}
+			b.WriteString(text)
+			argIdx++
 		default:
 			b.WriteByte('~')
 			b.WriteByte(template[i])
 		}
+	}
+	return b.String(), true
+}
+
+func (vm *WamState) formatStringDirective(value Value) (string, bool) {
+	if isEmptyListValue(value) {
+		return "", true
+	}
+	if atom, ok := value.(*Atom); ok {
+		return atom.Name, true
+	}
+	items, ok := vm.listToSlice(value)
+	if !ok {
+		return "", false
+	}
+	var b strings.Builder
+	for _, item := range items {
+		code, ok := vm.deref(item).(*Integer)
+		if !ok || code.Val < 0 || code.Val > 0x10ffff {
+			return "", false
+		}
+		b.WriteRune(rune(code.Val))
 	}
 	return b.String(), true
 }
@@ -1440,7 +1501,11 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "!/0":
 		limit := 0
 		if env := vm.peekEnvFrame(); env != nil {
-			limit = env.B0
+			// CutB0 = call-time choicepoint height, so the cut removes this
+			// predicate's own clause alternatives but not a caller's CP.
+			// (B0 is allocate-time and one too high -- it would leave
+			// sibling clauses uncut, making the cut a no-op.)
+			limit = env.CutB0
 		}
 		if limit < 0 {
 			limit = 0
@@ -2735,6 +2800,12 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
+        if entry.RegIdx >= 0 {
+            // Register-alias rewrite: restore the register to the variable
+            // cell it shared before bindUnbound rewrote it to a value.
+            vm.Regs[entry.RegIdx] = entry.RegOld
+            continue
+        }
         // setBinding handles the bookkeeping: writing nil reverts an
         // address to its unbound state, exactly matching the previous
         // map-based delete-on-!HadOld for the slice rep.
