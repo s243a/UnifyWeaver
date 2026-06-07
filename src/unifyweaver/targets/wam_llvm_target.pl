@@ -3697,6 +3697,7 @@ entry:
     i32 151, label %builtin_uname_sysname
     i32 152, label %builtin_uname_machine
     i32 153, label %builtin_copy_file
+    i32 154, label %builtin_read_file_to_atom
   ]
 
 builtin_is:
@@ -6857,6 +6858,73 @@ cpf.close_both_fail:
   call i32 @close(i32 %cpf.src_fd)
   call i32 @close(i32 %cpf.dst_fd)
   ret i1 false
+
+builtin_read_file_to_atom:
+  ; M129: read_file_to_atom(+Path, -Atom) -- reads the entire file
+  ; at Path into an atom. Uses stat() to size the destination
+  ; buffer up front (st_size at offset 48, same as M76 size_file)
+  ; then arena_alloc(size+1) and a read-loop that handles short
+  ; reads (signal interruption etc) by tracking the offset and
+  ; reading remain bytes each iteration. Fails on stat error,
+  ; open error, premature EOF (read returns 0 with bytes still
+  ; outstanding -- e.g. file shrunk underneath us), or read error.
+  ; Bytes are interned verbatim including any embedded nulls;
+  ; the trailing null is added so the arena-backed atom remains
+  ; valid as a C string for downstream consumers.
+  %rfta.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rfta.t1 = call i32 @value_tag(%Value %rfta.a1)
+  %rfta.is_atom = icmp eq i32 %rfta.t1, 0
+  br i1 %rfta.is_atom, label %rfta.go, label %rfta.fail
+rfta.fail:
+  ret i1 false
+rfta.go:
+  %rfta.aid = call i64 @value_payload(%Value %rfta.a1)
+  %rfta.path = call i8* @wam_atom_to_string(i64 %rfta.aid)
+  %rfta.path_null = icmp eq i8* %rfta.path, null
+  br i1 %rfta.path_null, label %rfta.fail, label %rfta.stat
+rfta.stat:
+  %rfta.statbuf = alloca [256 x i8]
+  %rfta.statbuf_ptr = getelementptr [256 x i8], [256 x i8]* %rfta.statbuf, i32 0, i32 0
+  %rfta.stat_ret = call i32 @stat(i8* %rfta.path, i8* %rfta.statbuf_ptr)
+  %rfta.stat_ok = icmp eq i32 %rfta.stat_ret, 0
+  br i1 %rfta.stat_ok, label %rfta.read_size, label %rfta.fail
+rfta.read_size:
+  %rfta.size_ptr_i8 = getelementptr i8, i8* %rfta.statbuf_ptr, i64 48
+  %rfta.size_ptr = bitcast i8* %rfta.size_ptr_i8 to i64*
+  %rfta.size = load i64, i64* %rfta.size_ptr
+  %rfta.fd = call i32 @open(i8* %rfta.path, i32 0, i32 0)
+  %rfta.open_ok = icmp sge i32 %rfta.fd, 0
+  br i1 %rfta.open_ok, label %rfta.alloc, label %rfta.fail
+rfta.alloc:
+  call void @wam_arena_ensure()
+  %rfta.bufsize = add i64 %rfta.size, 1
+  %rfta.arena = call i8* @wam_arena_alloc(i64 %rfta.bufsize)
+  %rfta.empty = icmp eq i64 %rfta.size, 0
+  br i1 %rfta.empty, label %rfta.finalize, label %rfta.loop
+rfta.loop:
+  %rfta.off = phi i64 [ 0, %rfta.alloc ], [ %rfta.off_next, %rfta.advance ]
+  %rfta.remain = sub i64 %rfta.size, %rfta.off
+  %rfta.read_at = getelementptr i8, i8* %rfta.arena, i64 %rfta.off
+  %rfta.n = call i64 @read(i32 %rfta.fd, i8* %rfta.read_at, i64 %rfta.remain)
+  %rfta.n_le_zero = icmp sle i64 %rfta.n, 0
+  br i1 %rfta.n_le_zero, label %rfta.close_fail, label %rfta.advance
+rfta.advance:
+  %rfta.off_next = add i64 %rfta.off, %rfta.n
+  %rfta.done = icmp eq i64 %rfta.off_next, %rfta.size
+  br i1 %rfta.done, label %rfta.finalize, label %rfta.loop
+rfta.close_fail:
+  call i32 @close(i32 %rfta.fd)
+  ret i1 false
+rfta.finalize:
+  call i32 @close(i32 %rfta.fd)
+  %rfta.term = getelementptr i8, i8* %rfta.arena, i64 %rfta.size
+  store i8 0, i8* %rfta.term
+  %rfta.atom_id = call i64 @wam_intern_atom(i8* %rfta.arena, i64 %rfta.size)
+  %rfta.v0 = insertvalue %Value undef, i32 0, 0
+  %rfta.v = insertvalue %Value %rfta.v0, i64 %rfta.atom_id, 1
+  %rfta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rfta.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %rfta.raw2, %Value %rfta.v)
+  ret i1 %rfta.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14164,6 +14232,7 @@ builtin_op_to_id('getlogin/1', 150).          % libc getlogin() as atom.
 builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as atom.
 builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
 builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
+builtin_op_to_id('read_file_to_atom/2', 154). % stat + open + read loop -> intern as atom.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

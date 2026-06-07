@@ -3192,6 +3192,54 @@ test_copy_file_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M129: read_file_to_atom/2 -- stat + open + read loop -> atom.
+
+:- dynamic test_rfta_short/2.
+test_rfta_short(_, R) :-
+    % Write a known short string, read it back, compare.
+    shell('printf hello > /tmp/uw_m129_short', _),
+    read_file_to_atom('/tmp/uw_m129_short', A),
+    shell('rm -f /tmp/uw_m129_short', _),
+    ( A == hello -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_empty/2.
+test_rfta_empty(_, R) :-
+    % Empty file -> empty atom (size=0 branch, skip read loop).
+    shell('rm -f /tmp/uw_m129_empty', _),
+    shell('touch /tmp/uw_m129_empty', _),
+    read_file_to_atom('/tmp/uw_m129_empty', A),
+    shell('rm -f /tmp/uw_m129_empty', _),
+    ( A == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_large/2.
+test_rfta_large(_, R) :-
+    % File larger than typical read chunks -- verifies the read
+    % loop handles multiple iterations to fill the buffer.
+    shell('seq 1 5000 > /tmp/uw_m129_large', _),
+    read_file_to_atom('/tmp/uw_m129_large', A),
+    atom_length(A, L),
+    size_file('/tmp/uw_m129_large', Sz),
+    shell('rm -f /tmp/uw_m129_large', _),
+    ( L =:= Sz, L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rfta_missing/2.
+test_rfta_missing(_, R) :-
+    % stat fails on missing path -> read_file_to_atom fails.
+    ( read_file_to_atom('/tmp/uw_m129_never_existed', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_rfta_bad_arg/2.
+test_rfta_bad_arg(_, R) :-
+    ( read_file_to_atom(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_rfta_size_matches/2.
+test_rfta_size_matches(_, R) :-
+    % atom_length of the read content must equal stat''s st_size.
+    shell('printf "hello world" > /tmp/uw_m129_sz', _),
+    read_file_to_atom('/tmp/uw_m129_sz', A),
+    atom_length(A, L),
+    shell('rm -f /tmp/uw_m129_sz', _),
+    ( L =:= 11 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6278,6 +6326,19 @@ test_all :-
                    test_copy_file_overwrite, 0, 1),
        run_test_r0('copy_file with non-atom args fails -> 1',
                    test_copy_file_bad_args, 0, 1),
+       format('--- M129 read_file_to_atom/2 ---~n'),
+       run_test_r0('read_file_to_atom short ascii -> 1',
+                   test_rfta_short, 0, 1),
+       run_test_r0('read_file_to_atom empty -> '''' -> 1',
+                   test_rfta_empty, 0, 1),
+       run_test_r0('read_file_to_atom large file (loop) -> 1',
+                   test_rfta_large, 0, 1),
+       run_test_r0('read_file_to_atom missing path fails -> 1',
+                   test_rfta_missing, 0, 1),
+       run_test_r0('read_file_to_atom non-atom arg fails -> 1',
+                   test_rfta_bad_arg, 0, 1),
+       run_test_r0('read_file_to_atom length matches stat size -> 1',
+                   test_rfta_size_matches, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
