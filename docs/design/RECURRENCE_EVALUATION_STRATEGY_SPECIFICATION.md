@@ -51,10 +51,6 @@ Each exported predicate has its own determinism contract. These matter for calle
 
 The selector module **does not write to any stream**. It returns the structured trace as part of the `StrategyAndTrace` return value. Target adapters (or thin wrappers around them) call the renderer helpers (`render_trace_for_stderr/2`, `format_trace_for_comment/3`) and decide whether to emit. This keeps the selector pure-functional and testable; quiet-mode is the default for library and test use.
 
-### Trace emission is pure-functional
-
-The selector module **does not write to any stream**. It returns the structured trace as part of the `StrategyAndTrace` return value. Target adapters (or thin wrappers around them) call the renderer helpers (`render_trace_for_stderr/2`, `format_trace_for_comment/3`) and decide whether to emit. This keeps the selector pure-functional and testable; quiet-mode is the default for library and test use.
-
 ## API
 
 ### `select_evaluation_strategy(+Recurrence, +Workload, -StrategyAndTrace)`
@@ -139,16 +135,21 @@ Inferred-data carries explicit uncertainty; cost-model rules can downweight it v
 
 `admissible_strategies(+Recurrence, -List)` returns the strategies the selector may pick from, based on properties of the recurrence alone (no intent context). A strategy is admissible iff *both* of the following hold:
 
-1. **KernelKind permits it** — read from a kernel-kind-to-strategies static table. E.g. `bidirectional_ancestor` permits `per_query(bidirectional)` and `per_query(astar)`; `transitive_closure2` permits `per_query(unidirectional)`, `per_query(bidirectional)` (via upgrade), and `fixed_point(semi_naive)`.
+1. **KernelKind permits it** — read from a kernel-kind-to-strategies static table. Concrete examples:
+   - `bidirectional_ancestor` — `value_domain(combinatorial)` — permits `per_query(bidirectional)` and `per_query(astar)`. fixed_point not in this kernel's permitted set (the kernel template is per-query-only).
+   - `transitive_closure2` — `value_domain(combinatorial)` — permits `per_query(unidirectional)`, `per_query(bidirectional)` (via upgrade), and `fixed_point(semi_naive)`. The fixed_point branch is structurally permitted; whether it's auto-selected depends on cost-model rules and is currently stubbed.
+   - `weighted_shortest_path3` — `value_domain(numeric)` — permits `per_query(dijkstra)`. fixed_point not in this kernel's permitted set in the current registry.
 
 2. **Termination guarantee permits it** — for any `fixed_point(...)` strategy, the recurrence must have a termination guarantee. Two cases by value domain:
-   - `value_domain(combinatorial)` AND `monotone(true)` — finite Herbrand-base lattice plus monotonicity gives Tarski-finite-lattice termination in at most |L| iterations. **No contraction-rate guarantee needed.** Datalog-shape recurrences and Bellman-Ford-with-visited-set fall in this case.
-   - `value_domain(numeric)` AND `monotone(true)` AND `numeric_contraction_rate(R)` with `R < 1.0` — continuous lattice needs contraction. `d_wPow` and PageRank-style recurrences fall in this case.
-   - If neither condition holds, all `fixed_point(_)` strategies are removed from admissibility regardless of what KernelKind would permit.
+   - `value_domain(combinatorial)` — finite-state iteration always halts (state-space is finite; iteration either reaches a fixed point or enters a detectable cycle in bounded time). **No contraction-rate guarantee needed.** Datalog-shape recurrences and Bellman-Ford-with-visited-set fall in this case.
+   - `value_domain(numeric)` AND `numeric_contraction_rate(R)` with `R < 1.0` — continuous lattice needs contraction. `d_wPow` and PageRank-style recurrences fall in this case.
+   - If neither condition holds (e.g. `value_domain(numeric)` with `numeric_contraction_rate(none)`), all `fixed_point(_)` strategies are removed from admissibility regardless of what KernelKind would permit.
 
    For `per_query(...)` strategies, no convergence guarantee is required from the recurrence — per-query traversal terminates by combinatorial visited-set tracking (`has_combinatorial_loop_break(true)` is the relevant safety property, separate from fixed_point admissibility).
 
 If the resulting list is empty, `select_evaluation_strategy/3` throws `error(no_admissible_strategy(Recurrence), _)`.
+
+**Note: `monotone(true)` is NOT in the admissibility test.** Admissibility is about termination; the iteration of a combinatorial recurrence over a finite state space terminates whether or not the recurrence is monotone (non-monotone iterations may oscillate, but they oscillate *in a detectable cycle* on a finite state space, so the evaluator can stop them). Monotonicity is what guarantees the iteration converges to the *least fixed point* — a semantic question about whether the answer is the one the user wants, not a termination question. Implementations of fixed_point evaluation for combinatorial recurrences are expected to detect cycles and either return a meaningful intermediate result or surface an error; UnifyWeaver's intended kernels are all monotone in practice, so the cycle-detection path is theoretical for now.
 
 **Why `monotone(false)` cross-class restriction is NOT applied here.** A separate concern: when `monotone(false)`, the selector should not auto-select *across* strategy classes — picking `per_query` when `fixed_point` was the cost-model default could change observable behaviour because non-monotone recurrences can be evaluation-order-sensitive. But this restriction depends on the user's intent (which class they're asking for), and `admissible_strategies/2` sees only the recurrence — no intent context. The cross-class restriction is therefore applied in Phase C (conflict resolution), where intent is in scope. Admissibility returns the full kernel+termination admissible set; Phase C narrows it under `monotone(false)` + cross-class intent.
 
@@ -239,14 +240,16 @@ cost_model_rule(+RuleName, +Priority, +Recurrence, +DataSignals, -Score, -Chosen
 
 #### Initial rule set (Phase 1 of the implementation plan)
 
-| Rule | Priority | When | Output | Score |
+| Rule | Priority | When (signal-value preconditions; tier is irrelevant for firing) | Output | Score |
 |------|----------|------|--------|-------|
-| `prefer_bidirectional_csr_present` | 100 | declared: `csr_available(true)`, `query_pattern(single_pair)`, `cardinality(large)` | `per_query(bidirectional)` | +3 |
-| `prefer_bidirectional_csr_buildable` | 90 | inferred: `csr_buildable(true)`, declared: `cardinality(large)`, `query_frequency(high)` | `per_query(bidirectional)` + `adjustment(build_csr_at_compile_time)` | +2 |
-| `prefer_unidirectional_no_csr` | 80 | declared: `csr_available(false)` AND inferred: `csr_buildable(false)` | `per_query(unidirectional)` | +2 |
-| `prefer_unidirectional_small` | 70 | declared: `cardinality(small)`, no contradicting signal | `per_query(unidirectional)` | +1 |
-| `prefer_astar_heuristic_available` | 60 | recurrence admits `per_query(astar)`, heuristic predicate available | `per_query(astar)` | +1 |
+| `prefer_bidirectional_csr_present` | 100 | `csr_available(true)`, `query_pattern(single_pair)`, `cardinality(large)` | `per_query(bidirectional)` | +3 |
+| `prefer_bidirectional_csr_buildable` | 90 | `csr_buildable(true)`, `cardinality(large)`, `query_frequency(high)` | `per_query(bidirectional)` + `adjustment(build_csr_at_compile_time)` | +2 |
+| `prefer_unidirectional_no_csr` | 80 | `csr_available(false)` AND `csr_buildable(false)` | `per_query(unidirectional)` | +2 |
+| `prefer_unidirectional_small` | 70 | `cardinality(small)`, no contradicting signal | `per_query(unidirectional)` | +1 |
+| `prefer_astar_heuristic_available` | 60 | recurrence admits `per_query(astar)`, `heuristic_predicate_available(true)` | `per_query(astar)` | +1 |
 | `default_fallback` | 1 | always | `per_query(unidirectional)` | +0 |
+
+**Note on rule preconditions and signal tiers.** A rule's *preconditions* are predicates over signal *values*; they fire on the value regardless of whether the signal arrived as declared-data or inferred-data. The *tier* of each matching signal is consulted only by the confidence-weighting layer (next subsection) — declared signals contribute weight 1.0, inferred signals contribute weight 0.8. Earlier drafts of this table annotated each precondition with its expected typical tier (e.g. "declared: csr_available(false)"); those annotations were misleading because they suggested rules wouldn't fire on the other tier. Removed.
 
 #### Confidence weighting for inferred signals
 
@@ -260,13 +263,15 @@ A worked example to anchor future rule additions. Suppose the workload is:
 - Inferred: `csr_buildable(true)`, `csr_available(false)`
 - (No intent signals)
 
-Rules that fire:
+Rules that fire (signal-value preconditions evaluated regardless of tier; tier consulted only by confidence weighting):
 
-- `prefer_bidirectional_csr_buildable` — all preconditions match: inferred `csr_buildable(true)` ✓, declared `cardinality(large)` ✓, declared `query_frequency(high)` ✓. Raw score +2. Confidence: `csr_buildable` is inferred (0.8), the other two are declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
-- `prefer_unidirectional_no_csr` — declared `csr_available(false)` matches; inferred `csr_buildable(false)` does *not* match (we have `csr_buildable(true)`). Rule does not fire.
+- `prefer_bidirectional_csr_buildable` — all preconditions match: `csr_buildable(true)` ✓, `cardinality(large)` ✓, `query_frequency(high)` ✓. Raw score +2. Confidence per signal: `csr_buildable(true)` is inferred (0.8), `cardinality(large)` is declared (1.0), `query_frequency(high)` is declared (1.0). Weighted score: 2 × (0.8 + 1.0 + 1.0) / 3 ≈ 1.87.
+- `prefer_unidirectional_no_csr` — `csr_available(false)` precondition matches (the signal is in the workload, tier-irrelevant for firing). But `csr_buildable(false)` does *not* match — we have `csr_buildable(true)` in the workload. Rule does not fire on value mismatch.
 - `default_fallback` — fires. Raw score +0.
 
-Winner: `per_query(bidirectional)` + `adjustment(build_csr_at_compile_time)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The adjustment is recorded as a detail field of the `step_satisfiability` trace entry (when satisfiability is what triggered the adjustment); when the cost model itself wants the adjustment as part of its preferred strategy, it adds the adjustment to the trace via a `step(adjustment, build_csr_at_compile_time, [...])` entry that immediately follows the `cost_model_choice` step. Either way, the `Strategy` term is `per_query(bidirectional)` — the adjustment is metadata, not part of the strategy term.
+Winner: `per_query(bidirectional)`, weighted score ≈ 1.87, deciding rule `prefer_bidirectional_csr_buildable`. The build-CSR adjustment is recorded as a detail field of the cost-model-choice trace entry (rule-level adjustments live where the rule fired, not as a separate step); the trace looks like `step(cost_model_choice, chosen(per_query(bidirectional), 1.87, prefer_bidirectional_csr_buildable), [adjustment(build_csr_at_compile_time), ...])`. Likewise, if a `step_satisfiability` resolution had triggered the adjustment (different scenario), the adjustment would live as a detail field of the satisfiability step. **Adjustments are detail fields of whatever step caused them, not separate trace steps**, so the per-step single-entry fold contract is preserved.
+
+Either way, the `Strategy` term is `per_query(bidirectional)` — the adjustment is trace metadata, not part of the strategy term.
 
 (*Earlier draft note:* a previous version of this example omitted `query_frequency(high)` from the workload, which would have prevented `prefer_bidirectional_csr_buildable` from firing because its precondition list requires it. Fixed in this revision; the example is now self-consistent.)
 
@@ -373,16 +378,34 @@ Example output (as the list of strings the renderer produces):
 [evaluation-strategy]   final_decision: per_query(bidirectional), decided_by=intent_matches
 ```
 
-Conflict example:
+Conflict example — refinement-based scope disambiguation (caller refines manifest; subset relationship; caller wins by specificity):
+
+```
+[evaluation-strategy] selecting for category_ancestor/4
+[evaluation-strategy]   classify_signals: intent=[kernel_mode(bidirectional), strategy(per_query(_))], declared=[csr_available(true)], inferred=[]
+[evaluation-strategy]   cost_model_choice: per_query(bidirectional), score=3.0, deciding-rule=prefer_bidirectional_csr_present
+[evaluation-strategy]   scope_disambiguation: resolved(per_query(bidirectional), by(caller_refines_manifest))
+[evaluation-strategy]   final_decision: per_query(bidirectional), decided_by=scope_disambiguation, overridden=[]
+```
+
+Note: this scenario has caller's `kernel_mode(bidirectional)` (strategy-set `{per_query(bidirectional), per_query(astar)}`) being a subset of manifest's `strategy(per_query(_))` (strategy-set `{per_query(unidirectional), per_query(bidirectional), per_query(astar), per_query(dijkstra)}`). Caller refines manifest; `step_scope_disambiguation` fires.
+
+Conflict example — disjoint intents, fall through to caller-wins:
 
 ```
 [evaluation-strategy] selecting for category_ancestor/4
 [evaluation-strategy]   classify_signals: intent=[kernel_mode(bidirectional), strategy(per_query(unidirectional))], declared=[csr_available(true)], inferred=[]
 [evaluation-strategy]   cost_model_choice: per_query(bidirectional), score=3.0, deciding-rule=prefer_bidirectional_csr_present
 [evaluation-strategy]   third_option: not_found (no admissible strategy satisfies both intent signals)
-[evaluation-strategy]   scope_disambiguation: resolved(per_query(bidirectional), by(narrower_subsumes_broader))
-[evaluation-strategy]   final_decision: per_query(bidirectional), decided_by=scope_disambiguation, overridden=[]
+[evaluation-strategy]   scope_disambiguation: passed (intents have disjoint strategy-sets; neither refines the other)
+[evaluation-strategy]   satisfiability: not_applicable (no structurally-unmet intent)
+[evaluation-strategy] WARNING: caller_wins applied — caller's kernel_mode(bidirectional) overrode manifest's strategy(per_query(unidirectional)); reason for override unknown; consider reconciling
+[evaluation-strategy]   final_decision: per_query(bidirectional), decided_by=caller_wins, overridden=[manifest:strategy(per_query(unidirectional))]
 ```
+
+Note: this scenario has the two intents pointing at disjoint strategy-sets (`{per_query(bidirectional), per_query(astar)}` vs `{per_query(unidirectional)}`). Neither refines the other, so `step_scope_disambiguation` does NOT resolve. Resolution falls through to `step_caller_wins` with a loud warning.
+
+(*Earlier-draft note:* a previous version of this conflict example used `by(narrower_subsumes_broader)` (stale post-rename to `refines`) AND showed the disjoint-intents scenario resolving via `step_scope_disambiguation`, which contradicted its own rule. Fixed in this revision: the first example now uses a true refinement scenario where the step actually fires; the second example shows the disjoint case correctly falling through to caller-wins.)
 
 ### `format_trace_for_comment(+Trace, +CommentPrefix, -CommentString)`
 

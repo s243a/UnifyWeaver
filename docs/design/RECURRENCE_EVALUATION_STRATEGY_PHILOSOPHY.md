@@ -57,20 +57,23 @@ The two axes interact with fixed_point admissibility in different ways:
 
 **Monotonicity-cross-class restriction.** A separate concern: when `monotone(false)`, no strategy class can be *auto-selected across classes* — the selector restricts to whichever class the user explicitly declares via intent. Non-monotone recurrences may have evaluation-order-dependent semantics; the compiler does not pick between classes without guidance. This restriction is applied in the conflict-resolution phase (where intent is in scope), not at the admissibility check (which sees only the recurrence).
 
-**Putting it together — fixed_point admissibility test:**
+**Putting it together — fixed_point admissibility test (termination only):**
 
 ```
 admissible(fixed_point, Recurrence) :-
-    monotone(Recurrence, true),
     termination_guarantee(Recurrence).
 
 termination_guarantee(Recurrence) :-
-    value_domain(Recurrence, combinatorial), !.    % finite lattice; Tarski + finite universe
+    value_domain(Recurrence, combinatorial), !.    % finite-state iteration always halts
 termination_guarantee(Recurrence) :-
     value_domain(Recurrence, numeric),
     numeric_contraction_rate(Recurrence, R),
     R < 1.0.
 ```
+
+Note the pseudocode does *not* gate on `monotone(true)`. Admissibility is about whether the strategy will terminate; for combinatorial recurrences over a finite state space, iteration always terminates (either at a fixed point if monotone, or at a detectable cycle if not). For numeric recurrences, termination requires contraction. Monotonicity affects whether the iteration converges to the *least fixed point*, which is what fixed_point evaluation usually intends — but that's a *semantic* concern, not a termination concern, and it's handled at the conflict-resolution phase (Phase C) where the cross-class restriction lives.
+
+In practice, UnifyWeaver's kernels (TC, ancestor, BFS variants, `d_wPow`) are all monotone, so the distinction is operational only in the edge case of a non-monotone recurrence the user wants to force into fixed-point evaluation. The Phase C restriction protects against accidental cross-class selection for non-monotone recurrences (the user gets a warning); admissibility alone doesn't reject them.
 
 For Phase 1 of the implementation, almost all kernels are combinatorial (TC, ancestor, BFS variants), so the contraction-rate check rarely applies. The contraction-rate machinery is set up for when `d_wPow`-style numeric recurrences enter the picture (book-18 ch7's territory).
 
