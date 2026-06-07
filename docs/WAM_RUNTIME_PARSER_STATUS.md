@@ -71,7 +71,7 @@ each WAM instruction).
 | **C++**      | ✅ | ✅ | ✅ | `native(parse_term)` | partial — codegen tests in `test_wam_cpp_generator.pl`, one `'42'` parse verified end-to-end during the audit |
 | **R**        | ✅ | ✅ | ✅ | `native(parse_term)` | codegen tests; runtime end-to-end via the R smoke harness |
 | **Elixir**   | ✅ | — | — | `none` | n/a — `runtime_parser(compiled)` correctly throws `domain_error` (since Elixir isn't in the capability table); guarded by `test_runtime_parser_compiled_request_errors` |
-| **Rust**     | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
+| **Rust**     | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; runtime builtin bridge still pending |
 | **Haskell**  | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; generated parser E2E is noted as slow in `docs/SESSION_HASKELL_PARITY_SUMMARY.md` |
 | **Go**       | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Clojure**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
@@ -96,7 +96,7 @@ Auditing the other targets for the same bug classes turned up:
 | **Rust** | `rust_val_literal` re-emitted quoted-numeric atoms verbatim (`Value::Atom("'42'")` instead of `Value::Atom("42")`) — same class as F# #2422 | #2431 |
 | **Python** | `_constant_term` re-parsed `Atom("42").name` through `_parse_constant`, silently promoting it to `Int(42)` at `put_constant` time; `wam_lines_to_python` used a naive whitespace split that broke any atom token containing a space (`':- p'`) | #2433 |
 | **C++** | audit clean — uses `wam_text_to_items/2` + `wam_classify_constant_token/2` which already honour the quoted-atom convention.  One end-to-end `'42'` parse verified before the ~12-min-per-case compile time made `:- p` / `\+ foo` impractical to also verify. | none |
-| **R, Elixir, Lua, Clojure, Go, Rust** (compiled path) | not applicable — these targets either use native parsing or don't bundle the compiled parser | none |
+| **R, Elixir, Lua, Clojure, Go** (compiled path) | not applicable — these targets either use native parsing or don't bundle the compiled parser | none |
 | **Haskell** (compiled path) | added after the original audit; appends portable parser + wrapper predicates but keeps the default off because parser-bundled generation is heavyweight | #2522 |
 
 The bug classes are roughly:
@@ -172,14 +172,16 @@ Significant work; worth it if there's a real user, not otherwise.
 
 ### 2. Add `compiled` to one more target with a real use case
 
-Haskell now has opt-in compiled-parser wiring: `runtime_parser(compiled)`
-appends the portable parser and target-agnostic wrapper predicates while
-leaving the default at `none`.  Rust remains the next natural candidate —
-it has the largest gap between "target has WAM but no parser" and "target
-needs to read user terms" (LMDB fact sources, anything reading config-file
-Prolog).  The work mirrors what's already done for Python and Haskell:
-append `prolog_term_parser` predicates, write a Python-style
-`_execute_read_term_from_atom` wrapper in Rust, expose it as a WAM builtin.
+Haskell and Rust now have opt-in compiled-parser wiring:
+`runtime_parser(compiled)` appends the portable parser and
+target-agnostic wrapper predicates while leaving the default at `none`.
+For Rust this is currently the compile-time/project-expansion half only:
+the generated project carries labels for `prolog_term_parser` and the
+wrapper predicates, and `runtime_parser(off)` rejects statically visible
+parser-dependent bodies.  The remaining Rust work is the runtime bridge:
+write a Python-style `_execute_read_term_from_atom` wrapper in Rust and
+expose it through WAM builtin dispatch so standard-name calls can execute
+instead of merely being present in the shared WAM table.
 
 Pre-work that benefits everyone: factor out the existing C++ and
 Python wrapper logic into a shared template so the Rust port (and any

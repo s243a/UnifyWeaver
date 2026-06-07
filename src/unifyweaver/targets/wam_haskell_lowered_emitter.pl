@@ -29,6 +29,7 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 %% =====================================================================
 %% Parsing
@@ -75,7 +76,28 @@ wam_haskell_lowerable(_PI, WamCode, _Reason) :-
     %   - Detected kernels are excluded from lowering by the partition
     %     logic (they use FFI via CallForeign, lowering would be dead code).
     clause1_instrs(PCInstrs, C1),
-    forall(member(I, C1), supported(I)).
+    forall(member(I, C1), supported(I)),
+    % Verify clause 1 actually folds via the shared structurer. Negation
+    % (!/0 commit) and nested ITEs now structure and lower; a genuinely
+    % ill-formed control block fails here and falls back to the interpreter
+    % instead of failing lower_all (keeps gate <-> emit in lockstep).
+    clause1_pc(PCInstrs, C1PC),
+    parse_wam_text(WamCode, _, LabelMap),
+    struct_stream(C1PC, LabelMap, Stream),
+    structure_ite(Stream, _).
+
+%% clause1_pc(+PCInstrs, -Clause1PCs)
+%  Like clause1_instrs/2 but keeps pc(PC,Instr) form, matching exactly the
+%  clause-1 slice emit_func/4 structures (strip switch prefixes, then the
+%  predicate-level try_me_else, then take to proceed).
+clause1_pc([], []).
+clause1_pc(PCInstrs0, C1) :-
+    strip_switch_prefixes(PCInstrs0, PCInstrs),
+    PCInstrs0 \== PCInstrs, !,
+    clause1_pc(PCInstrs, C1).
+clause1_pc([pc(_, try_me_else(_))|Rest], C1) :- !,
+    take_to_proceed_pc(Rest, C1).
+clause1_pc(PCInstrs, PCInstrs).
 
 clause1_instrs([], []).
 % Skip switch_on_constant* prefixes (multi-clause indexing).
@@ -217,10 +239,10 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("  where~n"),
         format("    clause1 s_c1 = do~n"),
         take_to_proceed_pc(BodyPCs, Clause1PCs),
-        emit_instrs_lm(Clause1PCs, "s_c1", "      ", ForeignPreds, LabelMap)
+        emit_clause_struct(Clause1PCs, LabelMap, "s_c1", "      ", ForeignPreds)
     ;   % Single-clause: simple do-notation
         format("~w !ctx s_init = do~n", [FN]),
-        emit_instrs_lm(PCInstrs1, "s_init", "  ", ForeignPreds, LabelMap)
+        emit_clause_struct(PCInstrs1, LabelMap, "s_init", "  ", ForeignPreds)
     ).
 
 take_to_proceed_pc([], []).
@@ -432,6 +454,125 @@ split_else_cont_([pc(PC, Instr)|Rest], ContLabel, LM, Else, Cont) :-
         Cont = [pc(PC, Instr)|Rest]
     ;   Else = [pc(PC, Instr)|ElseRest],
         split_else_cont_(Rest, ContLabel, LM, ElseRest, Cont)
+    ).
+
+%% =====================================================================
+%% Structured ITE emission (shared nesting-aware structurer)
+%% =====================================================================
+%
+%  The flat split_ite_blocks_lm/split_at_jump heuristic is NOT nesting
+%  aware (split_at_jump stops at an inner jump) and only recognises
+%  cut_ite (not the !/0 negation commit), so nested ITEs and \+ failed to
+%  lower. We instead feed clause 1 through the shared wam_ite_structurer:
+%  struct_stream/3 rebuilds a label-marked instruction stream (control
+%  markers stay bare so the structurer can match them; data instructions
+%  keep their pc(PC,_) wrapper so emit_one still has the PC), structure_ite
+%  folds every (C->T;E)/\+/once block into ite(Cond,Then,Else), and
+%  emit_structured/4 walks the result.
+%
+%  emit_structured reuses the EXACT case-(do…)of formats of the previous
+%  emit_instrs_lm + emit_ite_block, so a simple or sequential ITE produces
+%  byte-identical Haskell (no performance change); nested blocks recurse
+%  through the same path and negation is just an ite whose commit was !/0.
+
+%% emit_clause_struct(+ClausePCs, +LabelMap, +SV, +Ind, +FP)
+emit_clause_struct(ClausePCs, LabelMap, SV, Ind, FP) :-
+    struct_stream(ClausePCs, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    emit_structured(Structured, SV, Ind, FP).
+
+%% struct_stream(+ClausePCs, +LabelMap, -Stream)
+%  Re-insert label(L) markers at their PCs and keep ITE control markers
+%  (try_me_else/jump/trust_me/cut_ite and the !/0 commit) bare so the
+%  structurer matches them; every other instruction stays pc(PC,Instr).
+struct_stream([], _LM, []).
+struct_stream([pc(PC, Instr)|Rest], LM, Out) :-
+    % LabelMap keys are atoms, but try_me_else/jump args are strings; emit
+    % label markers as strings so structure_ite unifies them.
+    findall(label(LStr), (member(L-PC, LM), atom_string(L, LStr)), Labels),
+    struct_item(PC, Instr, Item),
+    append(Labels, [Item|More], Out),
+    struct_stream(Rest, LM, More).
+
+struct_item(_PC, try_me_else(L), try_me_else(L)) :- !.
+struct_item(_PC, jump(L),        jump(L))        :- !.
+struct_item(_PC, trust_me,       trust_me)       :- !.
+struct_item(_PC, cut_ite,        cut_ite)        :- !.
+struct_item(_PC, builtin_call(Op, N), builtin_call(Op, N)) :- neg_commit_op(Op), !.
+struct_item(PC, Instr, pc(PC, Instr)).
+
+neg_commit_op("!/0").
+neg_commit_op('!/0').
+
+%% emit_structured(+Structured, +SV, +Ind, +FP)
+%  Structured is a list of pc(PC,Instr) and ite(Cond,Then,Else) terms.
+%  Emits a do-block body yielding (Maybe WamState).
+emit_structured([], SV, Ind, _FP) :-
+    format("~wreturn ~w~n", [Ind, SV]).
+% Terminal: fail
+emit_structured([pc(_PC, fail)|Rest], _SV, Ind, _FP) :- !,
+    (   Rest \= []
+    ->  format("~w-- WARNING: fail is not the last instruction — unreachable code follows~n", [Ind])
+    ;   true
+    ),
+    format("~wNothing~n", [Ind]).
+% Terminal: execute (tail call)
+emit_structured([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :- !,
+    (   Rest \= []
+    ->  format("~w-- WARNING: execute(~w) is not the last instruction — tail-call semantics violated~n",
+               [Ind, PredStr])
+    ;   true
+    ),
+    emit_one(execute(PredStr), PC, SV, _, Ind, FP).
+% If-then-else as the final expression (no continuation)
+emit_structured([ite(Cond, Then, Else)], SV, Ind, FP) :- !,
+    format("~wcase (do~n", [Ind]),
+    atom_concat(Ind, "      ", CondInd),
+    emit_structured(Cond, SV, CondInd, FP),
+    format("~w  ) of~n", [Ind]),
+    fresh_sv(SV, SVthen),
+    format("~w    Just ~w -> do~n", [Ind, SVthen]),
+    atom_concat(Ind, "      ", ThenInd),
+    emit_structured(Then, SVthen, ThenInd, FP),
+    format("~w    Nothing -> do~n", [Ind]),
+    atom_concat(Ind, "      ", ElseInd),
+    emit_structured(Else, SV, ElseInd, FP).
+% If-then-else with a continuation — bind the result, then continue.
+emit_structured([ite(Cond, Then, Else)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    fresh_sv(SV, SVcont),
+    format("~w~w <- case (do~n", [Ind, SVcont]),
+    atom_concat(Ind, "          ", CondInd),
+    emit_structured(Cond, SV, CondInd, FP),
+    format("~w      ) of~n", [Ind]),
+    fresh_sv(SV, SVthen),
+    format("~w        Just ~w -> do~n", [Ind, SVthen]),
+    atom_concat(Ind, "          ", ThenInd),
+    emit_structured(Then, SVthen, ThenInd, FP),
+    format("~w        Nothing -> do~n", [Ind]),
+    atom_concat(Ind, "          ", ElseInd),
+    emit_structured(Else, SV, ElseInd, FP),
+    emit_structured(Rest, SVcont, Ind, FP).
+% Last plain instruction — emit, then return its state unless terminal.
+emit_structured([pc(PC, Instr)], SV, Ind, FP) :- !,
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    (   is_terminal_instr(Instr) -> true
+    ;   format("~wreturn ~w~n", [Ind, SVout])
+    ).
+% Plain instruction with more following.
+emit_structured([pc(PC, Instr)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    emit_structured(Rest, SVout, Ind, FP).
+% A bare !/0 that was NOT an ITE commit (a user cut left by the
+% structurer's pass-through). emit_one ignores the PC for !/0.
+emit_structured([builtin_call(Op, N)|Rest], SV, Ind, FP) :- !,
+    emit_one(builtin_call(Op, N), 0, SV, SVout, Ind, FP),
+    (   Rest == [] -> format("~wreturn ~w~n", [Ind, SVout])
+    ;   emit_structured(Rest, SVout, Ind, FP)
+    ).
+% A bare cut_ite outside any ITE block (defensive; should not occur).
+emit_structured([cut_ite|Rest], SV, Ind, FP) :- !,
+    (   Rest == [] -> format("~wreturn ~w~n", [Ind, SV])
+    ;   emit_structured(Rest, SV, Ind, FP)
     ).
 
 %% =====================================================================

@@ -380,20 +380,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode0)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode1)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
@@ -411,7 +411,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -555,6 +555,12 @@ wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
 wam_go_direct_builtin(print/1, 1, 'print/1').
 wam_go_direct_builtin('print/1', 1, 'print/1').
 wam_go_direct_builtin("print/1", 1, 'print/1').
+wam_go_direct_builtin(format/1, 1, 'format/1').
+wam_go_direct_builtin('format/1', 1, 'format/1').
+wam_go_direct_builtin("format/1", 1, 'format/1').
+wam_go_direct_builtin(format/2, 2, 'format/2').
+wam_go_direct_builtin('format/2', 2, 'format/2').
+wam_go_direct_builtin("format/2", 2, 'format/2').
 wam_go_direct_builtin(sum_list/2, 2, 'sum_list/2').
 wam_go_direct_builtin('sum_list/2', 2, 'sum_list/2').
 wam_go_direct_builtin("sum_list/2", 2, 'sum_list/2').
@@ -747,6 +753,12 @@ wam_instruction_to_go_literal(retry_me_else(Label, Arity), GoLiteral) :-
 wam_instruction_to_go_literal(retry_me_else(Label), GoLiteral) :-
     format(atom(GoLiteral), '&RetryMeElse{Label: "~w", Arity: 100}', [Label]).
 wam_instruction_to_go_literal(trust_me, '&TrustMe{}').
+wam_instruction_to_go_literal(get_level(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_instruction_to_go_literal(cut(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&Cut{Reg: ~w}', [YnIdx]).
 
 wam_instruction_to_go_literal(switch_on_constant(Table), GoLiteral) :-
     maplist(go_const_case, Table, Cases),
@@ -1210,8 +1222,7 @@ go_foreign_astar_dimensionality(_Module, 5).
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, _, _, [], []).
 wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
-    split_string(Line, " \t", " \t", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
     ;   CleanParts = [First|_],
@@ -1241,14 +1252,72 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
         )
     ).
 
+wam_tokenize_line(Line, Parts) :-
+    string_chars(Line, Chars),
+    wam_tokenize_chars(Chars, [], RevParts),
+    reverse(RevParts, Parts).
+
+wam_tokenize_chars([], Parts, Parts).
+wam_tokenize_chars([C|Rest], Parts0, Parts) :-
+    char_type(C, space),
+    !,
+    wam_tokenize_chars(Rest, Parts0, Parts).
+wam_tokenize_chars(['\''|Rest], Parts0, Parts) :-
+    !,
+    wam_take_quoted(Rest, Token, Remaining),
+    wam_tokenize_chars(Remaining, [Token|Parts0], Parts).
+wam_tokenize_chars(Chars, Parts0, Parts) :-
+    wam_take_bare(Chars, Token, Remaining),
+    (   Token == ""
+    ->  Parts1 = Parts0
+    ;   Parts1 = [Token|Parts0]
+    ),
+    wam_tokenize_chars(Remaining, Parts1, Parts).
+
+wam_take_quoted(Rest, Token, Remaining) :-
+    wam_take_quoted_inner(Rest, ['\''], RevQuoted, AfterQuote),
+    reverse(RevQuoted, QuotedChars),
+    wam_take_bare_tail(AfterQuote, TailChars, Remaining),
+    append(QuotedChars, TailChars, TokenChars),
+    string_chars(Token, TokenChars).
+
+wam_take_quoted_inner([], Acc, Acc, []).
+wam_take_quoted_inner(['\\', C|Rest], Acc, RevQuoted, Remaining) :-
+    !,
+    wam_take_quoted_inner(Rest, [C, '\\'|Acc], RevQuoted, Remaining).
+wam_take_quoted_inner(['\''|Rest], Acc, ['\''|Acc], Rest) :-
+    !.
+wam_take_quoted_inner([C|Rest], Acc, RevQuoted, Remaining) :-
+    wam_take_quoted_inner(Rest, [C|Acc], RevQuoted, Remaining).
+
+wam_take_bare([], "", []).
+wam_take_bare(Chars, Token, Remaining) :-
+    wam_take_bare_chars(Chars, TokenChars, Remaining),
+    string_chars(Token, TokenChars).
+
+wam_take_bare_chars([], [], []).
+wam_take_bare_chars([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_chars([C|Rest], [C|TokenRest], Remaining) :-
+    wam_take_bare_chars(Rest, TokenRest, Remaining).
+
+wam_take_bare_tail([], [], []).
+wam_take_bare_tail([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_tail([C|Rest], [C|Tail], Remaining) :-
+    wam_take_bare_tail(Rest, Tail, Remaining).
+
 %% wam_line_to_go_literal(+Parts, -GoLit)
 %% parse_string_to_go_val(+Str, -GoVal)
 %
 % When the WAM compiler emits an atom that needs Prolog quoting (e.g.
 % an apostrophe-bearing category like 'People\'s_Republic_of_China'),
 % the WAM TEXT carries the quoted form. The split-on-whitespace parser
-% above hands that whole token here including the surrounding ' and
-% the backslash-escaped inner quote. If we just pass it to
+% used to break quoted constants containing whitespace into multiple tokens.
+% `wam_tokenize_line/2` now keeps that whole token here including the
+% surrounding ' and the backslash-escaped inner quote. If we just pass it to
 % go_value_literal/2 unchanged, the resulting Go literal becomes
 %     &Atom{Name: "'People\'s_Republic_of_China'"}
 % which (a) keeps the spurious outer apostrophes inside the atom's Name
@@ -1291,6 +1360,14 @@ wam_line_to_go_literal(["jump", L], GoLit) :-
     clean_comma(L, CL),
     format(atom(GoLit), '&Jump{Label: "~w"}', [CL]).
 wam_line_to_go_literal(["cut_ite"], '&CutIte{}').
+wam_line_to_go_literal(["get_level", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_line_to_go_literal(["cut", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&Cut{Reg: ~w}', [YnIdx]).
 wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit) :-
     clean_comma(AggType, CAggType),
     clean_comma(ValueReg, CValueReg),
@@ -2016,6 +2093,24 @@ wam_go_case('JumpPc', '        vm.PC = i.TargetPC
 
 wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
             vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true').
+
+% M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
+% current choicepoint-stack height into a Y register; Cut truncates the
+% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
+% the if-then-else / negation choicepoint AND every CP the condition
+% pushed above it -- the cut a proper negation / soft-cut condition needs.
+wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+        vm.PC++
+        return true').
+
+wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
+            target := int(iv.Val)
+            if target >= 0 && target < len(vm.ChoicePoints) {
+                vm.ChoicePoints = vm.ChoicePoints[:target]
+            }
         }
         vm.PC++
         return true').

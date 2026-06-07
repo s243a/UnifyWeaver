@@ -2459,6 +2459,98 @@ test_cmp_lists_diff(_, R) :-
 test_forall_manual(_, R) :-
     ( ( ( positive(X), ( X > 0 -> fail ; true ) ) -> fail ; true ) -> R is 1 ; R is 0 ).
 
+% M112: truncate/2 -- libc truncate wrapper for file resizing.
+
+:- dynamic test_truncate_grow/2.
+test_truncate_grow(_, R) :-
+    % Create a tiny file via shell, truncate it to 100 bytes,
+    % verify size_file reports 100.
+    Path = '/tmp/uw_m112_truncate_test',
+    shell('touch /tmp/uw_m112_truncate_test', _),
+    truncate(Path, 100),
+    size_file(Path, Sz),
+    shell('rm -f /tmp/uw_m112_truncate_test', _),
+    ( Sz =:= 100 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_truncate_zero/2.
+test_truncate_zero(_, R) :-
+    % Truncating to 0 is a no-op on a freshly-created file but
+    % should still succeed.
+    Path = '/tmp/uw_m112_truncate_zero',
+    shell('touch /tmp/uw_m112_truncate_zero', _),
+    truncate(Path, 0),
+    size_file(Path, Sz),
+    shell('rm -f /tmp/uw_m112_truncate_zero', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_truncate_missing/2.
+test_truncate_missing(_, R) :-
+    % truncate on a non-existent path fails (ENOENT).
+    ( truncate('/tmp/uw_m112_does_not_exist', 0) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_truncate_bad_args/2.
+test_truncate_bad_args(_, R) :-
+    % Non-atom Path or non-Integer Length fail the type guards.
+    ( truncate(42, 0) -> R is 0
+    ; truncate('/tmp/x', not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M111: kill/2 -- libc kill wrapper. Sig=0 is the standard existence
+% probe (no signal sent, just check process exists + permission).
+
+:- dynamic test_kill_self_probe/2.
+test_kill_self_probe(_, R) :-
+    % kill(0, 0) sends signal 0 to ALL processes in the caller''s
+    % group -- succeeds iff at least one exists and we have
+    % permission. Effectively a no-op self-check.
+    ( kill(0, 0) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_kill_missing_pid/2.
+test_kill_missing_pid(_, R) :-
+    % Some pid that''s almost certainly not running. ESRCH.
+    ( kill(99999999, 0) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_kill_bad_args/2.
+test_kill_bad_args(_, R) :-
+    % Non-int args fail the type guards.
+    ( kill(not_int, 0) -> R is 0
+    ; kill(0, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
+% M110: realpath/2 -- libc realpath wrapper for canonical absolute paths.
+
+:- dynamic test_rp_tmp/2.
+test_rp_tmp(_, R) :-
+    % /tmp is its own canonical absolute path -- realpath returns
+    % the same atom (no symlinks involved here).
+    realpath('/tmp', Abs),
+    ( Abs == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rp_relative/2.
+test_rp_relative(_, R) :-
+    % realpath resolves . to the CWD; just check the result is a
+    % non-empty atom starting with /.
+    realpath('.', Abs),
+    atom_length(Abs, L),
+    atom_chars(Abs, [First | _]),
+    ( L > 0, First == '/' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_rp_missing/2.
+test_rp_missing(_, R) :-
+    % realpath on a non-existent path fails (ENOENT).
+    ( realpath('/tmp/uw_m110_definitely_not_here', _) -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_rp_bad_arg/2.
+test_rp_bad_arg(_, R) :-
+    % Non-atom Path fails the type guard.
+    ( realpath(42, _) -> R is 0 ; R is 1 ).   % 1
+
 % M109: getpgrp/1 -- libc process group id wrapper.
 
 :- dynamic test_pgrp_positive/2.
@@ -5230,6 +5322,31 @@ test_all :-
                    test_sort_mixed_num, 0, 1),
        run_test_r0('sort already-sorted length -> 5',
                    test_sort_already_sorted, 0, 5),
+       format('--- M112 truncate/2 ---~n'),
+       run_test_r0('touch + truncate 100 + size_file -> 1',
+                   test_truncate_grow, 0, 1),
+       run_test_r0('truncate 0 -> size 0 -> 1',
+                   test_truncate_zero, 0, 1),
+       run_test_r0('truncate on missing path fails -> 1',
+                   test_truncate_missing, 0, 1),
+       run_test_r0('truncate with non-atom path / non-int length fails -> 1',
+                   test_truncate_bad_args, 0, 1),
+       format('--- M111 kill/2 ---~n'),
+       run_test_r0('kill(0, 0) self-probe -> 1',
+                   test_kill_self_probe, 0, 1),
+       run_test_r0('kill on missing pid fails -> 1',
+                   test_kill_missing_pid, 0, 1),
+       run_test_r0('kill with non-int args fails -> 1',
+                   test_kill_bad_args, 0, 1),
+       format('--- M110 realpath/2 ---~n'),
+       run_test_r0('realpath(/tmp, Abs), Abs == /tmp -> 1',
+                   test_rp_tmp, 0, 1),
+       run_test_r0('realpath(., Abs), starts with / -> 1',
+                   test_rp_relative, 0, 1),
+       run_test_r0('realpath on missing path fails -> 1',
+                   test_rp_missing, 0, 1),
+       run_test_r0('realpath(42, _) fails (non-atom) -> 1',
+                   test_rp_bad_arg, 0, 1),
        format('--- M109 getpgrp/1 ---~n'),
        run_test_r0('getpgrp(PG), PG > 0 -> 1',
                    test_pgrp_positive, 0, 1),

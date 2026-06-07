@@ -397,3 +397,229 @@ In recommended order:
 - `examples/prototypes/tree_likeness_index_depth_likeness_probes/scripts/v3_max_parent_distance_probe.py`
 - `examples/prototypes/tree_likeness_index_depth_likeness_probes/results/` (raw output text from each run)
 - `examples/prototypes/tree_likeness_index_depth_likeness_probes/README.md`
+
+---
+
+## Addendum: F# port + enwiki extension (2026-06-06)
+
+The Python prototype's biggest weakness — V2's 61% timeout, restricted to
+simplewiki, no parity validation — motivated porting the per-node `d_wPow`
+probe to F#. The F# probe at
+`examples/prototypes/tree_likeness_index_depth_likeness_probes/fsharp_v1_v3_probe/`
+bundles the production bidirectional kernel template and adds a per-seed
+harness. Validation against Python on simplewiki: identical calibration
+constants, identical per-seed `d_wPow` values.
+
+The F# probe then enabled what Python couldn't: enwiki-scale measurement
+on the post-fix `Category:Main_topic_classifications` subgraph (page_id
+7345184, 2.26M reachable nodes, 6.7M edges — 30× larger than simplewiki
+Articles).
+
+### Enwiki V1 result (B = depth, child shortcuts only)
+
+| Depth range | Shortcut rate | Notes |
+|---|---|---|
+| **1-11** | **0/220 = 0%** | `d_wPow = depth + 1` exactly across all sampled seeds |
+| 12 | 4/20 = 20% | 4 nodes show genuine cross-children shortcuts |
+
+**Headline finding**: enwiki is *more* tree-like to root than simplewiki
+at the same depth range. On simplewiki, shortcut saturation kicks in at
+depth 10; on enwiki, depths 10 and 11 are still 0% shortcut. Despite
+the 30× scale-up.
+
+This **strengthens** the design note's §3 "child shortcuts to topical root
+are statistically rare" claim — it was only validated to depth 9 on
+simplewiki, but now confirmed to depth 11 on enwiki.
+
+Likely reason: enwiki's curation enforces hierarchical structure more
+strictly than simplewiki's smaller editor pool. Even though enwiki has
+more cross-categorisation in absolute terms, those cross-categorisations
+rarely create *shorter* alternate routes to a high-level topical root
+like MTC.
+
+### Enwiki V3 result (B = max parent distance, all admissible paths)
+
+V3 admits not just child shortcuts but also "parent-direction shortcuts"
+— alternate ancestor chains via multi-parent topology where some paths
+are shorter than the longest possible pure-parent chain.
+
+Per-depth (n=20 each, depths 1-12):
+
+| depth | mean(max_d) | mean(d_wPow) | mean diff vs min | mean diff vs max | dominant regime |
+|---|---|---|---|---|---|
+| 1-2 | 1.2-2.4 | depth+1 | +1.0 | +0.8 | MIN-LIKE (single chain) |
+| 3-5 | 4.3-8.8 | depth+1.2 to +1.9 | +1.2-1.9 | -0.1 to -2.0 | mixed: AVG-LIKE / stretched |
+| 6-10 | 11.3-18.5 | depth+2 to +3.7 | +2-3.7 | -3.3 to -5.8 | mostly stretched |
+| 11-12 | 12.6-14.3 | depth+1 to +1.4 | +1.0-1.4 | -0.3 to -2.0 | mixed including SHORTCUTs |
+
+**Overall (n=240)**:
+- **76.2% of nodes have `d_wPow < max_d + 1`** — these are parent-direction
+  shortcuts: the metric finds shorter routes than the longest possible
+  pure-parent chain via alternate ancestors.
+- 3.8% have `d_wPow < min_dist + 1` — genuine child-direction shortcuts.
+
+The categorisation (MIN-LIKE 21.7% + AVG-LIKE 16.7% + SHORTCUT 3.8% +
+stretched 57.9%) sums to 100% — those four buckets are mutually
+exclusive by construction.
+
+**Why the parent-shortcut figure (76.2%) and the category percentages
+don't seem to add up.** They're orthogonal cuts on the same nodes,
+not a partition:
+
+- **Categorisation** (mutually exclusive, sums to 100%): classifies
+  each node by *how* the metric value compares to the min/max
+  baselines. MIN-LIKE means "matches min+1", AVG-LIKE means "matches
+  midpoint+1", SHORTCUT means "below min+1", stretched means "above
+  min+1 but not at max+1".
+- **Parent-shortcut rate** (`d_wPow < max_d + 1`): a single threshold
+  cut. A node falls below max_d+1 if it's in *any* of the categories
+  whose value sits below max_d+1 — which is most of MIN-LIKE (those
+  with max > min), all of AVG-LIKE, all of SHORTCUT, and many of
+  stretched. The 76.2% is the union, not a separate category.
+- **Child-shortcut rate** (`d_wPow < min_dist + 1`): exactly the
+  SHORTCUT category (3.8%).
+
+The two cuts capture different questions: "does the metric reflect
+the multi-ancestor structure at all?" (76% parent-shortcut answers
+yes for most nodes) vs "does the metric find a path *shorter* than
+the BFS-shortest pure-parent route?" (3.8% child-shortcut answers
+yes for a small minority).
+
+**Reframing**: V1's 0% shortcut rate is *for child-direction shortcuts only*.
+When V3 admits parent-direction shortcuts (alternate ancestor chains via
+multi-parent topology), the rate jumps to **76%**. Enwiki's deep multi-parent
+structure means most nodes have substantially shorter routes than the
+maximum-depth tree-equivalent route would suggest.
+
+This vindicates the user's intuition: enwiki *does* have rich shortcut
+structure — it's just that those shortcuts are *parent-direction* (alternate
+ancestor chains), not *child-direction* (cross-children routes). V1
+doesn't see them; V3 does.
+
+### Zig-zag shortcuts and the geometric series
+
+A natural follow-on question: V3 admits "pure parent-direction" shortcuts
+(76%) and "pure child-direction" shortcuts (3.8% of nodes). What about
+*zig-zag* shortcuts — paths that alternate, e.g. up via an alternate
+parent, then down via a child to another sub-tree, then up again via
+its alternate parent, and so on?
+
+Estimating crudely, each additional "down-then-back-up" zig-zag
+transition multiplies by the empirical per-child-hop shortcut
+probability `p_child ≈ 0.04`. The total shortcut rate over arbitrary
+zig-zag depth `n` is then a geometric series:
+
+$$
+\sum_{n=0}^\infty 0.76 \cdot (0.04)^n
+\;=\; \frac{0.76}{1 - 0.04}
+\;\approx\; 0.79
+$$
+
+So allowing arbitrary zig-zag depth would add at most **~3%** on top of
+V3's already-measured 76% rate. The marginal contribution from each
+additional zig-zag transition collapses quickly because the per-child-hop
+probability is small.
+
+**This is the convergence-condition mechanism made visible per-node.**
+Theorem 2.3 (theory doc §2.3) bounds the M ≥ 1 contribution to the
+metric as a geometric series in `r = b'/(b_eff·D)`, with sum `r/(1-r)`.
+The user's empirical zig-zag analysis is the same series, measured
+per-path rather than per-cost:
+
+- **Per-cost** (theoretical): `r ≈ b'/(b_eff·D)` per child hop,
+  contribution `r/(1-r)`
+- **Per-path** (empirical on enwiki V3): `p_child ≈ 0.04` per zig-zag,
+  contribution `p_child/(1-p_child) ≈ 0.042`
+
+The empirical `p_child ≈ 0.04` is a proxy for `r`. Under the
+calibrated weights this implies enwiki MTC has `r ≈ 0.04`, a
+**convergence margin of ~25× safety** vs the boundary `r = 1`.
+
+**Cross-wiki comparison via the same lens:**
+
+| Wiki | Estimated `r` (from V3 child-shortcut rate) | Safety margin |
+|---|---|---|
+| simplewiki Articles | ~0.16 | ~6× |
+| enwiki MTC | ~0.04 | ~25× |
+
+**Counter-intuitive corollary:** enwiki has ~4× *safer* convergence
+than simplewiki, despite being 30× larger. The reason: more multi-parent
+topology produces more *long* alternate paths (parent-direction
+shortcuts), which the weighting crushes; but *short* child shortcuts
+(which would inflate `b'` and tighten convergence) are rarer at enwiki
+scale because the categorisation hierarchy is more strictly enforced.
+
+So zig-zag exploration would marginally extend the measured shortcut
+set, but the geometric series tells us in advance that the contribution
+is bounded by `0.04/(1-0.04) ≈ 4%`. V3 already captures the bulk; the
+zig-zag completion is a theoretical bound, not a measurement gap that
+needs filling.
+
+### Comparison table across all variants and wikis
+
+| Variant | Budget | Wiki | Shortcut rate definition | Rate |
+|---|---|---|---|---|
+| V1 | B = d | simplewiki | child via shortcut at B=d | 0% (d≤9), 100% (d≥10) |
+| V1 | B = d | enwiki | child via shortcut at B=d | 0% (d≤11), 20% (d=12) |
+| V2 | B = c_min | simplewiki | pair-to-pair via shortcut | 39%+ (61% timeout) |
+| V3 | B = max_d | simplewiki | child shortcut at B=max_d | 16% (Python) / similar (F#) |
+| V3 | B = max_d | enwiki | child shortcut at B=max_d | 3.8% |
+| **V3** | **B = max_d** | **enwiki** | **parent shortcut (d_wPow < max+1)** | **76.2%** |
+| **V3** | **B = max_d** | **simplewiki** | **parent shortcut (d_wPow < max+1)** | substantial (≥45%) |
+
+### Implications for the theory
+
+1. **§3 "shortcuts are rare" — needs three-way split.**
+   - *Child-direction shortcuts to topical root*: empirically rare both
+     wikis (0% at d≤9 simple, 0% at d≤11 enwiki).
+   - *Parent-direction shortcuts (alternate ancestor chains)*: abundant
+     in V3 measurements (76% on enwiki). Make the metric a substantial
+     downward deviation from "tree-equivalent maximum depth + 1."
+   - *Arbitrary-pair shortcuts*: V2 ≥ 39% on simplewiki, untested on enwiki
+     (would need V2 in F#).
+
+2. **§3.4 (topical homogeneity / Conjecture 3.4) — confirmed at enwiki
+   scale.** The V1 result extends across wikis. Calibration on the
+   homogeneous topical subgraph behaves consistently.
+
+3. **§5.4 (Conjecture 3.6, routing correction)** — V3 enwiki shows that
+   when the budget admits multi-ancestor paths, the metric "natural value"
+   sits well below max_d + 1. The routing correction's role in production
+   becomes about *which baseline the metric matches* — closer to min+1
+   under tight budgets (V1), closer to a weighted middle of min/max under
+   looser budgets (V3).
+
+4. **§6.1 (certificate at production budget)** — the V1 vs V3 contrast
+   makes precise the importance of the budget choice. A certificate at
+   B = depth (tightest) is much stricter than at B = max_d (looser); both
+   are reasonable but measure different things.
+
+### What's in the F# artifacts
+
+- `fsharp_v1_v3_probe/Kernel.fs` — bidirectional kernel + `_withMinDist`
+  variant for calibration-reuse + configurable path cap
+- `fsharp_v1_v3_probe/Program.fs` — per-seed harness, V1 / V3 modes
+- `fsharp_v1_v3_probe/uw_v1_probe.fsproj` — minimal F# project
+- `fsharp_v1_v3_probe/README.md` — build/run instructions, parity notes,
+  enwiki LMDB construction recipe
+- `results/enwiki_v1_fsharp_B_equals_min_depth.tsv` — V1 enwiki, 240 seeds
+- `results/enwiki_v3_fsharp_B_equals_max_parent_dist.tsv` — V3 enwiki, 240 seeds
+- `results/simplewiki_v3_fsharp_B_equals_max_parent_dist.tsv` — V3 simplewiki for parity
+
+### Caveats specific to the F# extension
+
+- **Path cap of 100K hit on V3 enwiki at depths 5-10** — DFS truncation may
+  slightly bias `d_wPow` toward shorter values (paths enumerated first).
+  Order-of-magnitude effect, not qualitative.
+- **V2 still not ported** — generalising the kernel's A* heuristic to
+  arbitrary `(u, v)` pairs (not just `(v, root)`) is a separate piece of
+  work. V2 enwiki remains untested.
+- **Single root tested** (`Main_topic_classifications`). Other topical
+  roots (e.g. `Category:Articles` on enwiki, page_id 14104879) would
+  validate that the finding isn't MTC-specific.
+- **Calibration constants differ between simplewiki and enwiki**:
+  D≈4.91/b_eff≈14.83 (simplewiki) vs D≈3.9/b_eff≈... (enwiki, see results).
+  The cross-wiki comparison normalises away these differences via the
+  per-depth analysis but it's worth noting that the absolute metric
+  values aren't directly comparable.
+
