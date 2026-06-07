@@ -1579,6 +1579,7 @@ declare i64 @read(i32, i8*, i64)
 declare i64 @write(i32, i8*, i64)
 declare i32* @__errno_location()
 declare i8* @strerror(i32)
+declare i32 @getrusage(i32, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3704,6 +3705,9 @@ entry:
     i32 156, label %builtin_append_atom_to_file
     i32 157, label %builtin_errno
     i32 158, label %builtin_strerror
+    i32 159, label %builtin_process_max_rss
+    i32 160, label %builtin_process_user_time
+    i32 161, label %builtin_process_system_time
   ]
 
 builtin_is:
@@ -7091,6 +7095,91 @@ ser.intern:
   %ser.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %ser.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ser.raw2, %Value %ser.v)
   ret i1 %ser.uok
+
+builtin_process_max_rss:
+  ; M132: process_max_rss(-KB) -- peak resident set size of the
+  ; current process in kilobytes, via getrusage(RUSAGE_SELF=0,
+  ; &ru). ru_maxrss is at offset 32 in struct rusage on Linux
+  ; glibc x86_64 (after ru_utime[16] + ru_stime[16]). Linux
+  ; reports KB; macOS reports BYTES at the same offset -- callers
+  ; on macOS need to divide by 1024 themselves (would need
+  ; target_os routing for full portability).
+  %prss.buf = alloca [256 x i8]
+  %prss.buf_ptr = getelementptr [256 x i8], [256 x i8]* %prss.buf, i32 0, i32 0
+  %prss.ret = call i32 @getrusage(i32 0, i8* %prss.buf_ptr)
+  %prss.ok = icmp eq i32 %prss.ret, 0
+  br i1 %prss.ok, label %prss.read, label %prss.fail
+prss.fail:
+  ret i1 false
+prss.read:
+  %prss.rss_pi8 = getelementptr i8, i8* %prss.buf_ptr, i64 32
+  %prss.rss_ptr = bitcast i8* %prss.rss_pi8 to i64*
+  %prss.rss = load i64, i64* %prss.rss_ptr
+  %prss.v = call %Value @value_integer(i64 %prss.rss)
+  %prss.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %prss.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %prss.raw1, %Value %prss.v)
+  ret i1 %prss.uok
+
+builtin_process_user_time:
+  ; M132: process_user_time(-Seconds) -- accumulated user-mode
+  ; CPU time of the current process as Float seconds, via
+  ; getrusage(RUSAGE_SELF=0, &ru). struct rusage starts with
+  ; ru_utime (struct timeval { i64 tv_sec; i64 tv_usec }), so
+  ; tv_sec at offset 0, tv_usec at offset 8. Result is
+  ; sec + usec / 1e6. Complementary to M107 cpu_time/1 which
+  ; gives total (user+sys) via clock_gettime.
+  %put.buf = alloca [256 x i8]
+  %put.buf_ptr = getelementptr [256 x i8], [256 x i8]* %put.buf, i32 0, i32 0
+  %put.ret = call i32 @getrusage(i32 0, i8* %put.buf_ptr)
+  %put.ok = icmp eq i32 %put.ret, 0
+  br i1 %put.ok, label %put.read, label %put.fail
+put.fail:
+  ret i1 false
+put.read:
+  %put.sec_ptr = bitcast i8* %put.buf_ptr to i64*
+  %put.sec = load i64, i64* %put.sec_ptr
+  %put.usec_pi8 = getelementptr i8, i8* %put.buf_ptr, i64 8
+  %put.usec_ptr = bitcast i8* %put.usec_pi8 to i64*
+  %put.usec = load i64, i64* %put.usec_ptr
+  %put.sec_d = sitofp i64 %put.sec to double
+  %put.usec_d = sitofp i64 %put.usec to double
+  %put.frac = fdiv double %put.usec_d, 1.000000e+06
+  %put.t_d = fadd double %put.sec_d, %put.frac
+  %put.t_bits = bitcast double %put.t_d to i64
+  %put.v0 = insertvalue %Value undef, i32 2, 0
+  %put.v = insertvalue %Value %put.v0, i64 %put.t_bits, 1
+  %put.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %put.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %put.raw1, %Value %put.v)
+  ret i1 %put.uok
+
+builtin_process_system_time:
+  ; M132: process_system_time(-Seconds) -- accumulated kernel-mode
+  ; CPU time of the current process. ru_stime starts at offset 16
+  ; (after ru_utime), tv_sec at offset 16, tv_usec at offset 24.
+  %pst.buf = alloca [256 x i8]
+  %pst.buf_ptr = getelementptr [256 x i8], [256 x i8]* %pst.buf, i32 0, i32 0
+  %pst.ret = call i32 @getrusage(i32 0, i8* %pst.buf_ptr)
+  %pst.ok = icmp eq i32 %pst.ret, 0
+  br i1 %pst.ok, label %pst.read, label %pst.fail
+pst.fail:
+  ret i1 false
+pst.read:
+  %pst.sec_pi8 = getelementptr i8, i8* %pst.buf_ptr, i64 16
+  %pst.sec_ptr = bitcast i8* %pst.sec_pi8 to i64*
+  %pst.sec = load i64, i64* %pst.sec_ptr
+  %pst.usec_pi8 = getelementptr i8, i8* %pst.buf_ptr, i64 24
+  %pst.usec_ptr = bitcast i8* %pst.usec_pi8 to i64*
+  %pst.usec = load i64, i64* %pst.usec_ptr
+  %pst.sec_d = sitofp i64 %pst.sec to double
+  %pst.usec_d = sitofp i64 %pst.usec to double
+  %pst.frac = fdiv double %pst.usec_d, 1.000000e+06
+  %pst.t_d = fadd double %pst.sec_d, %pst.frac
+  %pst.t_bits = bitcast double %pst.t_d to i64
+  %pst.v0 = insertvalue %Value undef, i32 2, 0
+  %pst.v = insertvalue %Value %pst.v0, i64 %pst.t_bits, 1
+  %pst.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %pst.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %pst.raw1, %Value %pst.v)
+  ret i1 %pst.uok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14403,6 +14492,9 @@ builtin_op_to_id('write_atom_to_file/2', 155). % open(O_TRUNC) + write loop + cl
 builtin_op_to_id('append_atom_to_file/2', 156). % open(O_APPEND) + write loop + close.
 builtin_op_to_id('errno/1', 157).             % thread-local errno via __errno_location.
 builtin_op_to_id('strerror/2', 158).          % libc strerror(errno) as atom.
+builtin_op_to_id('process_max_rss/1', 159).   % getrusage ru_maxrss (KB on Linux).
+builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seconds.
+builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

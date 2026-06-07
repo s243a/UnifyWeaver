@@ -2259,6 +2259,9 @@ is_builtin_pred(write_atom_to_file, 2). % write_atom_to_file(+Path, +Content) --
 is_builtin_pred(append_atom_to_file, 2). % append_atom_to_file(+Path, +Content) -- O_APPEND.
 is_builtin_pred(errno, 1).              % errno(-N) -- thread-local errno.
 is_builtin_pred(strerror, 2).           % strerror(+Errno, -Message).
+is_builtin_pred(process_max_rss, 1).    % process_max_rss(-KB) -- getrusage ru_maxrss.
+is_builtin_pred(process_user_time, 1).  % process_user_time(-Seconds) -- ru_utime.
+is_builtin_pred(process_system_time, 1).% process_system_time(-Seconds) -- ru_stime.
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

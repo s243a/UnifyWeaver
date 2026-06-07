@@ -3352,6 +3352,41 @@ test_strerror_round_trip(_, R) :-
 test_strerror_bad_arg(_, R) :-
     ( strerror(not_int, _) -> R is 0 ; R is 1 ).   % 1
 
+% M132: process_max_rss/1 + process_user_time/1 + process_system_time/1.
+
+:- dynamic test_max_rss_positive/2.
+test_max_rss_positive(_, R) :-
+    % Process should have allocated SOME memory by now.
+    process_max_rss(K),
+    ( integer(K), K > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_user_time_nonneg/2.
+test_user_time_nonneg(_, R) :-
+    process_user_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_system_time_nonneg/2.
+test_system_time_nonneg(_, R) :-
+    process_system_time(T),
+    ( T >= 0.0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_user_time_monotonic/2.
+test_user_time_monotonic(_, R) :-
+    % Two calls with some CPU work between: T1 >= T0 (never goes
+    % backwards). Trivial busy-loop via between/3 generates user
+    % CPU time.
+    process_user_time(T0),
+    ( between(1, 100, _), fail ; true ),
+    process_user_time(T1),
+    ( T1 >= T0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_max_rss_monotonic/2.
+test_max_rss_monotonic(_, R) :-
+    % Peak RSS only goes up (or stays).
+    process_max_rss(K0),
+    process_max_rss(K1),
+    ( K1 >= K0 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6481,6 +6516,17 @@ test_all :-
                    test_strerror_round_trip, 0, 1),
        run_test_r0('strerror(not_int, _) fails -> 1',
                    test_strerror_bad_arg, 0, 1),
+       format('--- M132 process_max_rss/user_time/system_time ---~n'),
+       run_test_r0('process_max_rss > 0 -> 1',
+                   test_max_rss_positive, 0, 1),
+       run_test_r0('process_user_time >= 0 -> 1',
+                   test_user_time_nonneg, 0, 1),
+       run_test_r0('process_system_time >= 0 -> 1',
+                   test_system_time_nonneg, 0, 1),
+       run_test_r0('user_time non-decreasing -> 1',
+                   test_user_time_monotonic, 0, 1),
+       run_test_r0('max_rss non-decreasing -> 1',
+                   test_max_rss_monotonic, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
