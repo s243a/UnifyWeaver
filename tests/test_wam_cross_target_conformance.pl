@@ -828,8 +828,8 @@ ct_teardown(go, go_ctx(Dir, Map)) :-
 % ============================================================
 
 rust_runner_driver('use std::env;
-use wam_lib::state::WamState;
-use wam_lib::{shared_wam_program, setup_foreign_predicates};
+use uw_rust_ct::state::WamState;
+use uw_rust_ct::{shared_wam_program, setup_foreign_predicates};
 
 fn main() {
     let key = match env::args().nth(1) {
