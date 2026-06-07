@@ -1563,6 +1563,9 @@ declare i32 @chown(i8*, i32, i32)
 declare i64 @readlink(i8*, i8*, i64)
 declare i32 @symlink(i8*, i8*)
 declare i32 @link(i8*, i8*)
+declare i32 @mkstemp(i8*)
+declare i32 @mkfifo(i8*, i32)
+declare i32 @close(i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3670,6 +3673,8 @@ entry:
     i32 138, label %builtin_link
     i32 139, label %builtin_is_absolute_file_name
     i32 140, label %builtin_same_file
+    i32 141, label %builtin_tmp_file
+    i32 142, label %builtin_mkfifo
   ]
 
 builtin_is:
@@ -6394,6 +6399,115 @@ samf.read:
   %samf.ino_eq = icmp eq i64 %samf.ino1, %samf.ino2
   %samf.both = and i1 %samf.dev_eq, %samf.ino_eq
   ret i1 %samf.both
+
+builtin_tmp_file:
+  ; M123: tmp_file(+Base, -Path) -- race-free temp file creation via
+  ; libc mkstemp. Builds the template ``/tmp/<Base>_XXXXXX'' in a
+  ; PATH_MAX-sized stack buffer, calls mkstemp (which mutates the
+  ; ``XXXXXX'' in-place with a unique suffix AND creates the file
+  ; atomically), then closes the fd we don''t need and returns
+  ; the resolved Path as an atom.
+  ;
+  ; Diverges from SWI semantics: SWI''s tmp_file/2 returns a name
+  ; only without creating the file (racy); we always create an
+  ; empty file. Callers can delete and re-create if they really
+  ; need an unused name.
+  %tmpf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tmpf.t1 = call i32 @value_tag(%Value %tmpf.a1)
+  %tmpf.is_atom = icmp eq i32 %tmpf.t1, 0
+  br i1 %tmpf.is_atom, label %tmpf.go, label %tmpf.fail
+tmpf.fail:
+  ret i1 false
+tmpf.go:
+  %tmpf.aid = call i64 @value_payload(%Value %tmpf.a1)
+  %tmpf.base = call i8* @wam_atom_to_string(i64 %tmpf.aid)
+  %tmpf.base_null = icmp eq i8* %tmpf.base, null
+  br i1 %tmpf.base_null, label %tmpf.fail, label %tmpf.build
+tmpf.build:
+  %tmpf.base_len = call i64 @strlen(i8* %tmpf.base)
+  ; PATH_MAX = 4096 -- ``/tmp/'' (5) + base + ``_XXXXXX'' (7) + ``\0'' (1).
+  %tmpf.buf = alloca [4096 x i8]
+  %tmpf.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %tmpf.buf, i32 0, i32 0
+  ; Write ``/tmp/'' (5 bytes).
+  %tmpf.b0 = getelementptr i8, i8* %tmpf.buf_ptr, i64 0
+  store i8 47, i8* %tmpf.b0
+  %tmpf.b1 = getelementptr i8, i8* %tmpf.buf_ptr, i64 1
+  store i8 116, i8* %tmpf.b1
+  %tmpf.b2 = getelementptr i8, i8* %tmpf.buf_ptr, i64 2
+  store i8 109, i8* %tmpf.b2
+  %tmpf.b3 = getelementptr i8, i8* %tmpf.buf_ptr, i64 3
+  store i8 112, i8* %tmpf.b3
+  %tmpf.b4 = getelementptr i8, i8* %tmpf.buf_ptr, i64 4
+  store i8 47, i8* %tmpf.b4
+  ; Copy Base after ``/tmp/''.
+  %tmpf.after_prefix = getelementptr i8, i8* %tmpf.buf_ptr, i64 5
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tmpf.after_prefix, i8* %tmpf.base, i64 %tmpf.base_len, i1 false)
+  %tmpf.after_base_off = add i64 5, %tmpf.base_len
+  %tmpf.after_base = getelementptr i8, i8* %tmpf.buf_ptr, i64 %tmpf.after_base_off
+  ; Write ``_XXXXXX'' (7 bytes) + null terminator (1 byte).
+  store i8 95, i8* %tmpf.after_base
+  %tmpf.x1 = getelementptr i8, i8* %tmpf.after_base, i64 1
+  store i8 88, i8* %tmpf.x1
+  %tmpf.x2 = getelementptr i8, i8* %tmpf.after_base, i64 2
+  store i8 88, i8* %tmpf.x2
+  %tmpf.x3 = getelementptr i8, i8* %tmpf.after_base, i64 3
+  store i8 88, i8* %tmpf.x3
+  %tmpf.x4 = getelementptr i8, i8* %tmpf.after_base, i64 4
+  store i8 88, i8* %tmpf.x4
+  %tmpf.x5 = getelementptr i8, i8* %tmpf.after_base, i64 5
+  store i8 88, i8* %tmpf.x5
+  %tmpf.x6 = getelementptr i8, i8* %tmpf.after_base, i64 6
+  store i8 88, i8* %tmpf.x6
+  %tmpf.term = getelementptr i8, i8* %tmpf.after_base, i64 7
+  store i8 0, i8* %tmpf.term
+  ; mkstemp mutates the buffer (resolves XXXXXX) and creates the file.
+  %tmpf.fd = call i32 @mkstemp(i8* %tmpf.buf_ptr)
+  %tmpf.mk_ok = icmp sge i32 %tmpf.fd, 0
+  br i1 %tmpf.mk_ok, label %tmpf.intern, label %tmpf.fail
+tmpf.intern:
+  call i32 @close(i32 %tmpf.fd)
+  %tmpf.final_len = call i64 @strlen(i8* %tmpf.buf_ptr)
+  call void @wam_arena_ensure()
+  %tmpf.bufsize = add i64 %tmpf.final_len, 1
+  %tmpf.arena = call i8* @wam_arena_alloc(i64 %tmpf.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tmpf.arena, i8* %tmpf.buf_ptr, i64 %tmpf.final_len, i1 false)
+  %tmpf.arena_term = getelementptr i8, i8* %tmpf.arena, i64 %tmpf.final_len
+  store i8 0, i8* %tmpf.arena_term
+  %tmpf.atom_id = call i64 @wam_intern_atom(i8* %tmpf.arena, i64 %tmpf.final_len)
+  %tmpf.v0 = insertvalue %Value undef, i32 0, 0
+  %tmpf.v = insertvalue %Value %tmpf.v0, i64 %tmpf.atom_id, 1
+  %tmpf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tmpf.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %tmpf.raw2, %Value %tmpf.v)
+  ret i1 %tmpf.uok
+
+builtin_mkfifo:
+  ; M123: mkfifo(+Path, +Mode) -- libc mkfifo wrapper, creates a
+  ; named pipe (FIFO) on the filesystem. Path must be Atom, Mode
+  ; must be Integer. Mode is the permission mask (octal in user
+  ; code: 0o644 etc.). Succeeds iff libc returns 0. EEXIST
+  ; (Path already exists), ENOENT (parent missing), etc. fail.
+  %mkf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mkf.t1 = call i32 @value_tag(%Value %mkf.a1)
+  %mkf.is_atom = icmp eq i32 %mkf.t1, 0
+  br i1 %mkf.is_atom, label %mkf.check2, label %mkf.fail
+mkf.fail:
+  ret i1 false
+mkf.check2:
+  %mkf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %mkf.t2 = call i32 @value_tag(%Value %mkf.a2)
+  %mkf.is_int = icmp eq i32 %mkf.t2, 1
+  br i1 %mkf.is_int, label %mkf.go, label %mkf.fail
+mkf.go:
+  %mkf.aid = call i64 @value_payload(%Value %mkf.a1)
+  %mkf.path = call i8* @wam_atom_to_string(i64 %mkf.aid)
+  %mkf.path_null = icmp eq i8* %mkf.path, null
+  br i1 %mkf.path_null, label %mkf.fail, label %mkf.do
+mkf.do:
+  %mkf.mode64 = call i64 @value_payload(%Value %mkf.a2)
+  %mkf.mode = trunc i64 %mkf.mode64 to i32
+  %mkf.ret = call i32 @mkfifo(i8* %mkf.path, i32 %mkf.mode)
+  %mkf.ok = icmp eq i32 %mkf.ret, 0
+  ret i1 %mkf.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13688,6 +13802,8 @@ builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
 builtin_op_to_id('link/2', 138).              % libc link(old, new) -- hard link.
 builtin_op_to_id('is_absolute_file_name/1', 139). % true iff first char is ''/''.
 builtin_op_to_id('same_file/2', 140).         % stat both, compare st_dev + st_ino.
+builtin_op_to_id('tmp_file/2', 141).          % mkstemp-based race-free temp file.
+builtin_op_to_id('mkfifo/2', 142).            % libc mkfifo(path, mode).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

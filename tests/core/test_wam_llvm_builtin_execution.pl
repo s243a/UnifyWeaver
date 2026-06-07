@@ -2880,6 +2880,68 @@ test_samf_bad_arg(_, R) :-
     ; R is 1
     ).   % 1
 
+% M123: tmp_file/2 + mkfifo/2.
+
+:- dynamic test_tmp_file_creates/2.
+test_tmp_file_creates(_, R) :-
+    % mkstemp creates the file atomically; test -f should succeed.
+    tmp_file(uw123, P),
+    atom_concat('test -f ', P, Cmd),
+    shell(Cmd, St),
+    atom_concat('rm -f ', P, Rm),
+    shell(Rm, _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_prefix/2.
+test_tmp_file_prefix(_, R) :-
+    % Path is non-empty and the file was created (mkstemp guarantee).
+    tmp_file(label, P),
+    atom_length(P, L),
+    atom_concat('test -f ', P, Cmd),
+    shell(Cmd, St),
+    atom_concat('rm -f ', P, Rm),
+    shell(Rm, _),
+    ( L > 0, St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_unique/2.
+test_tmp_file_unique(_, R) :-
+    % Two calls produce different paths (mkstemp guarantees this).
+    tmp_file(dup, P1),
+    tmp_file(dup, P2),
+    atom_concat('rm -f ', P1, R1), shell(R1, _),
+    atom_concat('rm -f ', P2, R2), shell(R2, _),
+    ( P1 \== P2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_tmp_file_bad_arg/2.
+test_tmp_file_bad_arg(_, R) :-
+    ( tmp_file(42, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_mkfifo_create/2.
+test_mkfifo_create(_, R) :-
+    % Create a FIFO at a known path, verify with "test -p".
+    Path = '/tmp/uw_m123_fifo',
+    shell('rm -f /tmp/uw_m123_fifo', _),
+    mkfifo(Path, 0o644),
+    shell('test -p /tmp/uw_m123_fifo', St),
+    shell('rm -f /tmp/uw_m123_fifo', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_mkfifo_exists_fail/2.
+test_mkfifo_exists_fail(_, R) :-
+    % mkfifo at an already-existing path fails (EEXIST).
+    shell('touch /tmp/uw_m123_busy', _),
+    ( mkfifo('/tmp/uw_m123_busy', 0o644) -> Tmp = 0 ; Tmp = 1 ),
+    shell('rm -f /tmp/uw_m123_busy', _),
+    R is Tmp.   % 1
+
+:- dynamic test_mkfifo_bad_path/2.
+test_mkfifo_bad_path(_, R) :-
+    ( mkfifo(42, 0o644) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_mkfifo_bad_mode/2.
+test_mkfifo_bad_mode(_, R) :-
+    ( mkfifo('/tmp/uw_m123_bm', not_int) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -5884,6 +5946,23 @@ test_all :-
                    test_samf_missing, 0, 1),
        run_test_r0('same_file with non-atom args fails -> 1',
                    test_samf_bad_arg, 0, 1),
+       format('--- M123 tmp_file/2 + mkfifo/2 ---~n'),
+       run_test_r0('tmp_file creates file -> 1',
+                   test_tmp_file_creates, 0, 1),
+       run_test_r0('tmp_file path under /tmp + has Base label -> 1',
+                   test_tmp_file_prefix, 0, 1),
+       run_test_r0('tmp_file unique on consecutive calls -> 1',
+                   test_tmp_file_unique, 0, 1),
+       run_test_r0('tmp_file(42, _) fails -> 1',
+                   test_tmp_file_bad_arg, 0, 1),
+       run_test_r0('mkfifo + test -p -> 1',
+                   test_mkfifo_create, 0, 1),
+       run_test_r0('mkfifo at existing path fails -> 1',
+                   test_mkfifo_exists_fail, 0, 1),
+       run_test_r0('mkfifo(42, _) fails -> 1',
+                   test_mkfifo_bad_path, 0, 1),
+       run_test_r0('mkfifo(_, not_int) fails -> 1',
+                   test_mkfifo_bad_mode, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
