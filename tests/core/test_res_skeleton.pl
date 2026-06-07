@@ -53,7 +53,7 @@ run_all([Test|Rest], Acc, Passed) :-
 
 test(test_module_loads).
 test(test_baseline_strategy_returned).
-test(test_trace_contains_stub_step).
+test(test_trace_has_no_stub_steps).
 test(test_determinism_in_if_then_else).
 test(test_determinism_under_findall).
 test(test_valid_strategy_accepts_wrapped).
@@ -89,11 +89,17 @@ test_baseline_strategy_returned :-
     select_evaluation_strategy(R, W, strategy_choice(Strategy, _Trace)),
     Strategy == strategy(per_query(unidirectional)).
 
-test_trace_contains_stub_step :-
+%% Phase 5 stub-leak detector: no step in any real selection should
+%% have name = 'stub'. The Phase 0 stub marker was removed in Phase 3
+%% (when resolve_against_intent/5 stopped being a stub); this test
+%% now asserts the absence rather than the presence of the marker.
+%% Once Phase 4 (renderers) lands, the assertion stays valid — the
+%% renderers read the trace but don't write into it.
+test_trace_has_no_stub_steps :-
     a_recurrence(R),
     a_workload(W),
     select_evaluation_strategy(R, W, strategy_choice(_Strategy, trace(Steps))),
-    member(step(stub, not_yet_implemented(phase_0), []), Steps).
+    \+ ( member(step(stub, _, _), Steps) ).
 
 %% Determinism: called inside if-then-else, the predicate succeeds
 %% in the if-branch without leaving a choicepoint. The cut after
