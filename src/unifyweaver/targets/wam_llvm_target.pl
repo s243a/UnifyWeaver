@@ -1516,6 +1516,7 @@ declare i32 @getpgrp()
 declare i8* @realpath(i8*, i8*)
 declare i32 @kill(i32, i32)
 declare i32 @truncate(i8*, i64)
+declare i32 @chown(i8*, i32, i32)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3613,6 +3614,7 @@ entry:
     i32 128, label %builtin_realpath
     i32 129, label %builtin_kill
     i32 130, label %builtin_truncate
+    i32 131, label %builtin_chown
   ]
 
 builtin_is:
@@ -5798,6 +5800,44 @@ tr.do:
   %tr.ret = call i32 @truncate(i8* %tr.path, i64 %tr.len)
   %tr.ok = icmp eq i32 %tr.ret, 0
   ret i1 %tr.ok
+
+builtin_chown:
+  ; M115: chown(+Path, +Uid, +Gid) -- libc chown wrapper.
+  ; Path must be Atom, Uid and Gid Integer. uid_t / gid_t are i32
+  ; on Linux glibc and the major BSDs / macOS / WASI -- truncate
+  ; the i64 payloads. Succeeds iff chown returns 0; EPERM (not
+  ; root), ENOENT, EACCES etc. map to a Prolog fail. Special
+  ; convention: -1 (or 0xFFFFFFFF) for either Uid or Gid leaves
+  ; that side unchanged (libc semantic, preserved as-is).
+  %co.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %co.t1 = call i32 @value_tag(%Value %co.a1)
+  %co.is_atom = icmp eq i32 %co.t1, 0
+  br i1 %co.is_atom, label %co.check2, label %co.fail
+co.fail:
+  ret i1 false
+co.check2:
+  %co.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %co.t2 = call i32 @value_tag(%Value %co.a2)
+  %co.is_int2 = icmp eq i32 %co.t2, 1
+  br i1 %co.is_int2, label %co.check3, label %co.fail
+co.check3:
+  %co.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %co.t3 = call i32 @value_tag(%Value %co.a3)
+  %co.is_int3 = icmp eq i32 %co.t3, 1
+  br i1 %co.is_int3, label %co.go, label %co.fail
+co.go:
+  %co.aid = call i64 @value_payload(%Value %co.a1)
+  %co.path = call i8* @wam_atom_to_string(i64 %co.aid)
+  %co.path_null = icmp eq i8* %co.path, null
+  br i1 %co.path_null, label %co.fail, label %co.do
+co.do:
+  %co.uid64 = call i64 @value_payload(%Value %co.a2)
+  %co.uid = trunc i64 %co.uid64 to i32
+  %co.gid64 = call i64 @value_payload(%Value %co.a3)
+  %co.gid = trunc i64 %co.gid64 to i32
+  %co.ret = call i32 @chown(i8* %co.path, i32 %co.uid, i32 %co.gid)
+  %co.ok = icmp eq i32 %co.ret, 0
+  ret i1 %co.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13035,6 +13075,7 @@ builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
 builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
 builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
 builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
+builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

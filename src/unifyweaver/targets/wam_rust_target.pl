@@ -1930,6 +1930,23 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         depth: i64,
         out: &mut Vec<i64>,
     ) {
+        // ROOT_ANCHORED_METRICS admissible prune: when a materialised
+        // min_dist_to_root table is loaded, a node whose shortest remaining
+        // distance to root exceeds the remaining depth budget cannot reach
+        // root within max_depth, so the whole branch is cut. A node absent
+        // from the table is unreachable and likewise pruned. Disabled (empty
+        // table) by default; never changes results, only avoids exploring
+        // walks that provably cannot reach root in budget.
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => {
+                    if depth + (d as i64) > max_depth as i64 {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
         // R7: route through self.edge_parents so lazy_lookups is
         // consulted before ffi_facts. This keeps the kernels_on
         // native path working under lmdb_materialisation(lazy).

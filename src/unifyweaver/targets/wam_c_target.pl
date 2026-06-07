@@ -1907,7 +1907,7 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
 
 wam_lines_to_c_pass2([], PC, _, _, _, PC, []).
 wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
+    split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
     ;   CleanParts = [First|_],
@@ -2138,6 +2138,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                 int continuation = state->CP;
                 if (continuation == WAM_AGGREGATE_META_COLLECT) {
                     return wam_collect_meta_aggregate_success(state);
+                }
+                if (continuation == WAM_META_CONJ_RETURN) {
+                    return wam_continue_conjunction(state);
                 }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
                     int barrier_index = --state->call_base_top;
@@ -2559,6 +2562,8 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_bind_next_aggregate_group(state);
                     } else if (next_pc == WAM_AGGREGATE_META_DONE) {
                         recovered = wam_finalize_meta_aggregate(state);
+                    } else if (next_pc == WAM_META_DISJ_RIGHT) {
+                        recovered = wam_resume_disjunction(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
@@ -2589,6 +2594,8 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
                                     int return_pc);
 static bool wam_collect_meta_aggregate_success(WamState *state);
 static bool wam_finalize_meta_aggregate(WamState *state);
+static bool wam_continue_conjunction(WamState *state);
+static bool wam_resume_disjunction(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -2857,6 +2864,23 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
     int arity = 0;
     if (!wam_parse_functor_arity(functor, &arity)) return false;
     if (arity > WAM_MAX_REGS) return false;
+    if (strcmp(functor, ",/2") == 0 && arity == 2) {
+        if (state->conj_top >= WAM_META_GOAL_STACK_SIZE) return false;
+        WamConjFrame *frame = &state->conj_frames[state->conj_top++];
+        frame->second_goal = state->H_array[base + 2];
+        frame->return_pc = return_pc;
+        return wam_invoke_goal_as_call(state, state->H_array[base + 1],
+                                       WAM_META_CONJ_RETURN);
+    }
+    if (strcmp(functor, ";/2") == 0 && arity == 2) {
+        if (state->disj_top >= WAM_META_GOAL_STACK_SIZE) return false;
+        WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
+        frame->right_goal = state->H_array[base + 2];
+        frame->return_pc = return_pc;
+        push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
+        return wam_invoke_goal_as_call(state, state->H_array[base + 1],
+                                       return_pc);
+    }
     if (strcmp(functor, "^/2") == 0 && arity == 2) {
         return wam_invoke_goal_as_call(state, state->H_array[base + 2],
                                        return_pc);
@@ -2887,6 +2911,23 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         return true;
     }
     return false;
+}
+
+static bool wam_continue_conjunction(WamState *state) {
+    if (state->conj_top <= 0) return false;
+    WamConjFrame *frame = &state->conj_frames[state->conj_top - 1];
+    return wam_invoke_goal_as_call(state, frame->second_goal,
+                                   frame->return_pc);
+}
+
+static bool wam_resume_disjunction(WamState *state) {
+    if (state->disj_top <= 0 || state->B <= 0) return false;
+    WamDisjFrame *frame = &state->disj_frames[state->disj_top - 1];
+    WamValue right_goal = frame->right_goal;
+    int return_pc = frame->return_pc;
+    state->disj_top--;
+    pop_choice_point(state);
+    return wam_invoke_goal_as_call(state, right_goal, return_pc);
 }
 
 static bool wam_copy_term_to_stored(WamState *state,

@@ -2286,7 +2286,13 @@ def throw_iso_error(state: WamState, err_term: Term) -> bool:
 
 
 def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int = -1) -> bool:
-    """Execute a WAM builtin_call instruction."""
+    """Execute a WAM builtin_call instruction.
+
+    Public alias `execute_builtin` is defined below: lowered predicate
+    functions call it (they import the runtime via `from wam_runtime import *`,
+    which skips underscore-prefixed names) to dispatch standard builtins the
+    same way the interpreter loop does.
+    """
     if builtin in ('catch/3', 'catch') and arity == 3:
         return _execute_catch(state)
     if builtin in ('throw/1', 'throw') and arity == 1:
@@ -2551,6 +2557,11 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('nl/0', 'nl'):
         return _emit_output('\n', state=state)
     return False
+
+
+# Public alias so `from wam_runtime import *` (which skips underscore names)
+# exposes the builtin dispatcher to generated lowered predicate functions.
+execute_builtin = _execute_builtin
 
 
 # -- Main WAM interpreter loop ---------------------------------------------

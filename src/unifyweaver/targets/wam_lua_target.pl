@@ -279,6 +279,12 @@ wam_parts_to_lua(["switch_on_structure" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'I.SwitchOnStructure({~w})', [CasesStr]).
 wam_parts_to_lua(["cut_ite"], 'I.CutIte()').
+wam_parts_to_lua(["get_level", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.GetLevel(~w)', [R]).
+wam_parts_to_lua(["cut", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.Cut(~w)', [R]).
 wam_parts_to_lua(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
     reg_to_int(TemplateReg, TIdx),
     reg_to_int(BagReg, BIdx),
@@ -532,9 +538,9 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources).
 
 compile_lua_predicate_wam(PredIndicator, wam_text, WamCode) :-
-    compile_predicate_to_wam_text(PredIndicator, [], WamCode).
+    compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamCode).
 compile_lua_predicate_wam(PredIndicator, wam_items_bridge, WamCode) :-
-    compile_predicate_to_wam_items(PredIndicator, [], WamCode).
+    compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], WamCode).
 
 lua_fact_source_spec(P, Arity, Options, Spec) :-
     Arity =:= 2,
@@ -623,6 +629,8 @@ wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
 wam_item_parts(trust_me, ["trust_me"]).
 wam_item_parts(jump(L), ["jump", L]).
 wam_item_parts(cut_ite, ["cut_ite"]).
+wam_item_parts(get_level(Yn), ["get_level", Yn]).
+wam_item_parts(cut(Yn), ["cut", Yn]).
 wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
 wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
 wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).

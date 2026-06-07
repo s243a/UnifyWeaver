@@ -380,20 +380,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode0)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode1)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
@@ -411,7 +411,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -753,6 +753,12 @@ wam_instruction_to_go_literal(retry_me_else(Label, Arity), GoLiteral) :-
 wam_instruction_to_go_literal(retry_me_else(Label), GoLiteral) :-
     format(atom(GoLiteral), '&RetryMeElse{Label: "~w", Arity: 100}', [Label]).
 wam_instruction_to_go_literal(trust_me, '&TrustMe{}').
+wam_instruction_to_go_literal(get_level(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_instruction_to_go_literal(cut(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&Cut{Reg: ~w}', [YnIdx]).
 
 wam_instruction_to_go_literal(switch_on_constant(Table), GoLiteral) :-
     maplist(go_const_case, Table, Cases),
@@ -1354,6 +1360,14 @@ wam_line_to_go_literal(["jump", L], GoLit) :-
     clean_comma(L, CL),
     format(atom(GoLit), '&Jump{Label: "~w"}', [CL]).
 wam_line_to_go_literal(["cut_ite"], '&CutIte{}').
+wam_line_to_go_literal(["get_level", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_line_to_go_literal(["cut", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&Cut{Reg: ~w}', [YnIdx]).
 wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit) :-
     clean_comma(AggType, CAggType),
     clean_comma(ValueReg, CValueReg),
@@ -1641,6 +1655,14 @@ compile_go_step_case(CaseCode) :-
 
 wam_go_case('GetConstant', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        // Dereference before inspecting: the register may hold a *Ref or a
+        // bound *Unbound (bound via the Bindings table), e.g. the tail of a
+        // partial list carried through a recursive call. Without the deref,
+        // isUnbound() sees the raw *Unbound as unbound and rebinds it to the
+        // constant -- silently corrupting an already-bound value (get_constant
+        // [] would overwrite a bound [H|T] tail with []). Mirrors the deref
+        // GetStructure / GetList already do.
+        val = vm.deref(val)
         if isUnbound(val) {
             u := val.(*Unbound)
             vm.bindUnbound(u, i.C)
@@ -1959,7 +1981,7 @@ wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back
         // active env frame. vm.E moves to the index of the just-pushed
         // frame so peekEnvFrame is O(1) and Deallocate can walk the
         // PrevE chain without scanning the stack.
-        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), PrevE: vm.E}
+        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), CutB0: vm.PendingB0, PrevE: vm.E}
         // Snapshot the Y-reg range (200..299) into the env frame so a
         // nested predicate that uses the same slot numbers via
         // PutVariable doesn''t silently clobber the caller''s Y-regs.
@@ -1999,6 +2021,7 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
@@ -2053,10 +2076,12 @@ wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
+        vm.PendingB0 = len(vm.ChoicePoints)
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
@@ -2065,7 +2090,8 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
         }
         return vm.executeIndexedAtomFact2(i.Pred)').
 
-wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Jump', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
@@ -2079,6 +2105,24 @@ wam_go_case('JumpPc', '        vm.PC = i.TargetPC
 
 wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
             vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true').
+
+% M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
+% current choicepoint-stack height into a Y register; Cut truncates the
+% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
+% the if-then-else / negation choicepoint AND every CP the condition
+% pushed above it -- the cut a proper negation / soft-cut condition needs.
+wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+        vm.PC++
+        return true').
+
+wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
+            target := int(iv.Val)
+            if target >= 0 && target < len(vm.ChoicePoints) {
+                vm.ChoicePoints = vm.ChoicePoints[:target]
+            }
         }
         vm.PC++
         return true').

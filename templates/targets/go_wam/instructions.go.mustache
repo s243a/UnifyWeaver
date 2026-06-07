@@ -96,6 +96,17 @@ func (i *JumpPc) instrTag() {}
 type CutIte struct{}
 func (i *CutIte) instrTag() {}
 
+// M17 soft cut. GetLevel snapshots the choicepoint-stack height into a Y
+// register (before an if-then-else / negation try_me_else); Cut truncates
+// the choicepoint stack back to that snapshot at the commit site, removing
+// the ITE/negation choicepoint AND any CPs the condition pushed above it.
+// Replaces the legacy CutIte (which dropped only the single topmost CP).
+type GetLevel struct { Reg int }
+func (i *GetLevel) instrTag() {}
+
+type Cut struct { Reg int }
+func (i *Cut) instrTag() {}
+
 type BeginAggregate struct { AggType string; ValueReg int; ResultReg int }
 func (i *BeginAggregate) instrTag() {}
 
