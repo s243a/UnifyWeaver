@@ -25,6 +25,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILDER = REPO_ROOT / "examples" / "benchmark" / "build_scoped_subtree_lmdb.py"
+EFFDIST = REPO_ROOT / "examples" / "benchmark" / "build_effective_distance.py"
 QUERY = REPO_ROOT / "examples" / "benchmark" / "query_root_metric.py"
 I32 = struct.Struct("<i")
 
@@ -97,6 +98,42 @@ class TestQueryRootMetric(unittest.TestCase):
         self.assertEqual(hist.get("0"), "1")
         self.assertEqual(hist.get("1"), "2")
         self.assertEqual(hist.get("2"), "1")
+
+    def _build_effective_distance(self, exponent="5"):
+        env_os = dict(os.environ)
+        env_os.setdefault("LANG", "C.UTF-8")
+        proc = subprocess.run(
+            [sys.executable, str(EFFDIST), "--lmdb", str(self.out),
+             "--exponent", exponent],
+            capture_output=True, text=True, env=env_os)
+        self.assertEqual(proc.returncode, 0, f"build_effective_distance failed:\n{proc.stderr}")
+
+    def test_effective_distance_lookup(self):
+        # Scoped category_parent: 3->2, 4->2, 5->3. With root 2 and exponent 5:
+        #   S(3) = S(4) = 2^-5 = 0.03125 ; S(5) = 3^-5 = 1/243.
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "3", "4", "5", "2")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertAlmostEqual(float(rows["3"]), 2 ** -5, places=12)
+        self.assertAlmostEqual(float(rows["4"]), 2 ** -5, places=12)
+        self.assertAlmostEqual(float(rows["5"]), 3 ** -5, places=12)
+        # root has no path to itself in this DAG -> absent
+        self.assertEqual(rows["2"], "unreachable")
+
+    def test_effective_distance_verify(self):
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "--verify")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verify: OK", proc.stderr)
+
+    def test_effective_distance_histogram_is_summary(self):
+        # f64 metric -> summary stats, not a value/count histogram.
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "--histogram")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertEqual(rows.get("count"), "3")  # nodes 3,4,5
 
 
 if __name__ == "__main__":
