@@ -39,6 +39,7 @@ Create `src/unifyweaver/core/recurrence_evaluation_strategy.pl` with the public 
 - No real logic. Stubs only.
 - The stub for `select_evaluation_strategy/3` returns `strategy_choice(strategy(per_query(unidirectional)), trace([step(stub, not_yet_implemented(phase_0), [])]))` — a working baseline that the F# WAM integration can call against from day one.
 - The stub trace step uses the explicit atom `stub` as its name, so test assertions can detect "stub steps leaked into a later phase's behaviour" (see Phase 5 success criteria).
+- **Pre-wire the call chain even in the stub.** The Phase 0 stub of `select_evaluation_strategy/3` calls `classify_signals/4` (stub returns three empty lists), then concatenates declared + inferred (`append(D, I, DataSignals)`), then calls `apply_cost_model/3` (stub returns the baseline strategy), then calls `resolve_against_intent/5` (stub returns the cost-model choice directly). Wiring the call chain at Phase 0 — even with stubbed-out components — means Phase 1–4 implementations slot in without changing the top-level structure. The integration test added in Phase 0 verifies the call chain executes without error.
 
 ### Success criteria
 
@@ -154,6 +155,7 @@ Both are documented in this implementation plan, in the SPEC, and as in-code com
 - Each step's individual tests pass.
 - Integration tests walk realistic decision scenarios end-to-end, including the conflict + override case.
 - The trace for each decision is complete and accurate (matches the SPEC's example outputs to the structural level — actual atom values may differ for non-stable rules).
+- **`monotone(false)` + cross-class adjustment edge case** — a dedicated test exercises the scenario: a `monotone(false)` recurrence + a caller intent requesting a cross-class strategy (e.g. caller asks for `kernel_mode(bidirectional)` which is per-query but cost-model would have preferred `fixed_point` for the recurrence) + `step_satisfiability` in scope. The test verifies the adjuster refuses the cross-class adjustment per the SPEC's [`monotone(false)` mechanism note](RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md#step_satisfiability--adjust-the-unsatisfiable), and the resolution falls through to `step_caller_wins`. This is the only place where admissibility and the cross-class restriction interact at runtime; without explicit coverage it's an untested edge.
 
 ### Estimated effort
 
@@ -173,7 +175,7 @@ Implement `render_trace_for_stderr/2` (produces list of strings) and `format_tra
 - Unit tests in `tests/core/test_res_trace.pl` covering rendering of each step type plus end-to-end rendering of full traces from the Phase 3 tests.
 - **Round-trip parse test**: for each supported `CommentPrefix`, render a sample trace as a comment header followed by a minimal valid source body for that language, then feed the full prefixed output to the language's actual parser and verify zero parse errors. Specifically:
   - **Prolog**: write the rendered comment + a minimal clause (`test_compiled :- true.`) to a `.pl` file; invoke `swipl --halt -g test_compiled -t halt -s <file>` and assert exit code 0. This catches the failure mode where `%` is not prefixed on every line (Prolog `%` is line-level; missing prefix causes a syntax error on the next line).
-  - F# / Haskell / Python: pattern-match assertions on the rendered string (every non-blank line begins with the prefix; no embedded delimiters from the trace text break out of the comment). Full language-parser round-trips are not assumed here because those toolchains aren't available in the Prolog test environment; the Prolog round-trip catches the most failure-prone case (the line-level-comment-syntax languages).
+  - F# / Haskell / Python: pattern-match assertions on the rendered string covering: (i) every non-blank line begins with the comment prefix; (ii) the trace text contains no embedded delimiters that would break out of the comment context for that language. Specifically check for: no `*/` substring (would break out of C-style block comments, defensive even though we use line comments); no unescaped newline-then-non-prefix (would interrupt the comment block); for Python (`#`), no embedded shebang-like sequence `#!` at line start; for Haskell (`--`), no embedded `{-` or `-}` block-comment delimiters; for F# (`//`), no embedded `///` (XML doc comment trigger). Full language-parser round-trips are not assumed here because those toolchains aren't available in the Prolog test environment; the Prolog round-trip catches the most failure-prone case (the line-level-comment-syntax languages) and the pattern-match assertions catch the remaining surface-level escape vectors.
 - **(Earlier-draft note)** A previous version of this test specification incorrectly proposed using `read_term/2` on the *stripped* content of the comment. That doesn't work — the comment body is human-readable text, not Prolog terms; `read_term/2` would fail to parse it. The correct test is the one above: feed the full prefixed output (with comment prefixes intact) to `swipl --halt` as source code, where Prolog's lexer correctly skips comments and the embedded clause body is what gets parsed.
 
 ### Scope notes
@@ -266,7 +268,7 @@ Comprehensive unit and integration tests. Some are scoped into Phases 1–5 abov
 ### Success criteria
 
 - All tests pass on a clean checkout.
-- Code coverage of the new module is at least 80% (track with a simple `cov_helper` or just by visual inspection — the module is small).
+- **Structural coverage criterion (replaces "80% by visual inspection").** Every named exported predicate has at least one positive test (returns expected output for valid input) and at least one negative test (throws expected error, or returns expected sentinel for malformed input). Internal helpers (`step_*`, `intent_compatible_with_strategy/2`, cost-model rules) each have at least one positive test exercising the success path. This is structural and verifiable by reading the test file; doesn't require a coverage tool but isn't satisfied by trivially exercising the entry point either. *Optional CI deliverable*: integrate `library(test_cover)` in SWI-Prolog when CI is in place, then re-add a numeric coverage threshold backed by the tool.
 - The trace-inspection helpers are reused in `test_wam_fsharp_strategy_autoselect_e2e.pl` (verified by import).
 
 ### Estimated effort
@@ -291,7 +293,7 @@ Update [`book-18-graph-algorithms`](https://github.com/s243a/UnifyWeaver_Educati
   - Update §What-is-missing to reflect the narrower remaining gaps (mostly the fixed-point branch, the C# query runtime as second consumer, ML-based detection).
   - Update §Concrete-prototyped-detection-bidirectional-ancestor — note that auto-selection now works.
 - New entry in `book-18-graph-algorithms/13_appendix_b_internal_theory.md`:
-  - `B.13 — The r-as-contraction-rate conjecture`. Records that the design depends on identifying `r = b'/(b_eff·D)` with the spectral contraction rate of the linearised `d_wPow` iteration operator; documents that this is a conjecture pending verification, points to the philosophy doc's hedge, names the rigorous identification as future theory work.
+  - `B.13 — r = b'/(b_eff·D) as contraction rate: conjecture and tracked theory work`. (Title uses the explicit formula to match the philosophy doc's framing — "conjecture is conjectured to be the contraction rate" in the philosophy is rendered here with the formula spelled out so a reader of the book's table of contents can match the entry to the SPEC/philosophy without resolving terminology.) Records that the design depends on identifying `r = b'/(b_eff·D)` with the spectral contraction rate of the linearised `d_wPow` iteration operator; documents that this is a conjecture pending verification, points to the philosophy doc's hedge, names the rigorous identification as future theory work.
 - Bump the "Status" line of book-18's README.md if appropriate (currently says "Initial — this book is a starting point").
 
 ### Scope notes
