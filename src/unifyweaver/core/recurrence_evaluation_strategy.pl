@@ -10,14 +10,14 @@
 % return the strategy the target should use to emit code, plus a
 % structured reasoning trace.
 %
-% Phase status: Phases 0-3 landed. classify_signals/4,
-% apply_cost_model/3, admissible_strategies/2, and
-% resolve_against_intent/5 are real. Only the trace renderers
-% (render_trace_for_stderr/2, format_trace_for_comment/3) remain
-% as Phase 4 stubs. The Phase 0 step(stub, ...) marker has been
-% REMOVED from the trace as of Phase 3 — the stub-leak detector
-% in Phase 5's tests now asserts on trace structure directly
-% (no step has name='stub'), not on the presence of the marker.
+% Phase status: Phases 0-4 landed. The selector is now functionally
+% complete from the user/library perspective: classify_signals/4,
+% apply_cost_model/3, admissible_strategies/2, resolve_against_intent/5,
+% render_trace_for_stderr/2, and format_trace_for_comment/3 are all
+% real. Only the F# WAM target integration (Phase 5) and book-18
+% chapter updates (Phase 7) remain. The selector module itself is
+% pure-functional — it returns structured trace; target adapters
+% decide whether and how to render and emit.
 %
 % This baseline lets the F# WAM target integration (Phase 5) call
 % against the module from day one, and lets the stub-leak assertion
@@ -766,16 +766,157 @@ recurrence_monotone(recurrence(_KernelKind, _Pred, Properties), Value) :-
 
 %% render_trace_for_stderr(+Trace, -Lines)
 %
-% Phase 0 stub: returns an empty list (no rendering).
-% Phase 4 implements the real renderer.
-render_trace_for_stderr(_Trace, []).
+% Phase 4: renders the structured trace as a list of strings, one
+% per trace step (plus an envelope line). Target adapters write
+% these to stderr (or anywhere); the selector itself does not.
+%
+% Output format per SPEC examples:
+%   [evaluation-strategy] selecting strategy
+%   [evaluation-strategy]   <step-name>: <outcome-summary>
+%   [evaluation-strategy]   <step-name>: <outcome-summary>
+%   ...
+render_trace_for_stderr(trace(Steps), Lines) :-
+    Header = "[evaluation-strategy] selecting strategy",
+    maplist(render_step_for_stderr, Steps, StepLines),
+    Lines = [Header | StepLines].
+
+%% render_step_for_stderr(+Step, -Line)
+%
+% Render one trace step as a single indented line. The step's
+% outcome dictates the detail wording.
+render_step_for_stderr(step(Name, Outcome, Details), Line) :-
+    format(string(NameStr), "~w", [Name]),
+    render_outcome_summary(Outcome, OutcomeStr),
+    render_details_summary(Details, DetailsStr),
+    (   DetailsStr == ""
+    ->  format(string(Line),
+               "[evaluation-strategy]   ~w: ~w", [NameStr, OutcomeStr])
+    ;   format(string(Line),
+               "[evaluation-strategy]   ~w: ~w (~w)",
+               [NameStr, OutcomeStr, DetailsStr])
+    ).
+
+%% render_outcome_summary(+Outcome, -String)
+render_outcome_summary(applied,                String) :- !,
+    String = "applied".
+render_outcome_summary(passed,                 String) :- !,
+    String = "passed".
+render_outcome_summary(not_found,              String) :- !,
+    String = "not_found".
+render_outcome_summary(no_scope_overlap,       String) :- !,
+    String = "no_scope_overlap".
+render_outcome_summary(adjusted,               String) :- !,
+    String = "adjusted".
+render_outcome_summary(satisfiable,            String) :- !,
+    String = "satisfiable".
+render_outcome_summary(classified(I, D, F),    String) :- !,
+    length(I, IL), length(D, DL), length(F, FL),
+    format(string(String),
+           "classified intent=~w declared=~w inferred=~w", [IL, DL, FL]).
+render_outcome_summary(chosen(Strategy, Score, Rule), String) :- !,
+    strategy_pretty(Strategy, StrategyStr),
+    format(string(String),
+           "chosen ~w score=~3f rule=~w", [StrategyStr, Score, Rule]).
+render_outcome_summary(found(Strategy),        String) :- !,
+    strategy_pretty(Strategy, StrategyStr),
+    format(string(String), "found ~w", [StrategyStr]).
+render_outcome_summary(resolved(Strategy, by(Reason)), String) :- !,
+    strategy_pretty(Strategy, StrategyStr),
+    format(string(String),
+           "resolved ~w by ~w", [StrategyStr, Reason]).
+render_outcome_summary(degraded(Action),       String) :- !,
+    format(string(String), "degraded ~w", [Action]).
+render_outcome_summary(Other,                  String) :-
+    format(string(String), "~w", [Other]).
+
+%% render_details_summary(+Details, -String)
+%
+% Render the Details list as a concise comma-separated string.
+% Empty list renders as empty string (caller checks).
+render_details_summary([], "") :- !.
+render_details_summary(Details, String) :-
+    maplist(detail_to_string, Details, DetailStrs),
+    atomics_to_string(DetailStrs, ", ", String).
+
+%% detail_to_string(+Detail, -String)
+detail_to_string(adjustment(Action), String) :- !,
+    format(string(String), "adjustment=~w", [Action]).
+detail_to_string(unknown_signal(S), String) :- !,
+    format(string(String), "unknown_signal=~w", [S]).
+detail_to_string(reason(R), String) :- !,
+    format(string(String), "reason=~w", [R]).
+detail_to_string(Other, String) :-
+    format(string(String), "~w", [Other]).
 
 %% format_trace_for_comment(+Trace, +CommentPrefix, -CommentString)
 %
-% Phase 0 stub: returns an empty string.
-% Phase 4 implements the real comment renderer with per-line
-% CommentPrefix application.
-format_trace_for_comment(_Trace, _CommentPrefix, "").
+% Phase 4: renders the trace as a multi-line comment block with
+% the CommentPrefix applied to EVERY line (not just the first).
+% Critical for line-level comment syntaxes (Prolog %, Python #).
+%
+% Output structure:
+%   <prefix>===================================
+%   <prefix>Evaluation strategy: <chosen strategy>
+%   <prefix>Decided by: <final-decision-line>
+%   <prefix>Trace:
+%   <prefix>  - step-name: outcome-summary
+%   <prefix>  - step-name: outcome-summary
+%   <prefix>  ...
+%   <prefix>===================================
+format_trace_for_comment(trace(Steps), CommentPrefix, CommentString) :-
+    must_be(string, CommentPrefix),
+    %% Find the final-decision step for the header.
+    (   member(step(final_decision, FinalOutcome, FinalDetails), Steps)
+    ->  render_final_decision_lines(FinalOutcome, FinalDetails, HeaderLines)
+    ;   %% No final_decision step (e.g. resolved at an early step).
+        %% Use the last step's outcome as the chosen strategy.
+        last_resolved_step(Steps, LastStep),
+        render_last_step_as_header(LastStep, HeaderLines)
+    ),
+    %% Render each step as a trace line.
+    maplist(render_step_for_comment, Steps, StepLines),
+    %% Assemble: separator, header, "Trace:", step lines, separator.
+    Sep = "========================================================================",
+    append([
+        [Sep],
+        HeaderLines,
+        ["Trace:"],
+        StepLines,
+        [Sep]
+    ], AllLines),
+    %% Prepend CommentPrefix to EVERY line.
+    maplist(prefix_line(CommentPrefix), AllLines, PrefixedLines),
+    atomics_to_string(PrefixedLines, "\n", CommentString).
+
+prefix_line(Prefix, Line, PrefixedLine) :-
+    string_concat(Prefix, Line, PrefixedLine).
+
+render_final_decision_lines(Strategy, Details, Lines) :-
+    strategy_pretty(Strategy, StrategyStr),
+    Line1Str = StrategyStr,
+    format(string(Line1), "Evaluation strategy: ~w", [Line1Str]),
+    (   member(decided_by(By), Details)
+    ->  format(string(Line2), "Decided by: ~w", [By])
+    ;   Line2 = "Decided by: (unspecified)"
+    ),
+    Lines = [Line1, Line2].
+
+last_resolved_step(Steps, LastStep) :-
+    reverse(Steps, [LastStep | _]).
+
+render_last_step_as_header(step(Name, Outcome, _Details), Lines) :-
+    render_outcome_summary(Outcome, OutcomeStr),
+    format(string(Line1), "Evaluation strategy: resolved at ~w", [Name]),
+    format(string(Line2), "Outcome: ~w", [OutcomeStr]),
+    Lines = [Line1, Line2].
+
+render_step_for_comment(step(Name, Outcome, Details), Line) :-
+    render_outcome_summary(Outcome, OutcomeStr),
+    render_details_summary(Details, DetailsStr),
+    (   DetailsStr == ""
+    ->  format(string(Line), "  - ~w: ~w", [Name, OutcomeStr])
+    ;   format(string(Line), "  - ~w: ~w (~w)", [Name, OutcomeStr, DetailsStr])
+    ).
 
 %% admissible_strategies(+Recurrence, -StrategyList)
 %
@@ -932,10 +1073,12 @@ rule_adjustments(_, []) :- !.
 
 %% strategy_pretty(+Strategy, -String)
 %
-% Phase 0 stub: returns the strategy term rendered with format_to_atom.
-% Phase 4 implements the pretty-printer alongside the renderers.
-strategy_pretty(Strategy, String) :-
-    format(string(String), "~w", [Strategy]).
+% Phase 4: renders a strategy term in a compact human-readable form
+% — `per_query(bidirectional)` rather than `strategy(per_query(bidirectional))`.
+strategy_pretty(strategy(Mode), String) :- !,
+    format(string(String), "~w", [Mode]).
+strategy_pretty(Other, String) :-
+    format(string(String), "~w", [Other]).
 
 %% ============================================================
 %% Type-check helpers
