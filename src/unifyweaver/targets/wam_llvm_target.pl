@@ -1570,6 +1570,8 @@ declare i32 @umask(i32)
 declare i32 @nice(i32)
 declare i32 @getpriority(i32, i32)
 declare i32 @setpriority(i32, i32, i32)
+declare i32 @getrlimit(i32, i8*)
+declare i32 @setrlimit(i32, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3684,6 +3686,8 @@ entry:
     i32 145, label %builtin_nice
     i32 146, label %builtin_getpriority
     i32 147, label %builtin_setpriority
+    i32 148, label %builtin_getrlimit
+    i32 149, label %builtin_setrlimit
   ]
 
 builtin_is:
@@ -6620,6 +6624,77 @@ spr.go:
   %spr.ret = call i32 @setpriority(i32 0, i32 0, i32 %spr.p)
   %spr.ok = icmp eq i32 %spr.ret, 0
   ret i1 %spr.ok
+
+builtin_getrlimit:
+  ; M126: getrlimit(+Resource, -SoftLimit) -- libc getrlimit wrapper.
+  ; Reads the current soft limit for Resource (an Integer naming
+  ; the POSIX rlimit constant: RLIMIT_CPU=0, RLIMIT_FSIZE=1,
+  ; RLIMIT_DATA=2, RLIMIT_STACK=3, RLIMIT_CORE=4). Higher-numbered
+  ; resources (RLIMIT_RSS, RLIMIT_NOFILE, RLIMIT_AS) vary across
+  ; OSes, but 0--4 are POSIX-portable. SoftLimit is the rlim_cur
+  ; field (offset 0, i64). RLIM_INFINITY (typically u64 max)
+  ; passes through unchanged. Fails if Resource is not an Integer
+  ; or libc returns -1 (EINVAL for unknown resource).
+  %grl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %grl.t1 = call i32 @value_tag(%Value %grl.a1)
+  %grl.is_int = icmp eq i32 %grl.t1, 1
+  br i1 %grl.is_int, label %grl.go, label %grl.fail
+grl.fail:
+  ret i1 false
+grl.go:
+  %grl.res64 = call i64 @value_payload(%Value %grl.a1)
+  %grl.res = trunc i64 %grl.res64 to i32
+  ; struct rlimit on Linux/macOS: { rlim_t rlim_cur; rlim_t rlim_max; }
+  ; with rlim_t = u64. Total 16 bytes.
+  %grl.buf = alloca [16 x i8]
+  %grl.buf_ptr = getelementptr [16 x i8], [16 x i8]* %grl.buf, i32 0, i32 0
+  %grl.ret = call i32 @getrlimit(i32 %grl.res, i8* %grl.buf_ptr)
+  %grl.call_ok = icmp eq i32 %grl.ret, 0
+  br i1 %grl.call_ok, label %grl.read, label %grl.fail
+grl.read:
+  %grl.cur_ptr = bitcast i8* %grl.buf_ptr to i64*
+  %grl.cur = load i64, i64* %grl.cur_ptr
+  %grl.v = call %Value @value_integer(i64 %grl.cur)
+  %grl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %grl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %grl.raw2, %Value %grl.v)
+  ret i1 %grl.ok
+
+builtin_setrlimit:
+  ; M126: setrlimit(+Resource, +SoftLimit) -- libc setrlimit wrapper.
+  ; Sets the soft limit for Resource to SoftLimit, leaving the
+  ; hard limit unchanged. Implementation: getrlimit first to
+  ; capture the current hard limit, overwrite rlim_cur with
+  ; SoftLimit, then setrlimit. Both args must be Integer; either
+  ; libc call returning -1 (typically EPERM when raising soft
+  ; above hard for unprivileged callers, or EINVAL for an unknown
+  ; resource) maps to Prolog fail.
+  %srl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %srl.t1 = call i32 @value_tag(%Value %srl.a1)
+  %srl.is_int1 = icmp eq i32 %srl.t1, 1
+  br i1 %srl.is_int1, label %srl.check2, label %srl.fail
+srl.fail:
+  ret i1 false
+srl.check2:
+  %srl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %srl.t2 = call i32 @value_tag(%Value %srl.a2)
+  %srl.is_int2 = icmp eq i32 %srl.t2, 1
+  br i1 %srl.is_int2, label %srl.go, label %srl.fail
+srl.go:
+  %srl.res64 = call i64 @value_payload(%Value %srl.a1)
+  %srl.res = trunc i64 %srl.res64 to i32
+  %srl.new = call i64 @value_payload(%Value %srl.a2)
+  %srl.buf = alloca [16 x i8]
+  %srl.buf_ptr = getelementptr [16 x i8], [16 x i8]* %srl.buf, i32 0, i32 0
+  ; Read current to preserve rlim_max.
+  %srl.get = call i32 @getrlimit(i32 %srl.res, i8* %srl.buf_ptr)
+  %srl.get_ok = icmp eq i32 %srl.get, 0
+  br i1 %srl.get_ok, label %srl.write, label %srl.fail
+srl.write:
+  %srl.cur_ptr = bitcast i8* %srl.buf_ptr to i64*
+  store i64 %srl.new, i64* %srl.cur_ptr
+  %srl.set = call i32 @setrlimit(i32 %srl.res, i8* %srl.buf_ptr)
+  %srl.ok = icmp eq i32 %srl.set, 0
+  ret i1 %srl.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -13921,6 +13996,8 @@ builtin_op_to_id('monotonic_time/1', 144).    % clock_gettime(CLOCK_MONOTONIC) a
 builtin_op_to_id('nice/1', 145).              % libc nice(inc) -- adjust priority.
 builtin_op_to_id('getpriority/1', 146).       % libc getpriority(PRIO_PROCESS, 0).
 builtin_op_to_id('setpriority/1', 147).       % libc setpriority(PRIO_PROCESS, 0, prio).
+builtin_op_to_id('getrlimit/2', 148).         % libc getrlimit(Res, &rlim) -- soft limit.
+builtin_op_to_id('setrlimit/2', 149).         % libc setrlimit(Res, &rlim) -- soft limit only.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

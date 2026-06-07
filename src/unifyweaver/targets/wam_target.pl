@@ -2248,6 +2248,8 @@ is_builtin_pred(monotonic_time, 1).     % monotonic_time(-Seconds) -- CLOCK_MONO
 is_builtin_pred(nice, 1).               % nice(+Inc) -- adjust process priority.
 is_builtin_pred(getpriority, 1).        % getpriority(-Prio) -- read self priority.
 is_builtin_pred(setpriority, 1).        % setpriority(+Prio) -- set self priority.
+is_builtin_pred(getrlimit, 2).          % getrlimit(+Resource, -SoftLimit).
+is_builtin_pred(setrlimit, 2).          % setrlimit(+Resource, +SoftLimit).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

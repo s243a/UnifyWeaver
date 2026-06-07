@@ -3036,6 +3036,61 @@ test_nice_bad_arg(_, R) :-
 test_setpriority_bad_arg(_, R) :-
     ( setpriority(not_int) -> R is 0 ; R is 1 ).   % 1
 
+% M126: getrlimit/2 + setrlimit/2.
+
+:- dynamic test_grl_fsize/2.
+test_grl_fsize(_, R) :-
+    % RLIMIT_FSIZE = 1. Default is usually RLIM_INFINITY, which is
+    % the rlim_t-max sentinel -- (u64)-1 on Linux/macOS, surfaces as
+    % -1 in signed Prolog Integer space. Just sanity-check it's
+    % an Integer; the actual value depends on environment.
+    getrlimit(1, L),
+    ( integer(L) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_grl_core/2.
+test_grl_core(_, R) :-
+    % RLIMIT_CORE = 4. Often 0 (no core dumps) but can also be
+    % RLIM_INFINITY; either is a valid Integer.
+    getrlimit(4, L),
+    ( integer(L) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_srl_round_trip/2.
+test_srl_round_trip(_, R) :-
+    % Set RLIMIT_CORE soft limit to a known value, read back, restore.
+    getrlimit(4, Before),
+    setrlimit(4, 0),
+    getrlimit(4, Read),
+    setrlimit(4, Before),
+    ( Read =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_srl_lower_ok/2.
+test_srl_lower_ok(_, R) :-
+    % Lowering the soft limit is always allowed for unprivileged.
+    getrlimit(1, Before),
+    NewLow is Before - 1,
+    ( NewLow > 0
+    -> ( setrlimit(1, NewLow) -> Set = 1 ; Set = 0 ),
+       setrlimit(1, Before)
+    ;  Set = 1
+    ),
+    R is Set.   % 1
+
+:- dynamic test_grl_bad_resource/2.
+test_grl_bad_resource(_, R) :-
+    % Resource 999 is way out of range -> EINVAL -> fail.
+    ( getrlimit(999, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_grl_bad_arg/2.
+test_grl_bad_arg(_, R) :-
+    ( getrlimit(not_int, _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_srl_bad_args/2.
+test_srl_bad_args(_, R) :-
+    ( setrlimit(not_int, 0) -> R is 0
+    ; setrlimit(1, not_int) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6083,6 +6138,21 @@ test_all :-
                    test_nice_bad_arg, 0, 1),
        run_test_r0('setpriority(not_int) fails -> 1',
                    test_setpriority_bad_arg, 0, 1),
+       format('--- M126 getrlimit/2 + setrlimit/2 ---~n'),
+       run_test_r0('getrlimit FSIZE non-negative -> 1',
+                   test_grl_fsize, 0, 1),
+       run_test_r0('getrlimit CORE non-negative -> 1',
+                   test_grl_core, 0, 1),
+       run_test_r0('setrlimit CORE round-trip -> 1',
+                   test_srl_round_trip, 0, 1),
+       run_test_r0('setrlimit lower FSIZE OK -> 1',
+                   test_srl_lower_ok, 0, 1),
+       run_test_r0('getrlimit unknown resource fails -> 1',
+                   test_grl_bad_resource, 0, 1),
+       run_test_r0('getrlimit non-int fails -> 1',
+                   test_grl_bad_arg, 0, 1),
+       run_test_r0('setrlimit non-int args fail -> 1',
+                   test_srl_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
