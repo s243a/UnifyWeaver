@@ -28,6 +28,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1, copy_file/2]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
@@ -62,11 +63,7 @@ bench_fixture_path(Path) :-
     directory_file_path(Root,
         'tests/fixtures/wam_ground_member_bench/Bench.hs', Path).
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
+% tmp_root/1 imported from helpers/smoke_paths (cross-platform).
 
 build_dir_for(Variant, Dir) :-
     tmp_root(Root),
@@ -219,11 +216,6 @@ keep_or_clean :-
         catch(cleanup_dir(DU), _, true)
     ).
 
-cleanup_dir(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir], [process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
-    ).
+cleanup_dir(Dir) :- clean_dir(Dir).
 
 :- initialization(main, main).

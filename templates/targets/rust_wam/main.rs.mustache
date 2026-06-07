@@ -2,15 +2,15 @@
 // Benchmark harness for effective-distance workload
 // Date: {{date}}
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::time::Instant;
 
-use wam_lib::value::Value;
-use wam_lib::state::WamState;
-use wam_lib::{shared_wam_program, setup_foreign_predicates};
+use {{crate_name}}::value::Value;
+use {{crate_name}}::state::WamState;
+use {{crate_name}}::{shared_wam_program, setup_foreign_predicates};
 
 fn load_tsv_pairs(path: &str) -> Vec<(String, String)> {
     let content = fs::read_to_string(path).unwrap_or_default();
@@ -33,25 +33,32 @@ fn load_single_column(path: &str) -> Vec<String> {
         .collect()
 }
 
-fn collect_solutions(vm: &mut WamState) -> Vec<f64> {
-    let mut results = Vec::new();
-    loop {
-        if !vm.run() {
-            break;
-        }
-        if let Some(val) = vm.get_reg("A3") {
-            let derefed = vm.deref_var(&val);
-            match derefed {
-                Value::Integer(n) => results.push(n as f64),
-                Value::Float(f) => results.push(f),
-                _ => {}
+fn compute_reachable_to_root(
+    root: &str,
+    reverse_index: &HashMap<String, Vec<String>>,
+    max_depth: usize,
+) -> HashSet<String> {
+    let mut reachable = HashSet::new();
+    let mut best_depth: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::from([(root.to_string(), 0)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        if let Some(&prev) = best_depth.get(&current) {
+            if depth >= prev {
+                continue;
             }
         }
-        if !vm.backtrack() {
-            break;
+        best_depth.insert(current.clone(), depth);
+        reachable.insert(current.clone());
+        if depth >= max_depth {
+            continue;
+        }
+        if let Some(children) = reverse_index.get(&current) {
+            for child in children {
+                queue.push_back((child.clone(), depth + 1));
+            }
         }
     }
-    results
+    reachable
 }
 
 fn main() {
@@ -64,17 +71,34 @@ fn main() {
     let article_categories = load_tsv_pairs(&format!("{}/article_category.tsv", facts_dir));
     let roots = load_single_column(&format!("{}/root_categories.tsv", facts_dir));
 
+    let root = if roots.is_empty() { String::new() } else { roots[0].clone() };
+    let max_depth_limit: usize = 10;
+
+    // Demand-filter: build reverse index (parent -> children) and find all
+    // categories reachable BACKWARD from root within max_depth. Only keep
+    // category_parent edges whose parent is reachable to root.
+    let mut reverse_index: HashMap<String, Vec<String>> = HashMap::new();
+    for (child, parent) in &category_parents {
+        reverse_index.entry(parent.clone()).or_default().push(child.clone());
+    }
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_index, max_depth_limit);
+    let filtered_edges: Vec<(String, String)> = category_parents
+        .iter()
+        .filter(|(_, parent)| reachable_to_root.contains(parent))
+        .cloned()
+        .collect();
+
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels.clone());
 
     vm.register_indexed_atom_fact2_pairs(
         "category_parent",
-        &category_parents.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect::<Vec<_>>(),
+        &filtered_edges.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect::<Vec<_>>(),
     );
 
     {
         let mut ffi_index: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (child, parent) in &category_parents {
+        for (child, parent) in &filtered_edges {
             let child_id = vm.intern_atom(child);
             let parent_id = vm.intern_atom(parent);
             ffi_index.entry(child_id).or_insert_with(Vec::new).push(parent_id);
@@ -84,11 +108,11 @@ fn main() {
 
     setup_foreign_predicates(&mut vm);
 
-    let root = if roots.is_empty() { String::new() } else { roots[0].clone() };
-
-    let mut seed_cats: Vec<String> = category_parents.iter()
-        .map(|(child, _)| child.clone())
-        .collect::<std::collections::HashSet<_>>()
+    // Seeds = distinct categories from article_categories (categories that
+    // articles actually belong to), matching the canonical workload semantic.
+    let mut seed_cats: Vec<String> = article_categories.iter()
+        .map(|(_, cat)| cat.clone())
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     seed_cats.sort();
@@ -112,72 +136,30 @@ fn main() {
     let t2 = Instant::now();
 
     let has_ca_foreign = vm.foreign_predicates.contains("category_ancestor/4");
-    let ca_pc = labels.get("category_ancestor/4").copied();
-    let psb_pc = labels.get("power_sum_bound/4").copied();
 
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
 
-    if has_ca_foreign || ca_pc.is_some() || psb_pc.is_some() {
+    if has_ca_foreign {
+        let root_id = vm.intern_atom(&root);
         for cat in &seed_cats {
-            vm.reset_query();
-
-            if has_ca_foreign {
-                vm.set_reg("A1", Value::Atom(cat.clone()));
-                vm.set_reg("A2", Value::Atom(root.clone()));
-                vm.set_reg("A3", Value::Unbound("_Hops".to_string()));
-                vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
-
-                let mut weight_sum: f64 = 0.0;
-                if vm.execute_foreign_predicate("category_ancestor/4", 4) {
-                    loop {
-                        if let Some(val) = vm.get_reg("A3") {
-                            let derefed = vm.deref_var(&val);
-                            match derefed {
-                                Value::Integer(h) => weight_sum += ((h as f64) + 1.0).powf(neg_n),
-                                Value::Float(h) => weight_sum += (h + 1.0).powf(neg_n),
-                                _ => {}
-                            }
-                        }
-                        if !vm.backtrack() { break; }
-                    }
-                }
-                if weight_sum > 0.0 {
-                    seed_weight_sums.insert(cat.clone(), weight_sum);
-                }
-            } else if let Some(pc) = psb_pc {
-                vm.pc = pc;
-                vm.set_reg("A1", Value::Atom(cat.clone()));
-                vm.set_reg("A2", Value::Atom(root.clone()));
-                vm.set_reg("A3", Value::Float(neg_n));
-                vm.set_reg("A4", Value::Unbound("_WS".to_string()));
-                if vm.run() {
-                    if let Some(val) = vm.get_reg("A4").map(|v| vm.deref_var(&v)) {
-                        match val {
-                            Value::Float(ws) if ws > 0.0 => {
-                                seed_weight_sums.insert(cat.clone(), ws);
-                            }
-                            Value::Integer(ws) if ws > 0 => {
-                                seed_weight_sums.insert(cat.clone(), ws as f64);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            } else if let Some(pc) = ca_pc {
-                vm.pc = pc;
-                vm.set_reg("A1", Value::Atom(cat.clone()));
-                vm.set_reg("A2", Value::Atom(root.clone()));
-                vm.set_reg("A3", Value::Unbound("_Hops".to_string()));
-                vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
-                vm.cp = 0;
-
-                let solutions = collect_solutions(&mut vm);
-                let weight_sum: f64 = solutions.iter()
-                    .map(|&hops| (hops + 1.0).powf(neg_n))
-                    .sum();
-                if weight_sum > 0.0 {
-                    seed_weight_sums.insert(cat.clone(), weight_sum);
-                }
+            let cat_id = vm.intern_atom(cat);
+            let mut visited_ids = vec![cat_id];
+            let mut hops: Vec<i64> = Vec::new();
+            let acc = vm.resolve_edge_accessor("category_parent");
+            vm.collect_native_category_ancestor_hops(
+                cat_id,
+                root_id,
+                &mut visited_ids,
+                max_depth_limit,
+                &acc,
+                0,
+                &mut hops,
+            );
+            let weight_sum: f64 = hops.iter()
+                .map(|&h| ((h as f64) + 1.0).powf(neg_n))
+                .sum();
+            if weight_sum > 0.0 {
+                seed_weight_sums.insert(cat.clone(), weight_sum);
             }
         }
     }
@@ -198,7 +180,7 @@ fn main() {
         .filter(|(_, &ws)| ws > 0.0)
         .map(|(art, &ws)| (ws.powf(inv_n), art.clone()))
         .collect();
-    results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
 
     let agg_ms = t3.elapsed().as_millis();
     let total_ms = t0.elapsed().as_millis();

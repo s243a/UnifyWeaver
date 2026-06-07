@@ -4,6 +4,7 @@
 
 :- use_module('../src/unifyweaver/targets/wam_c_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 :- use_module(library(filesex), [directory_file_path/3]).
 :- use_module(library(readutil), [read_file_to_string/3]).
 
@@ -17,14 +18,9 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
-wam_c_temp_root(Root) :-
-    (   getenv('TMPDIR', EnvRoot),
-        EnvRoot \= ''
-    ->  Root = EnvRoot
-    ;   exists_directory('/data/data/com.termux/files/usr/tmp')
-    ->  Root = '/data/data/com.termux/files/usr/tmp'
-    ;   Root = '/tmp'
-    ).
+% Delegate to the shared smoke_paths helper so this test works on
+% native Windows (no /tmp) and Termux (writable /data/data/.../tmp).
+wam_c_temp_root(Root) :- tmp_root(Root).
 
 wam_c_temp_path(Prefix, Stamp, Path) :-
     wam_c_temp_root(Root),
@@ -50,7 +46,9 @@ test_helpers_generation :-
         sub_string(S, _, _, _, 'void wam_state_init(WamState'),
         sub_string(S, _, _, _, 'void wam_free_state(WamState'),
         sub_string(S, _, _, _, 'int wam_run_predicate(WamState'),
-        sub_string(S, _, _, _, 'resolve_predicate_hash')
+        sub_string(S, _, _, _, 'resolve_predicate_hash'),
+        sub_string(S, _, _, _, 'state->atom_table_size'),
+        sub_string(S, _, _, _, 'free(state->atom_table)')
     ->  pass(Test)
     ;   fail_test(Test, 'helper generation missing expected content')
     ).
@@ -127,6 +125,81 @@ test_control_flow_instructions :-
         member(deallocate, Cases)
     ->  pass(Test)
     ;   fail_test(Test, 'missing control flow instruction arms')
+    ).
+
+test_aggregate_instructions :-
+    Test = 'WAM-C: aggregate instructions present',
+    (   implemented_wam_c_cases(Cases),
+        member(begin_aggregate, Cases),
+        member(end_aggregate, Cases)
+    ->  pass(Test)
+    ;   fail_test(Test, 'missing aggregate instruction arms')
+    ).
+
+test_control_cut_jump_instructions :-
+    Test = 'WAM-C: cut and jump control instructions present',
+    (   implemented_wam_c_cases(Cases),
+        member(get_level, Cases),
+        member(cut, Cases),
+        member(cut_ite, Cases),
+        member(jump, Cases),
+        compile_step_wam_to_c([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_prune_choice_points(state, target_b)'),
+        sub_string(S, _, _, _, 'state->P = target')
+    ->  pass(Test)
+    ;   fail_test(Test, 'missing cut/jump control instruction arms')
+    ).
+
+test_explicit_cut_uses_current_call_barrier :-
+    Test = 'WAM-C: explicit cut prunes to current call barrier',
+    (   compile_wam_helpers_to_c([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top - 1]'),
+        sub_string(S, _, _, _, 'wam_prune_choice_points(state, target_b)'),
+        sub_string(S, _, _, _, 'state->call_bases[state->call_base_top] = base_b'),
+        sub_string(S, _, _, _, 'state->call_base_preserve_choice[state->call_base_top] = false'),
+        \+ sub_string(S, _, _, _, 'state->B = 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'explicit !/0 still clears all choice points instead of pruning to the current barrier')
+    ).
+
+test_control_instruction_parsing :-
+    Test = 'WAM-C: cut and jump instructions parse to typed payloads',
+    WamCode = 'wam_c_ctrl_parse/1:\n    get_level Y1\n    try_me_else L_else\n    cut Y1\n    cut_ite\n    jump L_done\nL_else:\n    trust_me\nL_done:\n    proceed',
+    (   compile_wam_predicate_to_c(user:wam_c_ctrl_parse/1, WamCode, [], CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_GET_LEVEL'),
+        sub_string(S, _, _, _, 'INSTR_CUT'),
+        sub_string(S, _, _, _, 'INSTR_CUT_ITE'),
+        sub_string(S, _, _, _, 'INSTR_JUMP'),
+        sub_string(S, _, _, _, '.as.jump = { .target_pc = base_pc +')
+    ->  pass(Test)
+    ;   fail_test(Test, 'cut/jump instruction parsing missing typed payloads')
+    ).
+
+test_precise_ite_y_level_generation :-
+    Test = 'WAM-C: precise if-then-else lowers to get_level/cut',
+    assertz((user:wam_c_precise_codegen(X, R) :-
+        (X = a -> R = then ; R = else))),
+    (   compile_predicate_to_wam(user:wam_c_precise_codegen/2,
+                                 [ite_use_y_level(true)],
+                                 WamCode),
+        sub_string(WamCode, _, _, _, 'get_level '),
+        sub_string(WamCode, _, _, _, 'cut Y'),
+        \+ sub_string(WamCode, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_precise_codegen/2,
+                                   WamCode,
+                                   [ite_use_y_level(true)],
+                                   CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_GET_LEVEL'),
+        sub_string(S, _, _, _, 'INSTR_CUT'),
+        \+ sub_string(S, _, _, _, 'INSTR_CUT_ITE')
+    ->  retractall(user:wam_c_precise_codegen(_, _)),
+        pass(Test)
+    ;   retractall(user:wam_c_precise_codegen(_, _)),
+        fail_test(Test, 'precise ITE mode did not emit get_level/cut-only control flow')
     ).
 
 test_choice_point_instructions :-
@@ -260,9 +333,35 @@ test_category_ancestor_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_register_category_parent'),
         sub_string(S, _, _, _, 'void wam_register_category_ancestor_kernel'),
         sub_string(S, _, _, _, 'bool wam_category_ancestor_handler'),
+        sub_string(S, _, _, _, 'wam_state_category_child_range'),
         sub_string(S, _, _, _, 'wam_category_ancestor_dfs')
     ->  pass(Test)
     ;   fail_test(Test, 'category_ancestor native kernel helpers missing')
+    ).
+
+test_bidirectional_ancestor_kernel_generation :-
+    Test = 'WAM-C: bidirectional_ancestor native kernel helpers generated',
+    (   compile_wam_runtime_to_c([], RuntimeCode),
+        atom_string(RuntimeCode, S),
+        sub_string(S, _, _, _, 'void wam_register_bidirectional_ancestor_kernel'),
+        sub_string(S, _, _, _, 'bool wam_bidirectional_ancestor_handler'),
+        sub_string(S, _, _, _, 'wam_bidirectional_ancestor_dfs'),
+        sub_string(S, _, _, _, 'void wam_attach_bidirectional_child_csr'),
+        sub_string(S, _, _, _, 'void wam_register_category_id'),
+        sub_string(S, _, _, _, 'wam_category_id_atom_index_find'),
+        sub_string(S, _, _, _, 'wam_category_id_value_index_find'),
+        sub_string(S, _, _, _, 'category_id_by_atom'),
+        sub_string(S, _, _, _, 'WamBidirectionalDistanceMap'),
+        sub_string(S, _, _, _, 'WamBidirectionalDistanceCacheEntry'),
+        sub_string(S, _, _, _, 'wam_bidirectional_build_min_distances'),
+        sub_string(S, _, _, _, 'wam_bidirectional_get_min_distances'),
+        sub_string(S, _, _, _, 'wam_bidirectional_can_reach_root_within_budget'),
+        sub_string(S, _, _, _, 'bool wam_category_min_parent_hops'),
+        sub_string(S, _, _, _, 'bool wam_category_child_may_reach_root_within_budget'),
+        sub_string(S, _, _, _, 'bidirectional_min_distance_cache'),
+        sub_string(S, _, _, _, 'bidirectional_parent_step_cost')
+    ->  pass(Test)
+    ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
     ).
 
 test_transitive_closure_kernel_generation :-
@@ -341,8 +440,11 @@ test_fact_source_generation :-
         sub_string(S, _, _, _, 'void wam_fact_source_init'),
         sub_string(S, _, _, _, 'bool wam_fact_source_load_tsv'),
         sub_string(S, _, _, _, 'bool wam_fact_source_load_lmdb'),
+        sub_string(S, _, _, _, 'bool wam_fact_source_child_range'),
         sub_string(S, _, _, _, 'int wam_fact_source_lookup_arg1'),
-        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source')
+        sub_string(S, _, _, _, 'bool wam_register_category_parent_fact_source'),
+        sub_string(S, _, _, _, 'source->owner_state'),
+        sub_string(S, _, _, _, 'memcpy(target, source->edges')
     ->  pass(Test)
     ;   fail_test(Test, 'file FactSource helpers missing')
     ).
@@ -353,9 +455,15 @@ test_reverse_csr_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_reverse_csr_init'),
         sub_string(S, _, _, _, 'bool wam_reverse_csr_load'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_pread_drop'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_direct_io'),
         sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset_pread_drop'),
+        sub_string(S, _, _, _, 'bool wam_reverse_csr_load_lmdb_offset_direct_io'),
         sub_string(S, _, _, _, 'int wam_reverse_csr_lookup_children'),
         sub_string(S, _, _, _, 'pread('),
+        sub_string(S, _, _, _, 'O_DIRECT'),
+        sub_string(S, _, _, _, 'posix_fadvise'),
         sub_string(S, _, _, _, 'wam_read_i32_le')
     ->  pass(Test)
     ;   fail_test(Test, 'reverse CSR helpers missing')
@@ -394,6 +502,7 @@ test_reverse_index_plan_csr_cost_model :-
         memberchk(runtime_child_lookup(available), Capabilities),
         memberchk(runtime_api(wam_reverse_csr_lookup_children), Capabilities),
         memberchk(runtime_index_backend(lmdb_offset), Capabilities),
+        memberchk(runtime_io(pread_drop), Capabilities),
         memberchk(runtime_requires(wam_c_enable_lmdb), Capabilities)
     ->  pass(Test)
     ;   fail_test(Test, 'CSR options were not normalized through the cost model')
@@ -441,6 +550,166 @@ test_reverse_index_plan_runtime_available_lmdb_offset :-
     ;   fail_test(Test, 'runtime lmdb-offset CSR artifact was not marked available')
     ).
 
+test_reverse_index_plan_runtime_direct_io_available :-
+    Test = 'WAM-C: runtime direct_io CSR artifact is available when block size is declared',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(direct_io),
+                block_size_edges(1024)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(io_policy(direct_io), Resolved),
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_io(direct_io), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime direct_io CSR artifact should be marked available')
+    ).
+
+test_reverse_index_plan_runtime_buffered_pread_drop_available :-
+    Test = 'WAM-C: runtime buffered_pread_drop CSR artifact is available',
+    (   resolve_wam_c_reverse_index_plan(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread_drop)
+            ]))],
+            wam_c_reverse_index_plan(artifact(Resolved), Capabilities)
+        ),
+        memberchk(io_policy(buffered_pread_drop), Resolved),
+        memberchk(runtime_child_lookup(available), Capabilities),
+        memberchk(runtime_io(pread_drop), Capabilities)
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime buffered_pread_drop CSR artifact should be marked available')
+    ).
+
+test_reverse_index_setup_generation :-
+    Test = 'WAM-C: reverse_index artifact emits CSR setup lifecycle',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread)
+            ])),
+             reverse_csr_index_path('/tmp/category_child.csr.idx'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             category_id_map([orphan-20, child-30])],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'bool setup_wam_c_reverse_index_artifacts'),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load(bidirectional_child_csr, "/tmp/category_child.csr.idx", "/tmp/category_child.csr.val")'),
+        sub_string(S, _, _, _, 'wam_register_category_id(state, "orphan", 20)'),
+        sub_string(S, _, _, _, 'wam_register_category_id(state, "child", 30)'),
+        sub_string(S, _, _, _, 'wam_attach_bidirectional_child_csr(state, bidirectional_child_csr)'),
+        sub_string(S, _, _, _, 'void teardown_wam_c_reverse_index_artifacts')
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index artifact setup lifecycle missing')
+    ).
+
+test_reverse_index_setup_lmdb_offset_generation :-
+    Test = 'WAM-C: reverse_index lmdb-offset setup preserves CSR load order',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread)
+            ])),
+             reverse_csr_offset_lmdb_path('/tmp/category_child.offsets.lmdb'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             reverse_csr_offset_lmdb_dbi(offsets)],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, "/tmp/category_child.csr.val", "/tmp/category_child.offsets.lmdb", "offsets")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset CSR setup load order changed')
+    ).
+
+test_reverse_index_setup_lmdb_offset_pread_drop_generation :-
+    Test = 'WAM-C: reverse_index lmdb-offset setup emits buffered_pread_drop loader',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(lmdb_offset),
+                io_policy(buffered_pread_drop)
+            ])),
+             reverse_csr_offset_lmdb_path('/tmp/category_child.offsets.lmdb'),
+             reverse_csr_values_path('/tmp/category_child.csr.val'),
+             reverse_csr_offset_lmdb_dbi(offsets)],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_lmdb_offset_pread_drop(bidirectional_child_csr, "/tmp/category_child.csr.val", "/tmp/category_child.offsets.lmdb", "offsets")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset buffered_pread_drop CSR setup loader missing')
+    ).
+
+test_reverse_index_setup_rejects_runtime_direct_io_without_block_size :-
+    Test = 'WAM-C: reverse_index setup rejects direct_io without block size',
+    (   catch((generate_setup_reverse_index_c(
+                   [reverse_index(artifact([
+                       storage_kind(csr_pread_artifact),
+                       phase(runtime_available),
+                       index_backend(sorted_array),
+                       io_policy(direct_io)
+                   ])),
+                    reverse_csr_index_path('/tmp/category_child.csr.idx'),
+                    reverse_csr_values_path('/tmp/category_child.csr.val')],
+                   _Code
+               ), fail),
+              error(permission_error(use, csr_io_policy, direct_io), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
+    ).
+
+test_reverse_index_setup_direct_io_generation :-
+    Test = 'WAM-C: reverse_index setup emits direct_io loader',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(direct_io),
+                block_size_edges(1024)
+            ])),
+             reverse_csr_index_path('/tmp/category_child.csr.idx'),
+             reverse_csr_values_path('/tmp/category_child.csr.val')],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_direct_io(bidirectional_child_csr, "/tmp/category_child.csr.idx", "/tmp/category_child.csr.val", 1024)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'direct_io CSR setup loader missing')
+    ).
+
+test_reverse_index_setup_buffered_pread_drop_generation :-
+    Test = 'WAM-C: reverse_index setup emits buffered_pread_drop loader',
+    (   generate_setup_reverse_index_c(
+            [reverse_index(artifact([
+                storage_kind(csr_pread_artifact),
+                phase(runtime_available),
+                index_backend(sorted_array),
+                io_policy(buffered_pread_drop)
+            ])),
+             reverse_csr_index_path('/tmp/category_child.csr.idx'),
+             reverse_csr_values_path('/tmp/category_child.csr.val')],
+            Code
+        ),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, "/tmp/category_child.csr.idx", "/tmp/category_child.csr.val")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'buffered_pread_drop CSR setup loader missing')
+    ).
+
 test_streaming_foreign_results_generation :-
     Test = 'WAM-C: streaming foreign result helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -465,6 +734,19 @@ test_kernel_detector_setup_generation :-
         pass(Test)
     ;   cleanup_wam_c_detector_category_ancestor,
         fail_test(Test, 'detected kernel setup missing')
+    ).
+
+test_bidirectional_ancestor_setup_generation :-
+    Test = 'WAM-C: bidirectional_ancestor setup preserves direction costs',
+    Kernel = 'bidirectional_ancestor/5'-recursive_kernel(
+        bidirectional_ancestor,
+        bidirectional_ancestor/5,
+        [max_depth(7), parent_step_cost(1.5), child_step_cost(4.0), cost_budget(12.0)]),
+    (   generate_setup_detected_kernels_c([Kernel], SetupCode),
+        sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
+        sub_atom(SetupCode, _, _, _, 'wam_register_bidirectional_ancestor_kernel(state, "bidirectional_ancestor/5", 7, 1.5, 4.0, 12.0)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'bidirectional_ancestor setup missing direction costs')
     ).
 
 test_transitive_closure_detector_setup_generation :-
@@ -1121,6 +1403,36 @@ test_category_ancestor_kernel_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_bidirectional_ancestor_kernel_executable_smoke :-
+    Test = 'WAM-C: bidirectional_ancestor native kernel executable smoke',
+    (   gcc_available
+    ->  (   run_bidirectional_ancestor_kernel_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'bidirectional_ancestor native kernel executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
+    Test = 'WAM-C: bidirectional_ancestor uses reverse CSR child lookup',
+    (   gcc_available
+    ->  (   run_bidirectional_ancestor_csr_child_lookup_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'bidirectional_ancestor reverse CSR child lookup failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_reverse_index_setup_executable_smoke :-
+    Test = 'WAM-C: generated reverse_index CSR setup executable smoke',
+    (   gcc_available
+    ->  (   run_reverse_index_setup_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'generated reverse_index CSR setup executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_transitive_closure_kernel_executable_smoke :-
     Test = 'WAM-C: transitive_closure2 native kernel executable smoke',
     (   gcc_available
@@ -1363,6 +1675,106 @@ test_real_prolog_unify_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_control_executable_smoke :-
+    Test = 'WAM-C: real Prolog negation and if-then-else executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_control_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog control executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_precise_ite_executable_smoke :-
+    Test = 'WAM-C: real Prolog precise if-then-else executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_precise_ite_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog precise if-then-else executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_explicit_cut_executable_smoke :-
+    Test = 'WAM-C: real Prolog explicit cut executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_explicit_cut_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog explicit cut executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_forall_executable_smoke :-
+    Test = 'WAM-C: real Prolog forall/2 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_forall_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog forall/2 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_findall_executable_smoke :-
+    Test = 'WAM-C: real Prolog findall/3 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_findall_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog findall/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_bagof_setof_executable_smoke :-
+    Test = 'WAM-C: real Prolog bagof/3 and setof/3 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog bagof/3 and setof/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_bagof_setof_witness_executable_smoke :-
+    Test = 'WAM-C: real Prolog grouped bagof/3 and setof/3 witness smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_witness_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog grouped bagof/3 and setof/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_bagof_setof_existential_executable_smoke :-
+    Test = 'WAM-C: real Prolog bagof/3 and setof/3 existential smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_existential_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog existential bagof/3 and setof/3 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_bagof_setof_unbound_witness_groups_smoke :-
+    Test = 'WAM-C: real Prolog bagof/3 and setof/3 unbound witness groups smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_unbound_witness_groups_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog unbound witness groups executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+test_real_prolog_bagof_setof_meta_call_smoke :-
+    Test = 'WAM-C: runtime bagof/3 and setof/3 meta-call smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_bagof_setof_meta_call_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'runtime bagof/3 and setof/3 meta-call executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_real_prolog_classic_recursive_executable_smoke :-
     Test = 'WAM-C: real Prolog classic recursive executable smoke',
     (   gcc_available
@@ -1577,6 +1989,96 @@ run_category_ancestor_kernel_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_category_ancestor_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_bidirectional_ancestor_kernel_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_bidirectional_ancestor_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_bidirectional_ancestor_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_bidirectional_ancestor_csr_child_lookup_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_bidirectional_ancestor_csr_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(IndexPath), '~w.csr.idx', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    write_binary_file(IndexPath, [
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0,
+        40,0,0,0, 1,0,0,0,0,0,0,0, 1,0,0,0
+    ]),
+    write_binary_file(ValuesPath, [
+        30,0,0,0,
+        30,0,0,0
+    ]),
+    wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_reverse_index_setup_executable_smoke :-
+    WamCode = 'bidirectional_ancestor/5:\n    call_foreign bidirectional_ancestor/5, 5\n    proceed',
+    compile_wam_predicate_to_c(user:bidirectional_ancestor/5, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_reverse_index_setup_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(IndexPath), '~w.csr.idx', [TmpBase]),
+    format(atom(ValuesPath), '~w.csr.val', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    generate_setup_reverse_index_c(
+        [reverse_index(artifact([
+            storage_kind(csr_pread_artifact),
+            phase(runtime_available),
+            index_backend(sorted_array),
+            io_policy(buffered_pread)
+        ])),
+         reverse_csr_index_path(IndexPath),
+         reverse_csr_values_path(ValuesPath),
+         category_id_map([orphan-20, child-30, root-40])],
+        SetupCode
+    ),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w',
+           [SetupCode, PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    write_binary_file(IndexPath, [
+        20,0,0,0, 0,0,0,0,0,0,0,0, 1,0,0,0,
+        40,0,0,0, 1,0,0,0,0,0,0,0, 1,0,0,0
+    ]),
+    write_binary_file(ValuesPath, [
+        30,0,0,0,
+        30,0,0,0
+    ]),
+    wam_c_reverse_index_setup_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -2004,7 +2506,7 @@ run_real_prolog_multiclause_executable_smoke :-
     assertz((user:wam_c_real_multi(X, int) :- integer(X))),
     assertz((user:wam_c_real_multi([_|_], list) :- true)),
     (   compile_predicate_to_wam(user:wam_c_real_multi/2, [], WamCode),
-        sub_string(WamCode, _, _, _, 'switch_on_constant_a2'),
+        sub_string(WamCode, _, _, _, 'switch_on_constant_fallthrough'),
         sub_string(WamCode, _, _, _, 'retry_me_else'),
         sub_string(WamCode, _, _, _, 'builtin_call integer/1, 1'),
         compile_wam_predicate_to_c(user:wam_c_real_multi/2, WamCode, [], PredCode),
@@ -2105,6 +2607,686 @@ run_real_prolog_unify_executable_smoke :-
     ;   retractall(user:wam_c_real_unify(_, _)),
         fail
     ).
+
+run_real_prolog_control_executable_smoke :-
+    assertz((user:wam_c_ctrl_known(a) :- true)),
+    assertz((user:wam_c_ctrl_neg(X, ok) :- \+ wam_c_ctrl_known(X))),
+    assertz((user:wam_c_ctrl_if_known(X, yes) :-
+        (wam_c_ctrl_known(X) -> true ; fail))),
+    assertz((user:wam_c_ctrl_if_missing(X, no) :-
+        (wam_c_ctrl_known(X) -> fail ; true))),
+    (   compile_predicate_to_wam(user:wam_c_ctrl_known/1, [], WamKnown),
+        compile_predicate_to_wam(user:wam_c_ctrl_neg/2, [], WamNeg),
+        compile_predicate_to_wam(user:wam_c_ctrl_if_known/2, [], WamIfKnown),
+        compile_predicate_to_wam(user:wam_c_ctrl_if_missing/2, [], WamIfMissing),
+        sub_string(WamNeg, _, _, _, 'jump '),
+        sub_string(WamIfKnown, _, _, _, 'cut_ite'),
+        sub_string(WamIfKnown, _, _, _, 'jump '),
+        sub_string(WamIfMissing, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_known/1, WamKnown, [], KnownCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_neg/2, WamNeg, [], NegCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_if_known/2, WamIfKnown, [], IfKnownCode),
+        compile_wam_predicate_to_c(user:wam_c_ctrl_if_missing/2, WamIfMissing, [], IfMissingCode),
+        atomic_list_concat([KnownCode, NegCode, IfKnownCode, IfMissingCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_real_control_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_control_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_real_control_smoke
+    ;   cleanup_wam_c_real_control_smoke,
+        fail
+    ).
+
+cleanup_wam_c_real_control_smoke :-
+    retractall(user:wam_c_ctrl_known(_)),
+    retractall(user:wam_c_ctrl_neg(_, _)),
+    retractall(user:wam_c_ctrl_if_known(_, _)),
+    retractall(user:wam_c_ctrl_if_missing(_, _)).
+
+run_real_prolog_precise_ite_executable_smoke :-
+    assertz((user:wam_c_precise_choice(a) :- true)),
+    assertz((user:wam_c_precise_choice(a) :- true)),
+    assertz((user:wam_c_precise_then(X, then) :-
+        (wam_c_precise_choice(X) -> true ; fail))),
+    assertz((user:wam_c_precise_else(X, else) :-
+        (wam_c_precise_choice(X) -> fail ; true))),
+    assertz((user:wam_c_precise_scope(X) :-
+        (wam_c_precise_choice(X) -> R = then ; R = else),
+        R = else)),
+    Options = [ite_use_y_level(true)],
+    (   compile_predicate_to_wam(user:wam_c_precise_choice/1, Options, WamChoice),
+        compile_predicate_to_wam(user:wam_c_precise_then/2, Options, WamThen),
+        compile_predicate_to_wam(user:wam_c_precise_else/2, Options, WamElse),
+        compile_predicate_to_wam(user:wam_c_precise_scope/1, Options, WamScope),
+        sub_string(WamThen, _, _, _, 'get_level '),
+        sub_string(WamThen, _, _, _, 'cut Y'),
+        \+ sub_string(WamThen, _, _, _, 'cut_ite'),
+        sub_string(WamElse, _, _, _, 'get_level '),
+        sub_string(WamElse, _, _, _, 'cut Y'),
+        \+ sub_string(WamElse, _, _, _, 'cut_ite'),
+        sub_string(WamScope, _, _, _, 'get_level '),
+        sub_string(WamScope, _, _, _, 'cut Y'),
+        \+ sub_string(WamScope, _, _, _, 'cut_ite'),
+        compile_wam_predicate_to_c(user:wam_c_precise_choice/1, WamChoice, Options, ChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_then/2, WamThen, Options, ThenCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_else/2, WamElse, Options, ElseCode),
+        compile_wam_predicate_to_c(user:wam_c_precise_scope/1, WamScope, Options, ScopeCode),
+        atomic_list_concat([ChoiceCode, ThenCode, ElseCode, ScopeCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_precise_ite_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_precise_ite_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_precise_ite_smoke
+    ;   cleanup_wam_c_precise_ite_smoke,
+        fail
+    ).
+
+cleanup_wam_c_precise_ite_smoke :-
+    retractall(user:wam_c_precise_choice(_)),
+    retractall(user:wam_c_precise_then(_, _)),
+    retractall(user:wam_c_precise_else(_, _)),
+    retractall(user:wam_c_precise_scope(_)).
+
+run_real_prolog_explicit_cut_executable_smoke :-
+    assertz((user:wam_c_cut_choice(a) :- true)),
+    assertz((user:wam_c_cut_choice(b) :- true)),
+    assertz((user:wam_c_inner_cut :- wam_c_cut_choice(_), !)),
+    assertz((user:wam_c_outer_cut(ok) :- (wam_c_inner_cut, fail ; true))),
+    (   compile_predicate_to_wam(user:wam_c_cut_choice/1, [], WamChoice),
+        compile_predicate_to_wam(user:wam_c_inner_cut/0, [], WamInner),
+        compile_predicate_to_wam(user:wam_c_outer_cut/1, [], WamOuter),
+        sub_string(WamInner, _, _, _, 'builtin_call !/0, 0'),
+        sub_string(WamOuter, _, _, _, 'try_me_else'),
+        compile_wam_predicate_to_c(user:wam_c_cut_choice/1, WamChoice, [], ChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_inner_cut/0, WamInner, [], InnerCode),
+        compile_wam_predicate_to_c(user:wam_c_outer_cut/1, WamOuter, [], OuterCode),
+        atomic_list_concat([ChoiceCode, InnerCode, OuterCode], '\n\n', PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_explicit_cut_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_explicit_cut_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_explicit_cut_smoke
+    ;   cleanup_wam_c_explicit_cut_smoke,
+        fail
+    ).
+
+cleanup_wam_c_explicit_cut_smoke :-
+    retractall(user:wam_c_cut_choice(_)),
+    retractall(user:wam_c_inner_cut),
+    retractall(user:wam_c_outer_cut(_)).
+
+run_real_prolog_forall_executable_smoke :-
+    assertz((user:wam_c_forall_num(1) :- true)),
+    assertz((user:wam_c_forall_num(2) :- true)),
+    assertz((user:wam_c_forall_positive(1) :- true)),
+    assertz((user:wam_c_forall_positive(2) :- true)),
+    assertz((user:wam_c_forall_only_two(2) :- true)),
+    assertz((user:wam_c_forall_empty(_) :- fail)),
+    assertz((user:wam_c_forall_all(ok) :-
+        forall(wam_c_forall_num(X), wam_c_forall_positive(X)))),
+    assertz((user:wam_c_forall_fail(ok) :-
+        forall(wam_c_forall_num(X), wam_c_forall_only_two(X)))),
+    assertz((user:wam_c_forall_subset(ok) :-
+        forall(wam_c_forall_only_two(X), wam_c_forall_positive(X)))),
+    assertz((user:wam_c_forall_empty_ok(ok) :-
+        forall(wam_c_forall_empty(X), wam_c_forall_positive(X)))),
+    (   compile_predicate_to_wam(user:wam_c_forall_num/1, [], WamNum),
+        compile_predicate_to_wam(user:wam_c_forall_positive/1, [], WamPositive),
+        compile_predicate_to_wam(user:wam_c_forall_only_two/1, [], WamOnlyTwo),
+        compile_predicate_to_wam(user:wam_c_forall_empty/1, [], WamEmpty),
+        compile_predicate_to_wam(user:wam_c_forall_all/1, [], WamAll),
+        compile_predicate_to_wam(user:wam_c_forall_fail/1, [], WamFail),
+        compile_predicate_to_wam(user:wam_c_forall_subset/1, [], WamSubset),
+        compile_predicate_to_wam(user:wam_c_forall_empty_ok/1, [], WamEmptyOk),
+        sub_string(WamAll, _, _, _, 'cut_ite'),
+        sub_string(WamFail, _, _, _, 'cut_ite'),
+        sub_string(WamSubset, _, _, _, 'cut_ite'),
+        sub_string(WamEmptyOk, _, _, _, 'cut_ite'),
+        \+ sub_string(WamAll, _, _, _, 'builtin_call forall/2'),
+        compile_wam_predicate_to_c(user:wam_c_forall_num/1, WamNum, [], NumCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_positive/1, WamPositive, [], PositiveCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_only_two/1, WamOnlyTwo, [], OnlyTwoCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_empty/1, WamEmpty, [], EmptyCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_all/1, WamAll, [], AllCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_fail/1, WamFail, [], FailCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_subset/1, WamSubset, [], SubsetCode),
+        compile_wam_predicate_to_c(user:wam_c_forall_empty_ok/1, WamEmptyOk, [], EmptyOkCode),
+        atomic_list_concat([NumCode, PositiveCode, OnlyTwoCode, EmptyCode,
+                            AllCode, FailCode, SubsetCode, EmptyOkCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_forall_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_forall_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_forall_smoke
+    ;   cleanup_wam_c_forall_smoke,
+        fail
+    ).
+
+cleanup_wam_c_forall_smoke :-
+    retractall(user:wam_c_forall_num(_)),
+    retractall(user:wam_c_forall_positive(_)),
+    retractall(user:wam_c_forall_only_two(_)),
+    retractall(user:wam_c_forall_empty(_)),
+    retractall(user:wam_c_forall_all(_)),
+    retractall(user:wam_c_forall_fail(_)),
+    retractall(user:wam_c_forall_subset(_)),
+    retractall(user:wam_c_forall_empty_ok(_)).
+
+run_real_prolog_findall_executable_smoke :-
+    assertz((user:wam_c_findall_item(a) :- true)),
+    assertz((user:wam_c_findall_item(b) :- true)),
+    assertz((user:wam_c_findall_none(_) :- fail)),
+    assertz((user:wam_c_findall_all(L) :-
+        findall(X, wam_c_findall_item(X), L))),
+    assertz((user:wam_c_findall_empty(L) :-
+        findall(X, wam_c_findall_none(X), L))),
+    assertz((user:wam_c_findall_nested_inner(L) :-
+        findall(Y, wam_c_findall_item(Y), L))),
+    assertz((user:wam_c_findall_nested_outer(L) :-
+        findall(X, (wam_c_findall_item(X), wam_c_findall_nested_inner(_Ys)), L))),
+    assertz((user:wam_c_findall_inline_nested(L) :-
+        findall(X,
+                (   wam_c_findall_item(X),
+                    findall(Y, wam_c_findall_item(Y), Ys),
+                    Ys = [a, b]
+                ),
+                L))),
+    assertz((user:wam_c_findall_struct_template(L) :-
+        findall(pair(X, [X]), wam_c_findall_item(X), L))),
+    assertz((user:wam_c_findall_list_template(L) :-
+        findall([X, X], wam_c_findall_item(X), L))),
+    (   compile_predicate_to_wam(user:wam_c_findall_item/1, [], WamItem),
+        compile_predicate_to_wam(user:wam_c_findall_none/1, [], WamNone),
+        compile_predicate_to_wam(user:wam_c_findall_all/1, [], WamAll),
+        compile_predicate_to_wam(user:wam_c_findall_empty/1, [], WamEmpty),
+        compile_predicate_to_wam(user:wam_c_findall_nested_inner/1, [], WamNestedInner),
+        compile_predicate_to_wam(user:wam_c_findall_nested_outer/1, [], WamNestedOuter),
+        compile_predicate_to_wam(user:wam_c_findall_inline_nested/1, [], WamInlineNested),
+        compile_predicate_to_wam(user:wam_c_findall_struct_template/1, [], WamStructTemplate),
+        compile_predicate_to_wam(user:wam_c_findall_list_template/1, [], WamListTemplate),
+        sub_string(WamAll, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamAll, _, _, _, 'end_aggregate'),
+        sub_string(WamEmpty, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamEmpty, _, _, _, 'end_aggregate'),
+        sub_string(WamNestedInner, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamNestedOuter, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamInlineNested, _, _, _, 'begin_aggregate collect'),
+        \+ sub_string(WamInlineNested, _, _, _, 'call findall/3'),
+        sub_string(WamStructTemplate, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamListTemplate, _, _, _, 'begin_aggregate collect'),
+        \+ sub_string(WamAll, _, _, _, 'builtin_call findall/3'),
+        compile_wam_predicate_to_c(user:wam_c_findall_item/1, WamItem, [], ItemCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_none/1, WamNone, [], NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_all/1, WamAll, [], AllCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_empty/1, WamEmpty, [], EmptyCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_nested_inner/1, WamNestedInner, [], NestedInnerCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_nested_outer/1, WamNestedOuter, [], NestedOuterCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_inline_nested/1, WamInlineNested, [], InlineNestedCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_struct_template/1, WamStructTemplate, [], StructTemplateCode),
+        compile_wam_predicate_to_c(user:wam_c_findall_list_template/1, WamListTemplate, [], ListTemplateCode),
+        atomic_list_concat([ItemCode, NoneCode, AllCode, EmptyCode,
+                            NestedInnerCode, NestedOuterCode,
+                            InlineNestedCode,
+                            StructTemplateCode, ListTemplateCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_findall_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_findall_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_findall_smoke
+    ;   cleanup_wam_c_findall_smoke,
+        fail
+    ).
+
+cleanup_wam_c_findall_smoke :-
+    retractall(user:wam_c_findall_item(_)),
+    retractall(user:wam_c_findall_none(_)),
+    retractall(user:wam_c_findall_all(_)),
+    retractall(user:wam_c_findall_empty(_)),
+    retractall(user:wam_c_findall_nested_inner(_)),
+    retractall(user:wam_c_findall_nested_outer(_)),
+    retractall(user:wam_c_findall_inline_nested(_)),
+    retractall(user:wam_c_findall_struct_template(_)),
+    retractall(user:wam_c_findall_list_template(_)).
+
+run_real_prolog_bagof_setof_executable_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_bagset_item(b) :- true)),
+    assertz((user:wam_c_bagset_item(a) :- true)),
+    assertz((user:wam_c_bagset_none(_) :- fail)),
+    assertz((user:wam_c_bagset_bag(L) :-
+        bagof(X, (wam_c_bagset_item(X) ; wam_c_bagset_item(X)), L))),
+    assertz((user:wam_c_bagset_set(L) :-
+        setof(X, (wam_c_bagset_item(X) ; wam_c_bagset_item(X)), L))),
+    assertz((user:wam_c_bagset_bag_empty(L) :-
+        bagof(X, wam_c_bagset_none(X), L))),
+    assertz((user:wam_c_bagset_set_empty(L) :-
+        setof(X, wam_c_bagset_none(X), L))),
+    (   compile_predicate_to_wam(user:wam_c_bagset_item/1, Options, WamItem),
+        compile_predicate_to_wam(user:wam_c_bagset_none/1, Options, WamNone),
+        compile_predicate_to_wam(user:wam_c_bagset_bag/1, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_bagset_set/1, Options, WamSet),
+        compile_predicate_to_wam(user:wam_c_bagset_bag_empty/1, Options, WamBagEmpty),
+        compile_predicate_to_wam(user:wam_c_bagset_set_empty/1, Options, WamSetEmpty),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "''"),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "''"),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        compile_wam_predicate_to_c(user:wam_c_bagset_item/1, WamItem, Options, ItemCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_none/1, WamNone, Options, NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_bag/1, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_set/1, WamSet, Options, SetCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_bag_empty/1, WamBagEmpty, Options, BagEmptyCode),
+        compile_wam_predicate_to_c(user:wam_c_bagset_set_empty/1, WamSetEmpty, Options, SetEmptyCode),
+        atomic_list_concat([ItemCode, NoneCode, BagCode, SetCode,
+                            BagEmptyCode, SetEmptyCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_smoke
+    ;   cleanup_wam_c_bagof_setof_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_smoke :-
+    retractall(user:wam_c_bagset_item(_)),
+    retractall(user:wam_c_bagset_none(_)),
+    retractall(user:wam_c_bagset_bag(_)),
+    retractall(user:wam_c_bagset_set(_)),
+    retractall(user:wam_c_bagset_bag_empty(_)),
+    retractall(user:wam_c_bagset_set_empty(_)).
+
+run_real_prolog_bagof_setof_witness_executable_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_group_pair(b, red) :- true)),
+    assertz((user:wam_c_group_pair(a, red) :- true)),
+    assertz((user:wam_c_group_pair(c, blue) :- true)),
+    assertz((user:wam_c_group_bag(Y, L) :-
+        bagof(X, wam_c_group_pair(X, Y), L))),
+    assertz((user:wam_c_group_set(Y, L) :-
+        setof(X, wam_c_group_pair(X, Y), L))),
+    (   compile_predicate_to_wam(user:wam_c_group_pair/2, Options, WamPair),
+        compile_predicate_to_wam(user:wam_c_group_bag/2, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_group_set/2, Options, WamSet),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "'Y"),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "'Y"),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        compile_wam_predicate_to_c(user:wam_c_group_pair/2, WamPair, Options, PairCode),
+        compile_wam_predicate_to_c(user:wam_c_group_bag/2, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_group_set/2, WamSet, Options, SetCode),
+        atomic_list_concat([PairCode, BagCode, SetCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_witness_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_witness_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_witness_smoke
+    ;   cleanup_wam_c_bagof_setof_witness_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_witness_smoke :-
+    retractall(user:wam_c_group_pair(_, _)),
+    retractall(user:wam_c_group_bag(_, _)),
+    retractall(user:wam_c_group_set(_, _)).
+
+run_real_prolog_bagof_setof_existential_executable_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_exist_pair(b, red) :- true)),
+    assertz((user:wam_c_exist_pair(a, red) :- true)),
+    assertz((user:wam_c_exist_pair(c, blue) :- true)),
+    assertz((user:wam_c_exist_pair(b, blue) :- true)),
+    assertz((user:wam_c_exist_bag(L) :-
+        bagof(X, Y^wam_c_exist_pair(X, Y), L))),
+    assertz((user:wam_c_exist_set(L) :-
+        setof(X, Y^wam_c_exist_pair(X, Y), L))),
+    (   compile_predicate_to_wam(user:wam_c_exist_pair/2, Options, WamPair),
+        compile_predicate_to_wam(user:wam_c_exist_bag/1, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_exist_set/1, Options, WamSet),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "''"),
+        sub_string(WamBag, _, _, _, 'call wam_c_exist_pair/2'),
+        \+ sub_string(WamBag, _, _, _, 'call ^/2'),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "''"),
+        sub_string(WamSet, _, _, _, 'call wam_c_exist_pair/2'),
+        \+ sub_string(WamSet, _, _, _, 'call ^/2'),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        compile_wam_predicate_to_c(user:wam_c_exist_pair/2, WamPair, Options, PairCode),
+        compile_wam_predicate_to_c(user:wam_c_exist_bag/1, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_exist_set/1, WamSet, Options, SetCode),
+        atomic_list_concat([PairCode, BagCode, SetCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_existential_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_existential_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_existential_smoke
+    ;   cleanup_wam_c_bagof_setof_existential_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_existential_smoke :-
+    retractall(user:wam_c_exist_pair(_, _)),
+    retractall(user:wam_c_exist_bag(_)),
+    retractall(user:wam_c_exist_set(_)).
+
+run_real_prolog_bagof_setof_unbound_witness_groups_smoke :-
+    Options = [inline_bagof_setof(true)],
+    assertz((user:wam_c_uw_pair(b, red) :- true)),
+    assertz((user:wam_c_uw_pair(a, red) :- true)),
+    assertz((user:wam_c_uw_pair(c, blue) :- true)),
+    assertz((user:wam_c_uw_pair(d, blue) :- true)),
+    assertz((user:wam_c_uw_bag(Y, L) :-
+        bagof(X, wam_c_uw_pair(X, Y), L))),
+    assertz((user:wam_c_uw_set(Y, L) :-
+        setof(X, wam_c_uw_pair(X, Y), L))),
+    assertz((user:wam_c_uw_bag_groups_ok :-
+        findall(Y-L, wam_c_uw_bag(Y, L), Groups),
+        Groups = [red-[b, a], blue-[c, d]])),
+    assertz((user:wam_c_uw_set_groups_ok :-
+        findall(Y-L, wam_c_uw_set(Y, L), Groups),
+        Groups = [red-[a, b], blue-[c, d]])),
+    (   compile_predicate_to_wam(user:wam_c_uw_pair/2, Options, WamPair),
+        compile_predicate_to_wam(user:wam_c_uw_bag/2, Options, WamBag),
+        compile_predicate_to_wam(user:wam_c_uw_set/2, Options, WamSet),
+        compile_predicate_to_wam(user:wam_c_uw_bag_groups_ok/0, Options, WamBagGroups),
+        compile_predicate_to_wam(user:wam_c_uw_set_groups_ok/0, Options, WamSetGroups),
+        sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamBag, _, _, _, "'Y"),
+        \+ sub_string(WamBag, _, _, _, 'call bagof/3'),
+        sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamSet, _, _, _, "'Y"),
+        \+ sub_string(WamSet, _, _, _, 'call setof/3'),
+        sub_string(WamBagGroups, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamBagGroups, _, _, _, 'call wam_c_uw_bag/2'),
+        sub_string(WamSetGroups, _, _, _, 'begin_aggregate collect'),
+        sub_string(WamSetGroups, _, _, _, 'call wam_c_uw_set/2'),
+        compile_wam_predicate_to_c(user:wam_c_uw_pair/2, WamPair, Options, PairCode),
+        compile_wam_predicate_to_c(user:wam_c_uw_bag/2, WamBag, Options, BagCode),
+        compile_wam_predicate_to_c(user:wam_c_uw_set/2, WamSet, Options, SetCode),
+        compile_wam_predicate_to_c(user:wam_c_uw_bag_groups_ok/0, WamBagGroups, Options, BagGroupsCode),
+        compile_wam_predicate_to_c(user:wam_c_uw_set_groups_ok/0, WamSetGroups, Options, SetGroupsCode),
+        atomic_list_concat([PairCode, BagCode, SetCode,
+                            BagGroupsCode, SetGroupsCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_unbound_witness_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_unbound_witness_groups_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_unbound_witness_groups_smoke
+    ;   cleanup_wam_c_bagof_setof_unbound_witness_groups_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_unbound_witness_groups_smoke :-
+    retractall(user:wam_c_uw_pair(_, _)),
+    retractall(user:wam_c_uw_bag(_, _)),
+    retractall(user:wam_c_uw_set(_, _)),
+    retractall(user:wam_c_uw_bag_groups_ok),
+    retractall(user:wam_c_uw_set_groups_ok).
+
+run_real_prolog_bagof_setof_meta_call_smoke :-
+    assertz((user:wam_c_meta_item(a) :- true)),
+    assertz((user:wam_c_meta_item(b) :- true)),
+    assertz((user:wam_c_meta_dup(b) :- true)),
+    assertz((user:wam_c_meta_dup(a) :- true)),
+    assertz((user:wam_c_meta_dup(b) :- true)),
+    assertz((user:wam_c_meta_none(_) :- fail)),
+    assertz((user:wam_c_meta_conj_item(a) :- true)),
+    assertz((user:wam_c_meta_conj_item(b) :- true)),
+    assertz((user:wam_c_meta_conj_item(c) :- true)),
+    assertz((user:wam_c_meta_conj_keep(a) :- true)),
+    assertz((user:wam_c_meta_conj_keep(c) :- true)),
+    assertz((user:wam_c_meta_conj_dup(b) :- true)),
+    assertz((user:wam_c_meta_conj_dup(a) :- true)),
+    assertz((user:wam_c_meta_conj_dup(b) :- true)),
+    assertz((user:wam_c_meta_conj_set_keep(a) :- true)),
+    assertz((user:wam_c_meta_conj_set_keep(b) :- true)),
+    assertz((user:wam_c_meta_disj_left(a) :- true)),
+    assertz((user:wam_c_meta_disj_left(b) :- true)),
+    assertz((user:wam_c_meta_disj_right(c) :- true)),
+    assertz((user:wam_c_meta_disj_set_left(b) :- true)),
+    assertz((user:wam_c_meta_disj_set_left(a) :- true)),
+    assertz((user:wam_c_meta_disj_set_right(b) :- true)),
+    assertz((user:wam_c_meta_disj_set_right(c) :- true)),
+    assertz((user:wam_c_meta_bag(L) :-
+        bagof(X, wam_c_meta_item(X), L))),
+    assertz((user:wam_c_meta_set(L) :-
+        setof(X, wam_c_meta_dup(X), L))),
+    assertz((user:wam_c_meta_empty_bag(L) :-
+        bagof(X, wam_c_meta_none(X), L))),
+    assertz((user:wam_c_meta_conj_bag(L) :-
+        bagof(X,
+              (wam_c_meta_conj_item(X), wam_c_meta_conj_keep(X)),
+              L))),
+    assertz((user:wam_c_meta_conj_set(L) :-
+        setof(X,
+              (wam_c_meta_conj_dup(X), wam_c_meta_conj_set_keep(X)),
+              L))),
+    assertz((user:wam_c_meta_disj_bag(L) :-
+        bagof(X,
+              (wam_c_meta_disj_left(X); wam_c_meta_disj_right(X)),
+              L))),
+    assertz((user:wam_c_meta_disj_set(L) :-
+        setof(X,
+              (wam_c_meta_disj_set_left(X); wam_c_meta_disj_set_right(X)),
+              L))),
+    (   compile_predicate_to_wam(user:wam_c_meta_item/1, [], WamItem),
+        compile_predicate_to_wam(user:wam_c_meta_dup/1, [], WamDup),
+        compile_predicate_to_wam(user:wam_c_meta_none/1, [], WamNone),
+        compile_predicate_to_wam(user:wam_c_meta_conj_item/1, [], WamConjItem),
+        compile_predicate_to_wam(user:wam_c_meta_conj_keep/1, [], WamConjKeep),
+        compile_predicate_to_wam(user:wam_c_meta_conj_dup/1, [], WamConjDup),
+        compile_predicate_to_wam(user:wam_c_meta_conj_set_keep/1, [], WamConjSetKeep),
+        compile_predicate_to_wam(user:wam_c_meta_disj_left/1, [], WamDisjLeft),
+        compile_predicate_to_wam(user:wam_c_meta_disj_right/1, [], WamDisjRight),
+        compile_predicate_to_wam(user:wam_c_meta_disj_set_left/1, [], WamDisjSetLeft),
+        compile_predicate_to_wam(user:wam_c_meta_disj_set_right/1, [], WamDisjSetRight),
+        compile_predicate_to_wam(user:wam_c_meta_bag/1, [], WamBag),
+        compile_predicate_to_wam(user:wam_c_meta_set/1, [], WamSet),
+        compile_predicate_to_wam(user:wam_c_meta_empty_bag/1, [], WamEmptyBag),
+        compile_predicate_to_wam(user:wam_c_meta_conj_bag/1, [], WamConjBag),
+        compile_predicate_to_wam(user:wam_c_meta_conj_set/1, [], WamConjSet),
+        compile_predicate_to_wam(user:wam_c_meta_disj_bag/1, [], WamDisjBag),
+        compile_predicate_to_wam(user:wam_c_meta_disj_set/1, [], WamDisjSet),
+        sub_string(WamBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamConjBag, _, _, _, 'put_structure ,/2'),
+        sub_string(WamConjBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamConjBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamConjSet, _, _, _, 'put_structure ,/2'),
+        sub_string(WamConjSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamConjSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamDisjBag, _, _, _, 'put_structure ;/2'),
+        sub_string(WamDisjBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamDisjBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamDisjSet, _, _, _, 'put_structure ;/2'),
+        sub_string(WamDisjSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamDisjSet, _, _, _, 'begin_aggregate setof'),
+        compile_wam_predicate_to_c(user:wam_c_meta_item/1, WamItem, [], ItemCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_dup/1, WamDup, [], DupCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_none/1, WamNone, [], NoneCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_item/1, WamConjItem, [], ConjItemCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_keep/1, WamConjKeep, [], ConjKeepCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_dup/1, WamConjDup, [], ConjDupCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_set_keep/1, WamConjSetKeep, [], ConjSetKeepCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_left/1, WamDisjLeft, [], DisjLeftCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_right/1, WamDisjRight, [], DisjRightCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_set_left/1, WamDisjSetLeft, [], DisjSetLeftCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_set_right/1, WamDisjSetRight, [], DisjSetRightCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_bag/1, WamBag, [], BagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_set/1, WamSet, [], SetCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_empty_bag/1, WamEmptyBag, [], EmptyBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_bag/1, WamConjBag, [], ConjBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_conj_set/1, WamConjSet, [], ConjSetCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_bag/1, WamDisjBag, [], DisjBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_disj_set/1, WamDisjSet, [], DisjSetCode),
+        atomic_list_concat([ItemCode, DupCode, NoneCode,
+                            ConjItemCode, ConjKeepCode, ConjDupCode,
+                            ConjSetKeepCode,
+                            DisjLeftCode, DisjRightCode,
+                            DisjSetLeftCode, DisjSetRightCode,
+                            BagCode, SetCode, EmptyBagCode,
+                            ConjBagCode, ConjSetCode,
+                            DisjBagCode, DisjSetCode],
+                           '\n\n',
+                           PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        wam_c_temp_path('unifyweaver_wam_c_bagof_setof_meta_smoke', Stamp, TmpBase),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_bagof_setof_meta_call_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  cleanup_wam_c_bagof_setof_meta_call_smoke
+    ;   cleanup_wam_c_bagof_setof_meta_call_smoke,
+        fail
+    ).
+
+cleanup_wam_c_bagof_setof_meta_call_smoke :-
+    retractall(user:wam_c_meta_item(_)),
+    retractall(user:wam_c_meta_dup(_)),
+    retractall(user:wam_c_meta_none(_)),
+    retractall(user:wam_c_meta_conj_item(_)),
+    retractall(user:wam_c_meta_conj_keep(_)),
+    retractall(user:wam_c_meta_conj_dup(_)),
+    retractall(user:wam_c_meta_conj_set_keep(_)),
+    retractall(user:wam_c_meta_disj_left(_)),
+    retractall(user:wam_c_meta_disj_right(_)),
+    retractall(user:wam_c_meta_disj_set_left(_)),
+    retractall(user:wam_c_meta_disj_set_right(_)),
+    retractall(user:wam_c_meta_bag(_)),
+    retractall(user:wam_c_meta_set(_)),
+    retractall(user:wam_c_meta_empty_bag(_)),
+    retractall(user:wam_c_meta_conj_bag(_)),
+    retractall(user:wam_c_meta_conj_set(_)),
+    retractall(user:wam_c_meta_disj_bag(_)),
+    retractall(user:wam_c_meta_disj_set(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -2551,6 +3733,19 @@ int main(void) {
         wam_free_state(&state);
         return 10;
     }
+    for (int i = 0; i < 1000; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "runtime_atom_%d", i);
+        if (wam_intern_atom(&state, atom) == NULL) {
+            wam_free_state(&state);
+            return 11;
+        }
+    }
+    const char *a3 = wam_intern_atom(&state, "runtime_atom");
+    if (a1 != a3 || state.atom_table_size <= WAM_INITIAL_ATOM_HASH_SIZE) {
+        wam_free_state(&state);
+        return 12;
+    }
 
     WamValue list;
     list.tag = VAL_LIST;
@@ -2875,6 +4070,265 @@ int main(void) {
 }
 ').
 
+wam_c_bidirectional_ancestor_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+
+static int run_query(WamState *state,
+                     const char *cat,
+                     const char *root,
+                     int *total,
+                     int *parents,
+                     int *children) {
+    WamValue args[5] = {
+        val_atom(cat),
+        val_atom(root),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state->P != WAM_HALT) return 0;
+    if (state->A[2].tag != VAL_INT ||
+        state->A[3].tag != VAL_INT ||
+        state->A[4].tag != VAL_INT) {
+        return 0;
+    }
+    *total = state->A[2].data.integer;
+    *parents = state->A[3].data.integer;
+    *children = state->A[4].data.integer;
+    return 1;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_bidirectional_ancestor_5(&state);
+    wam_register_category_parent(&state, "orphan", "side");
+    wam_register_category_parent(&state, "child", "orphan");
+    wam_register_category_parent(&state, "child", "root");
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    int total = -1;
+    int parents = -1;
+    int children = -1;
+    if (!run_query(&state, "orphan", "root", &total, &parents, &children) ||
+        total != 2 || parents != 1 || children != 1) {
+        wam_free_state(&state);
+        return 10;
+    }
+    if (state.bidirectional_min_distance_cache == NULL) {
+        wam_free_state(&state);
+        return 11;
+    }
+    int min_hops = -1;
+    if (!wam_category_min_parent_hops(&state, "child", "root", &min_hops) ||
+        min_hops != 1) {
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_min_parent_hops(&state, "orphan", "root", &min_hops)) {
+        wam_free_state(&state);
+        return 14;
+    }
+    if (!wam_category_min_parent_hops(&state, "root", "root", &min_hops) ||
+        min_hops != 0) {
+        wam_free_state(&state);
+        return 15;
+    }
+    wam_register_category_parent(&state, "fresh_child", "root");
+    if (state.bidirectional_min_distance_cache != NULL) {
+        wam_free_state(&state);
+        return 12;
+    }
+
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 2.5);
+    WamValue pruned_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int pruned_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", pruned_args, 5);
+    if (pruned_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bidirectional_ancestor_csr_smoke_main(IndexPath, ValuesPath, MainCode) :-
+    format(atom(MainCode),
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+
+int main(void) {
+    WamState state;
+    WamReverseCsrArtifact csr;
+    wam_state_init(&state);
+    wam_reverse_csr_init(&csr);
+    setup_bidirectional_ancestor_5(&state);
+
+    if (!wam_reverse_csr_load(&csr, "~w", "~w")) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 5;
+    }
+
+    wam_register_category_id(&state, "orphan", 20);
+    wam_register_category_id(&state, "child", 30);
+    wam_register_category_id(&state, "root", 40);
+    for (int i = 0; i < 130; i++) {
+        char atom[32];
+        snprintf(atom, sizeof(atom), "extra_%d", i);
+        wam_register_category_id(&state, atom, 1000 + i);
+    }
+    wam_register_category_parent(&state, "child", "root");
+    wam_attach_bidirectional_child_csr(&state, &csr);
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    WamValue args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(&state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 1 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 1) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 10;
+    }
+    if (state.bidirectional_min_distance_cache == NULL) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 11;
+    }
+    int child_candidates = -1;
+    if (!wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 1) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 13;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "child", "root", 8, 1, 1.0, 2.0, 10.0,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 14;
+    }
+    if (wam_category_child_may_reach_root_within_budget(
+            &state, "orphan", "root", 8, 1, 1.0, 2.0, 1.5,
+            &child_candidates) ||
+        child_candidates != 0) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 15;
+    }
+
+    wam_attach_bidirectional_child_csr(&state, NULL);
+    if (state.bidirectional_min_distance_cache != NULL) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 12;
+    }
+    WamValue fallback_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int fallback_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", fallback_args, 5);
+    if (fallback_rc != WAM_HALT) {
+        wam_reverse_csr_close(&csr);
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_reverse_csr_close(&csr);
+    wam_free_state(&state);
+    return 0;
+}
+', [IndexPath, ValuesPath]).
+
+wam_c_reverse_index_setup_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_bidirectional_ancestor_5(WamState* state);
+bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr);
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                            WamReverseCsrArtifact* bidirectional_child_csr);
+
+int main(void) {
+    WamState state;
+    WamReverseCsrArtifact csr;
+    wam_state_init(&state);
+    setup_bidirectional_ancestor_5(&state);
+
+    if (!setup_wam_c_reverse_index_artifacts(&state, &csr)) {
+        wam_free_state(&state);
+        return 5;
+    }
+
+    wam_register_category_parent(&state, "child", "root");
+    wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5",
+                                               4, 1.0, 2.0, 10.0);
+
+    WamValue args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int rc = wam_run_predicate(&state, "bidirectional_ancestor/5", args, 5);
+    if (rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2 ||
+        state.A[3].tag != VAL_INT || state.A[3].data.integer != 1 ||
+        state.A[4].tag != VAL_INT || state.A[4].data.integer != 1) {
+        teardown_wam_c_reverse_index_artifacts(&state, &csr);
+        wam_free_state(&state);
+        return 10;
+    }
+
+    teardown_wam_c_reverse_index_artifacts(&state, &csr);
+    WamValue fallback_args[5] = {
+        val_atom("orphan"),
+        val_atom("root"),
+        val_unbound("Total"),
+        val_unbound("Parents"),
+        val_unbound("Children")
+    };
+    int fallback_rc = wam_run_predicate(&state, "bidirectional_ancestor/5", fallback_args, 5);
+    if (fallback_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_transitive_closure_smoke_main(
 '#include "wam_runtime.h"
 
@@ -3176,6 +4630,8 @@ int main(void) {
     wam_register_weighted_edge(&state, "tom", "eve", 1);
     wam_register_weighted_edge(&state, "eve", "ann", 1);
     wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_weighted_edge(&state, "flo", "mid", 0.5);
+    wam_register_weighted_edge(&state, "mid", "fin", 1.0);
     wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3");
 
     WamValue shortest_args[3] = {
@@ -3214,6 +4670,29 @@ int main(void) {
         return 30;
     }
 
+    WamValue float_args[3] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_unbound("Weight")
+    };
+    int float_rc = wam_run_predicate(&state, "weighted_path/3", float_args, 3);
+    if (float_rc != 0 || state.P != WAM_HALT ||
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 1.5) {
+        wam_free_state(&state);
+        return 35;
+    }
+
+    WamValue float_direct_args[3] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_float(1.5)
+    };
+    int float_direct_rc = wam_run_predicate(&state, "weighted_path/3", float_direct_args, 3);
+    if (float_direct_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 36;
+    }
+
     WamValue fail_args[3] = {
         val_atom("ann"),
         val_atom("tom"),
@@ -3240,9 +4719,12 @@ static void register_astar_edges(WamState *state) {
     wam_register_weighted_edge(state, "tom", "eve", 1);
     wam_register_weighted_edge(state, "eve", "ann", 1);
     wam_register_weighted_edge(state, "bob", "ann", 1);
+    wam_register_weighted_edge(state, "flo", "mid", 0.5);
+    wam_register_weighted_edge(state, "mid", "fin", 1.0);
     wam_register_direct_distance_edge(state, "tom", "ann", 2);
     wam_register_direct_distance_edge(state, "eve", "ann", 1);
     wam_register_direct_distance_edge(state, "bob", "ann", 1);
+    wam_register_direct_distance_edge(state, "flo", "fin", 1.5);
 }
 
 int main(void) {
@@ -3275,6 +4757,19 @@ int main(void) {
     if (direct_rc != 0 || state.P != WAM_HALT) {
         wam_free_state(&state);
         return 20;
+    }
+
+    WamValue float_args[4] = {
+        val_atom("flo"),
+        val_atom("fin"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int float_rc = wam_run_predicate(&state, "astar_path/4", float_args, 4);
+    if (float_rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 1.5) {
+        wam_free_state(&state);
+        return 25;
     }
 
     WamValue bad_dim_args[4] = {
@@ -3591,6 +5086,11 @@ int main(void) {
     }
 
     wam_register_category_parent_fact_source(&state, &source);
+    if (state.category_edge_count != source.edge_count) {
+        wam_free_state(&state);
+        wam_fact_source_close(&source);
+        return 25;
+    }
     wam_register_category_ancestor_kernel(&state, "category_ancestor/4", 10);
 
     WamValue args[4] = {
@@ -4561,6 +6061,931 @@ int main(void) {
 }
 ').
 
+wam_c_real_control_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_ctrl_known_1(WamState* state);
+void setup_wam_c_ctrl_neg_2(WamState* state);
+void setup_wam_c_ctrl_if_known_2(WamState* state);
+void setup_wam_c_ctrl_if_missing_2(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_ctrl_known_1(&state);
+    setup_wam_c_ctrl_neg_2(&state);
+    setup_wam_c_ctrl_if_known_2(&state);
+    setup_wam_c_ctrl_if_missing_2(&state);
+
+    WamValue neg_success_args[2] = { val_atom("b"), val_atom("ok") };
+    int neg_success_rc = wam_run_predicate(&state, "wam_c_ctrl_neg/2", neg_success_args, 2);
+    if (neg_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue neg_fail_args[2] = { val_atom("a"), val_atom("ok") };
+    int neg_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_neg/2", neg_fail_args, 2);
+    if (neg_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue if_known_success_args[2] = { val_atom("a"), val_atom("yes") };
+    int if_known_success_rc = wam_run_predicate(&state, "wam_c_ctrl_if_known/2", if_known_success_args, 2);
+    if (if_known_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue if_known_fail_args[2] = { val_atom("b"), val_atom("yes") };
+    int if_known_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_if_known/2", if_known_fail_args, 2);
+    if (if_known_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue if_missing_success_args[2] = { val_atom("b"), val_atom("no") };
+    int if_missing_success_rc = wam_run_predicate(&state, "wam_c_ctrl_if_missing/2", if_missing_success_args, 2);
+    if (if_missing_success_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue if_missing_fail_args[2] = { val_atom("a"), val_atom("no") };
+    int if_missing_fail_rc = wam_run_predicate(&state, "wam_c_ctrl_if_missing/2", if_missing_fail_args, 2);
+    if (if_missing_fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_precise_ite_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_precise_choice_1(WamState* state);
+void setup_wam_c_precise_then_2(WamState* state);
+void setup_wam_c_precise_else_2(WamState* state);
+void setup_wam_c_precise_scope_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_precise_choice_1(&state);
+    setup_wam_c_precise_then_2(&state);
+    setup_wam_c_precise_else_2(&state);
+    setup_wam_c_precise_scope_1(&state);
+
+    WamValue then_success_args[2] = { val_atom("a"), val_atom("then") };
+    int then_success_rc = wam_run_predicate(&state, "wam_c_precise_then/2", then_success_args, 2);
+    if (then_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue then_fail_args[2] = { val_atom("b"), val_atom("then") };
+    int then_fail_rc = wam_run_predicate(&state, "wam_c_precise_then/2", then_fail_args, 2);
+    if (then_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue else_success_args[2] = { val_atom("b"), val_atom("else") };
+    int else_success_rc = wam_run_predicate(&state, "wam_c_precise_else/2", else_success_args, 2);
+    if (else_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue else_fail_args[2] = { val_atom("a"), val_atom("else") };
+    int else_fail_rc = wam_run_predicate(&state, "wam_c_precise_else/2", else_fail_args, 2);
+    if (else_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue scope_fail_args[1] = { val_atom("a") };
+    int scope_fail_rc = wam_run_predicate(&state, "wam_c_precise_scope/1", scope_fail_args, 1);
+    if (scope_fail_rc != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue scope_success_args[1] = { val_atom("b") };
+    int scope_success_rc = wam_run_predicate(&state, "wam_c_precise_scope/1", scope_success_args, 1);
+    if (scope_success_rc != 0 || state.P != WAM_HALT || state.B != 0) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_explicit_cut_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_cut_choice_1(WamState* state);
+void setup_wam_c_inner_cut_0(WamState* state);
+void setup_wam_c_outer_cut_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_cut_choice_1(&state);
+    setup_wam_c_inner_cut_0(&state);
+    setup_wam_c_outer_cut_1(&state);
+
+    int inner_rc = wam_run_predicate(&state, "wam_c_inner_cut/0", NULL, 0);
+    if (inner_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue outer_args[1] = { val_atom("ok") };
+    int outer_rc = wam_run_predicate(&state, "wam_c_outer_cut/1", outer_args, 1);
+    if (outer_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue outer_fail_args[1] = { val_atom("bad") };
+    int outer_fail_rc = wam_run_predicate(&state, "wam_c_outer_cut/1", outer_fail_args, 1);
+    if (outer_fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_forall_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_forall_num_1(WamState* state);
+void setup_wam_c_forall_positive_1(WamState* state);
+void setup_wam_c_forall_only_two_1(WamState* state);
+void setup_wam_c_forall_empty_1(WamState* state);
+void setup_wam_c_forall_all_1(WamState* state);
+void setup_wam_c_forall_fail_1(WamState* state);
+void setup_wam_c_forall_subset_1(WamState* state);
+void setup_wam_c_forall_empty_ok_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_forall_num_1(&state);
+    setup_wam_c_forall_positive_1(&state);
+    setup_wam_c_forall_only_two_1(&state);
+    setup_wam_c_forall_empty_1(&state);
+    setup_wam_c_forall_all_1(&state);
+    setup_wam_c_forall_fail_1(&state);
+    setup_wam_c_forall_subset_1(&state);
+    setup_wam_c_forall_empty_ok_1(&state);
+
+    WamValue all_args[1] = { val_atom("ok") };
+    int all_rc = wam_run_predicate(&state, "wam_c_forall_all/1", all_args, 1);
+    if (all_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue fail_args[1] = { val_atom("ok") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_forall_fail/1", fail_args, 1);
+    if (fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue subset_args[1] = { val_atom("ok") };
+    int subset_rc = wam_run_predicate(&state, "wam_c_forall_subset/1", subset_args, 1);
+    if (subset_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue empty_args[1] = { val_atom("ok") };
+    int empty_rc = wam_run_predicate(&state, "wam_c_forall_empty_ok/1", empty_args, 1);
+    if (empty_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue bad_args[1] = { val_atom("bad") };
+    int bad_rc = wam_run_predicate(&state, "wam_c_forall_all/1", bad_args, 1);
+    if (bad_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_findall_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_findall_item_1(WamState* state);
+void setup_wam_c_findall_none_1(WamState* state);
+void setup_wam_c_findall_all_1(WamState* state);
+void setup_wam_c_findall_empty_1(WamState* state);
+void setup_wam_c_findall_nested_inner_1(WamState* state);
+void setup_wam_c_findall_nested_outer_1(WamState* state);
+void setup_wam_c_findall_inline_nested_1(WamState* state);
+void setup_wam_c_findall_struct_template_1(WamState* state);
+void setup_wam_c_findall_list_template_1(WamState* state);
+
+static bool expect_atom(WamState *state, WamValue value, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_atom_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list1(WamState *state, WamValue value,
+                              const char *first) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           tail->tag == VAL_ATOM &&
+           strcmp(tail->data.atom, "[]") == 0;
+}
+
+static bool expect_pair_atom_singleton(WamState *state, WamValue value,
+                                       const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_STR) return false;
+    WamValue *functor = &state->H_array[cell->data.ref_addr];
+    if (functor->tag != VAL_ATOM || strcmp(functor->data.atom, "pair/2") != 0) {
+        return false;
+    }
+    return expect_atom_slot(state, &state->H_array[cell->data.ref_addr + 1], atom) &&
+           expect_atom_list1(state, state->H_array[cell->data.ref_addr + 2], atom);
+}
+
+static bool expect_pair_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_pair_atom_singleton(state, state->H_array[cell_addr], first) &&
+           expect_pair_atom_singleton(state, state->H_array[tail1_addr], second) &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static bool expect_nested_atom_list2(WamState *state, WamValue value,
+                                     const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_list2(state, state->H_array[cell_addr], first, first) &&
+           expect_atom_list2(state, state->H_array[tail1_addr], second, second) &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static WamValue make_atom_list2(WamState *state,
+                                const char *first,
+                                const char *second) {
+    WamValue tail = val_atom("[]");
+    int base_second = state->H;
+    state->H_array[state->H++] = val_atom(second);
+    state->H_array[state->H++] = tail;
+    tail.tag = VAL_LIST;
+    tail.data.ref_addr = base_second;
+    int base_first = state->H;
+    state->H_array[state->H++] = val_atom(first);
+    state->H_array[state->H++] = tail;
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = base_first;
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_findall_item_1(&state);
+    setup_wam_c_findall_none_1(&state);
+    setup_wam_c_findall_all_1(&state);
+    setup_wam_c_findall_empty_1(&state);
+    setup_wam_c_findall_nested_inner_1(&state);
+    setup_wam_c_findall_nested_outer_1(&state);
+    setup_wam_c_findall_inline_nested_1(&state);
+    setup_wam_c_findall_struct_template_1(&state);
+    setup_wam_c_findall_list_template_1(&state);
+
+    WamValue all_args[1] = { val_unbound("All") };
+    int all_rc = wam_run_predicate(&state, "wam_c_findall_all/1", all_args, 1);
+    if (all_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue empty_args[1] = { val_unbound("Empty") };
+    int empty_rc = wam_run_predicate(&state, "wam_c_findall_empty/1", empty_args, 1);
+    if (empty_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom(&state, state.A[0], "[]") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue expected = make_atom_list2(&state, "a", "b");
+    WamValue bound_args[1] = { expected };
+    int bound_rc = wam_run_predicate(&state, "wam_c_findall_all/1", bound_args, 1);
+    if (bound_rc != 0 || state.P != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue nested_args[1] = { val_unbound("Nested") };
+    int nested_rc = wam_run_predicate(&state, "wam_c_findall_nested_outer/1", nested_args, 1);
+    if (nested_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue inline_nested_args[1] = { val_unbound("InlineNested") };
+    int inline_nested_rc = wam_run_predicate(&state, "wam_c_findall_inline_nested/1", inline_nested_args, 1);
+    if (inline_nested_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 45;
+    }
+
+    WamValue struct_args[1] = { val_unbound("Struct") };
+    int struct_rc = wam_run_predicate(&state, "wam_c_findall_struct_template/1", struct_args, 1);
+    if (struct_rc != 0 || state.P != WAM_HALT ||
+        !expect_pair_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue list_args[1] = { val_unbound("List") };
+    int list_rc = wam_run_predicate(&state, "wam_c_findall_list_template/1", list_args, 1);
+    if (list_rc != 0 || state.P != WAM_HALT ||
+        !expect_nested_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bagof_setof_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_bagset_item_1(WamState* state);
+void setup_wam_c_bagset_none_1(WamState* state);
+void setup_wam_c_bagset_bag_1(WamState* state);
+void setup_wam_c_bagset_set_1(WamState* state);
+void setup_wam_c_bagset_bag_empty_1(WamState* state);
+void setup_wam_c_bagset_set_empty_1(WamState* state);
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_nil(WamValue *cell) {
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_nil(tail2);
+}
+
+static bool expect_atom_list4(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third,
+                              const char *fourth) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    int tail3_addr = wam_cons_head_addr(state, tail3);
+    if (tail3_addr < 0) return false;
+    WamValue *tail4 = wam_deref_ptr(state, &state->H_array[tail3_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_atom_slot(state, &state->H_array[tail3_addr], fourth) &&
+           expect_nil(tail4);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_bagset_item_1(&state);
+    setup_wam_c_bagset_none_1(&state);
+    setup_wam_c_bagset_bag_1(&state);
+    setup_wam_c_bagset_set_1(&state);
+    setup_wam_c_bagset_bag_empty_1(&state);
+    setup_wam_c_bagset_set_empty_1(&state);
+
+    WamValue bag_args[1] = { val_unbound("Bag") };
+    int bag_rc = wam_run_predicate(&state, "wam_c_bagset_bag/1", bag_args, 1);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list4(&state, state.A[0], "b", "a", "b", "a") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_args[1] = { val_unbound("Set") };
+    int set_rc = wam_run_predicate(&state, "wam_c_bagset_set/1", set_args, 1);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue bag_empty_args[1] = { val_unbound("BagEmpty") };
+    int bag_empty_rc = wam_run_predicate(&state, "wam_c_bagset_bag_empty/1", bag_empty_args, 1);
+    if (bag_empty_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue set_empty_args[1] = { val_unbound("SetEmpty") };
+    int set_empty_rc = wam_run_predicate(&state, "wam_c_bagset_set_empty/1", set_empty_args, 1);
+    if (set_empty_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bagof_setof_witness_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_group_pair_2(WamState* state);
+void setup_wam_c_group_bag_2(WamState* state);
+void setup_wam_c_group_set_2(WamState* state);
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_nil(WamValue *cell) {
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_value(WamState *state, WamValue value, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_atom_list1(WamState *state, WamValue value,
+                              const char *first) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_nil(tail);
+}
+
+static bool expect_atom_list2(WamState *state, WamValue value,
+                              const char *first, const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_nil(tail2);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_group_pair_2(&state);
+    setup_wam_c_group_bag_2(&state);
+    setup_wam_c_group_set_2(&state);
+
+    WamValue bag_red_args[2] = { val_atom("red"), val_unbound("BagRed") };
+    int bag_red_rc = wam_run_predicate(&state, "wam_c_group_bag/2", bag_red_args, 2);
+    if (bag_red_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_value(&state, state.A[0], "red") ||
+        !expect_atom_list2(&state, state.A[1], "b", "a") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_red_args[2] = { val_atom("red"), val_unbound("SetRed") };
+    int set_red_rc = wam_run_predicate(&state, "wam_c_group_set/2", set_red_args, 2);
+    if (set_red_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_value(&state, state.A[0], "red") ||
+        !expect_atom_list2(&state, state.A[1], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue bag_blue_args[2] = { val_atom("blue"), val_unbound("BagBlue") };
+    int bag_blue_rc = wam_run_predicate(&state, "wam_c_group_bag/2", bag_blue_args, 2);
+    if (bag_blue_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_value(&state, state.A[0], "blue") ||
+        !expect_atom_list1(&state, state.A[1], "c") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue bag_missing_args[2] = { val_atom("green"), val_unbound("BagMissing") };
+    int bag_missing_rc = wam_run_predicate(&state, "wam_c_group_bag/2", bag_missing_args, 2);
+    if (bag_missing_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bagof_setof_existential_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_exist_pair_2(WamState* state);
+void setup_wam_c_exist_bag_1(WamState* state);
+void setup_wam_c_exist_set_1(WamState* state);
+
+static bool expect_atom_slot(WamState *state, WamValue *slot, const char *atom) {
+    WamValue *cell = wam_deref_ptr(state, slot);
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, atom) == 0;
+}
+
+static bool expect_nil(WamValue *cell) {
+    return cell->tag == VAL_ATOM && strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool expect_atom_list3(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_nil(tail3);
+}
+
+static bool expect_atom_list4(WamState *state, WamValue value,
+                              const char *first,
+                              const char *second,
+                              const char *third,
+                              const char *fourth) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    int cell_addr = wam_cons_head_addr(state, cell);
+    if (cell_addr < 0) return false;
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[cell_addr + 1]);
+    int tail1_addr = wam_cons_head_addr(state, tail1);
+    if (tail1_addr < 0) return false;
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[tail1_addr + 1]);
+    int tail2_addr = wam_cons_head_addr(state, tail2);
+    if (tail2_addr < 0) return false;
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[tail2_addr + 1]);
+    int tail3_addr = wam_cons_head_addr(state, tail3);
+    if (tail3_addr < 0) return false;
+    WamValue *tail4 = wam_deref_ptr(state, &state->H_array[tail3_addr + 1]);
+    return expect_atom_slot(state, &state->H_array[cell_addr], first) &&
+           expect_atom_slot(state, &state->H_array[tail1_addr], second) &&
+           expect_atom_slot(state, &state->H_array[tail2_addr], third) &&
+           expect_atom_slot(state, &state->H_array[tail3_addr], fourth) &&
+           expect_nil(tail4);
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_exist_pair_2(&state);
+    setup_wam_c_exist_bag_1(&state);
+    setup_wam_c_exist_set_1(&state);
+
+    WamValue bag_args[1] = { val_unbound("Bag") };
+    int bag_rc = wam_run_predicate(&state, "wam_c_exist_bag/1", bag_args, 1);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list4(&state, state.A[0], "b", "a", "c", "b") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_args[1] = { val_unbound("Set") };
+    int set_rc = wam_run_predicate(&state, "wam_c_exist_set/1", set_args, 1);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        !expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
+        state.B != 0 || state.call_base_top != 0 || state.aggregate_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bagof_setof_unbound_witness_groups_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_uw_pair_2(WamState* state);
+void setup_wam_c_uw_bag_2(WamState* state);
+void setup_wam_c_uw_set_2(WamState* state);
+void setup_wam_c_uw_bag_groups_ok_0(WamState* state);
+void setup_wam_c_uw_set_groups_ok_0(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_uw_pair_2(&state);
+    setup_wam_c_uw_bag_2(&state);
+    setup_wam_c_uw_set_2(&state);
+    setup_wam_c_uw_bag_groups_ok_0(&state);
+    setup_wam_c_uw_set_groups_ok_0(&state);
+
+    int bag_rc = wam_run_predicate(&state, "wam_c_uw_bag_groups_ok/0", NULL, 0);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    int set_rc = wam_run_predicate(&state, "wam_c_uw_set_groups_ok/0", NULL, 0);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_bagof_setof_meta_call_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_meta_item_1(WamState* state);
+void setup_wam_c_meta_dup_1(WamState* state);
+void setup_wam_c_meta_none_1(WamState* state);
+void setup_wam_c_meta_conj_item_1(WamState* state);
+void setup_wam_c_meta_conj_keep_1(WamState* state);
+void setup_wam_c_meta_conj_dup_1(WamState* state);
+void setup_wam_c_meta_conj_set_keep_1(WamState* state);
+void setup_wam_c_meta_disj_left_1(WamState* state);
+void setup_wam_c_meta_disj_right_1(WamState* state);
+void setup_wam_c_meta_disj_set_left_1(WamState* state);
+void setup_wam_c_meta_disj_set_right_1(WamState* state);
+void setup_wam_c_meta_bag_1(WamState* state);
+void setup_wam_c_meta_set_1(WamState* state);
+void setup_wam_c_meta_empty_bag_1(WamState* state);
+void setup_wam_c_meta_conj_bag_1(WamState* state);
+void setup_wam_c_meta_conj_set_1(WamState* state);
+void setup_wam_c_meta_disj_bag_1(WamState* state);
+void setup_wam_c_meta_disj_set_1(WamState* state);
+
+static bool wam_c_meta_expect_atom_list2(WamState *state, WamValue value,
+                                         const char *first,
+                                         const char *second) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_LIST) return false;
+    int first_addr = cell->data.ref_addr;
+    WamValue *head1 = wam_deref_ptr(state, &state->H_array[first_addr]);
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[first_addr + 1]);
+    if (head1->tag != VAL_ATOM || strcmp(head1->data.atom, first) != 0) return false;
+    if (tail1->tag != VAL_LIST) return false;
+    int second_addr = tail1->data.ref_addr;
+    WamValue *head2 = wam_deref_ptr(state, &state->H_array[second_addr]);
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[second_addr + 1]);
+    return head2->tag == VAL_ATOM &&
+           strcmp(head2->data.atom, second) == 0 &&
+           tail2->tag == VAL_ATOM &&
+           strcmp(tail2->data.atom, "[]") == 0;
+}
+
+static bool wam_c_meta_expect_atom_list3(WamState *state, WamValue value,
+                                         const char *first,
+                                         const char *second,
+                                         const char *third) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag != VAL_LIST) return false;
+    int first_addr = cell->data.ref_addr;
+    WamValue *head1 = wam_deref_ptr(state, &state->H_array[first_addr]);
+    WamValue *tail1 = wam_deref_ptr(state, &state->H_array[first_addr + 1]);
+    if (head1->tag != VAL_ATOM || strcmp(head1->data.atom, first) != 0) return false;
+    if (tail1->tag != VAL_LIST) return false;
+    int second_addr = tail1->data.ref_addr;
+    WamValue *head2 = wam_deref_ptr(state, &state->H_array[second_addr]);
+    WamValue *tail2 = wam_deref_ptr(state, &state->H_array[second_addr + 1]);
+    if (head2->tag != VAL_ATOM || strcmp(head2->data.atom, second) != 0) return false;
+    if (tail2->tag != VAL_LIST) return false;
+    int third_addr = tail2->data.ref_addr;
+    WamValue *head3 = wam_deref_ptr(state, &state->H_array[third_addr]);
+    WamValue *tail3 = wam_deref_ptr(state, &state->H_array[third_addr + 1]);
+    return head3->tag == VAL_ATOM &&
+           strcmp(head3->data.atom, third) == 0 &&
+           tail3->tag == VAL_ATOM &&
+           strcmp(tail3->data.atom, "[]") == 0;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_meta_item_1(&state);
+    setup_wam_c_meta_dup_1(&state);
+    setup_wam_c_meta_none_1(&state);
+    setup_wam_c_meta_conj_item_1(&state);
+    setup_wam_c_meta_conj_keep_1(&state);
+    setup_wam_c_meta_conj_dup_1(&state);
+    setup_wam_c_meta_conj_set_keep_1(&state);
+    setup_wam_c_meta_disj_left_1(&state);
+    setup_wam_c_meta_disj_right_1(&state);
+    setup_wam_c_meta_disj_set_left_1(&state);
+    setup_wam_c_meta_disj_set_right_1(&state);
+    setup_wam_c_meta_bag_1(&state);
+    setup_wam_c_meta_set_1(&state);
+    setup_wam_c_meta_empty_bag_1(&state);
+    setup_wam_c_meta_conj_bag_1(&state);
+    setup_wam_c_meta_conj_set_1(&state);
+    setup_wam_c_meta_disj_bag_1(&state);
+    setup_wam_c_meta_disj_set_1(&state);
+
+    WamValue bag_args[1] = { val_unbound("Bag") };
+    int bag_rc = wam_run_predicate(&state, "wam_c_meta_bag/1", bag_args, 1);
+    if (bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue set_args[1] = { val_unbound("Set") };
+    int set_rc = wam_run_predicate(&state, "wam_c_meta_set/1", set_args, 1);
+    if (set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue empty_args[1] = { val_unbound("Empty") };
+    int empty_rc = wam_run_predicate(&state, "wam_c_meta_empty_bag/1",
+                                     empty_args, 1);
+    if (empty_rc != WAM_HALT ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue conj_bag_args[1] = { val_unbound("ConjBag") };
+    int conj_bag_rc = wam_run_predicate(&state, "wam_c_meta_conj_bag/1",
+                                        conj_bag_args, 1);
+    if (conj_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "c") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue conj_set_args[1] = { val_unbound("ConjSet") };
+    int conj_set_rc = wam_run_predicate(&state, "wam_c_meta_conj_set/1",
+                                        conj_set_args, 1);
+    if (conj_set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue disj_bag_args[1] = { val_unbound("DisjBag") };
+    int disj_bag_rc = wam_run_predicate(&state, "wam_c_meta_disj_bag/1",
+                                        disj_bag_args, 1);
+    if (disj_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    WamValue disj_set_args[1] = { val_unbound("DisjSet") };
+    int disj_set_rc = wam_run_predicate(&state, "wam_c_meta_disj_set/1",
+                                        disj_set_args, 1);
+    if (disj_set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0) {
+        wam_free_state(&state);
+        return 70;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 wam_c_classic_fib_smoke_main(
 '#include "wam_runtime.h"
 
@@ -4634,9 +7059,15 @@ implemented_case(call, 'case INSTR_CALL').
 implemented_case(execute, 'case INSTR_EXECUTE').
 implemented_case(builtin_call, 'case INSTR_BUILTIN_CALL').
 implemented_case(call_foreign, 'case INSTR_CALL_FOREIGN').
+implemented_case(begin_aggregate, 'case INSTR_BEGIN_AGGREGATE').
+implemented_case(end_aggregate, 'case INSTR_END_AGGREGATE').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
+implemented_case(get_level, 'case INSTR_GET_LEVEL').
+implemented_case(cut, 'case INSTR_CUT').
+implemented_case(cut_ite, 'case INSTR_CUT_ITE').
+implemented_case(jump, 'case INSTR_JUMP').
 implemented_case(switch_on_constant, 'case INSTR_SWITCH_ON_CONSTANT').
 implemented_case(switch_on_structure, 'case INSTR_SWITCH_ON_STRUCTURE').
 implemented_case(switch_on_term, 'case INSTR_SWITCH_ON_TERM').
@@ -4670,6 +7101,11 @@ run_tests_once :-
     test_body_construction_instructions,
     test_unification_instructions,
     test_control_flow_instructions,
+    test_aggregate_instructions,
+    test_control_cut_jump_instructions,
+    test_explicit_cut_uses_current_call_barrier,
+    test_control_instruction_parsing,
+    test_precise_ite_y_level_generation,
     test_choice_point_instructions,
     test_choice_point_content,
     test_switch_on_term_list_dispatch,
@@ -4681,6 +7117,7 @@ run_tests_once :-
     test_builtin_call_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
+    test_bidirectional_ancestor_kernel_generation,
     test_transitive_closure_kernel_generation,
     test_transitive_distance_kernel_generation,
     test_transitive_parent_distance_kernel_generation,
@@ -4693,8 +7130,17 @@ run_tests_once :-
     test_reverse_index_plan_csr_cost_model,
     test_reverse_index_plan_runtime_available_sorted_array,
     test_reverse_index_plan_runtime_available_lmdb_offset,
+    test_reverse_index_plan_runtime_direct_io_available,
+    test_reverse_index_plan_runtime_buffered_pread_drop_available,
+    test_reverse_index_setup_generation,
+    test_reverse_index_setup_lmdb_offset_generation,
+    test_reverse_index_setup_lmdb_offset_pread_drop_generation,
+    test_reverse_index_setup_rejects_runtime_direct_io_without_block_size,
+    test_reverse_index_setup_direct_io_generation,
+    test_reverse_index_setup_buffered_pread_drop_generation,
     test_streaming_foreign_results_generation,
     test_kernel_detector_setup_generation,
+    test_bidirectional_ancestor_setup_generation,
     test_transitive_closure_detector_setup_generation,
     test_transitive_distance_detector_setup_generation,
     test_transitive_parent_distance_detector_setup_generation,
@@ -4722,6 +7168,9 @@ run_tests_once :-
     test_builtin_call_executable_smoke,
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
+    test_bidirectional_ancestor_kernel_executable_smoke,
+    test_bidirectional_ancestor_csr_child_lookup_executable_smoke,
+    test_reverse_index_setup_executable_smoke,
     test_transitive_closure_kernel_executable_smoke,
     test_transitive_distance_kernel_executable_smoke,
     test_transitive_parent_distance_kernel_executable_smoke,
@@ -4746,6 +7195,16 @@ run_tests_once :-
     test_real_prolog_structure_index_executable_smoke,
     test_real_prolog_is_list_executable_smoke,
     test_real_prolog_unify_executable_smoke,
+    test_real_prolog_control_executable_smoke,
+    test_real_prolog_precise_ite_executable_smoke,
+    test_real_prolog_explicit_cut_executable_smoke,
+    test_real_prolog_forall_executable_smoke,
+    test_real_prolog_findall_executable_smoke,
+    test_real_prolog_bagof_setof_executable_smoke,
+    test_real_prolog_bagof_setof_witness_executable_smoke,
+    test_real_prolog_bagof_setof_existential_executable_smoke,
+    test_real_prolog_bagof_setof_unbound_witness_groups_smoke,
+    test_real_prolog_bagof_setof_meta_call_smoke,
     test_real_prolog_classic_recursive_executable_smoke,
     test_lowered_fact_helper_executable_smoke,
     test_lowered_body_call_helper_executable_smoke,

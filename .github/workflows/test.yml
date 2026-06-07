@@ -51,6 +51,10 @@ jobs:
         run: |
           swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), asserta(user:file_search_path(library, 'tests/core')), use_module(library(test_policy)), test_policy, halt."
 
+      - name: Run root-metric directive tests
+        run: |
+          swipl -q -g run_tests -t halt tests/core/test_root_metric.pl
+
       - name: Run C# query target tests (codegen only)
         run: |
           SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt
@@ -66,6 +70,41 @@ jobs:
           python3 -m unittest tests/test_csharp_query_policy_report_ci_contract.py
           python3 -m unittest tests/test_csharp_query_policy_review_wrapper.py
           python3 examples/benchmark/review_csharp_query_effective_distance_policy.py --dry-run
+
+      - name: Set up .NET (for F# WAM target tests)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install python lmdb (for F# LMDB cross-target conformance fixture)
+        run: pip3 install --user lmdb
+
+      - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          DOTNET_NOLOGO: '1'
+          # Belt-and-suspenders: the generated fsproj targets net8.0 and
+          # setup-dotnet installs the matching runtime, but Major roll-forward
+          # keeps the dotnet legs launchable if the runner's SDK ever drifts.
+          DOTNET_ROLL_FORWARD: 'Major'
+        run: |
+          swipl -q -g main -t halt tests/run_wam_fsharp_tests.pl
+
+      - name: Run scoped-subtree LMDB builder test
+        run: |
+          python3 -m unittest tests.test_build_scoped_subtree_lmdb
+
+      - name: Run root-metric query tool test
+        run: |
+          python3 -m unittest tests.test_query_root_metric
+
+      - name: Run effective-distance node-DP test
+        run: |
+          python3 -m unittest tests.test_effective_distance_nodedp
+
+      - name: Run WAM Rust matrix-bench demand-flag codegen test
+        run: |
+          python3 -m unittest tests.test_wam_rust_matrix_demand_flag
 
       - name: Generate and run inference test runner
         run: |
@@ -98,10 +137,41 @@ jobs:
           echo "✓ Advanced recursion tests (24/24)"
           echo "✓ Constraint integration tests"
           echo "✓ Control plane tests (5/5)"
+          echo "✓ F# WAM target tests (codegen + dotnet smoke + LMDB conformance)"
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
           echo "✓ Visualization glue tests (478 tests)"
           echo "=========================================="
+
+  wam_conformance_smoke:
+    name: WAM Conformance Smoke (${{ matrix.target }})
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scala, elixir, wat, haskell, python, go, rust, c, cpp]
+    env:
+      CONFORMANCE_TARGETS: ${{ matrix.target }}
+      CONFORMANCE_PROGRAMS: member,builtins
+      CONFORMANCE_SAMPLE: 2
+      CONFORMANCE_SEED: ${{ github.run_number }}
+      UW_SMOKE_TMPDIR: ${{ runner.temp }}/unifyweaver-smoke
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: bash scripts/ci/install_swi_prolog.sh
+
+      - name: Create smoke temp root
+        run: mkdir -p "$UW_SMOKE_TMPDIR"
+
+      - name: Run sampled WAM conformance
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
 
   csharp_query_runtime_smoke:
     name: C# Query Runtime Smoke

@@ -192,6 +192,89 @@ elixir_test_tmp_dir(Name, TmpDir) :-
     catch(delete_directory_and_contents(TmpDir), _, true),
     make_directory_path(TmpDir).
 
+test_elixir_interpreter_uses_items_ir_policy_source :-
+    Test = 'WAM-Elixir: interpreter mode uses shared items IR policy',
+    (   once(source_file(wam_elixir_target:write_wam_elixir_project(_, _, _), Path)),
+        read_file_to_string(Path, Content, []),
+        sub_string(Content, _, _, _, 'wam_elixir_emit_ir_mode(Options, Mode, IrMode)'),
+        sub_string(Content, _, _, _, 'wam_ir_mode(wam_elixir, EmitMode, Options, IrMode)'),
+        sub_string(Content, _, _, _, 'elixir_interpreter_wam_code(RewrittenWamCode, IrMode'),
+        sub_string(Content, _, _, _, 'wam_text_to_items(WamText, Items)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'items IR policy wiring missing from source')
+    ).
+
+test_elixir_items_adapter_accepts_shared_items :-
+    Test = 'WAM-Elixir: shared WAM items convert to instruction literals',
+    Items = [label("demo/1"), put_constant("foo", "A1"),
+             call("other/0", "0"), proceed],
+    (   wam_elixir_target:wam_code_to_elixir_instructions(Items, Instrs, Labels),
+        sub_string(Instrs, _, _, _, '{:put_constant, "foo", 1}'),
+        sub_string(Instrs, _, _, _, '{:call, "other/0", 0}'),
+        sub_string(Instrs, _, _, _, ':proceed'),
+        sub_string(Labels, _, _, _, '"demo/1" => 1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'items adapter did not emit expected Elixir literals')
+    ).
+
+test_elixir_generated_predicate_allows_text_ir_override :-
+    Test = 'WAM-Elixir: generated predicate allows wam_text IR override',
+    WamCode = 'elixir_text_ir/1:
+  put_constant foo, A1
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_text_ir', TmpDir),
+        (   write_wam_elixir_project([elixir_text_ir/1-WamCode],
+                                    [wam_ir(wam_text)], TmpDir),
+            directory_file_path(TmpDir, 'lib', LibDir),
+            directory_file_path(LibDir, 'elixir_text_ir.ex', PredPath),
+            read_file_to_string(PredPath, Code, []),
+            (   sub_string(Code, _, _, _, '{:put_constant, "foo", 1}')
+            ->  pass(Test)
+            ;   fail_test(Test, 'text IR override did not emit predicate code')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_elixir_generated_predicate_rejects_direct_target_ir :-
+    Test = 'WAM-Elixir: generated predicate rejects direct_target IR',
+    WamCode = 'elixir_direct_ir/0:
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_direct_ir', TmpDir),
+        (   catch((write_wam_elixir_project([elixir_direct_ir/0-WamCode],
+                                            [wam_ir(direct_target)], TmpDir),
+                   Caught = false),
+                  error(domain_error(wam_elixir_ir_mode, direct_target), _),
+                  Caught = true),
+            (   Caught == true
+            ->  pass(Test)
+            ;   fail_test(Test, 'expected direct_target IR domain_error')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
+test_elixir_generated_predicate_rejects_native_items_until_available :-
+    Test = 'WAM-Elixir: generated predicate rejects wam_items_native IR',
+    WamCode = 'elixir_native_ir/0:
+  proceed',
+    setup_call_cleanup(
+        elixir_test_tmp_dir('tmp_wam_elixir_native_ir', TmpDir),
+        (   catch((write_wam_elixir_project([elixir_native_ir/0-WamCode],
+                                            [wam_ir(wam_items_native)], TmpDir),
+                   Caught = false),
+                  error(existence_error(wam_ir_mode, wam_items_native), _),
+                  Caught = true),
+            (   Caught == true
+            ->  pass(Test)
+            ;   fail_test(Test, 'expected wam_items_native existence_error')
+            )
+        ),
+        elixir_parser_cleanup_tmp_dir(TmpDir)
+    ).
+
 test_instruction_count :-
     Test = 'WAM-Elixir: instruction arm count',
     (   findall(N, wam_elixir_case(N, _), Cases),
@@ -2314,7 +2397,7 @@ test_findall_substrate_emits_aggregate_collect :-
         % values pass through unchanged, compound heap structures
         % become self-contained {:struct, ...} tuples that survive
         % backtrack's heap-rewind.
-        sub_string(S, _, _, _, 'raw = Map.get(state.regs, value_reg)'),
+        sub_string(S, _, _, _, 'raw = get_reg_raw(state, value_reg)'),
         sub_string(S, _, _, _, 'val = deep_copy_value(state, raw)'),
         % Must prepend (O(1)) to the nearest aggregate frame's accum.
         sub_string(S, _, _, _, '[val | prior]'),
@@ -2784,6 +2867,41 @@ test_runtime_list_walkers_accept_both_cons_tags :-
     ;   fail_test(Test, 'list walkers do not accept both cons tags')
     ).
 
+test_runtime_empty_list_constant_alias :-
+    Test = 'Runtime: native [] aliases WAM "[]" for constant matching and unification',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'def constant_match?("[]", []), do: true'),
+        sub_string(S, _, _, _, 'def constant_match?([], "[]"), do: true'),
+        sub_string(S, _, _, _, 'constant_match?(v1, v2) -> {:ok, state}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime does not alias native [] and WAM "[]"')
+    ).
+
+test_runtime_structural_unify_aliases_cons_tags :-
+    Test = 'Runtime: structural unification aliases ./2 and [|]/2 cons tags',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'),
+        sub_string(S, _, _, _, 'args1 = heap_slice(state, addr1 + 1, arity)'),
+        sub_string(S, _, _, _, 'args2 = heap_slice(state, addr2 + 1, arity)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'structural unify still requires identical cons tags')
+    ).
+
+test_lowered_empty_list_constant_alias :-
+    Test = 'Lowering: empty-list constants accept native [] from list destructuring',
+    wam_elixir_lowered_emitter:wam_elixir_lower_instr(get_constant("[]", "A1"), 1, [], p, "clause_main", GetCode),
+    wam_elixir_lowered_emitter:wam_elixir_lower_instr(switch_on_constant(["[]:L_nil"]), 1, [], p, "clause_main", SwitchCode),
+    atom_string(GetCode, GetS),
+    atom_string(SwitchCode, SwitchS),
+    (   sub_string(GetS, _, _, _, 'WamRuntime.constant_match?(val, "[]")'),
+        sub_string(SwitchS, _, _, _, '"[]" -> throw({:return'),
+        sub_string(SwitchS, _, _, _, '[] -> throw({:return')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered empty-list constant still rejects native []')
+    ).
+
 %% Backslash-escape regression: `=\=/2` op name must be emitted as
 %  `"=\\=/2"` in the lowered call site so Elixir parses it as the
 %  runtime string `=\=/2` (5 chars). Without escaping, Elixir 1.14+
@@ -2830,13 +2948,13 @@ test_lowered_emits_integer_literals :-
             lower_predicate_to_elixir(int_p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
             % Positive: bare integer literal in head-match comparison.
-            sub_string(S, _, _, _, 'val == 1'),
-            sub_string(S, _, _, _, 'val == 2'),
-            sub_string(S, _, _, _, 'val == 3'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 1)'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 2)'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 3)'),
             % Negative: stringified form must NOT appear.
-            \+ sub_string(S, _, _, _, 'val == "1"'),
-            \+ sub_string(S, _, _, _, 'val == "2"'),
-            \+ sub_string(S, _, _, _, 'val == "3"')
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "1")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "2")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "3")')
         ->  pass(Test)
         ;   fail_test(Test, 'integer constants stringified — head-match would silently fail')
         ),
@@ -3242,6 +3360,11 @@ run_tests :-
     test_runtime_parser_compiled_request_errors,
     test_runtime_parser_none_rejects_parser_dependent_builtin,
     test_runtime_parser_none_allows_term_to_atom_forward,
+    test_elixir_interpreter_uses_items_ir_policy_source,
+    test_elixir_items_adapter_accepts_shared_items,
+    test_elixir_generated_predicate_allows_text_ir_override,
+    test_elixir_generated_predicate_rejects_direct_target_ir,
+    test_elixir_generated_predicate_rejects_native_items_until_available,
     test_instruction_count,
     test_head_unification_instructions,
     test_body_construction_instructions,
@@ -3389,6 +3512,9 @@ run_tests :-
     test_runtime_default_arm_throws_unknown_builtin,
     test_lowered_put_structure_links_unbound_heap_ref,
     test_runtime_list_walkers_accept_both_cons_tags,
+    test_runtime_empty_list_constant_alias,
+    test_runtime_structural_unify_aliases_cons_tags,
+    test_lowered_empty_list_constant_alias,
     test_lowered_escapes_backslash_in_builtin_call,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,

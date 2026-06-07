@@ -21377,23 +21377,31 @@ compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
 %% compile_clause_parallel_branches(+PredSpec, +Clauses, +Idx, -BranchCodes)
 compile_clause_parallel_branches(_, [], _, []).
 compile_clause_parallel_branches(PredSpec, [Head-Body|Rest], Idx, [BranchCode|RestCodes]) :-
-    (   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode)
-    ->  (   Condition == "true"
+    (   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode0)
+    ->  % native_go_clause emits `return <expr>`, which is valid in a plain
+        % sequential function but not inside this goroutine (whose closure
+        % returns nothing). Run the clause in an inner closure returning
+        % (value, matched); on a match, send the value over the channel.
+        transform_returns_to_tuple(ClauseCode0, ClauseCode),
+        (   Condition == "true"
         ->  CondBlock = ClauseCode
         ;   format(string(CondBlock),
-'\t\tif ~w {
+'\t\t\tif ~w {
 ~w
-\t\t}', [Condition, ClauseCode])
+\t\t\t}', [Condition, ClauseCode])
         ),
         format(string(BranchCode),
 '\tgo func() { // clause ~w
 \t\tdefer wg.Done()
 \t\tdefer func() { recover() }() // prevent panics from crashing program
+\t\tif val, ok := func() (interface{}, bool) {
 ~w
-\t\tselect {
-\t\tcase <-ctx.Done():
-\t\t\treturn // cancelled — another clause already produced a result
-\t\tcase results <- result:
+\t\t\treturn nil, false
+\t\t}(); ok {
+\t\t\tselect {
+\t\t\tcase <-ctx.Done(): // cancelled — another clause already produced a result
+\t\t\tcase results <- val:
+\t\t\t}
 \t\t}
 \t}()', [Idx, CondBlock])
     ;   % Clause didn't compile — skip with comment
@@ -21404,3 +21412,22 @@ compile_clause_parallel_branches(PredSpec, [Head-Body|Rest], Idx, [BranchCode|Re
     ),
     NextIdx is Idx + 1,
     compile_clause_parallel_branches(PredSpec, Rest, NextIdx, RestCodes).
+
+%% transform_returns_to_tuple(+Code, -Out)
+%  Rewrite each `return <expr>` statement to `return <expr>, true` so a
+%  clause body produced by native_go_clause can be reused inside an inner
+%  closure of type func() (interface{}, bool). Only lines whose sole
+%  leading content is `return ` are rewritten (a string value containing
+%  "return " is left untouched because the leading text isn't whitespace).
+transform_returns_to_tuple(Code, Out) :-
+    split_string(Code, "\n", "", Lines),
+    maplist(transform_return_line, Lines, OutLines),
+    atomic_list_concat(OutLines, "\n", Out).
+
+transform_return_line(Line, Out) :-
+    (   sub_string(Line, Before, _, _, "return "),
+        sub_string(Line, 0, Before, _, Prefix),
+        split_string(Prefix, "", " \t", [""])   % only whitespace before `return`
+    ->  string_concat(Line, ", true", Out)
+    ;   Out = Line
+    ).

@@ -51,6 +51,7 @@
 :- use_module(library(filesex)).
 :- use_module(library(process)).
 :- use_module(library(option)).
+:- use_module('helpers/smoke_paths', [tmp_root/1]).
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_target',
               [write_wam_elixir_project/3]).
@@ -254,23 +255,9 @@ user:phase3_two_findalls(L, Rest) :-
     findall(X, phase3_r(X), L),
     findall(Y, phase3_r(Y), Rest).
 
-%% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
-%% order. Same fallback chain as the existing benchmark harness.
-tmp_root_candidate(Root) :-
-    member(Env, ['TMPDIR', 'TMP', 'TEMP']),
-    getenv(Env, Root),
-    Root \== ''.
-tmp_root_candidate(Root) :-
-    getenv('PREFIX', Prefix),
-    Prefix \== '',
-    directory_file_path(Prefix, tmp, Root).
-tmp_root_candidate('output').
-
-writable_tmp_root(Root) :-
-    tmp_root_candidate(Root),
-    catch(make_directory_path(Root), _, fail),
-    access_file(Root, write),
-    !.
+% writable_tmp_root/1 delegates to the shared smoke_paths helper
+% (which covers Windows %TEMP%, Termux, /tmp, etc.).
+writable_tmp_root(Root) :- tmp_root(Root).
 
 unique_project_dir(Dir) :-
     writable_tmp_root(Root),
@@ -522,12 +509,16 @@ assert_scenario_findall_compound(StdOut) :-
     sub_string(W, _, _, _, "\"a\""),
     sub_string(W, _, _, _, "\"b\""),
     sub_string(W, _, _, _, "\"c\""),
-    % Numeric pairs lower as bare integer literals, not strings.
-    % Match within compound-tuple context to avoid spurious hits in
-    % refs/heap addresses.
-    sub_string(W, _, _, _, "\"a\", 1"),
-    sub_string(W, _, _, _, "\"b\", 2"),
-    sub_string(W, _, _, _, "\"c\", 3").
+    % The second argument is the ATOM '1'/'2'/'3' — quoted in the
+    % phase3_q/2 facts — so it lowers as an Elixir string "1"/"2"/"3",
+    % NOT a bare integer. Atom and integer terms are kept distinct
+    % (genuine integers, e.g. the aggregate_all(count, ...) → 3 case,
+    % still lower bare). The WAM carries `get_constant '1', A2`, i.e.
+    % the atom, confirming this. Match within the compound-tuple
+    % context to avoid spurious hits in refs/heap addresses.
+    sub_string(W, _, _, _, "\"a\", \"1\""),
+    sub_string(W, _, _, _, "\"b\", \"2\""),
+    sub_string(W, _, _, _, "\"c\", \"3\"").
 
 assert_scenario_cut_conj(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_CUT_CONJ", W),

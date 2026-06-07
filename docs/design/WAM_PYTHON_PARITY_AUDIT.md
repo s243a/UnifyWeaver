@@ -17,9 +17,10 @@ matters for parity.
 | --- | --- | --- | --- |
 | Direct fact dispatch | `call_indexed_atom_fact2`, category ancestor helpers | Indexed fact paths | Present |
 | Aggregates | `begin_aggregate`, `end_aggregate` runtime paths | `findall/3`, `aggregate_all/3` families | Present, covered by generated-project E2E |
-| Structural builtins | `member/2`, `length/2` | `member/2`, `length/2` | Present: `member/2` enumerates via builtin choice points |
+| Structural builtins | `member/2`, `length/2` | `member/2`, `length/2` | Present: `member/2` enumerates via builtin choice points; `length/2` covers fixed and generative modes |
 | Type builtins | `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`, `nonvar/1`, `is_list/1` | Same baseline set | Present |
 | Comparison builtins | `==/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2` | Same baseline set | Present |
+| List ordering | `sort/2`, `msort/2`, `keysort/2` | Same baseline set where present | Present: generated-project E2E covers numeric, atom, duplicate, empty-list, and keyed-pair cases |
 | Unification builtins | `=/2`, `\=/2` | `=/2`, `\=/2` in comparable runtimes | Present |
 | Term inspection | `functor/3`, `arg/3` | `functor/3`, `arg/3` | Present |
 | Univ | `=../2` compose and decompose | `=../2` compose and decompose | Present |
@@ -89,10 +90,66 @@ instead of assembling a second runtime from Prolog string fragments. Generated
 projects also copy the same `WamRuntime.py`, so tests and generated projects
 now share one Python WAM runtime surface.
 
+
+## Items-Mode Readiness
+
+Python is a good candidate for the WAM items-mode migration because generated
+projects already use one packaged runtime surface, but the generator still has a
+text-first compile pipeline.
+
+Current load-bearing items path:
+
+- WAM representation mode is resolved through `wam_ir_mode/4`; Python defaults
+  to `wam_items_bridge` for interpreter mode and `wam_text` for lowered mode.
+- `plan_python_predicate/3` calls `compile_predicate_to_wam_items/3` for
+  internally compiled interpreter-mode predicates and stores `wam_items(items_only,
+  Items)` in `pred_plan/4`.
+- Supplied WAM text still normalizes through `wam_text_to_items/2` and stores
+  `wam_items(text(WamText), Items)` so external/debug text input remains
+  supported.
+- interpreter-mode predicate emission routes planned predicates through
+  `compile_wam_predicate_items_to_python/4`, so generated Python no longer
+  reparses internally generated WAM text during interpreter registration.
+- lowered mode still requests explicit WAM text via `compile_predicate_to_wam_text/3`
+  and calls `parse_wam_text_py/2` in `compile_lowered_wam_predicate_to_python/4`,
+  `lowered_candidate_wam/1`, and `lowered_route_supported/4` before emitting
+  lowered Python functions.
+- `wam_python_iso_audit/3` still recompiles predicates to WAM text and parses
+  lines for audit reporting.
+
+Items-mode bridge now present:
+
+- `wam_items_to_python_instructions/4` consumes `label(Name)` plus standard WAM
+  instruction items and emits the same Python instruction literals as the text
+  path.
+- `compile_wam_predicate_items_to_python/4` wraps that adapter in the same
+  registrar function shape as `compile_wam_predicate_to_python/4`.
+- The adapter preserves typed direct-item constants, so an atom like `'42'` is
+  emitted as `Atom("42")` while integer `42` is emitted as `Int(42)`.
+- Current tests compare the adapter against `wam_text_to_items/2` output for a
+  standard WAM-text fixture, cover typed atom/integer constant separation, and
+  assert that `compile_all_predicates/3` uses the common items API for internally
+  compiled interpreter-mode predicates.
+
+Remaining migration target:
+
+1. Replace the current `compile_predicate_to_wam_items/3` bridge implementation
+   with direct item emission once `wam_target.pl` grows native item generation.
+2. Teach the lowered emitter to consume the same item list directly, or add one
+   shared adapter from items to the lowered-emitter instruction representation.
+3. Keep the text parser only for external WAM text/debug migration paths, not
+   for WAM text generated inside the same process.
+
+Until native item emission lands, `tests/test_wam_python_target.pl` includes
+items-mode audit tests that record the remaining bridge boundary and protect the
+item-driven Python emitter.
+
 ## Remaining Follow-Up
 
 The packaged static runtime now carries the Lua/Rust/Haskell builtin baseline.
-No Python WAM builtin parity gaps are currently tracked here.
+No Python WAM builtin parity gaps are currently tracked here. The current
+Python WAM target file also runs without the earlier plunit choicepoint-warning
+noise in the registry and ITE detection tests.
 
 Completed follow-up:
 
@@ -100,12 +157,17 @@ Completed follow-up:
   type/comparison builtins through the packaged static runtime.
 - Generated-project E2E tests now verify `member/2` enumeration through
   aggregate collection.
+- Generated-project E2E tests now verify `sort/2`, `msort/2`, and `keysort/2`
+  through the packaged static runtime.
+- Python WAM registry and ITE tests now use deterministic assertions where the
+  test only needs the first valid proof, keeping full-suite output warning-free.
 - `compile_wam_runtime_to_python/2` now returns the packaged static runtime,
   removing the separate fallback runtime surface.
 
 ## Verification Commands
 
-Use these checks after touching Python WAM runtime parity:
+Use these checks after touching Python WAM runtime parity. On current `main`,
+`tests/test_wam_python_target.pl` passes 177/177 without choicepoint warnings:
 
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_python_target.pl

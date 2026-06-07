@@ -34,6 +34,14 @@ test_simple_fact(foo, bar).
 
 :- dynamic test_failed/0.
 
+:- dynamic rust_parser_read_demo/0.
+rust_parser_read_demo :-
+    read_term_from_atom('p(a)', _).
+
+:- dynamic rust_parser_term_to_atom_forward/0.
+rust_parser_term_to_atom_forward :-
+    term_to_atom(p(a), _).
+
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
 :- dynamic tail_suffix/2.
@@ -1703,6 +1711,94 @@ test_generated_project_has_parser :-
         fail_test(Test, 'Generated state.rs missing parser')
     ).
 
+test_runtime_parser_off_rejects_read :-
+    Test = 'WAM-Rust: runtime_parser(off) rejects parser-dependent bodies',
+    TmpDir = 'output/test_wam_rust_runtime_parser_off',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   catch(
+            write_wam_rust_project(
+                [user:rust_parser_read_demo/0],
+                [module_name('rust_parser_off'), runtime_parser(off)],
+                TmpDir),
+            error(permission_error(use, runtime_parser, read_term_from_atom/2), _),
+            true)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(off) did not reject read_term_from_atom/2')
+    ).
+
+test_runtime_parser_off_allows_forward_term_to_atom :-
+    Test = 'WAM-Rust: runtime_parser(off) allows forward term_to_atom/2',
+    TmpDir = 'output/test_wam_rust_runtime_parser_term_to_atom_forward',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:rust_parser_term_to_atom_forward/0],
+            [module_name('rust_parser_forward'), runtime_parser(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'Module: rust_parser_forward'),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(off) rejected safe forward term_to_atom/2')
+    ).
+
+test_runtime_parser_compiled_includes_parser_and_wrappers :-
+    Test = 'WAM-Rust: runtime_parser(compiled) includes parser and wrappers',
+    TmpDir = 'output/test_wam_rust_runtime_parser_compiled',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:rust_parser_read_demo/0],
+            [module_name('rust_parser_compiled'), runtime_parser(compiled)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'labels.insert("parse_term_from_atom/3"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("canonical_op_table/1"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("parse_atom_to_term/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) did not include parser/wrapper labels')
+    ).
+
+test_runtime_parser_default_excludes_wrappers :-
+    Test = 'WAM-Rust: runtime_parser(auto) does not bundle parser wrappers',
+    TmpDir = 'output/test_wam_rust_runtime_parser_default',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('rust_parser_default')],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"'),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("parse_term_from_atom/3"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(auto) unexpectedly bundled parser wrappers')
+    ).
+
 test_parser_resilience :-
     Test = 'WAM-Rust: parser handles malformed input gracefully',
     (   read_file_to_string(
@@ -1894,14 +1990,19 @@ test_r7_lazy_lmdb_lookup_handler_arm :-
     ;   fail_test(Test, 'execute_foreign_predicate is missing the lazy_lmdb_lookup arm or its key calls')
     ).
 
-%% R7: native category_ancestor routes through edge_parents (lazy_lookups-aware).
+%% R7: native category_ancestor routes through the resolved edge accessor
+%% (lazy_lookups-aware), resolving the constant predicate ONCE rather than
+%% re-hashing it per call (interning principle).
 test_r7_native_category_ancestor_uses_edge_parents :-
-    Test = 'WAM-Rust R7: native category_ancestor uses edge_parents (not raw ffi_facts)',
+    Test = 'WAM-Rust R7: native category_ancestor uses resolved edge accessor (not per-call ffi_facts string lookup)',
     (   wam_rust_target:compile_collect_native_category_ancestor_to_rust(Code),
-        sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
+        % Hot path consults the pre-resolved accessor, not a per-call
+        % string-keyed map lookup.
+        sub_string(Code, _, _, _, "self.edge_parents_via(cat_id, acc)"),
+        \+ sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
         \+ sub_string(Code, _, _, _, "self.ffi_facts.get(edge_pred)")
     ->  pass(Test)
-    ;   fail_test(Test, 'collect_native_category_ancestor_hops still reads ffi_facts directly; should call edge_parents')
+    ;   fail_test(Test, 'kernel should call edge_parents_via(cat_id, acc) against the resolved accessor, not a per-call predicate lookup')
     ).
 
 %% Regression: rust_val_literal must strip outer quotes from atom tokens
@@ -2015,6 +2116,10 @@ run_tests :-
     test_state_template_has_parser,
     test_parser_handles_all_instructions,
     test_generated_project_has_parser,
+    test_runtime_parser_off_rejects_read,
+    test_runtime_parser_off_allows_forward_term_to_atom,
+    test_runtime_parser_compiled_includes_parser_and_wrappers,
+    test_runtime_parser_default_excludes_wrappers,
     test_parser_resilience,
     test_cross_predicate_shared_wam,
     test_cross_predicate_distinct_pcs,

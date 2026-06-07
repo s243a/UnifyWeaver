@@ -23,7 +23,7 @@ Companion docs:
 
 ## Series Overview
 
-12 PRs landed in priority order. All reachable from `main`.
+17 PRs landed in priority order. All reachable from `main`.
 
 | # | Branch | Merged via | What it added |
 |---|---|---|---|
@@ -39,7 +39,11 @@ Companion docs:
 | follow-up | `feat/wam-elixir-bagof-setof-basics` | PR #2219 | `bagof/3` + `setof/3` basics via inlining |
 | follow-up | `feat/wam-elixir-member-enumerator` | PR #2235 | Cons-cell `./2`/`[|]/2` aliasing + user-source `em/2` for bagof tests |
 | compiler | `feat/wam-args-first-default` | PR #2285 | Flip `args_first_emission` default-on after audit (prevents heap-flat nested-compound bugs) |
-| perf | `feat/wam-elixir-y-regs-separate-field` | PR #2349 | Y-regs in separate state field — 30–55× bench speedup |
+| perf | `feat/wam-elixir-y-regs-separate-field` | PR #2349 | Y-regs in separate state field — 30-55x bench speedup |
+| cross-target | `test/wam-args-first-cross-target-audit` | PR #2464 | args-first bytecode property + Rust/Haskell codegen acceptance tests |
+| follow-up | `feat/wam-elixir-witness-group-bagof` | PR #2492 | Witness-group backtracking for `bagof/setof` + empty-retry-body fix |
+| follow-up | `feat/wam-elixir-metacall-aggregate-dispatch` | PR #2494 | Meta-call dispatch for `findall/bagof/setof` (removes `inline_bagof_setof` requirement) |
+| follow-up | `feat/wam-elixir-switch-on-term` | PR #2535 | `switch_on_term` + `switch_on_constant_fallthrough` — all WAM indexed dispatch |
 
 ## What's Implemented
 
@@ -53,16 +57,18 @@ Companion docs:
 - Explicit `*_iso/N` forms always throw structured ISO errors.
 - Explicit `*_lax/N` forms always preserve lax/fail-style behavior.
 
-The rewrite is text-level at project-write time (see `iso_errors_rewrite_text/4` in `wam_elixir_target.pl`). Items-level dispatch is deferred — the lowered emitter parses WAM line-by-line and has no items intermediate. Adding one would be the Items API refactor (`WAM_ITEMS_API_SPECIFICATION.md`).
+The rewrite is text-level at project-write time (see `iso_errors_rewrite_text/4` in `wam_elixir_target.pl`). Interpreter-mode predicate modules now parse the rewritten text through the shared WAM-items bridge before emitting Elixir instruction tuples. The lowered emitter still parses WAM line-by-line and has no items intermediate; moving that path to items remains the larger Items API refactor (`WAM_ITEMS_API_SPECIFICATION.md`).
 
-**Aggregates.** `findall/3`, `bagof/3`, `setof/3`, `aggregate_all(Template, Goal, Result)` with all spec-compliant templates (`bag`, `set`, `count`, `sum`, `max`, `min`). Compiled inline via `begin_aggregate`/`end_aggregate`; the `inline_bagof_setof(true)` option is required because Elixir does not have meta-call dispatch for `findall`/`bagof`/`setof` (deferred).
+**Aggregates.** `findall/3`, `bagof/3`, `setof/3`, `aggregate_all(Template, Goal, Result)` with all spec-compliant templates (`bag`, `set`, `count`, `sum`, `max`, `min`). Both compiled-inline (`begin_aggregate`/`end_aggregate`) and meta-call dispatch (`execute findall/3` etc.) paths work. Full ISO witness-group backtracking for `bagof/setof` — free-variable bindings are grouped and iterable via `{:agg_next_group, ...}` choice-point frames. The `^/2` existential quantifier is supported.
 
 **Compound unification.** `=/2` recurses through nested compounds; structured `catch` patterns like `error(K, _)` unify against thrown compound terms.
 
 **Member enumeration.** User-source `em/2` (2-clause ISO member) backtracks via `try_me_else`/`retry_me_else`/`trust_me`. The builtin `member/2` remains deterministic (boolean check). Cons-cell representations `./2` and `[|]/2` are treated as aliases in `step_get_structure_ref`.
 
-**End-to-end coverage.** 47 tests in `tests/test_wam_elixir_classic_programs.pl`:
-3 classic programs (fib, ackermann, pythagoras) + 4 call/N + 6 catch/throw + 5 is_iso/is_lax + 14 ISO sweep + 5 compound-eq + 6 bagof/setof + 4 em.
+**Indexed dispatch.** All WAM first-argument and second-argument indexing instructions are lowered: `switch_on_constant`, `switch_on_constant_a2`, `switch_on_constant_fallthrough`, `switch_on_constant_a2_fallthrough`, `switch_on_term`, `switch_on_term_a2`, `switch_on_structure`, `switch_on_structure_a2`. Type-based dispatch for `switch_on_term` distinguishes unbound variables, constants, list cons-cells (`./2`/`[|]/2`), and structures via heap lookup.
+
+**End-to-end coverage.** 50 tests in `tests/test_wam_elixir_classic_programs.pl`:
+3 classic programs (fib, ackermann, pythagoras) + 4 call/N + 6 catch/throw + 5 is_iso/is_lax + 14 ISO sweep + 5 compound-eq + 6 bagof/setof + 3 witness/meta-call + 4 em. All 50 pass.
 
 ## Performance
 
@@ -95,19 +101,20 @@ These choices are load-bearing and worth understanding before working on the tar
 
 **Side-stack catcher frames.** `catch/3` snapshots regs/y_regs/stack/trail-mark/cp-count into `state.catcher_frames`. `throw/1` raises `{:wam_throw, term, heap, heap_len}` as a BEAM throw — bundling the heap is critical for compound thrown terms (deep_copy creates cells in a state that gets discarded before the throw fires).
 
-**ISO error rewriting is text-level.** `iso_errors_rewrite_text/4` recognizes `builtin_call`/`put_structure`/`call`/`execute` line shapes and substitutes keys per the predicate's ISO mode. No items intermediate.
+**ISO error rewriting is text-level.** `iso_errors_rewrite_text/4` recognizes `builtin_call`/`put_structure`/`call`/`execute` line shapes and substitutes keys per the predicate's ISO mode. Interpreter mode then converts the rewritten text to shared WAM items; lowered mode still consumes the rewritten text directly.
 
 ## Deferred Work
 
 In rough priority order:
 
 1. **Atom interning** — deprioritized; see Performance section. Revisit only if a future bench shows it.
-2. **Audit Rust/Haskell for the nested-compound bug** — `args_first_emission` defaulting on (PR #2285) protects them prospectively, but no test exercises the pattern on those targets.
-3. **Witness-group backtracking for `bagof/setof`** — full ISO grouping where multiple free-var combos produce multiple bags. Mirrors C++ PR #2112. Needs an `aggregate_next_group` synthetic op + iterator infra.
-4. **Meta-call dispatch for `findall`/`bagof`/`setof`** — would let `inline_bagof_setof(true)` be optional. Required for goals constructed at runtime via `call/N`.
-5. **IEEE-754 lax float-divide** — BEAM raises on `1.0/0.0`. Would need atom sentinels (`:inf`, `:nan`) plumbed through the lax arithmetic path.
-6. **BEAM-native catch (Option B from PHILOSOPHY §5)** — only if perf measurements show the side-stack walk dominates. Current bench does not exercise it.
-7. **Items API for the lowered emitter** — would let ISO-error rewriting move from text-level to items-level. Cross-cutting; not Elixir-specific.
+2. ~~**Audit Rust/Haskell for the nested-compound bug**~~ — DONE (PR #2464). `args_first_emission` bytecode property verified + Rust/Haskell codegen acceptance tests.
+3. ~~**Witness-group backtracking for `bagof/setof`**~~ — DONE (PR #2492). Full ISO grouping with `{:agg_next_group, ...}` iterator CPs. Empty-retry-body fix included.
+4. ~~**Meta-call dispatch for `findall`/`bagof`/`setof`**~~ — DONE (PR #2494). Runtime `execute_aggregate_meta/2` + `dispatch_call_meta` integration. `inline_bagof_setof(true)` no longer required.
+5. ~~**switch_on_term + switch_on_constant_fallthrough**~~ — DONE (PR #2535). All WAM indexed dispatch instructions lowered. fibonacci and ackermann now pass.
+6. **IEEE-754 lax float-divide** — BEAM raises on `1.0/0.0`. Would need atom sentinels (`:inf`, `:nan`) plumbed through the lax arithmetic path.
+7. **BEAM-native catch (Option B from PHILOSOPHY §5)** — only if perf measurements show the side-stack walk dominates. Current bench does not exercise it.
+8. **Items API for the lowered emitter** — interpreter mode now uses the shared items bridge after text rewrite; the lowered emitter still needs an items-level path before ISO rewriting can move fully out of text. Cross-cutting; not Elixir-specific.
 
 ## Lessons Learned
 

@@ -88,6 +88,7 @@ let mkContext (branch1Body: Instruction list) (slowSize: int) =
         WcAtomDeintern      = Map.empty
         WcForeignConfig     = Map.empty
         WcLoweredPredicates = Map.empty
+        WcLookupSources     = Map.empty
         WcCancellationToken = None }
     ctx, pcParTry, pcParRetry2
 
@@ -111,7 +112,8 @@ let mkState () =
       WsBuilder    = None
       WsBuilderStack = []
       WsAggAccum   = []
-      WsB0Stack    = [] }
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 let runScenario (name: string) (branch1: Instruction list) (expectTrue: bool) (slowSize: int) : int64 * int64 * bool =
     let ctx, parPC, elsePC = mkContext branch1 slowSize

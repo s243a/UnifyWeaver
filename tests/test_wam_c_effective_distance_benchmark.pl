@@ -3,6 +3,8 @@
 % Usage: swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl
 
 :- use_module('../examples/benchmark/generate_wam_c_effective_distance_benchmark').
+:- use_module('../src/unifyweaver/core/cost_model',
+              [resolve_candidate_filter_min_roots/2]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module(library(process)).
 
@@ -15,6 +17,17 @@ pass(Test) :-
 fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
+
+test_candidate_filter_cost_model_resolver :-
+    Test = 'WAM-C effective-distance: candidate filter threshold resolver handles policy modes',
+    (   resolve_candidate_filter_min_roots([], 512),
+        resolve_candidate_filter_min_roots([candidate_filter_dense_root_ceiling(31)], 32),
+        resolve_candidate_filter_min_roots([candidate_filter_min_roots(always)], 0),
+        resolve_candidate_filter_min_roots([candidate_filter_min_roots(off)], Off),
+        Off > 1000000
+    ->  pass(Test)
+    ;   fail_test(Test, 'candidate filter threshold resolver mismatch')
+    ).
 
 test_generate_and_run_kernels_on :-
     Test = 'WAM-C effective-distance: kernels_on generated runner emits expected result',
@@ -68,6 +81,35 @@ test_generated_runner_bounds_kernel_heap :-
     ;   fail_test(Test, 'generated runner does not bound/reset kernel heap cells')
     ).
 
+test_generated_runner_indexes_article_categories :-
+    Test = 'WAM-C effective-distance: generated runner indexes article categories',
+    (   unique_tmp_dir(article_category_index, OutputDir),
+        write_test_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Main, _, _, _, 'ARTICLE_CATEGORY_STARTS'),
+        sub_string(Main, _, _, _, 'ARTICLE_CATEGORY_ENDS'),
+        sub_string(Main, _, _, _, 'int category_start = ARTICLE_CATEGORY_STARTS[ai];'),
+        sub_string(Main, _, _, _, 'for (int ci = category_start; ci < category_end; ci++)'),
+        \+ sub_string(Main, _, _, _, 'strcmp(ARTICLE_IDS[ci], ARTICLES[ai])')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated runner did not use article-category slices')
+    ).
+
+test_generated_runner_uses_monotonic_timer :-
+    Test = 'WAM-C effective-distance: generated runner uses monotonic timing',
+    (   unique_tmp_dir(monotonic_timer, OutputDir),
+        write_test_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Main, _, _, _, 'clock_gettime(CLOCK_MONOTONIC, &ts);'),
+        \+ sub_string(Main, _, _, _, 'gettimeofday(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'generated runner timing is not monotonic')
+    ).
+
 test_generate_and_run_lmdb_if_available :-
     Test = 'WAM-C effective-distance: facts_lmdb generated runner emits expected result',
     (   lmdb_toolchain_available
@@ -78,6 +120,154 @@ test_generate_and_run_lmdb_if_available :-
         ;   fail_test(Test, 'facts_lmdb runner output mismatch')
         )
     ;   pass('WAM-C effective-distance: facts_lmdb generated runner skipped (LMDB toolchain unavailable)')
+    ).
+
+test_generated_runner_supports_runtime_caps :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime caps',
+    (   unique_tmp_dir(runtime_caps, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_MAX_QUERIES'='1'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        \+ sub_string(Output, _, _, _, "article_a\troot\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_setup "),
+        sub_string(ErrText, _, _, _, "query_limit=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
+        sub_string(ErrText, _, _, _, "category_visits="),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles="),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips="),
+        sub_string(ErrText, _, _, _, "parent_reachability_checks="),
+        sub_string(ErrText, _, _, _, "parent_reachability_prunes="),
+        sub_string(ErrText, _, _, _, "parent_collect_calls="),
+        sub_string(ErrText, _, _, _, "child_prefilter_checks="),
+        sub_string(ErrText, _, _, _, "child_prefilter_prunes="),
+        sub_string(ErrText, _, _, _, "child_collect_calls=")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime cap output or metrics mismatch')
+    ).
+
+test_generated_runner_supports_runtime_sampling :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime sampling',
+    (   unique_tmp_dir(runtime_sampling, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_ROOT_STRIDE'='2',
+              'UW_WAM_C_EFFECTIVE_ROOT_OFFSET'='1'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        sub_string(ErrText, _, _, _, "selected_roots=1"),
+        sub_string(ErrText, _, _, _, "root_stride=2"),
+        sub_string(ErrText, _, _, _, "root_offset=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime sampling output or metrics mismatch')
+    ).
+
+test_generated_runner_supports_runtime_name_filters :-
+    Test = 'WAM-C effective-distance: generated runner supports runtime name filters',
+    (   unique_tmp_dir(runtime_name_filters, OutputDir),
+        write_runtime_cap_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_ROOT_NAMES'='root'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tother_root\t"),
+        sub_string(ErrText, _, _, _, "selected_roots=1"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime name-filter output or metrics mismatch')
+    ).
+
+test_generated_runner_prefilters_candidate_roots :-
+    Test = 'WAM-C effective-distance: generated runner prefilters impossible roots',
+    (   unique_tmp_dir(candidate_root_filter, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES'='0',
+              'UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS'='2'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=2"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_roots=1"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'candidate root prefilter metrics or output mismatch')
+    ).
+
+test_generated_runner_uses_planned_candidate_filter_threshold :-
+    Test = 'WAM-C effective-distance: generated runner uses planned candidate filter threshold',
+    (   unique_tmp_dir(candidate_root_planned_threshold, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              candidate_filter_min_roots(2)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            ['UW_WAM_C_EFFECTIVE_PROGRESS_QUERIES'='0'],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "candidate_filter_min_roots=2"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_skips=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=1"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'planned candidate filter threshold was not applied')
+    ).
+
+test_generated_runner_keeps_dense_query_cap :-
+    Test = 'WAM-C effective-distance: query cap disables sparse candidate schedule',
+    (   unique_tmp_dir(candidate_root_query_cap, OutputDir),
+        write_candidate_filter_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(FactsPath, OutputDir, kernels_on, facts_tsv),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project_with_env(OutputDir,
+            [ 'UW_WAM_C_EFFECTIVE_MAX_QUERIES'='1',
+              'UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS'='2'
+            ],
+            Output,
+            ErrText),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t"),
+        \+ sub_string(Output, _, _, _, "article_a\tzmissing\t"),
+        sub_string(ErrText, _, _, _, "wam_c_effective_runtime queries=1"),
+        sub_string(ErrText, _, _, _, "candidate_filter_articles=1"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_articles=0"),
+        sub_string(ErrText, _, _, _, "candidate_schedule_roots=0"),
+        sub_string(ErrText, _, _, _, "category_visits=1")
+    ->  pass(Test)
+    ;   fail_test(Test, 'query cap sparse-schedule guard mismatch')
     ).
 
 test_generate_and_run_bounded_child_search :-
@@ -96,9 +286,224 @@ test_generate_and_run_bounded_child_search :-
         compile_generated_project(OutputDir, facts_tsv),
         run_generated_project(OutputDir, Output),
         sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
-        sub_string(Output, _, _, _, "article_a\troot\t3.000000")
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
     ->  pass(Test)
     ;   fail_test(Test, 'bounded child search runner output mismatch')
+    ).
+
+test_child_search_uses_bidirectional_kernel :-
+    Test = 'WAM-C effective-distance: child search uses bidirectional collector',
+    (   unique_tmp_dir(child_search_codegen, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1)
+            ]),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Lib, _, _, _, 'WAM-compiled predicate: bidirectional_ancestor/5'),
+        sub_string(Main, _, _, _, 'setup_bidirectional_ancestor_5(&state);'),
+        sub_string(Main, _, _, _, 'wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5"'),
+        sub_string(Main, _, _, _, 'wam_register_bidirectional_ancestor_kernel(&state, "bidirectional_ancestor/5", 10, 1.0, 3.0, 10.0);'),
+        sub_string(Main, _, _, _, 'wam_collect_bidirectional_ancestor_hops(state, &bidir)'),
+        sub_string(Main, _, _, _, 'path->child_hops <= 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'child search did not route through bidirectional collector')
+    ).
+
+test_child_search_builds_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr writes and attaches CSR',
+    (   unique_tmp_dir(child_search_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(sorted_array),
+                  io_policy(buffered_pread)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'main.c', MainPath),
+        exists_file(IndexPath),
+        exists_file(ValuesPath),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(MainPath, Main, []),
+        sub_string(Lib, _, _, _, 'setup_wam_c_reverse_index_artifacts'),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val")'),
+        sub_string(Lib, _, _, _, 'wam_register_category_id(state, "orphan"'),
+        sub_string(Main, _, _, _, 'WamReverseCsrArtifact bidirectional_child_csr'),
+        sub_string(Main, _, _, _, 'setup_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr)'),
+        sub_string(Main, _, _, _, 'teardown_wam_c_reverse_index_artifacts(&state, &bidirectional_child_csr)'),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'reverse_index csr child-search output mismatch')
+    ).
+
+test_child_search_builds_pread_drop_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr supports buffered_pread_drop',
+    (   unique_tmp_dir(child_search_pread_drop_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(sorted_array),
+                  io_policy(buffered_pread_drop)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        read_file_to_string(LibPath, Lib, []),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val")'),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'buffered_pread_drop reverse_index csr output mismatch')
+    ).
+
+test_child_search_builds_lmdb_offset_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr can emit LMDB-offset CSR',
+    (   unique_tmp_dir(child_search_lmdb_offset_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(lmdb_offset),
+                  io_policy(buffered_pread)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'category_child.csr.idx', IndexPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'README.md', ReadmePath),
+        exists_file(IndexPath),
+        exists_file(ValuesPath),
+        exists_file(SeederPath),
+        read_file_to_string(SeederPath, Seeder, []),
+        read_file_to_string(LibPath, Lib, []),
+        read_file_to_string(ReadmePath, Readme, []),
+        sub_string(Seeder, _, _, _, 'category_child.csr.offsets.lmdb'),
+        sub_string(Seeder, _, _, _, 'mdb_dbi_open(txn, "offsets", MDB_CREATE, &dbi)'),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, "category_child.csr.val", "category_child.csr.offsets.lmdb", "offsets")'),
+        sub_string(Readme, _, _, _, 'seed_category_child_csr_offsets_lmdb.c'),
+        sub_string(Readme, _, _, _, '-DWAM_C_ENABLE_LMDB'),
+        (   lmdb_toolchain_available
+        ->  compile_generated_project(OutputDir, facts_tsv),
+            run_generated_project(OutputDir, Output),
+            sub_string(Output, _, _, _, "article_a\troot\t5.000000")
+        ;   true
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB-offset reverse_index csr generated files mismatch')
+    ).
+
+test_child_search_rejects_runtime_direct_io_reverse_csr :-
+    Test = 'WAM-C effective-distance: runtime direct_io reverse CSR fails clearly',
+    (   unique_tmp_dir(child_search_direct_io_csr, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        catch((generate_wam_c_effective_distance_benchmark:generate(
+                   FactsPath,
+                   OutputDir,
+                   kernels_on,
+                   [ fact_storage(facts_tsv),
+                     child_search(bounded),
+                     max_child_expansions(4),
+                     child_search_depth(1),
+                     reverse_index(csr([
+                         phase(runtime_available),
+                         index_backend(sorted_array),
+                         io_policy(direct_io)
+                     ]))
+                   ]),
+               fail),
+              error(permission_error(use, csr_io_policy, direct_io), _),
+              true)
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected permission_error(use, csr_io_policy, direct_io)')
+    ).
+
+test_child_search_builds_direct_io_reverse_csr :-
+    Test = 'WAM-C effective-distance: reverse_index csr emits direct_io loader',
+    (   unique_tmp_dir(child_search_direct_io_csr_enabled, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_on,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1),
+              reverse_index(csr([
+                  phase(runtime_available),
+                  index_backend(sorted_array),
+                  io_policy(direct_io),
+                  block_size_edges(1024)
+              ]))
+            ]),
+        directory_file_path(OutputDir, 'lib.c', LibPath),
+        directory_file_path(OutputDir, 'category_child.csr.val', ValuesPath),
+        read_file_to_string(LibPath, Lib, []),
+        sub_string(Lib, _, _, _, 'wam_reverse_csr_load_direct_io(bidirectional_child_csr, "category_child.csr.idx", "category_child.csr.val", 1024)'),
+        size_file(ValuesPath, ValuesBytes),
+        0 is ValuesBytes mod 4096,
+        compile_generated_project(OutputDir, facts_tsv)
+    ->  pass(Test)
+    ;   fail_test(Test, 'direct_io reverse_index csr generated files mismatch')
+    ).
+
+test_generate_and_run_bounded_child_search_kernels_off :-
+    Test = 'WAM-C effective-distance: kernels_off child search matches reference path',
+    (   unique_tmp_dir(child_search_kernels_off, OutputDir),
+        write_child_search_facts(OutputDir, FactsPath),
+        generate_wam_c_effective_distance_benchmark:generate(
+            FactsPath,
+            OutputDir,
+            kernels_off,
+            [ fact_storage(facts_tsv),
+              child_search(bounded),
+              max_child_expansions(4),
+              child_search_depth(1)
+            ]),
+        compile_generated_project(OutputDir, facts_tsv),
+        run_generated_project(OutputDir, Output),
+        sub_string(Output, _, _, _, "article\troot_category\teffective_distance"),
+        sub_string(Output, _, _, _, "article_a\troot\t5.000000")
+    ->  pass(Test)
+    ;   fail_test(Test, 'kernels_off child search runner output mismatch')
     ).
 
 test_generate_and_run_weighted_child_search :-
@@ -175,6 +580,25 @@ category_parent(child, orphan).
 category_parent(child, root).
 ').
 
+write_runtime_cap_facts(OutputDir, FactsPath) :-
+    directory_file_path(OutputDir, 'facts.pl', FactsPath),
+    write_text_file(FactsPath,
+'article_category(article_a, leaf).
+root_category(root).
+root_category(other_root).
+category_parent(leaf, root).
+category_parent(leaf, other_root).
+').
+
+write_candidate_filter_facts(OutputDir, FactsPath) :-
+    directory_file_path(OutputDir, 'facts.pl', FactsPath),
+    write_text_file(FactsPath,
+'article_category(article_a, leaf).
+root_category(root).
+root_category(zmissing).
+category_parent(leaf, root).
+').
+
 unique_tmp_dir(KernelMode, OutputDir) :-
     get_time(Now),
     Stamp is round(Now * 1000000),
@@ -183,13 +607,14 @@ unique_tmp_dir(KernelMode, OutputDir) :-
 
 compile_generated_project(OutputDir, FactStorage) :-
     maybe_seed_lmdb_project(OutputDir, FactStorage),
+    maybe_seed_reverse_csr_offset_lmdb_project(OutputDir),
     directory_file_path(OutputDir, 'wam_runtime.c', RuntimePath),
     directory_file_path(OutputDir, 'lib.c', LibPath),
     directory_file_path(OutputDir, 'main.c', MainPath),
     directory_file_path(OutputDir, 'wam_c_effective_distance', ExePath),
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
-    compile_flags(FactStorage, Flags),
-    link_flags(FactStorage, Links),
+    compile_flags(OutputDir, FactStorage, Flags),
+    link_flags(OutputDir, FactStorage, Links),
     append(['-std=c11', '-Wall', '-Wextra'|Flags],
            ['-I', IncludeDir, RuntimePath, LibPath, MainPath, '-lm'|Links],
            Args0),
@@ -232,11 +657,49 @@ maybe_seed_lmdb_project(OutputDir, facts_lmdb) :-
         fail
     ).
 
-compile_flags(facts_tsv, []).
-compile_flags(facts_lmdb, ['-DWAM_C_ENABLE_LMDB']).
+maybe_seed_reverse_csr_offset_lmdb_project(OutputDir) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !,
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb', SeederExe),
+    process_create(path(gcc),
+        ['-std=c11', '-Wall', '-Wextra', SeederPath, '-llmdb', '-o', SeederExe],
+        [stdout(null), stderr(pipe(CompileErr)), process(CompilePid)]),
+    read_string(CompileErr, _, CompileErrText),
+    close(CompileErr),
+    process_wait(CompilePid, CompileStatus),
+    (   CompileStatus = exit(0)
+    ->  true
+    ;   format(user_error, 'reverse CSR LMDB seeder gcc failed: ~w~n', [CompileErrText]),
+        fail
+    ),
+    process_create(SeederExe, [],
+        [cwd(OutputDir), stdout(null), stderr(pipe(RunErr)), process(RunPid)]),
+    read_string(RunErr, _, RunErrText),
+    close(RunErr),
+    process_wait(RunPid, RunStatus),
+    (   RunStatus = exit(0)
+    ->  true
+    ;   format(user_error, 'reverse CSR LMDB seeder failed: ~w~n', [RunErrText]),
+        fail
+    ).
+maybe_seed_reverse_csr_offset_lmdb_project(_OutputDir).
 
-link_flags(facts_tsv, []).
-link_flags(facts_lmdb, ['-llmdb']).
+compile_flags(OutputDir, _FactStorage, ['-DWAM_C_ENABLE_LMDB']) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !.
+compile_flags(_OutputDir, facts_tsv, []).
+compile_flags(_OutputDir, facts_lmdb, ['-DWAM_C_ENABLE_LMDB']).
+
+link_flags(OutputDir, _FactStorage, ['-llmdb']) :-
+    reverse_csr_lmdb_offset_project(OutputDir),
+    !.
+link_flags(_OutputDir, facts_tsv, []).
+link_flags(_OutputDir, facts_lmdb, ['-llmdb']).
+
+reverse_csr_lmdb_offset_project(OutputDir) :-
+    directory_file_path(OutputDir, 'seed_category_child_csr_offsets_lmdb.c', SeederPath),
+    exists_file(SeederPath).
 
 lmdb_toolchain_available :-
     catch(
@@ -252,6 +715,26 @@ run_generated_project(OutputDir, Output) :-
     directory_file_path(OutputDir, 'wam_c_effective_distance', ExePath),
     process_create(ExePath, [],
         [cwd(OutputDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, Output),
+    read_string(Err, _, ErrText),
+    close(Out),
+    close(Err),
+    process_wait(Pid, Status),
+    (   Status = exit(0)
+    ->  true
+    ;   format(user_error, 'generated runner failed: ~w~n', [ErrText]),
+        fail
+    ).
+
+run_generated_project_with_env(OutputDir, Env, Output, ErrText) :-
+    directory_file_path(OutputDir, 'wam_c_effective_distance', ExePath),
+    process_create(ExePath, [],
+        [ cwd(OutputDir),
+          environment(Env),
+          stdout(pipe(Out)),
+          stderr(pipe(Err)),
+          process(Pid)
+        ]),
     read_string(Out, _, Output),
     read_string(Err, _, ErrText),
     close(Out),
@@ -279,12 +762,28 @@ run_tests :-
 
 run_tests_once :-
     format('~n=== WAM-C Effective Distance Benchmark Tests ===~n~n'),
+    test_candidate_filter_cost_model_resolver,
     test_generate_and_run_kernels_on,
     test_generate_and_run_kernels_off,
     test_generate_lmdb_mode_files,
     test_generated_runner_bounds_kernel_heap,
+    test_generated_runner_indexes_article_categories,
+    test_generated_runner_uses_monotonic_timer,
     test_generate_and_run_lmdb_if_available,
+    test_generated_runner_supports_runtime_caps,
+    test_generated_runner_supports_runtime_sampling,
+    test_generated_runner_supports_runtime_name_filters,
+    test_generated_runner_prefilters_candidate_roots,
+    test_generated_runner_uses_planned_candidate_filter_threshold,
+    test_generated_runner_keeps_dense_query_cap,
     test_generate_and_run_bounded_child_search,
+    test_child_search_uses_bidirectional_kernel,
+    test_child_search_builds_reverse_csr,
+    test_child_search_builds_pread_drop_reverse_csr,
+    test_child_search_builds_lmdb_offset_reverse_csr,
+    test_child_search_rejects_runtime_direct_io_reverse_csr,
+    test_child_search_builds_direct_io_reverse_csr,
+    test_generate_and_run_bounded_child_search_kernels_off,
     test_generate_and_run_weighted_child_search,
     test_generate_and_run_child_search_budget_pruning,
     format('~n=== WAM-C Effective Distance Benchmark Tests Complete ===~n'),

@@ -37,6 +37,16 @@
     recommend_access_pattern/5, % +KKeys, +WBytes, +RFreeBytes, +Constants, -Pattern
     resolve_reverse_index/2,    % +Options, -ReverseIndex
     validate_reverse_index_option/2, % +Spec, -Normalized
+    resolve_candidate_filter_min_roots/2,
+                                % +Options, -MinRoots
+
+    %% LMDB materialisation-mode resolver (eager | lazy | cached)
+    resolve_auto_lmdb_materialisation/2, % +Options, -Mode
+    resolve_lmdb_cache_capacity/2,       % +Options, -CapacityEntries
+    lmdb_cache_capacity_free_pct/2,      % +Options, -Fraction
+    lmdb_cache_capacity_floor_bytes/2,   % +Options, -Bytes
+    lmdb_edge_size_bytes/1,              % -Bytes
+
     resolve_csr_io_policy/2,    % +Options, -Policy
     resolve_csr_index_backend/2, % +Options, -Backend
     csr_index_backend_options_from_benchmark_tsv/3,
@@ -255,6 +265,29 @@ resolve_reverse_index_spec(auto, Options, ReverseIndex) :-
 resolve_reverse_index_spec(Spec, _Options, ReverseIndex) :-
     validate_reverse_index_option(Spec, ReverseIndex).
 
+%! resolve_candidate_filter_min_roots(+Options, -MinRoots) is det.
+%
+%  Resolve the root-count threshold for WAM-C candidate-root filtering.
+%  The current auto policy encodes the measured low-root dense ceiling:
+%  keep candidate discovery off until at least 512 selected roots unless
+%  an explicit workload option overrides it.
+resolve_candidate_filter_min_roots(Options, MinRoots) :-
+    option(candidate_filter_min_roots(Spec), Options, auto),
+    resolve_candidate_filter_min_roots_spec(Spec, Options, MinRoots).
+
+resolve_candidate_filter_min_roots_spec(auto, Options, MinRoots) :-
+    !,
+    option(candidate_filter_dense_root_ceiling(DenseRootCeiling), Options, 511),
+    validate_nonnegative_integer(candidate_filter_dense_root_ceiling,
+                                 DenseRootCeiling),
+    MinRoots is DenseRootCeiling + 1.
+resolve_candidate_filter_min_roots_spec(always, _Options, 0) :- !.
+resolve_candidate_filter_min_roots_spec(off, _Options, 9223372036854775807) :- !.
+resolve_candidate_filter_min_roots_spec(never, _Options, 9223372036854775807) :- !.
+resolve_candidate_filter_min_roots_spec(MinRoots, _Options, MinRoots) :-
+    validate_nonnegative_integer(candidate_filter_min_roots, MinRoots),
+    !.
+
 %! validate_reverse_index_option(+Spec, -Normalized) is det.
 %
 %  Validate the user-facing reverse_index(...) spec and fill in
@@ -314,13 +347,16 @@ normalize_kind_options(artifact, Opts0, Opts) :-
     validate_reverse_ordering(Ordering),
     option(cache_bytes(CacheBytes), Opts0, 0),
     validate_nonnegative_integer(cache_bytes, CacheBytes),
+    option(block_size_edges(BlockSizeEdges), Opts0, 0),
+    validate_nonnegative_integer(block_size_edges, BlockSizeEdges),
     artifact_index_options(StorageKind, Opts0, IndexOpt),
     artifact_io_options(StorageKind, Opts0, IoOpt),
     append([
         relation(Relation),
         storage_kind(StorageKind),
         ordering(Ordering),
-        cache_bytes(CacheBytes)
+        cache_bytes(CacheBytes),
+        block_size_edges(BlockSizeEdges)
     ], IndexOpt, PrefixOpts),
     append(PrefixOpts, IoOpt, Opts).
 
@@ -615,6 +651,165 @@ validate_nonnegative_integer(_Name, Value) :-
     !.
 validate_nonnegative_integer(Name, Value) :-
     throw(error(domain_error(nonnegative_integer(Name), Value), _)).
+
+%% =====================================================================
+%% LMDB materialisation-mode resolver
+%% =====================================================================
+%%
+%% `lmdb_materialisation(auto | eager | lazy | cached)` is a codegen
+%% option (WAM-Rust today; target-agnostic so Haskell/C# can reuse it).
+%% This resolver implements the `auto` decision per
+%% docs/design/WAM_LMDB_LAZY_SPECIFICATION.md §7.2 and the cache-sizing
+%% rule in WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md §3.1.
+%%
+%% IMPORTANT: mode selection is a *codegen-time* decision driven purely
+%% by static fixture metadata. It must NOT read `/proc/meminfo` —
+%% MemAvailable is a runtime quantity, and baking a codegen-time
+%% reading into the emitted binary would be wrong on any machine other
+%% than the build host. The MemAvailable-dependent cache-capacity clamp
+%% (§3.1) is therefore applied at *runtime* in the generated target
+%% code; this resolver only emits the static `unrestricted_working_set`
+%% default plus the clamp parameters (cap_pct, headroom floor).
+
+%! lmdb_edge_size_bytes(-Bytes) is det.
+%
+%  Approximate in-cache cost of one parent edge: an i32 child key plus
+%  an i32 parent value plus container/hashing overhead. Used to turn a
+%  demand-set *edge count* into a memory footprint for the §3.1 clamp.
+lmdb_edge_size_bytes(12).
+
+%! resolve_auto_lmdb_materialisation(+Options, -Mode) is det.
+%
+%  Pick `eager` | `lazy` | `cached` from workload metadata. Explicit
+%  callers pass `lmdb_materialisation(eager|lazy|cached)` and get it
+%  back unchanged; `auto` (or an unset option) runs the decision tree.
+%
+%  Decision tree (spec §7.2):
+%    1. If an explicit `memory_budget(Bytes)` is *declared* and the
+%       demand set doesn't fit in it, the demand set can't be held
+%       resident → use a lazy form (`lazy` if the workload is
+%       segregated, else `cached`). No live MemAvailable read here —
+%       only a caller-declared budget triggers this branch.
+%    2. Otherwise the demand set fits. Choose `eager` iff the one-shot
+%       up-front materialisation is cheap (estimated cold build time
+%       within the per-process build budget, scaled by the expected
+%       query count so a long-lived process tolerates a bigger build).
+%       Else fall to the lazy form (`lazy` if segregated, else
+%       `cached`).
+%
+%  Recognised metadata options (all optional, conservative defaults):
+%    - fact_count(F)                        total edges in the source
+%    - demand_set_estimate(D)               edges the queries will touch
+%                                           (defaults to fact_count)
+%    - workload_segregated(Bool)            default false
+%    - expected_query_count_per_process(NQ) default 1
+%    - memory_budget(Bytes)                 declared cap; absent = unbounded
+%    - eager_build_budget_ms(Ms)            default 1000
+%    - constants(C)                         hardware constants list
+resolve_auto_lmdb_materialisation(Options, Mode) :-
+    option(lmdb_materialisation(Requested), Options, auto),
+    resolve_lmdb_materialisation_value(Requested, Options, Mode).
+
+resolve_lmdb_materialisation_value(eager,  _Options, eager) :- !.
+resolve_lmdb_materialisation_value(lazy,   _Options, lazy) :- !.
+resolve_lmdb_materialisation_value(cached, _Options, cached) :- !.
+resolve_lmdb_materialisation_value(auto, Options, Mode) :-
+    !,
+    lmdb_demand_set_estimate(Options, D),
+    (   lmdb_demand_set_overflows_budget(D, Options)
+    ->  lmdb_lazy_form(Options, Mode)
+    ;   lmdb_eager_build_is_cheap(D, Options)
+    ->  Mode = eager
+    ;   lmdb_lazy_form(Options, Mode)
+    ).
+resolve_lmdb_materialisation_value(Other, _Options, _) :-
+    throw(error(domain_error(lmdb_materialisation, Other), _)).
+
+%  When the demand set can't live in RAM we still need on-demand
+%  access; segregated workloads prefer bare `lazy` (no cross-query
+%  reuse to exploit), everything else prefers `cached`.
+lmdb_lazy_form(Options, Mode) :-
+    option(workload_segregated(WS), Options, false),
+    (   WS == true
+    ->  Mode = lazy
+    ;   Mode = cached
+    ).
+
+%  Demand-set edge estimate, defaulting to fact_count, then to 0.
+lmdb_demand_set_estimate(Options, D) :-
+    option(fact_count(F), Options, 0),
+    option(demand_set_estimate(D0), Options, F),
+    (   number(D0), D0 > 0
+    ->  D = D0
+    ;   D = F
+    ).
+
+%  True only when an explicit budget is declared AND the demand set's
+%  footprint exceeds it. No `memory_budget` option => never fires
+%  (codegen does not read MemAvailable).
+lmdb_demand_set_overflows_budget(D, Options) :-
+    option(memory_budget(Budget), Options),
+    number(Budget),
+    lmdb_edge_size_bytes(EdgeBytes),
+    Footprint is D * EdgeBytes,
+    Footprint > Budget.
+
+%  Eager wins when the up-front demand-set build is cheap. Estimate the
+%  build as D cold parent-edge seeks; tolerate up to
+%  eager_build_budget_ms × max(1, NQ) (a long-lived process amortises a
+%  bigger one-time build). With the default 1 s budget and 100 µs cold
+%  seek the eager↔cached crossover lands at ~10k edges — so 1k → eager,
+%  simplewiki/enwiki → cached, matching plan §3.
+lmdb_eager_build_is_cheap(D, Options) :-
+    option(eager_build_budget_ms(Budget0), Options, 1000),
+    option(expected_query_count_per_process(NQ), Options, 1),
+    resolve_cost_constants(Options, C),
+    seek_time_ms(D, 0.0, C, BuildMs),
+    Budget is Budget0 * max(1, NQ),
+    BuildMs =< Budget.
+
+resolve_cost_constants(Options, C) :-
+    (   option(constants(C0), Options), is_list(C0)
+    ->  C = C0
+    ;   default_constants(C)
+    ).
+
+%! resolve_lmdb_cache_capacity(+Options, -CapacityEntries) is det.
+%
+%  Codegen-time *default* cache capacity in entries (distinct child
+%  keys). This is the `unrestricted_working_set` term of §3.1 — the
+%  capacity that would serve the workload with no evictions, derived
+%  from the demand-set estimate. The MemAvailable clamp of §3.1 is NOT
+%  applied here; the generated target applies it at runtime. Floored at
+%  1024 so tiny fixtures still get a usable cache.
+%
+%  An explicit `cache_capacity(N)` option overrides the estimate.
+resolve_lmdb_cache_capacity(Options, Capacity) :-
+    (   option(cache_capacity(Explicit), Options), integer(Explicit), Explicit > 0
+    ->  Capacity = Explicit
+    ;   lmdb_demand_set_estimate(Options, D),
+        Capacity is max(1024, D)
+    ).
+
+%! lmdb_cache_capacity_free_pct(+Options, -Fraction) is det.
+%
+%  `cap_pct` from §3.1 — the fraction of (MemAvailable − headroom) the
+%  runtime cache may claim. Override per-predicate with
+%  `cache_capacity_free_pct(F)`.
+lmdb_cache_capacity_free_pct(Options, Fraction) :-
+    option(cache_capacity_free_pct(Fraction0), Options, 0.5),
+    validate_fraction(cache_capacity_free_pct, Fraction0),
+    Fraction = Fraction0.
+
+%! lmdb_cache_capacity_floor_bytes(+Options, -Bytes) is det.
+%
+%  Fixed component of the §3.1 `headroom_floor`
+%  (`max(512 MB, 0.10 × MemTotal)`). The runtime takes the max of this
+%  and 10% of MemTotal. Override with `cache_capacity_floor_bytes(B)`.
+lmdb_cache_capacity_floor_bytes(Options, Bytes) :-
+    option(cache_capacity_floor_bytes(Bytes0), Options, 536870912), % 512 MiB
+    validate_nonnegative_integer(cache_capacity_floor_bytes, Bytes0),
+    Bytes = Bytes0.
 
 %% =====================================================================
 %% System probe

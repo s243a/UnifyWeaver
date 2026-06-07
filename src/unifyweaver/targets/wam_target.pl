@@ -9,6 +9,8 @@
 :- module(wam_target, [
     target_info/1,
     compile_predicate_to_wam/3,          % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_text/3,     % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_items/3,    % +PredIndicator, +Options, -Items
     compile_predicate/3,                 % +PredIndicator, +Options, -WAMCode (dispatch alias)
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
@@ -25,6 +27,7 @@
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
+:- use_module('../targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% target_info(-Info)
 target_info(info{
@@ -47,7 +50,15 @@ compile_predicate(PredArity, Options, Code) :-
     compile_predicate_to_wam(PredArity, Options, Code).
 
 %% compile_predicate_to_wam(+PredIndicator, +Options, -Code)
+%  Compatibility wrapper: returns canonical WAM text, matching the historical
+%  API. New callers that want an explicit format should use
+%  compile_predicate_to_wam_text/3 or compile_predicate_to_wam_items/3.
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code).
+
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     % Handle module qualification
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
@@ -63,12 +74,21 @@ compile_predicate_to_wam(PredIndicator, Options, Code) :-
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
     ).
 
+%% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
+%  Compile a predicate to structured WAM items. This bridge keeps the legacy
+%  text generator as the source of truth for now, then normalizes through the
+%  shared parser. A later generator pass can replace this with direct item
+%  emission without changing target-facing call sites.
+compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code),
+    wam_text_to_items(Code, Items).
+
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
 %   Compiles a list of predicates to a single WAM module using templates.
 compile_wam_module(Predicates, Options, Code) :-
     maplist({Options}/[PI, PredCode]>> (
-        compile_predicate_to_wam(PI, Options, PredCode)
+        compile_predicate_to_wam_text(PI, Options, PredCode)
     ), Predicates, PredCodes),
     
     atomic_list_concat(PredCodes, '\n\n', AllPredsCode),
@@ -112,6 +132,9 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_ite_use_y_level, true)
     ;   b_setval(wam_ite_use_y_level, false)
     ),
+    % Reset cut scope to clause level at the start of each predicate
+    % compilation (see current_cut_target/1).
+    set_cut_target(clause),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
     % interleaved `set_variable Xn ; put_structure F/N, Xn ;
@@ -794,6 +817,22 @@ wam_inline_not_enabled :-
 wam_ite_use_y_level_enabled :-
     catch(b_getval(wam_ite_use_y_level, true), _, fail).
 
+% Current cut scope for a plain `!` emission. `clause` (the default)
+% means a `!` is transparent to the enclosing clause and emits
+% `builtin_call !/0` (the runtime cuts to the clause B0). Inside an
+% if-then-else CONDITION the cut is OPAQUE (local to the condition, like
+% call/1): the target is set to the condition''s barrier Y-register and a
+% `!` emits `cut Yn`, pruning only the condition''s own choicepoints and
+% leaving the if-then-else choicepoint intact. Saved/restored around
+% condition compilation so Then/Else branches revert to the enclosing
+% scope. Only meaningful under wam_ite_use_y_level_enabled (get_level/cut
+% targets); legacy targets always emit builtin_call !/0.
+current_cut_target(Target) :-
+    ( catch(b_getval(wam_cut_target, T), _, fail) -> Target = T ; Target = clause ).
+
+set_cut_target(Target) :-
+    b_setval(wam_cut_target, Target).
+
 is_builtin_goal(is).
 is_builtin_goal(=).
 is_builtin_goal(\=).
@@ -1191,8 +1230,24 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     ;   nonvar(Goal),
         Goal = \+(NotGoal),
         wam_inline_not_enabled
-    ->  compile_goals([((NotGoal, !, fail) ; true) | Rest],
-                      V0, HasEnv, Vf, Code)
+    ->  (   wam_ite_use_y_level_enabled
+        % M17 targets (get_level/cut): use the soft-cut form
+        % (NotGoal -> fail ; true). cut Yn truncates choicepoints back to
+        % the snapshot taken BEFORE the negation try_me_else, so it wipes
+        % the negation CP AND any CPs NotGoal pushed above it -- the same
+        % correctness the hard-cut form gives, but WITHOUT a clause-scope
+        % `!`. That matters because a clause-scope cut would (via the
+        % runtime''s B0 mechanism) cut to the enclosing clause''s level and
+        % wrongly prune sibling choicepoints created before the \+. The
+        % soft cut is scoped to the negation alone.
+        ->  compile_goals([((NotGoal -> fail ; true)) | Rest],
+                          V0, HasEnv, Vf, Code)
+        % Legacy targets (no get_level/cut): keep the hard-cut rewrite
+        % ((G, !, fail) ; true) -- see note below on why soft-cut+cut_ite
+        % gets the wrong CP when G is nondeterministic on these targets.
+        ;   compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                          V0, HasEnv, Vf, Code)
+        )
     % M71: forall(Cond, Action) inlines as
     %   ((Cond, (Action -> fail ; true)) -> fail ; true)
     % i.e., \+ (Cond, \+ Action) using soft-cut (-> form) for BOTH
@@ -1338,10 +1393,20 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = collect-CollectVar -> AggType = collect, ValueVar = CollectVar
     ;   AggType = collect, ValueVar = Template  % default: direct callers
     ),
-    % Find or allocate the Result register (where output goes)
+    % Find or allocate the Result register (where output goes).  If the
+    % result is a local variable first introduced by this aggregate,
+    % initialize its register before begin_aggregate so finalization has
+    % an unbound cell to unify with; head-bound results are already
+    % initialized by get_variable/get_value.
     (   var(Result), get_var_reg(Result, V0, ResultReg0)
-    ->  V1 = V0
-    ;   allocate_var(Result, V0, V1, ResultReg0)
+    ->  V1 = V0,
+        InitResultCode = ""
+    ;   var(Result)
+    ->  allocate_var(Result, V0, V1, ResultReg0),
+        format(string(InitResultCode), "    put_variable ~w, ~w",
+               [ResultReg0, ResultReg0])
+    ;   allocate_var(Result, V0, V1, ResultReg0),
+        InitResultCode = ""
     ),
     % Compile the Value register (what gets collected per solution)
     (   var(ValueVar)
@@ -1406,10 +1471,17 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % for lookup.
     aggregate_witness_clause(AggType, ValueVar, InnerGoal, Vf,
                              WitnessRegsClause),
-    (   InitValueCode \= ""
+    (   InitResultCode == ""
+    ->  InitAggregateCode = InitValueCode
+    ;   InitValueCode == ""
+    ->  InitAggregateCode = InitResultCode
+    ;   format(string(InitAggregateCode), "~w~n~w",
+               [InitResultCode, InitValueCode])
+    ),
+    (   InitAggregateCode \= ""
     ->  format(string(Code),
             "~w~n    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
-            [InitValueCode, AggType, ValueReg, ResultReg0,
+            [InitAggregateCode, AggType, ValueReg, ResultReg0,
              WitnessRegsClause, FullInnerCode, ValueReg])
     ;   format(string(Code),
             "    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
@@ -1669,12 +1741,44 @@ compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
        NextY is MaxY + 1,
        format(atom(BarrierReg), "Y~w", [NextY]),
        gensym('$ite_barrier_', BarrierVar),
-       V0a = vmap([b(BarrierVar, BarrierReg)|Bindings0], XCount0)
+       % A cut in the CONDITION is local to it (ISO: the condition of
+       % ->/2 is opaque to cut, like call/1). If the condition has a
+       % top-level cut, reserve a SECOND Y and snapshot the condition''s
+       % entry level into it with a get_level emitted AFTER try_me_else
+       % (so it captures the level WITH the ITE choice point but BEFORE
+       % any CP the condition pushes). A `!` in the condition then emits
+       % `cut CondBarrierReg`, pruning only the condition''s own CPs and
+       % leaving the ITE choice point intact -- so e.g. \+ (G, !, fail)
+       % (which desugars to ((G,!,fail) -> fail ; true)) correctly
+       % succeeds when the cut-guarded condition fails.
+       flatten_conjunction(CondGoal, CondGoals),
+       (   memberchk('!', CondGoals)
+       ->  CondY is MaxY + 2,
+           format(atom(CondBarrierReg), "Y~w", [CondY]),
+           gensym('$ite_cond_barrier_', CondBarrierVar),
+           V0a = vmap([b(BarrierVar, BarrierReg),
+                       b(CondBarrierVar, CondBarrierReg)|Bindings0], XCount0),
+           format(string(CondGetLevel), "    get_level ~w~n", [CondBarrierReg])
+       ;   CondBarrierReg = none,
+           V0a = vmap([b(BarrierVar, BarrierReg)|Bindings0], XCount0),
+           CondGetLevel = ""
+       )
     ;  V0a = V0,
-       BarrierReg = none
+       BarrierReg = none,
+       CondBarrierReg = none,
+       CondGetLevel = "",
+       flatten_conjunction(CondGoal, CondGoals)
     ),
-    flatten_conjunction(CondGoal, CondGoals),
-    compile_inner_call_goals(CondGoals, V0a, V1, CondCode),
+    % Compile the condition with cuts scoped to CondBarrierReg (when one
+    % was reserved); Then/Else revert to the enclosing scope so their
+    % cuts stay transparent to the clause / outer condition.
+    (   CondBarrierReg == none
+    ->  compile_inner_call_goals(CondGoals, V0a, V1, CondCode)
+    ;   current_cut_target(OldTarget),
+        set_cut_target(CondBarrierReg),
+        compile_inner_call_goals(CondGoals, V0a, V1, CondCode),
+        set_cut_target(OldTarget)
+    ),
     % Then and Else can each be themselves a nested if-then-else --
     % compile_ite_branch recurses on those forms. Else starts from
     % V0a since backtrack restores to before the condition (but the
@@ -1690,8 +1794,8 @@ compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
           [ElseLabel, CondCode, ThenCode, ContLabel,
            ElseLabel, ElseCode, ContLabel])
     ;  format(string(Code),
-          "    get_level ~w~n    try_me_else ~w~n~w~n    cut ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
-          [BarrierReg, ElseLabel, CondCode, BarrierReg, ThenCode,
+          "    get_level ~w~n    try_me_else ~w~n~w~w~n    cut ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [BarrierReg, ElseLabel, CondGetLevel, CondCode, BarrierReg, ThenCode,
            ContLabel, ElseLabel, ElseCode, ContLabel])
     ).
 
@@ -1737,6 +1841,11 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    ;   nonvar(Goal),
+        Goal = _ExistentialVars^ExistentialGoal
+    ->  flatten_conjunction(ExistentialGoal, ExistentialGoals),
+        append(ExistentialGoals, Rest, ExpandedGoals),
+        compile_inner_call_goals(ExpandedGoals, V0, Vf, Code)
     ;   Goal = (CondGoal -> ThenGoal)
     ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
@@ -1744,6 +1853,10 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ;   Goal = (LeftGoal ; RightGoal),
         \+ (LeftGoal = (_ -> _))
     ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
+    ;   Goal = findall(Template, InnerGoal, Result)
+    ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
     % M93b: \+ G inlining for inner goal positions (if-then-else
@@ -1811,6 +1924,17 @@ allocate_var(Var, VIn, VOut, Reg) :-
 % that genuinely needs a module registry which no target has yet.
 % String + atom guard per #1647 follow-up review (Perplexity)
 % covers any code path that represents module names as strings.
+% Plain cut. Emit a scope-correct cut: inside an if-then-else condition
+% the cut is local to the condition (cut Yn to the condition barrier);
+% elsewhere it is transparent to the clause (builtin_call !/0, runtime
+% cuts to clause B0). See current_cut_target/1.
+compile_goal_call('!', V, V, Code) :-
+    !,
+    (   current_cut_target(Target),
+        Target \== clause
+    ->  format(string(Code), "    cut ~w", [Target])
+    ;   Code = "    builtin_call !/0, 0"
+    ).
 compile_goal_call(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
@@ -2238,7 +2362,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  quote_wam_constant(Arg, ArgStr),
         format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
-    ;   is_list_term(Arg)
+    ;   is_list_term(Arg),
+        proper_list(Arg, _)
     ->  Arg = [H|T],
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V2),
@@ -2778,8 +2903,22 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
-proper_list(T, []) :- T == [], !.
-proper_list([H|T], [H|R]) :- proper_list(T, R).
+% Walk a list term, collecting its elements. Must FAIL (not loop) on a
+% partial or improper list, so callers (compile_put_argument/5 via the
+% `proper_list(Arg, _)` guard from #aac54075, and is_ground_atom_list/2)
+% can rely on a clean failure to fall through to the compound branch
+% (put_structure for the '[|]'/2 cons cell). The nonvar/1 guards stop the
+% recursion the moment a tail is an unbound variable, so a partial list
+% like [a|_] fails instead of recursing forever; an improper tail like
+% [a|b] fails when proper_list_/2 hits a non-list, non-[] tail.
+proper_list(T, Items) :-
+    nonvar(T),
+    proper_list_(T, Items).
+
+proper_list_(T, []) :- T == [], !.
+proper_list_([H|T], [H|R]) :-
+    nonvar(T),
+    proper_list_(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %

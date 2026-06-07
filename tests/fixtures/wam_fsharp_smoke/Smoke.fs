@@ -56,7 +56,8 @@ let mkEmptyState () =
       WsBuilder    = None
       WsBuilderStack = []
       WsAggAccum   = []
-      WsB0Stack    = [] }
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 let mkContext (code: Instruction array) (labels: Map<string, int>) =
     { WcCode              = code
@@ -68,6 +69,7 @@ let mkContext (code: Instruction array) (labels: Map<string, int>) =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources     = Map.empty
       WcCancellationToken = None }
 
 // -- Scenario 1: PutConstant writes to register and advances PC ------------

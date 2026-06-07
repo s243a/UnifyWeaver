@@ -21,6 +21,7 @@
     wam_instruction_to_c_literal/3,   % +WamInstr, +LabelMap, -CCode
     detect_kernels/2,                 % +Predicates, -DetectedKernels
     generate_setup_detected_kernels_c/2, % +DetectedKernels, -CCode
+    generate_setup_reverse_index_c/2, % +Options, -CCode
     resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
@@ -56,29 +57,44 @@ wam_c_reverse_index_capabilities(artifact(Opts), [
     runtime_child_lookup(available),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(sorted_array),
-    runtime_io(pread)
+    runtime_io(RuntimeIo)
 ]) :-
     memberchk(storage_kind(csr_pread_artifact), Opts),
     memberchk(index_backend(sorted_array), Opts),
+    wam_c_reverse_index_runtime_io_policy_supported(artifact(Opts)),
+    wam_c_reverse_index_runtime_io_capability(artifact(Opts), RuntimeIo),
     !.
 wam_c_reverse_index_capabilities(csr(Opts), [
     planning(accepted),
     runtime_child_lookup(available_after_artifact_build),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(sorted_array),
-    runtime_io(pread)
+    runtime_io(RuntimeIo)
 ]) :-
     memberchk(index_backend(sorted_array), Opts),
+    wam_c_reverse_index_runtime_io_policy_supported(csr(Opts)),
+    wam_c_reverse_index_runtime_io_capability(csr(Opts), RuntimeIo),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
     runtime_child_lookup(available),
     runtime_api(wam_reverse_csr_lookup_children),
     runtime_index_backend(lmdb_offset),
-    runtime_io(pread),
+    runtime_io(RuntimeIo),
     runtime_requires(wam_c_enable_lmdb)
 ]) :-
     wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex),
+    wam_c_reverse_index_runtime_io_capability(ReverseIndex, RuntimeIo),
+    !.
+wam_c_reverse_index_capabilities(ReverseIndex, [
+    planning(accepted),
+    runtime_child_lookup(unsupported),
+    runtime_reason(csr_io_policy_not_implemented(Policy)),
+    runtime_io(Policy)
+]) :-
+    wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+    \+ wam_c_supported_reverse_index_runtime_io_policy(Policy),
     !.
 wam_c_reverse_index_capabilities(ReverseIndex, [
     planning(accepted),
@@ -92,6 +108,55 @@ wam_c_reverse_index_uses_lmdb_offset(csr(Opts)) :-
 wam_c_reverse_index_uses_lmdb_offset(artifact(Opts)) :-
     memberchk(storage_kind(csr_pread_artifact), Opts),
     memberchk(index_backend(lmdb_offset), Opts).
+
+wam_c_reverse_index_runtime_io_policy(csr(Opts), Policy) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(io_policy(Policy), Opts).
+wam_c_reverse_index_runtime_io_policy(artifact(Opts), Policy) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(io_policy(Policy), Opts).
+
+wam_c_reverse_index_declared_io_policy(csr(Opts), Policy) :-
+    memberchk(io_policy(Policy), Opts).
+wam_c_reverse_index_declared_io_policy(artifact(Opts), Policy) :-
+    memberchk(io_policy(Policy), Opts).
+
+wam_c_supported_reverse_index_runtime_io_policy(buffered_pread).
+wam_c_supported_reverse_index_runtime_io_policy(buffered_pread_drop).
+wam_c_supported_reverse_index_runtime_io_policy(direct_io).
+
+wam_c_reverse_index_runtime_io_capability(ReverseIndex, pread_drop) :-
+    wam_c_reverse_index_declared_io_policy(ReverseIndex, buffered_pread_drop),
+    !.
+wam_c_reverse_index_runtime_io_capability(ReverseIndex, direct_io) :-
+    wam_c_reverse_index_declared_io_policy(ReverseIndex, direct_io),
+    !.
+wam_c_reverse_index_runtime_io_capability(_ReverseIndex, pread).
+
+wam_c_reverse_index_runtime_io_policy_supported(ReverseIndex) :-
+    (   wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy)
+    ->  wam_c_supported_reverse_index_runtime_io_policy(Policy)
+    ;   true
+    ).
+
+wam_c_require_reverse_index_runtime_io_policy(ReverseIndex) :-
+    (   wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+        \+ wam_c_supported_reverse_index_runtime_io_policy(Policy)
+    ->  throw(error(permission_error(use, csr_io_policy, Policy), _))
+    ;   wam_c_reverse_index_runtime_io_policy(ReverseIndex, direct_io),
+        \+ wam_c_reverse_index_direct_io_preconditions(ReverseIndex)
+    ->  throw(error(permission_error(use, csr_io_policy, direct_io), _))
+    ;   true
+    ).
+
+wam_c_reverse_index_direct_io_preconditions(csr(Opts)) :-
+    memberchk(block_size_edges(BlockSizeEdges), Opts),
+    integer(BlockSizeEdges),
+    BlockSizeEdges > 0.
+wam_c_reverse_index_direct_io_preconditions(artifact(Opts)) :-
+    memberchk(block_size_edges(BlockSizeEdges), Opts),
+    integer(BlockSizeEdges),
+    BlockSizeEdges > 0.
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -114,12 +179,14 @@ write_wam_c_project(Predicates, Options, ProjectDir) :-
     compile_lowered_helpers_for_project(LoweredPlans, LoweredKeys, LoweredCode, SetupLoweredCode),
     render_wam_c_lowered_helper_plan(LoweredPlans, LoweredPlanCode),
     generate_setup_detected_kernels_c(DetectedKernels, SetupKernelCode),
+    generate_setup_reverse_index_c(Options, SetupReverseIndexCode),
     compile_predicates_for_project(Predicates,
                                    [detected_kernel_keys(DetectedKeys),
                                     lowered_helper_keys(LoweredKeys)|Options],
                                    PredicatesCode),
-    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w~n~n~w',
-           [LoweredPlanCode, SetupKernelCode, LoweredCode, SetupLoweredCode]),
+    format(atom(LibCode), '#include "wam_runtime.h"~n~n~w~n~n~w~n~n~w~n~n~w~n~n~w',
+           [LoweredPlanCode, SetupKernelCode, SetupReverseIndexCode,
+            LoweredCode, SetupLoweredCode]),
     format(atom(LibCodeWithPredicates), '~w~n~n~w', [LibCode, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.c', LibPath),
     write_file(LibPath, LibCodeWithPredicates),
@@ -188,6 +255,7 @@ detect_kernels([PI|Rest], Kernels) :-
     detect_kernels(Rest, RestKernels).
 
 wam_c_supported_kernel(recursive_kernel(category_ancestor, _Pred, _ConfigOps)).
+wam_c_supported_kernel(recursive_kernel(bidirectional_ancestor, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_closure2, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_distance3, _Pred, _ConfigOps)).
 wam_c_supported_kernel(recursive_kernel(transitive_parent_distance4, _Pred, _ConfigOps)).
@@ -207,11 +275,222 @@ generate_setup_detected_kernels_c(DetectedKernels, Code) :-
            'void setup_detected_wam_c_kernels(WamState* state) {\n~w\n}',
            [Body]).
 
+%% generate_setup_reverse_index_c(+Options, -CCode)
+%  Emit project-level lifecycle hooks for a declaratively configured
+%  runtime reverse CSR. The generated setup function only attaches an
+%  artifact when the normalized reverse_index phase is runtime_available
+%  and the caller provided the concrete artifact paths.
+generate_setup_reverse_index_c(Options, Code) :-
+    (   wam_c_reverse_index_setup_plan(Options, Plan)
+    ->  wam_c_reverse_index_setup_code(Plan, Code)
+    ;   wam_c_reverse_index_noop_setup_code(Code)
+    ).
+
+wam_c_reverse_index_setup_plan(Options, Plan) :-
+    resolve_wam_c_reverse_index_plan(Options,
+        wam_c_reverse_index_plan(ReverseIndex, Capabilities)),
+    wam_c_require_reverse_index_runtime_io_policy(ReverseIndex),
+    wam_c_reverse_index_runtime_available(ReverseIndex, Capabilities),
+    wam_c_reverse_index_setup_backend(ReverseIndex, Backend),
+    wam_c_reverse_index_setup_policy(ReverseIndex, IoPolicy),
+    wam_c_reverse_index_setup_block_size_edges(ReverseIndex, BlockSizeEdges),
+    wam_c_reverse_index_setup_paths(Backend, Options, Paths),
+    option(category_id_map(CategoryIdMap), Options, []),
+    Plan = wam_c_reverse_index_setup(Backend, IoPolicy, BlockSizeEdges, Paths, CategoryIdMap).
+
+wam_c_reverse_index_runtime_available(artifact(Opts), Capabilities) :-
+    memberchk(phase(runtime_available), Opts),
+    memberchk(runtime_child_lookup(available), Capabilities).
+wam_c_reverse_index_runtime_available(csr(Opts), Capabilities) :-
+    memberchk(phase(runtime_available), Opts),
+    (   memberchk(runtime_child_lookup(available), Capabilities)
+    ;   memberchk(runtime_child_lookup(available_after_artifact_build), Capabilities)
+    ).
+
+wam_c_reverse_index_setup_backend(ReverseIndex, lmdb_offset) :-
+    wam_c_reverse_index_uses_lmdb_offset(ReverseIndex),
+    !.
+wam_c_reverse_index_setup_backend(_ReverseIndex, sorted_array).
+
+wam_c_reverse_index_setup_policy(ReverseIndex, Policy) :-
+    wam_c_reverse_index_runtime_io_policy(ReverseIndex, Policy),
+    !.
+wam_c_reverse_index_setup_policy(_ReverseIndex, buffered_pread).
+
+wam_c_reverse_index_setup_block_size_edges(csr(Opts), BlockSizeEdges) :-
+    memberchk(block_size_edges(BlockSizeEdges), Opts),
+    !.
+wam_c_reverse_index_setup_block_size_edges(artifact(Opts), BlockSizeEdges) :-
+    memberchk(block_size_edges(BlockSizeEdges), Opts),
+    !.
+wam_c_reverse_index_setup_block_size_edges(_ReverseIndex, 0).
+
+wam_c_reverse_index_setup_paths(sorted_array, Options,
+                                sorted_array(IndexPath, ValuesPath)) :-
+    option(reverse_csr_index_path(IndexPath), Options),
+    option(reverse_csr_values_path(ValuesPath), Options).
+wam_c_reverse_index_setup_paths(lmdb_offset, Options,
+                                lmdb_offset(OffsetPath, ValuesPath, DbiName)) :-
+    option(reverse_csr_offset_lmdb_path(OffsetPath), Options),
+    option(reverse_csr_values_path(ValuesPath), Options),
+    option(reverse_csr_offset_lmdb_dbi(DbiName), Options, offsets).
+
+wam_c_reverse_index_noop_setup_code(
+'bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr) {
+    (void)state;
+    (void)bidirectional_child_csr;
+    return true;
+}
+
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                           WamReverseCsrArtifact* bidirectional_child_csr) {
+    (void)state;
+    (void)bidirectional_child_csr;
+}
+').
+
+wam_c_reverse_index_setup_code(
+        wam_c_reverse_index_setup(Backend, IoPolicy, BlockSizeEdges, Paths, CategoryIdMap),
+        Code) :-
+    wam_c_reverse_index_load_call(Backend, IoPolicy, BlockSizeEdges, Paths, LoadCall),
+    wam_c_category_id_setup_lines(CategoryIdMap, IdLines),
+    format(atom(Code),
+'bool setup_wam_c_reverse_index_artifacts(WamState* state,
+                                         WamReverseCsrArtifact* bidirectional_child_csr) {
+    wam_reverse_csr_init(bidirectional_child_csr);
+    if (!(~w)) {
+        wam_reverse_csr_close(bidirectional_child_csr);
+        return false;
+    }
+~w
+    wam_attach_bidirectional_child_csr(state, bidirectional_child_csr);
+    return true;
+}
+
+void teardown_wam_c_reverse_index_artifacts(WamState* state,
+                                           WamReverseCsrArtifact* bidirectional_child_csr) {
+    wam_attach_bidirectional_child_csr(state, NULL);
+    wam_reverse_csr_close(bidirectional_child_csr);
+}
+', [LoadCall, IdLines]).
+
+wam_c_reverse_index_load_call(sorted_array,
+                              buffered_pread,
+                              _BlockSizeEdges,
+                              sorted_array(IndexPath, ValuesPath),
+                              LoadCall) :-
+    c_string_literal(IndexPath, IndexLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load(bidirectional_child_csr, ~w, ~w)',
+           [IndexLit, ValuesLit]).
+wam_c_reverse_index_load_call(sorted_array,
+                              buffered_pread_drop,
+                              _BlockSizeEdges,
+                              sorted_array(IndexPath, ValuesPath),
+                              LoadCall) :-
+    c_string_literal(IndexPath, IndexLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_pread_drop(bidirectional_child_csr, ~w, ~w)',
+           [IndexLit, ValuesLit]).
+wam_c_reverse_index_load_call(sorted_array,
+                              direct_io,
+                              BlockSizeEdges,
+                              sorted_array(IndexPath, ValuesPath),
+                              LoadCall) :-
+    c_string_literal(IndexPath, IndexLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_direct_io(bidirectional_child_csr, ~w, ~w, ~w)',
+           [IndexLit, ValuesLit, BlockSizeEdges]).
+wam_c_reverse_index_load_call(lmdb_offset,
+                              buffered_pread,
+                              _BlockSizeEdges,
+                              lmdb_offset(OffsetPath, ValuesPath, DbiName),
+                              LoadCall) :-
+    c_string_literal(OffsetPath, OffsetLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    c_string_literal(DbiName, DbiLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_lmdb_offset(bidirectional_child_csr, ~w, ~w, ~w)',
+           [ValuesLit, OffsetLit, DbiLit]).
+wam_c_reverse_index_load_call(lmdb_offset,
+                              buffered_pread_drop,
+                              _BlockSizeEdges,
+                              lmdb_offset(OffsetPath, ValuesPath, DbiName),
+                              LoadCall) :-
+    c_string_literal(OffsetPath, OffsetLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    c_string_literal(DbiName, DbiLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_lmdb_offset_pread_drop(bidirectional_child_csr, ~w, ~w, ~w)',
+           [ValuesLit, OffsetLit, DbiLit]).
+wam_c_reverse_index_load_call(lmdb_offset,
+                              direct_io,
+                              BlockSizeEdges,
+                              lmdb_offset(OffsetPath, ValuesPath, DbiName),
+                              LoadCall) :-
+    c_string_literal(OffsetPath, OffsetLit),
+    c_string_literal(ValuesPath, ValuesLit),
+    c_string_literal(DbiName, DbiLit),
+    format(atom(LoadCall),
+           'wam_reverse_csr_load_lmdb_offset_direct_io(bidirectional_child_csr, ~w, ~w, ~w, ~w)',
+           [ValuesLit, OffsetLit, DbiLit, BlockSizeEdges]).
+
+wam_c_category_id_setup_lines([], '').
+wam_c_category_id_setup_lines(CategoryIdMap, Lines) :-
+    CategoryIdMap \= [],
+    maplist(wam_c_category_id_setup_line, CategoryIdMap, LineList),
+    atomic_list_concat(LineList, '\n', Body),
+    format(atom(Lines), '~w\n', [Body]).
+
+wam_c_category_id_setup_line(Atom-Id, Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+wam_c_category_id_setup_line(category_id(Atom, Id), Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+wam_c_category_id_setup_line(id(Atom, Id), Line) :-
+    !,
+    wam_c_category_id_setup_line_(Atom, Id, Line).
+
+wam_c_category_id_setup_line_(Atom, Id, Line) :-
+    integer(Id),
+    c_string_literal(Atom, AtomLit),
+    format(atom(Line),
+           '    wam_register_category_id(state, ~w, ~w);',
+           [AtomLit, Id]).
+
+c_string_literal(Value, Literal) :-
+    format(atom(Raw), '~w', [Value]),
+    atom_codes(Raw, Codes),
+    phrase(c_string_literal_codes(Codes), EscapedCodes),
+    atom_codes(Escaped, EscapedCodes),
+    format(atom(Literal), '"~w"', [Escaped]).
+
+c_string_literal_codes([]) --> [].
+c_string_literal_codes([0'\\|Rest]) --> "\\\\", c_string_literal_codes(Rest).
+c_string_literal_codes([0'"|Rest]) --> "\\\"", c_string_literal_codes(Rest).
+c_string_literal_codes([10|Rest]) --> "\\n", c_string_literal_codes(Rest).
+c_string_literal_codes([13|Rest]) --> "\\r", c_string_literal_codes(Rest).
+c_string_literal_codes([9|Rest]) --> "\\t", c_string_literal_codes(Rest).
+c_string_literal_codes([Code|Rest]) --> [Code], c_string_literal_codes(Rest).
+
 wam_c_kernel_registration_line(Key-recursive_kernel(category_ancestor, _Pred, ConfigOps), Line) :-
     wam_c_kernel_max_depth(ConfigOps, MaxDepth),
     format(atom(Line),
            '    wam_register_category_ancestor_kernel(state, "~w", ~w);',
            [Key, MaxDepth]).
+wam_c_kernel_registration_line(Key-recursive_kernel(bidirectional_ancestor, _Pred, ConfigOps), Line) :-
+    wam_c_kernel_max_depth(ConfigOps, MaxDepth),
+    wam_c_kernel_float_config(ConfigOps, parent_step_cost, 1.0, ParentCost),
+    wam_c_kernel_float_config(ConfigOps, child_step_cost, 3.0, ChildCost),
+    wam_c_kernel_float_config(ConfigOps, cost_budget, 10.0, Budget),
+    format(atom(Line),
+           '    wam_register_bidirectional_ancestor_kernel(state, "~w", ~w, ~w, ~w, ~w);',
+           [Key, MaxDepth, ParentCost, ChildCost, Budget]).
 wam_c_kernel_registration_line(Key-recursive_kernel(transitive_closure2, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_transitive_closure_kernel(state, "~w");',
@@ -243,6 +522,15 @@ wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
         MaxDepth0 > 0
     ->  MaxDepth = MaxDepth0
     ;   MaxDepth = 10
+    ).
+
+wam_c_kernel_float_config(ConfigOps, Key, Default, Value) :-
+    Term =.. [Key, Value0],
+    (   member(Term, ConfigOps),
+        number(Value0),
+        Value0 > 0
+    ->  Value = Value0
+    ;   Value = Default
     ).
 
 % ============================================================================
@@ -605,7 +893,11 @@ c_static_value_literal(Atom, Lit) :-
     format(atom(Lit), '{ .tag = VAL_ATOM, .data.atom = "~w" }', [Atom]).
 c_static_value_literal(Int, Lit) :-
     integer(Int),
+    !,
     format(atom(Lit), '{ .tag = VAL_INT, .data.integer = ~w }', [Int]).
+c_static_value_literal(Float, Lit) :-
+    float(Float),
+    format(atom(Lit), '{ .tag = VAL_FLOAT, .data.floating = ~16g }', [Float]).
 
 lowered_fact_bucket_arrays(Symbol, Rows, ArraysCode, CasesCode, BucketCount) :-
     findall(First, member([First|_], Rows), FirstValues0),
@@ -1323,6 +1615,32 @@ wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [Op, N]).
 wam_instruction_to_c_literal(call_foreign(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [P, N]).
+wam_instruction_to_c_literal(begin_aggregate(Kind, TemplateReg, ResultReg), Code) :-
+    c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(ResultReg, ResultIsY, ResultIdx),
+    format(atom(Code), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_count = 0, .witness_regs = {0}, .witness_is_y = {0} } }',
+           [Kind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
+wam_instruction_to_c_literal(begin_aggregate(Kind, TemplateReg, ResultReg, WitnessRegs), Code) :-
+    clean_aggregate_witness(WitnessRegs, WitnessString),
+    aggregate_witness_fields(WitnessString, WitnessCount, WitnessRegInit, WitnessIsYInit),
+    c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(ResultReg, ResultIsY, ResultIdx),
+    format(atom(Code), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_count = ~w, .witness_regs = ~w, .witness_is_y = ~w } }',
+           [Kind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY,
+            WitnessCount, WitnessRegInit, WitnessIsYInit]).
+wam_instruction_to_c_literal(end_aggregate(TemplateReg), Code) :-
+    c_reg_index(TemplateReg, TemplateIsY, TemplateIdx),
+    format(atom(Code), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0, .witness_count = 0, .witness_regs = {0}, .witness_is_y = {0} } }',
+           [TemplateIdx, TemplateIsY]).
+wam_instruction_to_c_literal(get_level(Reg), Code) :-
+    c_reg_index(Reg, IsY, Idx),
+    format(atom(Code), '{ .tag = INSTR_GET_LEVEL, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_instruction_to_c_literal(cut(Reg), Code) :-
+    c_reg_index(Reg, IsY, Idx),
+    format(atom(Code), '{ .tag = INSTR_CUT, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_instruction_to_c_literal(cut_ite, '{ .tag = INSTR_CUT_ITE }').
+wam_instruction_to_c_literal(jump(_Label), _) :-
+    throw(error(context_error(missing_label_map, "jump/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -1342,19 +1660,22 @@ wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(jump(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
 c_value_literal(Str, Lit) :-
     string(Str),
-    (   number_string(Int, Str),
-        integer(Int)
-    ->  c_value_literal(Int, Lit)
+    (   number_string(Number, Str)
+    ->  c_value_literal(Number, Lit)
     ;   atom_string(Atom, Str),
         c_value_literal(Atom, Lit)
     ).
 c_value_literal(Atom, Lit) :- atom(Atom), format(atom(Lit), 'val_atom("~w")', [Atom]).
-c_value_literal(Int, Lit) :- integer(Int), format(atom(Lit), 'val_int(~w)', [Int]).
+c_value_literal(Int, Lit) :- integer(Int), !, format(atom(Lit), 'val_int(~w)', [Int]).
+c_value_literal(Float, Lit) :- float(Float), format(atom(Lit), 'val_float(~16g)', [Float]).
 
 c_reg_index(RegStr, IsY, Idx) :-
     string(RegStr),
@@ -1377,6 +1698,10 @@ c_reg_index(RegAtom, IsY, Idx) :-
     ->  IsY = 1,
         catch(number_chars(RegNo, NumChars), _, fail),
         Idx is RegNo - 1
+    ;   append(['_', 'X', 'T'], NumChars, Chars)
+    ->  IsY = 2,
+        catch(number_chars(TempNo, NumChars), _, fail),
+        Idx is 128 + TempNo
     ;   throw(error(wam_c_target_error(unknown_register(RegAtom)), _))
     ).
 
@@ -1459,11 +1784,45 @@ wam_line_to_c_instr(["execute", P], Instr) :-
     clean_comma(P, CP),
     format(atom(Instr), '{ .tag = INSTR_EXECUTE, .as.pred = { .pred = "~w" } }', [CP]).
 wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
-    clean_comma(Op, COp), clean_comma(N, CN),
+    clean_comma(Op, COp0), clean_comma(N, CN), c_escape_atom(COp0, COp),
     format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .as.pred = { .pred = "~w", .arity = ~w } }', [COp, CN]).
 wam_line_to_c_instr(["call_foreign", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_CALL_FOREIGN, .as.pred = { .pred = "~w", .arity = ~w } }', [CP, CN]).
+wam_line_to_c_instr(["begin_aggregate", Kind, TemplateReg, ResultReg], Instr) :-
+    clean_comma(Kind, CKind0), clean_comma(TemplateReg, CTemplateReg),
+    clean_comma(ResultReg, CResultReg), c_escape_atom(CKind0, CKind),
+    c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(CResultReg, ResultIsY, ResultIdx),
+    format(atom(Instr), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_count = 0, .witness_regs = {0}, .witness_is_y = {0} } }',
+           [CKind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY]).
+wam_line_to_c_instr(["begin_aggregate", Kind, TemplateReg, ResultReg, WitnessRegs], Instr) :-
+    clean_comma(Kind, CKind0), clean_comma(TemplateReg, CTemplateReg),
+    clean_comma(ResultReg, CResultReg), c_escape_atom(CKind0, CKind),
+    clean_aggregate_witness(WitnessRegs, WitnessString),
+    aggregate_witness_fields(WitnessString, WitnessCount, WitnessRegInit, WitnessIsYInit),
+    c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
+    c_reg_index(CResultReg, ResultIsY, ResultIdx),
+    format(atom(Instr), '{ .tag = INSTR_BEGIN_AGGREGATE, .as.aggregate = { .kind = "~w", .template_reg = ~w, .template_is_y = ~w, .result_reg = ~w, .result_is_y = ~w, .witness_count = ~w, .witness_regs = ~w, .witness_is_y = ~w } }',
+           [CKind, TemplateIdx, TemplateIsY, ResultIdx, ResultIsY,
+            WitnessCount, WitnessRegInit, WitnessIsYInit]).
+wam_line_to_c_instr(["end_aggregate", TemplateReg], Instr) :-
+    clean_comma(TemplateReg, CTemplateReg),
+    c_reg_index(CTemplateReg, TemplateIsY, TemplateIdx),
+    format(atom(Instr), '{ .tag = INSTR_END_AGGREGATE, .as.aggregate = { .kind = "collect", .template_reg = ~w, .template_is_y = ~w, .result_reg = 0, .result_is_y = 0, .witness_count = 0, .witness_regs = {0}, .witness_is_y = {0} } }',
+           [TemplateIdx, TemplateIsY]).
+wam_line_to_c_instr(["get_level", Reg], Instr) :-
+    clean_comma(Reg, CReg),
+    c_reg_index(CReg, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_LEVEL, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_line_to_c_instr(["cut", Reg], Instr) :-
+    clean_comma(Reg, CReg),
+    c_reg_index(CReg, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_CUT, .as.reg = { .reg = ~w, .is_y_reg = ~w } }', [Idx, IsY]).
+wam_line_to_c_instr(["jump", L], LabelMap, _Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
@@ -1473,6 +1832,7 @@ wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
+wam_line_to_c_instr(["cut_ite"], _, '{ .tag = INSTR_CUT_ITE }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
 wam_line_to_c_instr(["allocate"], _, '{ .tag = INSTR_ALLOCATE }').
 wam_line_to_c_instr(["deallocate"], _, '{ .tag = INSTR_DEALLOCATE }').
@@ -1484,6 +1844,51 @@ clean_comma(S, Clean) :-
     ->  sub_string(S, 0, _, 1, Clean)
     ;   Clean = S
     ).
+
+clean_aggregate_witness(Witness0, Witness) :-
+    clean_comma(Witness0, Clean0),
+    (   string(Clean0)
+    ->  S0 = Clean0
+    ;   atom(Clean0)
+    ->  atom_string(Clean0, S0)
+    ;   term_string(Clean0, S0)
+    ),
+    (   sub_string(S0, 0, 1, _, "'"),
+        sub_string(S0, _, 1, 0, "'")
+    ->  sub_string(S0, 1, _, 1, Witness)
+    ;   Witness = S0
+    ).
+
+aggregate_witness_fields("", 0, "{0}", "{0}") :- !.
+aggregate_witness_fields(WitnessString, Count, RegInit, IsYInit) :-
+    split_string(WitnessString, ";", "", WitnessRegs0),
+    exclude(=(""), WitnessRegs0, WitnessRegs),
+    length(WitnessRegs, Count),
+    (   Count =< 8
+    ->  true
+    ;   throw(error(wam_c_target_error(too_many_bagof_setof_witnesses(Count)), _))
+    ),
+    maplist(aggregate_witness_reg_indices, WitnessRegs, RegIndices, IsYIndices),
+    atomic_list_concat(RegIndices, ', ', RegBody),
+    atomic_list_concat(IsYIndices, ', ', IsYBody),
+    format(atom(RegInit), '{~w}', [RegBody]),
+    format(atom(IsYInit), '{~w}', [IsYBody]).
+
+aggregate_witness_reg_indices(WitnessReg, RegIdx, IsY) :-
+    c_reg_index(WitnessReg, IsY, RegIdx).
+
+%% c_escape_atom(+Atom, -Escaped)
+%  Escape backslashes and double quotes so the value is safe inside a C
+%  string literal. Functors carry them: =\=/2 must be emitted as "=\\=/2",
+%  otherwise the C compiler reads \= as an unknown escape and drops the
+%  backslash, so the runtime functor ("==/2") no longer matches its handler
+%  and arithmetic disequality silently fails.
+c_escape_atom(Atom, Escaped) :-
+    atom_string(Atom, S0),
+    split_string(S0, "\\", "", BSParts),
+    atomic_list_concat(BSParts, '\\\\', S1),
+    split_string(S1, "\"", "", QParts),
+    atomic_list_concat(QParts, '\\"', Escaped).
 
 wam_lines_to_c_pass1([], _, []).
 wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
@@ -1502,7 +1907,7 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
 
 wam_lines_to_c_pass2([], PC, _, _, _, PC, []).
 wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
+    split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
     ;   CleanParts = [First|_],
@@ -1525,12 +1930,20 @@ wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Inst
 wam_generate_c_instruction(PC, Parts, LabelMap, Arity, OffsetVar, CodeLines) :-
     c_pc_expr(OffsetVar, PC, PCExpr),
     (   (   Parts = ["switch_on_constant" | Entries],
-            SwitchReg = 0
+            SwitchReg = 0,
+            Fallthrough = false
         ;   Parts = ["switch_on_constant_a2" | Entries],
-            SwitchReg = 1
+            SwitchReg = 1,
+            Fallthrough = false
+        ;   Parts = ["switch_on_constant_fallthrough" | Entries],
+            SwitchReg = 0,
+            Fallthrough = true
+        ;   Parts = ["switch_on_constant_a2_fallthrough" | Entries],
+            SwitchReg = 1,
+            Fallthrough = true
         )
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w } };', [PCExpr, SwitchReg, HashSize]),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .as.switch_index = { .reg = ~w, .hash_size = ~w, .no_match_fallthrough = ~w } };', [PCExpr, SwitchReg, HashSize, Fallthrough]),
         format(atom(L1), '    state->code[~w].as.switch_index.hash_table = malloc(sizeof(HashEntry) * ~w);', [PCExpr, HashSize]),
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", Entries, 0, LabelMap, OffsetVar, HashLines),
         append([L0, L1], HashLines, CodeLines)
@@ -1562,6 +1975,15 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, OffsetVar, CodeLines) :-
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.hash_table", CEntries, 0, LabelMap, OffsetVar, CHashLines),
         generate_hash_table_entries(PC, PCExpr, "as.switch_index.s_hash_table", SEntries, 0, LabelMap, OffsetVar, SHashLines),
         append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
+    ;   Parts = [SwitchOp|_], string_concat("switch_on_", _, SwitchOp)
+    ->  % Unhandled first/second-argument indexing hint (e.g.
+        % switch_on_term_a2): degrade to a NoOp rather than throwing.
+        % Indexing is only an optimisation, so falling through to the
+        % try_me_else clause chain is correct, and emitting a real
+        % instruction keeps every later label PC aligned (a dropped one
+        % would shift them — the NoOp lesson from the Rust backend).
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_NOOP };', [PCExpr]),
+        CodeLines = [L0]
     ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, OffsetVar, CInstr)
         ->  true
         ;   wam_line_to_c_instr(Parts, CInstr_NoMap)
@@ -1702,18 +2124,49 @@ compile_step_wam_to_c(_Options, CCode) :-
                 state->P++;
                 return true;
             }
+            case INSTR_NOOP: {
+                /* No-op: advance past an instruction the C backend does not
+                   translate (chiefly first-argument indexing hints such as
+                   switch_on_term_a2). Indexing is only an optimisation, so
+                   falling through to the try_me_else clause chain is correct;
+                   emitting a real instruction keeps every later label PC
+                   aligned (a dropped instruction would shift them). */
+                state->P++;
+                return true;
+            }
             case INSTR_PROCEED: {
                 int continuation = state->CP;
+                if (continuation == WAM_AGGREGATE_META_COLLECT) {
+                    return wam_collect_meta_aggregate_success(state);
+                }
+                if (continuation == WAM_META_CONJ_RETURN) {
+                    return wam_continue_conjunction(state);
+                }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
-                    int target_b = state->call_bases[--state->call_base_top];
-                    wam_prune_choice_points(state, target_b);
+                    int barrier_index = --state->call_base_top;
+                    int target_b = state->call_bases[barrier_index];
+                    if (!state->call_base_preserve_choice[barrier_index]) {
+                        wam_prune_choice_points(state, target_b);
+                    }
                 }
                 state->P = continuation;
                 return true;
             }
             case INSTR_CALL: {
+                if (strcmp(instr->as.pred.pred, "findall/3") == 0) {
+                    return wam_dispatch_aggregate_meta(state, "collect", state->P + 1);
+                }
+                if (strcmp(instr->as.pred.pred, "bagof/3") == 0 ||
+                    strcmp(instr->as.pred.pred, "setof/3") == 0) {
+                    const char *kind =
+                        strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
+                    return wam_dispatch_aggregate_meta(state, kind, state->P + 1);
+                }
                 if (state->call_base_top >= WAM_CALL_STACK_SIZE) return false;
-                state->call_bases[state->call_base_top++] = state->B;
+                state->call_bases[state->call_base_top] = state->B;
+                state->call_base_preserve_choice[state->call_base_top] =
+                    state->aggregate_top > 0;
+                state->call_base_top++;
                 state->CP = state->P + 1;
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
@@ -1721,6 +2174,15 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_EXECUTE: {
+                if (strcmp(instr->as.pred.pred, "findall/3") == 0) {
+                    return wam_dispatch_aggregate_meta(state, "collect", state->CP);
+                }
+                if (strcmp(instr->as.pred.pred, "bagof/3") == 0 ||
+                    strcmp(instr->as.pred.pred, "setof/3") == 0) {
+                    const char *kind =
+                        strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
+                    return wam_dispatch_aggregate_meta(state, kind, state->CP);
+                }
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
@@ -1738,6 +2200,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return true;
                 }
                 return false;
+            }
+            case INSTR_BEGIN_AGGREGATE: {
+                return wam_begin_aggregate(state, instr);
+            }
+            case INSTR_END_AGGREGATE: {
+                return wam_end_aggregate(state, instr);
             }
             case INSTR_TRY_ME_ELSE: {
                 int target = instr->as.choice.target_pc;
@@ -1760,6 +2228,33 @@ compile_step_wam_to_c(_Options, CCode) :-
                 state->P++;
                 return true;
             }
+            case INSTR_GET_LEVEL: {
+                WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
+                *cell = val_int(state->B);
+                state->P++;
+                return true;
+            }
+            case INSTR_CUT: {
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg));
+                if (cell->tag != VAL_INT) return false;
+                int target_b = cell->data.integer;
+                if (target_b < 0 || target_b > state->B) return false;
+                wam_prune_choice_points(state, target_b);
+                state->P++;
+                return true;
+            }
+            case INSTR_CUT_ITE: {
+                if (state->B <= 0) return false;
+                pop_choice_point(state);
+                state->P++;
+                return true;
+            }
+            case INSTR_JUMP: {
+                int target = instr->as.jump.target_pc;
+                if (target < 0) return false;
+                state->P = target;
+                return true;
+            }
             case INSTR_SWITCH_ON_CONSTANT: {
                 WamValue *cell = wam_deref_ptr(state, &state->A[instr->as.switch_index.reg]);
                 if (val_is_unbound(*cell)) {
@@ -1767,6 +2262,10 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return true; // Unbound variable falls through to the sequential try_me_else chain
                 }
                 if (cell->tag != VAL_ATOM && cell->tag != VAL_INT) {
+                    if (instr->as.switch_index.no_match_fallthrough) {
+                        state->P++;
+                        return true;
+                    }
                     return false; // Type mismatch, fail
                 }
                 for (int i = 0; i < instr->as.switch_index.hash_size; i++) {
@@ -1774,6 +2273,10 @@ compile_step_wam_to_c(_Options, CCode) :-
                         state->P = instr->as.switch_index.hash_table[i].target_pc;
                         return true;
                     }
+                }
+                if (instr->as.switch_index.no_match_fallthrough) {
+                    state->P++;
+                    return true;
                 }
                 return false; // Not found in index, fail
             }
@@ -1810,6 +2313,19 @@ compile_step_wam_to_c(_Options, CCode) :-
                     }
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
+                    /* A "[|]/2"/"./2" structure is a list cell (nested cons
+                       cells are built with put_structure), so route it to the
+                       list clause exactly like a VAL_LIST — otherwise the
+                       recursion tail (a cons STR) misses the list clause. */
+                    if (f->tag == VAL_ATOM &&
+                        (strcmp(f->data.atom, "[|]/2") == 0 || strcmp(f->data.atom, "./2") == 0)) {
+                        if (instr->as.switch_index.list_target_pc >= 0) {
+                            state->P = instr->as.switch_index.list_target_pc;
+                        } else {
+                            state->P++;
+                        }
+                        return true;
+                    }
                     for (int i = 0; i < instr->as.switch_index.s_hash_size; i++) {
                         if (val_equal(*f, instr->as.switch_index.s_hash_table[i].key)) {
                             state->P = instr->as.switch_index.s_hash_table[i].target_pc;
@@ -1864,8 +2380,19 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_PUT_STRUCTURE: {
                 WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
                 WamValue *cell = resolve_reg(state, instr->as.functor.reg, instr->as.functor.is_y_reg);
+                /* If this register dereferences to an unbound placeholder heap
+                   cell (the embedded argument of an enclosing structure that a
+                   prior set_variable wrote, e.g. nested arithmetic
+                   +(+(A,B),C)), bind that cell to the new structure as well —
+                   otherwise the enclosing structure keeps pointing at the
+                   still-unbound placeholder and eval/unify never see this
+                   subterm. */
+                WamValue *placeholder = wam_deref_ptr(state, cell);
+                if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
+                    *placeholder = s;
+                }
                 *cell = s;
-                
+
                 const char *slash = strchr(instr->as.functor.pred, ''/'');
                 assert(slash != NULL && "Functor missing arity suffix");
                 int arity = strtol(slash + 1, NULL, 10);
@@ -1903,6 +2430,19 @@ compile_step_wam_to_c(_Options, CCode) :-
                 } else if (cell->tag == VAL_LIST) {
                     state->S = cell->data.ref_addr;
                     state->mode = MODE_READ;
+                } else if (cell->tag == VAL_STR) {
+                    /* Cons-cell aliasing: the compiler emits the outer list
+                       with put_list (VAL_LIST) but nested cons cells with
+                       put_structure "[|]/2" (VAL_STR). Treat a "[|]/2"/"./2"
+                       structure as a list cell: its head/tail are the two args
+                       after the functor cell. */
+                    WamValue *f = &state->H_array[cell->data.ref_addr];
+                    if (f->tag == VAL_ATOM &&
+                        (strcmp(f->data.atom, "[|]/2") == 0 ||
+                         strcmp(f->data.atom, "./2") == 0)) {
+                        state->S = cell->data.ref_addr + 1;
+                        state->mode = MODE_READ;
+                    } else { return false; }
                 } else { return false; }
                 state->P++;
                 return true;
@@ -2012,12 +2552,26 @@ compile_step_wam_to_c(_Options, CCode) :-
         while (state->P >= 0 && state->P < state->code_size) {
             Instruction* instr = &state->code[state->P];
             if (!step_wam(state, instr)) {
-                if (state->B == 0) {
+                bool recovered = false;
+                while (state->B > 0 && !recovered) {
+                    ChoicePoint* cp = &state->B_array[state->B - 1];
+                    int next_pc = cp->next_pc;
+                    restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
+                    if (next_pc == WAM_AGGREGATE_NEXT_GROUP) {
+                        pop_choice_point(state);
+                        recovered = wam_bind_next_aggregate_group(state);
+                    } else if (next_pc == WAM_AGGREGATE_META_DONE) {
+                        recovered = wam_finalize_meta_aggregate(state);
+                    } else if (next_pc == WAM_META_DISJ_RIGHT) {
+                        recovered = wam_resume_disjunction(state);
+                    } else {
+                        state->P = next_pc; // Explicitly jump to alternative
+                        recovered = true;
+                    }
+                }
+                if (!recovered) {
                     return WAM_HALT; // Failure, no choice points left
                 }
-                ChoicePoint* cp = &state->B_array[state->B - 1];
-                restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
-                state->P = cp->next_pc; // Explicitly jump to alternative
             }
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
@@ -2025,12 +2579,1219 @@ compile_step_wam_to_c(_Options, CCode) :-
 
 compile_wam_helpers_to_c(_Options, CCode) :-
     CCode =
-'#define _POSIX_C_SOURCE 200809L
+'#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include "wam_runtime.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <unistd.h>
+
+static void wam_bidirectional_distance_cache_clear(WamState *state);
+static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
+                                        int return_pc);
+static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
+                                    int return_pc);
+static bool wam_collect_meta_aggregate_success(WamState *state);
+static bool wam_finalize_meta_aggregate(WamState *state);
+static bool wam_continue_conjunction(WamState *state);
+static bool wam_resume_disjunction(WamState *state);
+
+static bool wam_ensure_heap_slots(WamState *state, int additional) {
+    if (additional <= 0) return true;
+    if (state->H > INT_MAX - additional) return false;
+    int required = state->H + additional;
+    if (required <= state->H_cap) return true;
+    if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+    while (required > state->H_cap) {
+        if (state->H_cap > INT_MAX / 2) {
+            state->H_cap = required;
+            break;
+        }
+        state->H_cap *= 2;
+    }
+    WamValue *heap = realloc(state->H_array, sizeof(WamValue) * (size_t)state->H_cap);
+    if (!heap) return false;
+    state->H_array = heap;
+    return true;
+}
+
+static void wam_stored_term_free(WamStoredTerm *term) {
+    free(term->cells);
+    memset(term, 0, sizeof(WamStoredTerm));
+}
+
+static bool wam_stored_term_reserve(WamStoredTerm *term, int additional) {
+    if (additional <= 0) return true;
+    if (term->cell_count > INT_MAX - additional) return false;
+    int required = term->cell_count + additional;
+    if (required <= term->cell_cap) return true;
+    int new_cap = term->cell_cap ? term->cell_cap : WAM_INITIAL_CAP;
+    while (required > new_cap) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = required;
+            break;
+        }
+        new_cap *= 2;
+    }
+    WamValue *cells = realloc(term->cells, sizeof(WamValue) * (size_t)new_cap);
+    if (!cells) return false;
+    term->cells = cells;
+    term->cell_cap = new_cap;
+    return true;
+}
+
+static bool wam_parse_functor_arity(const char *functor, int *arity_out) {
+    const char *slash = strrchr(functor, 47);
+    if (!slash) return false;
+    char *end = NULL;
+    long arity = strtol(slash + 1, &end, 10);
+    if (!end || *end != 0 || arity < 0 || arity > 255) return false;
+    *arity_out = (int)arity;
+    return true;
+}
+
+static bool wam_ref_addr(WamState *state, WamValue value, int *addr_out) {
+    if (value.tag != VAL_REF) return false;
+    int addr = value.data.ref_addr;
+    for (int steps = 0; steps < state->H_cap; steps++) {
+        if (addr < 0 || addr >= state->H) return false;
+        WamValue cell = state->H_array[addr];
+        if (cell.tag == VAL_UNBOUND) {
+            *addr_out = addr;
+            return true;
+        }
+        if (cell.tag != VAL_REF) return false;
+        if (cell.data.ref_addr == addr) {
+            *addr_out = addr;
+            return true;
+        }
+        addr = cell.data.ref_addr;
+    }
+    return false;
+}
+
+static bool wam_ref_array_contains(WamState *state, WamValue *values,
+                                   int count, WamValue value) {
+    int addr = -1;
+    if (!wam_ref_addr(state, value, &addr)) return false;
+    for (int i = 0; i < count; i++) {
+        int other = -1;
+        if (wam_ref_addr(state, values[i], &other) && other == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool wam_ref_array_append_unique_limit(WamState *state, WamValue *values,
+                                              int *count, int max_count,
+                                              WamValue value) {
+    if (wam_ref_array_contains(state, values, *count, value)) return true;
+    if (*count >= max_count) return false;
+    values[*count] = value;
+    (*count)++;
+    return true;
+}
+
+static bool wam_ref_array_append_unique(WamState *state, WamValue *values,
+                                        int *count, WamValue value) {
+    return wam_ref_array_append_unique_limit(state, values, count,
+                                             WAM_AGGREGATE_MAX_WITNESSES,
+                                             value);
+}
+
+static bool wam_collect_term_vars(WamState *state, WamValue value,
+                                  WamValue *vars, int *count,
+                                  int max_count) {
+    if (value.tag == VAL_REF) {
+        int addr = -1;
+        if (wam_ref_addr(state, value, &addr)) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = addr;
+            return wam_ref_array_append_unique_limit(state, vars, count,
+                                                     max_count, ref);
+        }
+    }
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag == VAL_LIST) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base + 1 >= state->H) return false;
+        return wam_collect_term_vars(state, state->H_array[base], vars,
+                                     count, max_count) &&
+               wam_collect_term_vars(state, state->H_array[base + 1], vars,
+                                     count, max_count);
+    }
+    if (cell->tag == VAL_STR) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H) return false;
+        WamValue *functor = &state->H_array[base];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (base + arity >= state->H) return false;
+        for (int i = 0; i < arity; i++) {
+            if (!wam_collect_term_vars(state, state->H_array[base + 1 + i],
+                                       vars, count, max_count)) return false;
+        }
+    }
+    return true;
+}
+
+static bool wam_collect_goal_witnesses(WamState *state, WamValue goal,
+                                       WamValue *exclude, int *exclude_count,
+                                       int exclude_max,
+                                       WamValue *witnesses,
+                                       int *witness_count) {
+    if (goal.tag == VAL_REF) {
+        int addr = -1;
+        if (wam_ref_addr(state, goal, &addr)) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = addr;
+            if (!wam_ref_array_contains(state, exclude, *exclude_count, ref)) {
+                if (!wam_ref_array_append_unique(state, witnesses,
+                                                 witness_count, ref)) return false;
+                return wam_ref_array_append_unique_limit(state, exclude,
+                                                         exclude_count,
+                                                         exclude_max, ref);
+            }
+            return true;
+        }
+    }
+    WamValue *cell = wam_deref_ptr(state, &goal);
+    if (cell->tag == VAL_LIST) {
+        int base = cell->data.ref_addr;
+        if (base < 0 || base + 1 >= state->H) return false;
+        return wam_collect_goal_witnesses(state, state->H_array[base],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count) &&
+               wam_collect_goal_witnesses(state, state->H_array[base + 1],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count);
+    }
+    if (cell->tag != VAL_STR) return true;
+    int base = cell->data.ref_addr;
+    if (base < 0 || base >= state->H) return false;
+    WamValue *functor = &state->H_array[base];
+    if (functor->tag != VAL_ATOM) return false;
+    int arity = 0;
+    if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+    if (base + arity >= state->H) return false;
+    if (strcmp(functor->data.atom, "^/2") == 0 && arity == 2) {
+        if (!wam_collect_term_vars(state, state->H_array[base + 1],
+                                   exclude, exclude_count,
+                                   exclude_max)) return false;
+        return wam_collect_goal_witnesses(state, state->H_array[base + 2],
+                                          exclude, exclude_count, exclude_max,
+                                          witnesses, witness_count);
+    }
+    for (int i = 0; i < arity; i++) {
+        if (!wam_collect_goal_witnesses(state, state->H_array[base + 1 + i],
+                                        exclude, exclude_count, exclude_max,
+                                        witnesses, witness_count)) return false;
+    }
+    return true;
+}
+
+static WamValue *wam_aggregate_result_cell(WamState *state,
+                                           WamAggregateFrame *frame) {
+    if (frame->is_meta) return &frame->meta_result;
+    return resolve_reg(state, frame->result_reg, frame->result_is_y);
+}
+
+static WamValue *wam_aggregate_witness_cell(WamState *state,
+                                            WamAggregateFrame *frame,
+                                            int index) {
+    if (index < 0 || index >= frame->witness_count) return NULL;
+    if (frame->is_meta) return &frame->meta_witnesses[index];
+    return resolve_reg(state, frame->witness_regs[index],
+                       frame->witness_is_y[index]);
+}
+
+static bool wam_goal_structure(WamState *state, WamValue goal,
+                               const char **functor_out, int *base_out) {
+    WamValue current = goal;
+    for (int strip = 0; strip < 8; strip++) {
+        WamValue *cell = wam_deref_ptr(state, &current);
+        if (cell->tag != VAL_STR) return false;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H) return false;
+        WamValue *functor = &state->H_array[base];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (base + arity >= state->H) return false;
+        if (strcmp(functor->data.atom, ":/2") == 0 && arity == 2) {
+            current = state->H_array[base + 2];
+            continue;
+        }
+        *functor_out = functor->data.atom;
+        *base_out = base;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
+                                    int return_pc) {
+    WamValue *cell = wam_deref_ptr(state, &goal);
+    if (cell->tag == VAL_ATOM) {
+        if (strcmp(cell->data.atom, "true") == 0) {
+            if (return_pc == WAM_AGGREGATE_META_COLLECT) {
+                return wam_collect_meta_aggregate_success(state);
+            }
+            state->P = return_pc;
+            return true;
+        }
+        if (strcmp(cell->data.atom, "fail") == 0 ||
+            strcmp(cell->data.atom, "false") == 0) {
+            return false;
+        }
+        char key[256];
+        int written = snprintf(key, sizeof(key), "%s/0", cell->data.atom);
+        if (written <= 0 || written >= (int)sizeof(key)) return false;
+        int target = resolve_predicate_hash(state, key);
+        if (target < 0) return false;
+        state->CP = return_pc;
+        state->P = target;
+        return true;
+    }
+    const char *functor = NULL;
+    int base = -1;
+    if (!wam_goal_structure(state, goal, &functor, &base)) return false;
+    int arity = 0;
+    if (!wam_parse_functor_arity(functor, &arity)) return false;
+    if (arity > WAM_MAX_REGS) return false;
+    if (strcmp(functor, ",/2") == 0 && arity == 2) {
+        if (state->conj_top >= WAM_META_GOAL_STACK_SIZE) return false;
+        WamConjFrame *frame = &state->conj_frames[state->conj_top++];
+        frame->second_goal = state->H_array[base + 2];
+        frame->return_pc = return_pc;
+        return wam_invoke_goal_as_call(state, state->H_array[base + 1],
+                                       WAM_META_CONJ_RETURN);
+    }
+    if (strcmp(functor, ";/2") == 0 && arity == 2) {
+        if (state->disj_top >= WAM_META_GOAL_STACK_SIZE) return false;
+        WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
+        frame->right_goal = state->H_array[base + 2];
+        frame->return_pc = return_pc;
+        push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
+        return wam_invoke_goal_as_call(state, state->H_array[base + 1],
+                                       return_pc);
+    }
+    if (strcmp(functor, "^/2") == 0 && arity == 2) {
+        return wam_invoke_goal_as_call(state, state->H_array[base + 2],
+                                       return_pc);
+    }
+    for (int i = 0; i < arity; i++) {
+        state->A[i] = state->H_array[base + 1 + i];
+    }
+    if (strcmp(functor, "findall/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "collect", return_pc);
+    }
+    if (strcmp(functor, "bagof/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "bagof", return_pc);
+    }
+    if (strcmp(functor, "setof/3") == 0) {
+        return wam_dispatch_aggregate_meta(state, "setof", return_pc);
+    }
+    int target = resolve_predicate_hash(state, functor);
+    if (target >= 0) {
+        state->CP = return_pc;
+        state->P = target;
+        return true;
+    }
+    if (wam_execute_builtin(state, functor, arity)) {
+        if (return_pc == WAM_AGGREGATE_META_COLLECT) {
+            return wam_collect_meta_aggregate_success(state);
+        }
+        state->P = return_pc;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_continue_conjunction(WamState *state) {
+    if (state->conj_top <= 0) return false;
+    WamConjFrame *frame = &state->conj_frames[state->conj_top - 1];
+    return wam_invoke_goal_as_call(state, frame->second_goal,
+                                   frame->return_pc);
+}
+
+static bool wam_resume_disjunction(WamState *state) {
+    if (state->disj_top <= 0 || state->B <= 0) return false;
+    WamDisjFrame *frame = &state->disj_frames[state->disj_top - 1];
+    WamValue right_goal = frame->right_goal;
+    int return_pc = frame->return_pc;
+    state->disj_top--;
+    pop_choice_point(state);
+    return wam_invoke_goal_as_call(state, right_goal, return_pc);
+}
+
+static bool wam_copy_term_to_stored(WamState *state,
+                                    WamStoredTerm *term,
+                                    WamValue value,
+                                    WamValue *out) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag == VAL_ATOM || cell->tag == VAL_INT || cell->tag == VAL_FLOAT) {
+        *out = *cell;
+        return true;
+    }
+    if (cell->tag == VAL_UNBOUND || cell->tag == VAL_REF) {
+        *out = val_unbound("_");
+        return true;
+    }
+    if (cell->tag == VAL_LIST) {
+        if (!wam_stored_term_reserve(term, 2)) return false;
+        int base = term->cell_count;
+        term->cell_count += 2;
+        out->tag = VAL_LIST;
+        out->data.ref_addr = base;
+        WamValue head;
+        WamValue tail;
+        if (!wam_copy_term_to_stored(state, term,
+                                     state->H_array[cell->data.ref_addr],
+                                     &head)) return false;
+        if (!wam_copy_term_to_stored(state, term,
+                                     state->H_array[cell->data.ref_addr + 1],
+                                     &tail)) return false;
+        term->cells[base] = head;
+        term->cells[base + 1] = tail;
+        return true;
+    }
+    if (cell->tag == VAL_STR) {
+        WamValue *functor = &state->H_array[cell->data.ref_addr];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (!wam_stored_term_reserve(term, 1 + arity)) return false;
+        int base = term->cell_count;
+        term->cell_count += 1 + arity;
+        out->tag = VAL_STR;
+        out->data.ref_addr = base;
+        term->cells[base] = *functor;
+        for (int i = 0; i < arity; i++) {
+            WamValue arg;
+            if (!wam_copy_term_to_stored(state, term,
+                                         state->H_array[cell->data.ref_addr + 1 + i],
+                                         &arg)) return false;
+            term->cells[base + 1 + i] = arg;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool wam_materialize_stored_term(WamState *state,
+                                        WamStoredTerm *term,
+                                        WamValue value,
+                                        WamValue *out) {
+    if (value.tag == VAL_ATOM) {
+        *out = val_atom(wam_intern_atom(state, value.data.atom));
+        return true;
+    }
+    if (value.tag == VAL_INT || value.tag == VAL_FLOAT || value.tag == VAL_UNBOUND) {
+        *out = value;
+        return true;
+    }
+    if (value.tag == VAL_LIST) {
+        if (value.data.ref_addr < 0 || value.data.ref_addr + 1 >= term->cell_count) return false;
+        if (!wam_ensure_heap_slots(state, 2)) return false;
+        int base = state->H;
+        state->H += 2;
+        out->tag = VAL_LIST;
+        out->data.ref_addr = base;
+        WamValue head;
+        WamValue tail;
+        if (!wam_materialize_stored_term(state, term,
+                                         term->cells[value.data.ref_addr],
+                                         &head)) return false;
+        if (!wam_materialize_stored_term(state, term,
+                                         term->cells[value.data.ref_addr + 1],
+                                         &tail)) return false;
+        state->H_array[base] = head;
+        state->H_array[base + 1] = tail;
+        return true;
+    }
+    if (value.tag == VAL_STR) {
+        if (value.data.ref_addr < 0 || value.data.ref_addr >= term->cell_count) return false;
+        WamValue *functor = &term->cells[value.data.ref_addr];
+        if (functor->tag != VAL_ATOM) return false;
+        int arity = 0;
+        if (!wam_parse_functor_arity(functor->data.atom, &arity)) return false;
+        if (value.data.ref_addr + arity >= term->cell_count) return false;
+        if (!wam_ensure_heap_slots(state, 1 + arity)) return false;
+        int base = state->H;
+        state->H += 1 + arity;
+        out->tag = VAL_STR;
+        out->data.ref_addr = base;
+        state->H_array[base] = val_atom(wam_intern_atom(state, functor->data.atom));
+        for (int i = 0; i < arity; i++) {
+            WamValue arg;
+            if (!wam_materialize_stored_term(state, term,
+                                             term->cells[value.data.ref_addr + 1 + i],
+                                             &arg)) return false;
+            state->H_array[base + 1 + i] = arg;
+        }
+        return true;
+    }
+    return false;
+}
+
+static int wam_stored_term_tag_rank(WamValueTag tag) {
+    switch (tag) {
+        case VAL_UNBOUND: return 0;
+        case VAL_INT: return 1;
+        case VAL_FLOAT: return 2;
+        case VAL_ATOM: return 3;
+        case VAL_LIST: return 4;
+        case VAL_STR: return 5;
+        case VAL_REF: return 6;
+        default: return 7;
+    }
+}
+
+static int wam_compare_ints(int left, int right) {
+    return (left > right) - (left < right);
+}
+
+static int wam_compare_doubles(double left, double right) {
+    return (left > right) - (left < right);
+}
+
+static int wam_compare_stored_value(const WamStoredTerm *left_term,
+                                    WamValue left,
+                                    const WamStoredTerm *right_term,
+                                    WamValue right) {
+    int left_rank = wam_stored_term_tag_rank(left.tag);
+    int right_rank = wam_stored_term_tag_rank(right.tag);
+    if (left_rank != right_rank) return wam_compare_ints(left_rank, right_rank);
+
+    switch (left.tag) {
+        case VAL_UNBOUND:
+            return 0;
+        case VAL_INT:
+            return wam_compare_ints(left.data.integer, right.data.integer);
+        case VAL_FLOAT:
+            return wam_compare_doubles(left.data.floating, right.data.floating);
+        case VAL_ATOM:
+            return strcmp(left.data.atom, right.data.atom);
+        case VAL_LIST: {
+            int left_base = left.data.ref_addr;
+            int right_base = right.data.ref_addr;
+            if (left_base < 0 || left_base + 1 >= left_term->cell_count ||
+                right_base < 0 || right_base + 1 >= right_term->cell_count) {
+                return wam_compare_ints(left_base, right_base);
+            }
+            int head_cmp =
+                wam_compare_stored_value(left_term, left_term->cells[left_base],
+                                         right_term, right_term->cells[right_base]);
+            if (head_cmp != 0) return head_cmp;
+            return wam_compare_stored_value(left_term, left_term->cells[left_base + 1],
+                                            right_term, right_term->cells[right_base + 1]);
+        }
+        case VAL_STR: {
+            int left_base = left.data.ref_addr;
+            int right_base = right.data.ref_addr;
+            if (left_base < 0 || left_base >= left_term->cell_count ||
+                right_base < 0 || right_base >= right_term->cell_count) {
+                return wam_compare_ints(left_base, right_base);
+            }
+            WamValue left_functor = left_term->cells[left_base];
+            WamValue right_functor = right_term->cells[right_base];
+            int functor_cmp =
+                wam_compare_stored_value(left_term, left_functor,
+                                         right_term, right_functor);
+            if (functor_cmp != 0) return functor_cmp;
+            if (left_functor.tag != VAL_ATOM || right_functor.tag != VAL_ATOM) {
+                return 0;
+            }
+            int left_arity = 0;
+            int right_arity = 0;
+            if (!wam_parse_functor_arity(left_functor.data.atom, &left_arity) ||
+                !wam_parse_functor_arity(right_functor.data.atom, &right_arity)) {
+                return 0;
+            }
+            int arity_cmp = wam_compare_ints(left_arity, right_arity);
+            if (arity_cmp != 0) return arity_cmp;
+            for (int i = 0; i < left_arity; i++) {
+                int arg_cmp =
+                    wam_compare_stored_value(left_term, left_term->cells[left_base + 1 + i],
+                                             right_term, right_term->cells[right_base + 1 + i]);
+                if (arg_cmp != 0) return arg_cmp;
+            }
+            return 0;
+        }
+        case VAL_REF:
+            return wam_compare_ints(left.data.ref_addr, right.data.ref_addr);
+        default:
+            return 0;
+    }
+}
+
+static int wam_compare_stored_terms_for_qsort(const void *left,
+                                              const void *right) {
+    const WamStoredTerm *left_term = (const WamStoredTerm *)left;
+    const WamStoredTerm *right_term = (const WamStoredTerm *)right;
+    return wam_compare_stored_value(left_term, left_term->root,
+                                    right_term, right_term->root);
+}
+
+static void wam_aggregate_sort_dedup_items(WamAggregateFrame *frame) {
+    if (frame->item_count < 2) return;
+    qsort(frame->items, (size_t)frame->item_count, sizeof(WamStoredTerm),
+          wam_compare_stored_terms_for_qsort);
+
+    int out = 1;
+    for (int i = 1; i < frame->item_count; i++) {
+        WamStoredTerm *previous = &frame->items[out - 1];
+        WamStoredTerm *current = &frame->items[i];
+        if (wam_compare_stored_value(previous, previous->root,
+                                     current, current->root) == 0) {
+            wam_stored_term_free(current);
+        } else {
+            if (out != i) {
+                frame->items[out] = *current;
+                memset(current, 0, sizeof(WamStoredTerm));
+            }
+            out++;
+        }
+    }
+    frame->item_count = out;
+}
+
+static void wam_sort_aggregate_item_indices(WamAggregateFrame *frame,
+                                            int *indices,
+                                            int index_count) {
+    for (int i = 1; i < index_count; i++) {
+        int current = indices[i];
+        int j = i - 1;
+        while (j >= 0 &&
+               wam_compare_stored_value(&frame->items[indices[j]],
+                                         frame->items[indices[j]].root,
+                                         &frame->items[current],
+                                         frame->items[current].root) > 0) {
+            indices[j + 1] = indices[j];
+            j--;
+        }
+        indices[j + 1] = current;
+    }
+}
+
+static int wam_dedup_sorted_aggregate_item_indices(WamAggregateFrame *frame,
+                                                   int *indices,
+                                                   int index_count) {
+    if (index_count < 2) return index_count;
+    int out = 1;
+    for (int i = 1; i < index_count; i++) {
+        WamStoredTerm *previous = &frame->items[indices[out - 1]];
+        WamStoredTerm *current = &frame->items[indices[i]];
+        if (wam_compare_stored_value(previous, previous->root,
+                                     current, current->root) != 0) {
+            indices[out++] = indices[i];
+        }
+    }
+    return out;
+}
+
+static bool wam_build_aggregate_list_from_indices(WamState *state,
+                                                  WamAggregateFrame *frame,
+                                                  int *indices,
+                                                  int index_count,
+                                                  WamValue *out) {
+    WamValue tail = val_atom("[]");
+    for (int i = index_count - 1; i >= 0; i--) {
+        int item_index = indices[i];
+        WamValue head;
+        if (!wam_materialize_stored_term(state, &frame->items[item_index],
+                                         frame->items[item_index].root,
+                                         &head)) return false;
+        if (!wam_ensure_heap_slots(state, 2)) return false;
+        int base = state->H;
+        state->H_array[state->H++] = head;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_copy_current_witness_tuple(WamState *state,
+                                           WamAggregateFrame *frame,
+                                           WamStoredTerm *term) {
+    memset(term, 0, sizeof(WamStoredTerm));
+    if (frame->witness_count <= 0) {
+        term->root = val_atom("[]");
+        return true;
+    }
+    if (frame->witness_count == 1) {
+        WamValue *cell = wam_aggregate_witness_cell(state, frame, 0);
+        if (!cell) return false;
+        return wam_copy_term_to_stored(state, term, *cell, &term->root);
+    }
+
+    WamValue tail = val_atom("[]");
+    for (int i = frame->witness_count - 1; i >= 0; i--) {
+        WamValue *cell = wam_aggregate_witness_cell(state, frame, i);
+        if (!cell) return false;
+        WamValue head;
+        if (!wam_copy_term_to_stored(state, term, *cell, &head)) return false;
+        if (!wam_stored_term_reserve(term, 2)) return false;
+        int base = term->cell_count;
+        term->cell_count += 2;
+        term->cells[base] = head;
+        term->cells[base + 1] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    term->root = tail;
+    return true;
+}
+
+static bool wam_witness_regs_are_bound(WamState *state,
+                                       WamAggregateFrame *frame) {
+    for (int i = 0; i < frame->witness_count; i++) {
+        WamValue *witness = wam_aggregate_witness_cell(state, frame, i);
+        if (!witness) return false;
+        WamValue *cell = wam_deref_ptr(state, witness);
+        if (val_is_unbound(*cell)) return false;
+    }
+    return true;
+}
+
+static int wam_select_aggregate_witness_group(WamState *state,
+                                              WamAggregateFrame *frame) {
+    if (frame->witness_count <= 0) return 0;
+    if (frame->item_count <= 0) return -1;
+    if (!wam_witness_regs_are_bound(state, frame)) {
+        return 0;
+    }
+
+    WamStoredTerm selected;
+    if (!wam_copy_current_witness_tuple(state, frame, &selected)) return -1;
+    int selected_index = -1;
+    for (int i = 0; i < frame->item_count; i++) {
+        if (wam_compare_stored_value(&selected, selected.root,
+                                     &frame->witnesses[i],
+                                     frame->witnesses[i].root) == 0) {
+            selected_index = i;
+            break;
+        }
+    }
+    wam_stored_term_free(&selected);
+    return selected_index;
+}
+
+static bool wam_build_witness_group_indices(WamAggregateFrame *frame,
+                                            int selected_index,
+                                            int **indices_out,
+                                            int *index_count_out) {
+    if (selected_index < 0 || selected_index >= frame->item_count) return false;
+    int *indices = malloc(sizeof(int) * (size_t)frame->item_count);
+    if (!indices) return false;
+    int count = 0;
+    WamStoredTerm *selected = &frame->witnesses[selected_index];
+    for (int i = 0; i < frame->item_count; i++) {
+        if (wam_compare_stored_value(selected, selected->root,
+                                     &frame->witnesses[i],
+                                     frame->witnesses[i].root) == 0) {
+            indices[count++] = i;
+        }
+    }
+    *indices_out = indices;
+    *index_count_out = count;
+    return true;
+}
+
+static bool wam_build_witness_group_reps(WamAggregateFrame *frame,
+                                         int **reps_out,
+                                         int *group_count_out) {
+    if (frame->item_count <= 0) {
+        *reps_out = NULL;
+        *group_count_out = 0;
+        return true;
+    }
+    int *reps = malloc(sizeof(int) * (size_t)frame->item_count);
+    if (!reps) return false;
+    int group_count = 0;
+    for (int i = 0; i < frame->item_count; i++) {
+        bool seen = false;
+        for (int g = 0; g < group_count; g++) {
+            int rep = reps[g];
+            if (wam_compare_stored_value(&frame->witnesses[rep],
+                                         frame->witnesses[rep].root,
+                                         &frame->witnesses[i],
+                                         frame->witnesses[i].root) == 0) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            reps[group_count++] = i;
+        }
+    }
+    *reps_out = reps;
+    *group_count_out = group_count;
+    return true;
+}
+
+static bool wam_materialize_witness_component(WamState *state,
+                                              WamStoredTerm *witness,
+                                              int witness_count,
+                                              int component_index,
+                                              WamValue *out) {
+    if (component_index < 0 || component_index >= witness_count) return false;
+    if (witness_count == 1) {
+        return wam_materialize_stored_term(state, witness, witness->root, out);
+    }
+
+    WamValue cursor = witness->root;
+    for (int i = 0; i <= component_index; i++) {
+        if (cursor.tag != VAL_LIST) return false;
+        int base = cursor.data.ref_addr;
+        if (base < 0 || base + 1 >= witness->cell_count) return false;
+        if (i == component_index) {
+            return wam_materialize_stored_term(state, witness,
+                                               witness->cells[base], out);
+        }
+        cursor = witness->cells[base + 1];
+    }
+    return false;
+}
+
+static bool wam_unify_witness_registers_from_group(WamState *state,
+                                                   WamAggregateFrame *frame,
+                                                   int selected_index) {
+    if (frame->witness_count <= 0) return true;
+    WamStoredTerm *witness = &frame->witnesses[selected_index];
+    for (int i = 0; i < frame->witness_count; i++) {
+        WamValue value;
+        if (!wam_materialize_witness_component(state, witness,
+                                               frame->witness_count,
+                                               i, &value)) return false;
+        WamValue *target = wam_aggregate_witness_cell(state, frame, i);
+        if (!target) return false;
+        if (!wam_unify(state, target, &value)) return false;
+    }
+    return true;
+}
+
+static bool wam_bind_aggregate_group(WamState *state,
+                                     WamAggregateGroupIterator *iter,
+                                     int group_index) {
+    if (group_index < 0 || group_index >= iter->group_count) return false;
+    int selected_index = iter->group_reps[group_index];
+    WamAggregateFrame frame_view;
+    memset(&frame_view, 0, sizeof(WamAggregateFrame));
+    frame_view.kind = iter->kind;
+    frame_view.is_meta = iter->is_meta;
+    frame_view.result_reg = iter->result_reg;
+    frame_view.result_is_y = iter->result_is_y;
+    frame_view.meta_result = iter->meta_result;
+    frame_view.items = iter->items;
+    frame_view.witnesses = iter->witnesses;
+    frame_view.item_count = iter->item_count;
+    frame_view.item_cap = iter->item_cap;
+    frame_view.witness_count = iter->witness_count;
+    for (int i = 0; i < iter->witness_count; i++) {
+        frame_view.witness_regs[i] = iter->witness_regs[i];
+        frame_view.witness_is_y[i] = iter->witness_is_y[i];
+        frame_view.meta_witnesses[i] = iter->meta_witnesses[i];
+    }
+
+    int *indices = NULL;
+    int index_count = 0;
+    if (!wam_build_witness_group_indices(&frame_view, selected_index,
+                                         &indices, &index_count)) return false;
+    if (strcmp(iter->kind, "setof") == 0) {
+        wam_sort_aggregate_item_indices(&frame_view, indices, index_count);
+        index_count =
+            wam_dedup_sorted_aggregate_item_indices(&frame_view, indices,
+                                                    index_count);
+    }
+
+    WamValue result_list;
+    bool witness_ok =
+        wam_unify_witness_registers_from_group(state, &frame_view,
+                                               selected_index);
+    bool list_ok = witness_ok &&
+        wam_build_aggregate_list_from_indices(state, &frame_view, indices,
+                                              index_count, &result_list);
+    free(indices);
+    if (!list_ok) return false;
+
+    WamValue *result_cell = wam_aggregate_result_cell(state, &frame_view);
+    if (!wam_unify(state, result_cell, &result_list)) return false;
+    if (frame_view.is_meta) {
+        WamValue *meta_result = wam_deref_ptr(state, &frame_view.meta_result);
+        state->A[0] = *meta_result;
+    }
+    state->P = iter->return_pc;
+    return true;
+}
+
+static bool wam_bind_next_aggregate_group(WamState *state) {
+    if (state->aggregate_group_top <= 0) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top - 1];
+    if (iter->next_group >= iter->group_count) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+        return false;
+    }
+
+    int group_index = iter->next_group++;
+    bool has_more = iter->next_group < iter->group_count;
+    int return_pc = iter->return_pc;
+    if (has_more) {
+        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+    }
+
+    bool ok = wam_bind_aggregate_group(state, iter, group_index);
+    if (!has_more) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(iter);
+    }
+    if (ok) {
+        state->P = return_pc;
+    }
+    return ok;
+}
+
+static bool wam_push_aggregate_group_iterator(WamState *state,
+                                              WamAggregateFrame *frame,
+                                              int *group_reps,
+                                              int group_count,
+                                              int return_pc) {
+    if (state->aggregate_group_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+    WamAggregateGroupIterator *iter =
+        &state->aggregate_group_iters[state->aggregate_group_top];
+    wam_aggregate_group_iterator_free(iter);
+    iter->kind = frame->kind;
+    iter->is_meta = frame->is_meta;
+    iter->return_pc = return_pc;
+    iter->result_reg = frame->result_reg;
+    iter->result_is_y = frame->result_is_y;
+    iter->meta_result = frame->meta_result;
+    iter->items = frame->items;
+    iter->witnesses = frame->witnesses;
+    iter->item_count = frame->item_count;
+    iter->item_cap = frame->item_cap;
+    iter->witness_count = frame->witness_count;
+    for (int i = 0; i < frame->witness_count; i++) {
+        iter->witness_regs[i] = frame->witness_regs[i];
+        iter->witness_is_y[i] = frame->witness_is_y[i];
+        iter->meta_witnesses[i] = frame->meta_witnesses[i];
+    }
+    iter->group_reps = group_reps;
+    iter->group_count = group_count;
+    iter->next_group = 0;
+    state->aggregate_group_top++;
+
+    frame->items = NULL;
+    frame->witnesses = NULL;
+    frame->item_count = 0;
+    frame->item_cap = 0;
+    return true;
+}
+
+static void wam_aggregate_frame_free(WamAggregateFrame *frame) {
+    for (int i = 0; i < frame->item_count; i++) {
+        wam_stored_term_free(&frame->items[i]);
+        if (frame->witnesses) {
+            wam_stored_term_free(&frame->witnesses[i]);
+        }
+    }
+    free(frame->items);
+    free(frame->witnesses);
+    memset(frame, 0, sizeof(WamAggregateFrame));
+}
+
+static void wam_aggregate_clear_all(WamState *state) {
+    while (state->aggregate_top > 0) {
+        state->aggregate_top--;
+        wam_aggregate_frame_free(&state->aggregate_frames[state->aggregate_top]);
+    }
+    wam_trim_aggregate_group_iters(state, 0);
+}
+
+static bool wam_aggregate_append_item(WamState *state,
+                                      WamAggregateFrame *frame,
+                                      WamValue value) {
+    if (frame->item_count >= frame->item_cap) {
+        int new_cap = frame->item_cap ? frame->item_cap * 2 : WAM_INITIAL_CAP;
+        WamStoredTerm *items =
+            realloc(frame->items, sizeof(WamStoredTerm) * (size_t)new_cap);
+        if (!items) return false;
+        frame->items = items;
+        WamStoredTerm *witnesses = frame->witnesses;
+        if (frame->witness_count > 0) {
+            witnesses =
+                realloc(frame->witnesses, sizeof(WamStoredTerm) * (size_t)new_cap);
+            if (!witnesses) return false;
+            frame->witnesses = witnesses;
+        }
+        memset(items + frame->item_cap, 0,
+               sizeof(WamStoredTerm) * (size_t)(new_cap - frame->item_cap));
+        if (frame->witness_count > 0) {
+            memset(witnesses + frame->item_cap, 0,
+                   sizeof(WamStoredTerm) * (size_t)(new_cap - frame->item_cap));
+        }
+        frame->item_cap = new_cap;
+    }
+    WamStoredTerm *term = &frame->items[frame->item_count];
+    memset(term, 0, sizeof(WamStoredTerm));
+    if (!wam_copy_term_to_stored(state, term, value, &term->root)) {
+        wam_stored_term_free(term);
+        return false;
+    }
+    if (frame->witness_count > 0) {
+        WamStoredTerm *witness = &frame->witnesses[frame->item_count];
+        if (!wam_copy_current_witness_tuple(state, frame, witness)) {
+            wam_stored_term_free(term);
+            wam_stored_term_free(witness);
+            return false;
+        }
+    }
+    frame->item_count++;
+    return true;
+}
+
+static bool wam_build_aggregate_list(WamState *state,
+                                     WamAggregateFrame *frame,
+                                     WamValue *out) {
+    WamValue tail = val_atom("[]");
+    for (int i = frame->item_count - 1; i >= 0; i--) {
+        WamValue head;
+        if (!wam_materialize_stored_term(state, &frame->items[i],
+                                         frame->items[i].root, &head)) return false;
+        if (!wam_ensure_heap_slots(state, 2)) return false;
+        int base = state->H;
+        state->H_array[state->H++] = head;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static int wam_find_matching_end_aggregate(WamState *state, int begin_pc) {
+    int depth = 0;
+    for (int pc = begin_pc + 1; pc < state->code_size; pc++) {
+        if (state->code[pc].tag == INSTR_BEGIN_AGGREGATE) {
+            depth++;
+        } else if (state->code[pc].tag == INSTR_END_AGGREGATE) {
+            if (depth == 0) return pc;
+            depth--;
+        }
+    }
+    return -1;
+}
+
+static bool wam_finalize_aggregate_frame(WamState *state,
+                                         WamAggregateFrame *frame) {
+    bool is_collect = strcmp(frame->kind, "collect") == 0;
+    bool is_bagof = strcmp(frame->kind, "bagof") == 0;
+    bool is_setof = strcmp(frame->kind, "setof") == 0;
+    if (!is_collect && !is_bagof && !is_setof) return false;
+    int next_pc = frame->is_meta ? frame->return_pc : frame->end_pc + 1;
+    int frame_index = state->aggregate_top - 1;
+    if (frame->sentinel_b > 0 && frame->sentinel_b <= state->B) {
+        ChoicePoint *sentinel = &state->B_array[frame->sentinel_b - 1];
+        restore_choice_point(state, sentinel);
+    }
+    wam_prune_choice_points(state, frame->base_b);
+
+    if ((is_bagof || is_setof) && frame->item_count == 0) {
+        wam_aggregate_frame_free(frame);
+        state->aggregate_top = frame_index;
+        state->P = next_pc;
+        return false;
+    }
+
+    WamValue result_list;
+    if (frame->witness_count > 0) {
+        if (!wam_witness_regs_are_bound(state, frame)) {
+            int *group_reps = NULL;
+            int group_count = 0;
+            if (!wam_build_witness_group_reps(frame, &group_reps,
+                                              &group_count)) return false;
+            if (group_count <= 0) {
+                free(group_reps);
+                wam_aggregate_frame_free(frame);
+                state->aggregate_top = frame_index;
+                state->P = next_pc;
+                return false;
+            }
+            if (!wam_push_aggregate_group_iterator(state, frame, group_reps,
+                                                   group_count, next_pc)) {
+                free(group_reps);
+                return false;
+            }
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            state->aggregate_top = frame_index;
+            return wam_bind_next_aggregate_group(state);
+        }
+        int selected_index = wam_select_aggregate_witness_group(state, frame);
+        if (selected_index < 0) {
+            wam_aggregate_frame_free(frame);
+            state->aggregate_top = frame_index;
+            state->P = next_pc;
+            return false;
+        }
+        int *indices = NULL;
+        int index_count = 0;
+        if (!wam_build_witness_group_indices(frame, selected_index,
+                                             &indices, &index_count)) return false;
+        if (is_setof) {
+            wam_sort_aggregate_item_indices(frame, indices, index_count);
+            index_count =
+                wam_dedup_sorted_aggregate_item_indices(frame, indices, index_count);
+        }
+        bool witness_ok =
+            wam_unify_witness_registers_from_group(state, frame, selected_index);
+        bool list_ok = witness_ok &&
+            wam_build_aggregate_list_from_indices(state, frame, indices,
+                                                  index_count, &result_list);
+        free(indices);
+        if (!list_ok) return false;
+    } else {
+        if (is_setof) {
+            wam_aggregate_sort_dedup_items(frame);
+        }
+        if (!wam_build_aggregate_list(state, frame, &result_list)) return false;
+    }
+    WamValue *result_cell = wam_aggregate_result_cell(state, frame);
+    bool ok = wam_unify(state, result_cell, &result_list);
+    if (ok && frame->is_meta) {
+        WamValue *meta_result = wam_deref_ptr(state, &frame->meta_result);
+        state->A[0] = *meta_result;
+    }
+    wam_aggregate_frame_free(frame);
+    state->aggregate_top = frame_index;
+    if (!ok) return false;
+    state->P = next_pc;
+    return true;
+}
+
+static bool wam_collect_meta_aggregate_success(WamState *state) {
+    if (state->aggregate_top <= 0) return false;
+    WamAggregateFrame *frame =
+        &state->aggregate_frames[state->aggregate_top - 1];
+    if (!frame->is_meta) return false;
+    (void)wam_aggregate_append_item(state, frame, frame->meta_template);
+    return false;
+}
+
+static bool wam_finalize_meta_aggregate(WamState *state) {
+    if (state->aggregate_top <= 0) return false;
+    WamAggregateFrame *frame =
+        &state->aggregate_frames[state->aggregate_top - 1];
+    if (!frame->is_meta) return false;
+    return wam_finalize_aggregate_frame(state, frame);
+}
+
+static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
+                                        int return_pc) {
+    if (strcmp(kind, "collect") != 0 &&
+        strcmp(kind, "bagof") != 0 &&
+        strcmp(kind, "setof") != 0) return false;
+    if (state->aggregate_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+
+    WamAggregateFrame *frame = &state->aggregate_frames[state->aggregate_top++];
+    memset(frame, 0, sizeof(WamAggregateFrame));
+    frame->kind = kind;
+    frame->is_meta = true;
+    frame->begin_pc = state->P;
+    frame->end_pc = return_pc - 1;
+    frame->return_pc = return_pc;
+    frame->base_b = state->B;
+    frame->sentinel_b = state->B + 1;
+    frame->meta_template = state->A[0];
+    frame->meta_result = state->A[2];
+
+    if (strcmp(kind, "bagof") == 0 || strcmp(kind, "setof") == 0) {
+        WamValue exclude[WAM_AGGREGATE_META_MAX_VARS];
+        int exclude_count = 0;
+        if (!wam_collect_term_vars(state, state->A[0], exclude,
+                                   &exclude_count,
+                                   WAM_AGGREGATE_META_MAX_VARS)) {
+            state->aggregate_top--;
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            return false;
+        }
+        if (!wam_collect_goal_witnesses(state, state->A[1], exclude,
+                                        &exclude_count,
+                                        WAM_AGGREGATE_META_MAX_VARS,
+                                        frame->meta_witnesses,
+                                        &frame->witness_count)) {
+            state->aggregate_top--;
+            memset(frame, 0, sizeof(WamAggregateFrame));
+            return false;
+        }
+    }
+
+    push_choice_point(state, WAM_AGGREGATE_META_DONE, 32);
+    return wam_invoke_goal_as_call(state, state->A[1],
+                                   WAM_AGGREGATE_META_COLLECT);
+}
+
+static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
+    if (strcmp(instr->as.aggregate.kind, "collect") != 0 &&
+        strcmp(instr->as.aggregate.kind, "bagof") != 0 &&
+        strcmp(instr->as.aggregate.kind, "setof") != 0) return false;
+    if (instr->as.aggregate.witness_count < 0 ||
+        instr->as.aggregate.witness_count > WAM_AGGREGATE_MAX_WITNESSES) return false;
+    if (state->aggregate_top > 0) {
+        WamAggregateFrame *top = &state->aggregate_frames[state->aggregate_top - 1];
+        if (top->begin_pc == state->P && top->sentinel_b == state->B) {
+            return wam_finalize_aggregate_frame(state, top);
+        }
+    }
+    if (state->aggregate_top >= WAM_AGGREGATE_STACK_SIZE) return false;
+    int end_pc = wam_find_matching_end_aggregate(state, state->P);
+    if (end_pc < 0) return false;
+
+    WamAggregateFrame *frame = &state->aggregate_frames[state->aggregate_top++];
+    memset(frame, 0, sizeof(WamAggregateFrame));
+    frame->kind = instr->as.aggregate.kind;
+    frame->begin_pc = state->P;
+    frame->end_pc = end_pc;
+    frame->base_b = state->B;
+    frame->sentinel_b = state->B + 1;
+    frame->template_reg = instr->as.aggregate.template_reg;
+    frame->template_is_y = instr->as.aggregate.template_is_y;
+    frame->result_reg = instr->as.aggregate.result_reg;
+    frame->result_is_y = instr->as.aggregate.result_is_y;
+    frame->witness_count = instr->as.aggregate.witness_count;
+    for (int i = 0; i < frame->witness_count; i++) {
+        frame->witness_regs[i] = instr->as.aggregate.witness_regs[i];
+        frame->witness_is_y[i] = instr->as.aggregate.witness_is_y[i];
+    }
+    push_choice_point(state, state->P, 32);
+    state->P++;
+    return true;
+}
+
+static bool wam_end_aggregate(WamState *state, Instruction *instr) {
+    if (state->aggregate_top <= 0) return false;
+    WamAggregateFrame *frame = &state->aggregate_frames[state->aggregate_top - 1];
+    if (strcmp(frame->kind, "collect") != 0 &&
+        strcmp(frame->kind, "bagof") != 0 &&
+        strcmp(frame->kind, "setof") != 0) return false;
+    WamValue *template_cell =
+        resolve_reg(state, instr->as.aggregate.template_reg,
+                    instr->as.aggregate.template_is_y);
+    if (!wam_aggregate_append_item(state, frame, *template_cell)) return false;
+    if (state->B > frame->sentinel_b) {
+        return false;
+    }
+    return wam_finalize_aggregate_frame(state, frame);
+}
 
 void wam_state_init(WamState *state) {
     memset(state, 0, sizeof(WamState));
@@ -2046,7 +3807,8 @@ void wam_state_init(WamState *state) {
 }
 
 void wam_free_state(WamState *state) {
-    for (int i = 0; i < WAM_ATOM_HASH_SIZE; i++) {
+    wam_aggregate_clear_all(state);
+    for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
         while (e) {
             AtomEntry *next = e->next;
@@ -2055,6 +3817,7 @@ void wam_free_state(WamState *state) {
             e = next;
         }
     }
+    free(state->atom_table);
     for (int i = 0; i < state->code_size; i++) {
         if (state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) {
             free(state->code[i].as.switch_index.hash_table);
@@ -2068,7 +3831,12 @@ void wam_free_state(WamState *state) {
     free(state->TR_array);
     free(state->B_array);
     free(state->E_array);
+    wam_bidirectional_distance_cache_clear(state);
     free(state->category_edges);
+    free(state->category_edges_by_child);
+    free(state->category_ids);
+    free(state->category_id_by_atom);
+    free(state->category_id_by_value);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
     memset(state, 0, sizeof(WamState));
@@ -2080,11 +3848,21 @@ int wam_run_predicate(WamState *state, const char *pred,
     if (entry < 0) return WAM_ERR_OOB;
     int base_b = state->B;
     int base_call_base_top = state->call_base_top;
-    for (int i = 0; i < arity; i++) state->A[i] = args[i];
+    if (state->call_base_top >= WAM_CALL_STACK_SIZE) return WAM_ERR_OOB;
+    state->call_bases[state->call_base_top] = base_b;
+    state->call_base_preserve_choice[state->call_base_top] = false;
+    state->call_base_top++;
+    for (int i = 0; i < arity; i++) {
+        state->A[i] = val_is_unbound(args[i]) ? wam_make_ref(state) : args[i];
+    }
     state->CP = WAM_HALT;
     state->P = entry;
     int rc = wam_run(state);
     wam_prune_choice_points(state, base_b);
+    for (int i = 0; i < arity; i++) {
+        WamValue *cell = wam_deref_ptr(state, &state->A[i]);
+        state->A[i] = *cell;
+    }
     state->call_base_top = base_call_base_top;
     return rc;
 }
@@ -2123,6 +3901,22 @@ static bool wam_eval_arith(WamState *state, WamValue value, int *out) {
         *out = lhs / rhs;
         return true;
     }
+    if (strcmp(functor->data.atom, "///2") == 0) {
+        /* // is integer (floored) division. */
+        if (rhs == 0) return false;
+        int q = lhs / rhs;
+        if ((lhs % rhs != 0) && ((lhs < 0) != (rhs < 0))) q -= 1;
+        *out = q;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "mod/2") == 0) {
+        /* mod follows the sign of the divisor (floored modulo). */
+        if (rhs == 0) return false;
+        int m = lhs % rhs;
+        if (m != 0 && ((m < 0) != (rhs < 0))) m += rhs;
+        *out = m;
+        return true;
+    }
     return false;
 }
 
@@ -2135,6 +3929,11 @@ static bool wam_term_functor(WamState *state, WamValue term,
         return true;
     }
     if (cell->tag == VAL_INT) {
+        *name_out = *cell;
+        *arity_out = 0;
+        return true;
+    }
+    if (cell->tag == VAL_FLOAT) {
         *name_out = *cell;
         *arity_out = 0;
         return true;
@@ -2266,7 +4065,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
     if (strcmp(op, "!/0") == 0 && arity == 0) {
-        state->B = 0;
+        if (state->call_base_top <= 0) return false;
+        int target_b = state->call_bases[state->call_base_top - 1];
+        if (target_b < 0 || target_b > state->B) return false;
+        wam_prune_choice_points(state, target_b);
         return true;
     }
 
@@ -2278,8 +4080,8 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
         if (strcmp(op, "atom/1") == 0) return a1->tag == VAL_ATOM;
         if (strcmp(op, "integer/1") == 0) return a1->tag == VAL_INT;
-        if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT;
-        if (strcmp(op, "float/1") == 0) return false;
+        if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
+        if (strcmp(op, "float/1") == 0) return a1->tag == VAL_FLOAT;
         if (strcmp(op, "var/1") == 0) return val_is_unbound(*a1);
         if (strcmp(op, "nonvar/1") == 0) return !val_is_unbound(*a1);
         if (strcmp(op, "compound/1") == 0) return a1->tag == VAL_STR || a1->tag == VAL_LIST;
@@ -2308,7 +4110,7 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         WamValue *arity_cell = wam_deref_ptr(state, &state->A[2]);
         if (arity_cell->tag != VAL_INT || arity_cell->data.integer < 0) return false;
         if (arity_cell->data.integer == 0) {
-            if (name->tag != VAL_ATOM && name->tag != VAL_INT) return false;
+            if (name->tag != VAL_ATOM && name->tag != VAL_INT && name->tag != VAL_FLOAT) return false;
             return wam_unify(state, &state->A[0], name);
         }
         if (name->tag != VAL_ATOM) return false;
@@ -2352,21 +4154,41 @@ bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity)
     return handler(state, pred, arity);
 }
 
-void wam_register_category_parent(WamState *state, const char *child, const char *parent) {
-    if (state->category_edge_count >= state->category_edge_cap) {
-        state->category_edge_cap = state->category_edge_cap ? state->category_edge_cap * 2 : WAM_INITIAL_CAP;
-        state->category_edges = realloc(state->category_edges, sizeof(CategoryEdge) * state->category_edge_cap);
+static bool wam_ensure_category_edge_capacity(WamState *state, int additional) {
+    if (additional <= 0) return true;
+    if (state->category_edge_count > INT_MAX - additional) return false;
+    int needed = state->category_edge_count + additional;
+    if (state->category_edge_cap >= needed) return true;
+    int new_cap = state->category_edge_cap ? state->category_edge_cap : WAM_INITIAL_CAP;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
     }
+    CategoryEdge *edges =
+        realloc(state->category_edges, sizeof(CategoryEdge) * (size_t)new_cap);
+    if (!edges) return false;
+    state->category_edges = edges;
+    state->category_edge_cap = new_cap;
+    return true;
+}
+
+void wam_register_category_parent(WamState *state, const char *child, const char *parent) {
+    if (!wam_ensure_category_edge_capacity(state, 1)) return;
     state->category_edges[state->category_edge_count].child = wam_intern_atom(state, child);
     state->category_edges[state->category_edge_count].parent = wam_intern_atom(state, parent);
     state->category_edge_count++;
+    state->category_child_index_dirty = true;
+    wam_bidirectional_distance_cache_clear(state);
 }
 
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent) {
     wam_register_category_parent(state, child, parent);
 }
 
-void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight) {
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight) {
     if (state->weighted_edge_count >= state->weighted_edge_cap) {
         state->weighted_edge_cap = state->weighted_edge_cap ? state->weighted_edge_cap * 2 : WAM_INITIAL_CAP;
         state->weighted_edges = realloc(state->weighted_edges, sizeof(WeightedEdge) * state->weighted_edge_cap);
@@ -2377,7 +4199,7 @@ void wam_register_weighted_edge(WamState *state, const char *source, const char 
     state->weighted_edge_count++;
 }
 
-void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, int distance) {
+void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance) {
     if (state->direct_distance_edge_count >= state->direct_distance_edge_cap) {
         state->direct_distance_edge_cap = state->direct_distance_edge_cap ? state->direct_distance_edge_cap * 2 : WAM_INITIAL_CAP;
         state->direct_distance_edges = realloc(state->direct_distance_edges, sizeof(WeightedEdge) * state->direct_distance_edge_cap);
@@ -2394,6 +4216,7 @@ void wam_fact_source_init(WamFactSource *source) {
 
 void wam_fact_source_close(WamFactSource *source) {
     free(source->edges);
+    free(source->edges_by_child);
     memset(source, 0, sizeof(WamFactSource));
 }
 
@@ -2401,6 +4224,11 @@ static void wam_fact_source_add_edge(WamState *state,
                                      WamFactSource *source,
                                      const char *child,
                                      const char *parent) {
+    if (source->edge_count == 0) {
+        source->owner_state = state;
+    } else if (source->owner_state != state) {
+        source->owner_state = NULL;
+    }
     if (source->edge_count >= source->edge_cap) {
         source->edge_cap = source->edge_cap ? source->edge_cap * 2 : WAM_INITIAL_CAP;
         source->edges = realloc(source->edges, sizeof(CategoryEdge) * source->edge_cap);
@@ -2408,6 +4236,7 @@ static void wam_fact_source_add_edge(WamState *state,
     source->edges[source->edge_count].child = wam_intern_atom(state, child);
     source->edges[source->edge_count].parent = wam_intern_atom(state, parent);
     source->edge_count++;
+    source->child_index_dirty = true;
 }
 
 bool wam_fact_source_load_tsv(WamState *state, WamFactSource *source, const char *path) {
@@ -2510,22 +4339,368 @@ done:
 #endif
 }
 
+static int wam_compare_category_edge_child_parent(const void *left, const void *right) {
+    const CategoryEdge *a = (const CategoryEdge *)left;
+    const CategoryEdge *b = (const CategoryEdge *)right;
+    int child_cmp = strcmp(a->child, b->child);
+    if (child_cmp != 0) return child_cmp;
+    return strcmp(a->parent, b->parent);
+}
+
+static int wam_category_edge_lower_bound(CategoryEdge *edges, int count, const char *child) {
+    int lo = 0;
+    int hi = count;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (strcmp(edges[mid].child, child) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static bool wam_fact_source_ensure_child_index(WamFactSource *source) {
+    if (!source->child_index_dirty &&
+        source->edges_by_child &&
+        source->child_index_count == source->edge_count) {
+        return true;
+    }
+    free(source->edges_by_child);
+    source->edges_by_child = NULL;
+    source->child_index_count = 0;
+    if (source->edge_count == 0) {
+        source->child_index_dirty = false;
+        return true;
+    }
+    source->edges_by_child = malloc(sizeof(CategoryEdge) * (size_t)source->edge_count);
+    if (!source->edges_by_child) return false;
+    memcpy(source->edges_by_child, source->edges, sizeof(CategoryEdge) * (size_t)source->edge_count);
+    qsort(source->edges_by_child, (size_t)source->edge_count, sizeof(CategoryEdge),
+          wam_compare_category_edge_child_parent);
+    source->child_index_count = source->edge_count;
+    source->child_index_dirty = false;
+    return true;
+}
+
+bool wam_fact_source_child_range(WamFactSource *source, const char *child,
+                                 CategoryEdge **edges_out, int *count_out) {
+    *edges_out = NULL;
+    *count_out = 0;
+    if (!wam_fact_source_ensure_child_index(source)) return false;
+    int start = wam_category_edge_lower_bound(source->edges_by_child,
+                                              source->child_index_count,
+                                              child);
+    if (start >= source->child_index_count ||
+        strcmp(source->edges_by_child[start].child, child) != 0) {
+        return true;
+    }
+    int end = start;
+    while (end < source->child_index_count &&
+           strcmp(source->edges_by_child[end].child, child) == 0) {
+        end++;
+    }
+    *edges_out = source->edges_by_child + start;
+    *count_out = end - start;
+    return true;
+}
+
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges) {
+    CategoryEdge *edges = NULL;
     int count = 0;
-    for (int i = 0; i < source->edge_count; i++) {
-        if (strcmp(source->edges[i].child, arg1) != 0) continue;
-        if (count < max_edges) out_edges[count] = source->edges[i];
-        count++;
+    if (!wam_fact_source_child_range(source, arg1, &edges, &count)) return -1;
+    for (int i = 0; i < count && i < max_edges; i++) {
+        out_edges[i] = edges[i];
     }
     return count;
 }
 
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source) {
-    for (int i = 0; i < source->edge_count; i++) {
-        wam_register_category_parent(state, source->edges[i].child, source->edges[i].parent);
+    if (source->edge_count <= 0) return true;
+    if (!wam_ensure_category_edge_capacity(state, source->edge_count)) {
+        return false;
     }
+
+    CategoryEdge *target = state->category_edges + state->category_edge_count;
+    if (source->owner_state == state) {
+        memcpy(target, source->edges, sizeof(CategoryEdge) * (size_t)source->edge_count);
+    } else {
+        for (int i = 0; i < source->edge_count; i++) {
+            target[i].child = wam_intern_atom(state, source->edges[i].child);
+            target[i].parent = wam_intern_atom(state, source->edges[i].parent);
+        }
+    }
+    state->category_edge_count += source->edge_count;
+    state->category_child_index_dirty = true;
+    wam_bidirectional_distance_cache_clear(state);
     return true;
+}
+
+static bool wam_state_ensure_category_child_index(WamState *state) {
+    if (!state->category_child_index_dirty &&
+        state->category_edges_by_child &&
+        state->category_child_index_count == state->category_edge_count) {
+        return true;
+    }
+    free(state->category_edges_by_child);
+    state->category_edges_by_child = NULL;
+    state->category_child_index_count = 0;
+    if (state->category_edge_count == 0) {
+        state->category_child_index_dirty = false;
+        return true;
+    }
+    state->category_edges_by_child = malloc(sizeof(CategoryEdge) * (size_t)state->category_edge_count);
+    if (!state->category_edges_by_child) return false;
+    memcpy(state->category_edges_by_child, state->category_edges,
+           sizeof(CategoryEdge) * (size_t)state->category_edge_count);
+    qsort(state->category_edges_by_child, (size_t)state->category_edge_count,
+          sizeof(CategoryEdge), wam_compare_category_edge_child_parent);
+    state->category_child_index_count = state->category_edge_count;
+    state->category_child_index_dirty = false;
+    return true;
+}
+
+static bool wam_state_category_child_range(WamState *state, const char *child,
+                                           CategoryEdge **edges_out,
+                                           int *count_out) {
+    *edges_out = NULL;
+    *count_out = 0;
+    if (!wam_state_ensure_category_child_index(state)) return false;
+    int start = wam_category_edge_lower_bound(state->category_edges_by_child,
+                                              state->category_child_index_count,
+                                              child);
+    if (start >= state->category_child_index_count ||
+        strcmp(state->category_edges_by_child[start].child, child) != 0) {
+        return true;
+    }
+    int end = start;
+    while (end < state->category_child_index_count &&
+           strcmp(state->category_edges_by_child[end].child, child) == 0) {
+        end++;
+    }
+    *edges_out = state->category_edges_by_child + start;
+    *count_out = end - start;
+    return true;
+}
+
+static uint64_t wam_category_id_hash_atom(const char *atom) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)atom;
+    while (*p) {
+        h ^= (uint64_t)(*p++);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t wam_category_id_hash_value(int id) {
+    uint32_t x = (uint32_t)id;
+    x ^= x >> 16;
+    x *= 2246822519u;
+    x ^= x >> 13;
+    x *= 3266489917u;
+    x ^= x >> 16;
+    return (uint64_t)x;
+}
+
+static int wam_category_id_index_capacity(int desired_count) {
+    int needed = desired_count * 2;
+    int capacity = WAM_INITIAL_CAP;
+    while (capacity < needed && capacity < (INT_MAX / 2)) {
+        capacity *= 2;
+    }
+    return capacity;
+}
+
+static int wam_category_id_find_atom_linear(WamState *state, const char *atom) {
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (strcmp(state->category_ids[i].atom, atom) == 0) return i;
+    }
+    return -1;
+}
+
+static int wam_category_id_find_value_linear(WamState *state, int id) {
+    for (int i = 0; i < state->category_id_count; i++) {
+        if (state->category_ids[i].id == id) return i;
+    }
+    return -1;
+}
+
+static bool wam_category_id_atom_index_find(WamState *state,
+                                            const char *atom,
+                                            int *index_out) {
+    if (!state->category_id_by_atom || state->category_id_by_atom_cap <= 0) {
+        return false;
+    }
+    int mask = state->category_id_by_atom_cap - 1;
+    int slot = (int)(wam_category_id_hash_atom(atom) & (uint64_t)mask);
+    while (state->category_id_by_atom[slot].atom) {
+        if (strcmp(state->category_id_by_atom[slot].atom, atom) == 0) {
+            *index_out = state->category_id_by_atom[slot].index;
+            return true;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return false;
+}
+
+static bool wam_category_id_value_index_find(WamState *state,
+                                             int id,
+                                             int *index_out) {
+    if (!state->category_id_by_value || state->category_id_by_value_cap <= 0) {
+        return false;
+    }
+    int mask = state->category_id_by_value_cap - 1;
+    int slot = (int)(wam_category_id_hash_value(id) & (uint64_t)mask);
+    while (state->category_id_by_value[slot].occupied) {
+        if (state->category_id_by_value[slot].id == id) {
+            *index_out = state->category_id_by_value[slot].index;
+            return true;
+        }
+        slot = (slot + 1) & mask;
+    }
+    return false;
+}
+
+static void wam_category_id_insert_atom_index(WamCategoryIdAtomIndexEntry *table,
+                                              int capacity,
+                                              const char *atom,
+                                              int index) {
+    int mask = capacity - 1;
+    int slot = (int)(wam_category_id_hash_atom(atom) & (uint64_t)mask);
+    while (table[slot].atom) {
+        if (strcmp(table[slot].atom, atom) == 0) {
+            table[slot].index = index;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+    table[slot].atom = atom;
+    table[slot].index = index;
+}
+
+static void wam_category_id_insert_value_index(WamCategoryIdValueIndexEntry *table,
+                                               int capacity,
+                                               int id,
+                                               int index,
+                                               bool replace_existing) {
+    int mask = capacity - 1;
+    int slot = (int)(wam_category_id_hash_value(id) & (uint64_t)mask);
+    while (table[slot].occupied) {
+        if (table[slot].id == id) {
+            if (replace_existing) table[slot].index = index;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+    table[slot].occupied = true;
+    table[slot].id = id;
+    table[slot].index = index;
+}
+
+static bool wam_rebuild_category_id_indexes_for_count(WamState *state,
+                                                      int desired_count) {
+    if (desired_count == 0 && state->category_id_count == 0) {
+        free(state->category_id_by_atom);
+        free(state->category_id_by_value);
+        state->category_id_by_atom = NULL;
+        state->category_id_by_value = NULL;
+        state->category_id_by_atom_cap = 0;
+        state->category_id_by_value_cap = 0;
+        return true;
+    }
+
+    int capacity = wam_category_id_index_capacity(desired_count);
+    WamCategoryIdAtomIndexEntry *atom_table =
+        calloc((size_t)capacity, sizeof(WamCategoryIdAtomIndexEntry));
+    WamCategoryIdValueIndexEntry *value_table =
+        calloc((size_t)capacity, sizeof(WamCategoryIdValueIndexEntry));
+    if (!atom_table || !value_table) {
+        free(atom_table);
+        free(value_table);
+        return false;
+    }
+
+    for (int i = 0; i < state->category_id_count; i++) {
+        wam_category_id_insert_atom_index(atom_table, capacity,
+                                          state->category_ids[i].atom, i);
+        wam_category_id_insert_value_index(value_table, capacity,
+                                           state->category_ids[i].id, i, false);
+    }
+
+    free(state->category_id_by_atom);
+    free(state->category_id_by_value);
+    state->category_id_by_atom = atom_table;
+    state->category_id_by_value = value_table;
+    state->category_id_by_atom_cap = capacity;
+    state->category_id_by_value_cap = capacity;
+    return true;
+}
+
+static bool wam_rebuild_category_id_indexes(WamState *state) {
+    return wam_rebuild_category_id_indexes_for_count(state,
+                                                    state->category_id_count);
+}
+
+static bool wam_ensure_category_id_index_capacity(WamState *state,
+                                                  int desired_count) {
+    int required_capacity = wam_category_id_index_capacity(desired_count);
+    if (state->category_id_by_atom &&
+        state->category_id_by_value &&
+        state->category_id_by_atom_cap >= required_capacity &&
+        state->category_id_by_value_cap >= required_capacity) {
+        return true;
+    }
+    return wam_rebuild_category_id_indexes_for_count(state, desired_count);
+}
+
+void wam_register_category_id(WamState *state, const char *atom, int id) {
+    const char *interned = wam_intern_atom(state, atom);
+    int existing_index = -1;
+    if (!wam_category_id_atom_index_find(state, interned, &existing_index) &&
+        (!state->category_id_by_atom || state->category_id_by_atom_cap <= 0)) {
+        existing_index = wam_category_id_find_atom_linear(state, interned);
+    }
+    if (existing_index >= 0) {
+        int old_id = state->category_ids[existing_index].id;
+        state->category_ids[existing_index].id = id;
+        if (old_id != id ||
+            !state->category_id_by_atom ||
+            !state->category_id_by_value) {
+            (void)wam_rebuild_category_id_indexes(state);
+        }
+        wam_bidirectional_distance_cache_clear(state);
+        return;
+    }
+    if (state->category_id_count >= state->category_id_cap) {
+        state->category_id_cap = state->category_id_cap ? state->category_id_cap * 2 : WAM_INITIAL_CAP;
+        WamCategoryIdEntry *entries =
+            realloc(state->category_ids,
+                    sizeof(WamCategoryIdEntry) * (size_t)state->category_id_cap);
+        if (!entries) return;
+        state->category_ids = entries;
+    }
+    if (!wam_ensure_category_id_index_capacity(state, state->category_id_count + 1)) {
+        return;
+    }
+    int index = state->category_id_count;
+    state->category_ids[index].atom = interned;
+    state->category_ids[index].id = id;
+    state->category_id_count++;
+    wam_category_id_insert_atom_index(state->category_id_by_atom,
+                                      state->category_id_by_atom_cap,
+                                      interned, index);
+    wam_category_id_insert_value_index(state->category_id_by_value,
+                                       state->category_id_by_value_cap,
+                                       id, index, false);
+    wam_bidirectional_distance_cache_clear(state);
+}
+
+void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact) {
+    state->bidirectional_child_csr = artifact;
+    wam_bidirectional_distance_cache_clear(state);
 }
 
 static int32_t wam_read_i32_le(const unsigned char *p) {
@@ -2566,6 +4741,49 @@ static bool wam_pread_exact(int fd, void *buffer, size_t bytes, off_t offset) {
     return true;
 }
 
+static bool wam_direct_read_exact(WamReverseCsrArtifact *artifact,
+                                  void *buffer,
+                                  size_t bytes,
+                                  off_t offset) {
+    if (!artifact->direct_io) {
+        return wam_pread_exact(artifact->values_fd, buffer, bytes, offset);
+    }
+    if (artifact->direct_io_alignment == 0 || artifact->values_size < 0) return false;
+
+    size_t alignment = artifact->direct_io_alignment;
+    uint64_t start = (uint64_t)offset;
+    uint64_t end = start + (uint64_t)bytes;
+    if (end < start || end > (uint64_t)artifact->values_size) return false;
+    uint64_t aligned_start = start - (start % (uint64_t)alignment);
+    uint64_t aligned_end = ((end + (uint64_t)alignment - 1ULL) / (uint64_t)alignment) *
+                           (uint64_t)alignment;
+    if (aligned_end < aligned_start) return false;
+    if (aligned_end > (uint64_t)artifact->values_size) return false;
+    size_t read_bytes = (size_t)(aligned_end - aligned_start);
+    if (read_bytes == 0 || ((uint64_t)read_bytes != aligned_end - aligned_start)) return false;
+
+    void *scratch = NULL;
+    if (posix_memalign(&scratch, alignment, read_bytes) != 0) return false;
+    bool ok = wam_pread_exact(artifact->values_fd, scratch, read_bytes, (off_t)aligned_start);
+    if (ok) {
+        memcpy(buffer, ((unsigned char *)scratch) + (start - aligned_start), bytes);
+    }
+    free(scratch);
+    return ok;
+}
+
+static void wam_drop_fd_range(int fd, off_t offset, off_t bytes) {
+#if defined(POSIX_FADV_DONTNEED)
+    if (fd >= 0 && bytes > 0) {
+        (void)posix_fadvise(fd, offset, bytes, POSIX_FADV_DONTNEED);
+    }
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact) {
     memset(artifact, 0, sizeof(WamReverseCsrArtifact));
     artifact->index_fd = -1;
@@ -2592,14 +4810,28 @@ bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
                           const char *values_path) {
     const size_t record_bytes = 16;
     unsigned char *raw = NULL;
+    bool drop_after_read = artifact->drop_after_read;
+    bool direct_io = artifact->direct_io;
+    size_t direct_io_alignment = artifact->direct_io_alignment;
     bool ok = false;
     off_t index_size = 0;
 
     wam_reverse_csr_close(artifact);
+    artifact->drop_after_read = drop_after_read;
+    artifact->direct_io = direct_io;
+    artifact->direct_io_alignment = direct_io_alignment;
     artifact->index_fd = open(index_path, O_RDONLY);
     if (artifact->index_fd < 0) goto done;
-    artifact->values_fd = open(values_path, O_RDONLY);
+    int values_flags = O_RDONLY;
+#ifdef O_DIRECT
+    if (artifact->direct_io) values_flags |= O_DIRECT;
+#else
+    if (artifact->direct_io) goto done;
+#endif
+    artifact->values_fd = open(values_path, values_flags);
     if (artifact->values_fd < 0) goto done;
+    artifact->values_size = lseek(artifact->values_fd, 0, SEEK_END);
+    if (artifact->values_size < 0) goto done;
 
     index_size = lseek(artifact->index_fd, 0, SEEK_END);
     if (index_size < 0 || (index_size % (off_t)record_bytes) != 0) goto done;
@@ -2613,6 +4845,9 @@ bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
         raw = malloc((size_t)index_size);
         if (!artifact->rows || !raw) goto done;
         if (!wam_pread_exact(artifact->index_fd, raw, (size_t)index_size, 0)) goto done;
+        if (artifact->drop_after_read) {
+            wam_drop_fd_range(artifact->index_fd, 0, index_size);
+        }
         for (int i = 0; i < artifact->row_count; i++) {
             const unsigned char *record = raw + ((size_t)i * record_bytes);
             int parent = (int)wam_read_i32_le(record);
@@ -2631,6 +4866,30 @@ done:
     return ok;
 }
 
+bool wam_reverse_csr_load_pread_drop(WamReverseCsrArtifact *artifact,
+                                     const char *index_path,
+                                     const char *values_path) {
+    bool ok = false;
+    artifact->drop_after_read = true;
+    ok = wam_reverse_csr_load(artifact, index_path, values_path);
+    if (ok) artifact->drop_after_read = true;
+    return ok;
+}
+
+bool wam_reverse_csr_load_direct_io(WamReverseCsrArtifact *artifact,
+                                    const char *index_path,
+                                    const char *values_path,
+                                    int block_size_edges) {
+    if (block_size_edges <= 0) return false;
+    artifact->direct_io = true;
+    artifact->direct_io_alignment = 4096;
+    bool ok = wam_reverse_csr_load(artifact, index_path, values_path);
+    if (ok) {
+        artifact->direct_io = true;
+    }
+    return ok;
+}
+
 bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
                                       const char *values_path,
                                       const char *offset_env_path,
@@ -2644,11 +4903,25 @@ bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
 #else
     MDB_txn *txn = NULL;
     int rc = 0;
+    bool drop_after_read = artifact->drop_after_read;
+    bool direct_io = artifact->direct_io;
+    size_t direct_io_alignment = artifact->direct_io_alignment;
     bool ok = false;
 
     wam_reverse_csr_close(artifact);
-    artifact->values_fd = open(values_path, O_RDONLY);
+    artifact->drop_after_read = drop_after_read;
+    artifact->direct_io = direct_io;
+    artifact->direct_io_alignment = direct_io_alignment;
+    int values_flags = O_RDONLY;
+#ifdef O_DIRECT
+    if (artifact->direct_io) values_flags |= O_DIRECT;
+#else
+    if (artifact->direct_io) goto done;
+#endif
+    artifact->values_fd = open(values_path, values_flags);
     if (artifact->values_fd < 0) goto done;
+    artifact->values_size = lseek(artifact->values_fd, 0, SEEK_END);
+    if (artifact->values_size < 0) goto done;
 
     rc = mdb_env_create(&artifact->offset_env);
     if (rc != MDB_SUCCESS) goto done;
@@ -2673,6 +4946,32 @@ done:
     if (!ok) wam_reverse_csr_close(artifact);
     return ok;
 #endif
+}
+
+bool wam_reverse_csr_load_lmdb_offset_pread_drop(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name) {
+    bool ok = false;
+    artifact->drop_after_read = true;
+    ok = wam_reverse_csr_load_lmdb_offset(artifact, values_path, offset_env_path, db_name);
+    if (ok) artifact->drop_after_read = true;
+    return ok;
+}
+
+bool wam_reverse_csr_load_lmdb_offset_direct_io(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name,
+                                                int block_size_edges) {
+    if (block_size_edges <= 0) return false;
+    artifact->direct_io = true;
+    artifact->direct_io_alignment = 4096;
+    bool ok = wam_reverse_csr_load_lmdb_offset(artifact, values_path, offset_env_path, db_name);
+    if (ok) {
+        artifact->direct_io = true;
+    }
+    return ok;
 }
 
 static WamReverseCsrRow *wam_reverse_csr_find_row(WamReverseCsrArtifact *artifact,
@@ -2756,10 +5055,17 @@ int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
         unsigned char encoded[4];
         uint64_t edge_offset = offset_edges + (uint64_t)i;
         if (edge_offset > (UINT64_MAX / 4ULL)) return -1;
-        if (!wam_pread_exact(artifact->values_fd, encoded, sizeof(encoded), (off_t)(edge_offset * 4ULL))) {
+        if (!wam_direct_read_exact(artifact, encoded, sizeof(encoded), (off_t)(edge_offset * 4ULL))) {
             return -1;
         }
         out_children[i] = (int)wam_read_i32_le(encoded);
+    }
+    if (artifact->drop_after_read && to_read > 0) {
+        uint64_t first_byte = offset_edges * 4ULL;
+        uint64_t byte_count = (uint64_t)to_read * 4ULL;
+        if (first_byte <= (uint64_t)LLONG_MAX && byte_count <= (uint64_t)LLONG_MAX) {
+            wam_drop_fd_range(artifact->values_fd, (off_t)first_byte, (off_t)byte_count);
+        }
     }
     return total;
 }
@@ -2787,9 +5093,54 @@ bool wam_int_results_push(WamIntResults *results, int value) {
     return true;
 }
 
+void wam_bidirectional_ancestor_results_init(WamBidirectionalAncestorResults *results) {
+    memset(results, 0, sizeof(WamBidirectionalAncestorResults));
+}
+
+void wam_bidirectional_ancestor_results_close(WamBidirectionalAncestorResults *results) {
+    free(results->values);
+    memset(results, 0, sizeof(WamBidirectionalAncestorResults));
+}
+
+bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *results,
+                                             int total_hops,
+                                             int parent_hops,
+                                             int child_hops) {
+    if (results->count >= results->cap) {
+        results->cap = results->cap ? results->cap * 2 : WAM_INITIAL_CAP;
+        results->values = realloc(results->values,
+                                  sizeof(WamBidirectionalAncestorResult) * results->cap);
+        if (!results->values) {
+            results->count = 0;
+            results->cap = 0;
+            return false;
+        }
+    }
+    results->values[results->count].total_hops = total_hops;
+    results->values[results->count].parent_hops = parent_hops;
+    results->values[results->count].child_hops = child_hops;
+    results->count++;
+    return true;
+}
+
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth) {
     state->category_max_depth = max_depth > 0 ? max_depth : 10;
     wam_register_foreign_predicate(state, pred, 4, wam_category_ancestor_handler);
+}
+
+void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
+                                                int max_depth,
+                                                double parent_step_cost,
+                                                double child_step_cost,
+                                                double cost_budget) {
+    state->category_max_depth = max_depth > 0 ? max_depth : 10;
+    state->bidirectional_parent_step_cost =
+        parent_step_cost > 0.0 ? parent_step_cost : 1.0;
+    state->bidirectional_child_step_cost =
+        child_step_cost > 0.0 ? child_step_cost : 3.0;
+    state->bidirectional_cost_budget =
+        cost_budget > 0.0 ? cost_budget : 10.0;
+    wam_register_foreign_predicate(state, pred, 5, wam_bidirectional_ancestor_handler);
 }
 
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred) {
@@ -2861,6 +5212,327 @@ static bool wam_visited_array_contains(const char **visited, int visited_len, co
     return false;
 }
 
+bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out) {
+    int index = -1;
+    if (wam_category_id_atom_index_find(state, atom, &index) ||
+        ((!state->category_id_by_atom || state->category_id_by_atom_cap <= 0) &&
+         (index = wam_category_id_find_atom_linear(state, atom)) >= 0)) {
+        *id_out = state->category_ids[index].id;
+        return true;
+    }
+    return false;
+}
+
+bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out) {
+    int index = -1;
+    if (wam_category_id_value_index_find(state, id, &index) ||
+        ((!state->category_id_by_value || state->category_id_by_value_cap <= 0) &&
+         (index = wam_category_id_find_value_linear(state, id)) >= 0)) {
+        *atom_out = state->category_ids[index].atom;
+        return true;
+    }
+    return false;
+}
+
+typedef struct {
+    const char **keys;
+    int *distances;
+    int capacity;
+    int count;
+} WamBidirectionalDistanceMap;
+
+typedef struct WamBidirectionalDistanceCacheEntry {
+    const char *root;
+    WamBidirectionalDistanceMap distances;
+    struct WamBidirectionalDistanceCacheEntry *next;
+} WamBidirectionalDistanceCacheEntry;
+
+typedef struct {
+    const char **items;
+    int count;
+    int cap;
+} WamBidirectionalAtomQueue;
+
+static uint64_t wam_bidirectional_atom_hash(const char *atom) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)atom;
+    while (*p) {
+        h ^= (uint64_t)(*p++);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void wam_bidirectional_distance_map_init(WamBidirectionalDistanceMap *map) {
+    memset(map, 0, sizeof(WamBidirectionalDistanceMap));
+}
+
+static void wam_bidirectional_distance_map_close(WamBidirectionalDistanceMap *map) {
+    free(map->keys);
+    free(map->distances);
+    memset(map, 0, sizeof(WamBidirectionalDistanceMap));
+}
+
+static int wam_bidirectional_distance_map_slot(const char **keys,
+                                               int capacity,
+                                               const char *key,
+                                               bool *present) {
+    uint64_t h = wam_bidirectional_atom_hash(key);
+    int mask = capacity - 1;
+    int slot = (int)(h & (uint64_t)mask);
+    while (keys[slot]) {
+        if (strcmp(keys[slot], key) == 0) {
+            *present = true;
+            return slot;
+        }
+        slot = (slot + 1) & mask;
+    }
+    *present = false;
+    return slot;
+}
+
+static bool wam_bidirectional_distance_map_reserve(WamBidirectionalDistanceMap *map,
+                                                   int min_capacity) {
+    if (min_capacity < WAM_INITIAL_CAP) min_capacity = WAM_INITIAL_CAP;
+    if (map->capacity >= min_capacity) return true;
+
+    int new_capacity = map->capacity ? map->capacity : WAM_INITIAL_CAP;
+    while (new_capacity < min_capacity) {
+        if (new_capacity > INT_MAX / 2) return false;
+        new_capacity *= 2;
+    }
+
+    const char **new_keys = calloc((size_t)new_capacity, sizeof(const char *));
+    int *new_distances = malloc(sizeof(int) * (size_t)new_capacity);
+    if (!new_keys || !new_distances) {
+        free(new_keys);
+        free(new_distances);
+        return false;
+    }
+
+    for (int i = 0; i < map->capacity; i++) {
+        if (!map->keys[i]) continue;
+        bool present = false;
+        int slot = wam_bidirectional_distance_map_slot(
+            new_keys, new_capacity, map->keys[i], &present);
+        new_keys[slot] = map->keys[i];
+        new_distances[slot] = map->distances[i];
+    }
+
+    free(map->keys);
+    free(map->distances);
+    map->keys = new_keys;
+    map->distances = new_distances;
+    map->capacity = new_capacity;
+    return true;
+}
+
+static bool wam_bidirectional_distance_map_get(WamBidirectionalDistanceMap *map,
+                                               const char *key,
+                                               int *distance_out) {
+    if (map->capacity == 0) return false;
+    bool present = false;
+    int slot = wam_bidirectional_distance_map_slot(
+        map->keys, map->capacity, key, &present);
+    if (!present) return false;
+    *distance_out = map->distances[slot];
+    return true;
+}
+
+static bool wam_bidirectional_distance_map_put_if_absent(
+        WamBidirectionalDistanceMap *map,
+        const char *key,
+        int distance,
+        bool *inserted) {
+    if (map->capacity == 0 || map->count >= map->capacity / 2) {
+        int next_capacity = WAM_INITIAL_CAP;
+        if (map->capacity) {
+            if (map->capacity > INT_MAX / 2) return false;
+            next_capacity = map->capacity * 2;
+        }
+        if (!wam_bidirectional_distance_map_reserve(map, next_capacity)) return false;
+    }
+
+    bool present = false;
+    int slot = wam_bidirectional_distance_map_slot(
+        map->keys, map->capacity, key, &present);
+    if (present) {
+        *inserted = false;
+        return true;
+    }
+    map->keys[slot] = key;
+    map->distances[slot] = distance;
+    map->count++;
+    *inserted = true;
+    return true;
+}
+
+static void wam_bidirectional_atom_queue_init(WamBidirectionalAtomQueue *queue) {
+    memset(queue, 0, sizeof(WamBidirectionalAtomQueue));
+}
+
+static void wam_bidirectional_atom_queue_close(WamBidirectionalAtomQueue *queue) {
+    free(queue->items);
+    memset(queue, 0, sizeof(WamBidirectionalAtomQueue));
+}
+
+static bool wam_bidirectional_atom_queue_push(WamBidirectionalAtomQueue *queue,
+                                              const char *atom) {
+    if (queue->count >= queue->cap) {
+        int next_cap = WAM_INITIAL_CAP;
+        if (queue->cap) {
+            if (queue->cap > INT_MAX / 2) return false;
+            next_cap = queue->cap * 2;
+        }
+        const char **items = realloc(queue->items,
+                                     sizeof(const char *) * (size_t)next_cap);
+        if (!items) return false;
+        queue->items = items;
+        queue->cap = next_cap;
+    }
+    queue->items[queue->count++] = atom;
+    return true;
+}
+
+static bool wam_bidirectional_build_min_distances(WamState *state,
+                                                  const char *root,
+                                                  WamBidirectionalDistanceMap *map) {
+    WamBidirectionalAtomQueue queue;
+    wam_bidirectional_atom_queue_init(&queue);
+
+    bool inserted = false;
+    if (!wam_bidirectional_distance_map_put_if_absent(map, root, 0, &inserted) ||
+        !wam_bidirectional_atom_queue_push(&queue, root)) {
+        wam_bidirectional_atom_queue_close(&queue);
+        return false;
+    }
+
+    for (int head = 0; head < queue.count; head++) {
+        const char *node = queue.items[head];
+        int distance = 0;
+        if (!wam_bidirectional_distance_map_get(map, node, &distance)) continue;
+        int next_distance = distance + 1;
+
+        if (state->bidirectional_child_csr) {
+            int parent_id = 0;
+            if (!wam_category_atom_to_id(state, node, &parent_id)) continue;
+            int child_count = wam_reverse_csr_lookup_children(
+                state->bidirectional_child_csr, parent_id, NULL, 0);
+            if (child_count < 0) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            if (child_count == 0) continue;
+            int *child_ids = malloc(sizeof(int) * (size_t)child_count);
+            if (!child_ids) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            int read_count = wam_reverse_csr_lookup_children(
+                state->bidirectional_child_csr, parent_id, child_ids, child_count);
+            if (read_count < 0) {
+                free(child_ids);
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            int limit = read_count < child_count ? read_count : child_count;
+            for (int i = 0; i < limit; i++) {
+                const char *child = NULL;
+                if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+                bool child_inserted = false;
+                if (!wam_bidirectional_distance_map_put_if_absent(
+                        map, child, next_distance, &child_inserted)) {
+                    free(child_ids);
+                    wam_bidirectional_atom_queue_close(&queue);
+                    return false;
+                }
+                if (child_inserted &&
+                    !wam_bidirectional_atom_queue_push(&queue, child)) {
+                    free(child_ids);
+                    wam_bidirectional_atom_queue_close(&queue);
+                    return false;
+                }
+            }
+            free(child_ids);
+            continue;
+        }
+
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->parent, node) != 0) continue;
+            bool child_inserted = false;
+            if (!wam_bidirectional_distance_map_put_if_absent(
+                    map, edge->child, next_distance, &child_inserted)) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+            if (child_inserted &&
+                !wam_bidirectional_atom_queue_push(&queue, edge->child)) {
+                wam_bidirectional_atom_queue_close(&queue);
+                return false;
+            }
+        }
+    }
+
+    wam_bidirectional_atom_queue_close(&queue);
+    return true;
+}
+
+static void wam_bidirectional_distance_cache_clear(WamState *state) {
+    WamBidirectionalDistanceCacheEntry *entry =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    while (entry) {
+        WamBidirectionalDistanceCacheEntry *next = entry->next;
+        wam_bidirectional_distance_map_close(&entry->distances);
+        free(entry);
+        entry = next;
+    }
+    state->bidirectional_min_distance_cache = NULL;
+}
+
+static WamBidirectionalDistanceMap *wam_bidirectional_get_min_distances(
+        WamState *state,
+        const char *root) {
+    WamBidirectionalDistanceCacheEntry *entry =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    while (entry) {
+        if (strcmp(entry->root, root) == 0) {
+            return &entry->distances;
+        }
+        entry = entry->next;
+    }
+
+    WamBidirectionalDistanceCacheEntry *new_entry =
+        calloc(1, sizeof(WamBidirectionalDistanceCacheEntry));
+    if (!new_entry) return NULL;
+    new_entry->root = wam_intern_atom(state, root);
+    wam_bidirectional_distance_map_init(&new_entry->distances);
+    if (!wam_bidirectional_build_min_distances(
+            state, new_entry->root, &new_entry->distances)) {
+        wam_bidirectional_distance_map_close(&new_entry->distances);
+        free(new_entry);
+        return NULL;
+    }
+    new_entry->next =
+        (WamBidirectionalDistanceCacheEntry *)state->bidirectional_min_distance_cache;
+    state->bidirectional_min_distance_cache = new_entry;
+    return &new_entry->distances;
+}
+
+static bool wam_bidirectional_can_reach_root_within_budget(
+        WamBidirectionalDistanceMap *min_distances,
+        const char *node,
+        double next_cost,
+        double parent_cost,
+        double budget) {
+    int min_parent_hops = 0;
+    if (!wam_bidirectional_distance_map_get(
+            min_distances, node, &min_parent_hops)) {
+        return false;
+    }
+    return next_cost + ((double)min_parent_hops * parent_cost) <= budget;
+}
+
 static bool wam_category_ancestor_dfs(WamState *state,
                                       const char *cat,
                                       const char *root,
@@ -2870,9 +5542,11 @@ static bool wam_category_ancestor_dfs(WamState *state,
                                       int visited_len,
                                       WamIntResults *results) {
     bool found = false;
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_state_category_child_range(state, cat, &edges, &edge_count)) return false;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         if (strcmp(edge->parent, root) == 0) {
             if (!wam_int_results_push(results, depth + 1)) return false;
@@ -2882,9 +5556,8 @@ static bool wam_category_ancestor_dfs(WamState *state,
 
     if (visited_len >= max_depth || visited_len >= 64) return found;
 
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, cat) != 0) continue;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
         if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
         visited[visited_len] = edge->parent;
         if (wam_category_ancestor_dfs(state, edge->parent, root, depth + 1,
@@ -2929,6 +5602,78 @@ bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results)
                                      visited, visited_len, results);
 }
 
+bool wam_category_min_parent_hops(WamState *state,
+                                  const char *cat,
+                                  const char *root,
+                                  int *hops_out) {
+    if (!cat || !root || !hops_out) return false;
+    if (strcmp(cat, root) == 0) {
+        *hops_out = 0;
+        return true;
+    }
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) return false;
+    return wam_bidirectional_distance_map_get(min_distances, cat, hops_out);
+}
+
+bool wam_category_child_may_reach_root_within_budget(WamState *state,
+                                                     const char *cat,
+                                                     const char *root,
+                                                     int max_child_expansions,
+                                                     int child_depth,
+                                                     double parent_cost,
+                                                     double child_cost,
+                                                     double budget,
+                                                     int *candidate_count_out) {
+    if (candidate_count_out) *candidate_count_out = 0;
+    if (!state || !cat || !root) return true;
+    if (max_child_expansions <= 0 || child_depth <= 0) return false;
+    if (child_cost > budget) return false;
+    if (child_depth != 1) return true;
+    if (!state->bidirectional_child_csr) return true;
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) return true;
+
+    int parent_id = 0;
+    if (!wam_category_atom_to_id(state, cat, &parent_id)) return false;
+    int child_count = wam_reverse_csr_lookup_children(
+        state->bidirectional_child_csr, parent_id, NULL, 0);
+    if (child_count < 0) return true;
+    if (child_count == 0) return false;
+
+    int child_limit = child_count < 256 ? child_count : 256;
+    if (child_limit <= 0) return false;
+    int *child_ids = malloc(sizeof(int) * (size_t)child_limit);
+    if (!child_ids) return true;
+    int read_count = wam_reverse_csr_lookup_children(
+        state->bidirectional_child_csr, parent_id, child_ids, child_limit);
+    if (read_count < 0) {
+        free(child_ids);
+        return true;
+    }
+
+    int candidate_count = 0;
+    int limit = read_count < child_limit ? read_count : child_limit;
+    for (int i = 0; i < limit; i++) {
+        const char *child = NULL;
+        int min_parent_hops = 0;
+        if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+        if (!wam_bidirectional_distance_map_get(
+                min_distances, child, &min_parent_hops)) {
+            continue;
+        }
+        double total_cost = child_cost + ((double)min_parent_hops * parent_cost);
+        if (total_cost <= budget) {
+            candidate_count++;
+        }
+    }
+    free(child_ids);
+    if (candidate_count_out) *candidate_count_out = candidate_count;
+    return candidate_count > 0;
+}
+
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity) {
     (void)pred;
     if (arity != 4) return false;
@@ -2943,6 +5688,241 @@ bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity)
     WamValue result = val_int(results.values[0]);
     bool ok = wam_unify(state, &state->A[2], &result);
     wam_int_results_close(&results);
+    return ok;
+}
+
+static bool wam_bidirectional_ancestor_dfs(WamState *state,
+                                           const char *node,
+                                           const char *root,
+                                           int depth,
+                                           int max_depth,
+                                           const char **visited,
+                                           int visited_len,
+                                           int parent_hops,
+                                           int child_hops,
+                                           double cost,
+                                           WamBidirectionalDistanceMap *min_distances,
+                                           WamBidirectionalAncestorResults *results);
+
+static bool wam_bidirectional_ancestor_step_child(
+        WamState *state,
+        const char *child,
+        const char *root,
+        int depth,
+        int max_depth,
+        const char **visited,
+        int visited_len,
+        int parent_hops,
+        int child_hops,
+        double cost,
+        double parent_cost,
+        double child_cost,
+        double budget,
+        WamBidirectionalDistanceMap *min_distances,
+        WamBidirectionalAncestorResults *results,
+        bool *found) {
+    if (wam_visited_array_contains(visited, visited_len, child)) return true;
+    double next_cost = cost + child_cost;
+    if (next_cost > budget) return true;
+    if (!wam_bidirectional_can_reach_root_within_budget(
+            min_distances, child, next_cost, parent_cost, budget)) {
+        return true;
+    }
+    int next_child_hops = child_hops + 1;
+    if (strcmp(child, root) == 0) {
+        if (!wam_bidirectional_ancestor_results_push(
+                results, parent_hops + next_child_hops,
+                parent_hops, next_child_hops)) {
+            return false;
+        }
+        *found = true;
+        return true;
+    }
+    if (depth + 1 >= max_depth || visited_len >= 64) return true;
+    visited[visited_len] = child;
+    if (wam_bidirectional_ancestor_dfs(state, child, root,
+                                       depth + 1, max_depth,
+                                       visited, visited_len + 1,
+                                       parent_hops, next_child_hops,
+                                       next_cost, min_distances, results)) {
+        *found = true;
+    }
+    return true;
+}
+
+static bool wam_bidirectional_ancestor_expand_children(
+        WamState *state,
+        const char *node,
+        const char *root,
+        int depth,
+        int max_depth,
+        const char **visited,
+        int visited_len,
+        int parent_hops,
+        int child_hops,
+        double cost,
+        double parent_cost,
+        double child_cost,
+        double budget,
+        WamBidirectionalDistanceMap *min_distances,
+        WamBidirectionalAncestorResults *results,
+        bool *found) {
+    if (state->bidirectional_child_csr) {
+        int parent_id = 0;
+        if (!wam_category_atom_to_id(state, node, &parent_id)) return true;
+        int child_ids[256];
+        int child_count = wam_reverse_csr_lookup_children(
+            state->bidirectional_child_csr, parent_id, child_ids, 256);
+        if (child_count < 0) return false;
+        int limit = child_count < 256 ? child_count : 256;
+        for (int i = 0; i < limit; i++) {
+            const char *child = NULL;
+            if (!wam_category_id_to_atom(state, child_ids[i], &child)) continue;
+            if (!wam_bidirectional_ancestor_step_child(
+                    state, child, root, depth, max_depth, visited, visited_len,
+                    parent_hops, child_hops, cost, parent_cost, child_cost,
+                    budget, min_distances, results, found)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    for (int i = 0; i < state->category_edge_count; i++) {
+        CategoryEdge *edge = &state->category_edges[i];
+        if (strcmp(edge->parent, node) != 0) continue;
+        if (!wam_bidirectional_ancestor_step_child(
+                state, edge->child, root, depth, max_depth, visited, visited_len,
+                parent_hops, child_hops, cost, parent_cost, child_cost,
+                budget, min_distances, results, found)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool wam_bidirectional_ancestor_dfs(WamState *state,
+                                           const char *node,
+                                           const char *root,
+                                           int depth,
+                                           int max_depth,
+                                           const char **visited,
+                                           int visited_len,
+                                           int parent_hops,
+                                           int child_hops,
+                                           double cost,
+                                           WamBidirectionalDistanceMap *min_distances,
+                                           WamBidirectionalAncestorResults *results) {
+    bool found = false;
+    double parent_cost = state->bidirectional_parent_step_cost > 0.0
+        ? state->bidirectional_parent_step_cost
+        : 1.0;
+    double child_cost = state->bidirectional_child_step_cost > 0.0
+        ? state->bidirectional_child_step_cost
+        : 3.0;
+    double budget = state->bidirectional_cost_budget > 0.0
+        ? state->bidirectional_cost_budget
+        : 10.0;
+
+    CategoryEdge *edges = NULL;
+    int edge_count = 0;
+    if (!wam_state_category_child_range(state, node, &edges, &edge_count)) return false;
+    for (int i = 0; i < edge_count; i++) {
+        CategoryEdge *edge = &edges[i];
+        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+        double next_cost = cost + parent_cost;
+        if (next_cost > budget) continue;
+        if (!wam_bidirectional_can_reach_root_within_budget(
+                min_distances, edge->parent, next_cost, parent_cost, budget)) {
+            continue;
+        }
+        int next_parent_hops = parent_hops + 1;
+        if (strcmp(edge->parent, root) == 0) {
+            if (!wam_bidirectional_ancestor_results_push(
+                    results, next_parent_hops + child_hops,
+                    next_parent_hops, child_hops)) {
+                return false;
+            }
+            found = true;
+            continue;
+        }
+        if (depth + 1 >= max_depth || visited_len >= 64) continue;
+        visited[visited_len] = edge->parent;
+        if (wam_bidirectional_ancestor_dfs(state, edge->parent, root,
+                                           depth + 1, max_depth,
+                                           visited, visited_len + 1,
+                                           next_parent_hops, child_hops,
+                                           next_cost, min_distances, results)) {
+            found = true;
+        }
+    }
+
+    if (!wam_bidirectional_ancestor_expand_children(
+            state, node, root, depth, max_depth, visited, visited_len,
+            parent_hops, child_hops, cost, parent_cost, child_cost, budget,
+            min_distances, results, &found)) {
+        return false;
+    }
+
+    return found;
+}
+
+bool wam_collect_bidirectional_ancestor_hops(WamState *state,
+                                             WamBidirectionalAncestorResults *results) {
+    const char *cat = NULL;
+    const char *root = NULL;
+    const char *visited[64];
+    int visited_len = 0;
+    if (!wam_value_as_atom(state, state->A[0], &cat)) return false;
+    if (!wam_value_as_atom(state, state->A[1], &root)) return false;
+    if (strcmp(cat, root) == 0) {
+        return wam_bidirectional_ancestor_results_push(results, 0, 0, 0);
+    }
+
+    WamBidirectionalDistanceMap *min_distances =
+        wam_bidirectional_get_min_distances(state, root);
+    if (!min_distances) {
+        return false;
+    }
+
+    visited[visited_len++] = cat;
+    int max_depth = state->category_max_depth > 0 ? state->category_max_depth : 10;
+    bool ok = wam_bidirectional_ancestor_dfs(state, cat, root, 0, max_depth,
+                                             visited, visited_len, 0, 0, 0.0,
+                                             min_distances, results);
+    return ok;
+}
+
+static bool wam_unify_bidirectional_ancestor_result(
+        WamState *state,
+        WamBidirectionalAncestorResult *result) {
+    WamValue total_value = val_int(result->total_hops);
+    WamValue parent_value = val_int(result->parent_hops);
+    WamValue child_value = val_int(result->child_hops);
+    return wam_unify(state, &state->A[2], &total_value) &&
+           wam_unify(state, &state->A[3], &parent_value) &&
+           wam_unify(state, &state->A[4], &child_value);
+}
+
+bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != 5) return false;
+
+    WamBidirectionalAncestorResults results;
+    wam_bidirectional_ancestor_results_init(&results);
+    if (!wam_collect_bidirectional_ancestor_hops(state, &results) || results.count == 0) {
+        wam_bidirectional_ancestor_results_close(&results);
+        return false;
+    }
+
+    bool ok = false;
+    for (int i = 0; i < results.count; i++) {
+        if (wam_unify_bidirectional_ancestor_result(state, &results.values[i])) {
+            ok = true;
+            break;
+        }
+    }
+    wam_bidirectional_ancestor_results_close(&results);
     return ok;
 }
 
@@ -3244,12 +6224,12 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
                                                 const char *start,
                                                 const char *target,
                                                 const char **target_out,
-                                                int *weight_out) {
+                                                double *weight_out) {
     const char *nodes[256];
-    int distances[256];
+    double distances[256];
     bool done[256];
     int node_count = 0;
-    const int inf = 1073741823;
+    const double inf = 1.0e100;
 
     nodes[node_count] = start;
     distances[node_count] = 0;
@@ -3258,7 +6238,7 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
 
     while (true) {
         int best_idx = -1;
-        int best_distance = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (!done[i] && distances[i] < best_distance) {
                 best_idx = i;
@@ -3303,7 +6283,7 @@ static bool wam_weighted_shortest_path_dijkstra(WamState *state,
 
     if (!target) {
         int best_idx = -1;
-        int best_distance = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (strcmp(nodes[i], start) != 0 && distances[i] < best_distance) {
                 best_idx = i;
@@ -3335,19 +6315,19 @@ bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int a
     }
 
     const char *result_target = NULL;
-    int result_weight = 0;
+    double result_weight = 0.0;
     if (!wam_weighted_shortest_path_dijkstra(state, start, target,
                                              &result_target, &result_weight)) {
         return false;
     }
 
     WamValue target_value = val_atom(result_target);
-    WamValue weight_value = val_int(result_weight);
+    WamValue weight_value = val_number_from_double(result_weight);
     return wam_unify(state, &state->A[1], &target_value) &&
            wam_unify(state, &state->A[2], &weight_value);
 }
 
-static int wam_astar_heuristic(WamState *state, const char *node, const char *target) {
+static double wam_astar_heuristic(WamState *state, const char *node, const char *target) {
     for (int i = 0; i < state->direct_distance_edge_count; i++) {
         WeightedEdge *edge = &state->direct_distance_edges[i];
         if (strcmp(edge->source, node) == 0 && strcmp(edge->target, target) == 0) {
@@ -3361,12 +6341,12 @@ static bool wam_astar_shortest_path_search(WamState *state,
                                            const char *start,
                                            const char *target,
                                            int dimensionality,
-                                           int *weight_out) {
+                                           double *weight_out) {
     const char *nodes[256];
-    int distances[256];
+    double distances[256];
     bool done[256];
     int node_count = 0;
-    const int inf = 1073741823;
+    const double inf = 1.0e100;
     (void)dimensionality;
 
     nodes[node_count] = start;
@@ -3376,12 +6356,12 @@ static bool wam_astar_shortest_path_search(WamState *state,
 
     while (true) {
         int best_idx = -1;
-        int best_score = inf;
-        int best_distance = inf;
+        double best_score = inf;
+        double best_distance = inf;
         for (int i = 0; i < node_count; i++) {
             if (done[i]) continue;
-            int heuristic = wam_astar_heuristic(state, nodes[i], target);
-            int score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
+            double heuristic = wam_astar_heuristic(state, nodes[i], target);
+            double score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
             if (score < best_score || (score == best_score && distances[i] < best_distance)) {
                 best_idx = i;
                 best_score = score;
@@ -3437,14 +6417,14 @@ bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arit
     WamValue *dim_cell = wam_deref_ptr(state, &state->A[2]);
     if (dim_cell->tag != VAL_INT) return false;
 
-    int result_weight = 0;
+    double result_weight = 0.0;
     if (!wam_astar_shortest_path_search(state, start, target,
                                         dim_cell->data.integer,
                                         &result_weight)) {
         return false;
     }
 
-    WamValue weight_value = val_int(result_weight);
+    WamValue weight_value = val_number_from_double(result_weight);
     return wam_unify(state, &state->A[3], &weight_value);
 }
 '.

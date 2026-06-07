@@ -1,8 +1,12 @@
 :- encoding(utf8).
 :- use_module(library(plunit)).
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
+:- use_module('../src/unifyweaver/targets/wam_wat_lowered_emitter').
 
 :- begin_tests(wam_wat_target).
+
+assert_substring(Haystack, Needle) :-
+    assertion(sub_string(Haystack, _, _, _, Needle)).
 
 %% --- Register mapping ---
 
@@ -65,6 +69,24 @@ test(encode_get_value) :-
     wam_instruction_to_wat_bytes(get_value('X1', 'A2'), [], Hex),
     assertion(atom(Hex)),
     assertion(sub_string(Hex, 0, _, _, "\\02")).  % tag=2
+
+test(operand_helper_decodes_canonical_encoding) :-
+    wam_instruction_to_wat_operands(put_constant(42, 'A1'), [], put_constant, Op1, Op2),
+    assertion(Op1 == 42),
+    assertion(Op2 =:= (1 << 32)).
+
+test(lowered_emitter_accepts_deterministic_clause) :-
+    WamCode = 'put_constant 42 A1
+builtin_call integer/1 1
+proceed
+',
+    wam_wat_lowerable(answer/0, WamCode, Reason),
+    assertion(Reason == single_clause),
+    lower_predicate_to_wat(answer/0, WamCode, [], lowered('answer/0', FuncName, Code)),
+    assertion(FuncName == lowered_answer_0),
+    assert_substring(Code, "(func $lowered_answer_0"),
+    assert_substring(Code, "(call $do_put_constant"),
+    assert_substring(Code, "(call $do_builtin_call").
 
 test(encode_get_structure) :-
     wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
@@ -312,6 +334,41 @@ test(write_wat_project) :-
     retractall(user:test_greet),
     (exists_file(TmpFile) -> delete_file(TmpFile) ; true).
 
+test(write_wat_project_default_stays_interpreter_only) :-
+    get_time(T),
+    format(atom(TmpFile), '/tmp/test_wam_wat_default_~w.wat', [T]),
+    assertz(user:test_wat_default_mode :- true),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_wat_default_mode/0],
+                                  [module_name(test_wam_default)], TmpFile),
+            read_file_to_string(TmpFile, Content, []),
+            assertion(\+ sub_string(Content, _, _, _, "$lowered_test_wat_default_mode_0")),
+            assertion(sub_string(Content, _, _, _, "$run_loop"))
+        ),
+        (   retractall(user:test_wat_default_mode),
+            (exists_file(TmpFile) -> delete_file(TmpFile) ; true)
+        )
+    ).
+
+test(write_wat_project_functions_mode_emits_lowered_entry) :-
+    get_time(T),
+    format(atom(TmpFile), '/tmp/test_wam_wat_lowered_~w.wat', [T]),
+    assertz(user:test_wat_lowered_mode :- integer(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_wat_lowered_mode/0],
+                                  [module_name(test_wam_lowered), emit_mode(functions)], TmpFile),
+            read_file_to_string(TmpFile, Content, []),
+            assertion(sub_string(Content, _, _, _, "$lowered_test_wat_lowered_mode_0")),
+            assertion(sub_string(Content, _, _, _, "Lowered clause-1 failed: replay")),
+            assertion(sub_string(Content, _, _, _, "$run_loop"))
+        ),
+        (   retractall(user:test_wat_lowered_mode),
+            (exists_file(TmpFile) -> delete_file(TmpFile) ; true)
+        )
+    ).
+
 %% --- wat2wasm syntax validation ---
 
 %% --- Functional execution via wat2wasm + node ---
@@ -352,8 +409,17 @@ const imports={env:{\n\c
   }catch(e){console.log('ERROR '+e.message);process.exit(1);}\n\c
 })();\n".
 
+
+wam_wat_tmp_path(Prefix, Ext, Path) :-
+    (   getenv('TMPDIR', Dir)
+    ->  true
+    ;   Dir = '/tmp'
+    ),
+    get_time(T),
+    format(atom(Path), '~w/~w_~w.~w', [Dir, Prefix, T, Ext]).
+
 ensure_node_harness(HarnessPath) :-
-    HarnessPath = '/data/data/com.termux/files/home/tmp/wam_wat_test_harness.js',
+    wam_wat_tmp_path(wam_wat_test_harness, js, HarnessPath),
     (   exists_file(HarnessPath)
     ->  true
     ;   node_harness_source(Src),
@@ -445,9 +511,7 @@ test(functional_integer_type_check, [condition(tool_available(wat2wasm)),
     %% $default which returned 0 (fail) unconditionally. After the fix,
     %% the br_table routes ID 12 to a real handler that checks
     %% A1.tag == 1 (integer).
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_int_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_int, wat, WatFile),
     assertz(user:test_int_check :- integer(42)),
     setup_call_cleanup(
         true,
@@ -473,9 +537,7 @@ test(functional_atom_type_check_fail, [condition(tool_available(wat2wasm)),
     %% atom). Return value 0 proves the dispatch distinguishes tags
     %% correctly rather than unconditionally returning 1. Pairs with
     %% functional_integer_type_check as a negative test.
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_atomfail_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_atomfail, wat, WatFile),
     assertz(user:test_atom_fail :- atom(42)),
     setup_call_cleanup(
         true,
@@ -521,9 +583,7 @@ test(functional_cross_predicate_call, [condition(tool_available(wat2wasm)),
     %%   (c) simple_id''s head unifies with A1 and A2 correctly
     %%       using the shared single data segment
     %%   (d) simple_id''s proceed halts cleanly since CP=-1
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_cross_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_cross, wat, WatFile),
     assertz(user:simple_id(X, X)),
     assertz(user:cross_caller :- simple_id(hello, _)),
     setup_call_cleanup(
@@ -554,9 +614,7 @@ test(functional_copy_term_nested, [condition(tool_available(wat2wasm)),
     %% fresh inner compound and recursively copies its args. A return
     %% value of 1 means the worklist processed every level and the
     %% final root value was written back to A2.
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_nested_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_copy_nested, wat, WatFile),
     assertz(user:test_func_copy_nested :- copy_term(outer(inner(a, b), c), _)),
     setup_call_cleanup(
         true,
@@ -582,9 +640,7 @@ test(functional_copy_term_compound, [condition(tool_available(wat2wasm)),
     %; worklist''s trivial path (one compound, no nesting, no vars).
     %% With the deep impl this is still a meaningful sanity test and
     %% a regression guard.
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_copy, wat, WatFile),
     assertz(user:test_func_copy :- copy_term(foo(a, b), _)),
     setup_call_cleanup(
         true,
@@ -613,9 +669,7 @@ test(functional_univ_decompose_compound, [condition(tool_available(wat2wasm)),
     %% path is deferred. The test exercises the entire pipeline:
     %% canonical WAM → builtin_call =../2 → $builtin_univ → cons-list
     %% construction on the heap → success return.
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_univ_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_univ, wat, WatFile),
     assertz(user:test_func_univ :- (bar(a, b) =.. _)),
     setup_call_cleanup(
         true,
@@ -637,9 +691,7 @@ test(functional_univ_decompose_compound, [condition(tool_available(wat2wasm)),
 
 test(functional_true_succeeds, [condition(tool_available(wat2wasm)),
                                  condition(tool_available(node))]) :-
-    get_time(T),
-    format(atom(WatFile),
-        '/data/data/com.termux/files/home/tmp/test_wam_func_true_~w.wat', [T]),
+    wam_wat_tmp_path(test_wam_func_true, wat, WatFile),
     assertz(user:test_func_true :- true),
     setup_call_cleanup(
         true,
@@ -664,10 +716,9 @@ test(wat2wasm_validates) :-
     %% paren imbalance in $builtin_arith_cmp to ship unnoticed. The
     %% assertion is now replaced with a direct unification that fails
     %% the test on non-zero exit.
-    get_time(T),
-    TmpDir = '/data/data/com.termux/files/home/tmp',
-    format(atom(TmpWat), '~w/test_wam_validate_~w.wat', [TmpDir, T]),
-    format(atom(TmpWasm), '~w/test_wam_validate_~w.wasm', [TmpDir, T]),
+    wam_wat_tmp_path(test_wam_validate, wat, TmpWat),
+    file_name_extension(Base, _, TmpWat),
+    file_name_extension(Base, wasm, TmpWasm),
     assertz(user:test_validate :- true),
     Predicates = [test_validate/0],
     Options = [module_name(validate_test)],

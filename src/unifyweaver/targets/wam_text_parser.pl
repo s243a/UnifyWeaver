@@ -197,17 +197,28 @@ wam_recognise_instruction(["get_structure", F, Ai],    get_structure(F, Ai)).
 wam_recognise_instruction(["get_list", Ai],            get_list(Ai)).
 wam_recognise_instruction(["get_nil", Ai],             get_nil(Ai)).
 wam_recognise_instruction(["get_integer", N, Ai],      get_integer(N, Ai)).
+wam_recognise_instruction(["get_float", F, Ai],        get_float(F, Ai)).
 wam_recognise_instruction(["unify_variable", Xn],      unify_variable(Xn)).
 wam_recognise_instruction(["unify_value", Xn],         unify_value(Xn)).
 wam_recognise_instruction(["unify_constant", C],       unify_constant(C)).
+wam_recognise_instruction(["unify_nil"],               unify_nil).
+wam_recognise_instruction(["unify_void", N],           unify_void(N)).
 wam_recognise_instruction(["put_variable", Xn, Ai],    put_variable(Xn, Ai)).
 wam_recognise_instruction(["put_value", Xn, Ai],       put_value(Xn, Ai)).
+wam_recognise_instruction(["put_unsafe_value", Yn, Ai], put_unsafe_value(Yn, Ai)).
 wam_recognise_instruction(["put_constant", C, Ai],     put_constant(C, Ai)).
+wam_recognise_instruction(["put_nil", Ai],             put_nil(Ai)).
+wam_recognise_instruction(["put_integer", N, Ai],      put_integer(N, Ai)).
+wam_recognise_instruction(["put_float", F, Ai],        put_float(F, Ai)).
 wam_recognise_instruction(["put_structure", F, Ai],    put_structure(F, Ai)).
 wam_recognise_instruction(["put_list", Ai],            put_list(Ai)).
 wam_recognise_instruction(["set_variable", Xn],        set_variable(Xn)).
 wam_recognise_instruction(["set_value", Xn],           set_value(Xn)).
+wam_recognise_instruction(["set_local_value", Xn],     set_local_value(Xn)).
 wam_recognise_instruction(["set_constant", C],         set_constant(C)).
+wam_recognise_instruction(["set_nil"],                 set_nil).
+wam_recognise_instruction(["set_integer", N],          set_integer(N)).
+wam_recognise_instruction(["set_void", N],             set_void(N)).
 wam_recognise_instruction(["call", P, N],              call(P, N)).
 wam_recognise_instruction(["execute", P],              execute(P)).
 wam_recognise_instruction(["proceed"],                 proceed).
@@ -216,6 +227,7 @@ wam_recognise_instruction(["allocate"],                allocate).
 wam_recognise_instruction(["deallocate"],              deallocate).
 wam_recognise_instruction(["builtin_call", Op, Ar],    builtin_call(Op, Ar)).
 wam_recognise_instruction(["call_foreign", Pred, Ar],  call_foreign(Pred, Ar)).
+wam_recognise_instruction(["arg", N, Reg, OutReg],     arg(N, Reg, OutReg)).
 wam_recognise_instruction(["try_me_else", L],          try_me_else(L)).
 wam_recognise_instruction(["retry_me_else", L],        retry_me_else(L)).
 wam_recognise_instruction(["trust_me"],                trust_me).
@@ -229,6 +241,10 @@ wam_recognise_instruction(["retry", L],                retry(L)).
 wam_recognise_instruction(["trust", L],                trust(L)).
 wam_recognise_instruction(["jump", L],                 jump(L)).
 wam_recognise_instruction(["cut_ite"],                 cut_ite).
+% M17 soft-cut for if-then-else / negation: get_level Yn snapshots the
+% choicepoint level into Yn; cut Yn truncates choicepoints back to it.
+wam_recognise_instruction(["get_level", Yn],           get_level(Yn)).
+wam_recognise_instruction(["cut", Yn],                 cut(Yn)).
 wam_recognise_instruction(["begin_aggregate", K, V, R], begin_aggregate(K, V, R)).
 wam_recognise_instruction(["begin_aggregate", K, V, R, W],
                                                        begin_aggregate(K, V, R, W)).

@@ -53,6 +53,7 @@
     iso_errors_mode_for/3,               % +Config, +PI, -Mode
     iso_errors_warn_multi_module/2,      % +Config, +Predicates
     iso_errors_rewrite/4,                % +Config, +PI, +Items0, -Items
+    iso_errors_rewrite_item/3,           % +Mode, +Item0, -Item
     iso_errors_valid_pi/1,               % +PI
     iso_errors_pi_matches/2,             % +PatternPI, +TargetPI
     iso_errors_audit_normalise_pi/2,     % +PI, -NormPI

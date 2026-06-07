@@ -90,8 +90,13 @@
                 iso_errors_mode_for/3,
                 iso_errors_warn_multi_module/2,
                 iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
                 iso_errors_audit_normalise_pi/2,
                 iso_errors_audit_walk/5
+              ]).
+:- use_module('../targets/wam_text_parser',
+              [ wam_tokenize_line/2,
+                wam_recognise_instruction/2
               ]).
 :- use_module('../core/prolog_term_parser').
 :- use_module('../core/cpp_runtime_parser_wrappers').
@@ -4481,46 +4486,40 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 
 iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
+% Rewrite one line via the shared items pipeline. Tokenize the line
+% with the shared quote-aware tokenizer, recognise it to a structured
+% WAM item, apply the shared item-level ISO rewrite, and splice the
+% new key back into the original line.
+%
+% iso_errors_rewrite_item/3 (in core/iso_errors) is the single source
+% of truth for the builtin_call / put_structure / call / execute key
+% swaps — this target no longer carries its own per-shape text rules.
+% All four rewritable shapes carry the key as their first argument, so
+% arg(1, ...) extracts old/new keys generically.
+%
+% Splicing rather than re-printing the recognised item preserves the
+% original whitespace byte-for-byte, so existing text output is
+% unaffected. Any failure along the chain (unrecognised line, key not
+% in the ISO/lax tables, splice miss) falls through to OutLine = Line.
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
-    split_string(Line, " \t", " \t", Parts0),
-    exclude(==(""), Parts0, Parts),
-    (   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
     ->  true
     ;   OutLine = Line
     ).
 
-iso_errors_rewrite_parts(Mode, ["builtin_call", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["put_structure", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["call", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["execute", Key0 | _], Line, OutLine) :- !,
-    iso_errors_clean_key_token(Key0, Key),
-    iso_errors_lookup(Mode, Key, NewKey),
-    Key \== NewKey,
-    iso_errors_splice_line(Line, Key, NewKey, OutLine).
-
+% Kept: the audit (iso_errors_audit_classify_line/2) still uses this to
+% strip the trailing comma from a builtin_call key token.
 iso_errors_clean_key_token(Token0, Token) :-
     (   string_concat(Token, ",", Token0)
     ->  true
     ;   Token = Token0
     ).
-
-iso_errors_lookup(true, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
-iso_errors_lookup(false, Key, NewKey) :-
-    iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
-iso_errors_lookup(_, Key, Key).
 
 iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
     sub_string(Line, Before, KLen, _After, Key),
@@ -5037,6 +5036,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     generate_lookup_sources_expr_fs(Options, LookupSourcesExpr),
     (option(csr_path(_), Options) -> HasCsr = true ; HasCsr = false),
+    (option(csr_kernel(true), Options) -> HasCsrKernel = true ; HasCsrKernel = false),
     (option(lmdb_path(_), Options) -> HasLmdb = true ; HasLmdb = false),
     option(lmdb_materialisation(Materialisation), Options, cached),
     option(lmdb_l2_capacity(L2Cap), Options, 4096),
@@ -5054,6 +5054,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
         has_csr = HasCsr,
+        has_csr_kernel = HasCsrKernel,
         has_lmdb = HasLmdb,
         has_bidirectional = HasBidir,
         branch_factor = BranchFactor,
@@ -5083,15 +5084,22 @@ generate_lookup_sources_expr_fs(Options, Expr) :-
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_path(CsrPath), Options),
+    % csr_kernel mode constructs its CSR source directly in the kernel branch
+    % (forward category_parent CSR), so skip the auto WcLookupSources entry --
+    % its default category_child relation would point at a non-existent file.
+    \+ option(csr_kernel(true), Options),
     option(csr_relation(Rel), Options, category_child),
+    % Resolve the CSR artifact dir against factsDir at runtime (a relative
+    % csr_path like "csr" would otherwise be opened against the process CWD,
+    % not the fixture dir). Path.Combine leaves an absolute csr_path unchanged.
     format(atom(Entry),
-        '("~w", CsrReader.CsrLookupSource("~w", "~w") :> ILookupSource)',
+        '("~w", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "~w") :> ILookupSource)',
         [Rel, CsrPath, Rel]).
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_parent_path(CsrParentPath), Options),
     format(atom(Entry),
-        '("category_parent", CsrReader.CsrLookupSource("~w", "category_parent") :> ILookupSource)',
+        '("category_parent", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "category_parent") :> ILookupSource)',
         [CsrParentPath]).
 
 %% generate_fsproj(+ModName, +Options, -Code)

@@ -102,11 +102,16 @@ write_wam_go_project(Predicates, Options, ProjectDir) :-
     % can reference the same vars from anywhere in `package main`.
     init_atom_intern_table_go,
     compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    % lib.go has no import block of its own, but the native-strategy
+    % predicate bodies reference std packages (fmt/context/sync/bufio/os/…).
+    % Emit exactly the imports the generated code actually uses — Go errors
+    % on both missing and unused imports.
+    go_lib_import_block(PredicatesCode, ImportBlock),
     format(atom(LibContent),
 'package ~w
 
-~w
-', [PackageName, PredicatesCode]),
+~w~w
+', [PackageName, ImportBlock, PredicatesCode]),
     directory_file_path(ProjectDir, 'lib.go', LibPath),
     write_file(LibPath, LibContent),
 
@@ -172,28 +177,14 @@ var _ = fmt.Sprintf
     ;   true
     ),
 
-    % Generate main.go with RunParallel when parallel(true)
-    (   option(parallel(true), Options)
-    ->  (   PackageName == main
-        ->  format(atom(MainContent),
-'package main
-
-import "fmt"
-
-func main() {
-	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
-	seeds := [][]Value{
-		{&Atom{Name: "query"}},
-	}
-	results := RunParallel(ctx, seeds, 0)
-	for i, res := range results {
-		if res != nil {
-			fmt.Printf("Seed %%d: %%v\\n", i, res)
-		}
-	}
-}
-', [])
-        ;   format(atom(MainContent),
+    % Generate main.go benchmark harness from template (when package is main)
+    (   PackageName == main
+    ->  read_template_file('templates/targets/go_wam/main_bench.go.mustache', MainTemplate),
+        render_template(MainTemplate, [package_name=PackageName], MainContent),
+        directory_file_path(ProjectDir, 'main.go', MainPath),
+        write_file(MainPath, MainContent)
+    ;   option(parallel(true), Options)
+    ->  format(atom(MainContent),
 'package main
 
 import (
@@ -213,14 +204,71 @@ func main() {
 		}
 	}
 }
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName])
-        ),
+', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
     ),
 
     format('WAM Go project created at: ~w~n', [ProjectDir]).
+
+%% go_lib_import_block(+Code, -ImportBlock)
+%  Emit a Go `import (...)` block listing exactly the std packages the
+%  generated native predicate bodies reference. Go rejects both missing
+%  and unused imports, so we detect actual usage ("<pkg>.") in the code
+%  with line comments stripped (to avoid false positives like
+%  "// fmt.Sprintf style"). Empty block when nothing is used.
+go_lib_import_block(Code, ImportBlock) :-
+    go_strip_line_comments(Code, Stripped),
+    findall(Path,
+        ( go_std_import(Marker, Path), sub_string(Stripped, _, _, _, Marker) ),
+        Paths0),
+    sort(Paths0, Paths),
+    (   Paths == []
+    ->  ImportBlock = ""
+    ;   maplist([P, L]>>format(string(L), '\t"~w"', [P]), Paths, Ls),
+        atomic_list_concat(Ls, "\n", Inner),
+        format(string(ImportBlock), 'import (\n~w\n)\n\n', [Inner])
+    ).
+
+go_strip_line_comments(Code, Stripped) :-
+    split_string(Code, "\n", "", Lines),
+    maplist(go_strip_line_comment, Lines, SLines),
+    atomic_list_concat(SLines, "\n", Stripped).
+go_strip_line_comment(Line, Out) :-
+    ( sub_string(Line, B, _, _, "//") -> sub_string(Line, 0, B, _, Out) ; Out = Line ).
+
+%% go_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses ->, ; (disjunction / if-then-else), \+, or
+%  once. The native Go strategy mis-compiles these (interface{} comparisons
+%  for ->, an unwrapped stdin-pipeline fragment for \+); the WAM-lowered
+%  path handles them correctly, so such predicates are routed to WAM.
+%  See docs/GO_TARGET.md "Native control-construct codegen (deferred)" for
+%  what is blocked and what a proper native implementation could add.
+go_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    go_body_has_control(Body),
+    !.
+
+go_body_has_control(G) :- var(G), !, fail.
+go_body_has_control((_ -> _)) :- !.
+go_body_has_control((_ ; _)) :- !.
+go_body_has_control(\+ _) :- !.
+go_body_has_control(not(_)) :- !.
+go_body_has_control(once(_)) :- !.
+go_body_has_control((A , B)) :- !, ( go_body_has_control(A) -> true ; go_body_has_control(B) ).
+go_body_has_control(_) :- fail.
+
+%% go_std_import(+UsageMarker, -ImportPath)
+go_std_import("fmt.",     "fmt").
+go_std_import("context.", "context").
+go_std_import("sync.",    "sync").
+go_std_import("bufio.",   "bufio").
+go_std_import("os.",      "os").
+go_std_import("strings.", "strings").
+go_std_import("strconv.", "strconv").
+go_std_import("sort.",    "sort").
 
 %% compile_lowered_predicates(+Predicates, +Options, -Code)
 %  Attempts lowered emission for each predicate. Lowerable deterministic
@@ -258,8 +306,22 @@ compile_lowered_predicates(Predicates, Options, Code) :-
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
+    ;   resolve_template_path(Path, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content), "// Template not found: ~w", [Path])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python target's
+%  source_file/2-based resolution.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_go_target:write_wam_go_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
@@ -318,24 +380,30 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode0)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode1)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
-    ;   catch(
+    ;   % The native Go strategy mis-compiles control constructs: (C->T;E)
+        % becomes an `interface{} > 0` comparison (a type error) and \+ an
+        % unwrapped stdin-pipeline fragment. These are handled correctly by
+        % the WAM-lowered path, so decline native here and fall through to
+        % the WAM fallback branch below.
+        \+ go_pred_has_control_constructs(Module:Pred/Arity),
+        catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
             _, fail)
@@ -343,7 +411,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -448,6 +516,21 @@ wam_go_direct_builtin("select/3", 3, 'select/3').
 wam_go_direct_builtin(delete/3, 3, 'delete/3').
 wam_go_direct_builtin('delete/3', 3, 'delete/3').
 wam_go_direct_builtin("delete/3", 3, 'delete/3').
+wam_go_direct_builtin(subtract/3, 3, 'subtract/3').
+wam_go_direct_builtin('subtract/3', 3, 'subtract/3').
+wam_go_direct_builtin("subtract/3", 3, 'subtract/3').
+wam_go_direct_builtin(intersection/3, 3, 'intersection/3').
+wam_go_direct_builtin('intersection/3', 3, 'intersection/3').
+wam_go_direct_builtin("intersection/3", 3, 'intersection/3').
+wam_go_direct_builtin(union/3, 3, 'union/3').
+wam_go_direct_builtin('union/3', 3, 'union/3').
+wam_go_direct_builtin("union/3", 3, 'union/3').
+wam_go_direct_builtin(append/3, 3, 'append/3').
+wam_go_direct_builtin('append/3', 3, 'append/3').
+wam_go_direct_builtin("append/3", 3, 'append/3').
+wam_go_direct_builtin(permutation/2, 2, 'permutation/2').
+wam_go_direct_builtin('permutation/2', 2, 'permutation/2').
+wam_go_direct_builtin("permutation/2", 2, 'permutation/2').
 wam_go_direct_builtin(reverse/2, 2, 'reverse/2').
 wam_go_direct_builtin('reverse/2', 2, 'reverse/2').
 wam_go_direct_builtin("reverse/2", 2, 'reverse/2').
@@ -463,12 +546,42 @@ wam_go_direct_builtin("nth1/3", 3, 'nth1/3').
 wam_go_direct_builtin(numlist/3, 3, 'numlist/3').
 wam_go_direct_builtin('numlist/3', 3, 'numlist/3').
 wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
+wam_go_direct_builtin(between/3, 3, 'between/3').
+wam_go_direct_builtin('between/3', 3, 'between/3').
+wam_go_direct_builtin("between/3", 3, 'between/3').
+wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
+wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
+wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
+wam_go_direct_builtin(print/1, 1, 'print/1').
+wam_go_direct_builtin('print/1', 1, 'print/1').
+wam_go_direct_builtin("print/1", 1, 'print/1').
+wam_go_direct_builtin(format/1, 1, 'format/1').
+wam_go_direct_builtin('format/1', 1, 'format/1').
+wam_go_direct_builtin("format/1", 1, 'format/1').
+wam_go_direct_builtin(format/2, 2, 'format/2').
+wam_go_direct_builtin('format/2', 2, 'format/2').
+wam_go_direct_builtin("format/2", 2, 'format/2').
+wam_go_direct_builtin(sum_list/2, 2, 'sum_list/2').
+wam_go_direct_builtin('sum_list/2', 2, 'sum_list/2').
+wam_go_direct_builtin("sum_list/2", 2, 'sum_list/2').
+wam_go_direct_builtin(min_list/2, 2, 'min_list/2').
+wam_go_direct_builtin('min_list/2', 2, 'min_list/2').
+wam_go_direct_builtin("min_list/2", 2, 'min_list/2').
+wam_go_direct_builtin(max_list/2, 2, 'max_list/2').
+wam_go_direct_builtin('max_list/2', 2, 'max_list/2').
+wam_go_direct_builtin("max_list/2", 2, 'max_list/2').
+wam_go_direct_builtin(list_to_set/2, 2, 'list_to_set/2').
+wam_go_direct_builtin('list_to_set/2', 2, 'list_to_set/2').
+wam_go_direct_builtin("list_to_set/2", 2, 'list_to_set/2').
 wam_go_direct_builtin(sort/2, 2, 'sort/2').
 wam_go_direct_builtin('sort/2', 2, 'sort/2').
 wam_go_direct_builtin("sort/2", 2, 'sort/2').
 wam_go_direct_builtin(msort/2, 2, 'msort/2').
 wam_go_direct_builtin('msort/2', 2, 'msort/2').
 wam_go_direct_builtin("msort/2", 2, 'msort/2').
+wam_go_direct_builtin(keysort/2, 2, 'keysort/2').
+wam_go_direct_builtin('keysort/2', 2, 'keysort/2').
+wam_go_direct_builtin("keysort/2", 2, 'keysort/2').
 wam_go_direct_builtin('@</2', 2, '@</2').
 wam_go_direct_builtin("@</2", 2, '@</2').
 wam_go_direct_builtin('@=</2', 2, '@=</2').
@@ -495,6 +608,15 @@ wam_go_direct_builtin("string_code/3", 3, 'string_code/3').
 wam_go_direct_builtin(split_string/4, 4, 'split_string/4').
 wam_go_direct_builtin('split_string/4', 4, 'split_string/4').
 wam_go_direct_builtin("split_string/4", 4, 'split_string/4').
+wam_go_direct_builtin(tab/1, 1, 'tab/1').
+wam_go_direct_builtin('tab/1', 1, 'tab/1').
+wam_go_direct_builtin("tab/1", 1, 'tab/1').
+wam_go_direct_builtin(getenv/2, 2, 'getenv/2').
+wam_go_direct_builtin('getenv/2', 2, 'getenv/2').
+wam_go_direct_builtin("getenv/2", 2, 'getenv/2').
+wam_go_direct_builtin(setenv/2, 2, 'setenv/2').
+wam_go_direct_builtin('setenv/2', 2, 'setenv/2').
+wam_go_direct_builtin("setenv/2", 2, 'setenv/2').
 wam_go_direct_builtin(succ/2, 2, 'succ/2').
 wam_go_direct_builtin('succ/2', 2, 'succ/2').
 wam_go_direct_builtin("succ/2", 2, 'succ/2').
@@ -556,7 +678,8 @@ wam_instruction_to_go_literal(get_value(Xn, Ai), GoLiteral) :-
     format(atom(GoLiteral), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(get_structure(F, Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
-    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
+    escape_go_string(F, EscapedFunctor),
+    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_instruction_to_go_literal(get_list(Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
     format(atom(GoLiteral), '&GetList{Ai: ~w}', [AiIdx]).
@@ -582,7 +705,8 @@ wam_instruction_to_go_literal(put_value(Xn, Ai), GoLiteral) :-
     format(atom(GoLiteral), '&PutValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(put_structure(F, Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
-    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
+    escape_go_string(F, EscapedFunctor),
+    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_instruction_to_go_literal(put_list(Ai), GoLiteral) :-
     go_reg_index(Ai, AiIdx),
     format(atom(GoLiteral), '&PutList{Ai: ~w}', [AiIdx]).
@@ -629,6 +753,12 @@ wam_instruction_to_go_literal(retry_me_else(Label, Arity), GoLiteral) :-
 wam_instruction_to_go_literal(retry_me_else(Label), GoLiteral) :-
     format(atom(GoLiteral), '&RetryMeElse{Label: "~w", Arity: 100}', [Label]).
 wam_instruction_to_go_literal(trust_me, '&TrustMe{}').
+wam_instruction_to_go_literal(get_level(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_instruction_to_go_literal(cut(Yn), GoLiteral) :-
+    go_reg_index(Yn, YnIdx),
+    format(atom(GoLiteral), '&Cut{Reg: ~w}', [YnIdx]).
 
 wam_instruction_to_go_literal(switch_on_constant(Table), GoLiteral) :-
     maplist(go_const_case, Table, Cases),
@@ -1092,8 +1222,7 @@ go_foreign_astar_dimensionality(_Module, 5).
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, _, _, [], []).
 wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
-    split_string(Line, " \t", " \t", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
     ;   CleanParts = [First|_],
@@ -1104,11 +1233,81 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
             wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, RestLabels)
         ;   % Instruction line
             wam_line_to_go_literal(CleanParts, PredIndicator, Options, GoLit),
-            GoLits = [GoLit | RestLits],
-            NPC is PC + 1,
-            wam_lines_to_go(Rest, NPC, PredIndicator, Options, RestLits, Labels)
+            (   sub_atom(GoLit, 0, 2, _, '//')
+            ->  % Non-instruction placeholder: some unimplemented ops (e.g.
+                % arg/3 in certain modes) emit a `// TODO ...` comment instead
+                % of a real instruction. Go ignores comment lines, so they
+                % occupy NO slot in the runtime instruction array. They must
+                % therefore not advance PC or be counted in InstrCount —
+                % otherwise every predicate emitted after them gets a StartPC
+                % shifted by the number of comments, so it is entered past its
+                % prologue (e.g. skipping the put_variable that allocates a
+                % findall template), silently corrupting execution. Skip the
+                % comment entirely so PC accounting matches the emitted array.
+                wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
+            ;   GoLits = [GoLit | RestLits],
+                NPC is PC + 1,
+                wam_lines_to_go(Rest, NPC, PredIndicator, Options, RestLits, Labels)
+            )
         )
     ).
+
+wam_tokenize_line(Line, Parts) :-
+    string_chars(Line, Chars),
+    wam_tokenize_chars(Chars, [], RevParts),
+    reverse(RevParts, Parts).
+
+wam_tokenize_chars([], Parts, Parts).
+wam_tokenize_chars([C|Rest], Parts0, Parts) :-
+    char_type(C, space),
+    !,
+    wam_tokenize_chars(Rest, Parts0, Parts).
+wam_tokenize_chars(['\''|Rest], Parts0, Parts) :-
+    !,
+    wam_take_quoted(Rest, Token, Remaining),
+    wam_tokenize_chars(Remaining, [Token|Parts0], Parts).
+wam_tokenize_chars(Chars, Parts0, Parts) :-
+    wam_take_bare(Chars, Token, Remaining),
+    (   Token == ""
+    ->  Parts1 = Parts0
+    ;   Parts1 = [Token|Parts0]
+    ),
+    wam_tokenize_chars(Remaining, Parts1, Parts).
+
+wam_take_quoted(Rest, Token, Remaining) :-
+    wam_take_quoted_inner(Rest, ['\''], RevQuoted, AfterQuote),
+    reverse(RevQuoted, QuotedChars),
+    wam_take_bare_tail(AfterQuote, TailChars, Remaining),
+    append(QuotedChars, TailChars, TokenChars),
+    string_chars(Token, TokenChars).
+
+wam_take_quoted_inner([], Acc, Acc, []).
+wam_take_quoted_inner(['\\', C|Rest], Acc, RevQuoted, Remaining) :-
+    !,
+    wam_take_quoted_inner(Rest, [C, '\\'|Acc], RevQuoted, Remaining).
+wam_take_quoted_inner(['\''|Rest], Acc, ['\''|Acc], Rest) :-
+    !.
+wam_take_quoted_inner([C|Rest], Acc, RevQuoted, Remaining) :-
+    wam_take_quoted_inner(Rest, [C|Acc], RevQuoted, Remaining).
+
+wam_take_bare([], "", []).
+wam_take_bare(Chars, Token, Remaining) :-
+    wam_take_bare_chars(Chars, TokenChars, Remaining),
+    string_chars(Token, TokenChars).
+
+wam_take_bare_chars([], [], []).
+wam_take_bare_chars([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_chars([C|Rest], [C|TokenRest], Remaining) :-
+    wam_take_bare_chars(Rest, TokenRest, Remaining).
+
+wam_take_bare_tail([], [], []).
+wam_take_bare_tail([C|Rest], [], [C|Rest]) :-
+    char_type(C, space),
+    !.
+wam_take_bare_tail([C|Rest], [C|Tail], Remaining) :-
+    wam_take_bare_tail(Rest, Tail, Remaining).
 
 %% wam_line_to_go_literal(+Parts, -GoLit)
 %% parse_string_to_go_val(+Str, -GoVal)
@@ -1116,8 +1315,9 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
 % When the WAM compiler emits an atom that needs Prolog quoting (e.g.
 % an apostrophe-bearing category like 'People\'s_Republic_of_China'),
 % the WAM TEXT carries the quoted form. The split-on-whitespace parser
-% above hands that whole token here including the surrounding ' and
-% the backslash-escaped inner quote. If we just pass it to
+% used to break quoted constants containing whitespace into multiple tokens.
+% `wam_tokenize_line/2` now keeps that whole token here including the
+% surrounding ' and the backslash-escaped inner quote. If we just pass it to
 % go_value_literal/2 unchanged, the resulting Go literal becomes
 %     &Atom{Name: "'People\'s_Republic_of_China'"}
 % which (a) keeps the spurious outer apostrophes inside the atom's Name
@@ -1160,6 +1360,14 @@ wam_line_to_go_literal(["jump", L], GoLit) :-
     clean_comma(L, CL),
     format(atom(GoLit), '&Jump{Label: "~w"}', [CL]).
 wam_line_to_go_literal(["cut_ite"], '&CutIte{}').
+wam_line_to_go_literal(["get_level", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&GetLevel{Reg: ~w}', [YnIdx]).
+wam_line_to_go_literal(["cut", Yn], GoLit) :-
+    clean_comma(Yn, CYn),
+    go_reg_index(CYn, YnIdx),
+    format(atom(GoLit), '&Cut{Reg: ~w}', [YnIdx]).
 wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit) :-
     clean_comma(AggType, CAggType),
     clean_comma(ValueReg, CValueReg),
@@ -1186,10 +1394,20 @@ wam_line_to_go_literal(["get_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
+wam_line_to_go_literal(["arg", N, Src, Dest], GoLit) :-
+    % arg N, Src, Dest — extract argument N (1-based) of the term in
+    % register Src into register Dest. Previously unhandled: it fell
+    % through to the `// TODO` catch-all (a silent no-op), which is what
+    % left findall templates unbound after copy_term. Lower it to a real
+    % GetArgInto instruction.
+    clean_comma(N, CN), clean_comma(Src, CSrc), clean_comma(Dest, CDest),
+    go_reg_index(CSrc, SrcIdx), go_reg_index(CDest, DestIdx),
+    format(atom(GoLit), '&GetArgInto{Index: ~w, Src: ~w, Dest: ~w}', [CN, SrcIdx, DestIdx]).
 wam_line_to_go_literal(["get_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
-    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
+    escape_go_string(CFN, EscapedFunctor),
+    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_line_to_go_literal(["get_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
@@ -1223,7 +1441,8 @@ wam_line_to_go_literal(["put_value", Xn, Ai], GoLit) :-
 wam_line_to_go_literal(["put_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
-    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
+    escape_go_string(CFN, EscapedFunctor),
+    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [EscapedFunctor, AiIdx]).
 wam_line_to_go_literal(["put_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
     go_reg_index(CAi, AiIdx),
@@ -1436,6 +1655,14 @@ compile_go_step_case(CaseCode) :-
 
 wam_go_case('GetConstant', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        // Dereference before inspecting: the register may hold a *Ref or a
+        // bound *Unbound (bound via the Bindings table), e.g. the tail of a
+        // partial list carried through a recursive call. Without the deref,
+        // isUnbound() sees the raw *Unbound as unbound and rebinds it to the
+        // constant -- silently corrupting an already-bound value (get_constant
+        // [] would overwrite a bound [H|T] tail with []). Mirrors the deref
+        // GetStructure / GetList already do.
+        val = vm.deref(val)
         if isUnbound(val) {
             u := val.(*Unbound)
             vm.bindUnbound(u, i.C)
@@ -1490,6 +1717,7 @@ wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
 
 wam_go_case('GetList', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        val = vm.deref(val)
         if isUnbound(val) {
             addr := vm.heapPush(nil)
             l := &List{Elements: make([]Value, 2)}
@@ -1501,9 +1729,13 @@ wam_go_case('GetList', '        val := vm.Regs[i.Ai]
             vm.PC++
             return true
         }
-        val = vm.deref(val)
         if list, ok := val.(*List); ok && len(list.Elements) > 0 {
             vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
+            vm.PC++
+            return true
+        }
+        if h, t, ok := consHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
             vm.PC++
             return true
         }
@@ -1636,7 +1868,20 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         vm.Heap[addr] = s
         vm.CurrentStruct = s
         vm.CurrentList = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
+        ref := &Ref{Addr: addr}
+        // If this register holds an unbound placeholder (one a prior
+        // set_variable embedded into an enclosing structure/list arg), bind
+        // it to the new structure so the embedded copy resolves here. The
+        // compiler builds nested terms outer-first — e.g. +(+(A,B),C) or a
+        // list tail cell [|]/2 — leaving a placeholder in the arg slot that
+        // a later put_structure into the same register must fill. Trailing
+        // via bindUnbound keeps it backtrack-safe.
+        if cur := vm.Regs[i.Ai]; cur != nil {
+            if u, ok := vm.deref(cur).(*Unbound); ok {
+                vm.bindUnbound(u, ref)
+            }
+        }
+        vm.Regs[i.Ai] = ref
         vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
         vm.PC++
         return true').
@@ -1736,7 +1981,7 @@ wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back
         // active env frame. vm.E moves to the index of the just-pushed
         // frame so peekEnvFrame is O(1) and Deallocate can walk the
         // PrevE chain without scanning the stack.
-        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), PrevE: vm.E}
+        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), CutB0: vm.PendingB0, PrevE: vm.E}
         // Snapshot the Y-reg range (200..299) into the env frame so a
         // nested predicate that uses the same slot numbers via
         // PutVariable doesn''t silently clobber the caller''s Y-regs.
@@ -1776,26 +2021,77 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            if vm.executeForeignPredicate(i.Pred, i.Arity) {
+                vm.PC = vm.CP
+                return true
+            }
+            return false
+        }
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            vm.PC = vm.CP
+            return true
+        }
         return false').
+
+wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
+        var selected Value
+        switch t := term.(type) {
+        case *Compound:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *Structure:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *List:
+            head, tail, ok := vm.listHeadTail(t)
+            if !ok {
+                return false
+            }
+            if i.Index == 1 {
+                selected = head
+            } else if i.Index == 2 {
+                selected = tail
+            } else {
+                return false
+            }
+        default:
+            return false
+        }
+        vm.trailBinding(i.Dest)
+        vm.putReg(i.Dest, selected)
+        vm.PC++
+        return true').
 
 wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.Arity)').
 
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
+        vm.PendingB0 = len(vm.ChoicePoints)
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
-        return false').
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            return vm.executeForeignPredicate(i.Pred, 0)
+        }
+        return vm.executeIndexedAtomFact2(i.Pred)').
 
-wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Jump', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
@@ -1809,6 +2105,24 @@ wam_go_case('JumpPc', '        vm.PC = i.TargetPC
 
 wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
             vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true').
+
+% M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
+% current choicepoint-stack height into a Y register; Cut truncates the
+% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
+% the if-then-else / negation choicepoint AND every CP the condition
+% pushed above it -- the cut a proper negation / soft-cut condition needs.
+wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+        vm.PC++
+        return true').
+
+wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
+            target := int(iv.Val)
+            if target >= 0 && target < len(vm.ChoicePoints) {
+                vm.ChoicePoints = vm.ChoicePoints[:target]
+            }
         }
         vm.PC++
         return true').

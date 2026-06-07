@@ -80,6 +80,13 @@ pub enum Instruction {
     ExecutePc(usize),
     /// Return from predicate (jump to CP).
     Proceed,
+    /// No-op: advances the program counter by one. Emitted for WAM
+    /// instructions the Rust backend does not (yet) translate — chiefly the
+    /// first-argument indexing hints (switch_on_term, ...). Indexing is only
+    /// an optimisation, so skipping it and letting the try_me_else clause
+    /// chain run is correct; emitting a real instruction (rather than a
+    /// dropped comment) keeps every later label PC aligned.
+    NoOp,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
     /// Start collecting solutions for an aggregate.
@@ -102,6 +109,10 @@ pub enum Instruction {
     // === Indexing ===
     /// First-argument constant dispatch.
     SwitchOnConstant(Vec<(Value, String)>),
+    /// First-argument constant dispatch that falls through to the next
+    /// instruction (the try_me_else chain) when the argument is unbound or
+    /// matches no table key — as opposed to SwitchOnConstant, which fails.
+    SwitchOnConstantFallthrough(Vec<(Value, String)>),
     /// First-argument constant dispatch with pre-resolved PCs.
     SwitchOnConstantPc(Vec<(Value, usize)>),
     /// First-argument structure dispatch.

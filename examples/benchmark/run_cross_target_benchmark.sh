@@ -103,7 +103,7 @@ fi
 # Rust
 RUST_BIN=""
 if [ -n "${RUST_DIR:-}" ] && [ -f "$RUST_DIR/Cargo.toml" ]; then
-    if [ ! -f "$RUST_DIR/target/release/wam-rust-bench" ] && [ ! -f "$RUST_DIR/target/release/main" ]; then
+    if [ ! -f "$RUST_DIR/target/release/bench" ] && [ ! -f "$RUST_DIR/target/release/wam-rust-bench" ] && [ ! -f "$RUST_DIR/target/release/main" ]; then
         echo -n "  Building Rust... "
         BUILD_START=$(date +%s%N)
         (cd "$RUST_DIR" && cargo build --release 2>&1 | tail -1) || {
@@ -116,7 +116,7 @@ if [ -n "${RUST_DIR:-}" ] && [ -f "$RUST_DIR/Cargo.toml" ]; then
         echo "  Rust binary cached"
     fi
     # Find the binary
-    for name in wam-rust-bench main; do
+    for name in bench wam-rust-bench main; do
         if [ -f "$RUST_DIR/target/release/$name" ]; then
             RUST_BIN="$RUST_DIR/target/release/$name"
             break
@@ -157,7 +157,7 @@ run_benchmark() {
     for i in $(seq 1 $REPS); do
         local stdout_file="$OUTPUT_DIR/${name}_run${i}.tsv"
         local stderr_file="$OUTPUT_DIR/${name}_run${i}.stderr"
-        eval "$cmd" "$data_arg" > "$stdout_file" 2> "$stderr_file" || true
+        LANG=C.utf8 LC_ALL=C.utf8 eval "$cmd" "$data_arg" > "$stdout_file" 2> "$stderr_file" || true
         local qms=$(grep 'query_ms=' "$stderr_file" 2>/dev/null | sed 's/query_ms=//')
         local tms=$(grep 'total_ms=' "$stderr_file" 2>/dev/null | sed 's/total_ms=//')
         times+=("${qms:-?}")

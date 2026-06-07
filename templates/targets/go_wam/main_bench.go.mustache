@@ -1,0 +1,244 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"math"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+func loadTsvPairs(path string) []AtomPair {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var pairs []AtomPair
+	scanner := bufio.NewScanner(f)
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue
+		}
+		cols := strings.SplitN(scanner.Text(), "\t", 3)
+		if len(cols) >= 2 {
+			pairs = append(pairs, AtomPair{Left: cols[0], Right: cols[1]})
+		}
+	}
+	return pairs
+}
+
+func loadSingleColumn(path string) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var vals []string
+	scanner := bufio.NewScanner(f)
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue
+		}
+		s := strings.TrimSpace(scanner.Text())
+		if s != "" {
+			vals = append(vals, s)
+		}
+	}
+	return vals
+}
+
+func collectSolutions(ctx *WamContext, pc int, cat, root string, negN float64) float64 {
+	vm := NewWamStateFromCtx(ctx)
+	setupSharedForeignPredicates(vm)
+	vm.PC = pc
+	vm.Regs[0] = internAtom(cat)
+	vm.Regs[1] = internAtom(root)
+	vm.Regs[2] = &Unbound{Name: "_Hops", Idx: 1000000}
+	vm.Regs[3] = &List{Elements: []Value{internAtom(cat)}}
+	vm.CP = 0
+
+	var weightSum float64
+	for {
+		if !vm.Run() {
+			break
+		}
+		v := vm.getReg(2)
+		if v != nil {
+			v = vm.deref(v)
+			switch val := v.(type) {
+			case *Integer:
+				weightSum += math.Pow(float64(val.Val)+1.0, negN)
+			case *Float:
+				weightSum += math.Pow(val.Val+1.0, negN)
+			}
+		}
+		if !vm.backtrack() {
+			break
+		}
+	}
+	return weightSum
+}
+
+func computeReachableToRoot(root string, reverseIndex map[string][]string, maxDepth int) map[string]bool {
+	reachable := make(map[string]bool)
+	bestDepth := make(map[string]int)
+	type entry struct {
+		node  string
+		depth int
+	}
+	queue := []entry{{root, 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if prev, ok := bestDepth[cur.node]; ok && cur.depth >= prev {
+			continue
+		}
+		bestDepth[cur.node] = cur.depth
+		reachable[cur.node] = true
+		if cur.depth >= maxDepth {
+			continue
+		}
+		for _, child := range reverseIndex[cur.node] {
+			queue = append(queue, entry{child, cur.depth + 1})
+		}
+	}
+	return reachable
+}
+
+func main() {
+	factsDir := "."
+	if len(os.Args) > 1 {
+		factsDir = os.Args[1]
+	}
+
+	t0 := time.Now()
+
+	categoryParents := loadTsvPairs(factsDir + "/category_parent.tsv")
+	articleCategories := loadTsvPairs(factsDir + "/article_category.tsv")
+	roots := loadSingleColumn(factsDir + "/root_categories.tsv")
+
+	root := ""
+	if len(roots) > 0 {
+		root = roots[0]
+	}
+	const maxDepthLimit = 10
+
+	reverseIndex := make(map[string][]string)
+	for _, p := range categoryParents {
+		reverseIndex[p.Right] = append(reverseIndex[p.Right], p.Left)
+	}
+	reachableToRoot := computeReachableToRoot(root, reverseIndex, maxDepthLimit)
+	var filteredEdges []AtomPair
+	for _, p := range categoryParents {
+		if reachableToRoot[p.Right] {
+			filteredEdges = append(filteredEdges, p)
+		}
+	}
+
+	ctx := NewWamContext(SharedWamCode, SharedWamLabels)
+
+	vm := NewWamStateFromCtx(ctx)
+	setupSharedForeignPredicates(vm)
+	vm.registerIndexedAtomFact2Pairs("category_parent/2", filteredEdges)
+
+	seedSet := make(map[string]bool)
+	for _, ac := range articleCategories {
+		seedSet[ac.Right] = true
+	}
+	seedCats := make([]string, 0, len(seedSet))
+	for k := range seedSet {
+		seedCats = append(seedCats, k)
+	}
+	sort.Strings(seedCats)
+
+	n := 5.0
+	if pc, ok := SharedWamLabels["dimension_n/1"]; ok {
+		nvm := NewWamStateFromCtx(ctx)
+		nvm.PC = pc
+		nvm.Regs[0] = &Unbound{Name: "_N", Idx: 999999}
+		if nvm.Run() {
+			v := nvm.deref(nvm.getReg(0))
+			switch val := v.(type) {
+			case *Integer:
+				n = float64(val.Val)
+			case *Float:
+				n = val.Val
+			}
+		}
+	}
+	negN := -n
+
+	loadMs := time.Since(t0).Milliseconds()
+
+	t2 := time.Now()
+
+	caPC, hasCA := SharedWamLabels["category_ancestor/4"]
+	seedWeightSums := make(map[string]float64)
+
+	if hasCA {
+		for _, cat := range seedCats {
+			ws := collectSolutions(ctx, caPC, cat, root, negN)
+			if ws > 0 {
+				seedWeightSums[cat] = ws
+			}
+		}
+	}
+
+	queryMs := time.Since(t2).Milliseconds()
+
+	t3 := time.Now()
+
+	invN := -1.0 / n
+	articleSums := make(map[string]float64)
+	for _, ac := range articleCategories {
+		ws := 0.0
+		if ac.Right == root {
+			ws = 1.0
+		}
+		catWs := seedWeightSums[ac.Right]
+		articleSums[ac.Left] += ws + catWs
+	}
+
+	type result struct {
+		deff    float64
+		article string
+	}
+	var results []result
+	for art, ws := range articleSums {
+		if ws > 0 {
+			results = append(results, result{math.Pow(ws, invN), art})
+		}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].deff != results[j].deff {
+			return results[i].deff < results[j].deff
+		}
+		return results[i].article < results[j].article
+	})
+
+	aggMs := time.Since(t3).Milliseconds()
+	totalMs := time.Since(t0).Milliseconds()
+
+	w := bufio.NewWriter(os.Stdout)
+	fmt.Fprintln(w, "article\troot_category\teffective_distance")
+	for _, r := range results {
+		fmt.Fprintf(w, "%s\t%s\t%.6f\n", r.article, root, r.deff)
+	}
+	w.Flush()
+
+	fmt.Fprintf(os.Stderr, "mode=wam_go_bench\n")
+	fmt.Fprintf(os.Stderr, "load_ms=%d\n", loadMs)
+	fmt.Fprintf(os.Stderr, "query_ms=%d\n", queryMs)
+	fmt.Fprintf(os.Stderr, "aggregation_ms=%d\n", aggMs)
+	fmt.Fprintf(os.Stderr, "total_ms=%d\n", totalMs)
+	fmt.Fprintf(os.Stderr, "seed_count=%d\n", len(seedCats))
+	fmt.Fprintf(os.Stderr, "tuple_count=%d\n", len(seedWeightSums))
+	fmt.Fprintf(os.Stderr, "article_count=%d\n", len(results))
+}

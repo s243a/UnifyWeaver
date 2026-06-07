@@ -23,6 +23,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_go_target, [
     escape_go_string/2,
@@ -87,21 +88,92 @@ instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
 
 % =====================================================================
+% Label-preserving parse + if-then-else structuring
+% =====================================================================
+%
+%  The base parser (parse_wam_text) drops label lines, which erases the
+%  boundaries of an (C -> T ; E) / \+ / once block. Without those
+%  boundaries the old emitter used a "peel the trailing epilogue"
+%  heuristic to split the else body from the continuation — which placed a
+%  *sequential* second ITE (and broke a nested one) inside the preceding
+%  else branch, silently miscompiling the clause.
+%
+%  parse_wam_text_labeled keeps label(Name) markers (and cut_ite) so
+%  structure_ite can fold each block into an ite(Cond,Then,Else) term
+%  using the real else/cont labels. The continuation is then emitted as a
+%  sibling of the if/else (not nested in the else), fixing sequential and
+%  nested blocks. Mirrors the shared wam_ite_structurer.
+
+parse_wam_text_labeled(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled(Lines, Instrs).
+
+parse_lines_labeled([], []).
+parse_lines_labeled([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  parse_lines_labeled(Rest, Instrs)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelStr),
+            Instrs = [label(LabelStr)|More],   % keep as string to match try_me_else/jump args
+            parse_lines_labeled(Rest, More)
+        ;   instr_from_parts(CleanParts, Instr)
+        ->  Instrs = [Instr|More],
+            parse_lines_labeled(Rest, More)
+        ;   parse_lines_labeled(Rest, Instrs)
+        )
+    ).
+
+% structure_ite/2, split_commit/3 and is_commit/1 are shared across the
+% lowered backends — see wam_ite_structurer.pl.
+
+%% go_base_instrs(+WamCode, -Instrs)  — base (label-stripped) parse or list.
+go_base_instrs(WamCode, Instrs) :-
+    ( is_list(WamCode) -> Instrs = WamCode ; parse_wam_text(WamCode, Instrs) ).
+
+%% go_structured_clause1(+WamCode, -Structured) is semidet.
+%  Re-parse keeping labels/cut_ite, take clause 1, fold ITE blocks. Only
+%  succeeds for a single-clause predicate (no predicate-level try_me_else
+%  head) whose every block is consumed.
+go_structured_clause1(WamCode, Structured) :-
+    ( is_list(WamCode) -> LInstrs = WamCode ; parse_wam_text_labeled(WamCode, LInstrs) ),
+    \+ ( LInstrs = [try_me_else(_)|_] ),   % not predicate-level multi-clause
+    take_to_proceed(LInstrs, C1L),
+    structure_ite(C1L, Structured),
+    \+ member(try_me_else(_), Structured),  % every block consumed
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+%% go_supported_structured(+StructuredInstr)
+go_supported_structured(ite(C, T, E)) :- !,
+    forall(member(I, C), go_supported_structured(I)),
+    forall(member(I, T), go_supported_structured(I)),
+    forall(member(I, E), go_supported_structured(I)).
+go_supported_structured(I) :- go_supported(I).
+
+% =====================================================================
 % Lowerability
 % =====================================================================
 
 %% wam_go_lowerable(+Pred/Arity, +WamCode, -Reason)
 %  True if the predicate can be lowered to a direct Go function.
 wam_go_lowerable(PI, WamCode, Reason) :-
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
-    ;   atom_string(WamCode, _), parse_wam_text(WamCode, Instrs)
-    ),
+    go_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
-    forall(member(I, C1), go_supported(I)),
-    (   is_deterministic_pred_go(Instrs)
-    ->  Reason = deterministic
-    ;   Reason = multi_clause_1
+    (   % No internal ITE: existing deterministic / multi-clause path.
+        \+ member(try_me_else(_), C1),
+        forall(member(I, C1), go_supported(I))
+    ->  ( is_deterministic_pred_go(Instrs) -> Reason = deterministic
+        ; Reason = multi_clause_1 )
+    ;   % Clause-1 has an inner choice point: lower only if it is a pure
+        % (C -> T ; E) / \+ / once block whose pieces are all supported.
+        \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
+        go_structured_clause1(WamCode, Structured),
+        forall(member(I, Structured), go_supported_structured(I)),
+        Reason = ite_lowered
     ),
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
 
@@ -195,11 +267,15 @@ capitalize_first(Str, Cap) :-
 lower_predicate_to_go(PI, WamCode, _Options, GoLines) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     go_func_name(Pred/Arity, FuncName),
-    (   is_list(WamCode) -> Instrs = WamCode
-    ;   parse_wam_text(WamCode, Instrs)
-    ),
+    go_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1Instrs),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "    ")),
+    % Emit the plain clause-1 when it has no inner choice point; otherwise
+    % fold its ITE block(s) into structured form (ite/3) first.
+    (   \+ member(try_me_else(_), C1Instrs)
+    ->  EmitInstrs = C1Instrs
+    ;   go_structured_clause1(WamCode, EmitInstrs)
+    ),
+    with_output_to(string(Body), emit_instrs(EmitInstrs, "    ")),
     format(string(Header),
 '// ~w — lowered from ~w/~w
 func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
@@ -214,88 +290,59 @@ func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
 %  `return false` failure paths short-circuit cleanly; on failure the
 %  trail is unwound to its pre-condition mark before the else branch.
 emit_instrs([], _).
-emit_instrs([try_me_else(_)|Rest], Ind) :-
-    split_ite_blocks_go(Rest, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs),
-    !,
-    emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, Ind),
-    emit_instrs(ContInstrs, Ind).
+emit_instrs([ite(Cond, Then, Else)|Rest], Ind) :- !,
+    emit_ite_block(Cond, Then, Else, Ind),
+    emit_instrs(Rest, Ind).
+emit_instrs([label(_)|Rest], Ind) :- !,   % safety: drop any stray label marker
+    emit_instrs(Rest, Ind).
 emit_instrs([Instr|Rest], Ind) :-
     emit_one(Instr, Ind),
     emit_instrs(Rest, Ind).
 
 %% has_internal_ite_pattern(+Instrs)
-%  True if the instruction list contains a complete try_me_else /
-%  cut_ite / jump / trust_me sequence. Used by tests to assert that the
-%  emitter actually triggers ITE lowering on a given input.
+%  True if the (clause-1 of the) given instruction stream contains a
+%  well-formed if-then-else block, i.e. structure_ite folds out at
+%  least one ite/3 term. Used by tests to assert that ITE lowering fires.
 has_internal_ite_pattern(Instrs) :-
-    append(_, [try_me_else(_)|Rest], Instrs),
-    split_ite_blocks_go(Rest, _, _, _, _),
-    !.
-
-%% split_ite_blocks_go(+Instrs, -CondInstrs, -ThenInstrs, -ElseInstrs, -ContInstrs)
-%  Slice the instruction stream after a try_me_else into the four parts
-%  of an if-then-else:
-%    <cond_instrs> cut_ite <then_instrs> jump(_) trust_me <else_instrs> <cont_instrs>
-%
-%  We don't currently have label PC information at this layer, so we
-%  use a heuristic to separate the else body from the continuation:
-%  the continuation is the trailing tail of "epilogue" instructions
-%  (deallocate followed by proceed, or just proceed). Everything before
-%  that tail belongs to the else body. This matches what the WAM
-%  compiler emits for `(C -> T ; E), epilogue` and ensures the then
-%  branch can be augmented with the same epilogue (otherwise it leaks
-%  an env frame and Go fails to compile the function with "missing
-%  return").
-split_ite_blocks_go(Instrs, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
-    split_at_instr_go(Instrs, cut_ite, CondInstrs, AfterCut),
-    split_at_jump_go(AfterCut, ThenInstrs, AfterJump),
-    AfterJump = [trust_me|ElseAndCont],
-    split_else_from_cont(ElseAndCont, ElseInstrs, ContInstrs).
-
-%% split_else_from_cont(+ElseAndCont, -ElseInstrs, -ContInstrs)
-%  Peel off the trailing epilogue (deallocate*, proceed) as the
-%  continuation. Falls back to "everything is else, cont is empty"
-%  when the trailing pattern doesn't match.
-split_else_from_cont(Instrs, ElseInstrs, ContInstrs) :-
-    (   peel_epilogue(Instrs, ElseInstrs0, ContInstrs0),
-        ContInstrs0 \= []
-    ->  ElseInstrs = ElseInstrs0,
-        ContInstrs = ContInstrs0
-    ;   ElseInstrs = Instrs,
-        ContInstrs = []
-    ).
-
-peel_epilogue(Instrs, Body, Epilogue) :-
-    append(Body, Epilogue, Instrs),
-    is_epilogue(Epilogue),
-    !.
-peel_epilogue(Instrs, Instrs, []).
-
-is_epilogue([proceed]).
-is_epilogue([deallocate, proceed]).
-
-split_at_instr_go([], _, _, _) :- !, fail.
-split_at_instr_go([Instr|Rest], Instr, [], Rest) :- !.
-split_at_instr_go([H|T], Instr, [H|Before], After) :-
-    split_at_instr_go(T, Instr, Before, After).
-
-split_at_jump_go([], [], []) :- !, fail.
-split_at_jump_go([jump(_)|Rest], [], Rest) :- !.
-split_at_jump_go([H|T], [H|Then], Rest) :-
-    split_at_jump_go(T, Then, Rest).
+    catch(go_structured_clause1(Instrs, Structured), _, fail),
+    once(member(ite(_, _, _), Structured)).
 
 %% emit_ite_block(+CondInstrs, +ThenInstrs, +ElseInstrs, +Indent)
 %  Emit native Go if/else for the WAM if-then-else pattern.
 %  The condition runs in an immediately-invoked closure that returns
 %  bool, so any inner `return false` short-circuits to a false outcome
-%  without escaping the surrounding lowered function. The trail mark
-%  taken before the closure is used to unwind any partial bindings made
-%  by the condition before the else branch executes.
+%  without escaping the surrounding lowered function.
+%
+%  When the condition fails we must restore the pre-condition machine
+%  state before running the else branch — exactly what a choice point
+%  does on backtracking. Three things can change during the condition,
+%  and Go's runtime tracks them in different places:
+%
+%    1. Variable bindings — reverted via the trail mark + unwindTrailTo.
+%    2. Existing argument / Y registers that bindUnbound rewrote in place
+%       (the trail does not track these) — reverted via a full snapshot of
+%       the register file (copy of vm.Regs). We can't use snapshotAllRegs:
+%       it sizes its Y-range from MaxYReg, but the lowered code sets
+%       Y-registers with direct `vm.Regs[i] = ...` writes (not putReg), so
+%       MaxYReg is stale and restoreSavedRegs would wipe live Y-regs.
+%    3. Fresh variables the condition itself created with put_variable.
+%       getReg reads the register array directly (not the binding table),
+%       so after restoring the pre-condition registers we re-run the
+%       condition's put_variable instructions to reset those registers to
+%       fresh unbound vars, matching the interpreter's post-backtrack
+%       state.
+%
+%  Without all three, a binding condition like ((Y=a,Y=b) -> ... ; ...)
+%  leaves Y holding the stale `a` after the trail is unwound, so a later
+%  `X = Y` in the else/continuation sees the wrong value. The then branch
+%  keeps the condition's results, so only the else restores.
 emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, I) :-
     atom_concat(I, "    ", InnerInd),
+    cond_put_variable_instrs(CondInstrs, FreshVarInstrs),
     format("~w// if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)~n", [I]),
     format("~w{~n", [I]),
     format("~w    _trailMark := vm.TrailLen~n", [I]),
+    format("~w    _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it~n", [I]),
     format("~w    _condOk := func() bool {~n", [I]),
     emit_instrs(CondInstrs, InnerInd),
     format("~w        return true~n", [I]),
@@ -303,10 +350,21 @@ emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, I) :-
     format("~w    if _condOk {~n", [I]),
     emit_instrs(ThenInstrs, InnerInd),
     format("~w    } else {~n", [I]),
+    format("~w        vm.Regs = _savedRegs~n", [I]),
     format("~w        vm.unwindTrailTo(_trailMark)~n", [I]),
+    emit_instrs(FreshVarInstrs, InnerInd),   % reset condition-local fresh vars
     emit_instrs(ElseInstrs, InnerInd),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
+
+%% cond_put_variable_instrs(+CondInstrs, -PutVarInstrs)
+%  The put_variable instructions in a condition, in order. Re-running them
+%  in the else branch resets the fresh variables the condition created.
+cond_put_variable_instrs([], []).
+cond_put_variable_instrs([put_variable(X, A)|T], [put_variable(X, A)|R]) :- !,
+    cond_put_variable_instrs(T, R).
+cond_put_variable_instrs([_|T], R) :-
+    cond_put_variable_instrs(T, R).
 
 % --- Terminal instructions ---
 
@@ -376,8 +434,9 @@ emit_one(get_value(XnStr, AiStr), I) :-
 
 emit_one(get_structure(FStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
+    escape_go_string(FStr, EscapedFunctor),
     format("~w// get_structure ~w, ~w~n", [I, FStr, AiStr]),
-    format("~wif !vm.Step(&GetStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, FStr, Ai]),
+    format("~wif !vm.Step(&GetStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, EscapedFunctor, Ai]),
     format("~w    return false~n", [I]),
     format("~w}~n", [I]).
 
@@ -412,8 +471,9 @@ emit_one(put_value(XnStr, AiStr), I) :-
 
 emit_one(put_structure(FStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
+    escape_go_string(FStr, EscapedFunctor),
     format("~w// put_structure ~w, ~w~n", [I, FStr, AiStr]),
-    format("~wif !vm.Step(&PutStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, FStr, Ai]),
+    format("~wif !vm.Step(&PutStructure{Functor: \"~w\", Ai: ~w}) {~n", [I, EscapedFunctor, Ai]),
     format("~w    return false~n", [I]),
     format("~w}~n", [I]).
 

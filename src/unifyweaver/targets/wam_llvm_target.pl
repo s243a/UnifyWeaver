@@ -1331,8 +1331,12 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         wam_predicates=WamCode,
         interop_bridge=""
     ],
+    % Write output file. The generated module embeds UTF-8 characters from
+    % the runtime templates (arrows, dashes in comments), so the stream must
+    % be UTF-8 regardless of the process locale (which is POSIX/ASCII in many
+    % CI containers) -- otherwise format/3 raises an encoding error.
     setup_call_cleanup(
-        open(OutputFile, write, Stream),
+        open(OutputFile, write, Stream, [encoding(utf8)]),
         stream_render_mustache(Stream, ModuleTemplate, Substitutions),
         close(Stream)
     ),
@@ -1398,7 +1402,7 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
     ], FullModule),
 
     setup_call_cleanup(
-        open(OutputFile, write, Stream),
+        open(OutputFile, write, Stream, [encoding(utf8)]),
         format(Stream, "~w", [FullModule]),
         close(Stream)
     ),

@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use lmdb::{DatabaseFlags, Environment, Transaction, WriteFlags};
+use mysql_stream::categorylinks_resolve::{
+    build_linktarget_title_map, build_page_title_to_id_map, IdMethod, IngestMode, Resolver,
+};
 use mysql_stream::{iter_mysql_rows, Field};
 
 type DynError = Box<dyn Error>;
@@ -36,6 +39,14 @@ struct Config {
     fixture_header: String,
     stats_path: Option<PathBuf>,
     refresh: bool,
+    /// Ingest mode selecting which auxiliary dumps to consume. Default Correct.
+    mode: IngestMode,
+    /// Fallback ID generation strategy (only used when mode=Fallback). Default Position.
+    id_method: IdMethod,
+    /// Required for mode=Correct or mode=Compromise.
+    linktarget_dump: Option<PathBuf>,
+    /// Required for mode=Correct.
+    page_dump: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +94,10 @@ where
     let mut fixture_header = "child\tparent".to_string();
     let mut stats_path = None;
     let mut refresh = false;
+    let mut mode = IngestMode::Correct;
+    let mut id_method = IdMethod::Position;
+    let mut linktarget_dump: Option<PathBuf> = None;
+    let mut page_dump: Option<PathBuf> = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -140,6 +155,26 @@ where
                 stats_path = Some(PathBuf::from(args.next().ok_or("--stats requires a path")?));
             }
             "--refresh" => refresh = true,
+            "--mode" => {
+                let value = args.next().ok_or("--mode requires a value")?;
+                mode = IngestMode::parse(&value.to_string_lossy())
+                    .map_err(|e| -> DynError { e.into() })?;
+            }
+            "--id-method" => {
+                let value = args.next().ok_or("--id-method requires a value")?;
+                id_method = IdMethod::parse(&value.to_string_lossy())
+                    .map_err(|e| -> DynError { e.into() })?;
+            }
+            "--linktarget-dump" => {
+                linktarget_dump = Some(PathBuf::from(
+                    args.next().ok_or("--linktarget-dump requires a path")?,
+                ));
+            }
+            "--page-dump" => {
+                page_dump = Some(PathBuf::from(
+                    args.next().ok_or("--page-dump requires a path")?,
+                ));
+            }
             "--help" | "-h" => return Err(usage().into()),
             value if value.starts_with("--") => {
                 return Err(format!("unknown option: {value}\n{}", usage()).into());
@@ -168,7 +203,34 @@ where
         fixture_header,
         stats_path,
         refresh,
+        mode,
+        id_method,
+        linktarget_dump,
+        page_dump,
     })
+}
+
+/// Validate that the auxiliary dumps required by the chosen mode are present.
+fn validate_mode_inputs(config: &Config) -> Result<(), DynError> {
+    match config.mode {
+        IngestMode::Correct => {
+            if config.linktarget_dump.is_none() {
+                return Err("--mode=correct requires --linktarget-dump <path>".into());
+            }
+            if config.page_dump.is_none() {
+                return Err("--mode=correct requires --page-dump <path>".into());
+            }
+        }
+        IngestMode::Compromise => {
+            if config.linktarget_dump.is_none() {
+                return Err("--mode=compromise requires --linktarget-dump <path>".into());
+            }
+        }
+        IngestMode::Fallback => {
+            // No auxiliary dumps needed; --id-method is consulted.
+        }
+    }
+    Ok(())
 }
 
 fn parse_positive_usize(value: &OsString, flag: &str) -> Result<usize, DynError> {
@@ -180,7 +242,25 @@ fn parse_positive_usize(value: &OsString, flag: &str) -> Result<usize, DynError>
 }
 
 fn usage() -> String {
-    "usage: mysql_stream_lmdb <dump.sql[.gz]> <lmdb-dir> [--manifest <path>] [--predicate-name NAME] [--cl-type TYPE] [--max-edges N] [--map-size BYTES] [--batch-size N] [--fixture-tsv <path>] [--fixture-header TEXT] [--stats <path>] [--refresh]".to_string()
+    concat!(
+        "usage: mysql_stream_lmdb <categorylinks.sql[.gz]> <lmdb-dir> ",
+        "[--mode correct|compromise|fallback] [--id-method raw|position|hash] ",
+        "[--linktarget-dump <path>] [--page-dump <path>] ",
+        "[--manifest <path>] [--predicate-name NAME] [--cl-type TYPE] ",
+        "[--max-edges N] [--map-size BYTES] [--batch-size N] ",
+        "[--fixture-tsv <path>] [--fixture-header TEXT] [--stats <path>] [--refresh]\n",
+        "\n",
+        "Modes:\n",
+        "  correct    (default) categorylinks + linktarget + page → walkable page_id graph\n",
+        "  compromise          categorylinks + linktarget → walkable lt_id graph, leaves opaque\n",
+        "  fallback            categorylinks only → use --id-method to choose ID scheme\n",
+        "\n",
+        "ID methods (mode=fallback only):\n",
+        "  raw       emit cl_from / cl_target_id unchanged (mixes namespaces on post-2023 schemas)\n",
+        "  position  (default) monotonic intern of both spaces into one (stable within one run)\n",
+        "  hash      deterministic FNV-1a hash with namespace salt (stable across runs)\n",
+    )
+    .to_string()
 }
 
 fn default_manifest_path(lmdb_path: &Path) -> PathBuf {
@@ -190,6 +270,8 @@ fn default_manifest_path(lmdb_path: &Path) -> PathBuf {
 }
 
 fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
+    validate_mode_inputs(config)?;
+
     if config.lmdb_path.exists() && config.manifest_path.exists() && !config.refresh {
         let stats = SinkStats {
             rows_scanned: 0,
@@ -225,6 +307,32 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         fs::create_dir_all(parent)?;
     }
 
+    // Build the auxiliary maps BEFORE we open the LMDB writer. These
+    // are read-only and only need to be alive for the categorylinks pass.
+    let mut resolver = Resolver::new(config.mode, config.id_method);
+    if let Some(lt_path) = config.linktarget_dump.as_deref() {
+        eprintln!(
+            "mysql_stream_lmdb: loading linktarget dump ({})",
+            lt_path.display()
+        );
+        resolver.lt_title_map = build_linktarget_title_map(lt_path)?;
+        eprintln!(
+            "mysql_stream_lmdb: linktarget rows kept (ns=14): {}",
+            resolver.lt_title_map.len()
+        );
+    }
+    if let Some(page_path) = config.page_dump.as_deref() {
+        eprintln!(
+            "mysql_stream_lmdb: loading page dump ({})",
+            page_path.display()
+        );
+        resolver.page_title_to_id = build_page_title_to_id_map(page_path)?;
+        eprintln!(
+            "mysql_stream_lmdb: page rows kept (ns=14): {}",
+            resolver.page_title_to_id.len()
+        );
+    }
+
     let env = Environment::new()
         .set_max_dbs(4)
         .set_map_size(config.map_size)
@@ -242,17 +350,26 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         .ok_or("dump path must be valid UTF-8")?;
     for row in iter_mysql_rows(dump_path)? {
         rows_scanned += 1;
-        let Some((child, parent)) = categorylinks_edge(&row, &config.cl_type) else {
+        // Filter by cl_type at this layer, then hand the raw ids to the
+        // resolver. categorylinks_edge returns the raw decimal-string
+        // representation for backward compatibility with the old code path,
+        // but mode != Fallback/Raw needs the i64 form to do lookups.
+        let Some((cl_from, cl_target_id)) = categorylinks_raw_ids(&row, &config.cl_type) else {
             continue;
         };
+        let Some((child_id, parent_id)) = resolver.resolve_edge(cl_from, cl_target_id) else {
+            continue;
+        };
+        let child_str = child_id.to_string();
+        let parent_str = parent_id.to_string();
         txn.put(
             db,
-            &child.as_bytes(),
-            &parent.as_bytes(),
+            &child_str.as_bytes(),
+            &parent_str.as_bytes(),
             WriteFlags::empty(),
         )?;
         if let Some(writer) = fixture_tsv.as_mut() {
-            writeln!(writer, "{child}\t{parent}")?;
+            writeln!(writer, "{child_str}\t{parent_str}")?;
         }
         edges_written += 1;
 
@@ -270,6 +387,13 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
     txn.commit()?;
     if let Some(mut writer) = fixture_tsv {
         writer.flush()?;
+    }
+
+    if resolver.unresolved_parents > 0 {
+        eprintln!(
+            "mysql_stream_lmdb: unresolved parent ids (skipped): {}",
+            resolver.unresolved_parents
+        );
     }
 
     write_csharp_query_manifest(config, edges_written)?;
@@ -296,20 +420,32 @@ fn open_fixture_tsv(
     Ok(Some(writer))
 }
 
+// Retained for the existing unit tests that exercise the row-extraction
+// shape with String pairs. The streaming path now goes through
+// categorylinks_raw_ids + Resolver instead.
+#[cfg_attr(not(test), allow(dead_code))]
 fn categorylinks_edge(row: &[Field], cl_type: &str) -> Option<(String, String)> {
+    let (child, parent) = categorylinks_raw_ids(row, cl_type)?;
+    Some((child.to_string(), parent.to_string()))
+}
+
+/// Extract `(cl_from, cl_target_id)` as i64 from a categorylinks row,
+/// filtering on `cl_type` in column 4. Returns None when the row doesn't
+/// match the requested cl_type or the integer parses fail.
+fn categorylinks_raw_ids(row: &[Field], cl_type: &str) -> Option<(i64, i64)> {
     if row.get(4).and_then(Field::as_str) != Some(cl_type) {
         return None;
     }
     let child = field_i64(row.get(0)?)?;
     let parent = field_i64(row.get(6)?)?;
-    Some((child.to_string(), parent.to_string()))
+    Some((child, parent))
 }
 
 fn field_i64(field: &Field) -> Option<i64> {
     match field {
         Field::Int(value) => Some(*value),
         Field::Str(bytes) => std::str::from_utf8(bytes).ok()?.parse().ok(),
-        Field::Null => None,
+        Field::Float(_) | Field::Null => None,
     }
 }
 
@@ -320,6 +456,16 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
     let source_length_json = source_length
         .map(|length| length.to_string())
         .unwrap_or_else(|| "null".to_string());
+    let mode_str = match config.mode {
+        IngestMode::Correct => "correct",
+        IngestMode::Compromise => "compromise",
+        IngestMode::Fallback => "fallback",
+    };
+    let id_method_str = match config.id_method {
+        IdMethod::Raw => "raw",
+        IdMethod::Position => "position",
+        IdMethod::Hash => "hash",
+    };
     let manifest = format!(
         concat!(
             "{{\n",
@@ -335,7 +481,9 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
             "  \"ValueEncoding\": \"utf8\",\n",
             "  \"RowCount\": {},\n",
             "  \"SourcePath\": \"{}\",\n",
-            "  \"SourceLength\": {}\n",
+            "  \"SourceLength\": {},\n",
+            "  \"IngestMode\": \"{}\",\n",
+            "  \"IdMethod\": \"{}\"\n",
             "}}\n"
         ),
         json_escape(&config.predicate_name),
@@ -343,7 +491,9 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
         DB_NAME,
         row_count,
         json_escape(&source_path),
-        source_length_json
+        source_length_json,
+        mode_str,
+        id_method_str,
     );
     fs::write(&config.manifest_path, manifest)?;
     Ok(())

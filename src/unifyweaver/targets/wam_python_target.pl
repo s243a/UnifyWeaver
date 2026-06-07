@@ -25,8 +25,10 @@
 	compile_wam_helpers_to_python/2,       % +Options, -PythonCode
 	compile_wam_runtime_to_python/2,       % +Options, -PythonCode
 	compile_wam_predicate_to_python/4,     % +Pred/Arity, +WamCode, +Options, -PythonCode
+	compile_wam_predicate_items_to_python/4, % +Pred/Arity, +Items, +Options, -PythonCode
 	wam_instruction_to_python_literal/2,   % +WamInstr, -PyLiteral
 	wam_line_to_python_literal/2,          % +Parts, -PyLit
+	wam_items_to_python_instructions/4,  % +Items, +PredIndicator, -InstrLits, -LabelLits
 	write_wam_python_project/3,            % +Predicates, +Options, +ProjectDir
 	emit_wam_python/3,                     % +Predicates, +Options, +Mode
 	iso_errors_resolve_options/2,          % +Options, -Config
@@ -44,13 +46,19 @@
 :- use_module('../core/template_system').
 :- use_module('../core/prolog_term_parser').
 :- use_module('../bindings/python_wam_bindings').
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_target', [
+	compile_predicate_to_wam/3,
+	compile_predicate_to_wam_text/3,
+	compile_predicate_to_wam_items/3
+]).
+:- use_module('../targets/wam_ir_mode', [wam_ir_mode/4]).
 :- use_module('../core/iso_errors',
               [ iso_errors_resolve_options/2,
                 iso_errors_load_config/2,
                 iso_errors_mode_for/3,
                 iso_errors_warn_multi_module/2,
                 iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
                 iso_errors_audit_normalise_pi/2,
                 iso_errors_audit_walk/5
               ]).
@@ -58,11 +66,15 @@
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
 	parse_wam_text_py/2,
-	python_func_name/2
+	python_func_name/2,
+	py_structured_clause1/2,
+	emit_structured_python/4
 ]).
 :- use_module('../targets/wam_text_parser',
               [wam_classify_constant_token/2,
-               wam_tokenize_line/2]).
+               wam_tokenize_line/2,
+               wam_recognise_instruction/2,
+               wam_text_to_items/2]).
 :- use_module(wam_runtime_parser_capability, [
 	parser_dependent_body_goal/2,
 	wam_target_runtime_parser/3
@@ -1143,6 +1155,132 @@ switch_entry_to_python(Key-Label, Entry) :-
 	;   format(atom(Entry), '"~w": "~w"', [Key, Label])
 	).
 
+
+% ============================================================================
+% WAM items → Python instruction literals
+% ============================================================================
+
+%% wam_items_to_python_instructions(+Items, +PredIndicator, -InstrLiterals, -LabelLiterals)
+%  Convert structured WAM items directly into Python instruction literals.
+%  This is the migration bridge for items-mode target generation: callers that
+%  already have `label(Name)` / instruction items can bypass WAM text tokenizing.
+wam_items_to_python_instructions(Items, _PredIndicator, InstrLiterals, LabelLiterals) :-
+	wam_items_to_python_(Items, 0, InstrParts, LabelParts),
+	atomic_list_concat(InstrParts, '\n', InstrLiterals),
+	atomic_list_concat(LabelParts, '\n', LabelLiterals).
+
+wam_items_to_python_([], _, [], []).
+wam_items_to_python_([label(LabelName)|Rest], PC, [LabelEntry|RestInstrs], [LabelEntry|RestLabels]) :-
+	!,
+	format(string(LabelEntry), '        ("__label__", "~w"),', [LabelName]),
+	wam_items_to_python_(Rest, PC, RestInstrs, RestLabels).
+wam_items_to_python_([Item|Rest], PC, Instrs, Labels) :-
+	(   wam_item_to_python_literal(Item, PyInstr)
+	->  format(string(InstrEntry), '        ~w,', [PyInstr]),
+		NPC is PC + 1,
+		Instrs = [InstrEntry|RestInstrs],
+		wam_items_to_python_(Rest, NPC, RestInstrs, Labels)
+	;   format(string(InstrEntry), '        # SKIP ITEM: ~q', [Item]),
+		NPC is PC + 1,
+		Instrs = [InstrEntry|RestInstrs],
+		wam_items_to_python_(Rest, NPC, RestInstrs, Labels)
+	).
+
+wam_item_to_python_literal(get_constant(C, Ai), Py) :-
+	python_item_constant_literal(C, PyVal), clean_comma(Ai, CAi),
+	format(atom(Py), '("get_constant", ~w, ~w)', [PyVal, CAi]).
+wam_item_to_python_literal(unify_constant(C), Py) :-
+	python_item_constant_literal(C, PyVal),
+	format(atom(Py), '("unify_constant", ~w)', [PyVal]).
+wam_item_to_python_literal(set_constant(C), Py) :-
+	python_item_constant_literal(C, PyVal),
+	format(atom(Py), '("set_constant", ~w)', [PyVal]).
+wam_item_to_python_literal(put_constant(C, Ai), Py) :-
+	python_item_constant_literal(C, PyVal), clean_comma(Ai, CAi),
+	format(atom(Py), '("put_constant", ~w, ~w)', [PyVal, CAi]).
+wam_item_to_python_literal(Item, Py) :-
+	wam_item_to_line_parts(Item, Parts),
+	wam_line_to_python_literal(Parts, Py).
+
+python_item_constant_literal(Token, PyVal) :-
+	string(Token),
+	!,
+	python_text_constant_literal(Token, PyVal).
+python_item_constant_literal(Token, PyVal) :-
+	integer(Token),
+	!,
+	format(atom(PyVal), 'Int(~w)', [Token]).
+python_item_constant_literal(Token, PyVal) :-
+	float(Token),
+	!,
+	format(atom(PyVal), 'Float(~w)', [Token]).
+python_item_constant_literal(Token, PyVal) :-
+	atom(Token),
+	!,
+	atom_string(Token, Name),
+	escape_python_string(Name, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
+python_item_constant_literal(Token, PyVal) :-
+	term_string(Token, Name),
+	escape_python_string(Name, Esc),
+	format(atom(PyVal), 'Atom("~w")', [Esc]).
+
+wam_item_to_line_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
+wam_item_to_line_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
+wam_item_to_line_parts(get_structure(Fn, Ai), ["get_structure", Fn, Ai]).
+wam_item_to_line_parts(get_list(Ai), ["get_list", Ai]).
+wam_item_to_line_parts(get_nil(Ai), ["get_nil", Ai]).
+wam_item_to_line_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
+wam_item_to_line_parts(get_float(F, Ai), ["get_float", F, Ai]).
+wam_item_to_line_parts(unify_variable(Xn), ["unify_variable", Xn]).
+wam_item_to_line_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_to_line_parts(unify_nil, ["unify_nil"]).
+wam_item_to_line_parts(unify_void(N), ["unify_void", N]).
+wam_item_to_line_parts(set_variable(Xn), ["set_variable", Xn]).
+wam_item_to_line_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_to_line_parts(set_local_value(Xn), ["set_local_value", Xn]).
+wam_item_to_line_parts(set_nil, ["set_nil"]).
+wam_item_to_line_parts(set_integer(N), ["set_integer", N]).
+wam_item_to_line_parts(set_void(N), ["set_void", N]).
+wam_item_to_line_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
+wam_item_to_line_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_to_line_parts(put_unsafe_value(Yn, Ai), ["put_unsafe_value", Yn, Ai]).
+wam_item_to_line_parts(put_nil(Ai), ["put_nil", Ai]).
+wam_item_to_line_parts(put_integer(N, Ai), ["put_integer", N, Ai]).
+wam_item_to_line_parts(put_float(F, Ai), ["put_float", F, Ai]).
+wam_item_to_line_parts(put_structure(Fn, Ai), ["put_structure", Fn, Ai]).
+wam_item_to_line_parts(put_list(Ai), ["put_list", Ai]).
+wam_item_to_line_parts(call(P, N), ["call", P, N]).
+wam_item_to_line_parts(execute(P), ["execute", P]).
+wam_item_to_line_parts(proceed, ["proceed"]).
+wam_item_to_line_parts(fail, ["fail"]).
+wam_item_to_line_parts(halt, ["halt"]).
+wam_item_to_line_parts(allocate, ["allocate"]).
+wam_item_to_line_parts(deallocate, ["deallocate"]).
+wam_item_to_line_parts(try_me_else(Label), ["try_me_else", Label]).
+wam_item_to_line_parts(retry_me_else(Label), ["retry_me_else", Label]).
+wam_item_to_line_parts(trust_me, ["trust_me"]).
+wam_item_to_line_parts(try(Label), ["try", Label]).
+wam_item_to_line_parts(retry(Label), ["retry", Label]).
+wam_item_to_line_parts(trust(Label), ["trust", Label]).
+wam_item_to_line_parts(neck_cut, ["neck_cut"]).
+wam_item_to_line_parts(get_level(Yn), ["get_level", Yn]).
+wam_item_to_line_parts(cut(Yn), ["cut", Yn]).
+wam_item_to_line_parts(switch_on_term(Args), Parts) :-
+	append(["switch_on_term"], Args, Parts).
+wam_item_to_line_parts(is(Target, Expr), ["is", Target, Expr]).
+wam_item_to_line_parts(builtin_call(Op, Arity), ["builtin_call", Op, Arity]).
+wam_item_to_line_parts(call_foreign(Pred, Arity), ["call_foreign", Pred, Arity]).
+wam_item_to_line_parts(begin_aggregate(AggType, ValueReg, ResultReg), ["begin_aggregate", AggType, ValueReg, ResultReg]).
+wam_item_to_line_parts(end_aggregate(ValueReg), ["end_aggregate", ValueReg]).
+wam_item_to_line_parts(cut_ite, ["cut_ite"]).
+wam_item_to_line_parts(jump(Label), ["jump", Label]).
+wam_item_to_line_parts(call_indexed_atom_fact2(Pred), ["call_indexed_atom_fact2", Pred]).
+wam_item_to_line_parts(base_category_ancestor(CatReg, TargetReg, VisitedReg), ["base_category_ancestor", CatReg, TargetReg, VisitedReg]).
+wam_item_to_line_parts(base_category_ancestor_bind(CatReg, TargetReg, HopsReg, VisitedReg), ["base_category_ancestor_bind", CatReg, TargetReg, HopsReg, VisitedReg]).
+wam_item_to_line_parts(recurse_category_ancestor(MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip), ["recurse_category_ancestor", MidReg, RootReg, ChildHopsReg, VisitedReg, Pred, Skip]).
+wam_item_to_line_parts(return_add1(OutReg, InReg), ["return_add1", OutReg, InReg]).
+
 % ============================================================================
 % WAM line parsing → Python instruction literals
 % ============================================================================
@@ -1158,6 +1296,22 @@ clean_comma(S, Clean) :-
 	->  sub_string(Str, 0, Before, _, CleanStr),
 		atom_string(Clean, CleanStr)
 	;   Clean = S
+	).
+
+%% python_functor_arity(+FunctorSlashArity, -Arity)
+%  Arity is the FINAL '/'-separated component of a 'name/arity' functor.
+%  Taking the last part (not requiring exactly two) is essential for
+%  operators whose functor itself contains '/', e.g. '///2' (integer
+%  division //) or '//2' (float division /): splitting those on '/' yields
+%  3-4 parts, so the old [_Name, ArStr] pattern fell through to arity 0.
+%  A 0-arity '//' compound then carried no argument cells and eval_arith
+%  could not apply it, so `X is 17 // 5` failed (the cbi_arith divergence).
+python_functor_arity(CFn, Arity) :-
+	(   split_string(CFn, "/", "", Parts),
+	    last(Parts, ArStr),
+	    number_string(A, ArStr)
+	->  Arity = A
+	;   Arity = 0
 	).
 
 %% escape_python_string(+In, -Out)
@@ -1223,10 +1377,7 @@ wam_line_to_python_literal(["get_value", Xn, Ai], Py) :-
 	format(atom(Py), '("get_value", ~w, ~w)', [CXn, CAi]).
 wam_line_to_python_literal(["get_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("get_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["get_list", Ai], Py) :-
@@ -1299,10 +1450,7 @@ wam_line_to_python_literal(["put_float", F, Ai], Py) :-
 	format(atom(Py), '("put_float", ~w, ~w)', [CF, CAi]).
 wam_line_to_python_literal(["put_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("put_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["put_list", Ai], Py) :-
@@ -1442,13 +1590,23 @@ sub_string_replace(Str, From, To, Result) :-
 %  Emits a register_predicate(raw_program) call so the flat program can be
 %  built by load_program in main.py.
 compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
+	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
+	format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode).
+
+%% compile_wam_predicate_items_to_python(+Pred/Arity, +Items, +Options, -PythonCode)
+%  Converts structured WAM items for a predicate to Python code.
+%  This is the item-driven counterpart to compile_wam_predicate_to_python/4;
+%  callers can bypass WAM text when they already have label/instruction items.
+compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PythonCode) :-
+	wam_items_to_python_instructions(Items, Pred/Arity, InstrLiterals, _LabelLiterals),
+	format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode).
+
+format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
 	option(registrar_prefix(RegistrarPrefix), Options, ''),
 	atom_concat(RegistrarPrefix, FuncName, RegistrarName),
-	% Build the label key: "Pred/Arity"
 	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
-	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
 	format(string(PythonCode),
 'def ~w(raw_program):
     """Register WAM code for ~w/~w into raw_program dict."""
@@ -1462,9 +1620,15 @@ compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
 %  inserts a call_lowered stub into raw_program. The separate registrar avoids
 %  a name collision with the pred_* lowered function itself.
 compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
-	parse_wam_text_py(WamCode, Instrs),
-	is_deterministic_pred_py(Instrs),
-	emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn),
+	% Soft-cut if-then-else / negation / once lowers via the shared
+	% structurer; everything else takes the straight-line deterministic
+	% path (unchanged).
+	(   py_structured_clause1(WamCode, Structured)
+	->  emit_structured_python(Pred/Arity, Structured, Options, LoweredFn)
+	;   parse_wam_text_py(WamCode, Instrs),
+	    is_deterministic_pred_py(Instrs),
+	    emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn)
+	),
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
 	atom_concat(register_, FuncName, RegistrarName),
@@ -1603,13 +1767,23 @@ iso_errors:iso_errors_default_to_lax("read/2", "read_lax/2").
 
 %% iso_errors_rewrite_plans(+Config, +Plans0, -Plans)
 %  Python-specific pred_plan wrapper: applies iso_errors_rewrite_text
-%  to each pred_plan(Pred, Arity, Wam, wam) plan's WAM text.
+%  to each pred_plan(Pred, Arity, WamRepr, wam) plan's WAM text, then
+%  refreshes the structured items used by interpreter-mode codegen.
 iso_errors_rewrite_plans(Config, Plans0, Plans) :-
 	maplist(iso_errors_rewrite_plan(Config), Plans0, Plans).
 
 iso_errors_rewrite_plan(Config, pred_plan(Pred, Arity, Wam0, wam), pred_plan(Pred, Arity, Wam, wam)) :-
 	!,
-	iso_errors_rewrite_text(Config, Pred/Arity, Wam0, Wam).
+	(   Wam0 = wam_items(text(WamText0), _Items0)
+	->  iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
+	    python_wam_text_plan(WamText, Wam)
+	;   Wam0 = wam_items(items_only, Items0)
+	->  iso_errors_rewrite(Config, Pred/Arity, Items0, Items),
+	    python_wam_items_plan(Items, Wam)
+	;   wam_plan_text(Wam0, WamText0)
+	->  iso_errors_rewrite_text(Config, Pred/Arity, WamText0, WamText),
+	    python_wam_text_plan(WamText, Wam)
+	).
 iso_errors_rewrite_plan(_, Plan, Plan).
 
 %% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
@@ -1626,46 +1800,40 @@ iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
 
 iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
 
+% Rewrite one line via the shared items pipeline. Tokenize the line
+% with the shared quote-aware tokenizer, recognise it to a structured
+% WAM item, apply the shared item-level ISO rewrite, and splice the
+% new key back into the original line.
+%
+% iso_errors_rewrite_item/3 (in core/iso_errors) is the single source
+% of truth for the builtin_call / put_structure / call / execute key
+% swaps — this target no longer carries its own per-shape text rules.
+% All four rewritable shapes carry the key as their first argument, so
+% arg(1, ...) extracts old/new keys generically.
+%
+% Splicing rather than re-printing the recognised item preserves the
+% original whitespace byte-for-byte, so existing text output is
+% unaffected. Any failure along the chain (unrecognised line, key not
+% in the ISO/lax tables, splice miss) falls through to OutLine = Line.
 iso_errors_rewrite_line(Mode, Line, OutLine) :-
-	split_string(Line, " \t", " \t", Parts0),
-	exclude(==(""), Parts0, Parts),
-	(   iso_errors_rewrite_parts(Mode, Parts, Line, OutLine)
+	(   wam_tokenize_line(Line, Tokens),
+	    wam_recognise_instruction(Tokens, Item0),
+	    iso_errors_rewrite_item(Mode, Item0, Item1),
+	    Item0 \== Item1,
+	    arg(1, Item0, OldKey),
+	    arg(1, Item1, NewKey),
+	    iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
 	->  true
 	;   OutLine = Line
 	).
 
-iso_errors_rewrite_parts(Mode, ["builtin_call", Key0 | _], Line, OutLine) :- !,
-	iso_errors_clean_key_token(Key0, Key),
-	iso_errors_lookup(Mode, Key, NewKey),
-	Key \== NewKey,
-	iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["put_structure", Key0 | _], Line, OutLine) :- !,
-	iso_errors_clean_key_token(Key0, Key),
-	iso_errors_lookup(Mode, Key, NewKey),
-	Key \== NewKey,
-	iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["call", Key0 | _], Line, OutLine) :- !,
-	iso_errors_clean_key_token(Key0, Key),
-	iso_errors_lookup(Mode, Key, NewKey),
-	Key \== NewKey,
-	iso_errors_splice_line(Line, Key, NewKey, OutLine).
-iso_errors_rewrite_parts(Mode, ["execute", Key0 | _], Line, OutLine) :- !,
-	iso_errors_clean_key_token(Key0, Key),
-	iso_errors_lookup(Mode, Key, NewKey),
-	Key \== NewKey,
-	iso_errors_splice_line(Line, Key, NewKey, OutLine).
-
+% Kept: the audit (iso_errors_audit_classify_line/2) still uses this to
+% strip the trailing comma from a builtin_call key token.
 iso_errors_clean_key_token(Token0, Token) :-
 	(   string_concat(Token, ",", Token0)
 	->  true
 	;   Token = Token0
 	).
-
-iso_errors_lookup(true, Key, NewKey) :-
-	iso_errors:iso_errors_default_to_iso(Key, NewKey), !.
-iso_errors_lookup(false, Key, NewKey) :-
-	iso_errors:iso_errors_default_to_lax(Key, NewKey), !.
-iso_errors_lookup(_, Key, Key).
 
 iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
 	sub_string(Line, Before, KLen, _After, Key),
@@ -1896,44 +2064,84 @@ python_predicate_clause(Name/Arity, Head, Body) :-
 plan_python_predicates(Predicates, Options, Plans) :-
 	maplist(plan_python_predicate(Options), Predicates, Plans).
 
-plan_python_predicate(Options, Module:Pred/Arity-WamCode,
-                      pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+plan_python_predicate(Options, _Module:Pred/Arity-WamText,
+                      pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  Kind = ffi
-	;   Module == user
-	->  Kind = wam
-	;   Kind = wam
+	->  Kind = ffi,
+	    Wam = ''
+	;   python_wam_text_plan(WamText, Wam),
+	    Kind = wam
 	).
 plan_python_predicate(Options, Module:Pred/Arity,
-                      pred_plan(Pred, Arity, WamCode, Kind)) :- !,
+                      pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
-	    WamCode = ''
-	;   compile_predicate_to_wam(Module:Pred/Arity, [], WamCode)
+	    Wam = ''
+	;   python_plan_compile_predicate(Options, Module:Pred/Arity, Wam)
 	->  Kind = wam
-	;   WamCode = '',
+	;   Wam = '',
 	    Kind = missing
 	).
-plan_python_predicate(Options, Pred/Arity-WamCode, pred_plan(Pred, Arity, WamCode, Kind)) :- !,
-	(   is_ffi_predicate(Pred, Arity, Options)
-	->  Kind = ffi
-	;   Kind = wam
-	).
-plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, WamCode, Kind)) :-
+plan_python_predicate(Options, Pred/Arity-WamText, pred_plan(Pred, Arity, Wam, Kind)) :- !,
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  Kind = ffi,
-	    WamCode = ''
-	;   compile_predicate_to_wam(Pred/Arity, [], WamCode)
+	    Wam = ''
+	;   python_wam_text_plan(WamText, Wam),
+	    Kind = wam
+	).
+plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  Kind = ffi,
+	    Wam = ''
+	;   python_plan_compile_predicate(Options, Pred/Arity, Wam)
 	->  Kind = wam
-	;   WamCode = '',
+	;   Wam = '',
 	    Kind = missing
 	).
+
+python_plan_compile_predicate(Options, PredIndicator, Wam) :-
+	python_wam_emit_ir_mode(Options, IrMode),
+	(   IrMode = wam_text
+	->  compile_predicate_to_wam_text(PredIndicator, [], WamText),
+	    python_wam_text_plan(WamText, Wam)
+	;   IrMode = wam_items_bridge
+	->  compile_predicate_to_wam_items(PredIndicator, [], Items),
+	    python_wam_items_plan(Items, Wam)
+	).
+
+python_wam_emit_ir_mode(Options, IrMode) :-
+	(   option(emit_mode(lowered), Options)
+	->  EmitMode = lowered
+	;   EmitMode = interpreter
+	),
+	wam_ir_mode(wam_python, EmitMode, Options, IrMode),
+	(   IrMode == direct_target
+	->  throw(error(domain_error(wam_python_ir_mode, direct_target),
+	                python_plan_compile_predicate/3))
+	;   IrMode == wam_items_native
+	->  throw(error(existence_error(wam_ir_mode, wam_items_native),
+	                python_plan_compile_predicate/3))
+	;   true
+	).
+
+python_wam_text_plan(WamText, wam_items(text(WamText), Items)) :-
+	wam_text_to_items(WamText, Items).
+
+python_wam_items_plan(Items, wam_items(items_only, Items)).
+
+wam_plan_text(wam_items(text(WamText), _Items), WamText) :- !.
+wam_plan_text(wam_items(items_only, _Items), _) :- !, fail.
+wam_plan_text(WamText, WamText).
+
+wam_plan_items(wam_items(_Source, Items), Items) :- !.
+wam_plan_items(WamText, Items) :-
+	wam_text_to_items(WamText, Items).
 
 lowered_route_set(Plans, Options, LoweredSet) :-
 	(   option(emit_mode(lowered), Options)
 	->  findall(Pred/Arity,
-	        ( member(pred_plan(Pred, Arity, WamCode, wam), Plans),
-	          lowered_candidate_wam(WamCode)
+	        ( member(pred_plan(Pred, Arity, Wam, wam), Plans),
+	          lowered_candidate_wam(Wam)
 	        ),
 	        Candidates0),
 	    sort(Candidates0, Candidates),
@@ -1941,9 +2149,12 @@ lowered_route_set(Plans, Options, LoweredSet) :-
 	;   LoweredSet = []
 	).
 
-lowered_candidate_wam(WamCode) :-
-	parse_wam_text_py(WamCode, Instrs),
-	is_deterministic_pred_py(Instrs).
+lowered_candidate_wam(Wam) :-
+	wam_plan_text(Wam, WamText),
+	(   parse_wam_text_py(WamText, Instrs),
+	    is_deterministic_pred_py(Instrs)
+	;   py_structured_clause1(WamText, _)    % soft-cut if-then-else / \+ / once
+	).
 
 fix_lowered_route_set(Current, Plans, Options, Final) :-
 	include(lowered_route_supported(Plans, Options, Current), Current, Next0),
@@ -1954,8 +2165,9 @@ fix_lowered_route_set(Current, Plans, Options, Final) :-
 	).
 
 lowered_route_supported(Plans, Options, Current, Pred/Arity) :-
-	member(pred_plan(Pred, Arity, WamCode, wam), Plans),
-	parse_wam_text_py(WamCode, Instrs),
+	member(pred_plan(Pred, Arity, Wam, wam), Plans),
+	wam_plan_text(Wam, WamText),
+	parse_wam_text_py(WamText, Instrs),
 	findall(CalleePred/CalleeArity, direct_wam_call(Instrs, CalleePred/CalleeArity), Calls0),
 	sort(Calls0, Calls),
 	forall(member(CalleePred/CalleeArity, Calls),
@@ -1990,17 +2202,20 @@ pred_string_indicator(PredStr, ArityStr, Pred/Arity) :-
 	    atom_number(ArityAtom0, Arity)
 	).
 
-compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, WamCode, Kind), PredCode) :-
+compile_planned_predicate(Options, LoweredSet, pred_plan(Pred, Arity, Wam, Kind), PredCode) :-
 	(   Kind = ffi
 	->  compile_ffi_stub_predicate(Pred, Arity, Options, PredCode)
 	;   Kind = missing
 	->  atom_string(Pred, PredStr),
 	    format(string(PredCode), '# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
 	;   member(Pred/Arity, LoweredSet)
-	->  compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  wam_plan_text(Wam, WamText),
+	    compile_lowered_wam_predicate_to_python(Pred/Arity, WamText, Options, PredCode)
 	;   option(emit_mode(lowered), Options)
-	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, [registrar_prefix(register_)|Options], PredCode)
-	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	->  wam_plan_items(Wam, Items),
+	    compile_wam_predicate_items_to_python(Pred/Arity, Items, [registrar_prefix(register_)|Options], PredCode)
+	;   wam_plan_items(Wam, Items),
+	    compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)
 	).
 
 %% pred_func_name(+Options, +PredSpec, -FuncName)
@@ -2310,8 +2525,12 @@ if __name__ == \'__main__\':
 ', [ModuleName]).
 
 %% write_file(+Path, +Content)
-%  Write content to a file.
+%  Write content to a file. The runtime and generated modules embed UTF-8
+%  characters (arrows / dashes in comments and docstrings), so the stream
+%  is opened as UTF-8 regardless of the process locale (POSIX/ASCII in many
+%  CI containers) — otherwise write/2 raises an encoding error.
 write_file(Path, Content) :-
-	open(Path, write, Stream),
-	write(Stream, Content),
-	close(Stream).
+	setup_call_cleanup(
+		open(Path, write, Stream, [encoding(utf8)]),
+		write(Stream, Content),
+		close(Stream)).

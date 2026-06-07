@@ -27,8 +27,12 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_target', [
+    compile_predicate_to_wam_text/3,
+    compile_predicate_to_wam_items/3
+]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module(wam_ir_mode, [wam_ir_mode/4]).
 :- use_module(wam_text_parser, [
     wam_tokenize_line/2,
     wam_recognise_label/2,
@@ -60,6 +64,17 @@ validate_emit_mode(mixed(L), mixed(L)) :- is_list(L), !.
 validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_lua_emit_mode, Other),
                 wam_lua_resolve_emit_mode/2)).
+
+wam_lua_emit_ir_mode(Options, EmitMode, IrMode) :-
+    wam_ir_mode(wam_lua, EmitMode, Options, IrMode),
+    (   IrMode == direct_target
+    ->  throw(error(domain_error(wam_lua_ir_mode, direct_target),
+                    wam_lua_emit_ir_mode/3))
+    ;   IrMode == wam_items_native
+    ->  throw(error(existence_error(wam_ir_mode, wam_items_native),
+                    wam_lua_emit_ir_mode/3))
+    ;   true
+    ).
 
 should_try_lower(functions, _, _) :- !.
 should_try_lower(mixed(HotPreds), P, A) :-
@@ -264,6 +279,12 @@ wam_parts_to_lua(["switch_on_structure" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'I.SwitchOnStructure({~w})', [CasesStr]).
 wam_parts_to_lua(["cut_ite"], 'I.CutIte()').
+wam_parts_to_lua(["get_level", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.GetLevel(~w)', [R]).
+wam_parts_to_lua(["cut", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.Cut(~w)', [R]).
 wam_parts_to_lua(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
     reg_to_int(TemplateReg, TIdx),
     reg_to_int(BagReg, BIdx),
@@ -427,8 +448,9 @@ compile_predicates_for_project(Predicates, Options,
     forall(member(A, ExtraAtoms), (atom_string(A, S), intern_lua_atom(S, _))),
     option(foreign_predicates(ForeignPredicates), Options, []),
     append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePreds),
-    wam_lua_resolve_emit_mode(Options, Mode),
-    compile_all_predicates(CompilePreds, Options, Mode, 1,
+    wam_lua_resolve_emit_mode(Options, EmitMode),
+    wam_lua_emit_ir_mode(Options, EmitMode, IrMode),
+    compile_all_predicates(CompilePreds, Options, EmitMode, IrMode, 1,
         [], [], [], [], [], [], [],
         AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries, InlineFacts, FactSources),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
@@ -444,9 +466,9 @@ same_pi(P0, P1) :- pi_key(P0, K), pi_key(P1, K).
 pi_key(_:P/A, P/A) :- !.
 pi_key(P/A, P/A).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources,
+compile_all_predicates([], _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources,
                        Instrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources).
-compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
+compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
                        InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, InlineFactAcc, FactSourceAcc,
                        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources) :-
     (Pred = _M:P/Arity -> true ; Pred = P/Arity),
@@ -455,7 +477,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         lua_string_literal(Key, KeyQ),
         format(string(FLit), 'I.CallFactStream(~w, ~w)', [KeyQ, Arity]),
         PredInstrs = [FLit, 'I.Proceed()'],
-        WamForLower = "",
+        WamCode = "",
         PredSubLabelEntries0 = [],
         InlineFactEntry = none,
         lua_fact_source_entry(Key, SourceSpec, FactSourceEntry)
@@ -463,13 +485,13 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     ->  lua_string_literal(P, PQ),
         format(string(FLit), 'I.CallForeign(~w, ~w)', [PQ, Arity]),
         PredInstrs = [FLit, 'I.Proceed()'],
-        WamForLower = "",
+        WamCode = "",
         PredSubLabelEntries0 = [],
         InlineFactEntry = none,
         FactSourceEntry = none
-    ;   compile_predicate_to_wam(P/Arity, [], WamForLower),
+    ;   compile_lua_predicate_wam(P/Arity, IrMode, WamCode),
         (   Arity == 2,
-            lua_inline_fact_tuples(WamForLower, Tuples),
+            lua_inline_fact_tuples(WamCode, Tuples),
             Tuples \= []
         ->  format(string(Key), '~w/~w', [P, Arity]),
             lua_string_literal(Key, KeyQ),
@@ -478,7 +500,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
             PredSubLabelEntries0 = [],
             lua_inline_fact_entry(Key, Tuples, InlineFactEntry),
             FactSourceEntry = none
-        ;   wam_code_to_lua_data(WamForLower, Options, PredInstrs, PredSubLabelEntries0),
+        ;   wam_code_to_lua_data(WamCode, Options, PredInstrs, PredSubLabelEntries0),
             InlineFactEntry = none,
             FactSourceEntry = none
         )
@@ -498,11 +520,11 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     format(string(MainEntry), '  [~w] = ~w', [KeyQ, BasePC]),
     NewTopLabels = [MainEntry|TopLabelAcc],
     append([MainEntry|PredSubLabelEntries], AllLabelAcc, NewAllLabels),
-    (   should_try_lower(Mode, P, Arity),
-        WamForLower \= "",
+    (   should_try_lower(EmitMode, P, Arity),
+        WamCode \= "",
         InlineFactEntry == none,
-        catch(wam_lua_lowerable(Pred, WamForLower, _), _, fail),
-        catch(lower_predicate_to_lua(Pred, WamForLower, [],
+        catch(wam_lua_lowerable(Pred, WamCode, _), _, fail),
+        catch(lower_predicate_to_lua(Pred, WamCode, [],
                                      lowered(_, FuncName, LoweredLua)), _, fail)
     ->  NewLoweredAcc = [LoweredLua|LoweredAcc],
         emit_lua_lowered_wrapper(P, Arity, FuncName, Wrapper)
@@ -511,9 +533,14 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
     ),
     (InlineFactEntry == none -> NewInlineFactAcc = InlineFactAcc ; NewInlineFactAcc = [InlineFactEntry|InlineFactAcc]),
     (FactSourceEntry == none -> NewFactSourceAcc = FactSourceAcc ; NewFactSourceAcc = [FactSourceEntry|FactSourceAcc]),
-    compile_all_predicates(Rest, Options, Mode, NewPC,
+    compile_all_predicates(Rest, Options, EmitMode, IrMode, NewPC,
         NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewInlineFactAcc, NewFactSourceAcc,
         AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, InlineFacts, FactSources).
+
+compile_lua_predicate_wam(PredIndicator, wam_text, WamCode) :-
+    compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamCode).
+compile_lua_predicate_wam(PredIndicator, wam_items_bridge, WamCode) :-
+    compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], WamCode).
 
 lua_fact_source_spec(P, Arity, Options, Spec) :-
     Arity =:= 2,
@@ -602,6 +629,8 @@ wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
 wam_item_parts(trust_me, ["trust_me"]).
 wam_item_parts(jump(L), ["jump", L]).
 wam_item_parts(cut_ite, ["cut_ite"]).
+wam_item_parts(get_level(Yn), ["get_level", Yn]).
+wam_item_parts(cut(Yn), ["cut", Yn]).
 wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
 wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
 wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).

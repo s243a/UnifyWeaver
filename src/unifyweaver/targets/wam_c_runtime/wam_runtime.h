@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdint.h>
+#include <limits.h>
 #include <sys/types.h>
 #ifdef WAM_C_ENABLE_LMDB
 #include <lmdb.h>
@@ -18,16 +19,25 @@
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
-#define WAM_ATOM_HASH_SIZE 512
+#define WAM_INITIAL_ATOM_HASH_SIZE 512
 #define WAM_FOREIGN_HASH_SIZE 256
 #define WAM_CALL_STACK_SIZE 1024
+#define WAM_AGGREGATE_STACK_SIZE 32
+#define WAM_AGGREGATE_MAX_WITNESSES 8
+#define WAM_AGGREGATE_META_MAX_VARS 64
+#define WAM_META_GOAL_STACK_SIZE 64
+#define WAM_AGGREGATE_NEXT_GROUP -3
+#define WAM_AGGREGATE_META_COLLECT -4
+#define WAM_AGGREGATE_META_DONE -5
+#define WAM_META_CONJ_RETURN -6
+#define WAM_META_DISJ_RIGHT -7
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
 
 /* Value tag enum */
 typedef enum {
-    VAL_ATOM, VAL_INT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
+    VAL_ATOM, VAL_INT, VAL_FLOAT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
 } WamValueTag;
 
 typedef struct {
@@ -35,6 +45,7 @@ typedef struct {
     union {
         const char *atom;
         int integer;
+        double floating;
         int ref_addr;
         const char *str_functor;
         const char *unbound_name;
@@ -55,9 +66,73 @@ typedef struct {
     int trail_size;
     int stack_size;
     int call_base_top;
+    int aggregate_group_top;
+    int conj_top;
+    int disj_top;
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
+
+typedef struct {
+    WamValue root;
+    WamValue *cells;
+    int cell_count;
+    int cell_cap;
+} WamStoredTerm;
+
+typedef struct {
+    const char *kind;
+    bool is_meta;
+    int begin_pc;
+    int end_pc;
+    int return_pc;
+    int base_b;
+    int sentinel_b;
+    int template_reg;
+    int template_is_y;
+    int result_reg;
+    int result_is_y;
+    WamValue meta_template;
+    WamValue meta_result;
+    WamValue meta_witnesses[WAM_AGGREGATE_MAX_WITNESSES];
+    WamStoredTerm *items;
+    WamStoredTerm *witnesses;
+    int item_count;
+    int item_cap;
+    int witness_count;
+    int witness_regs[WAM_AGGREGATE_MAX_WITNESSES];
+    int witness_is_y[WAM_AGGREGATE_MAX_WITNESSES];
+} WamAggregateFrame;
+
+typedef struct {
+    const char *kind;
+    bool is_meta;
+    int return_pc;
+    int result_reg;
+    int result_is_y;
+    WamValue meta_result;
+    WamValue meta_witnesses[WAM_AGGREGATE_MAX_WITNESSES];
+    WamStoredTerm *items;
+    WamStoredTerm *witnesses;
+    int item_count;
+    int item_cap;
+    int witness_count;
+    int witness_regs[WAM_AGGREGATE_MAX_WITNESSES];
+    int witness_is_y[WAM_AGGREGATE_MAX_WITNESSES];
+    int *group_reps;
+    int group_count;
+    int next_group;
+} WamAggregateGroupIterator;
+
+typedef struct {
+    WamValue second_goal;
+    int return_pc;
+} WamConjFrame;
+
+typedef struct {
+    WamValue right_goal;
+    int return_pc;
+} WamDisjFrame;
 
 /* Environment Frame */
 typedef struct {
@@ -83,8 +158,11 @@ typedef enum {
     INSTR_CALL, INSTR_EXECUTE, INSTR_PROCEED,
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
+    INSTR_GET_LEVEL, INSTR_CUT, INSTR_CUT_ITE, INSTR_JUMP,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
-    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN
+    INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
+    INSTR_BEGIN_AGGREGATE, INSTR_END_AGGREGATE,
+    INSTR_NOOP
 } WamInstrTag;
 
 /* Hash Entry for Indexing */
@@ -117,13 +195,17 @@ typedef struct {
 typedef struct {
     const char *source;
     const char *target;
-    int weight;
+    double weight;
 } WeightedEdge;
 
 typedef struct {
+    WamState *owner_state;
     CategoryEdge *edges;
     int edge_count;
     int edge_cap;
+    CategoryEdge *edges_by_child;
+    int child_index_count;
+    bool child_index_dirty;
 } WamFactSource;
 
 typedef struct {
@@ -135,6 +217,10 @@ typedef struct {
 typedef struct {
     int index_fd;
     int values_fd;
+    bool drop_after_read;
+    bool direct_io;
+    size_t direct_io_alignment;
+    off_t values_size;
     WamReverseCsrRow *rows;
     int row_count;
 #ifdef WAM_C_ENABLE_LMDB
@@ -146,10 +232,38 @@ typedef struct {
 } WamReverseCsrArtifact;
 
 typedef struct {
+    const char *atom;
+    int id;
+} WamCategoryIdEntry;
+
+typedef struct {
+    const char *atom;
+    int index;
+} WamCategoryIdAtomIndexEntry;
+
+typedef struct {
+    int id;
+    int index;
+    bool occupied;
+} WamCategoryIdValueIndexEntry;
+
+typedef struct {
     int *values;
     int count;
     int cap;
 } WamIntResults;
+
+typedef struct {
+    int total_hops;
+    int parent_hops;
+    int child_hops;
+} WamBidirectionalAncestorResult;
+
+typedef struct {
+    WamBidirectionalAncestorResult *values;
+    int count;
+    int cap;
+} WamBidirectionalAncestorResults;
 
 typedef struct {
     int reg;
@@ -186,13 +300,29 @@ typedef struct {
 } WamChoiceInstr;
 
 typedef struct {
+    int target_pc;
+} WamJumpInstr;
+
+typedef struct {
     int reg;
     HashEntry *hash_table;
     int hash_size;
     HashEntry *s_hash_table;
     int s_hash_size;
     int list_target_pc;
+    bool no_match_fallthrough;
 } WamSwitchInstr;
+
+typedef struct {
+    char *kind;
+    int template_reg;
+    int template_is_y;
+    int result_reg;
+    int result_is_y;
+    int witness_count;
+    int witness_regs[WAM_AGGREGATE_MAX_WITNESSES];
+    int witness_is_y[WAM_AGGREGATE_MAX_WITNESSES];
+} WamAggregateInstr;
 
 typedef union {
     WamConstantInstr constant;
@@ -201,7 +331,9 @@ typedef union {
     WamFunctorInstr functor;
     WamPredInstr pred;
     WamChoiceInstr choice;
+    WamJumpInstr jump;
     WamSwitchInstr switch_index;
+    WamAggregateInstr aggregate;
 } InstructionPayload;
 
 /* Instruction */
@@ -250,20 +382,48 @@ struct WamState {
     PredEntry pred_hash[WAM_PRED_HASH_SIZE];
 
     /* Interned dynamic atoms */
-    AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
+    AtomEntry **atom_table;
+    int atom_table_size;
+    int atom_count;
 
     /* Foreign predicate handlers */
     ForeignEntry foreign_hash[WAM_FOREIGN_HASH_SIZE];
 
     /* First-solution call pruning */
     int call_bases[WAM_CALL_STACK_SIZE];
+    bool call_base_preserve_choice[WAM_CALL_STACK_SIZE];
     int call_base_top;
+
+    /* Aggregate/findall frames */
+    WamAggregateFrame aggregate_frames[WAM_AGGREGATE_STACK_SIZE];
+    int aggregate_top;
+    WamAggregateGroupIterator aggregate_group_iters[WAM_AGGREGATE_STACK_SIZE];
+    int aggregate_group_top;
+    WamConjFrame conj_frames[WAM_META_GOAL_STACK_SIZE];
+    int conj_top;
+    WamDisjFrame disj_frames[WAM_META_GOAL_STACK_SIZE];
+    int disj_top;
 
     /* Native category_ancestor kernel data */
     CategoryEdge *category_edges;
     int category_edge_count;
     int category_edge_cap;
+    CategoryEdge *category_edges_by_child;
+    int category_child_index_count;
+    bool category_child_index_dirty;
     int category_max_depth;
+    double bidirectional_parent_step_cost;
+    double bidirectional_child_step_cost;
+    double bidirectional_cost_budget;
+    WamReverseCsrArtifact *bidirectional_child_csr;
+    void *bidirectional_min_distance_cache;
+    WamCategoryIdEntry *category_ids;
+    int category_id_count;
+    int category_id_cap;
+    WamCategoryIdAtomIndexEntry *category_id_by_atom;
+    int category_id_by_atom_cap;
+    WamCategoryIdValueIndexEntry *category_id_by_value;
+    int category_id_by_value_cap;
 
     /* Native weighted_shortest_path3 kernel data */
     WeightedEdge *weighted_edges;
@@ -283,9 +443,14 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
-void wam_register_weighted_edge(WamState *state, const char *source, const char *target, int weight);
-void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, int distance);
+void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight);
+void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
+void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
+                                                int max_depth,
+                                                double parent_step_cost,
+                                                double child_step_cost,
+                                                double cost_budget);
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
 void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_parent_distance_kernel(WamState *state, const char *pred);
@@ -293,6 +458,7 @@ void wam_register_transitive_step_parent_distance_kernel(WamState *state, const 
 void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred);
 void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
+bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, int arity);
@@ -306,16 +472,38 @@ bool wam_fact_source_load_lmdb(WamState *state, WamFactSource *source,
                                const char *env_path, const char *db_name);
 int wam_fact_source_lookup_arg1(WamFactSource *source, const char *arg1,
                                 CategoryEdge *out_edges, int max_edges);
+bool wam_fact_source_child_range(WamFactSource *source, const char *child,
+                                 CategoryEdge **edges_out, int *count_out);
 bool wam_register_category_parent_fact_source(WamState *state, WamFactSource *source);
+void wam_register_category_id(WamState *state, const char *atom, int id);
+bool wam_category_atom_to_id(WamState *state, const char *atom, int *id_out);
+bool wam_category_id_to_atom(WamState *state, int id, const char **atom_out);
+void wam_attach_bidirectional_child_csr(WamState *state, WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_init(WamReverseCsrArtifact *artifact);
 void wam_reverse_csr_close(WamReverseCsrArtifact *artifact);
 bool wam_reverse_csr_load(WamReverseCsrArtifact *artifact,
                           const char *index_path,
                           const char *values_path);
+bool wam_reverse_csr_load_pread_drop(WamReverseCsrArtifact *artifact,
+                                     const char *index_path,
+                                     const char *values_path);
+bool wam_reverse_csr_load_direct_io(WamReverseCsrArtifact *artifact,
+                                    const char *index_path,
+                                    const char *values_path,
+                                    int block_size_edges);
 bool wam_reverse_csr_load_lmdb_offset(WamReverseCsrArtifact *artifact,
                                       const char *values_path,
                                       const char *offset_env_path,
                                       const char *db_name);
+bool wam_reverse_csr_load_lmdb_offset_pread_drop(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name);
+bool wam_reverse_csr_load_lmdb_offset_direct_io(WamReverseCsrArtifact *artifact,
+                                                const char *values_path,
+                                                const char *offset_env_path,
+                                                const char *db_name,
+                                                int block_size_edges);
 int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
                                     int parent,
                                     int *out_children,
@@ -323,7 +511,28 @@ int wam_reverse_csr_lookup_children(WamReverseCsrArtifact *artifact,
 void wam_int_results_init(WamIntResults *results);
 void wam_int_results_close(WamIntResults *results);
 bool wam_int_results_push(WamIntResults *results, int value);
+void wam_bidirectional_ancestor_results_init(WamBidirectionalAncestorResults *results);
+void wam_bidirectional_ancestor_results_close(WamBidirectionalAncestorResults *results);
+bool wam_bidirectional_ancestor_results_push(WamBidirectionalAncestorResults *results,
+                                             int total_hops,
+                                             int parent_hops,
+                                             int child_hops);
+bool wam_category_min_parent_hops(WamState *state,
+                                  const char *cat,
+                                  const char *root,
+                                  int *hops_out);
+bool wam_category_child_may_reach_root_within_budget(WamState *state,
+                                                     const char *cat,
+                                                     const char *root,
+                                                     int max_child_expansions,
+                                                     int child_depth,
+                                                     double parent_cost,
+                                                     double child_cost,
+                                                     double budget,
+                                                     int *candidate_count_out);
 bool wam_collect_category_ancestor_hops(WamState *state, WamIntResults *results);
+bool wam_collect_bidirectional_ancestor_hops(WamState *state,
+                                             WamBidirectionalAncestorResults *results);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
@@ -333,6 +542,15 @@ static inline WamValue val_atom(const char *s) {
 }
 static inline WamValue val_int(int n) {
     WamValue v; v.tag = VAL_INT; v.data.integer = n; return v;
+}
+static inline WamValue val_float(double n) {
+    WamValue v; v.tag = VAL_FLOAT; v.data.floating = n; return v;
+}
+static inline WamValue val_number_from_double(double n) {
+    if (n >= (double)INT_MIN && n <= (double)INT_MAX && n == (double)((int)n)) {
+        return val_int((int)n);
+    }
+    return val_float(n);
 }
 static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
@@ -430,10 +648,46 @@ static inline char *wam_strdup(const char *str) {
     return copy;
 }
 
+static inline bool wam_atom_table_ensure(WamState *state) {
+    if (state->atom_table) return true;
+    state->atom_table_size = WAM_INITIAL_ATOM_HASH_SIZE;
+    state->atom_table = calloc((size_t)state->atom_table_size, sizeof(AtomEntry *));
+    if (!state->atom_table) {
+        state->atom_table_size = 0;
+        return false;
+    }
+    return true;
+}
+
+static inline bool wam_atom_table_rehash(WamState *state, int new_size) {
+    AtomEntry **new_table = calloc((size_t)new_size, sizeof(AtomEntry *));
+    if (!new_table) return false;
+    for (int i = 0; i < state->atom_table_size; i++) {
+        AtomEntry *entry = state->atom_table[i];
+        while (entry) {
+            AtomEntry *next = entry->next;
+            unsigned int h = wam_hash_string(entry->str) & (unsigned int)(new_size - 1);
+            entry->next = new_table[h];
+            new_table[h] = entry;
+            entry = next;
+        }
+    }
+    free(state->atom_table);
+    state->atom_table = new_table;
+    state->atom_table_size = new_size;
+    return true;
+}
+
 static inline const char *wam_intern_atom(WamState *state, const char *str) {
-    unsigned int h = wam_hash_string(str) & (WAM_ATOM_HASH_SIZE - 1);
+    if (!wam_atom_table_ensure(state)) return str;
+    unsigned int h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     for (AtomEntry *e = state->atom_table[h]; e; e = e->next) {
         if (strcmp(e->str, str) == 0) return e->str;
+    }
+    if ((state->atom_count + 1) * 4 > state->atom_table_size * 3 &&
+        state->atom_table_size <= INT_MAX / 2 &&
+        wam_atom_table_rehash(state, state->atom_table_size * 2)) {
+        h = wam_hash_string(str) & (unsigned int)(state->atom_table_size - 1);
     }
     AtomEntry *e = malloc(sizeof(AtomEntry));
     if (!e) return str;
@@ -444,6 +698,7 @@ static inline const char *wam_intern_atom(WamState *state, const char *str) {
     }
     e->next = state->atom_table[h];
     state->atom_table[h] = e;
+    state->atom_count++;
     return e->str;
 }
 // Creates a new unbound reference on the heap.
@@ -467,6 +722,7 @@ static inline bool val_is_unbound(WamValue v) {
 static inline bool val_equal(WamValue v1, WamValue v2) {
     if (v1.tag != v2.tag) return false;
     if (v1.tag == VAL_INT) return v1.data.integer == v2.data.integer;
+    if (v1.tag == VAL_FLOAT) return v1.data.floating == v2.data.floating;
     if (v1.tag == VAL_ATOM) return strcmp(v1.data.atom, v2.data.atom) == 0;
     // simplify for demonstration
     return false;
@@ -503,6 +759,22 @@ static inline void wam_bind(WamState *state, WamValue *v1, WamValue *v2) {
     trail_binding(state, v1);
     *v1 = *v2;
 }
+/* Return the heap address of a cons cell's head, treating both a VAL_LIST
+   (head@addr, tail@addr+1) and a "[|]/2"/"./2" VAL_STR (functor@addr,
+   head@addr+1, tail@addr+2) as the same list cell; -1 if not a cons. The
+   compiler mixes the two spellings for one logical list (put_list vs
+   put_structure "[|]/2"), so unification must alias them. */
+static inline int wam_cons_head_addr(WamState *state, WamValue *d) {
+    if (d->tag == VAL_LIST) return d->data.ref_addr;
+    if (d->tag == VAL_STR) {
+        WamValue *f = &state->H_array[d->data.ref_addr];
+        if (f->tag == VAL_ATOM &&
+            (strcmp(f->data.atom, "[|]/2") == 0 || strcmp(f->data.atom, "./2") == 0)) {
+            return d->data.ref_addr + 1;
+        }
+    }
+    return -1;
+}
 static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
     WamValue *pdl[256];
     int pdl_top = 0;
@@ -522,11 +794,28 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             wam_bind(state, unbound, other);
             continue;
         }
-        
+
+        /* Cons-cell aliasing: a VAL_LIST and a "[|]/2"/"./2" VAL_STR are the
+           same list cell. Unify head with head and tail with tail. */
+        {
+            int c1 = wam_cons_head_addr(state, d1);
+            int c2 = wam_cons_head_addr(state, d2);
+            if (c1 >= 0 && c2 >= 0) {
+                if (pdl_top + 4 > 256) return false;
+                pdl[pdl_top++] = &state->H_array[c2 + 1];
+                pdl[pdl_top++] = &state->H_array[c1 + 1];
+                pdl[pdl_top++] = &state->H_array[c2];
+                pdl[pdl_top++] = &state->H_array[c1];
+                continue;
+            }
+        }
+
         if (d1->tag != d2->tag) return false;
         
         if (d1->tag == VAL_INT) {
             if (d1->data.integer != d2->data.integer) return false;
+        } else if (d1->tag == VAL_FLOAT) {
+            if (d1->data.floating != d2->data.floating) return false;
         } else if (d1->tag == VAL_ATOM) {
             if (strcmp(d1->data.atom, d2->data.atom) != 0) return false;
         } else if (d1->tag == VAL_LIST) {
@@ -558,6 +847,53 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
     }
     return true;
 }
+
+static inline void wam_stored_term_inline_free(WamStoredTerm *term) {
+    free(term->cells);
+    memset(term, 0, sizeof(WamStoredTerm));
+}
+
+static inline void wam_aggregate_group_iterator_free(WamAggregateGroupIterator *iter) {
+    for (int i = 0; i < iter->item_count; i++) {
+        wam_stored_term_inline_free(&iter->items[i]);
+        if (iter->witnesses) {
+            wam_stored_term_inline_free(&iter->witnesses[i]);
+        }
+    }
+    free(iter->items);
+    free(iter->witnesses);
+    free(iter->group_reps);
+    memset(iter, 0, sizeof(WamAggregateGroupIterator));
+}
+
+static inline void wam_trim_aggregate_group_iters(WamState *state, int target_top) {
+    if (target_top < 0) target_top = 0;
+    if (target_top > state->aggregate_group_top) {
+        target_top = state->aggregate_group_top;
+    }
+    while (state->aggregate_group_top > target_top) {
+        state->aggregate_group_top--;
+        wam_aggregate_group_iterator_free(
+            &state->aggregate_group_iters[state->aggregate_group_top]);
+    }
+}
+
+static inline void wam_trim_conj_frames(WamState *state, int target_top) {
+    if (target_top < 0) target_top = 0;
+    if (target_top > state->conj_top) {
+        target_top = state->conj_top;
+    }
+    state->conj_top = target_top;
+}
+
+static inline void wam_trim_disj_frames(WamState *state, int target_top) {
+    if (target_top < 0) target_top = 0;
+    if (target_top > state->disj_top) {
+        target_top = state->disj_top;
+    }
+    state->disj_top = target_top;
+}
+
 static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
         state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
@@ -570,6 +906,9 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
     cp->call_base_top = state->call_base_top;
+    cp->aggregate_group_top = state->aggregate_group_top;
+    cp->conj_top = state->conj_top;
+    cp->disj_top = state->disj_top;
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -589,6 +928,9 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->E = cp->stack_size;
     state->CP = cp->cp;
     state->call_base_top = cp->call_base_top;
+    wam_trim_aggregate_group_iters(state, cp->aggregate_group_top);
+    wam_trim_conj_frames(state, cp->conj_top);
+    wam_trim_disj_frames(state, cp->disj_top);
     unwind_trail(state, cp->trail_size);
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
@@ -603,9 +945,20 @@ static inline void pop_choice_point(WamState *state) {
     }
 }
 static inline void wam_prune_choice_points(WamState *state, int target_b) {
+    int target_group_top = 0;
+    int target_conj_top = 0;
+    int target_disj_top = 0;
+    if (target_b > 0 && target_b <= state->B) {
+        target_group_top = state->B_array[target_b - 1].aggregate_group_top;
+        target_conj_top = state->B_array[target_b - 1].conj_top;
+        target_disj_top = state->B_array[target_b - 1].disj_top;
+    }
     while (state->B > target_b) {
         pop_choice_point(state);
     }
+    wam_trim_aggregate_group_iters(state, target_group_top);
+    wam_trim_conj_frames(state, target_conj_top);
+    wam_trim_disj_frames(state, target_disj_top);
 }
 static inline void update_choice_point(WamState *state, int next_pc) {
     if (state->B > 0) {

@@ -1,0 +1,23 @@
+
+// R7/R8: Atom-keyed wrapper around the LMDB int-keyed LookupSource.
+// Bundles LmdbFactSource with the s2i/i2s intern maps so the kernel
+// can call into a single LookupSource for category_parent/2 and stay
+// in atom-space at the kernel boundary. Used by both `lazy` mode
+// (registered directly) and `cached` mode (wrapped in CachedLookup).
+struct LazyCategoryParents {
+    source: LmdbFactSource,
+    s2i: HashMap<String, i32>,
+    i2s: HashMap<i32, String>,
+}
+
+impl wam_lib::state::LookupSource for LazyCategoryParents {
+    fn lookup_key_for_atom(&self, atom: &str) -> Option<i32> {
+        self.s2i.get(atom).copied()
+    }
+    fn lookup_parents(&self, key: i32) -> Vec<i32> {
+        self.source.lookup_parents(key).unwrap_or_default()
+    }
+    fn atom_for_key(&self, key: i32) -> Option<String> {
+        self.i2s.get(&key).cloned()
+    }
+}
