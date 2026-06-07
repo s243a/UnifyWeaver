@@ -1981,7 +1981,7 @@ wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back
         // active env frame. vm.E moves to the index of the just-pushed
         // frame so peekEnvFrame is O(1) and Deallocate can walk the
         // PrevE chain without scanning the stack.
-        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), PrevE: vm.E}
+        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), CutB0: vm.PendingB0, PrevE: vm.E}
         // Snapshot the Y-reg range (200..299) into the env frame so a
         // nested predicate that uses the same slot numbers via
         // PutVariable doesn''t silently clobber the caller''s Y-regs.
@@ -2021,6 +2021,7 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
@@ -2075,10 +2076,12 @@ wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
+        vm.PendingB0 = len(vm.ChoicePoints)
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.PendingB0 = len(vm.ChoicePoints)
             vm.PC = pc
             return true
         }
@@ -2087,7 +2090,8 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
         }
         return vm.executeIndexedAtomFact2(i.Pred)').
 
-wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Jump', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {

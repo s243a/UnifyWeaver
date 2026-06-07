@@ -102,6 +102,11 @@ type EnvFrame struct {
 	// restore, so reading the restored Y-reg dereferences through the
 	// (still-bound) Unbound to the bound value.
 	SavedYRegs [100]Value
+	// CutB0: the predicate's call-time choicepoint height (copied from
+	// vm.PendingB0 at Allocate). A plain cut truncates choicepoints back
+	// to CutB0. Kept separate from B0 (allocate-time) because B0 drives
+	// Deallocate's physical-pop heuristic and must not change meaning.
+	CutB0 int
 }
 
 type UnifyCtx struct {
@@ -149,6 +154,12 @@ type WamState struct {
 	Ctx          *WamContext
 	PC           int
 	CP           int
+	// PendingB0: choicepoint-stack height captured by Call/Execute just
+	// before transferring to a user predicate (BEFORE its try_me_else
+	// pushes the clause-chain CP). Allocate copies it into EnvFrame.CutB0
+	// so a plain cut (!/0) truncates back to the callee's entry level --
+	// its own clause alternatives, not a caller's choicepoint.
+	PendingB0    int
 	// Regs holds A/X/Y registers in a single flat array.
 	//   * A1..A8: indices 0..7 (argument registers)
 	//   * X-regs: 8..199  (clause-local temporaries)
@@ -1440,7 +1451,11 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "!/0":
 		limit := 0
 		if env := vm.peekEnvFrame(); env != nil {
-			limit = env.B0
+			// CutB0 = call-time choicepoint height, so the cut removes this
+			// predicate's own clause alternatives but not a caller's CP.
+			// (B0 is allocate-time and one too high -- it would leave
+			// sibling clauses uncut, making the cut a no-op.)
+			limit = env.CutB0
 		}
 		if limit < 0 {
 			limit = 0
