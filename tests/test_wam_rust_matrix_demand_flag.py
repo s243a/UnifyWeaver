@@ -81,6 +81,23 @@ class TestMatrixDemandFlag(unittest.TestCase):
         self.assertTrue(any("pub fn is_scoped" in d for d in defs),
                         "is_scoped() definition missing from generated Rust")
 
+    def test_min_dist_prune_wiring(self):
+        # WAM_MIN_DIST_PRUNE=1 loads metric_min_dist_to_root and the kernel
+        # consults it (admissible A* prune). Verify the full wiring is emitted.
+        src = self._generate("cached")
+        self.assertIn('std::env::var("WAM_MIN_DIST_PRUNE")', src)
+        self.assertIn(".load_min_dist()", src)
+        self.assertIn(".set_min_dist(", src)
+        src_dir = Path(self.tmp.name) / "cached" / "src"
+        defs = [p.read_text() for p in src_dir.glob("*.rs")]
+        # kernel prune guard + the loader + the setter definitions
+        self.assertTrue(any("self.min_dist.is_empty()" in d for d in defs),
+                        "kernel min_dist prune guard missing")
+        self.assertTrue(any("pub fn load_min_dist" in d for d in defs),
+                        "load_min_dist() definition missing")
+        self.assertTrue(any("pub fn set_min_dist" in d for d in defs),
+                        "set_min_dist() definition missing")
+
 
 if __name__ == "__main__":
     unittest.main()
