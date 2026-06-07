@@ -3133,6 +3133,65 @@ test_uname_known_linux_or_darwin(_, R) :-
     !,
     R is 1.   % 1
 
+% M128: copy_file/2 -- libc open/read/write/close.
+
+:- dynamic test_copy_file_basic/2.
+test_copy_file_basic(_, R) :-
+    % Create a tiny source file, copy it, diff to confirm bytes match.
+    shell('echo hello > /tmp/uw_m128_src', _),
+    shell('rm -f /tmp/uw_m128_dst', _),
+    copy_file('/tmp/uw_m128_src', '/tmp/uw_m128_dst'),
+    shell('diff -q /tmp/uw_m128_src /tmp/uw_m128_dst', St),
+    shell('rm -f /tmp/uw_m128_src /tmp/uw_m128_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_empty/2.
+test_copy_file_empty(_, R) :-
+    % Copying an empty file produces an empty dest (read returns 0
+    % immediately, loop exits successfully).
+    shell('rm -f /tmp/uw_m128_empty_src /tmp/uw_m128_empty_dst', _),
+    shell('touch /tmp/uw_m128_empty_src', _),
+    copy_file('/tmp/uw_m128_empty_src', '/tmp/uw_m128_empty_dst'),
+    size_file('/tmp/uw_m128_empty_dst', Sz),
+    shell('rm -f /tmp/uw_m128_empty_src /tmp/uw_m128_empty_dst', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_large/2.
+test_copy_file_large(_, R) :-
+    % Copy a file larger than the 4 KB buffer -- exercises the
+    % loop. yes | head produces ~3 KB per 1500 lines, so generate
+    % 20 KB by repeating ~10000 lines.
+    shell('rm -f /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', _),
+    shell('seq 1 5000 > /tmp/uw_m128_large_src', _),
+    copy_file('/tmp/uw_m128_large_src', '/tmp/uw_m128_large_dst'),
+    shell('diff -q /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', St),
+    shell('rm -f /tmp/uw_m128_large_src /tmp/uw_m128_large_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_missing_src/2.
+test_copy_file_missing_src(_, R) :-
+    % Source doesn''t exist -> open fails -> copy_file fails.
+    ( copy_file('/tmp/uw_m128_never_existed', '/tmp/uw_m128_x') -> R is 0
+    ; R is 1
+    ).   % 1
+
+:- dynamic test_copy_file_overwrite/2.
+test_copy_file_overwrite(_, R) :-
+    % O_TRUNC: copying over an existing dest replaces its content.
+    shell('echo old > /tmp/uw_m128_ow_dst', _),
+    shell('echo new > /tmp/uw_m128_ow_src', _),
+    copy_file('/tmp/uw_m128_ow_src', '/tmp/uw_m128_ow_dst'),
+    shell('diff -q /tmp/uw_m128_ow_src /tmp/uw_m128_ow_dst', St),
+    shell('rm -f /tmp/uw_m128_ow_src /tmp/uw_m128_ow_dst', _),
+    ( St =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_copy_file_bad_args/2.
+test_copy_file_bad_args(_, R) :-
+    ( copy_file(42, '/tmp/x') -> R is 0
+    ; copy_file('/tmp/x', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6206,6 +6265,19 @@ test_all :-
                    test_uname_sysname_stable, 0, 1),
        run_test_r0('uname_sysname known OS -> 1',
                    test_uname_known_linux_or_darwin, 0, 1),
+       format('--- M128 copy_file/2 ---~n'),
+       run_test_r0('copy_file basic round-trip + diff -> 1',
+                   test_copy_file_basic, 0, 1),
+       run_test_r0('copy_file empty source -> empty dst -> 1',
+                   test_copy_file_empty, 0, 1),
+       run_test_r0('copy_file large (multi-loop) round-trip -> 1',
+                   test_copy_file_large, 0, 1),
+       run_test_r0('copy_file missing source fails -> 1',
+                   test_copy_file_missing_src, 0, 1),
+       run_test_r0('copy_file O_TRUNC overwrite -> 1',
+                   test_copy_file_overwrite, 0, 1),
+       run_test_r0('copy_file with non-atom args fails -> 1',
+                   test_copy_file_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

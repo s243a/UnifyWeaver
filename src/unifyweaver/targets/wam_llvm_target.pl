@@ -1574,6 +1574,9 @@ declare i32 @getrlimit(i32, i8*)
 declare i32 @setrlimit(i32, i8*)
 declare i8* @getlogin()
 declare i32 @uname(i8*)
+declare i32 @open(i8*, i32, i32)
+declare i64 @read(i32, i8*, i64)
+declare i64 @write(i32, i8*, i64)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3693,6 +3696,7 @@ entry:
     i32 150, label %builtin_getlogin
     i32 151, label %builtin_uname_sysname
     i32 152, label %builtin_uname_machine
+    i32 153, label %builtin_copy_file
   ]
 
 builtin_is:
@@ -6783,6 +6787,76 @@ unm.intern:
   %unm.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %unm.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %unm.raw1, %Value %unm.v)
   ret i1 %unm.uok
+
+builtin_copy_file:
+  ; M128: copy_file(+Src, +Dst) -- file copy via libc open / read /
+  ; write / close. Both args must be Atom. Source is opened O_RDONLY;
+  ; destination is opened O_WRONLY|O_CREAT|O_TRUNC (flags = 577 on
+  ; Linux) with mode 0644 (= 420 decimal). Loop reads 4 KB at a
+  ; time and writes them through; succeeds when read returns 0,
+  ; fails (after closing both fds) on read error, short write, or
+  ; either open returning -1. Open flags are Linux glibc constants;
+  ; macOS and BSDs use different O_CREAT (= 512) and O_TRUNC
+  ; (= 1024) values, so a portable version would need to dispatch
+  ; through the M113 target_os framework -- documented limitation.
+  %cpf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %cpf.t1 = call i32 @value_tag(%Value %cpf.a1)
+  %cpf.is_atom1 = icmp eq i32 %cpf.t1, 0
+  br i1 %cpf.is_atom1, label %cpf.check2, label %cpf.fail
+cpf.fail:
+  ret i1 false
+cpf.check2:
+  %cpf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %cpf.t2 = call i32 @value_tag(%Value %cpf.a2)
+  %cpf.is_atom2 = icmp eq i32 %cpf.t2, 0
+  br i1 %cpf.is_atom2, label %cpf.have_args, label %cpf.fail
+cpf.have_args:
+  %cpf.src_aid = call i64 @value_payload(%Value %cpf.a1)
+  %cpf.src_path = call i8* @wam_atom_to_string(i64 %cpf.src_aid)
+  %cpf.src_path_null = icmp eq i8* %cpf.src_path, null
+  br i1 %cpf.src_path_null, label %cpf.fail, label %cpf.have_src_path
+cpf.have_src_path:
+  %cpf.dst_aid = call i64 @value_payload(%Value %cpf.a2)
+  %cpf.dst_path = call i8* @wam_atom_to_string(i64 %cpf.dst_aid)
+  %cpf.dst_path_null = icmp eq i8* %cpf.dst_path, null
+  br i1 %cpf.dst_path_null, label %cpf.fail, label %cpf.open_src
+cpf.open_src:
+  ; O_RDONLY = 0; mode arg is ignored when not creating.
+  %cpf.src_fd = call i32 @open(i8* %cpf.src_path, i32 0, i32 0)
+  %cpf.src_ok = icmp sge i32 %cpf.src_fd, 0
+  br i1 %cpf.src_ok, label %cpf.open_dst, label %cpf.fail
+cpf.open_dst:
+  ; O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577 (Linux glibc).
+  ; mode 0o644 = 420 decimal -- typical rw-r--r-- for new files.
+  %cpf.dst_fd = call i32 @open(i8* %cpf.dst_path, i32 577, i32 420)
+  %cpf.dst_ok = icmp sge i32 %cpf.dst_fd, 0
+  br i1 %cpf.dst_ok, label %cpf.loop_init, label %cpf.close_src_then_fail
+cpf.close_src_then_fail:
+  call i32 @close(i32 %cpf.src_fd)
+  ret i1 false
+cpf.loop_init:
+  %cpf.buf = alloca [4096 x i8]
+  %cpf.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %cpf.buf, i32 0, i32 0
+  br label %cpf.loop
+cpf.loop:
+  %cpf.n = call i64 @read(i32 %cpf.src_fd, i8* %cpf.buf_ptr, i64 4096)
+  %cpf.n_zero = icmp eq i64 %cpf.n, 0
+  br i1 %cpf.n_zero, label %cpf.success, label %cpf.check_neg
+cpf.check_neg:
+  %cpf.n_neg = icmp slt i64 %cpf.n, 0
+  br i1 %cpf.n_neg, label %cpf.close_both_fail, label %cpf.do_write
+cpf.do_write:
+  %cpf.wn = call i64 @write(i32 %cpf.dst_fd, i8* %cpf.buf_ptr, i64 %cpf.n)
+  %cpf.wn_ok = icmp eq i64 %cpf.wn, %cpf.n
+  br i1 %cpf.wn_ok, label %cpf.loop, label %cpf.close_both_fail
+cpf.success:
+  call i32 @close(i32 %cpf.src_fd)
+  call i32 @close(i32 %cpf.dst_fd)
+  ret i1 true
+cpf.close_both_fail:
+  call i32 @close(i32 %cpf.src_fd)
+  call i32 @close(i32 %cpf.dst_fd)
+  ret i1 false
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14089,6 +14163,7 @@ builtin_op_to_id('setrlimit/2', 149).         % libc setrlimit(Res, &rlim) -- so
 builtin_op_to_id('getlogin/1', 150).          % libc getlogin() as atom.
 builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as atom.
 builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
+builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
