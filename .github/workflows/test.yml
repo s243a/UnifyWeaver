@@ -157,7 +157,7 @@ jobs:
       CONFORMANCE_PROGRAMS: member,builtins
       CONFORMANCE_SAMPLE: 2
       CONFORMANCE_SEED: ${{ github.run_number }}
-      UW_SMOKE_TMPDIR: ${{ runner.temp }}/unifyweaver-smoke
+      UW_SMOKE_TMPDIR: /tmp/unifyweaver-smoke
 
     steps:
       - name: Checkout code
