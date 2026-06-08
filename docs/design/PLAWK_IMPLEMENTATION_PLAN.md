@@ -1,0 +1,252 @@
+<!--
+SPDX-License-Identifier: MIT
+Copyright (c) 2026 John William Creighton (s243a)
+-->
+
+# plawk — Implementation Plan
+
+*Project: UnifyWeaver — Hybrid WAM/LLVM Target*
+*Author: John Creighton*
+*Status: Early Design / Prototype Phase*
+
+> **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
+> [Specification](PLAWK_SPECIFICATION.md) ·
+> [Submodule README](../../src/unifyweaver/plawk/README.md)
+
+---
+
+## Codebase reconciliation (audit findings)
+
+Before the phased plan, three findings from auditing the existing target. They
+change *what* the early phases actually have to build.
+
+### Finding 1 — Mode declarations are already consumed by codegen ✅
+
+`:- mode foo(+,-,?)` is read by `demand_analysis:read_mode_declaration/3` (via
+`user:mode/1`), mapped `+/-/?` → input/output/any, and fed to
+`binding_state_analysis`, which computes per-variable bound/unbound states at
+each program point (`binding_state_at_var/3`). `wam_target.pl` — the WAM pipeline
+the LLVM target rides — consults those states at dozens of sites to specialise
+builtin lowering (forward vs reverse `atom_concat`, deterministic `sub_atom`,
+`memberchk` vs `member`) and to index on input positions.
+
+**Consequence:** the "single mode ⇒ less backtracking" thesis is real and
+**already wired**. The DSL gets it for free by declaring `:- mode` on its core
+predicates.
+
+### Finding 2 — `:- det` declarations are *not* consumed ❌
+
+There is no determinism-directive parser in `core/`. Determinism is achieved
+**structurally**: cut (`!` → the clause's `cut_barrier`), if-then-else, first-
+argument / switch indexing, and `musttail` TCO in `llvm_target.pl`; plus each
+builtin is hand-lowered to push-or-not a choicepoint based on its own known
+determinism (sometimes gated on binding state).
+
+**Consequence:** Specification §8's machine-checkable `:- det` directive that
+*drives choicepoint elision for user predicates* is **net-new work**, not an
+existing lever. Two paths:
+
+- **(a) Rely on structural determinism (recommended for Phase 0–1).** Write
+  `handler`/`reader`/`select_writer` with cut / if-then-else / single-clause-
+  per-shape so they are already deterministic; declare `:- mode` so the existing
+  binding analysis kicks in.
+- **(b) Add a `:- det` pass later (measurement-justified).** A directive parser
+  + a determinism-check/choicepoint-elision pass, only if profiling shows
+  residual choicepoints in the hot loop after (a).
+
+### Finding 3 — No streaming input builtin; one needs adding 🔧
+
+The LLVM target's only input builtins are whole-file (`read_file_to_atom/2`,
+`read_link/2`). There is no `read/1`, `get_char`, `get_code`, or `read_line`. The
+awk lazy record loop needs a buffered reader that holds an fd + buffer position
+**across calls**.
+
+**Builtin addition surface** (from M129 `read_file_to_atom`): a builtin is three
+things — (1) a registration `builtin_op_to_id('name/arity', N).`; (2) a dispatch
+entry in the op switch, `i32 N, label %builtin_name`; (3) a hand-written IR block
+`builtin_name:` that reads registers via `wam_get_reg_deref`, does the work via
+already-linked libc (`open`/`read`/`close`/`stat`), allocates with
+`wam_arena_alloc`, interns results with `wam_intern_atom`, and binds outputs with
+`wam_unify_value`, returning `i1`.
+
+**Sketch — buffered streaming line reader** (recommended; this *is* `reader/4`):
+
+```
+runtime struct  WamLineReader { i32 fd; i8* buf; i64 cap; i64 len; i64 pos; }
+                arena-allocated; the DSL handle is the pointer as an i64 Value
+                (or an index into a small fixed stream table). Handle 0 ⇒ fd 0.
+
+stream_open(+Path, -H)
+    open(Path, O_RDONLY); arena_alloc(struct) + arena_alloc(cap=65536);
+    len=pos=0; return H.
+
+read_line(+H, -Line)
+    scan buf[pos..len) for '\n';
+    if not found: memmove(buf, buf+pos, len-pos); pos=0; len=remainder;
+                  n = read(fd, buf+len, cap-len); len += n; rescan;
+    on EOF with empty buffer: unify Line = atom 'end_of_file'  (do NOT fail —
+        preserves the EOF/error distinction from Specification §1);
+    else: intern buf[pos..nl) (excluding '\n') via wam_intern_atom; advance pos;
+          unify Line.
+
+stream_close(+H)
+    close(fd).
+```
+
+Roughly ~120–180 lines of IR following the M129 template, plus the small runtime
+struct. Tractable, and it unblocks every later phase.
+
+**Phase-0 shortcut (no runtime change):** `read_file_to_atom(Path, Whole)` +
+`split_string(Whole, "\n", "", Lines)`, iterate `Lines` in Prolog. Correct, lets
+the core loop be validated immediately, but not unbounded-stream-safe — replace
+with the buffered reader in Phase 1.
+
+---
+
+## Phase 0: Prolog core prototype (no LLVM)
+
+**Goal:** validate the execution model and API in standard SWI-Prolog.
+
+1. Implement `process_all/4` per Specification §1 (det Reader, `end_of_file`
+   sentinel).
+2. Implement a text line reader (Phase-0 shortcut: slurp + `split_string/4`).
+3. Implement `item_field/3` for list-based `Fields`.
+4. Implement `state/N` with counter + output slot.
+5. Implement `select_writer/2` for text records (stdout).
+6. End-to-end test: count all records; print those where `$1 == "ERROR"`.
+7. Add `:- mode` declarations to all predicates.
+8. **Verify determinism with SWI tooling** — e.g. `setup_call_cleanup`/
+   `deterministic/1` or the determinism checker — to *prove* handlers succeed
+   exactly once and leave no choicepoints. This is the evidence the Phase-1
+   codegen story depends on (Finding 2, path a).
+
+**Success:** a Prolog program behaving like a minimal `awk`, using only the core
+predicates, with determinism demonstrated.
+
+Lands in `src/unifyweaver/plawk/core/`.
+
+---
+
+## Phase 1: UnifyWeaver LLVM integration
+
+**Goal:** transpile the Phase-0 core to LLVM via the hybrid WAM target.
+
+1. Compile the Phase-0 predicates through the existing pipeline; confirm `:- mode`
+   drives binding analysis (Finding 1) — no new mode plumbing expected.
+2. Confirm the tail call in `process_all/4` is lowered with `musttail` (loop, not
+   stack growth); if not, identify why the clause isn't recognised as
+   last-call-deterministic.
+3. **Add the buffered streaming reader builtin** (Finding 3 sketch): `stream_open`,
+   `read_line`, `stream_close` in `wam_llvm_target.pl`; replace the Phase-0
+   slurp shortcut.
+4. Map `state/N` to an LLVM aggregate; thread as a pointer parameter.
+5. Map `item_field/3` to an array index on the aggregate.
+6. Validate the native binary against the Phase-0 SWI prototype on identical
+   inputs.
+
+**Success:** a native binary that reads stdin, counts records, prints matching
+lines — identical behaviour to Phase 0, running as compiled LLVM.
+
+---
+
+## Phase 2: AWK syntactic sugar
+
+**Goal:** an awk-like front-end that parses programs and emits Phase-0/1 core.
+
+1. AST: `program(BeginClauses, Rules, EndClauses)`, `rule(Pattern, Body)`.
+2. Prolog/DCG parser for the awk subset (Specification §9).
+3. Code generator AST → Prolog core (one guarded clause per pattern-action pair,
+   so `next` is structural — Specification §7).
+4. Integrate into the pipeline: awk source → AST → core → WAM IR → LLVM → binary.
+5. `BEGIN`/`END` → init/finalize predicates around `process_all/4`.
+
+**AWK subset (minimum viable):** field-comparison and regex patterns, `BEGIN`/
+`END`; actions `print`, basic `printf`, `$N = expr`, var assignment, `++`/`+=`/
+`is`, `if/else`, `next`, `break`; specials `$0`/`$N`/`NR`/`NF`/`FS`/`OFS`.
+
+Parser/codegen land in `src/unifyweaver/plawk/{parser,codegen}/`.
+
+**Success:** a user-written awk-style program parses, lowers, compiles, and
+produces correct output on standard awk test cases.
+
+---
+
+## Phase 3: Binary data structures and DCG reader
+
+**Goal:** replace text records with binary structures; add DCG-based readers.
+
+1. Binary record ABI: struct layout, alignment, (de)serialisation convention.
+2. DCG grammar for parsing binary records into terms.
+3. Compile the DCG through UnifyWeaver to LLVM.
+4. Extend `item_field/3` and `select_writer/2` for `record(binary, Type, Payload)`.
+5. Map `State` stream handles to OS file descriptors.
+
+> **Perf caveat:** DCGs over difference-lists of bytes are correct but can be
+> slow in WAM without first-argument indexing on the byte / partial evaluation.
+> Treat as a correctness path first; specialise before claiming "no text in the
+> hot path."
+
+**Success:** a binary that reads a custom binary format, processes it with
+pattern-action rules, and writes binary output — no text serialisation in the
+hot path.
+
+---
+
+## Phase 4: File descriptors and bash compatibility
+
+**Goal:** multi-stream support and bash-like subprocess/redirection.
+
+1. Extend `State` to hold a map of named stream handles.
+2. **Wire to existing builtins** rather than rebuild: `shell/1,2`, `mkfifo/2`,
+   `kill/2`, and the filesystem surface already in `wam_llvm_target.pl`
+   (Specification §10). Reuse `glue/{shell,pipe,native,streaming}_glue.pl`.
+3. `spawn_process/5` for subprocess creation with connected pipes.
+4. DSL redirection syntax (`>`, `<`, `2>`, `|`) desugaring to the primitives.
+5. stdin/stdout isolation: spawned subprocesses must not inherit the DSL's
+   primary I/O unless explicitly redirected.
+
+**Success:** a DSL program orchestrating multiple streams (incl. subprocesses)
+while the main handler loop processes its own primary input independently.
+
+---
+
+## Phase 5: JIT grammar and interactive query
+
+**Goal:** runtime grammar extension via DCGs and clause-database querying.
+
+1. Expose a `read_term/3`-equivalent DSL builtin — i.e. **add LLVM to the
+   runtime-parser capability table** (`wam_runtime_parser_capability.pl`) in
+   `compiled` mode; default stays `off`/`native` so non-JIT binaries pay nothing
+   (Specification §11, `docs/WAM_RUNTIME_PARSER_STATUS.md`).
+2. Load new DCG grammar rules at runtime (read via the parser, compiled via
+   WAM/LLVM JIT).
+3. Assert/retract clauses from within a running DSL program.
+4. REPL mode: read queries from a stream, evaluate, return results.
+5. If a `:- det` pass was added (Finding 2, path b), enforce declared modes/det
+   on dynamically loaded predicates before acceptance.
+
+**Success:** a running DSL binary accepts new grammar rules at runtime, compiles
+them to native code, and uses them in subsequent iterations of the main loop.
+
+---
+
+## Appendix: compilation pipeline
+
+```
+awk-like source
+      │  [Phase 2: parser]
+      ▼
+AST: program(Begin, Rules, End)
+      │  [Phase 2: AST → Prolog core codegen]
+      ▼
+Prolog core: handler/4, reader/4, ...  + :- mode declarations
+      │  [UnifyWeaver: Prolog → Hybrid WAM IR]   (modes drive binding analysis)
+      ▼
+WAM IR  (deterministic builtins selected via binding state)
+      │  [UnifyWeaver: WAM IR → LLVM IR]   (state/N → aggregate; tail call → musttail)
+      ▼
+LLVM IR
+      │  [llc + clang]
+      ▼
+Native executable: reads streams, processes records, writes output
+```
