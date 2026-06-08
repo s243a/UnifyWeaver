@@ -3708,6 +3708,7 @@ entry:
     i32 159, label %builtin_process_max_rss
     i32 160, label %builtin_process_user_time
     i32 161, label %builtin_process_system_time
+    i32 162, label %builtin_path_join
   ]
 
 builtin_is:
@@ -7180,6 +7181,105 @@ pst.read:
   %pst.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %pst.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %pst.raw1, %Value %pst.v)
   ret i1 %pst.uok
+
+builtin_path_join:
+  ; M133: path_join(+Base, +Rel, -Full) -- joins Base and Rel into
+  ; Full, inserting exactly one ''/'' between them (skipping the
+  ; insertion if Base already ends with one). If Rel is absolute
+  ; (first char is ''/''), Full = Rel and Base is ignored -- matches
+  ; the standard ''absolute path overrides'' semantics of os.path.join,
+  ; Path/, and pathjoin in major languages. Empty-Base / empty-Rel
+  ; fast paths skip the slash logic.
+  %pj.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %pj.t1 = call i32 @value_tag(%Value %pj.a1)
+  %pj.is_atom1 = icmp eq i32 %pj.t1, 0
+  br i1 %pj.is_atom1, label %pj.check2, label %pj.fail
+pj.fail:
+  ret i1 false
+pj.check2:
+  %pj.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %pj.t2 = call i32 @value_tag(%Value %pj.a2)
+  %pj.is_atom2 = icmp eq i32 %pj.t2, 0
+  br i1 %pj.is_atom2, label %pj.have_args, label %pj.fail
+pj.have_args:
+  %pj.b_aid = call i64 @value_payload(%Value %pj.a1)
+  %pj.b = call i8* @wam_atom_to_string(i64 %pj.b_aid)
+  %pj.b_null = icmp eq i8* %pj.b, null
+  br i1 %pj.b_null, label %pj.fail, label %pj.have_b
+pj.have_b:
+  %pj.r_aid = call i64 @value_payload(%Value %pj.a2)
+  %pj.r = call i8* @wam_atom_to_string(i64 %pj.r_aid)
+  %pj.r_null = icmp eq i8* %pj.r, null
+  br i1 %pj.r_null, label %pj.fail, label %pj.measure
+pj.measure:
+  %pj.blen = call i64 @strlen(i8* %pj.b)
+  %pj.rlen = call i64 @strlen(i8* %pj.r)
+  ; If Rel starts with ''/'', it''s absolute -- return Rel verbatim.
+  %pj.r_has = icmp sgt i64 %pj.rlen, 0
+  br i1 %pj.r_has, label %pj.check_abs, label %pj.use_base
+pj.check_abs:
+  %pj.r0 = load i8, i8* %pj.r
+  %pj.is_abs = icmp eq i8 %pj.r0, 47
+  br i1 %pj.is_abs, label %pj.use_rel, label %pj.check_base
+pj.use_rel:
+  ; Full = Rel.
+  call void @wam_arena_ensure()
+  %pj.rel_buflen = add i64 %pj.rlen, 1
+  %pj.rel_buf = call i8* @wam_arena_alloc(i64 %pj.rel_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.rel_buf, i8* %pj.r, i64 %pj.rlen, i1 false)
+  %pj.rel_term = getelementptr i8, i8* %pj.rel_buf, i64 %pj.rlen
+  store i8 0, i8* %pj.rel_term
+  %pj.rel_aid = call i64 @wam_intern_atom(i8* %pj.rel_buf, i64 %pj.rlen)
+  br label %pj.unify
+pj.use_base:
+  ; Rel is empty -> Full = Base.
+  call void @wam_arena_ensure()
+  %pj.base_buflen = add i64 %pj.blen, 1
+  %pj.base_buf = call i8* @wam_arena_alloc(i64 %pj.base_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.base_buf, i8* %pj.b, i64 %pj.blen, i1 false)
+  %pj.base_term = getelementptr i8, i8* %pj.base_buf, i64 %pj.blen
+  store i8 0, i8* %pj.base_term
+  %pj.base_aid = call i64 @wam_intern_atom(i8* %pj.base_buf, i64 %pj.blen)
+  br label %pj.unify
+pj.check_base:
+  ; Both non-empty; decide whether to insert ''/'' based on whether
+  ; Base already ends with one. Base of length 0 -> just use Rel.
+  %pj.b_has = icmp sgt i64 %pj.blen, 0
+  br i1 %pj.b_has, label %pj.measure_slash, label %pj.use_rel
+pj.measure_slash:
+  %pj.last_idx = sub i64 %pj.blen, 1
+  %pj.last_ptr = getelementptr i8, i8* %pj.b, i64 %pj.last_idx
+  %pj.last_c = load i8, i8* %pj.last_ptr
+  %pj.has_slash = icmp eq i8 %pj.last_c, 47
+  %pj.sep_len = select i1 %pj.has_slash, i64 0, i64 1
+  ; total = blen + sep_len + rlen
+  %pj.t1_tmp = add i64 %pj.blen, %pj.sep_len
+  %pj.total = add i64 %pj.t1_tmp, %pj.rlen
+  call void @wam_arena_ensure()
+  %pj.full_buflen = add i64 %pj.total, 1
+  %pj.full_buf = call i8* @wam_arena_alloc(i64 %pj.full_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.full_buf, i8* %pj.b, i64 %pj.blen, i1 false)
+  ; Insert ''/'' if needed.
+  br i1 %pj.has_slash, label %pj.copy_rel, label %pj.insert_slash
+pj.insert_slash:
+  %pj.slash_pos = getelementptr i8, i8* %pj.full_buf, i64 %pj.blen
+  store i8 47, i8* %pj.slash_pos
+  br label %pj.copy_rel
+pj.copy_rel:
+  %pj.rel_off = add i64 %pj.blen, %pj.sep_len
+  %pj.rel_dst = getelementptr i8, i8* %pj.full_buf, i64 %pj.rel_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.rel_dst, i8* %pj.r, i64 %pj.rlen, i1 false)
+  %pj.full_term = getelementptr i8, i8* %pj.full_buf, i64 %pj.total
+  store i8 0, i8* %pj.full_term
+  %pj.full_aid = call i64 @wam_intern_atom(i8* %pj.full_buf, i64 %pj.total)
+  br label %pj.unify
+pj.unify:
+  %pj.final_aid = phi i64 [ %pj.rel_aid, %pj.use_rel ], [ %pj.base_aid, %pj.use_base ], [ %pj.full_aid, %pj.copy_rel ]
+  %pj.v0 = insertvalue %Value undef, i32 0, 0
+  %pj.v = insertvalue %Value %pj.v0, i64 %pj.final_aid, 1
+  %pj.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pj.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pj.raw3, %Value %pj.v)
+  ret i1 %pj.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14495,6 +14595,7 @@ builtin_op_to_id('strerror/2', 158).          % libc strerror(errno) as atom.
 builtin_op_to_id('process_max_rss/1', 159).   % getrusage ru_maxrss (KB on Linux).
 builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seconds.
 builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
+builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (absolute Rel wins).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
