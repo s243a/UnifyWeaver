@@ -77,14 +77,12 @@ main :-
     make_directory_path(ProjectDir),
     %% NOTE: allow_bidirectional_kernel_swap(true) is required as of the
     %% bidirectional-not-default fix. Without it, the F# WAM target
-    %% emits category_ancestor by default (see Step 5 of the safety
-    %% rationale: program.fs.mustache has a hardcoded benchmark loop
-    %% that matches category_ancestor's signature; the bidirectional
-    %% emission breaks the build until the template is parameterised).
-    %% Setting the flag opts into the bidirectional emission, which
-    %% this test specifically verifies. The dotnet build step below
-    %% is therefore SKIPPED — the build will fail until program.fs.mustache
-    %% is updated to emit kernel-specific benchmark loops.
+    %% would emit category_ancestor by default. Setting the flag opts
+    %% into the bidirectional emission, which this test specifically
+    %% verifies. program.fs.mustache is now parameterised on
+    %% kernel_kind via {{match}} so the dotnet build succeeds — the
+    %% bidirectional benchmark loop is currently a stub (TODO: full
+    %% lookupParents/lookupChildren native benchmark).
     write_wam_fsharp_project(
         [category_ancestor/4],
         [
@@ -133,26 +131,36 @@ main :-
     ;   format('  effectiveDistanceWeighted: MISSING~n'), halt(1)
     ),
 
-    %% Step 7: Build — INTENTIONALLY SKIPPED.
-    %%
-    %% templates/targets/fsharp_wam/program.fs.mustache has a
-    %% hardcoded call to nativeKernel_category_ancestor with the
-    %% unidirectional 6-argument signature. When the kernel is
-    %% upgraded to bidirectional (this test's whole point), Program.fs
-    %% still emits the hardcoded category_ancestor call which doesn't
-    %% match the upgraded kernel's signature, and dotnet build fails
-    %% with FS0039.
-    %%
-    %% Fixing this requires parameterising program.fs.mustache to
-    %% emit kernel-specific benchmark loops. The template-system
-    %% supports conditional rendering (see TEMPLATE_ENGINE.md and
-    %% WAM_TEMPLATE_MATCH_CASE_TESTING.md); the fix is tracked
-    %% future work but is independent of the strategy-selector
-    %% pipeline this test covers.
-    format('Step 5: Build SKIPPED — known pre-existing program.fs.mustache bug~n'),
-    format('       (track: parameterise template for kernel-specific benchmark loop)~n'),
+    %% Step 7: Verify Program.fs has the parameterised benchmark loop
+    %% — it should reference the bidirectional stub (zero-stat loop)
+    %% and must NOT reference nativeKernel_category_ancestor (which
+    %% would mean the {{match}} block fell back to category_ancestor
+    %% or didn't render).
+    (   sub_string(ProgCode, _, _, _, "bidirectional_ancestor")
+    ->  format('  Program.fs references bidirectional_ancestor (parameterised loop): OK~n')
+    ;   format('  Program.fs missing bidirectional_ancestor reference~n'), halt(1)
+    ),
+    (   sub_string(ProgCode, _, _, _, "nativeKernel_category_ancestor")
+    ->  format('  Program.fs still references nativeKernel_category_ancestor — wrong branch!~n'), halt(1)
+    ;   format('  Program.fs does NOT reference nativeKernel_category_ancestor (correct): OK~n')
+    ),
+
+    %% Step 8: Run dotnet build — should now succeed thanks to the
+    %% parameterised {{match kernel_kind}} block in program.fs.mustache.
+    %% The bidirectional benchmark loop is a stub (zero-stat) until a
+    %% follow-up PR wires lookupParents/lookupChildren into the
+    %% benchmark scope; the build verification here proves the
+    %% kernel-kind parameterisation produced compilable F#.
+    format('Step 5: Running dotnet build (should succeed with parameterised template)...~n'),
+    run_cmd(dotnet,
+            ['build', '--nologo', '-v', 'minimal', '-c', 'Release'],
+            ProjectDir, BuildExit, BuildOut),
+    (   BuildExit == 0
+    ->  format('  dotnet build succeeded — bidirectional kernel emission is buildable: OK~n')
+    ;   format('  dotnet build FAILED:~n~w~n', [BuildOut]), halt(1)
+    ),
 
     format('~n=== All checks passed ===~n'),
     format('Bidirectional kernel E2E: kernel detection, template rendering,~n'),
-    format('calibration, A* pruning, weighted metric — all generated valid F#.~n'),
-    format('Build verification skipped pending program.fs.mustache parameterisation.~n').
+    format('calibration, A* pruning, weighted metric, parameterised Program.fs,~n'),
+    format('and dotnet build — all verified.~n').
