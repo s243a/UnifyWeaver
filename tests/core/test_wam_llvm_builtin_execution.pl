@@ -3515,6 +3515,60 @@ test_ats_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M136: atom_split/3 -- split atom on single-char separator.
+
+:- dynamic test_aspl_basic/2.
+test_aspl_basic(_, R) :-
+    % Note: use = (unification) not == to dodge a pre-existing
+    % strict-equality bug on multi-cons-cell lists in the LLVM
+    % target. For ground lists this is equivalent.
+    atom_split('a,b,c', ',', P),
+    ( P = [a, b, c] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_no_sep/2.
+test_aspl_no_sep(_, R) :-
+    atom_split('abc', ',', P),
+    ( P = [abc] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_trailing_sep/2.
+test_aspl_trailing_sep(_, R) :-
+    % Trailing sep produces an empty final element.
+    atom_split('a,b,', ',', P),
+    ( P = [a, b, ''] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_leading_sep/2.
+test_aspl_leading_sep(_, R) :-
+    atom_split(',a,b', ',', P),
+    ( P = ['', a, b] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_only_sep/2.
+test_aspl_only_sep(_, R) :-
+    % One sep alone produces two empty parts.
+    atom_split(',', ',', P),
+    ( P = ['', ''] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_empty/2.
+test_aspl_empty(_, R) :-
+    atom_split('', ',', P),
+    ( P = [''] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_path/2.
+test_aspl_path(_, R) :-
+    atom_split('/usr/local/bin', '/', P),
+    ( P = ['', usr, local, bin] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aspl_multichar_sep/2.
+test_aspl_multichar_sep(_, R) :-
+    % Multi-char separator fails the single-char guard.
+    ( atom_split('a,b', ',,', _) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_aspl_bad_args/2.
+test_aspl_bad_args(_, R) :-
+    ( atom_split(42, ',', _) -> R is 0
+    ; atom_split(abc, 99, _) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6694,6 +6748,25 @@ test_all :-
                    test_ats_failing_cmd, 0, 1),
        run_test_r0('atom_to_system with non-atom args fails -> 1',
                    test_ats_bad_args, 0, 1),
+       format('--- M136 atom_split/3 ---~n'),
+       run_test_r0('atom_split a,b,c on , -> [a,b,c] -> 1',
+                   test_aspl_basic, 0, 1),
+       run_test_r0('atom_split abc on , -> [abc] -> 1',
+                   test_aspl_no_sep, 0, 1),
+       run_test_r0('atom_split trailing , -> empty final -> 1',
+                   test_aspl_trailing_sep, 0, 1),
+       run_test_r0('atom_split leading , -> empty first -> 1',
+                   test_aspl_leading_sep, 0, 1),
+       run_test_r0('atom_split single , -> two empties -> 1',
+                   test_aspl_only_sep, 0, 1),
+       run_test_r0('atom_split empty atom -> ['''']  -> 1',
+                   test_aspl_empty, 0, 1),
+       run_test_r0('atom_split /usr/local/bin -> path parts -> 1',
+                   test_aspl_path, 0, 1),
+       run_test_r0('atom_split with multi-char sep fails -> 1',
+                   test_aspl_multichar_sep, 0, 1),
+       run_test_r0('atom_split with non-atom args fails -> 1',
+                   test_aspl_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
