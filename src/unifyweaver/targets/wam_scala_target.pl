@@ -1336,13 +1336,21 @@ scala_lower_each([], [], []).
 scala_lower_each([P|Rest], [Code|Cs], [Entry|Es]) :-
     scala_predicate_wamcode(P, WamCode),
     lower_predicate_to_scala(P, WamCode, [], lowered(PredKey, FuncName, Code)),
-    % Entry wrapper: try the lowered clause-1 fast path; on failure fall
-    % back to a fresh interpreter run of the same predicate. This keeps
-    % results identical to the pure interpreter (a lowered `false` defers
-    % to the complete step loop) while taking the fast path on success.
-    format(string(Entry),
-        '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
-        [PredKey, PredKey, FuncName]),
+    (   % T4 (multi_clause_n): the lowered function lowers EVERY clause and is
+        % complete (first-solution, deterministic-prefix), so it never needs
+        % the interpreter fallback — emit a direct entry. This is what makes
+        % "the interpreter is never entered for the predicate" hold.
+        catch(wam_scala_lowerable(P, WamCode, multi_clause_n), _, fail)
+    ->  format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => ~w(WamRuntime.newState(prog.dispatch("~w"), args), prog))',
+            [PredKey, FuncName, PredKey])
+    ;   % All other shapes: try the lowered fast path; on failure fall back to
+        % a fresh interpreter run (a lowered `false` defers to the complete
+        % step loop — e.g. T5's unbound-A1 case, or clause-2+ of multi_clause_1).
+        format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
+            [PredKey, PredKey, FuncName])
+    ),
     scala_lower_each(Rest, Cs, Es).
 
 % ============================================================================
