@@ -1928,13 +1928,21 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                BundledCode),
            Record = native(PredIndicator, Arity, BundledCode),
            NextPC = StartPC
-        ;  LowerShape == multi_clause_c1
-        -> format(user_error,
-            '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
-            [Pred, Arity]),
+        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain )
+        -> ( LowerShape == clause_chain
+           ->  format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid T5 first-arg dispatch + bytecode)~n',
+                 [Pred, Arity])
+           ;   format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
+                 [Pred, Arity])
+           ),
            % Parse the WAM bytecode (all clauses) into the merge so the
            % dispatcher's slow path can run it. The dispatcher entry
            % is emitted in pass2 via emit_hybrid_dispatcher.
+           % clause_chain lowers ALL clauses as the fast path; the bytecode is
+           % still emitted so the unbound-first-arg case (which the lowered fn
+           % declines by returning false) is enumerated by @run_loop.
            %
            % Hybrid records use the bare Pred/Arity form (matching the
            % wam-record convention) so partition / resolve / dispatch
