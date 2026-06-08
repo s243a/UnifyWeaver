@@ -24,6 +24,7 @@ Run `python3 max_dist_budget.py` for a synthetic equivalence self-check.
 import struct
 import subprocess
 import sys
+from collections import defaultdict, deque
 from pathlib import Path
 
 import lmdb
@@ -31,34 +32,56 @@ import lmdb
 I32 = struct.Struct("<i")
 
 
-def dp_max_dist(min_dist, parents_of):
-    """The V3 probe's original budget DP (BFS-depth-monotone longest path).
+def dp_max_dist(min_dist, parents_of, warn=sys.stderr):
+    """True longest acyclic parent-hop distance to root for every reachable node.
 
-    `min_dist` maps node -> BFS depth from root (depth 0 == root). Nodes are
-    processed in ascending depth, and only parents already resolved (i.e. at a
-    strictly smaller BFS depth) contribute. Returns {node: max_dist}, root -> 0.
+    Longest-path DP over the parent-DAG in topological order (Kahn): a node is
+    resolved only after ALL its reachable parents are, so a parent at a *greater*
+    BFS depth still contributes. `min_dist` maps node -> BFS depth from root
+    (depth 0 == root). Returns {node: max_dist}, root(s) -> 0.
 
-    CAVEAT — this is NOT the true longest acyclic parent path. A node can have a
-    parent at a *greater* BFS depth (a node with a near-root shortcut parent AND
-    a deeper ancestor chain via another parent); this DP skips that deeper
-    parent and so UNDERCOUNTS. On a diamond 4->{1,3}, 3->2, 2->1 it returns
-    max_dist[4]=1, while the true longest acyclic path 4->3->2->1 is 3. The
-    materialised `max_dist_to_root` metric (load_metric_max_dist) computes the
-    true value; see this module's self-check. Kept as-is so the probe's existing
-    committed results remain reproducible; pass --max-dist-metric to the probe to
-    use the corrected (true-longest) budget instead.
+    This matches the materialised `max_dist_to_root` metric on a DAG (see
+    load_metric_max_dist + this module's self-check). It supersedes the V3
+    probe's earlier BFS-depth-monotone DP, which assumed every parent was
+    shallower and so UNDERCOUNTED any node with a near-root shortcut parent plus
+    a deeper ancestor chain (on a diamond 4->{1,3}, 3->2, 2->1 it returned
+    max_dist[4]=1 instead of the true 3).
+
+    A reachable node trapped in a parent cycle has no topological position; such
+    nodes (rare in a near-acyclic category graph) get a single shallow-parent
+    relaxation as a degraded estimate and are reported via `warn`.
     """
-    nodes_at_depth = {}
-    for n, d in min_dist.items():
-        nodes_at_depth.setdefault(d, []).append(n)
-    if not nodes_at_depth:
-        return {}
-    max_dist = {n: 0 for n in nodes_at_depth.get(0, [])}
-    for d in range(1, max(nodes_at_depth) + 1):
-        for n in nodes_at_depth.get(d, []):
+    reachable = set(min_dist)
+    children = defaultdict(list)
+    indeg = {n: 0 for n in reachable}
+    for n in reachable:
+        for p in parents_of.get(n, ()):
+            if p in reachable:
+                children[p].append(n)
+                indeg[n] += 1
+    max_dist = {n: 0 for n, d in min_dist.items() if d == 0}
+    q = deque(n for n in reachable if indeg[n] == 0)
+    resolved = 0
+    while q:
+        n = q.popleft()
+        resolved += 1
+        base = max_dist.get(n, 0)
+        for c in children[n]:
+            if base + 1 > max_dist.get(c, -1):
+                max_dist[c] = base + 1
+            indeg[c] -= 1
+            if indeg[c] == 0:
+                q.append(c)
+    if resolved < len(reachable):
+        leftover = [n for n in reachable if indeg[n] > 0]
+        if warn is not None:
+            warn.write(f"WARNING: {len(leftover):,} reachable node(s) in a parent "
+                       f"cycle; using a degraded shallow-parent estimate for them\n")
+        for n in sorted(leftover, key=lambda x: min_dist[x]):
             cand = [max_dist[p] for p in parents_of.get(n, ()) if p in max_dist]
-            if cand:
-                max_dist[n] = 1 + max(cand)
+            best = 1 + max(cand) if cand else min_dist[n]
+            if best > max_dist.get(n, -1):
+                max_dist[n] = best
     return max_dist
 
 
@@ -107,11 +130,26 @@ BUILD_MAX_DISTANCE = (Path(__file__).resolve().parents[4]
 
 def _self_check():
     """Build a synthetic diamond Phase-1 LMDB, materialise max_dist_to_root with
-    an unbounded depth, and pin BOTH budgets — characterising the difference
-    between the materialised metric (true longest acyclic path) and the probe's
-    BFS-depth-monotone DP (which undercounts node 4: 1 vs 3)."""
+    an unbounded depth, and assert the corrected DP EQUALS the materialised
+    metric on the diamond (4->3->2->1 = 3, not the old BFS-monotone 1)."""
+    import io
     import tempfile
-    from collections import deque
+
+    # --- in-memory DP checks (no LMDB) ---
+    # Chain with a shortcut: 5 reaches root via 5->1 (len 1) and
+    # 5->4->3->2->1 (len 4). The old BFS-monotone DP returned 1 for node 5;
+    # the corrected DP must return 4.
+    chain_parents = {2: [1], 3: [2], 4: [3], 5: [4, 1]}
+    chain_min = {1: 0, 2: 1, 3: 2, 4: 3, 5: 1}
+    assert dp_max_dist(chain_min, chain_parents) == {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
+
+    # Parent cycle 3->4->5->3 must not hang; the fallback fills it and warns.
+    cyc_parents = {2: [1], 3: [2, 5], 4: [3], 5: [4]}
+    cyc_min = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
+    buf = io.StringIO()
+    got = dp_max_dist(cyc_min, cyc_parents, warn=buf)
+    assert got == {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}, got
+    assert "cycle" in buf.getvalue(), buf.getvalue()
 
     # child -> [parents]; root = 1. Diamond: 4 reaches root via 4->1 (len 1)
     # and 4->3->2->1 (len 3); longest acyclic = 3.
@@ -153,14 +191,12 @@ def _self_check():
         dp = dp_max_dist(min_dist, parents_of)
         loaded = load_metric_max_dist(lmdb_dir, expected_root=root)
 
-        # Materialised metric = true longest acyclic parent path (root -> 0).
+        # Corrected DP and the materialised metric agree: true longest acyclic
+        # path (4->3->2->1 = 3), root -> 0.
         assert loaded == {1: 0, 2: 1, 3: 2, 4: 3}, loaded
-        # Probe DP undercounts node 4 (1, not 3): it skips parent 3, which is at
-        # a greater BFS depth than 4 (4 has a near-root shortcut 4->1).
-        assert dp == {1: 0, 2: 1, 4: 1, 3: 2}, dp
-        assert loaded[4] == 3 and dp[4] == 1, "expected the documented divergence"
-    print("max_dist_budget self-check OK: metric=true-longest {2:1,3:2,4:3}; "
-          "probe-DP undercounts node 4 (1 vs 3) — divergence characterised")
+        assert dp == loaded, f"DP {dp} != metric {loaded}"
+    print("max_dist_budget self-check OK: corrected DP == materialised metric "
+          "{1:0, 2:1, 3:2, 4:3} (node 4 = 3, the true longest path)")
 
 
 if __name__ == "__main__":
