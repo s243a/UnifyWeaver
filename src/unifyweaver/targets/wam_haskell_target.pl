@@ -292,7 +292,7 @@ wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
 
 % Compile WAM code on demand for the lowerability check and emission.
 wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
-    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode).
+    wam_target:compile_predicate_to_wam(PredIndicator, [ite_use_y_level(true)], WamCode).
 
 % ============================================================================
 % PHASE F1: FACT PREDICATE CLASSIFICATION
@@ -2295,6 +2295,18 @@ step !ctx s CutIte =
     (_cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
     [] -> Just (s { wsPC = wsPC s + 1 })  -- no CP to pop (shouldn''t happen)
 
+-- M17 soft cut. GetLevel snapshots the current CP-stack depth into a Y
+-- register (before an if-then-else / negation try_me_else); Cut truncates
+-- the CP stack back to that depth at the commit site, removing the
+-- ITE/negation CP AND any CPs the condition pushed above it.
+step !ctx s (GetLevel reg) =
+  Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert reg (Integer (wsCPsLen s)) (wsRegs s) })
+
+step !ctx s (Cut reg) =
+  case IM.lookup reg (wsRegs s) of
+    Just (Integer n) -> Just (s { wsPC = wsPC s + 1, wsCPs = take n (wsCPs s), wsCPsLen = n })
+    _ -> Just (s { wsPC = wsPC s + 1 })
+
 -- Type-checking builtins
 step !ctx s (BuiltinCall "nonvar/1" _) =
   case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
@@ -3206,6 +3218,18 @@ stepST _ _ !pw CutIte =
     (_ : rest) -> return $ Just pw { pwPC = pwPC pw + 1
                                    , pwCPs = rest, pwCPsLen = pwCPsLen pw - 1 }
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
+
+-- M17 soft cut (see the pure `step` GetLevel/Cut for semantics).
+stepST _ regs !pw (GetLevel reg) = do
+  writeArray regs reg (Integer (pwCPsLen pw))
+  return $ Just pw { pwPC = pwPC pw + 1 }
+
+stepST _ regs !pw (Cut reg) = do
+  v <- readArray regs reg
+  case v of
+    Integer n -> return $ Just pw { pwPC = pwPC pw + 1
+                                  , pwCPs = take n (pwCPs pw), pwCPsLen = n }
+    _ -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- Type-checking builtins
 stepST _ regs !pw (BuiltinCall "nonvar/1" _) = do
@@ -5785,6 +5809,8 @@ data Instruction
   | Jump String                         -- unconditional jump to label
   | JumpPc !Int                         -- post-resolution: direct PC jump
   | CutIte                              -- soft cut: pop one CP (if-then-else)
+  | GetLevel !Int                       -- M17: snapshot CP-stack depth into a Y reg
+  | Cut !Int                            -- M17: truncate CP stack to a saved depth
   | Proceed
   | TryMeElsePc !Int                   -- post-resolution: direct PC for else branch
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
@@ -6008,7 +6034,7 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, All
 
 compile_predicates_merged_normal(PredIndicator, Pred, Arity, Rest, StartPC, Options,
                                  AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
-    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode),
+    wam_target:compile_predicate_to_wam(PredIndicator, [ite_use_y_level(true)], WamCode),
     format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
@@ -6463,7 +6489,7 @@ compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
-    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode),
+    wam_target:compile_predicate_to_wam(PredIndicator, [ite_use_y_level(true)], WamCode),
     format(user_error, '  ~w/~w: compiled to WAM~n', [Pred, Arity]),
     % Parse WAM text into Haskell instruction list and label map
     atom_string(WamCode, WamStr),
@@ -6634,6 +6660,12 @@ wam_instr_to_haskell(["proceed"], "Proceed").
 wam_instr_to_haskell(["jump", Label], Hs) :-
     format(string(Hs), 'Jump "~w"', [Label]).
 wam_instr_to_haskell(["cut_ite"], "CutIte").
+wam_instr_to_haskell(["get_level", Yn], Hs) :-
+    clean_comma(Yn, CYn), reg_name_to_int(CYn, YnI),
+    format(string(Hs), 'GetLevel ~w', [YnI]).
+wam_instr_to_haskell(["cut", Yn], Hs) :-
+    clean_comma(Yn, CYn), reg_name_to_int(CYn, YnI),
+    format(string(Hs), 'Cut ~w', [YnI]).
 wam_instr_to_haskell(["builtin_call", Op, N], Hs) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
