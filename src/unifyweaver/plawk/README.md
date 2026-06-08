@@ -3,7 +3,7 @@ SPDX-License-Identifier: MIT
 Copyright (c) 2026 John William Creighton (s243a)
 -->
 
-# stream_dsl — a compiled, binary-record awk/bash-like DSL
+# plawk — Prolog awk: a compiled, binary-record awk/bash-like DSL
 
 > **Status:** design phase. This directory is the home of a planned UnifyWeaver
 > submodule. No runtime code yet — the canonical specification lives in the
@@ -38,16 +38,17 @@ Prolog core → existing WAM→LLVM pipeline + those builtins as its standard li
 
 ## Naming note (collision)
 
-The existing **AWK target** (`docs/AWK_TARGET_STATUS.md`,
-`src/unifyweaver/targets/awk_target.pl`) goes the *opposite* direction — it
-*emits* awk scripts *from* Prolog facts. To avoid two meanings of "awk", this
-submodule is provisionally named **`stream_dsl`** (surface syntax is awk-like;
-an eventual CLI could be `uawk`). Rename freely — nothing depends on it yet.
+The name **`plawk`** = "**Prolog awk**": an awk-like surface compiled through
+Prolog → WAM → LLVM. It also disambiguates from the existing **AWK target**
+(`docs/AWK_TARGET_STATUS.md`, `src/unifyweaver/targets/awk_target.pl`), which
+goes the *opposite* direction — it *emits* awk scripts *from* Prolog facts. The
+two are complementary: one emits awk for portability, `plawk` consumes an
+awk-like surface for native performance.
 
 ## Planned structure
 
 ```
-stream_dsl/
+plawk/
   README.md          this file
   core/              process_all/4, reader/handler/writer, item_field/3   (Phase 0)
   parser/            awk-like surface → AST → Prolog core                 (Phase 2)
@@ -60,9 +61,9 @@ The original single design doc has been split into UnifyWeaver's standard
 philosophy / specification / implementation-plan triad, **reconciled against the
 existing codebase**:
 
-- [`docs/design/STREAM_DSL_PHILOSOPHY.md`](../../../docs/design/STREAM_DSL_PHILOSOPHY.md)
-- [`docs/design/STREAM_DSL_SPECIFICATION.md`](../../../docs/design/STREAM_DSL_SPECIFICATION.md)
-- [`docs/design/STREAM_DSL_IMPLEMENTATION_PLAN.md`](../../../docs/design/STREAM_DSL_IMPLEMENTATION_PLAN.md)
+- [`docs/design/PLAWK_PHILOSOPHY.md`](../../../docs/design/PLAWK_PHILOSOPHY.md)
+- [`docs/design/PLAWK_SPECIFICATION.md`](../../../docs/design/PLAWK_SPECIFICATION.md)
+- [`docs/design/PLAWK_IMPLEMENTATION_PLAN.md`](../../../docs/design/PLAWK_IMPLEMENTATION_PLAN.md)
 
 The implementation plan's **§ Codebase reconciliation** captures the three audit
 findings: modes are already consumed by codegen, `:- det` is not, and a buffered

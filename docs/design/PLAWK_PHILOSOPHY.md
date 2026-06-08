@@ -3,15 +3,15 @@ SPDX-License-Identifier: MIT
 Copyright (c) 2026 John William Creighton (s243a)
 -->
 
-# Stream DSL — Philosophy
+# plawk — Philosophy
 
 *Project: UnifyWeaver — Hybrid WAM/LLVM Target*
 *Author: John Creighton*
 *Status: Early Design / Prototype Phase*
 
-> **Companion docs:** [Specification](STREAM_DSL_SPECIFICATION.md) ·
-> [Implementation Plan](STREAM_DSL_IMPLEMENTATION_PLAN.md) ·
-> [Submodule README](../../src/unifyweaver/stream_dsl/README.md)
+> **Companion docs:** [Specification](PLAWK_SPECIFICATION.md) ·
+> [Implementation Plan](PLAWK_IMPLEMENTATION_PLAN.md) ·
+> [Submodule README](../../src/unifyweaver/plawk/README.md)
 
 ---
 
@@ -132,10 +132,10 @@ The DSL syntax is sugar; **the Prolog core is the specification.**
 
 ## 5. Relationship to the existing AWK target
 
-UnifyWeaver already has an **AWK target** (`docs/AWK_TARGET_STATUS.md`,
-`src/unifyweaver/targets/awk_target.pl`). That target compiles Prolog *into* awk
-scripts — the opposite data-flow direction from this DSL, which compiles an
-awk-like surface *down to* Prolog→LLVM. To keep the two distinct, this work is
-named **`stream_dsl`** (surface syntax is awk-like; an eventual CLI could be
-`uawk`). They are complementary, not competing: one emits awk for portability,
-the other consumes an awk-like surface for native performance.
+The name **`plawk`** = "**Prolog awk**": an awk-like surface compiled through
+Prolog → WAM → LLVM. It also disambiguates from the existing **AWK target**
+(`docs/AWK_TARGET_STATUS.md`, `src/unifyweaver/targets/awk_target.pl`). That
+target compiles Prolog *into* awk scripts — the opposite data-flow direction
+from `plawk`, which compiles an awk-like surface *down to* Prolog→LLVM. They are
+complementary, not competing: one emits awk for portability, the other consumes
+an awk-like surface for native performance.

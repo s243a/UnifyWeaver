@@ -3,15 +3,15 @@ SPDX-License-Identifier: MIT
 Copyright (c) 2026 John William Creighton (s243a)
 -->
 
-# Stream DSL — Specification
+# plawk — Specification
 
 *Project: UnifyWeaver — Hybrid WAM/LLVM Target*
 *Author: John Creighton*
 *Status: Early Design / Prototype Phase*
 
-> **Companion docs:** [Philosophy](STREAM_DSL_PHILOSOPHY.md) ·
-> [Implementation Plan](STREAM_DSL_IMPLEMENTATION_PLAN.md) ·
-> [Submodule README](../../src/unifyweaver/stream_dsl/README.md)
+> **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
+> [Implementation Plan](PLAWK_IMPLEMENTATION_PLAN.md) ·
+> [Submodule README](../../src/unifyweaver/plawk/README.md)
 
 ---
 

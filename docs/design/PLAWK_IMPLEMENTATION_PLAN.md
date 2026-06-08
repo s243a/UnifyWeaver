@@ -3,15 +3,15 @@ SPDX-License-Identifier: MIT
 Copyright (c) 2026 John William Creighton (s243a)
 -->
 
-# Stream DSL — Implementation Plan
+# plawk — Implementation Plan
 
 *Project: UnifyWeaver — Hybrid WAM/LLVM Target*
 *Author: John Creighton*
 *Status: Early Design / Prototype Phase*
 
-> **Companion docs:** [Philosophy](STREAM_DSL_PHILOSOPHY.md) ·
-> [Specification](STREAM_DSL_SPECIFICATION.md) ·
-> [Submodule README](../../src/unifyweaver/stream_dsl/README.md)
+> **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
+> [Specification](PLAWK_SPECIFICATION.md) ·
+> [Submodule README](../../src/unifyweaver/plawk/README.md)
 
 ---
 
@@ -123,7 +123,7 @@ with the buffered reader in Phase 1.
 **Success:** a Prolog program behaving like a minimal `awk`, using only the core
 predicates, with determinism demonstrated.
 
-Lands in `src/unifyweaver/stream_dsl/core/`.
+Lands in `src/unifyweaver/plawk/core/`.
 
 ---
 
@@ -164,7 +164,7 @@ lines — identical behaviour to Phase 0, running as compiled LLVM.
 `END`; actions `print`, basic `printf`, `$N = expr`, var assignment, `++`/`+=`/
 `is`, `if/else`, `next`, `break`; specials `$0`/`$N`/`NR`/`NF`/`FS`/`OFS`.
 
-Parser/codegen land in `src/unifyweaver/stream_dsl/{parser,codegen}/`.
+Parser/codegen land in `src/unifyweaver/plawk/{parser,codegen}/`.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
