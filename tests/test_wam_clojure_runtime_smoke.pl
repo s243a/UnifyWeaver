@@ -122,6 +122,18 @@
 :- dynamic user:wam_numlist_guard/3.
 :- dynamic user:wam_numlist_high_before_low/1.
 :- dynamic user:wam_numlist_unbound_low/1.
+:- dynamic user:wam_sum_list_guard/2.
+:- dynamic user:wam_sum_list_empty/0.
+:- dynamic user:wam_sum_list_bad_list/1.
+:- dynamic user:wam_sum_list_non_numeric/1.
+:- dynamic user:wam_min_list_guard/2.
+:- dynamic user:wam_min_list_empty/1.
+:- dynamic user:wam_min_list_bad_list/1.
+:- dynamic user:wam_min_list_non_numeric/1.
+:- dynamic user:wam_max_list_guard/2.
+:- dynamic user:wam_max_list_empty/1.
+:- dynamic user:wam_max_list_bad_list/1.
+:- dynamic user:wam_max_list_non_numeric/1.
 :- dynamic user:wam_delete_guard/3.
 :- dynamic user:wam_delete_bad_list/1.
 :- dynamic user:wam_delete_unbound_list/1.
@@ -468,6 +480,18 @@ user:wam_select_unbound_list(Rest) :- select(a, L, Rest), is_list(L).
 user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
 user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
 user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
+user:wam_sum_list_guard(List, Sum) :- sum_list(List, Sum).
+user:wam_sum_list_empty :- sum_list([], Sum), Sum =:= 0.
+user:wam_sum_list_bad_list(_) :- sum_list([1|2], _).
+user:wam_sum_list_non_numeric(_) :- sum_list([a], _).
+user:wam_min_list_guard(List, Min) :- min_list(List, Min).
+user:wam_min_list_empty(_) :- min_list([], _).
+user:wam_min_list_bad_list(_) :- min_list([1|2], _).
+user:wam_min_list_non_numeric(_) :- min_list([a], _).
+user:wam_max_list_guard(List, Max) :- max_list(List, Max).
+user:wam_max_list_empty(_) :- max_list([], _).
+user:wam_max_list_bad_list(_) :- max_list([1|2], _).
+user:wam_max_list_non_numeric(_) :- max_list([a], _).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- delete(L, a, Rest), is_list(L).
@@ -819,6 +843,18 @@ run_smoke :-
           user:wam_numlist_guard/3,
           user:wam_numlist_high_before_low/1,
           user:wam_numlist_unbound_low/1,
+          user:wam_sum_list_guard/2,
+          user:wam_sum_list_empty/0,
+          user:wam_sum_list_bad_list/1,
+          user:wam_sum_list_non_numeric/1,
+          user:wam_min_list_guard/2,
+          user:wam_min_list_empty/1,
+          user:wam_min_list_bad_list/1,
+          user:wam_min_list_non_numeric/1,
+          user:wam_max_list_guard/2,
+          user:wam_max_list_empty/1,
+          user:wam_max_list_bad_list/1,
+          user:wam_max_list_non_numeric/1,
           user:wam_delete_guard/3,
           user:wam_delete_bad_list/1,
           user:wam_delete_unbound_list/1,
@@ -1082,6 +1118,7 @@ run_smoke :-
     assert_lowered_nth1_builtin_emitted(TmpDir),
     assert_lowered_select_builtin_emitted(TmpDir),
     assert_lowered_numlist_builtin_emitted(TmpDir),
+    assert_lowered_numeric_list_reducers_emitted(TmpDir),
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_subtract_builtin_emitted(TmpDir),
     assert_lowered_intersection_builtin_emitted(TmpDir),
@@ -1317,6 +1354,21 @@ smoke_cases([
     case('wam_numlist_unbound_low/1', '[2,3]', "true"),
     case('wam_numlist_unbound_low/1', '[1,3]', "false"),
     case('wam_numlist_unbound_low/1', '[]', "false"),
+    case('wam_sum_list_guard/2', args('[1,2,3]', 6), "true"),
+    case('wam_sum_list_guard/2', args('[1,2,3]', 5), "false"),
+    case('wam_sum_list_empty/0', no_args, "true"),
+    case('wam_sum_list_bad_list/1', a, "false"),
+    case('wam_sum_list_non_numeric/1', a, "false"),
+    case('wam_min_list_guard/2', args('[1,2,3]', 1), "true"),
+    case('wam_min_list_guard/2', args('[1,2,3]', 2), "false"),
+    case('wam_min_list_empty/1', a, "false"),
+    case('wam_min_list_bad_list/1', a, "false"),
+    case('wam_min_list_non_numeric/1', a, "false"),
+    case('wam_max_list_guard/2', args('[1,2,3]', 3), "true"),
+    case('wam_max_list_guard/2', args('[1,2,3]', 2), "false"),
+    case('wam_max_list_empty/1', a, "false"),
+    case('wam_max_list_bad_list/1', a, "false"),
+    case('wam_max_list_non_numeric/1', a, "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -1849,6 +1901,15 @@ assert_lowered_numlist_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-numlist-high-before-low-1"),
     has(CoreCode, "defn lowered-wam-numlist-unbound-low-1"),
     has(CoreCode, "runtime/apply-numlist-solution").
+
+assert_lowered_numeric_list_reducers_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-sum-list-guard-2"),
+    has(CoreCode, "defn lowered-wam-sum-list-empty-0"),
+    has(CoreCode, "defn lowered-wam-min-list-guard-2"),
+    has(CoreCode, "defn lowered-wam-max-list-guard-2"),
+    has(CoreCode, "runtime/apply-numeric-list-reducer-solution").
 
 assert_lowered_delete_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),

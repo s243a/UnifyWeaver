@@ -522,6 +522,18 @@ clojure_direct_builtin("numlist/3", "3").
 clojure_direct_builtin("numlist/3", 3).
 clojure_direct_builtin('numlist/3', "3").
 clojure_direct_builtin('numlist/3', 3).
+clojure_direct_builtin("sum_list/2", "2").
+clojure_direct_builtin("sum_list/2", 2).
+clojure_direct_builtin('sum_list/2', "2").
+clojure_direct_builtin('sum_list/2', 2).
+clojure_direct_builtin("min_list/2", "2").
+clojure_direct_builtin("min_list/2", 2).
+clojure_direct_builtin('min_list/2', "2").
+clojure_direct_builtin('min_list/2', 2).
+clojure_direct_builtin("max_list/2", "2").
+clojure_direct_builtin("max_list/2", 2).
+clojure_direct_builtin('max_list/2', "2").
+clojure_direct_builtin('max_list/2', 2).
 clojure_direct_builtin("delete/3", "3").
 clojure_direct_builtin("delete/3", 3).
 clojure_direct_builtin('delete/3', "3").
@@ -955,6 +967,14 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "numlist/3" ; Op == 'numlist/3'),
     !,
     format(atom(Expr), '(runtime/apply-numlist-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (   Op == "sum_list/2" ; Op == 'sum_list/2'
+    ;   Op == "min_list/2" ; Op == 'min_list/2'
+    ;   Op == "max_list/2" ; Op == 'max_list/2'
+    ),
+    !,
+    format(atom(Expr), '(runtime/apply-numeric-list-reducer-solution ~w "~w")', [S, Op]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "delete/3" ; Op == 'delete/3'),
