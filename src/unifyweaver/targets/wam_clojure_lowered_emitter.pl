@@ -666,6 +666,10 @@ clojure_direct_builtin("string_code/3", "3").
 clojure_direct_builtin("string_code/3", 3).
 clojure_direct_builtin('string_code/3', "3").
 clojure_direct_builtin('string_code/3', 3).
+clojure_direct_builtin("split_string/4", "4").
+clojure_direct_builtin("split_string/4", 4).
+clojure_direct_builtin('split_string/4', "4").
+clojure_direct_builtin('split_string/4', 4).
 clojure_direct_builtin("char_type/2", "2").
 clojure_direct_builtin("char_type/2", 2).
 clojure_direct_builtin('char_type/2', "2").
@@ -1122,6 +1126,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "string_code/3" ; Op == 'string_code/3'),
     !,
     format(atom(Expr), '(runtime/apply-string-code-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "split_string/4" ; Op == 'split_string/4'),
+    !,
+    format(atom(Expr), '(runtime/apply-split-string-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "char_type/2" ; Op == 'char_type/2'),

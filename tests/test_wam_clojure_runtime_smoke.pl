@@ -294,6 +294,15 @@
 :- dynamic user:wam_string_code_zero/0.
 :- dynamic user:wam_string_code_unbound_index/1.
 :- dynamic user:wam_string_code_unbound_string/1.
+:- dynamic user:wam_split_string_guard/4.
+:- dynamic user:wam_split_string_basic/0.
+:- dynamic user:wam_split_string_padding/0.
+:- dynamic user:wam_split_string_empty_separator/0.
+:- dynamic user:wam_split_string_consecutive/0.
+:- dynamic user:wam_split_string_mismatch/0.
+:- dynamic user:wam_split_string_bad_source/1.
+:- dynamic user:wam_split_string_bad_separator/1.
+:- dynamic user:wam_split_string_bad_pad/1.
 :- dynamic user:wam_char_type_alpha/0.
 :- dynamic user:wam_char_type_digit/0.
 :- dynamic user:wam_char_type_space/0.
@@ -666,6 +675,15 @@ user:wam_string_code_oob :- string_code(6, hello, _).
 user:wam_string_code_zero :- string_code(0, hello, _).
 user:wam_string_code_unbound_index(_) :- user:wam_unbound_arg(I), string_code(I, hello, _).
 user:wam_string_code_unbound_string(_) :- user:wam_unbound_arg(S), string_code(1, S, _).
+user:wam_split_string_guard(S, Sep, Pad, Parts) :- split_string(S, Sep, Pad, Parts).
+user:wam_split_string_basic :- split_string(abcbd, b, '', Parts), Parts = [a,c,d].
+user:wam_split_string_padding :- split_string(xaxbxcx, b, x, Parts), Parts = [a,c].
+user:wam_split_string_empty_separator :- split_string(abc, '', '', Parts), Parts = [abc].
+user:wam_split_string_consecutive :- split_string(abbc, b, '', Parts), Parts = [a,'',c].
+user:wam_split_string_mismatch :- split_string(abcbd, b, '', Parts), Parts = [a,c].
+user:wam_split_string_bad_source(_) :- user:wam_unbound_arg(S), split_string(S, ',', '', _).
+user:wam_split_string_bad_separator(_) :- user:wam_unbound_arg(Sep), split_string(abc, Sep, '', _).
+user:wam_split_string_bad_pad(_) :- user:wam_unbound_arg(Pad), split_string(abc, '', Pad, _).
 user:wam_char_type_alpha :- char_type(a, alpha).
 user:wam_char_type_digit :- char_code(C, 0'5), char_type(C, digit), char_type(C, alnum).
 user:wam_char_type_space :- char_code(C, 32), char_type(C, space), char_type(C, whitespace).
@@ -1043,6 +1061,15 @@ run_smoke :-
           user:wam_string_code_zero/0,
           user:wam_string_code_unbound_index/1,
           user:wam_string_code_unbound_string/1,
+          user:wam_split_string_guard/4,
+          user:wam_split_string_basic/0,
+          user:wam_split_string_padding/0,
+          user:wam_split_string_empty_separator/0,
+          user:wam_split_string_consecutive/0,
+          user:wam_split_string_mismatch/0,
+          user:wam_split_string_bad_source/1,
+          user:wam_split_string_bad_separator/1,
+          user:wam_split_string_bad_pad/1,
           user:wam_char_type_alpha/0,
           user:wam_char_type_digit/0,
           user:wam_char_type_space/0,
@@ -1620,6 +1647,17 @@ smoke_cases([
     case('wam_string_code_zero/0', no_args, "false"),
     case('wam_string_code_unbound_index/1', a, "false"),
     case('wam_string_code_unbound_string/1', a, "false"),
+    case('wam_split_string_guard/4', args(abcbd, b, z, '[a,c,d]'), "true"),
+    case('wam_split_string_guard/4', args(xaxbxcx, b, x, '[a,c]'), "true"),
+    case('wam_split_string_guard/4', args(abbc, b, z, '[a,'''',c]'), "true"),
+    case('wam_split_string_basic/0', no_args, "true"),
+    case('wam_split_string_padding/0', no_args, "true"),
+    case('wam_split_string_empty_separator/0', no_args, "true"),
+    case('wam_split_string_consecutive/0', no_args, "true"),
+    case('wam_split_string_mismatch/0', no_args, "false"),
+    case('wam_split_string_bad_source/1', a, "false"),
+    case('wam_split_string_bad_separator/1', a, "false"),
+    case('wam_split_string_bad_pad/1', a, "false"),
     case('wam_char_type_alpha/0', no_args, "true"),
     case('wam_char_type_digit/0', no_args, "true"),
     case('wam_char_type_space/0', no_args, "true"),
@@ -2131,6 +2169,8 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
     has(CoreCode, "defn lowered-wam-string-code-guard-3"),
     has(CoreCode, "defn lowered-wam-string-code-unbound-string-1"),
+    has(CoreCode, "defn lowered-wam-split-string-guard-4"),
+    has(CoreCode, "defn lowered-wam-split-string-consecutive-0"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
@@ -2153,6 +2193,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/apply-atomic-list-concat-solution"),
     has(CoreCode, "runtime/apply-char-code-solution"),
     has(CoreCode, "runtime/apply-string-code-solution"),
+    has(CoreCode, "runtime/apply-split-string-solution"),
     has(CoreCode, "runtime/apply-char-type-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),
@@ -2267,6 +2308,13 @@ arg_to_edn_vector(args(Arg1, Arg2, Arg3), ArgsEdn) :-
     prolog_term_string_to_edn(Arg2, EdnArg2),
     prolog_term_string_to_edn(Arg3, EdnArg3),
     format(string(ArgsEdn), "[~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3]).
+arg_to_edn_vector(args(Arg1, Arg2, Arg3, Arg4), ArgsEdn) :-
+    !,
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    prolog_term_string_to_edn(Arg4, EdnArg4),
+    format(string(ArgsEdn), "[~w ~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3, EdnArg4]).
 arg_to_edn_vector(Arg, ArgsEdn) :-
     prolog_term_string_to_edn(Arg, EdnArg),
     format(string(ArgsEdn), "[~w]", [EdnArg]).
@@ -2296,6 +2344,26 @@ run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2), Output) :-
     (   ErrStr == ""
     ->  true
     ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2), ErrStr), _))
+    ).
+
+run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2, Arg3, Arg4), Output) :-
+    find_clojure_classpath(ClassPath),
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    prolog_term_string_to_edn(Arg4, EdnArg4),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', PredKey, EdnArg1, EdnArg2, EdnArg3, EdnArg4],
+                   [cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err))]),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    normalize_space(string(Output), OutStr0),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2, Arg3, Arg4), ErrStr), _))
     ).
 
 run_clojure_predicate(ProjectDir, PredKey, no_args, Output) :-
@@ -2335,6 +2403,7 @@ prolog_term_string_to_edn(a, "\"a\"") :- !.
 prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
+prolog_term_string_to_edn(x, "\"x\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
 prolog_term_string_to_edn('<', "\"<\"") :- !.
 prolog_term_string_to_edn('=', "\"=\"") :- !.
@@ -2364,6 +2433,9 @@ prolog_term_string_to_edn(o, "\"o\"") :- !.
 prolog_term_string_to_edn("o", "\"o\"") :- !.
 prolog_term_string_to_edn(bar, "\"bar\"") :- !.
 prolog_term_string_to_edn("bar", "\"bar\"") :- !.
+prolog_term_string_to_edn(abcbd, "\"abcbd\"") :- !.
+prolog_term_string_to_edn(abbc, "\"abbc\"") :- !.
+prolog_term_string_to_edn(xaxbxcx, "\"xaxbxcx\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
@@ -2391,6 +2463,8 @@ prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[a,c,d]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"d\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[a,'''',c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c,d]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"d\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.
