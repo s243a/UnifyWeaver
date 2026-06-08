@@ -9,6 +9,8 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
+:- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 
 build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)) :-
     atom_string(WamCode, S),
@@ -29,6 +31,20 @@ skippable_prefix_line([First|_]) :- sub_string(First, _, 1, 0, ":").
 skippable_prefix_line(["switch_on_constant"|_]).
 skippable_prefix_line(["switch_on_structure"|_]).
 
+% T5: the clauses discriminate on a DISTINCT first-argument constant
+% (lowering type T5). ALL clauses become a bound-checked first-arg dispatch;
+% an unbound first argument falls back to the multi_clause_1 path (clause 1
+% inline + array fallback), which enumerates every clause. Takes precedence
+% over multi_clause_1. The payload carries both the front-end guards (for the
+% bound dispatch) and clause 1's lines + alt label (for the unbound fallback).
+classify_clause_shape([FirstLine|Rest], plan(clause_chain, AltAtom, chain_payload(Guards, ClauseLines))) :-
+    wam_lua_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]),
+    lua_chain_terms([FirstLine|Rest], Terms),
+    clause_chain(Terms, chain(Guards)),
+    forall(member(guard(_, Rem), Guards), lua_chain_rem_supported(Rem)),
+    !,
+    atom_string(AltAtom, AltStr),
+    take_clause1_lines(Rest, ClauseLines).
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLines)) :-
     wam_lua_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]), !,
     atom_string(AltAtom, AltStr),
@@ -70,6 +86,38 @@ lua_line_term(["cut_ite"], cut_ite) :- !.
 lua_line_term(["builtin_call", Op, Ar], builtin_call(Op, Ar)) :- !.
 lua_line_term(Parts, line(Parts)).
 
+% --- T5 clause-chain term parse (for the shared wam_clause_chain front-end) -
+% Convert WAM lines into just the terms clause_chain inspects: the choice-point
+% separators, the head get_constant(V, A1), and an opaque line(Parts) leaf for
+% everything else (which lua_emit_chain_term/2 renders unchanged). Label lines
+% and blanks are dropped.
+lua_chain_terms([], []).
+lua_chain_terms([Line|Rest], Terms) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  lua_chain_terms(Rest, Terms)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  lua_chain_terms(Rest, Terms)            % drop label lines
+    ;   lua_chain_term(Parts, T),
+        Terms = [T|More],
+        lua_chain_terms(Rest, More)
+    ).
+
+lua_chain_term(["try_me_else", L], try_me_else(L)) :- !.
+lua_chain_term(["retry_me_else", L], retry_me_else(L)) :- !.
+lua_chain_term(["trust_me"], trust_me) :- !.
+lua_chain_term(["get_constant", V, A], get_constant(V, A)) :- !.
+lua_chain_term(Parts, line(Parts)).
+
+% Each clause remainder (everything after the head get_constant) must be a
+% line(Parts) leaf this emitter can render, or a further get_constant.
+lua_chain_rem_supported([]).
+lua_chain_rem_supported([T|Rest]) :-
+    ( T = get_constant(_, _) -> true
+    ; T = line(Parts) -> parts_supported(Parts)
+    ),
+    lua_chain_rem_supported(Rest).
+
 take_clause1_lines([], []).
 take_clause1_lines([Line|Rest], Out) :-
     wam_lua_target:tokenize_wam_line(Line, Parts),
@@ -83,6 +131,10 @@ wam_lua_lowerable(_PI, WamCode, Reason) :-
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
     (   Reason == ite
     ->  forall(member(I, Payload), lua_struct_supported(I))
+    ;   Reason == clause_chain
+    ->  Payload = chain_payload(Guards, ClauseLines),
+        forall(member(guard(_, Rem), Guards), lua_chain_rem_supported(Rem)),
+        forall(member(Line, ClauseLines), line_supported(Line))
     ;   forall(member(Line, Payload), line_supported(Line))
     ).
 
@@ -149,6 +201,9 @@ lower_predicate_to_lua(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     ->  emit_deterministic_function(PredName, FuncName, Payload, Code)
     ;   Mode == ite
     ->  emit_ite_function(PredName, FuncName, Payload, Code)
+    ;   Mode == clause_chain
+    ->  Payload = chain_payload(Guards, Clause1Lines),
+        emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Code)
     ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code)
     ).
 
@@ -225,6 +280,76 @@ local function ~w(program, state)
   return Runtime.run(program, state) == true
 end
 ', [PredName, FuncName, AltQ, Body]).
+
+% T5 first-argument dispatch. A BOUND first argument is matched against each
+% clause's distinct discriminator and that clause's remainder runs natively
+% (the non-first clauses are fast-path too — no interpreter hop); a bound
+% value matching no clause fails. An UNBOUND first argument is genuinely
+% nondeterministic, so it falls back to the multi_clause_1 path (clause 1
+% inline + array fallback from the clause-2 label), which enumerates every
+% clause exactly as before.
+emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Code) :-
+    with_output_to(string(Dispatch), lua_emit_chain_guards(Guards, "    ")),
+    with_output_to(string(Clause1Body), emit_lines(Clause1Lines, "    ")),
+    wam_lua_target:lua_string_literal(AltLabel, AltQ),
+    format(string(Code),
+'-- Lowered: ~w (T5 first-argument dispatch)
+local function ~w(program, state)
+  local t5a1 = Runtime.deref(state, Runtime.get_reg(state, 1))
+  if type(t5a1) == "table" and t5a1.tag ~~= "unbound" then
+~w    return false
+  end
+  -- unbound first argument: enumerate all clauses via the interpreter
+  local alt_pc = program.labels[~w]
+  if alt_pc == nil then return false end
+  table.insert(state.cps, {
+    next_pc = alt_pc,
+    regs = Runtime.copy_table(state.regs),
+    cp = state.cp,
+    trail_len = #state.trail,
+    var_counter = state.var_counter
+  })
+  local ok = (function()
+~w    return false
+  end)()
+  if ok == true then return true end
+  if Runtime.backtrack(state) ~~= true then return false end
+  state.pc = state.pc + 1
+  state.halt = false
+  return Runtime.run(program, state) == true
+end
+', [PredName, FuncName, Dispatch, AltQ, Clause1Body]).
+
+lua_emit_chain_guards([], _).
+lua_emit_chain_guards([guard(V, Rem)|Rest], Ind) :-
+    lua_chain_eq_expr(V, "t5a1", Eq),
+    format("~wif ~w then~n", [Ind, Eq]),
+    string_concat(Ind, "  ", Ind2),
+    lua_emit_chain_rem(Rem, Ind2),
+    format("~wend~n", [Ind]),
+    lua_emit_chain_guards(Rest, Ind).
+
+lua_emit_chain_rem([], _).
+lua_emit_chain_rem([T|Rest], Ind) :-
+    lua_emit_chain_term(T, Ind),
+    lua_emit_chain_rem(Rest, Ind).
+
+lua_emit_chain_term(get_constant(C, R), Ind) :- !, emit_line_parts(["get_constant", C, R], Ind).
+lua_emit_chain_term(line(Parts), Ind) :- !, emit_line_parts(Parts, Ind).
+
+%% lua_chain_eq_expr(+ConstToken, +LuaVar, -BoolExpr)
+%  A non-binding equality test of the (already-derefed, known-bound) value in
+%  LuaVar against the clause discriminator. Mirrors the runtime's same_atomic.
+lua_chain_eq_expr(VStr, Var, Expr) :-
+    wam_classify_constant_token(VStr, Class),
+    (   Class = integer(N)
+    ->  format(string(Expr), '~w.tag == "int" and ~w.val == ~w', [Var, Var, N])
+    ;   Class = float(F)
+    ->  format(string(Expr), '~w.tag == "float" and ~w.val == ~w', [Var, Var, F])
+    ;   Class = atom(Name),
+        wam_lua_target:intern_lua_atom(Name, Id),
+        format(string(Expr), '~w.tag == "atom" and ~w.id == ~w', [Var, Var, Id])
+    ).
 
 emit_lines([], _).
 emit_lines([Line|Rest], Ind) :-
