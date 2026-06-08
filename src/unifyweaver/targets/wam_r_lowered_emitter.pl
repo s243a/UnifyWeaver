@@ -42,6 +42,7 @@
 :- use_module('../core/binding_state_analysis').
 :- use_module('../core/demand_analysis').
 :- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 % =====================================================================
 % Emission plan
@@ -86,6 +87,24 @@ skippable_prefix_line(["switch_on_structure"|_]).
 % First-real-instruction discriminates between deterministic and
 % multi_clause_n. A try_me_else here means a standard WAM try-chain
 % follows, which we split into per-clause line groups.
+% T5: the clauses discriminate on a DISTINCT first-argument constant
+% (lowering type T5). Takes precedence over multi_clause_n: a BOUND first
+% argument dispatches in O(1) straight to the matching clause (no try-all
+% loop, no choice point); an UNBOUND first argument falls back to the
+% multi_clause_n try-all loop, which enumerates every clause. The payload
+% carries the per-clause discriminators (for the dispatch) and the same
+% per-clause line groups multi_clause_n uses (for try_clause_).
+classify_clause_shape([FirstLine|Rest],
+                      plan(clause_chain, none, chain_payload(Discriminators, Clauses))) :-
+    wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
+    r_chain_terms([FirstLine|Rest], Terms),
+    clause_chain(Terms, chain(Guards)),
+    findall(V, member(guard(V, _), Guards), Discriminators),
+    take_multi_clause_lines(Rest, Clauses),
+    length(Guards, NClauses),
+    length(Clauses, NClauses),                 % guards align 1:1 with clauses
+    forall(member(guard(_, Rem), Guards), r_chain_rem_supported(Rem)),
+    !.
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
     wam_r_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]), !,
     take_multi_clause_lines(Rest, Clauses).
@@ -127,6 +146,37 @@ r_line_term(["jump", L], jump(L)) :- !.
 r_line_term(["cut_ite"], cut_ite) :- !.
 r_line_term(["builtin_call", Op, Ar], builtin_call(Op, Ar)) :- !.
 r_line_term(Parts, line(Parts)).
+
+% --- T5 clause-chain term parse (for the shared wam_clause_chain front-end) -
+% Convert WAM lines into just the terms clause_chain inspects: the choice-point
+% separators, the head get_constant(V, A1), and an opaque line(Parts) leaf for
+% everything else. Label lines and blanks are dropped.
+r_chain_terms([], []).
+r_chain_terms([Line|Rest], Terms) :-
+    wam_r_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  r_chain_terms(Rest, Terms)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  r_chain_terms(Rest, Terms)             % drop label lines
+    ;   r_chain_term(Parts, T),
+        Terms = [T|More],
+        r_chain_terms(Rest, More)
+    ).
+
+r_chain_term(["try_me_else", L], try_me_else(L)) :- !.
+r_chain_term(["retry_me_else", L], retry_me_else(L)) :- !.
+r_chain_term(["trust_me"], trust_me) :- !.
+r_chain_term(["get_constant", V, A], get_constant(V, A)) :- !.
+r_chain_term(Parts, line(Parts)).
+
+% Each clause remainder (everything after the head get_constant) must be a
+% renderable line(Parts) leaf or a further get_constant.
+r_chain_rem_supported([]).
+r_chain_rem_supported([T|Rest]) :-
+    ( T = get_constant(_, _) -> true
+    ; T = line(Parts) -> parts_supported(Parts)
+    ),
+    r_chain_rem_supported(Rest).
 
 % Multi-clause WAM emitted by the shared compiler has the shape:
 %   try_me_else L2, clause1..., L2:, retry_me_else L3, clause2...,
@@ -204,6 +254,8 @@ wam_r_lowerable(_PI, WamCode, Reason) :-
 
 emission_plan_lines(deterministic, Lines, Lines).
 emission_plan_lines(multi_clause_n, Clauses, Lines) :-
+    append(Clauses, Lines).
+emission_plan_lines(clause_chain, chain_payload(_, Clauses), Lines) :-
     append(Clauses, Lines).
 
 %% r_struct_supported(+StructuredInstr) -- recurse through ite/3; each leaf
@@ -316,6 +368,10 @@ lower_predicate_to_r(PI, WamCode, Opts,
     ->  emit_ite_function(PredName, FuncName, ClauseLines, ModeHeader, Code)
     ;   Mode == multi_clause_n
     ->  emit_multi_clause_function(PredName, FuncName, ClauseLines,
+                                   ModeHeader, Code)
+    ;   Mode == clause_chain
+    ->  ClauseLines = chain_payload(Discriminators, Clauses),
+        emit_clause_chain_function(PredName, FuncName, Discriminators, Clauses,
                                    ModeHeader, Code)
     ),
     clear_lowered_mode_context.
@@ -653,6 +709,109 @@ emit_multi_clause_function(PredName, FuncName, Clauses,
   FALSE
 }', [ModeHeader, PredName, FuncName, ClauseCode,
       NClauses, NClauses, NClauses, NClauses]).
+
+% T5 first-argument dispatch. Reuses the multi_clause_n machinery verbatim
+% (per-clause snapshots, try_clause_, restore_clause_entry_, push_next_clause_
+% and the try-all fallback loop) but inserts an O(1) dispatch prologue: a
+% BOUND first argument is matched against each clause's distinct discriminator
+% and the matching clause is run directly via try_clause_(k) — no try-all
+% loop, no choice point (the discriminators are distinct, so it is
+% deterministic). On a clause-body failure the state is restored, matching the
+% loop's contract. An UNBOUND first argument (or a register that is unset)
+% falls through to the multi_clause_n try-all loop, which enumerates every
+% clause exactly as before.
+emit_clause_chain_function(PredName, FuncName, Discriminators, Clauses,
+                           ModeHeader, Code) :-
+    length(Clauses, NClauses),
+    with_output_to(string(ClauseCode), emit_clause_dispatch(Clauses, 1)),
+    with_output_to(string(DispatchCode), emit_chain_dispatch_r(Discriminators, 1)),
+    % The header keeps the multi_clause_n marker — clause_chain IS an
+    % all-clauses-inline lowering (try_clause_ holds every clause) — and adds
+    % the T5 note for the first-argument dispatch prologue.
+    format(string(Code),
+'~w# Lowered: ~w  (multi-clause; all clauses inline; T5 first-argument dispatch)
+~w <- function(program, state) {
+  snap_regs_      <- state$regs2
+  snap_cp_        <- state$cp
+  snap_trail_     <- length(state$trail)
+  snap_var_count_ <- state$var_counter
+  snap_mode_      <- state$mode
+  snap_build_     <- state$build_stack
+  snap_read_      <- state$read_stack
+  snap_stack_len_ <- length(state$stack)
+  snap_barrier_   <- state$pending_call_barrier
+  resume_pc_      <- state$pc + 1L
+  restore_clause_entry_ <- function() {
+    state$regs2 <- snap_regs_
+    WamRuntime$undo_trail_to(state, snap_trail_)
+    state$cp <- snap_cp_
+    state$var_counter <- snap_var_count_
+    state$mode <- snap_mode_
+    state$build_stack <- snap_build_
+    state$read_stack <- snap_read_
+    state$pending_call_barrier <- snap_barrier_
+    if (length(state$stack) > snap_stack_len_) {
+      if (snap_stack_len_ == 0L) state$stack <- list()
+      else state$stack <- state$stack[seq_len(snap_stack_len_)]
+    }
+    state$shadow_frame <- NULL
+  }
+  try_clause_ <- function(idx_) {
+~w    FALSE
+  }
+  push_next_clause_ <- function(next_idx_) {
+    state$cps <- c(state$cps, list(list(
+      kind        = "iter",
+      regs        = snap_regs_,
+      trail_len   = snap_trail_,
+      cp          = snap_cp_,
+      var_counter = snap_var_count_,
+      mode        = snap_mode_,
+      build_stack = snap_build_,
+      read_stack  = snap_read_,
+      call_barrier = snap_barrier_,
+      stack_len   = snap_stack_len_,
+      resume_pc   = resume_pc_,
+      retry       = function(state) {
+        for (idx_ in seq.int(next_idx_, ~wL)) {
+          ok_ <- isTRUE(try_clause_(idx_))
+          if (ok_) {
+            if (idx_ < ~wL) push_next_clause_(idx_ + 1L)
+            return(TRUE)
+          }
+          restore_clause_entry_()
+        }
+        FALSE
+      }
+    )))
+  }
+  # T5 fast path: a bound first argument selects exactly one clause.
+  t5a1_ <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+  if (!is.null(t5a1_) && !(is.list(t5a1_) && !is.null(t5a1_$tag) && t5a1_$tag == "unbound")) {
+~w    return(FALSE)
+  }
+  # Unbound first argument: enumerate every clause.
+  for (idx_ in seq_len(~wL)) {
+    ok_ <- isTRUE(try_clause_(idx_))
+    if (ok_) {
+      if (idx_ < ~wL) push_next_clause_(idx_ + 1L)
+      return(TRUE)
+    }
+    restore_clause_entry_()
+  }
+  FALSE
+}', [ModeHeader, PredName, FuncName, ClauseCode,
+      NClauses, NClauses, DispatchCode, NClauses, NClauses]).
+
+%% emit_chain_dispatch_r(+Discriminators, +Idx)
+%  One `if (identical(t5a1_, <const>)) { ... try_clause_(idx) ... }` per clause.
+emit_chain_dispatch_r([], _).
+emit_chain_dispatch_r([V|Rest], Idx) :-
+    wam_r_target:constant_to_r_term(V, CTerm),
+    format("    if (identical(t5a1_, ~w)) { ok_ <- isTRUE(try_clause_(~wL)); if (!ok_) restore_clause_entry_(); return(ok_) }~n",
+           [CTerm, Idx]),
+    Idx1 is Idx + 1,
+    emit_chain_dispatch_r(Rest, Idx1).
 
 emit_clause_dispatch([], _).
 emit_clause_dispatch([Lines|Rest], Idx) :-
