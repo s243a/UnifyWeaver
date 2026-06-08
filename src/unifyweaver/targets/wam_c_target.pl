@@ -2871,6 +2871,80 @@ static bool wam_dispatch_if_then_else(WamState *state,
     return wam_invoke_goal_as_call(state, if_goal, WAM_META_ITE_THEN);
 }
 
+static bool wam_functor_with_arity(WamState *state,
+                                   const char *functor,
+                                   int arity,
+                                   char *out,
+                                   size_t out_size) {
+    const char *slash = strrchr(functor, 47);
+    if (!slash) return false;
+    size_t name_len = (size_t)(slash - functor);
+    if (name_len == 0 || name_len >= out_size) return false;
+    int written = snprintf(out, out_size, "%.*s/%d",
+                           (int)name_len, functor, arity);
+    if (written <= 0 || written >= (int)out_size) return false;
+    (void)state;
+    return true;
+}
+
+static bool wam_dispatch_call_n(WamState *state,
+                                int base,
+                                int arity,
+                                int return_pc) {
+    if (arity < 1) return false;
+    WamValue callable = state->H_array[base + 1];
+    if (arity == 1) {
+        return wam_invoke_goal_as_call(state, callable, return_pc);
+    }
+
+    int extra_count = arity - 1;
+    WamValue args[WAM_MAX_REGS];
+    int goal_arity = 0;
+    char functor_buf[256];
+
+    WamValue *callable_cell = wam_deref_ptr(state, &callable);
+    if (callable_cell->tag == VAL_ATOM) {
+        goal_arity = extra_count;
+        int written = snprintf(functor_buf, sizeof(functor_buf), "%s/%d",
+                               callable_cell->data.atom, goal_arity);
+        if (written <= 0 || written >= (int)sizeof(functor_buf)) return false;
+    } else {
+        const char *callable_functor = NULL;
+        int callable_base = -1;
+        if (!wam_goal_structure(state, callable, &callable_functor,
+                                &callable_base)) return false;
+        int callable_arity = 0;
+        if (!wam_parse_functor_arity(callable_functor,
+                                     &callable_arity)) return false;
+        if (callable_arity > WAM_MAX_REGS - extra_count) return false;
+        goal_arity = callable_arity + extra_count;
+        if (!wam_functor_with_arity(state, callable_functor, goal_arity,
+                                    functor_buf, sizeof(functor_buf))) {
+            return false;
+        }
+        for (int i = 0; i < callable_arity; i++) {
+            args[i] = state->H_array[callable_base + 1 + i];
+        }
+    }
+
+    if (goal_arity > WAM_MAX_REGS) return false;
+    int existing_args = goal_arity - extra_count;
+    for (int i = 0; i < extra_count; i++) {
+        args[existing_args + i] = state->H_array[base + 2 + i];
+    }
+
+    if (!wam_ensure_heap_slots(state, goal_arity + 1)) return false;
+    int goal_base = state->H;
+    state->H_array[state->H++] = val_atom(wam_intern_atom(state, functor_buf));
+    for (int i = 0; i < goal_arity; i++) {
+        state->H_array[state->H++] = args[i];
+    }
+    WamValue expanded_goal;
+    expanded_goal.tag = VAL_STR;
+    expanded_goal.data.ref_addr = goal_base;
+    return wam_invoke_goal_as_call(state, expanded_goal, return_pc);
+}
+
 static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
                                     int return_pc) {
     WamValue *cell = wam_deref_ptr(state, &goal);
@@ -2897,6 +2971,9 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
     int arity = 0;
     if (!wam_parse_functor_arity(functor, &arity)) return false;
     if (arity > WAM_MAX_REGS) return false;
+    if (strncmp(functor, "call/", 5) == 0 && arity >= 1) {
+        return wam_dispatch_call_n(state, base, arity, return_pc);
+    }
     if (strcmp(functor, ",/2") == 0 && arity == 2) {
         if (state->conj_top >= WAM_META_GOAL_STACK_SIZE) return false;
         WamConjFrame *frame = &state->conj_frames[state->conj_top++];

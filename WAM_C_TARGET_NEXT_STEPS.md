@@ -4,15 +4,15 @@ Status date: 2026-06-07
 
 Latest branch verification:
 
-- `investigate/wam-c-meta-goal-ite` based on `main` at `28ac3536`
-  (`Merge pull request #2881 from
-  s243a/investigate/wam-c-meta-goal-disjunction`)
+- `investigate/wam-c-meta-goal-call-n` based on `main` at `08b21f86`
+  (`Merge pull request #2916 from
+  s243a/investigate/wam-c-meta-goal-ite`)
 - `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-meta-goal-ite`
+- `investigate/wam-c-meta-goal-call-n`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -91,6 +91,7 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | Runtime conjunction goal-term dispatch | Done | C preserves `,/2` functors in WAM-to-C parsing, dispatches conjunction goal terms through a synthetic continuation frame, snapshots frame depth in choicepoints, and covers non-inline aggregate bodies with conjunction in `bagof/3` and `setof/3` |
 | Runtime disjunction goal-term dispatch | Done | C dispatches `;/2` goal terms by placing the right branch behind a synthetic choicepoint, snapshots disjunction-frame depth in choicepoints, and covers non-inline aggregate bodies with disjunction in `bagof/3` and `setof/3` |
 | Runtime if-then-else goal-term dispatch | Done | C recognizes `;(->(If, Then), Else)` goal terms, commits on the first condition success by pruning condition alternatives and the else fallback, and covers non-inline aggregate bodies with if-then-else in `bagof/3` and `setof/3` |
+| Runtime `call/N` goal-term expansion | Done | C expands `call/1` through `call/N` goal terms by appending extra arguments to atom or partial-structure callables before reusing normal meta-goal dispatch, and covers non-inline aggregate bodies with `call/N` in `bagof/3` and `setof/3` |
 
 ## Current C Target Baseline
 
@@ -151,7 +152,7 @@ The C target is now a credible small WAM backend:
   existential `^/2` suppression plus unbound witness group enumeration inside
   inline `bagof/3` / `setof/3` bodies. It also has runtime meta-call dispatch
   for non-inline aggregate calls over simple callable goal terms and
-  conjunction/disjunction/if-then-else goal terms.
+  conjunction/disjunction/if-then-else/`call/N` goal terms.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -174,7 +175,7 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, existential `^/2`, and unbound witness group enumeration for inline `bagof/3` / `setof/3`; runtime meta-call aggregate dispatch now covers simple callable, conjunction, disjunction, and if-then-else goals, while `call/N` and broader meta-goal forms remain gaps. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, existential `^/2`, and unbound witness group enumeration for inline `bagof/3` / `setof/3`; runtime meta-call aggregate dispatch now covers simple callable, conjunction, disjunction, if-then-else, and `call/N` goals, while broader meta-goal forms remain gaps. |
 | Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
@@ -188,6 +189,27 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-meta-goal-call-n`
+
+Goal: extend C aggregate meta-call goal dispatch to `call/N` goal expansion.
+
+Evidence:
+
+- C recognizes `call/1` through `call/N` goal terms before normal predicate
+  lookup.
+- `call/1` invokes the callable directly.
+- `call/N` expands atom callables and partial-structure callables by appending
+  extra arguments into a temporary heap goal term, then reuses normal meta-goal
+  dispatch.
+- The executable smoke covers non-inline `bagof/3` and `setof/3` bodies with
+  `call/2`, `call/3`, partial-structure `call/2`, and sorted/deduplicated set
+  output.
+
+Remaining gaps:
+
+- Broader meta-goal parity should now be driven by concrete benchmark or user
+  programs rather than the aggregate `call/N` sequence.
 
 ### Completed: `investigate/wam-c-meta-goal-ite`
 
@@ -213,8 +235,8 @@ Evidence:
 
 Remaining gaps:
 
-- General `call/N` composition still needs runtime goal expansion before the
-  C meta-call path reaches full goal-term parity.
+- Later branches closed the aggregate `call/N` gap; remaining meta-goal parity
+  work should be driven by concrete benchmark or user programs.
 
 ### Completed: `investigate/wam-c-meta-goal-disjunction`
 
@@ -237,8 +259,9 @@ Evidence:
 
 Remaining gaps:
 
-- General `call/N` composition still needs runtime goal expansion before the C
-  meta-call path reaches full goal-term parity.
+- Later branches closed the aggregate if-then-else and `call/N` gaps; remaining
+  meta-goal parity work should be driven by concrete benchmark or user
+  programs.
 
 ### Completed: `investigate/wam-c-meta-goal-composition`
 
@@ -263,8 +286,9 @@ Evidence:
 
 Remaining gaps:
 
-- General `call/N` composition still needs runtime goal expansion before the C
-  meta-call path reaches full goal-term parity.
+- Later branches closed the aggregate disjunction, if-then-else, and `call/N`
+  gaps; remaining meta-goal parity work should be driven by concrete benchmark
+  or user programs.
 
 ### Completed: `investigate/wam-c-meta-aggregate-dispatch`
 
@@ -290,9 +314,9 @@ Evidence:
 
 Remaining gaps:
 
-- The first meta-call implementation invokes atoms, module-qualified simple
-  predicate terms, `^/2`, direct builtins, and nested aggregate terms. It does
-  not yet cover general `call/N` goal composition in the C runtime.
+- Later branches extended the first meta-call implementation through
+  conjunction, disjunction, if-then-else, and `call/N` goal terms. Remaining
+  parity work should be driven by concrete benchmark or user programs.
 
 ### Completed: `investigate/wam-c-bagof-setof-unbound-witness-groups`
 
@@ -1290,11 +1314,14 @@ Evidence:
 
 The aggregate parity sequence now has inline no-witness, caller-bound witness,
 existential `^/2`, unbound witness group enumeration, runtime meta-call
-aggregate dispatch for simple callable goals, and conjunction goal-term
-dispatch, disjunction goal-term dispatch, and if-then-else goal-term dispatch
-inside meta aggregate bodies. The next aggregate feature worth considering is
-`call/N` composition because it changes general meta-call goal expansion, not
-just aggregate frame finalization.
+aggregate dispatch for simple callable goals, conjunction goal-term dispatch,
+disjunction goal-term dispatch, if-then-else goal-term dispatch, and `call/N`
+goal expansion inside meta aggregate bodies. The next aggregate/meta-goal work
+should be driven by concrete generated programs or benchmark demand rather than
+another obvious core meta-call form. For C parity, the next narrow candidate is
+likely broader classic-program stress coverage or project-generator/test
+scaffolding depth, unless a benchmark exposes a specific builtin or control
+gap.
 
 For the effective-distance/CSR line, result-capped and sampled runs already
 confirm child-CSR variants agree, and parent plus child reachability prefilters
