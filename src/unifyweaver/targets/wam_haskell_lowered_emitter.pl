@@ -30,6 +30,7 @@
 :- use_module(library(lists)).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 %% =====================================================================
 %% Parsing
@@ -221,7 +222,9 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
     format("~w :: WamContext -> WamState -> Maybe WamState~n", [FN]),
     % Skip switch_on_constant* prefixes before deciding multi/single-clause.
     strip_switch_prefixes(PCInstrs, PCInstrs1),
-    (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
+    (   emit_func_t5(FN, PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  atom_string(LAtom, LStr),
         (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
         format("~w !ctx s_init =~n", [FN]),
@@ -249,6 +252,116 @@ take_to_proceed_pc([], []).
 take_to_proceed_pc([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
 take_to_proceed_pc([pc(PC, fail)|_], [pc(PC, fail)]) :- !.
 take_to_proceed_pc([H|T], [H|R]) :- take_to_proceed_pc(T, R).
+
+%% =====================================================================
+%% T5: multi-clause as a first-argument dispatch (wam_clause_chain)
+%% =====================================================================
+%
+%  When the clauses discriminate on a DISTINCT first-argument constant
+%  (lowering type T5 in docs/proposals/WAM_LOWERING_TAXONOMY_AND_MATRIX.md)
+%  ALL clauses are lowered to native Haskell and selected by a deref-and-match
+%  cascade, instead of lowering only clause 1 and reaching clauses 2+ through
+%  the interpreter on backtrack. When the first argument is BOUND this is
+%  deterministic dispatch with no interpreter hop; when it is UNBOUND (or the
+%  register is unset) we defer to the interpreter via the same choice-point /
+%  backtrack / run fallback the ordinary multi-clause path uses — that path
+%  enumerates every clause, binding the variable in turn.
+%
+%  Each clause body is emitted in FULL (the leading `get_constant V, A1` is
+%  kept): on the bound fast path it harmlessly re-matches the already-bound
+%  first argument, and on the unbound fallback it is exactly what binds the
+%  variable. So the only thing T5 changes is HOW the matching clause is
+%  reached, never what a clause does.
+
+%% emit_func_t5(+FN, +PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T5 dispatch and succeeds, or fails (emitting nothing) when the
+%  predicate is not a distinct-first-argument constant chain. All checks run
+%  before any output so a failure leaves the stream untouched for the caller's
+%  fallback emission.
+emit_func_t5(FN, PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
+    maplist(t5_strip_pc, PCInstrs1, PlainInstrs),
+    clause_chain(PlainInstrs, chain(_Guards)),
+    t5_split_clauses_pc(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(( member(Sl, Slices), member(pc(_, I), Sl) ), supported(I)),
+    maplist(t5_slice_discriminator, Slices, Discrs),
+    % All checks passed — emit.
+    atom_string(L2Atom, L2Str),
+    ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
+    format("~w !ctx s_init =~n", [FN]),
+    format("  case derefVar (wsBindings s_init) <$> IM.lookup 1 (wsRegs s_init) of~n"),
+    format("    Just (Unbound _) -> t5fallback~n"),
+    format("    Just v~n"),
+    t5_emit_dispatch_guards(Discrs, 1),
+    format("      | otherwise -> Nothing~n"),
+    format("    _ -> t5fallback~n"),
+    format("  where~n"),
+    % Interpreter fallback for the unbound/unset first-argument case: push a
+    % choice point at clause 2's label, try clause 1 natively, and on failure
+    % backtrack into the interpreter to enumerate the remaining clauses.
+    format("    t5fallback =~n"),
+    format("      let s_cp = s_init { wsCPs = ChoicePoint~n"),
+    format("            { cpNextPC = ~w, cpRegs = wsRegs s_init, cpStack = wsStack s_init~n", [AltPC]),
+    format("            , cpCP = wsCP s_init, cpTrailLen = wsTrailLen s_init~n"),
+    format("            , cpHeapLen = wsHeapLen s_init, cpBindings = wsBindings s_init~n"),
+    format("            , cpCutBar = wsCutBar s_init, cpAggFrame = Nothing, cpBuiltin = Nothing~n"),
+    format("            } : wsCPs s_init~n"),
+    format("            , wsCPsLen = wsCPsLen s_init + 1 }~n"),
+    format("      in case t5clause_1 s_cp of~n"),
+    format("           Just result -> Just result~n"),
+    format("           Nothing -> backtrack s_cp >>= \\s_bt -> run ctx (s_bt { wsPC = wsPC s_bt + 1 })~n"),
+    t5_emit_clause_defs(Slices, 1, LabelMap, FP).
+
+t5_strip_pc(pc(_, I), I).
+
+%% t5_split_clauses_pc(+PCInstrs1, -Slices)
+%  Split the switch-stripped pc-instruction list (which opens with
+%  try_me_else) at the choice-point separators into per-clause slices, each
+%  trimmed to its terminal proceed/fail. Mirrors wam_clause_chain's
+%  split_clauses but keeps the pc(PC,Instr) wrappers for emission.
+t5_split_clauses_pc([pc(_, try_me_else(_))|Rest], [Slice|More]) :-
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+
+t5_split_more_pc([], []).
+t5_split_more_pc([pc(_, retry_me_else(_))|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+t5_split_more_pc([pc(_, trust_me)|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+
+t5_collect_clause_pc([], [], []).
+t5_collect_clause_pc([pc(P, retry_me_else(L))|Rest], [], [pc(P, retry_me_else(L))|Rest]) :- !.
+t5_collect_clause_pc([pc(P, trust_me)|Rest], [], [pc(P, trust_me)|Rest]) :- !.
+t5_collect_clause_pc([Item|Rest], [Item|More], After) :-
+    t5_collect_clause_pc(Rest, More, After).
+
+%% t5_slice_discriminator(+Slice, -HaskellValueExpr)
+%  Each lowerable clause opens with `get_constant V, A1`; render V as its
+%  Haskell Value constructor.
+t5_slice_discriminator([pc(_, get_constant(VStr, _A1))|_], HC) :-
+    val_hs(VStr, HC).
+
+%% t5_emit_dispatch_guards(+Discrs, +Index)
+t5_emit_dispatch_guards([], _).
+t5_emit_dispatch_guards([HC|Rest], N) :-
+    format("      | v == (~w) -> t5clause_~w s_init~n", [HC, N]),
+    N1 is N + 1,
+    t5_emit_dispatch_guards(Rest, N1).
+
+%% t5_emit_clause_defs(+Slices, +Index, +LabelMap, +FP)
+t5_emit_clause_defs([], _, _, _).
+t5_emit_clause_defs([Slice|Rest], N, LabelMap, FP) :-
+    format("    t5clause_~w s_c~w = do~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct(Slice, LabelMap, SV, "      ", FP),
+    N1 is N + 1,
+    t5_emit_clause_defs(Rest, N1, LabelMap, FP).
 
 %% =====================================================================
 %% emit_instrs_lm — LabelMap-aware top-level emission
@@ -662,8 +775,13 @@ emit_one(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
 % ---- GetStructure F Ai — delegate to step ----
 emit_one(get_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
-    parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_struct_functor(FuncName, FnId),
+    % Intern the FULL functor string (e.g. "+/2"), matching the interpreter
+    % codegen (wam_haskell_target's get_structure/put_structure rules). The
+    % lowered and interpreted paths share one runtime intern table, so a bare
+    % "+" here would get a different id than the table's "+/2" and evalArith /
+    % unification would look up the wrong name.
+    parse_functor(FnStr, _FuncName, Arity),
+    wam_haskell_target:intern_struct_functor(FnStr, FnId),
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (GetStructure ~w ~w ~w)~n",
            [I, SVout, SV, PC, FnId, Ai, Arity]).
@@ -739,8 +857,10 @@ emit_one(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
 % Directly sets wsBuilder, matching step's PutStructure semantics.
 emit_one(put_structure(FnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
-    parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_struct_functor(FuncName, FnId),
+    % Intern the FULL functor string (see get_structure above) so the
+    % builder's functor id matches the shared runtime intern table.
+    parse_functor(FnStr, _FuncName, Arity),
+    wam_haskell_target:intern_struct_functor(FnStr, FnId),
     fresh_sv(SV, SVout),
     format("~wlet ~w = ~w { wsBuilder = BuildStruct ~w ~w ~w [] }~n",
            [I, SVout, SV, FnId, Ai, Arity]).
