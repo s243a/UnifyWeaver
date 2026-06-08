@@ -1583,6 +1583,7 @@ declare i32 @getrusage(i32, i8*)
 declare i8* @popen(i8*, i8*)
 declare i32 @pclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3713,6 +3714,7 @@ entry:
     i32 161, label %builtin_process_system_time
     i32 162, label %builtin_path_join
     i32 163, label %builtin_system_to_atom
+    i32 164, label %builtin_atom_to_system
   ]
 
 builtin_is:
@@ -7351,6 +7353,70 @@ sta.close:
   %sta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %sta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sta.raw2, %Value %sta.v)
   ret i1 %sta.ok
+
+builtin_atom_to_system:
+  ; M135: atom_to_system(+Cmd, +Content) -- input-side companion
+  ; to M134 system_to_atom/2. Opens a pipe to Cmd via popen(cmd,
+  ; "w") and writes Content''s bytes as the command''s stdin, then
+  ; pclose to flush + wait. Succeeds iff pclose returns 0 (subprocess
+  ; exited cleanly with status 0). Both args must be Atom.
+  ;
+  ; Useful for piping data through filters. Short writes are
+  ; retried (fwrite normally handles this internally but we
+  ; double-check by tracking offset).
+  %ats.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ats.t1 = call i32 @value_tag(%Value %ats.a1)
+  %ats.is_atom1 = icmp eq i32 %ats.t1, 0
+  br i1 %ats.is_atom1, label %ats.check2, label %ats.fail
+ats.fail:
+  ret i1 false
+ats.check2:
+  %ats.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ats.t2 = call i32 @value_tag(%Value %ats.a2)
+  %ats.is_atom2 = icmp eq i32 %ats.t2, 0
+  br i1 %ats.is_atom2, label %ats.have_args, label %ats.fail
+ats.have_args:
+  %ats.cmd_aid = call i64 @value_payload(%Value %ats.a1)
+  %ats.cmd = call i8* @wam_atom_to_string(i64 %ats.cmd_aid)
+  %ats.cmd_null = icmp eq i8* %ats.cmd, null
+  br i1 %ats.cmd_null, label %ats.fail, label %ats.have_cmd
+ats.have_cmd:
+  %ats.body_aid = call i64 @value_payload(%Value %ats.a2)
+  %ats.body = call i8* @wam_atom_to_string(i64 %ats.body_aid)
+  %ats.body_null = icmp eq i8* %ats.body, null
+  br i1 %ats.body_null, label %ats.fail, label %ats.open
+ats.open:
+  ; "w\0" mode string on stack.
+  %ats.mode = alloca [2 x i8]
+  %ats.mode_ptr = getelementptr [2 x i8], [2 x i8]* %ats.mode, i32 0, i32 0
+  store i8 119, i8* %ats.mode_ptr
+  %ats.mode_t = getelementptr i8, i8* %ats.mode_ptr, i64 1
+  store i8 0, i8* %ats.mode_t
+  %ats.fp = call i8* @popen(i8* %ats.cmd, i8* %ats.mode_ptr)
+  %ats.fp_null = icmp eq i8* %ats.fp, null
+  br i1 %ats.fp_null, label %ats.fail, label %ats.size
+ats.size:
+  %ats.len = call i64 @strlen(i8* %ats.body)
+  %ats.empty = icmp eq i64 %ats.len, 0
+  br i1 %ats.empty, label %ats.close, label %ats.loop
+ats.loop:
+  %ats.off = phi i64 [ 0, %ats.size ], [ %ats.off_next, %ats.advance ]
+  %ats.remain = sub i64 %ats.len, %ats.off
+  %ats.src = getelementptr i8, i8* %ats.body, i64 %ats.off
+  %ats.n = call i64 @fwrite(i8* %ats.src, i64 1, i64 %ats.remain, i8* %ats.fp)
+  %ats.n_zero = icmp eq i64 %ats.n, 0
+  br i1 %ats.n_zero, label %ats.close_fail, label %ats.advance
+ats.advance:
+  %ats.off_next = add i64 %ats.off, %ats.n
+  %ats.done = icmp eq i64 %ats.off_next, %ats.len
+  br i1 %ats.done, label %ats.close, label %ats.loop
+ats.close_fail:
+  call i32 @pclose(i8* %ats.fp)
+  ret i1 false
+ats.close:
+  %ats.ret = call i32 @pclose(i8* %ats.fp)
+  %ats.ok = icmp eq i32 %ats.ret, 0
+  ret i1 %ats.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14668,6 +14734,7 @@ builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seco
 builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
 builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (absolute Rel wins).
 builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
+builtin_op_to_id('atom_to_system/2', 164).    % popen(cmd, "w") + fwrite + pclose, succeed iff status 0.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

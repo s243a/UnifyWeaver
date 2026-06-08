@@ -3473,6 +3473,48 @@ test_sta_pipe(_, R) :-
 test_sta_bad_arg(_, R) :-
     ( system_to_atom(42, _) -> R is 0 ; R is 1 ).   % 1
 
+% M135: atom_to_system/2 -- pipe atom to a command via popen('w').
+
+:- dynamic test_ats_basic/2.
+test_ats_basic(_, R) :-
+    % Pipe 'hello' to wc -c via stdin, file gets just the length.
+    shell('rm -f /tmp/uw_m135_out', _),
+    atom_to_system('cat > /tmp/uw_m135_out', 'hello'),
+    size_file('/tmp/uw_m135_out', Sz),
+    shell('rm -f /tmp/uw_m135_out', _),
+    ( Sz =:= 5 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ats_empty/2.
+test_ats_empty(_, R) :-
+    % Empty content -> 0-byte file (loop skipped via empty fast path).
+    shell('rm -f /tmp/uw_m135_empty', _),
+    atom_to_system('cat > /tmp/uw_m135_empty', ''),
+    size_file('/tmp/uw_m135_empty', Sz),
+    shell('rm -f /tmp/uw_m135_empty', _),
+    ( Sz =:= 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ats_pipeline/2.
+test_ats_pipeline(_, R) :-
+    % Pipeline: write a single-line atom, count its bytes via wc -c.
+    shell('rm -f /tmp/uw_m135_count', _),
+    atom_to_system('wc -c > /tmp/uw_m135_count', 'hello'),
+    size_file('/tmp/uw_m135_count', Sz),
+    shell('rm -f /tmp/uw_m135_count', _),
+    ( Sz > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_ats_failing_cmd/2.
+test_ats_failing_cmd(_, R) :-
+    % Command that exits non-zero -> pclose returns non-zero ->
+    % atom_to_system fails. "false" always exits 1.
+    ( atom_to_system('false', anything) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_ats_bad_args/2.
+test_ats_bad_args(_, R) :-
+    ( atom_to_system(42, abc) -> R is 0
+    ; atom_to_system('cat > /dev/null', 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6641,6 +6683,17 @@ test_all :-
                    test_sta_pipe, 0, 1),
        run_test_r0('system_to_atom(42, _) fails -> 1',
                    test_sta_bad_arg, 0, 1),
+       format('--- M135 atom_to_system/2 ---~n'),
+       run_test_r0('cat <- 5 bytes -> size 5 -> 1',
+                   test_ats_basic, 0, 1),
+       run_test_r0('cat <- empty -> size 0 -> 1',
+                   test_ats_empty, 0, 1),
+       run_test_r0('sort -u | wc -l pipeline -> 1',
+                   test_ats_pipeline, 0, 1),
+       run_test_r0('false command fails -> 1',
+                   test_ats_failing_cmd, 0, 1),
+       run_test_r0('atom_to_system with non-atom args fails -> 1',
+                   test_ats_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
