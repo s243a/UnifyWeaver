@@ -95,7 +95,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
-| scala   | ✓ | ✓ T2a | ✓ | ✗ | **✗** | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
 | rust    | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
@@ -135,6 +135,15 @@ Verification notes:
   no target does general recursion→loop.
 - elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
   R's closure-per-clause shape — counted ✓ but architecturally distinct.
+- **scala T4** (added later): every clause is emitted inline as a sibling
+  `Boolean` closure, tried in order with a trail/register restore between
+  attempts (`WamRuntime.loRestoreClause`); the entry has no `runPredicate`
+  fallback, so the interpreter is never entered for the predicate. Scala's
+  lowered runtime only ever takes a predicate's first solution (`loCall` /
+  `loExecute` — deterministic-prefix), so unlike R/elixir it needs no
+  retry/iter choice point for clauses 2+; gated below T5 (clause_chain) and
+  above multi_clause_1, so only multi-clause predicates that don't
+  discriminate on a distinct first-arg constant take this path.
 
 ---
 

@@ -248,7 +248,16 @@ wam_scala_lowerable(_PI, WamCode, Reason) :-
     ->  Reason = clause_chain
     ;   is_deterministic_pred_scala(C1),
         forall(member(I, C1), scala_supported(I))
-    ->  ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause )
+    ->  ( MultiClause == false
+        ->  Reason = single_clause
+        ;   % T4: every clause is a clean supported deterministic body, so
+            % lower them ALL inline (tried in order with restore-between) and
+            % never enter the interpreter for the predicate. Takes precedence
+            % over multi_clause_1 (clause-1 only + interpreter fallback).
+            scala_all_clauses_lowerable(Instrs)
+        ->  Reason = multi_clause_n
+        ;   Reason = multi_clause_1
+        )
     ;   % Clause-1 has an inner choice point. Lower it only if that point is
         % a pure (C -> T ; E) / \+ / once block whose pieces are all
         % supported; otherwise decline (interpreter fallback).
@@ -280,6 +289,47 @@ take_to_proceed_scala([], []).
 take_to_proceed_scala([proceed|_], [proceed]) :- !.
 take_to_proceed_scala([fail|_], [fail]) :- !.
 take_to_proceed_scala([I|Rest], [I|More]) :- take_to_proceed_scala(Rest, More).
+
+%% scala_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split a multi-clause predicate's instruction list (opens with try_me_else)
+%  at the choice-point separators (retry_me_else / trust_me) into per-clause
+%  instruction lists. Used by T4 (multi_clause_n) to emit every clause as a
+%  sibling closure.
+scala_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    scala_collect_clause(Rest, Clause, After),
+    scala_split_more(After, More).
+
+scala_split_more([], []).
+scala_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    scala_collect_clause(Rest, Clause, After),
+    scala_split_more(After, More).
+scala_split_more([trust_me|Rest], [Clause|More]) :- !,
+    scala_collect_clause(Rest, Clause, After),
+    scala_split_more(After, More).
+
+scala_collect_clause([], [], []).
+scala_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+scala_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+scala_collect_clause([I|Rest], [I|More], After) :-
+    scala_collect_clause(Rest, More, After).
+
+%% scala_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause of a multi-clause predicate is a clean, supported,
+%  deterministic-prefix body (no inner choice point, ends in a terminal). Such
+%  a predicate lowers as T4 (multi_clause_n): all clauses inline, tried in
+%  order with a trail/register restore between attempts, so the interpreter is
+%  never entered for the predicate.
+scala_all_clauses_lowerable(Instrs) :-
+    scala_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),   % no inner ITE block
+             forall(member(I, Cl), scala_supported(I)),
+             last(Cl, Last), scala_clause_terminal(Last) )).
+
+scala_clause_terminal(proceed).
+scala_clause_terminal(fail).
+scala_clause_terminal(execute(_, _)).
 
 %% is_deterministic_pred_scala(+Instrs)
 %  True if the clause-1 instruction list has no choice-point ops.
@@ -382,9 +432,16 @@ lower_predicate_to_scala(PI, WamCode, Options, lowered(PredName, FuncName, Code)
     % T5 first-argument-constant clause chain takes precedence; otherwise
     % emit from the plain clause-1 when fully supported, else fold its inner
     % ITE block(s) into structured form first.
-    (   scala_clause_chain_lowerable(Instrs, Guards)
+    (   MultiClause == true,
+        scala_clause_chain_lowerable(Instrs, Guards)
     ->  with_output_to(string(Code),
             emit_clause_chain_scala(FuncName, Guards, ForeignKeys))
+    ;   MultiClause == true,
+        is_deterministic_pred_scala(C1),
+        forall(member(I, C1), scala_supported(I)),
+        scala_all_clauses_lowerable(Instrs)
+    ->  with_output_to(string(Code),
+            emit_multi_clause_n_scala(FuncName, Instrs, ForeignKeys))
     ;   (   is_deterministic_pred_scala(C1),
             forall(member(I, C1), scala_supported(I))
         ->  EmitBody = C1
@@ -393,6 +450,51 @@ lower_predicate_to_scala(PI, WamCode, Options, lowered(PredName, FuncName, Code)
         with_output_to(string(Code),
             emit_function_scala(FuncName, EmitBody, MultiClause, ForeignKeys))
     ).
+
+%% emit_multi_clause_n_scala(+FuncName, +Instrs, +ForeignKeys)
+%  Emit T4: capture the clause-entry state, then emit every clause as a
+%  sibling `Boolean` closure and try them in order, restoring the entry state
+%  between attempts. Returns the first clause that succeeds, or false if all
+%  fail — first-solution / deterministic-prefix semantics (matching loCall),
+%  so the interpreter is never entered for the predicate. Sound because the
+%  Scala lowered runtime only ever takes a predicate's first solution (loCall
+%  / loExecute), so no retry choice point is needed for clauses 2+.
+emit_multi_clause_n_scala(FuncName, Instrs, FK) :-
+    scala_split_clauses(Instrs, Clauses),
+    nb_setval(scala_ite_ctr, 0),
+    format("  /** ~w — T4 all-clauses inline (generated); tries each clause natively with a~n", [FuncName]),
+    format("   *  trail/register restore between attempts, so the interpreter is never entered. */~n", []),
+    format("  def ~w(s: WamState, program: WamProgram): Boolean = {~n", [FuncName]),
+    format("    val _t4Regs  = WamRuntime.snapshotRegs(s)~n", []),
+    format("    val _t4Trail = s.trail.length~n", []),
+    format("    val _t4Env   = s.envStack~n", []),
+    format("    val _t4Cut   = s.cutBar~n", []),
+    format("    val _t4Var   = s.nextVarId~n", []),
+    emit_clause_defs_scala(Clauses, 1, FK),
+    emit_clause_dispatch_scala(Clauses, 1),
+    format("    false~n", []),
+    format("  }~n", []).
+
+%% emit_clause_defs_scala(+Clauses, +Index, +FK)
+%  Emit one `def _t4clause<N>(): Boolean = { <body> }` per clause. A body that
+%  can fall off the end (ends in proceed) returns true; failures emit
+%  `return false`; a tail-call (execute) emits its own return.
+emit_clause_defs_scala([], _, _).
+emit_clause_defs_scala([Cl | Rest], N, FK) :-
+    format("    def _t4clause~w(): Boolean = {~n", [N]),
+    emit_body_scala(Cl, "      ", FK),
+    ( body_falls_through(Cl) -> format("      true~n", []) ; true ),
+    format("    }~n", []),
+    N1 is N + 1,
+    emit_clause_defs_scala(Rest, N1, FK).
+
+%% emit_clause_dispatch_scala(+Clauses, +Index)
+emit_clause_dispatch_scala([], _).
+emit_clause_dispatch_scala([_ | Rest], N) :-
+    format("    if (_t4clause~w()) return true~n", [N]),
+    format("    WamRuntime.loRestoreClause(s, _t4Regs, _t4Trail, _t4Env, _t4Cut, _t4Var)~n", []),
+    N1 is N + 1,
+    emit_clause_dispatch_scala(Rest, N1).
 
 %% emit_clause_chain_scala(+FuncName, +Guards, +ForeignKeys)
 %  Emit T5: deref the first argument once; if it is still unbound, defer to
