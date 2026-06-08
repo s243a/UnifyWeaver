@@ -3569,6 +3569,77 @@ test_aspl_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M137: ==/2 and \\==/2 deep deref correctness (regression for the bug
+% uncovered while writing the M136 atom_split tests).
+
+:- dynamic test_seq_lit_two/2.
+test_seq_lit_two(_, R) :-
+    % This was the failing case under the legacy @value_equals
+    % implementation: [a, b] == [a, b] returned false.
+    L1 = [a, b],
+    L2 = [a, b],
+    ( L1 == L2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_lit_three/2.
+test_seq_lit_three(_, R) :-
+    % Similar regression for a 3-element literal.
+    L1 = [a, b, c],
+    L2 = [a, b, c],
+    ( L1 == L2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_split_lit/2.
+test_seq_split_lit(_, R) :-
+    % The M136 atom_split tests had to use = instead of == for
+    % multi-element results; that's now no longer necessary.
+    atom_split('a,b,c', ',', P),
+    ( P == [a, b, c] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_nested_compound/2.
+test_seq_nested_compound(_, R) :-
+    % Nested non-list compound. foo(bar(1), baz(qux)) had the same
+    % shallow-comparison failure mode.
+    T1 = foo(bar(1), baz(qux)),
+    T2 = foo(bar(1), baz(qux)),
+    ( T1 == T2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_differ_at_depth/2.
+test_seq_differ_at_depth(_, R) :-
+    % Equality must still REJECT when args differ at depth.
+    T1 = foo(bar(1), baz(qux)),
+    T2 = foo(bar(2), baz(qux)),
+    ( T1 == T2 -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_sneq_lit_two/2.
+test_sneq_lit_two(_, R) :-
+    % The \\==/2 sibling should also work post-fix.
+    L1 = [a, b],
+    L2 = [a, c],
+    ( L1 \== L2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sneq_equal_rejects/2.
+test_sneq_equal_rejects(_, R) :-
+    % Two structurally equal lists -> \== fails.
+    L1 = [a, b, c],
+    L2 = [a, b, c],
+    ( L1 \== L2 -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_seq_singleton_still_works/2.
+test_seq_singleton_still_works(_, R) :-
+    % Regression check: the singleton case worked before; make sure
+    % it still does.
+    L1 = [a],
+    L2 = [a],
+    ( L1 == L2 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_atom_eq_still_works/2.
+test_seq_atom_eq_still_works(_, R) :-
+    % Atom == atom (the shallow path) must remain fast and correct.
+    ( foo == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_seq_int_eq_still_works/2.
+test_seq_int_eq_still_works(_, R) :-
+    ( 42 == 42 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6767,6 +6838,27 @@ test_all :-
                    test_aspl_multichar_sep, 0, 1),
        run_test_r0('atom_split with non-atom args fails -> 1',
                    test_aspl_bad_args, 0, 1),
+       format('--- M137 ==/2 deep deref correctness ---~n'),
+       run_test_r0('[a,b] == [a,b] -> 1',
+                   test_seq_lit_two, 0, 1),
+       run_test_r0('[a,b,c] == [a,b,c] -> 1',
+                   test_seq_lit_three, 0, 1),
+       run_test_r0('atom_split result == literal list -> 1',
+                   test_seq_split_lit, 0, 1),
+       run_test_r0('foo(bar(1),baz(qux)) == self -> 1',
+                   test_seq_nested_compound, 0, 1),
+       run_test_r0('terms differing at depth -> == rejects -> 1',
+                   test_seq_differ_at_depth, 0, 1),
+       run_test_r0('[a,b] \\== [a,c] -> 1',
+                   test_sneq_lit_two, 0, 1),
+       run_test_r0('[a,b,c] \\== [a,b,c] -> rejects -> 1',
+                   test_sneq_equal_rejects, 0, 1),
+       run_test_r0('[a] == [a] still works -> 1',
+                   test_seq_singleton_still_works, 0, 1),
+       run_test_r0('foo == foo still works -> 1',
+                   test_seq_atom_eq_still_works, 0, 1),
+       run_test_r0('42 == 42 still works -> 1',
+                   test_seq_int_eq_still_works, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
