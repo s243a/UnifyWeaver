@@ -3433,6 +3433,46 @@ test_pj_bad_args(_, R) :-
     ; R is 1
     ).   % 1
 
+% M134: system_to_atom/2 -- shell stdout capture.
+
+:- dynamic test_sta_echo/2.
+test_sta_echo(_, R) :-
+    % "echo hi" produces "hi\n" -- 3 bytes.
+    system_to_atom('echo hi', O),
+    atom_length(O, L),
+    ( L =:= 3 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sta_empty/2.
+test_sta_empty(_, R) :-
+    % "true" produces no output -> empty atom.
+    system_to_atom('true', O),
+    ( O == '' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sta_pwd/2.
+test_sta_pwd(_, R) :-
+    % "pwd" produces the cwd + "\n". Just check non-empty atom.
+    system_to_atom('pwd', O),
+    atom_length(O, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sta_multiline/2.
+test_sta_multiline(_, R) :-
+    % "seq 1 5" produces "1\n2\n3\n4\n5\n" = 10 bytes.
+    system_to_atom('seq 1 5', O),
+    atom_length(O, L),
+    ( L =:= 10 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sta_pipe/2.
+test_sta_pipe(_, R) :-
+    % Shell pipeline: "echo hello | wc -c" -> "6\n" (5 chars + nl).
+    system_to_atom('echo hello | wc -c', O),
+    atom_length(O, L),
+    ( L > 0 -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_sta_bad_arg/2.
+test_sta_bad_arg(_, R) :-
+    ( system_to_atom(42, _) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6588,6 +6628,19 @@ test_all :-
                    test_pj_nested, 0, 1),
        run_test_r0('path_join with non-atom args fails -> 1',
                    test_pj_bad_args, 0, 1),
+       format('--- M134 system_to_atom/2 ---~n'),
+       run_test_r0('echo hi -> 3-byte atom -> 1',
+                   test_sta_echo, 0, 1),
+       run_test_r0('true -> empty atom -> 1',
+                   test_sta_empty, 0, 1),
+       run_test_r0('pwd -> non-empty atom -> 1',
+                   test_sta_pwd, 0, 1),
+       run_test_r0('seq 1 5 -> 10-byte atom -> 1',
+                   test_sta_multiline, 0, 1),
+       run_test_r0('shell pipeline captures stdout -> 1',
+                   test_sta_pipe, 0, 1),
+       run_test_r0('system_to_atom(42, _) fails -> 1',
+                   test_sta_bad_arg, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
