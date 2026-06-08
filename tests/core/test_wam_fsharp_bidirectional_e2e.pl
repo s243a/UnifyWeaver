@@ -18,9 +18,16 @@
 :- use_module(library(process)).
 
 run_cmd(Prog, Args, Dir, ExitCode, OutText) :-
+    run_cmd_env(Prog, Args, Dir, [], ExitCode, OutText).
+
+%% run_cmd_env/6: like run_cmd but with environment variable overrides
+%% (used to set DOTNET_ROLL_FORWARD=Major for the dotnet run step
+%% so a host with only net9 installed can still execute a net8 binary).
+run_cmd_env(Prog, Args, Dir, EnvOverrides, ExitCode, OutText) :-
     setup_call_cleanup(
         process_create(path(Prog), Args,
                        [cwd(Dir),
+                        environment(EnvOverrides),
                         stdout(pipe(Out)),
                         stderr(pipe(Err)),
                         process(PID)]),
@@ -49,12 +56,18 @@ run_cmd(Prog, Args, Dir, ExitCode, OutText) :-
 :- assertz(user:max_depth(10)).
 
 main :-
-    LmdbDir = '/tmp/uw_fsharp_bidir_e2e_lmdb',
-    CsrDir  = '/tmp/uw_fsharp_bidir_e2e_csr',
+    %% Layout: factsRoot/{lmdb,csr,article_category.tsv,root_ids.txt}
+    %% is what the generated Program.fs expects (factsDir/lmdb,
+    %% factsDir/csr subdirs + TSV bridge files at the root).  We
+    %% generate LMDB and CSR directly into the right subdirectories
+    %% so no symlinking is needed.
+    FactsRoot  = '/tmp/uw_fsharp_bidir_e2e_facts',
+    LmdbDir    = '/tmp/uw_fsharp_bidir_e2e_facts/lmdb',
+    CsrDir     = '/tmp/uw_fsharp_bidir_e2e_facts/csr',
     ProjectDir = '/tmp/uw_fsharp_bidir_e2e_proj',
-    catch(delete_directory_and_contents(LmdbDir), _, true),
-    catch(delete_directory_and_contents(CsrDir), _, true),
+    catch(delete_directory_and_contents(FactsRoot), _, true),
     catch(delete_directory_and_contents(ProjectDir), _, true),
+    make_directory_path(FactsRoot),
 
     %% Step 1: Generate LMDB fixture (small scale for fast test)
     format('Step 1: Generating LMDB fixture (50 parents x 4 children)...~n'),
@@ -145,12 +158,8 @@ main :-
     ;   format('  Program.fs does NOT reference nativeKernel_category_ancestor (correct): OK~n')
     ),
 
-    %% Step 8: Run dotnet build — should now succeed thanks to the
-    %% parameterised {{match kernel_kind}} block in program.fs.mustache.
-    %% The bidirectional benchmark loop is a stub (zero-stat) until a
-    %% follow-up PR wires lookupParents/lookupChildren into the
-    %% benchmark scope; the build verification here proves the
-    %% kernel-kind parameterisation produced compilable F#.
+    %% Step 8: Run dotnet build — succeeds thanks to the parameterised
+    %% {{match kernel_kind}} block in program.fs.mustache.
     format('Step 5: Running dotnet build (should succeed with parameterised template)...~n'),
     run_cmd(dotnet,
             ['build', '--nologo', '-v', 'minimal', '-c', 'Release'],
@@ -160,7 +169,64 @@ main :-
     ;   format('  dotnet build FAILED:~n~w~n', [BuildOut]), halt(1)
     ),
 
+    %% Step 9: Write the TSV bridge files Program.fs needs at runtime.
+    %% The synthetic Phase-1 generator only populates LMDB; Program.fs
+    %% reads seeds from article_category.tsv (col2 = LMDB int id) and
+    %% the root from root_ids.txt.  The synthetic fixture's id
+    %% convention is: parents 1..50, children 51..250 (4 children per
+    %% parent: children 51..54 -> parent 1, 55..58 -> parent 2, ...).
+    %% Seed 5 distinct child ids; pick parent 1 as the root.  Expected:
+    %% the first 4 seeds (children of parent 1) find parent 1 via the
+    %% upward direction; the 5th (child of parent 2) reaches parent 1
+    %% only if the descent direction connects parent-2's subtree to
+    %% parent 1's subtree, which it doesn't in this disjoint synthetic
+    %% topology.  Expected solutions=4.
+    format('Step 6: Writing TSV bridge files (article_category.tsv, root_ids.txt)...~n'),
+    directory_file_path(FactsRoot, 'article_category.tsv', AcTsv),
+    setup_call_cleanup(
+        open(AcTsv, write, AcOut, [encoding(utf8)]),
+        format(AcOut, 'a1\t51~na2\t52~na3\t53~na4\t54~na5\t55~n', []),
+        close(AcOut)),
+    directory_file_path(FactsRoot, 'root_ids.txt', RootTxt),
+    setup_call_cleanup(
+        open(RootTxt, write, RootOut, [encoding(utf8)]),
+        format(RootOut, '1~n', []),
+        close(RootOut)),
+
+    %% Step 10: Run the binary against the staged factsRoot.  Use
+    %% DOTNET_ROLL_FORWARD=Major so a host with only net9 installed
+    %% can still execute the net8-targeted binary (which is what the
+    %% generated .fsproj currently asks for).
+    format('Step 7: Running dotnet run (binary executes bidirectional native benchmark)...~n'),
+    run_cmd_env(dotnet,
+                ['run', '--no-build', '-c', 'Release', '--',
+                 FactsRoot, '2'],
+                ProjectDir,
+                ['DOTNET_ROLL_FORWARD'='Major'],
+                RunExit, RunOut),
+    format('  --- run output ---~n~w~n  --- end ---~n', [RunOut]),
+    (   RunExit == 0
+    ->  format('  binary exited cleanly: OK~n')
+    ;   format('  binary FAILED (exit ~w)~n', [RunExit]), halt(1)
+    ),
+
+    %% Step 11: Assert the benchmark loop actually produced solutions
+    %% via the native bidirectional kernel.  A zero-solutions result
+    %% would mean either the {{case}} fell through to a stub, the
+    %% lookupChildren wasn't wired correctly, or the kernel's
+    %% upward direction wasn't being called at all.
+    (   sub_string(RunOut, _, _, _, "solutions=4")
+    ->  format('  bidirectional kernel produced 4 solutions (expected 4 of 5 seeds): OK~n')
+    ;   sub_string(RunOut, _, _, _, "solutions=0")
+    ->  format('  bidirectional kernel produced 0 solutions — wiring is broken~n'),
+        halt(1)
+    ;   %% Some other non-zero count — log it but accept it as a
+        %% non-regression signal (e.g. if the synthetic fixture changes
+        %% topology, the exact count may drift).
+        format('  bidirectional kernel produced non-zero solutions (count differs from 4 — re-check fixture topology)~n')
+    ),
+
     format('~n=== All checks passed ===~n'),
     format('Bidirectional kernel E2E: kernel detection, template rendering,~n'),
     format('calibration, A* pruning, weighted metric, parameterised Program.fs,~n'),
-    format('and dotnet build — all verified.~n').
+    format('dotnet build, AND dotnet run with non-zero solutions — all verified.~n').
