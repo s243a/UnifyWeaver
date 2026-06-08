@@ -166,8 +166,16 @@ wam_rust_lowerable(PI, WamCode, Reason) :-
     ;   % No internal ITE: existing deterministic / multi-clause path.
         \+ member(try_me_else(_), C1),
         forall(member(I, C1), rust_supported(I))
-    ->  ( is_deterministic_pred_rust(Instrs) -> Reason = deterministic
-        ; Reason = multi_clause_1 )
+    ->  ( is_deterministic_pred_rust(Instrs)
+        ->  Reason = deterministic
+        ;   % T4: every clause is a clean supported deterministic body — lower
+            % them ALL inline (tried in order with restore-between), so the
+            % function never returns to the interpreter for clauses 2+. Takes
+            % precedence over multi_clause_1 (clause-1 only).
+            rust_all_clauses_lowerable(Instrs)
+        ->  Reason = multi_clause_n
+        ;   Reason = multi_clause_1
+        )
     ;   % Clause-1 has an inner choice point: lower only if it is a pure
         % (C -> T ; E) / \+ / once block whose pieces are all supported.
         \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
@@ -185,6 +193,42 @@ clause1_instrs(Instrs, Instrs).
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
 take_to_proceed([I|Rest], [I|More]) :- take_to_proceed(Rest, More).
+
+%% rust_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split a multi-clause predicate (opens with try_me_else) at the choice-point
+%  separators into per-clause instruction lists (T4 / multi_clause_n).
+rust_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    rust_collect_clause(Rest, Clause, After),
+    rust_split_more(After, More).
+
+rust_split_more([], []).
+rust_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    rust_collect_clause(Rest, Clause, After),
+    rust_split_more(After, More).
+rust_split_more([trust_me|Rest], [Clause|More]) :- !,
+    rust_collect_clause(Rest, Clause, After),
+    rust_split_more(After, More).
+
+rust_collect_clause([], [], []).
+rust_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+rust_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+rust_collect_clause([I|Rest], [I|More], After) :-
+    rust_collect_clause(Rest, More, After).
+
+%% rust_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause is a clean supported deterministic body (no inner
+%  choice point, ends in a terminal) — the T4 (multi_clause_n) condition.
+rust_all_clauses_lowerable(Instrs) :-
+    rust_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),
+             forall(member(I, Cl), rust_supported(I)),
+             last(Cl, Last), rust_clause_terminal(Last) )).
+
+rust_clause_terminal(proceed).
+rust_clause_terminal(fail).
+rust_clause_terminal(execute(_)).
 
 %% rust_clause_chain_lowerable(+Instrs, -Guards) is semidet.
 %  True when the predicate is a distinct-first-argument-constant clause
@@ -280,6 +324,12 @@ lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     (   % T5 first-argument-constant dispatch takes precedence.
         rust_clause_chain_lowerable(Instrs, Guards)
     ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ;   % T4: a multi-clause predicate whose clauses are all supported
+        % deterministic bodies (but not a distinct-first-arg chain) — lower
+        % every clause inline, tried in order with a restore between attempts.
+        \+ is_deterministic_pred_rust(Instrs),
+        rust_all_clauses_lowerable(Instrs)
+    ->  emit_multi_clause_n_rust(FuncName, Pred, Arity, Instrs, ForeignPreds, RustLines)
     ;   % Emit the plain clause-1 when it has no inner choice point;
         % otherwise fold its ITE block(s) into structured form (ite/3).
         (   \+ member(try_me_else(_), C1Instrs)
@@ -321,6 +371,33 @@ emit_rust_guards([guard(V, Rem) | Rest], ForeignPreds) :-
     emit_instrs(Rem, "        ", ForeignPreds),
     format("    }~n"),
     emit_rust_guards(Rest, ForeignPreds).
+
+%% emit_multi_clause_n_rust(+FuncName, +Pred, +Arity, +Instrs, +FK, -RustLines)
+%  Emit T4: capture the clause-entry state, then try every clause inline as an
+%  immediately-invoked closure (its `proceed` returns true, its failures return
+%  false), restoring the entry state between attempts. The first clause that
+%  succeeds wins (first-solution / deterministic-prefix semantics); on total
+%  failure it returns false. The interpreter is never entered for the
+%  predicate — clauses 2+ run natively, unlike multi_clause_1.
+emit_multi_clause_n_rust(FuncName, Pred, Arity, Instrs, ForeignPreds, RustLines) :-
+    rust_split_clauses(Instrs, Clauses),
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T4 all-clauses inline)
+pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    let _t4 = vm.lo_clause_snapshot();~n"),
+          emit_rust_clauses(Clauses, ForeignPreds),
+          format("    false~n") )),
+    format(string(Footer), '}', []),
+    RustLines = [Header, Body, Footer].
+
+emit_rust_clauses([], _).
+emit_rust_clauses([Cl | Rest], ForeignPreds) :-
+    format("    if (|vm: &mut WamState| -> bool {~n"),
+    emit_instrs(Cl, "        ", ForeignPreds),
+    format("    })(vm) { return true; }~n"),
+    format("    vm.lo_restore_clause(&_t4);~n"),
+    emit_rust_clauses(Rest, ForeignPreds).
 
 %% emit_instrs(+Instrs, +Indent, +ForeignPreds)
 %  Emit Rust code for a list of instructions.
