@@ -3781,12 +3781,29 @@ test(lowerability_deterministic) :-
     wam_cpp_lowerable(wam_cpp_fact/1, Instrs, Reason),
     assertion(Reason == deterministic).
 
-test(lowerability_multi_clause_1) :-
+% A multi-clause predicate that discriminates on a DISTINCT first-argument
+% constant now lowers as T5 (clause_chain): ALL clauses are emitted as a
+% bound-checked first-arg dispatch, taking precedence over multi_clause_1.
+test(lowerability_clause_chain) :-
     Instrs = [try_me_else("L2"),
               get_constant("a", "A1"),
               proceed,
               trust_me,
               get_constant("b", "A1"),
+              proceed],
+    wam_cpp_lowerable(wam_cpp_choice/1, Instrs, Reason),
+    assertion(Reason == clause_chain).
+
+% A multi-clause predicate whose head does NOT discriminate on a distinct
+% first-arg constant (here the first argument is bound via get_variable, not
+% get_constant) is not a clause chain, so it still lowers as multi_clause_1
+% (clause 1 inline, clauses 2+ via the interpreter fallback).
+test(lowerability_multi_clause_1) :-
+    Instrs = [try_me_else("L2"),
+              get_variable("X1", "A1"),
+              proceed,
+              trust_me,
+              get_variable("X1", "A1"),
               proceed],
     wam_cpp_lowerable(wam_cpp_choice/1, Instrs, Reason),
     assertion(Reason == multi_clause_1).
