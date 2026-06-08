@@ -1580,6 +1580,9 @@ declare i64 @write(i32, i8*, i64)
 declare i32* @__errno_location()
 declare i8* @strerror(i32)
 declare i32 @getrusage(i32, i8*)
+declare i8* @popen(i8*, i8*)
+declare i32 @pclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -3709,6 +3712,7 @@ entry:
     i32 160, label %builtin_process_user_time
     i32 161, label %builtin_process_system_time
     i32 162, label %builtin_path_join
+    i32 163, label %builtin_system_to_atom
   ]
 
 builtin_is:
@@ -7280,6 +7284,73 @@ pj.unify:
   %pj.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %pj.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pj.raw3, %Value %pj.v)
   ret i1 %pj.ok
+
+builtin_system_to_atom:
+  ; M134: system_to_atom(+Cmd, -Output) -- runs Cmd through a
+  ; shell via libc popen(cmd, "r"), captures stdout into an atom,
+  ; then closes the pipe with pclose. Output trailing newline is
+  ; preserved verbatim (callers can sub_atom-trim if they want
+  ; chomped output).
+  ;
+  ; Buffer: 64 KB single arena allocation, read with the buffer''s
+  ; remaining length as the per-call fread limit. Output > 64 KB
+  ; causes failure (no growable buffer in the current arena).
+  ; Cmd must be Atom; non-atom or popen failure (fork/exec out
+  ; of resources) maps to Prolog fail.
+  %sta.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sta.t1 = call i32 @value_tag(%Value %sta.a1)
+  %sta.is_atom = icmp eq i32 %sta.t1, 0
+  br i1 %sta.is_atom, label %sta.go, label %sta.fail
+sta.fail:
+  ret i1 false
+sta.go:
+  %sta.aid = call i64 @value_payload(%Value %sta.a1)
+  %sta.cmd = call i8* @wam_atom_to_string(i64 %sta.aid)
+  %sta.cmd_null = icmp eq i8* %sta.cmd, null
+  br i1 %sta.cmd_null, label %sta.fail, label %sta.open
+sta.open:
+  ; Build the "r\0" mode string on the stack.
+  %sta.mode = alloca [2 x i8]
+  %sta.mode_ptr = getelementptr [2 x i8], [2 x i8]* %sta.mode, i32 0, i32 0
+  store i8 114, i8* %sta.mode_ptr
+  %sta.mode_t = getelementptr i8, i8* %sta.mode_ptr, i64 1
+  store i8 0, i8* %sta.mode_t
+  %sta.fp = call i8* @popen(i8* %sta.cmd, i8* %sta.mode_ptr)
+  %sta.fp_null = icmp eq i8* %sta.fp, null
+  br i1 %sta.fp_null, label %sta.fail, label %sta.alloc
+sta.alloc:
+  call void @wam_arena_ensure()
+  %sta.buf = call i8* @wam_arena_alloc(i64 65537)
+  br label %sta.loop
+sta.loop:
+  %sta.off = phi i64 [ 0, %sta.alloc ], [ %sta.off_next, %sta.advance ]
+  %sta.remain = sub i64 65536, %sta.off
+  ; If buffer is full, stop reading -- 1 MB cap.
+  %sta.has_room = icmp sgt i64 %sta.remain, 0
+  br i1 %sta.has_room, label %sta.read, label %sta.overflow
+sta.read:
+  %sta.dst = getelementptr i8, i8* %sta.buf, i64 %sta.off
+  %sta.n = call i64 @fread(i8* %sta.dst, i64 1, i64 %sta.remain, i8* %sta.fp)
+  %sta.eof = icmp eq i64 %sta.n, 0
+  br i1 %sta.eof, label %sta.close, label %sta.advance
+sta.advance:
+  %sta.off_next = add i64 %sta.off, %sta.n
+  br label %sta.loop
+sta.overflow:
+  ; Output exceeded 64 KB -- pclose and fail rather than truncate
+  ; silently.
+  call i32 @pclose(i8* %sta.fp)
+  ret i1 false
+sta.close:
+  call i32 @pclose(i8* %sta.fp)
+  %sta.term = getelementptr i8, i8* %sta.buf, i64 %sta.off
+  store i8 0, i8* %sta.term
+  %sta.atom_id = call i64 @wam_intern_atom(i8* %sta.buf, i64 %sta.off)
+  %sta.v0 = insertvalue %Value undef, i32 0, 0
+  %sta.v = insertvalue %Value %sta.v0, i64 %sta.atom_id, 1
+  %sta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sta.raw2, %Value %sta.v)
+  ret i1 %sta.ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14596,6 +14667,7 @@ builtin_op_to_id('process_max_rss/1', 159).   % getrusage ru_maxrss (KB on Linux
 builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seconds.
 builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
 builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (absolute Rel wins).
+builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
