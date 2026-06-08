@@ -285,6 +285,15 @@
 :- dynamic user:wam_char_code_forward_unify_mismatch/0.
 :- dynamic user:wam_char_code_bad_char/0.
 :- dynamic user:wam_char_code_unbound_pair/1.
+:- dynamic user:wam_string_code_guard/3.
+:- dynamic user:wam_string_code_first/0.
+:- dynamic user:wam_string_code_last/0.
+:- dynamic user:wam_string_code_unify/0.
+:- dynamic user:wam_string_code_mismatch/0.
+:- dynamic user:wam_string_code_oob/0.
+:- dynamic user:wam_string_code_zero/0.
+:- dynamic user:wam_string_code_unbound_index/1.
+:- dynamic user:wam_string_code_unbound_string/1.
 :- dynamic user:wam_char_type_alpha/0.
 :- dynamic user:wam_char_type_digit/0.
 :- dynamic user:wam_char_type_space/0.
@@ -648,6 +657,15 @@ user:wam_char_code_forward_unify :- char_code(a, N), N = 97.
 user:wam_char_code_forward_unify_mismatch :- char_code(a, N), N = 98.
 user:wam_char_code_bad_char :- char_code(ab, _).
 user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_arg(N), char_code(C, N).
+user:wam_string_code_guard(I, S, C) :- string_code(I, S, C).
+user:wam_string_code_first :- string_code(1, hello, C), C =:= 104.
+user:wam_string_code_last :- string_code(5, hello, C), C =:= 111.
+user:wam_string_code_unify :- string_code(2, hello, C), C = 101.
+user:wam_string_code_mismatch :- string_code(2, hello, 111).
+user:wam_string_code_oob :- string_code(6, hello, _).
+user:wam_string_code_zero :- string_code(0, hello, _).
+user:wam_string_code_unbound_index(_) :- user:wam_unbound_arg(I), string_code(I, hello, _).
+user:wam_string_code_unbound_string(_) :- user:wam_unbound_arg(S), string_code(1, S, _).
 user:wam_char_type_alpha :- char_type(a, alpha).
 user:wam_char_type_digit :- char_code(C, 0'5), char_type(C, digit), char_type(C, alnum).
 user:wam_char_type_space :- char_code(C, 32), char_type(C, space), char_type(C, whitespace).
@@ -1016,6 +1034,15 @@ run_smoke :-
           user:wam_char_code_forward_unify_mismatch/0,
           user:wam_char_code_bad_char/0,
           user:wam_char_code_unbound_pair/1,
+          user:wam_string_code_guard/3,
+          user:wam_string_code_first/0,
+          user:wam_string_code_last/0,
+          user:wam_string_code_unify/0,
+          user:wam_string_code_mismatch/0,
+          user:wam_string_code_oob/0,
+          user:wam_string_code_zero/0,
+          user:wam_string_code_unbound_index/1,
+          user:wam_string_code_unbound_string/1,
           user:wam_char_type_alpha/0,
           user:wam_char_type_digit/0,
           user:wam_char_type_space/0,
@@ -1582,6 +1609,17 @@ smoke_cases([
     case('wam_char_code_forward_unify_mismatch/0', no_args, "false"),
     case('wam_char_code_bad_char/0', no_args, "false"),
     case('wam_char_code_unbound_pair/1', a, "false"),
+    case('wam_string_code_guard/3', args(1, hello, 104), "true"),
+    case('wam_string_code_guard/3', args(2, hello, 101), "true"),
+    case('wam_string_code_guard/3', args(2, hello, 111), "false"),
+    case('wam_string_code_first/0', no_args, "true"),
+    case('wam_string_code_last/0', no_args, "true"),
+    case('wam_string_code_unify/0', no_args, "true"),
+    case('wam_string_code_mismatch/0', no_args, "false"),
+    case('wam_string_code_oob/0', no_args, "false"),
+    case('wam_string_code_zero/0', no_args, "false"),
+    case('wam_string_code_unbound_index/1', a, "false"),
+    case('wam_string_code_unbound_string/1', a, "false"),
     case('wam_char_type_alpha/0', no_args, "true"),
     case('wam_char_type_digit/0', no_args, "true"),
     case('wam_char_type_space/0', no_args, "true"),
@@ -2091,6 +2129,8 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-string-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-code-guard-3"),
+    has(CoreCode, "defn lowered-wam-string-code-unbound-string-1"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
@@ -2112,6 +2152,7 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/apply-atom-case-solution"),
     has(CoreCode, "runtime/apply-atomic-list-concat-solution"),
     has(CoreCode, "runtime/apply-char-code-solution"),
+    has(CoreCode, "runtime/apply-string-code-solution"),
     has(CoreCode, "runtime/apply-char-type-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),
