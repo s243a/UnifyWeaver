@@ -3387,6 +3387,52 @@ test_max_rss_monotonic(_, R) :-
     process_max_rss(K1),
     ( K1 >= K0 -> R is 1 ; R is 0 ).   % 1
 
+% M133: path_join/3 -- join two paths with single '/' separator.
+
+:- dynamic test_pj_simple/2.
+test_pj_simple(_, R) :-
+    path_join('/usr/bin', swipl, F),
+    ( F == '/usr/bin/swipl' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_trailing_slash/2.
+test_pj_trailing_slash(_, R) :-
+    % Base already has trailing slash -> don''t double up.
+    path_join('/usr/bin/', swipl, F),
+    ( F == '/usr/bin/swipl' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_absolute_rel/2.
+test_pj_absolute_rel(_, R) :-
+    % Absolute Rel overrides Base entirely.
+    path_join('/usr/bin', '/etc/hosts', F),
+    ( F == '/etc/hosts' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_empty_base/2.
+test_pj_empty_base(_, R) :-
+    % Empty Base + non-empty Rel: with non-absolute Rel, we keep
+    % the Rel verbatim (no leading '/').
+    path_join('', foo, F),
+    ( F == foo -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_empty_rel/2.
+test_pj_empty_rel(_, R) :-
+    % Empty Rel: Full = Base.
+    path_join('/tmp', '', F),
+    ( F == '/tmp' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_nested/2.
+test_pj_nested(_, R) :-
+    % Building deeper paths via repeated calls.
+    path_join('/var', log, A),
+    path_join(A, 'syslog', F),
+    ( F == '/var/log/syslog' -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_pj_bad_args/2.
+test_pj_bad_args(_, R) :-
+    ( path_join(42, foo, _) -> R is 0
+    ; path_join('/tmp', 99, _) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6527,6 +6573,21 @@ test_all :-
                    test_user_time_monotonic, 0, 1),
        run_test_r0('max_rss non-decreasing -> 1',
                    test_max_rss_monotonic, 0, 1),
+       format('--- M133 path_join/3 ---~n'),
+       run_test_r0('path_join /usr/bin + swipl -> 1',
+                   test_pj_simple, 0, 1),
+       run_test_r0('path_join /usr/bin/ + swipl (no double slash) -> 1',
+                   test_pj_trailing_slash, 0, 1),
+       run_test_r0('path_join /usr/bin + /etc/hosts -> Rel wins -> 1',
+                   test_pj_absolute_rel, 0, 1),
+       run_test_r0('path_join '''' + foo -> foo -> 1',
+                   test_pj_empty_base, 0, 1),
+       run_test_r0('path_join /tmp + '''' -> /tmp -> 1',
+                   test_pj_empty_rel, 0, 1),
+       run_test_r0('path_join nested chain -> 1',
+                   test_pj_nested, 0, 1),
+       run_test_r0('path_join with non-atom args fails -> 1',
+                   test_pj_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
