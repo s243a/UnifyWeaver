@@ -5134,6 +5134,16 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         option(graph_dimensionality(Dimensionality), Options, 5.0)
     ;   HasBidir = false, BranchFactor = 15.0, Dimensionality = 5.0
     ),
+    %% Determine the kernel_kind for the benchmark-loop {{match}}
+    %% block in program.fs.mustache. The benchmark loop targets a
+    %% single primary kernel; if multiple kernels are detected,
+    %% the first one wins (matches the prior hardcoded behaviour
+    %% which assumed category_ancestor). Empty list -> unknown,
+    %% which triggers the {{default}} stub case.
+    (   DetectedKernels = [_-recursive_kernel(FirstKernelKind, _, _) | _]
+    ->  KernelKind = FirstKernelKind
+    ;   KernelKind = unknown
+    ),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
@@ -5141,6 +5151,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         has_csr_kernel = HasCsrKernel,
         has_lmdb = HasLmdb,
         has_bidirectional = HasBidir,
+        kernel_kind = KernelKind,
         branch_factor = BranchFactor,
         dimensionality = Dimensionality,
         materialisation = Materialisation,

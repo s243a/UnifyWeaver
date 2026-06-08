@@ -341,9 +341,36 @@ let main argv =
     for rep = 1 to numReps do
         let querySw = Stopwatch.StartNew()
         let mutable repSolutions = 0
+{{match kernel_kind}}
+{{case category_ancestor}}
+        // category_ancestor native benchmark loop (LMDB fast path)
         for cat in seedInts do
             let hits = nativeKernel_category_ancestor lookupFn cat rootInt maxDepthCfg 1 [ cat ]
             if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+{{case bidirectional_ancestor}}
+        // bidirectional_ancestor: LMDB fast path not yet wired in this template.
+        //
+        // The bidirectional kernel takes (lookupParents, lookupChildren, cat,
+        // root, parentCost, childCost, budget) — different signature than
+        // category_ancestor. Setting up lookupChildren requires CSR cursor
+        // resolution that's currently scoped inside WamRuntime.fs's
+        // executeForeign / resolveFactLookup path. Mirroring that setup into
+        // Program.fs's benchmark scope is tracked as future work.
+        //
+        // In the meantime, the bidirectional kernel still runs correctly via
+        // the WAM dispatch path (WamRuntime.fs) when invoked through normal
+        // predicate-call infrastructure. The benchmark loop here emits zero
+        // stats so the project builds without referencing nativeKernel_*
+        // mismatched signatures.
+        for _cat in seedInts do
+            // TODO: implement bidirectional native benchmark loop with
+            // lookupParents + lookupChildren + cost configuration
+            ()
+{{default}}
+        // Unknown kernel kind: skip the native benchmark loop.
+        for _cat in seedInts do
+            ()
+{{/match}}
         querySw.Stop()
         lastQueryMs <- querySw.ElapsedMilliseconds
         totalSolutions <- totalSolutions + repSolutions
