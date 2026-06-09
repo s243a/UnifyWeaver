@@ -69,6 +69,10 @@ swipl -q -s examples/plawk/demo/print_error_fields.pl -t halt
 
 The demo prints the record count and the lines whose first field is `ERROR`.
 
+For a walkthrough of the current Prolog-core syntax and how it maps to awk
+concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
+[`TUTORIAL.md`](TUTORIAL.md).
+
 ## Design documents
 
 - [`docs/design/PLAWK_PHILOSOPHY.md`](../../docs/design/PLAWK_PHILOSOPHY.md)
