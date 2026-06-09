@@ -2296,7 +2296,20 @@ dispatch:
   %label_idx = load i32, i32* %label_ptr
   %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
   %valid = icmp sge i32 %target_pc, 0
-  br i1 %valid, label %go, label %fail
+  br i1 %valid, label %prepare_atom_args, label %fail
+
+prepare_atom_args:
+  %has_atom_args = icmp sgt i32 %target_arity, 0
+  br i1 %has_atom_args, label %shift_atom_args, label %go
+
+shift_atom_args:
+  %arg_i = phi i32 [ 0, %prepare_atom_args ], [ %arg_next, %shift_atom_args ]
+  %src_i = add i32 %arg_i, 1
+  %arg_val = call %Value @wam_get_reg(%WamState* %vm, i32 %src_i)
+  call void @wam_set_reg(%WamState* %vm, i32 %arg_i, %Value %arg_val)
+  %arg_next = add i32 %arg_i, 1
+  %arg_done = icmp sge i32 %arg_next, %target_arity
+  br i1 %arg_done, label %go, label %shift_atom_args
 
 go:
   call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
