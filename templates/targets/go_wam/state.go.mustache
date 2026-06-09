@@ -987,6 +987,25 @@ func (vm *WamState) formatStringDirective(value Value) (string, bool) {
 	return b.String(), true
 }
 
+func outputAtomCharText(value Value) (string, bool) {
+	atom, ok := value.(*Atom)
+	if !ok {
+		return "", false
+	}
+	if len([]rune(atom.Name)) != 1 {
+		return "", false
+	}
+	return atom.Name, true
+}
+
+func outputCodeText(value Value) (string, bool) {
+	integer, ok := value.(*Integer)
+	if !ok || integer.Val < 0 || integer.Val > int64(unicode.MaxRune) {
+		return "", false
+	}
+	return string(rune(integer.Val)), true
+}
+
 func (vm *WamState) canonicalTermString(value Value) string {
 	value = vm.deref(value)
 	if isEmptyListValue(value) {
@@ -1524,6 +1543,20 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return true
 	case "write_canonical/1":
 		fmt.Print(vm.canonicalTermString(arg1))
+		return true
+	case "put_char/1":
+		text, ok := outputAtomCharText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		fmt.Print(text)
+		return true
+	case "put_code/1":
+		text, ok := outputCodeText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		fmt.Print(text)
 		return true
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())

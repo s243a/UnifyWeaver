@@ -558,6 +558,12 @@ wam_go_direct_builtin("print/1", 1, 'print/1').
 wam_go_direct_builtin(write_canonical/1, 1, 'write_canonical/1').
 wam_go_direct_builtin('write_canonical/1', 1, 'write_canonical/1').
 wam_go_direct_builtin("write_canonical/1", 1, 'write_canonical/1').
+wam_go_direct_builtin(put_char/1, 1, 'put_char/1').
+wam_go_direct_builtin('put_char/1', 1, 'put_char/1').
+wam_go_direct_builtin("put_char/1", 1, 'put_char/1').
+wam_go_direct_builtin(put_code/1, 1, 'put_code/1').
+wam_go_direct_builtin('put_code/1', 1, 'put_code/1').
+wam_go_direct_builtin("put_code/1", 1, 'put_code/1').
 wam_go_direct_builtin(format/1, 1, 'format/1').
 wam_go_direct_builtin('format/1', 1, 'format/1').
 wam_go_direct_builtin("format/1", 1, 'format/1').
