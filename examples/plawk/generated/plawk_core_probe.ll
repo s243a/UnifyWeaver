@@ -1,1529 +1,111 @@
-:- encoding(utf8).
-% SPDX-License-Identifier: MIT OR Apache-2.0
-% Copyright (c) 2025 John William Creighton (@s243a)
-%
-% wam_llvm_target.pl - WAM-to-LLVM IR Transpilation Target
-%
-% Transpiles WAM runtime predicates (wam_runtime.pl) to LLVM IR code.
-% Phase 2: step_wam/3 → LLVM switch dispatch
-% Phase 3: helper predicates → LLVM functions
-% Phase 4: WAM instructions → LLVM struct literals
-% Phase 5: Hybrid module assembly
-%
-% Key LLVM-specific design choices:
-%   - Value = { i32 tag, i64 payload } tagged union (not enum/interface)
-%   - Instruction dispatch via LLVM switch on integer tag
-%   - Registers = [64 x %Value] fixed array (not HashMap/map)
-%   - Run loop uses musttail for constant-stack execution
-%   - Arena-style memory (malloc + backtrack rewind)
-%
-% See: docs/design/WAM_LLVM_TRANSPILATION_IMPLEMENTATION_PLAN.md
-
-:- module(wam_llvm_target, [
-    compile_step_wam_to_llvm/2,          % +Options, -LLVMCode
-    compile_wam_helpers_to_llvm/2,       % +Options, -LLVMCode
-    compile_wam_runtime_to_llvm/2,       % +Options, -LLVMCode (step + helpers combined)
-    compile_wam_predicate_to_llvm/4,     % +Pred/Arity, +WamCode, +Options, -LLVMCode
-    wam_instruction_to_llvm_literal/2,   % +WamInstr, -LLVMLiteral (errors on label-ref instrs)
-    wam_instruction_to_llvm_literal/3,   % +WamInstr, +LabelMap, -LLVMLiteral
-    wam_line_to_llvm_literal/2,          % +Parts, -LLVMLit
-    write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
-    wam_llvm_last_compile_counts/2,      % ?InstrCount, ?LabelCount (side channel)
-    write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
-    build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
-    builtin_op_to_id/2,                  % +OpName, -IntId
-    % Foreign dispatch (M3)
-    wam_llvm_foreign_kind_id/2,          % +Kind, -Id
-    % Indexed fact table emission (M4)
-    llvm_emit_atom_fact2_table/3,        % +TableName, +Pairs, -LLVMGlobal
-    llvm_emit_weighted_edge_table/3,     % +TableName, +Triples, -LLVMGlobal
-    % Foreign lowering pipeline (M5.6)
-    llvm_foreign_kernel_spec/3,          % ?Pred/Arity, ?KernelKind, ?Config (dynamic)
-    clear_llvm_foreign_kernel_specs/0,   % retractall helper (for test isolation)
-    foreign_kernel/3,                    % +Pred/Arity, +Kind, +Config (user directive)
-    % Shared helpers (used by wam_llvm_lowered_emitter)
-    sanitize_functor_for_llvm/2,         % +Name, -SaneName (bijective hex escape)
-    register_functor_string/1,           % +NameStr (assert into functor_string_global table)
-    split_functor_arity/3                % +Str, -Name, -Arity (handles `/` in name)
-]).
-
-:- use_module(library(lists)).
-:- use_module(library(option)).
-:- use_module('../core/template_system').
-:- use_module('../bindings/llvm_wam_bindings').
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
-:- use_module(wam_llvm_lowered_emitter, [
-    wam_llvm_lowerable/3,
-    wam_llvm_lowerable_with_closure/4,
-    lower_predicate_to_llvm/4,
-    llvm_lowered_func_name/2,
-    call_execute_targets/2,
-    emit_native_wrapper/2,
-    emit_hybrid_dispatcher/5
-]).
-
-:- discontiguous wam_llvm_case/2.
-:- discontiguous wam_line_to_llvm_literal/2.
-:- discontiguous wam_instruction_to_llvm_literal/2.
-
-% ============================================================================
-% Foreign Lowering Spec Table (M5.6)
-% ============================================================================
-%
-% The canonical record for "this predicate should be lowered to a native
-% foreign kernel instead of being compiled to WAM". Populated via three
-% user-facing paths that all funnel into this single table:
-%
-%   (a) :- foreign_kernel(Pred/Arity, Kind, Config) directive (M5.6b)
-%   (b) foreign_predicates([...]) entry in Options (M5.6a, this commit)
-%   (c) foreign_lowering(true) + automatic pattern matching (M5.6c)
-%
-% Path (b) is a thin wrapper around (a) — the options-list helper just
-% asserts the same facts the directive would. Path (c) invokes detector
-% predicates that inspect clause shape and assert specs when a known
-% recursive kernel pattern matches.
-%
-% The compile pipeline checks this table *before* trying native LLVM
-% lowering or WAM fallback. When a spec exists, the predicate body is
-% replaced with a single `call_foreign Kind, Arity` instruction, and the
-% runtime template's weak @wam_<kind>_kernel_impl default is spliced
-% out and replaced with a concrete body that reads registers, scans the
-% fact table, and writes the result.
-
-:- dynamic llvm_foreign_kernel_spec/3.
-:- dynamic wam_llvm_last_compile_counts/2.   % M108: per-compile (Instr, Label) counts.
-
-clear_llvm_foreign_kernel_specs :-
-    retractall(llvm_foreign_kernel_spec(_, _, _)).
-
-%% apply_foreign_predicates_option(+Options) is det.
-%
-%  Reads a `foreign_predicates([...])` entry from the options list and
-%  asserts a llvm_foreign_kernel_spec/3 fact for each entry. Accepted
-%  entry shapes:
-%
-%    Pred/Arity - Kind - Config
-%    foreign_kernel(Pred/Arity, Kind, Config)
-%
-%  Any other shape is silently ignored so future extensions don't break
-%  old option lists.
-apply_foreign_predicates_option(Options) :-
-    ( option(foreign_predicates(Entries), Options)
-    -> forall(member(Entry, Entries), assert_foreign_entry(Entry))
-    ; true
-    ).
-
-assert_foreign_entry(PredArity - Kind - Config) :- !,
-    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
-assert_foreign_entry(foreign_kernel(PredArity, Kind, Config)) :- !,
-    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
-assert_foreign_entry(_) :- true.  % ignore unrecognized shapes
-
-%% foreign_kernel(+PredArity, +Kind, +Config) is det.
-%
-%  M5.6b: user-facing directive-style entry point. A user source file
-%  can import this predicate and use it as a directive to declare that
-%  a predicate should be lowered to a native foreign kernel:
-%
-%    :- use_module(library(wam_llvm_target),
-%         [foreign_kernel/3, write_wam_llvm_project/3]).
-%    :- foreign_kernel(my_distance/3, transitive_distance3,
-%         [edge_pred(edge/2)]).
-%
-%  The directive simply asserts a llvm_foreign_kernel_spec/3 fact —
-%  the rest of the pipeline treats it identically to specs that come
-%  in via the options-list path or the auto-detector path.
-foreign_kernel(PredArity, Kind, Config) :-
-    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
-
-% ============================================================================
-% M5.6c — Automatic Foreign Kernel Detection
-% ============================================================================
-%
-% When `foreign_lowering(true)` is set in Options, the compile pipeline
-% walks each user predicate's clauses and runs them against a registry
-% of detectors. A detector is a predicate that returns a
-% `recursive_kernel(Kind, Pred/Arity, Config)` term when the clauses
-% match a known recursive-kernel shape. The matched spec is then
-% asserted into the same llvm_foreign_kernel_spec/3 table that paths
-% (a) and (b) populate, so there's only one downstream code path.
-%
-% This mirrors the Rust target's rust_recursive_kernel_detector/2
-% registry at rust_target.pl:3742-3751 and the matcher predicates at
-% rust_target.pl:3968-3988. Currently only transitive_distance3 is
-% implemented; weighted_shortest_path3 and astar_shortest_path4 can
-% be added by porting the same matcher structure once their
-% dispatcher stubs are wired (the M5.5 weak-default pattern only
-% covers td3 so far).
-
-%% llvm_recursive_kernel_detector(?Kind, ?DetectorPredicate).
-%
-%  Registry of kernel kinds and the predicates that can detect them.
-%  DetectorPredicate(+Pred, +Arity, +Clauses, -RecKernel) should bind
-%  RecKernel to a `recursive_kernel(Kind, Pred/Arity, Config)` term
-%  on success.
-llvm_recursive_kernel_detector(countdown_sum2,
-    llvm_recursive_kernel_countdown_sum).
-llvm_recursive_kernel_detector(category_ancestor,
-    llvm_recursive_kernel_category_ancestor).
-llvm_recursive_kernel_detector(list_suffix2,
-    llvm_recursive_kernel_list_suffix).
-llvm_recursive_kernel_detector(transitive_closure2,
-    llvm_recursive_kernel_transitive_closure).
-llvm_recursive_kernel_detector(transitive_distance3,
-    llvm_recursive_kernel_transitive_distance).
-llvm_recursive_kernel_detector(weighted_shortest_path3,
-    llvm_recursive_kernel_weighted_shortest_path).
-llvm_recursive_kernel_detector(astar_shortest_path4,
-    llvm_recursive_kernel_astar_shortest_path).
-
-%% llvm_recursive_kernel_transitive_distance(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the transitive_distance3 shape:
-%    pred(Start, Target, 1)     :- edge(Start, Target).
-%    pred(Start, Target, Depth) :-
-%        edge(Start, Mid),
-%        pred(Mid, Target, PrevDepth),
-%        Depth is PrevDepth + 1.
-%
-%  On success binds RecKernel to
-%    recursive_kernel(transitive_distance3, Pred/Arity,
-%                     [edge_pred(EdgePred/2)]).
-llvm_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
-        recursive_kernel(transitive_distance3, Pred/Arity,
-            [edge_pred(EdgePred/2)])) :-
-    llvm_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred).
-
-%% llvm_recursive_kernel_countdown_sum(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the countdown_sum2 clause shape:
-%    pred(0, 0).
-%    pred(N, Sum) :- N > 0, N1 is N - 1, pred(N1, PrevSum), Sum is PrevSum + N.
-llvm_recursive_kernel_countdown_sum(Pred, Arity, Clauses,
-        recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
-    llvm_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
-
-%% llvm_foreign_lowerable_countdown_sum(+Pred, +Arity, +Clauses).
-%
-%  Ported from rust_target.pl:3902. Matches the countdown-sum recurrence.
-llvm_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
-    member(BaseHead-true, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead =.. [Pred, 0, 0],
-    RecHead =.. [Pred, N, Sum],
-    RecBody = (GtGoal, (StepGoal, (RecGoal, SumGoal))),
-    GtGoal =.. [>, N, 0],
-    StepGoal =.. [is, PrevN, StepExpr],
-    ( StepExpr =.. [-, N, 1] ; StepExpr =.. [+, N, -1] ),
-    RecGoal =.. [Pred, PrevN, PrevSum],
-    SumGoal =.. [is, Sum, SumExpr],
-    SumExpr =.. [+, PrevSum, N].
-
-%% llvm_recursive_kernel_category_ancestor(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the category_ancestor clause shape (arity 4):
-%    pred(Cat, Target, 1, Visited) :-
-%        edge(Cat, Target), \+ member(Target, Visited).
-%    pred(Cat, Target, Hops, Visited) :-
-%        edge(Cat, Mid), \+ member(Mid, Visited),
-%        pred(Mid, Target, H1, [Mid|Visited]),
-%        Hops is H1 + 1.
-%
-%  Requires user:max_depth/1 to be defined.
-llvm_recursive_kernel_category_ancestor(Pred, Arity, Clauses,
-        recursive_kernel(category_ancestor, Pred/Arity,
-            [edge_pred(EdgePred/2), max_depth(MaxDepth)])) :-
-    llvm_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, EdgePred),
-    ( user:max_depth(MaxDepth) -> true ; MaxDepth = 10 ).
-
-%% llvm_foreign_lowerable_category_ancestor(+Pred, +Arity, +Clauses, -EdgePred).
-%
-%  Ported from rust_target.pl:3889. Matches predicates with arity 4
-%  that have two clause bodies (neither is `true`), both containing
-%  negation-as-failure (\+ member/2), and the recursive body containing
-%  arithmetic (Hops is H1 + 1).
-llvm_foreign_lowerable_category_ancestor(Pred, 4, Clauses, EdgePred) :-
-    member(BaseHead-BaseBody, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead \== RecHead,
-    BaseBody \== true,
-    RecBody \== true,
-    BaseHead =.. [Pred, _, _, _, _],
-    RecHead =.. [Pred, _, _, _, _],
-    % Base body must contain an edge call and a negation check.
-    term_string(BaseBody, BaseStr),
-    sub_string(BaseStr, _, _, _, "\\+"),
-    % Recursive body must contain edge call, negation, recursive call, and arithmetic.
-    term_string(RecBody, RecStr),
-    sub_string(RecStr, _, _, _, "\\+"),
-    sub_string(RecStr, _, _, _, " is "),
-    % Extract edge predicate from base body.
-    BaseBody = (EdgeGoal, _),
-    EdgeGoal =.. [EdgePred, _, _].
-
-%% llvm_recursive_kernel_list_suffix(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the list_suffix2 clause shape:
-%    pred(X, X).
-%    pred([_|Tail], Suffix) :- pred(Tail, Suffix).
-llvm_recursive_kernel_list_suffix(Pred, Arity, Clauses,
-        recursive_kernel(list_suffix2, Pred/Arity, [])) :-
-    llvm_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
-
-%% llvm_foreign_lowerable_list_suffix(+Pred, +Arity, +Clauses).
-%
-%  Ported from rust_target.pl:3917. Matches the list-suffix pattern.
-llvm_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
-    member(BaseHead-true, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead =.. [Pred, BaseList, BaseList],
-    var(BaseList),
-    RecHead =.. [Pred, InputList, Suffix],
-    InputList = [_|Tail],
-    RecBody =.. [Pred, Tail, Suffix].
-
-%% llvm_recursive_kernel_transitive_closure(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the transitive_closure2 clause shape:
-%    pred(Start, Target) :- edge(Start, Target).
-%    pred(Start, Target) :- edge(Start, Mid), pred(Mid, Target).
-llvm_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
-        recursive_kernel(transitive_closure2, Pred/Arity,
-            [edge_pred(EdgePred/2)])) :-
-    llvm_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred).
-
-%% llvm_foreign_lowerable_transitive_closure(+Pred, +Arity, +Clauses, -EdgePred).
-%
-%  Ported from rust_target.pl:3933. Simple two-clause transitive
-%  closure pattern.
-llvm_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred) :-
-    member(BaseHead-BaseBody, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead =.. [Pred, BaseStart, BaseTarget],
-    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
-    RecHead =.. [Pred, RecStart, RecTarget],
-    RecBody = (EdgeGoal, RecGoal),
-    EdgeGoal =.. [EdgePred, RecStart, RecMid],
-    RecGoal =.. [Pred, RecMid, RecTarget].
-
-%% llvm_foreign_lowerable_transitive_distance(+Pred, +Arity, +Clauses, -EdgePred).
-%
-%  Clause-shape matcher ported from rust_target.pl:3968. The only
-%  difference from the Rust version is that we do not gather the
-%  fact pairs here — the M5.6a build_td3_concrete_impl/6 helper
-%  reads them from the user module at codegen time, so the matcher
-%  just needs to confirm the EdgePred name and arity.
-llvm_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred) :-
-    member(BaseHead-BaseBody, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead =.. [Pred, BaseStart, BaseTarget, 1],
-    RecHead =.. [Pred, RecStart, RecTarget, RecDepth],
-    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
-    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
-    EdgeGoal =.. [EdgePred, RecStart, RecMid],
-    RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
-    IsGoal =.. [is, RecDepth, Expr],
-    Expr =.. [+, PrevDepth, 1].
-
-%% llvm_recursive_kernel_weighted_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the weighted_shortest_path3 clause shape:
-%    pred(X, Y, W) :- weight_pred(X, Y, W).
-%    pred(X, Y, Cost) :-
-%        weight_pred(X, Z, W),
-%        pred(Z, Y, RestCost),
-%        Cost is W + RestCost.
-%
-%  On success binds RecKernel to
-%    recursive_kernel(weighted_shortest_path3, Pred/Arity,
-%                     [weight_pred(WeightPred/3)]).
-llvm_recursive_kernel_weighted_shortest_path(Pred, Arity, Clauses,
-        recursive_kernel(weighted_shortest_path3, Pred/Arity,
-            [weight_pred(WeightPred/3)])) :-
-    llvm_foreign_lowerable_weighted_shortest_path(Pred, Arity, Clauses, WeightPred).
-
-%% llvm_foreign_lowerable_weighted_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
-%
-%  Ported from rust_target.pl:4045. Accepts the simple-form recursive
-%  body; the Rust target also accepts a visited-list form, which
-%  M5.9 does not yet mirror because Dijkstra doesn't need cycle
-%  checks (it tracks visited internally via best[]).
-llvm_foreign_lowerable_weighted_shortest_path(Pred, 3, Clauses, WeightPred) :-
-    member(BaseHead-BaseBody, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead \== RecHead,
-    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseWeight],
-    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
-    RecHead =.. [Pred, RecStart, RecTarget, RecCost],
-    RecBody = (WeightGoal, (RecGoal, IsGoal)),
-    WeightGoal =.. [WeightPred, RecStart, RecMid, W],
-    RecGoal =.. [Pred, RecMid, RecTarget, RestCost],
-    IsGoal =.. [is, RecCost, PlusExpr],
-    PlusExpr =.. [+, W, RestCost].
-
-%% llvm_recursive_kernel_astar_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
-%
-%  Detects the astar_shortest_path4 clause shape (arity 4):
-%    pred(X, Y, W, _Vis) :- weight_pred(X, Y, W).
-%    pred(X, Y, Cost, Vis) :-
-%        weight_pred(X, Z, W),
-%        pred(Z, Y, RC, [Z|Vis]),
-%        Cost is W + RC.
-%
-%  Extracts weight_pred. If user:direct_semantic_dist/3 is defined,
-%  includes it as direct_dist_pred for runtime heuristic support.
-llvm_recursive_kernel_astar_shortest_path(Pred, Arity, Clauses,
-        recursive_kernel(astar_shortest_path4, Pred/Arity, Config)) :-
-    llvm_foreign_lowerable_astar_shortest_path(Pred, Arity, Clauses, WeightPred),
-    ( predicate_property(user:direct_semantic_dist(_,_,_), defined)
-    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(direct_semantic_dist/3)]
-    ;  Config = [weight_pred(WeightPred/3)]
-    ).
-
-%% llvm_foreign_lowerable_astar_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
-%
-%  Matches arity-4 predicates with weighted shortest path + visited list.
-%  Base clause: pred(X, Y, W, _) :- weight(X, Y, W).
-%  Recursive clause: pred(X, Y, Cost, Vis) :- weight(X, Z, W), pred(Z, Y, RC, ...), Cost is W + RC.
-llvm_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses, WeightPred) :-
-    member(BaseHead-BaseBody, Clauses),
-    member(RecHead-RecBody, Clauses),
-    BaseHead \== RecHead,
-    BaseHead =.. [Pred, _, _, _, _],
-    RecHead =.. [Pred, _, _, _, _],
-    % Base body is a single weight_pred call (ignoring visited arg).
-    BaseBody =.. [WeightPred, _, _, _],
-    WeightPred \== Pred,
-    % Recursive body contains weight call, recursive call, and arithmetic.
-    RecBody = (WeightGoal, RestBody),
-    WeightGoal =.. [WeightPred, _, _, _],
-    % Rest may have \+ member(...) interleaved; just check for the recursive call and is/2.
-    term_string(RestBody, RestStr),
-    atom_string(Pred, PredStr),
-    sub_string(RestStr, _, _, _, PredStr),
-    sub_string(RestStr, _, _, _, " is ").
-
-%% llvm_auto_detect_foreign_kernels(+Predicates) is det.
-%
-%  For each predicate indicator in the list, read its clauses from
-%  the user module and run them against every registered detector.
-%  When a detector matches, assert a llvm_foreign_kernel_spec/3 fact
-%  for the result. Idempotent — if a spec already exists for the
-%  predicate (e.g., from the options-list path), the auto-detect
-%  skips it to avoid duplicate registration.
-llvm_auto_detect_foreign_kernels([]).
-llvm_auto_detect_foreign_kernels([PredIndicator|Rest]) :-
-    ( PredIndicator = Module:Pred/Arity -> true
-    ; PredIndicator = Pred/Arity, Module = user
-    ),
-    ( lookup_foreign_kernel_spec(Pred, Arity, _, _)
-    -> true   % already registered via (a) or (b); don't override
-    ;  llvm_collect_clause_pairs(Module, Pred, Arity, Clauses),
-       ( llvm_try_detectors(Pred, Arity, Clauses, Kind, Config)
-       -> assertz(llvm_foreign_kernel_spec(Pred/Arity, Kind, Config))
-       ;  true
-       )
-    ),
-    llvm_auto_detect_foreign_kernels(Rest).
-
-%% llvm_collect_clause_pairs(+Module, +Pred, +Arity, -Pairs) is det.
-%
-%  Gather (Head - Body) pairs for every clause of Module:Pred/Arity.
-%  Catch + default to empty list so predicates with no clauses (or
-%  predicates that are opaque to clause/2) don't blow up the compile.
-llvm_collect_clause_pairs(Module, Pred, Arity, Pairs) :-
-    catch(
-        findall(Head-Body,
-            ( functor(Head, Pred, Arity),
-              clause(Module:Head, Body)
-            ),
-            Pairs),
-        _, Pairs = []).
-
-%% llvm_try_detectors(+Pred, +Arity, +Clauses, -Kind, -Config) is semidet.
-%
-%  Iterate the detector registry and return the first match.
-llvm_try_detectors(Pred, Arity, Clauses, Kind, Config) :-
-    llvm_recursive_kernel_detector(Kind, DetectorName),
-    Goal =.. [DetectorName, Pred, Arity, Clauses, Result],
-    call(Goal),
-    Result = recursive_kernel(Kind, _, Config),
-    !.
-
-%% lookup_foreign_kernel_spec(+Pred, +Arity, -Kind, -Config) is semidet.
-%
-%  Succeeds iff a spec is registered for the given predicate. Strips
-%  any Module: qualifier so callers can pass `user:foo/3` or `foo/3`
-%  interchangeably.
-lookup_foreign_kernel_spec(Pred, Arity, Kind, Config) :-
-    ( llvm_foreign_kernel_spec(Pred/Arity, Kind, Config)
-    ; llvm_foreign_kernel_spec(_:Pred/Arity, Kind, Config)
-    ), !.
-
-%% substitute_foreign_kernel_impls(+StateFuncsRaw, -StateFuncs, -Globals).
-%
-%  Post-processes the rendered state template output to splice concrete
-%  kernel impl bodies in place of the weak defaults, and collects any
-%  module-level globals (fact tables, etc.) the impls depend on.
-%
-%  When no foreign specs are registered this is a pass-through:
-%    StateFuncs = StateFuncsRaw, Globals = ''.
-%
-%  When one or more td3 specs are registered, M5.8 emits a single
-%  concrete @wam_td3_kernel_impl that `switch`es on %instance with
-%  one case per registered predicate. Each case GEPs its own
-%  module-local %AtomFactPair table and calls the @wam_td3_run
-%  helper. This lets multiple td3 predicates with *different*
-%  edge_preds coexist in one module — each gets its own instance_id
-%  and its own edge table.
-substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
-    % td3 pass
-    findall(PredArity-Config,
-        llvm_foreign_kernel_spec(PredArity, transitive_distance3, Config),
-        Td3Entries),
-    ( Td3Entries == []
-    -> StateFuncs0 = StateFuncsRaw, Td3Tables = ''
-    ;  build_td3_instance_switch(Td3Entries, Td3ImplBody, Td3Tables),
-       replace_td3_weak_default(StateFuncsRaw, Td3ImplBody, StateFuncs0)
-    ),
-    % ca pass — category_ancestor (depth-bounded BFS).
-    findall(CaPredArity-CaConfig,
-        llvm_foreign_kernel_spec(CaPredArity, category_ancestor, CaConfig),
-        CaEntries),
-    ( CaEntries == []
-    -> StateFuncsCa = StateFuncs0, CaTables = ''
-    ;  build_ca_instance_switch(CaEntries, CaImplBody, CaTables),
-       replace_ca_weak_default(StateFuncs0, CaImplBody, StateFuncsCa)
-    ),
-    % cds2 pass — countdown_sum2 (deterministic arithmetic).
-    findall(CdsPredArity-CdsConfig,
-        llvm_foreign_kernel_spec(CdsPredArity, countdown_sum2, CdsConfig),
-        Cds2Entries),
-    ( Cds2Entries == []
-    -> StateFuncsCds = StateFuncsCa, Cds2Tables = ''
-    ;  build_cds2_instance_switch(Cds2Entries, Cds2ImplBody, Cds2Tables),
-       replace_cds2_weak_default(StateFuncsCa, Cds2ImplBody, StateFuncsCds)
-    ),
-    % tc2 pass — transitive_closure2 (boolean reachability).
-    findall(TcPredArity-TcConfig,
-        llvm_foreign_kernel_spec(TcPredArity, transitive_closure2, TcConfig),
-        Tc2Entries),
-    ( Tc2Entries == []
-    -> StateFuncsTc = StateFuncsCds, Tc2Tables = ''
-    ;  build_tc2_instance_switch(Tc2Entries, Tc2ImplBody, Tc2Tables),
-       replace_tc2_weak_default(StateFuncsCds, Tc2ImplBody, StateFuncsTc)
-    ),
-    % ls2 pass — list_suffix2 (enumerate suffixes via backtracking).
-    findall(LsPredArity-LsConfig,
-        llvm_foreign_kernel_spec(LsPredArity, list_suffix2, LsConfig),
-        Ls2Entries),
-    ( Ls2Entries == []
-    -> StateFuncsLs = StateFuncsTc, Ls2Tables = ''
-    ;  build_ls2_instance_switch(Ls2Entries, Ls2ImplBody, Ls2Tables),
-       replace_ls2_weak_default(StateFuncsTc, Ls2ImplBody, StateFuncsLs)
-    ),
-    % wsp3 pass — mirror of the td3 pass but for weighted_shortest_path3.
-    findall(WspPredArity-WspConfig,
-        llvm_foreign_kernel_spec(WspPredArity, weighted_shortest_path3, WspConfig),
-        Wsp3Entries),
-    ( Wsp3Entries == []
-    -> StateFuncs1 = StateFuncsLs, Wsp3Tables = ''
-    ;  build_wsp3_instance_switch(Wsp3Entries, Wsp3ImplBody, Wsp3Tables),
-       replace_wsp3_weak_default(StateFuncsLs, Wsp3ImplBody, StateFuncs1)
-    ),
-    % astar4 pass
-    findall(AsPredArity-AsConfig,
-        llvm_foreign_kernel_spec(AsPredArity, astar_shortest_path4, AsConfig),
-        Astar4Entries),
-    ( Astar4Entries == []
-    -> StateFuncs = StateFuncs1, Astar4Tables = ''
-    ;  build_astar4_instance_switch(Astar4Entries, Astar4ImplBody, Astar4Tables),
-       replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
-    ),
-    % Concatenate the per-kind global tables into one Globals blob.
-    ( CaTables == '', Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Ls2Tables == '', Wsp3Tables == '', Astar4Tables == ''
-    -> Globals = ''
-    ;  atomic_list_concat([
-           '; === foreign kernel support globals ===\n',
-           CaTables, '\n', Cds2Tables, '\n', Tc2Tables, '\n', Ls2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
-       ], Globals)
-    ).
-
-%% build_td3_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  Entries is a list of PredArity-Config pairs (the order matches the
-%  instance_id assignment — first entry is instance 0). Produces:
-%
-%    - ImplBody: the full `define i1 @wam_td3_kernel_impl(%WamState*,
-%      i32 %instance)` body with one switch case per entry, each
-%      loading its own edge table pointer/len/max and calling
-%      @wam_td3_run.
-%    - TablesIR: the concatenated %AtomFactPair global constant
-%      definitions for each entry's edge table. These are dropped
-%      into the module's native_predicates section so they are at
-%      module scope before any use.
-build_td3_instance_switch(Entries, ImplBody, TablesIR) :-
-    build_td3_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    atomic_list_concat(Tables, '\n\n', TablesIR),
-    format(atom(ImplBody),
-'define i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %bail [
-~w
-  ]
-
-~w
-
-bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-%% build_td3_instance_parts(+Entries, +StartIndex, -SwitchCases, -Bodies, -Tables).
-%
-%  Walks Entries assigning sequential instance IDs starting at
-%  StartIndex. For each entry produces three pieces:
-%
-%    - SwitchCase: `    i32 N, label %inst_N`
-%    - Body:       `inst_N:\n  %tblN = getelementptr ...\n
-%                   %rN = call i1 @wam_td3_run(...)\n  ret i1 %rN`
-%    - Table:      the private-constant %AtomFactPair definition
-%                  for this instance's edge table.
-build_td3_instance_parts([], _, [], [], []).
-build_td3_instance_parts([PredArity-Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
-    PredArity = Pred/_,
-    sanitize_atom_for_llvm(Pred, SanePred),
-    format(atom(TableName), 'td3_inst_~w_~w_edges', [SanePred, Index]),
-    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
-    format(atom(SwitchCase), '    i32 ~w, label %inst_~w', [Index, Index]),
-    format(atom(Body),
-'inst_~w:
-  %tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
-  %r_~w = call i1 @wam_td3_run(%WamState* %vm, %AtomFactPair* %tbl_~w, i64 ~w, i64 ~w)
-  ret i1 %r_~w',
-        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
-    NextIndex is Index + 1,
-    build_td3_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
-
-%% build_td3_instance_table(+Config, +TableName, -TableIR, -GepLen, -EffLen, -MaxAtomId).
-%
-%  Reads the edge predicate facts from Config, emits a %AtomFactPair
-%  private constant under TableName, and returns the sizing info the
-%  caller needs for the GEP and the @wam_td3_run call. GepLen is the
-%  declared LLVM array size (always ≥ 1 so the type matches the
-%  initializer); EffLen is the logical number of edges (may be 0).
-build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
-    ( member(edge_pred(EdgePred), Config) -> true
-    ; EdgePred = edge/2  % sensible default for smoke tests
-    ),
-    EdgePred = EPName/EPArity,
-    ( EPArity =:= 2 -> true
-    ; throw(foreign_lowering_edge_pred_arity(EPName/EPArity))
-    ),
-    catch(
-        findall(fact(From, To),
-            ( Goal =.. [EPName, From, To],
-              user:Goal
-            ),
-            Pairs),
-        _, Pairs = []),
-    compute_max_atom_id(Pairs, MaxAtomId),
-    llvm_emit_atom_fact2_table(TableName, Pairs, TableIR),
-    length(Pairs, Len),
-    ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
-
-%% build_cds2_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  countdown_sum2 is pure arithmetic — no per-instance tables. Every
-%  case calls the same @wam_cds2_run helper. TablesIR is always ''.
-build_cds2_instance_switch(Entries, ImplBody, '') :-
-    build_cds2_instance_parts(Entries, 0, SwitchCases, CaseBodies),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    format(atom(ImplBody),
-'define i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %cds_bail [
-~w
-  ]
-
-~w
-
-cds_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_cds2_instance_parts([], _, [], []).
-build_cds2_instance_parts([_PredArity-_Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies]) :-
-    format(atom(SwitchCase), '    i32 ~w, label %cds_inst_~w', [Index, Index]),
-    format(atom(Body),
-'cds_inst_~w:
-  %cds_r_~w = call i1 @wam_cds2_run(%WamState* %vm)
-  ret i1 %cds_r_~w',
-        [Index, Index, Index]),
-    NextIndex is Index + 1,
-    build_cds2_instance_parts(Rest, NextIndex, RestCases, RestBodies).
-
-%% replace_cds2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_cds2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: could not find cds2 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% build_ca_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  category_ancestor: depth-bounded BFS. Each instance has its own
-%  edge table and max_depth. Calls @wam_ca_run with per-instance params.
-build_ca_instance_switch(Entries, ImplBody, TablesIR) :-
-    build_ca_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    atomic_list_concat(Tables, '\n\n', TablesIR),
-    format(atom(ImplBody),
-'define i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %ca_bail [
-~w
-  ]
-
-~w
-
-ca_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_ca_instance_parts([], _, [], [], []).
-build_ca_instance_parts([PredArity-Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
-    PredArity = Pred/_,
-    sanitize_atom_for_llvm(Pred, SanePred),
-    format(atom(TableName), 'ca_inst_~w_~w_edges', [SanePred, Index]),
-    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
-    % Extract max_depth from config (default 10).
-    ( memberchk(max_depth(MaxDepth), Config) -> true ; MaxDepth = 10 ),
-    format(atom(SwitchCase), '    i32 ~w, label %ca_inst_~w', [Index, Index]),
-    format(atom(Body),
-'ca_inst_~w:
-  %ca_tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
-  %ca_r_~w = call i1 @wam_ca_run(%WamState* %vm, %AtomFactPair* %ca_tbl_~w, i64 ~w, i64 ~w, i32 ~w)
-  ret i1 %ca_r_~w',
-        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, MaxDepth, Index]),
-    NextIndex is Index + 1,
-    build_ca_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
-
-%% replace_ca_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_ca_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: could not find ca weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% build_ls2_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  list_suffix2 is stateless (no edge tables) — every instance calls
-%  the same @wam_ls2_run. The switch exists for multi-instance pattern
-%  consistency. TablesIR is always empty.
-build_ls2_instance_switch(Entries, ImplBody, '') :-
-    build_ls2_instance_parts(Entries, 0, SwitchCases, CaseBodies),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    format(atom(ImplBody),
-'define i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %ls_bail [
-~w
-  ]
-
-~w
-
-ls_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_ls2_instance_parts([], _, [], []).
-build_ls2_instance_parts([_PredArity-_Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies]) :-
-    format(atom(SwitchCase), '    i32 ~w, label %ls_inst_~w', [Index, Index]),
-    format(atom(Body),
-'ls_inst_~w:
-  %ls_r_~w = call i1 @wam_ls2_run(%WamState* %vm)
-  ret i1 %ls_r_~w',
-        [Index, Index, Index]),
-    NextIndex is Index + 1,
-    build_ls2_instance_parts(Rest, NextIndex, RestCases, RestBodies).
-
-%% replace_ls2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_ls2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: could not find ls2 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% build_tc2_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  Emits @wam_tc2_kernel_impl with a switch dispatching each instance
-%  to its own %AtomFactPair edge table and a call to @wam_tc2_run.
-%  Reuses build_td3_instance_table for the table emission since tc2
-%  and td3 both use edge_pred/2 → %AtomFactPair.
-build_tc2_instance_switch(Entries, ImplBody, TablesIR) :-
-    build_tc2_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    atomic_list_concat(Tables, '\n\n', TablesIR),
-    format(atom(ImplBody),
-'define i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %tc_bail [
-~w
-  ]
-
-~w
-
-tc_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_tc2_instance_parts([], _, [], [], []).
-build_tc2_instance_parts([PredArity-Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
-    PredArity = Pred/_,
-    sanitize_atom_for_llvm(Pred, SanePred),
-    format(atom(TableName), 'tc2_inst_~w_~w_edges', [SanePred, Index]),
-    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
-    format(atom(SwitchCase), '    i32 ~w, label %tc_inst_~w', [Index, Index]),
-    format(atom(Body),
-'tc_inst_~w:
-  %tc_tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
-  %tc_r_~w = call i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %tc_tbl_~w, i64 ~w, i64 ~w)
-  ret i1 %tc_r_~w',
-        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
-    NextIndex is Index + 1,
-    build_tc2_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
-
-%% replace_tc2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_tc2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: could not find tc2 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% build_wsp3_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  M5.9 counterpart of build_td3_instance_switch. Emits one
-%  `define i1 @wam_wsp3_kernel_impl(...)` with a switch dispatching
-%  each instance to its own %WeightedFact edge table and a call to
-%  @wam_wsp3_run.
-build_wsp3_instance_switch(Entries, ImplBody, TablesIR) :-
-    build_wsp3_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    atomic_list_concat(Tables, '\n\n', TablesIR),
-    format(atom(ImplBody),
-'define i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %wsp_bail [
-~w
-  ]
-
-~w
-
-wsp_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_wsp3_instance_parts([], _, [], [], []).
-build_wsp3_instance_parts([PredArity-Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
-    PredArity = Pred/_,
-    sanitize_atom_for_llvm(Pred, SanePred),
-    format(atom(TableName), 'wsp3_inst_~w_~w_edges', [SanePred, Index]),
-    build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
-    format(atom(SwitchCase), '    i32 ~w, label %wsp_inst_~w', [Index, Index]),
-    format(atom(Body),
-'wsp_inst_~w:
-  %wsp_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %wsp_r_~w = call i1 @wam_wsp3_run(%WamState* %vm, %WeightedFact* %wsp_tbl_~w, i64 ~w, i64 ~w)
-  ret i1 %wsp_r_~w',
-        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
-    NextIndex is Index + 1,
-    build_wsp3_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
-
-%% build_wsp3_instance_table(+Config, +TableName, -TableIR, -GepLen, -EffLen, -MaxAtomId).
-%
-%  Reads the weight predicate clauses from Config, emits a
-%  %WeightedFact private constant under TableName, and returns the
-%  sizing info the caller needs for the GEP and the @wam_wsp3_run
-%  call. The weight predicate has arity 3: weight_pred(From, To, Weight).
-build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
-    ( member(weight_pred(WeightPred), Config) -> true
-    ; WeightPred = weight/3  % default for smoke tests
-    ),
-    WeightPred = WPName/WPArity,
-    ( WPArity =:= 3 -> true
-    ; throw(foreign_lowering_weight_pred_arity(WPName/WPArity))
-    ),
-    catch(
-        findall(edge(From, To, Weight),
-            ( Goal =.. [WPName, From, To, Weight],
-              user:Goal
-            ),
-            Triples),
-        _, Triples = []),
-    compute_max_atom_id_weighted(Triples, MaxAtomId),
-    llvm_emit_weighted_edge_table(TableName, Triples, TableIR),
-    length(Triples, Len),
-    ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
-
-%% compute_max_atom_id_weighted(+Triples, -MaxAtomId).
-%  Like compute_max_atom_id/2 but for edge(From, To, Weight) terms.
-%  Weight is ignored for the max-id bound.
-compute_max_atom_id_weighted([], 0).
-compute_max_atom_id_weighted(Triples, MaxAtomId) :-
-    findall(Id,
-        ( member(edge(From, To, _), Triples),
-          ( intern_atom(From, Id)
-          ; intern_atom(To, Id)
-          )
-        ),
-        Ids),
-    ( Ids == []
-    -> MaxAtomId = 0
-    ;  max_list(Ids, MaxAtomId)
-    ).
-
-%% replace_wsp3_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_wsp3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: M5.9 could not find wsp3 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% build_astar4_instance_switch(+Entries, -ImplBody, -TablesIR).
-%
-%  M5.10 counterpart for astar_shortest_path4. Each per-instance case
-%  emits a %WeightedFact edge table (same as wsp3) PLUS a zeroed
-%  heuristic double[] array. The zero heuristic makes A* degenerate
-%  to Dijkstra, validating the full A* pipeline without requiring a
-%  target-dependent heuristic mechanism.
-build_astar4_instance_switch(Entries, ImplBody, TablesIR) :-
-    build_astar4_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
-    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
-    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
-    atomic_list_concat(Tables, '\n\n', TablesIR),
-    format(atom(ImplBody),
-'define i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {
-entry:
-  switch i32 %instance, label %as_bail [
-~w
-  ]
-
-~w
-
-as_bail:
-  ret i1 false
-}',
-        [SwitchCasesStr, CaseBodiesStr]).
-
-build_astar4_instance_parts([], _, [], [], []).
-build_astar4_instance_parts([PredArity-Config | Rest], Index,
-        [SwitchCase|RestCases], [Body|RestBodies], [AllTablesIR|RestTables]) :-
-    PredArity = Pred/_,
-    sanitize_atom_for_llvm(Pred, SanePred),
-    format(atom(EdgeTableName), 'astar4_inst_~w_~w_edges', [SanePred, Index]),
-    format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
-    build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
-    % Check if direct_dist_pred is configured for runtime heuristic.
-    ( member(direct_dist_pred(DDPred), Config)
-    -> % Runtime heuristic: emit a %WeightedFact table for direct distances
-       % and build the heuristic dynamically at query time.
-       format(atom(DDTableName), 'astar4_inst_~w_~w_direct', [SanePred, Index]),
-       build_wsp3_instance_table(
-           [weight_pred(DDPred)], DDTableName, DDTableIR, DDGepLen, DDEffLen, DDMaxAtomId),
-       MaxAtomIdAll is max(MaxAtomId, DDMaxAtomId),
-       format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, DDTableIR]),
-       format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
-       format(atom(Body),
-'as_inst_~w:
-  %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %as_dtbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %as_target_~w = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
-  %as_h_~w = call double* @wam_build_heuristic_from_table(
-      %WeightedFact* %as_dtbl_~w, i64 ~w,
-      i64 %as_target_~w, i64 ~w)
-  %as_r_~w = call i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %as_tbl_~w, i64 ~w, double* %as_h_~w, i64 ~w)
-  %as_h_raw_~w = bitcast double* %as_h_~w to i8*
-  call void @free(i8* %as_h_raw_~w)
-  ret i1 %as_r_~w',
-           [Index,
-            Index, GepLen, GepLen, EdgeTableName,
-            Index, DDGepLen, DDGepLen, DDTableName,
-            Index,
-            Index, Index, DDEffLen,
-            Index, MaxAtomIdAll,
-            Index, Index, EffLen, Index, MaxAtomIdAll,
-            Index, Index, Index, Index])
-    ;  % Static heuristic (compile-time, possibly zero).
-       build_astar4_heuristic_array(Config, MaxAtomId, HeuristicName,
-           HeuristicIR, HeuristicArrSize),
-       format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, HeuristicIR]),
-       format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
-       format(atom(Body),
-'as_inst_~w:
-  %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %as_h_~w = getelementptr [~w x double], [~w x double]* @~w, i64 0, i64 0
-  %as_r_~w = call i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %as_tbl_~w, i64 ~w, double* %as_h_~w, i64 ~w)
-  ret i1 %as_r_~w',
-           [Index,
-            Index, GepLen, GepLen, EdgeTableName,
-            Index, HeuristicArrSize, HeuristicArrSize, HeuristicName,
-            Index, Index, EffLen, Index, MaxAtomId,
-            Index])
-    ),
-    NextIndex is Index + 1,
-    build_astar4_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
-
-%% build_astar4_heuristic_array(+Config, +MaxAtomId, +Name, -IR, -Size).
-%
-%  When the config contains `heuristic_pred(HPred/3)` and
-%  `heuristic_target(TargetAtom)`, reads facts of the form
-%  `HPred(Node, TargetAtom, HValue)` from the user module, interns
-%  each Node to get its atom ID, and emits a `[Size x double]` global
-%  constant where entry `i` = h(atom_id_i). Entries for IDs that
-%  don't appear in the heuristic facts default to 0.0 (admissible
-%  since h=0 never overestimates).
-%
-%  When the config does NOT contain heuristic_pred/heuristic_target,
-%  emits a zeroinitializer (all zeros — A* degenerates to Dijkstra).
-build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
-    Size0 is MaxAtomId + 1,
-    ( Size0 =< 0 -> Size = 1 ; Size = Size0 ),
-    (   member(heuristic_pred(HPred), Config),
-        member(heuristic_target(Target), Config)
-    ->  % Read heuristic facts for the fixed target.
-        HPred = HPName/HPArity,
-        ( HPArity =:= 3 -> true
-        ; throw(heuristic_pred_arity(HPName/HPArity))
-        ),
-        catch(
-            findall(AtomId-HVal,
-                ( Goal =.. [HPName, Node, Target, HVal],
-                  user:Goal,
-                  atom(Node),
-                  number(HVal),
-                  intern_atom(Node, AtomId)
-                ),
-                HEntries),
-            _, HEntries = []),
-        % Build the array: Size entries, default 0.0, overridden by HEntries.
-        numlist(0, MaxAtomId, Indices),
-        maplist(heuristic_entry_value(HEntries), Indices, Values),
-        maplist(format_double_entry, Values, ValueStrs),
-        atomic_list_concat(ValueStrs, ', ', ValuesStr),
-        format(atom(IR),
-            '@~w = private constant [~w x double] [~w]',
-            [Name, Size, ValuesStr])
-    ;   % No heuristic config — zero array.
-        format(atom(IR),
-            '@~w = private constant [~w x double] zeroinitializer',
-            [Name, Size])
-    ).
-
-heuristic_entry_value(HEntries, AtomId, Value) :-
-    ( memberchk(AtomId-V, HEntries) -> Value = V ; Value = 0.0 ).
-
-format_double_entry(V, Str) :-
-    ( integer(V)
-    -> format(atom(Str), 'double ~w.0', [V])
-    ;  format(atom(Str), 'double ~w', [V])
-    ).
-
-%% replace_astar4_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-replace_astar4_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: M5.10 could not find astar4 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% sanitize_atom_for_llvm(+Atom, -Sanitized).
-%  Replace any characters that would be awkward in an LLVM global
-%  identifier with underscores. Most atoms used as predicate names
-%  are alphanumeric + underscore already, so this is a belt-and-braces
-%  measure for edge cases.
-sanitize_atom_for_llvm(Atom, Sanitized) :-
-    atom_codes(Atom, Codes),
-    maplist(sanitize_code, Codes, SaneCodes),
-    atom_codes(Sanitized, SaneCodes).
-
-sanitize_code(C, C) :-
-    ( (C >= 0'a, C =< 0'z) ; (C >= 0'A, C =< 0'Z)
-    ; (C >= 0'0, C =< 0'9) ; C =:= 0'_ ), !.
-sanitize_code(_, 0'_).
-
-%% compute_max_atom_id(+Pairs, -MaxAtomId).
-%
-%  Interns every atom in a list of fact(From, To) pairs and returns
-%  the highest resulting ID. Empty list → 0.
-compute_max_atom_id([], 0).
-compute_max_atom_id(Pairs, MaxAtomId) :-
-    findall(Id,
-        ( member(fact(From, To), Pairs),
-          ( intern_atom(From, Id)
-          ; intern_atom(To, Id)
-          )
-        ),
-        Ids),
-    ( Ids == []
-    -> MaxAtomId = 0
-    ;  max_list(Ids, MaxAtomId)
-    ).
-
-%% replace_td3_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
-%
-%  Replaces the M5.5 weak default of @wam_td3_kernel_impl with NewBody
-%  in the rendered state template. If the exact weak-default fragment
-%  isn't found (template drift, etc.) the original text is returned
-%  unchanged and an error is logged — the M5.5 delegation test would
-%  have caught any drift in the weak-default fragment itself.
-%
-%  M5.8: the weak default now takes an i32 %instance parameter so
-%  that pure-WAM modules and foreign-lowered modules share the same
-%  dispatcher signature. The string matched here must stay in sync
-%  with the state.ll.mustache definition.
-replace_td3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
-    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
-    -> StateFuncs = StateFuncs0
-    ;  format(user_error,
-        'WARNING: M5.6 could not find td3 weak-default in state template; leaving unchanged~n', []),
-       StateFuncs = StateFuncsRaw
-    ).
-
-%% string_replace(+Haystack, +Needle, +Replacement, -Result) is semidet.
-%
-%  Simple substring replacement. Fails if Needle is not found.
-string_replace(Haystack, Needle, Replacement, Result) :-
-    ( atom(Haystack) -> atom_string(Haystack, HayStr) ; HayStr = Haystack ),
-    ( atom(Needle)   -> atom_string(Needle, NeedleStr) ; NeedleStr = Needle ),
-    ( atom(Replacement) -> atom_string(Replacement, ReplStr) ; ReplStr = Replacement ),
-    sub_string(HayStr, Before, _, After, NeedleStr), !,
-    sub_string(HayStr, 0, Before, _, Prefix),
-    string_length(HayStr, HayLen),
-    SuffixStart is HayLen - After,
-    sub_string(HayStr, SuffixStart, After, 0, Suffix),
-    string_concat(Prefix, ReplStr, Tmp),
-    string_concat(Tmp, Suffix, Result).
-
-% ============================================================================
-% PHASE 5: Hybrid Module Assembly
-% ============================================================================
-
-%% write_wam_llvm_project(+Predicates, +Options, +OutputFile)
-%  Generates a complete LLVM IR module for the given predicates.
-write_wam_llvm_project(Predicates, Options, OutputFile) :-
-    option(module_name(ModuleName), Options, 'wam_generated'),
-    option(target_triple(Triple), Options, 'x86_64-pc-linux-gnu'),
-    option(target_datalayout(DataLayout), Options,
-        'e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128'),
-    get_time(TimeStamp),
-    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
-
-    % M5.6: populate the foreign kernel spec table.
-    % Path (a) directives have already run by load time. Path (b) is
-    % the options-list form; path (c) walks clause shapes when
-    % foreign_lowering(true) is set.
-    apply_foreign_predicates_option(Options),
-    ( option(foreign_lowering(true), Options)
-    -> llvm_auto_detect_foreign_kernels(Predicates)
-    ;  true
-    ),
-
-    % Read and render type definitions template
-    read_template_file('templates/targets/llvm_wam/types.ll.mustache', TypesTemplate),
-    render_template(TypesTemplate, [module_name=ModuleName, date=Date], TypesDef),
-
-    % Read and render value functions template
-    read_template_file('templates/targets/llvm_wam/value.ll.mustache', ValueTemplate),
-    render_template(ValueTemplate, [], ValueFuncs),
-
-    % Read and render state functions template. When foreign lowering
-    % is active, splice concrete kernel impl bodies in place of the
-    % weak defaults in the rendered state template.
-    read_template_file('templates/targets/llvm_wam/state.ll.mustache', StateTemplate),
-    render_template(StateTemplate, [], StateFuncsRaw),
-    substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, ForeignGlobals),
-
-    % Generate runtime (step + helpers)
-    compile_step_wam_to_llvm(Options, StepFunc),
-    compile_wam_helpers_to_llvm(Options, HelpersCode),
-    read_template_file('templates/targets/llvm_wam/runtime.ll.mustache', RuntimeTemplate),
-    render_template(RuntimeTemplate, [
-        step_function=StepFunc,
-        helper_functions=HelpersCode
-    ], RuntimeFuncs),
-
-    % Compile predicates (native or WAM fallback). Any predicate with a
-    % llvm_foreign_kernel_spec/3 entry is compiled to a body of
-    % WAM instructions ending in `call_foreign Kind, Arity`.
-    retractall(functor_string_global(_, _)),
-    % M105: also reset the atom-table dynamic predicates per module.
-    % Atom ids are module-scoped (each module emits its own
-    % @wam_atom_strings global) so persistent state across compiles
-    % only serves to accumulate. The 600+ test suite hit Prolog''s
-    % 4GB global-stack cap around test 650 because every compile
-    % re-interns 95 ASCII chars + [] + a handful of named atoms,
-    % and those atom_table_entry asserts piled up monotonically.
-    retractall(atom_table_entry(_, _)),
-    retractall(atom_table_next_id(_)),
-    assertz(atom_table_next_id(1)),
-    % Pre-register functor globals referenced directly by runtime
-    % helpers (e.g. =../2 needs the cons-cell functor "." and the
-    % empty-list atom "[]"). Route through register_functor_string so
-    % the key type (string) matches the bytecode-side registration —
-    % otherwise a program that BOTH uses findall AND explicitly
-    % constructs cons cells emits two `@.fn__5B_7C_5D` globals and
-    % llc rejects the module ("redefinition of global").
-    register_functor_string("."),
-    register_functor_string("[]"),
-    % M9: cons-cell functor for the findall / aggregate_all(bag/set)
-    % result list. @wam_apply_aggregation's collect_case allocates
-    % `[|]`-tagged Compounds on the arena to build the result; the
-    % functor string global it references must exist or llvm-as rejects
-    % the module. Eager registration handles programs that consume the
-    % list via findall but never explicitly construct a cons cell.
-    register_functor_string("[|]"),
-    % M51: pre-register `-` so pairs_keys_values/3 reverse mode can
-    % construct K-V pair compounds without depending on the source
-    % program to mention `-/2` itself.
-    register_functor_string("-"),
-    % M58: pre-register the type names char_type/2 dispatches on so
-    % their @.fn_<name> globals exist for strcmp comparisons.
-    register_functor_string("alpha"),
-    register_functor_string("alnum"),
-    register_functor_string("digit"),
-    register_functor_string("upper"),
-    register_functor_string("lower"),
-    register_functor_string("space"),
-    register_functor_string("ascii"),
-    register_functor_string("white"),
-    register_functor_string("punct"),
-    register_functor_string("csym"),
-    register_functor_string("csymf"),
-    register_functor_string("newline"),
-    register_functor_string("end_of_line"),
-    % M60: must_be/2 type names. Some overlap with M58 char_type
-    % (alpha etc.) but distinct names need separate registration.
-    register_functor_string("atom"),
-    register_functor_string("integer"),
-    register_functor_string("float"),
-    register_functor_string("number"),
-    register_functor_string("compound"),
-    register_functor_string("var"),
-    register_functor_string("nonvar"),
-    register_functor_string("atomic"),
-    register_functor_string("callable"),
-    register_functor_string("ground"),
-    register_functor_string("list"),
-    register_functor_string("boolean"),
-    % M83: arithmetic atom constants. ``X is pi'' and ``X is e''
-    % resolve to Float(pi) and Float(e) in eval_arith_value via
-    % strcmp against these registered names.
-    register_functor_string("pi"),
-    register_functor_string("e"),
-    % M97: set_random(seed(N)) -- builtin_set_random does strcmp on
-    % the compound''s functor string against "seed". Pre-register so
-    % @.fn_seed is in the module even for programs that never
-    % explicitly construct a `seed/1' compound elsewhere.
-    register_functor_string("seed"),
-    % M98: stamp_date_time/3 builds a `date(...)' compound and uses
-    % a `local' atom for the TZName slot. Pre-register both so their
-    % @.fn_... globals are in every module.
-    register_functor_string("date"),
-    register_functor_string("local"),
-    % M105: numbervars/3 binds free vars to ''$VAR''(N) compounds.
-    % Pre-register so @.fn__24VAR exists in every module.
-    register_functor_string("$VAR"),
-    % M9: intern "[]" so the empty-list atom id is known at runtime.
-    % @wam_apply_aggregation's collect_case reads this id from a
-    % module-level global to terminate the cons-cell chain.
-    intern_atom('[]', EmptyListAtomId),
-    format(atom(EmptyListGlobal),
-'; M9: empty-list atom id for the findall / aggregate_all(bag/set)
-; collect path. Read by @wam_apply_aggregation when building the
-; result cons-cell chain (the tail of the final cell is an Atom
-; %Value with payload = this id).
-@wam_empty_list_atom_id = private constant i64 ~w',
-        [EmptyListAtomId]),
-    % M26: eagerly intern single-character atoms for the printable
-    % ASCII range (32..126). char_code/2 and atom_chars/2 use these
-    % via the @wam_char_to_atom_id lookup table emitted alongside
-    % the regular atom-string globals. Reserving these slots now
-    % means the per-module table is dense and the runtime doesn''t
-    % need to fall back to runtime atom interning for any printable
-    % character.
-    forall(between(32, 126, CharCode),
-        ( char_code(CharAtom, CharCode),
-          intern_atom(CharAtom, _)
-        )),
-    compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
-
-    % Emit functor string globals collected during WAM compilation.
-    emit_functor_string_globals(FunctorGlobals),
-
-    % M12: emit per-atom string globals + lookup table so format/2,
-    % write/1 of atoms, and other runtime code can resolve interned
-    % atom ids back to printable strings.
-    emit_atom_string_globals(AtomStringGlobals),
-
-    % Prepend foreign kernel globals + functor strings to the native
-    % predicates section so they are at module scope before any use.
-    atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n',
-        EmptyListGlobal, '\n', AtomStringGlobals, '\n\n', NativeCode],
-        FinalNativeCode),
-
-    % Generate external declarations (native vs WASM).
-    generate_external_declarations(Triple, ExternalDecls),
-
-    % M116: stream the module IR straight to the output file rather
-    % than calling render_template/3 to build one multi-MB Prolog
-    % atom and then writing it in one shot. The single big atom was
-    % the dominant per-compile allocation that drove the suite into
-    % SWI''s 4 GB global-stack cap around test 675.
-    read_template_file('templates/targets/llvm_wam/module.ll.mustache', ModuleTemplate),
-    Substitutions = [
-        module_name=ModuleName,
-        date=Date,
-        target_datalayout=DataLayout,
-        target_triple=Triple,
-        type_definitions=TypesDef,
-        external_declarations=ExternalDecls,
-        value_functions=ValueFuncs,
-        state_functions=StateFuncs,
-        runtime_functions=RuntimeFuncs,
-        native_predicates=FinalNativeCode,
-        wam_predicates=WamCode,
-        interop_bridge=""
-    ],
-    % Write output file. The generated module embeds UTF-8 characters from
-    % the runtime templates (arrows, dashes in comments), so the stream must
-    % be UTF-8 regardless of the process locale (which is POSIX/ASCII in many
-    % CI containers) -- otherwise format/3 raises an encoding error.
-    setup_call_cleanup(
-        open(OutputFile, write, Stream, [encoding(utf8)]),
-        stream_render_mustache(Stream, ModuleTemplate, Substitutions),
-        close(Stream)
-    ),
-    format('WAM LLVM module created at: ~w~n', [OutputFile]).
-
-% ============================================================================
-% PHASE 7: WASM Variant
-% ============================================================================
-
-%% write_wam_llvm_wasm_project(+Predicates, +Options, +OutputFile)
-%  Generates a WASM-compatible LLVM IR module.
-%  Key differences from native: wasm32 triple, bump allocator (no malloc),
-%  iterative run_loop (no musttail), i32 pointers.
-write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
-    option(module_name(ModuleName), Options, 'wam_wasm'),
-    get_time(TimeStamp),
-    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
-
-    % WASM type definitions
-    read_template_file('templates/targets/llvm_wam_wasm/types.ll.mustache', TypesTemplate),
-    render_template(TypesTemplate, [module_name=ModuleName, date=Date], TypesDef),
-
-    % Bump allocator (replaces malloc/free)
-    read_template_file('templates/targets/llvm_wam_wasm/allocator.ll.mustache', AllocTemplate),
-    render_template(AllocTemplate, [], AllocFuncs),
-
-    % Value functions (shared with native — %Value is the same)
-    read_template_file('templates/targets/llvm_wam/value.ll.mustache', ValueTemplate),
-    render_template(ValueTemplate, [], ValueFuncs),
-
-    % State functions (shared — uses %WamState pointers)
-    read_template_file('templates/targets/llvm_wam/state.ll.mustache', StateTemplate),
-    render_template(StateTemplate, [], StateFuncs),
-
-    % Runtime with iterative loop (no musttail)
-    compile_step_wam_to_llvm(Options, StepFunc),
-    compile_wam_helpers_to_llvm(Options, HelpersCode),
-    read_template_file('templates/targets/llvm_wam_wasm/runtime.ll.mustache', RuntimeTemplate),
-    render_template(RuntimeTemplate, [
-        step_function=StepFunc,
-        helper_functions=HelpersCode
-    ], RuntimeFuncs),
-
-    % Compile predicates
-    compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
-
-    % Generate WASM export declarations for WAM-compiled predicates
-    generate_wasm_exports(Predicates, WasmExports),
-
-    % Assemble
-    read_template_file('templates/targets/llvm_wam_wasm/module.ll.mustache', ModuleTemplate),
-    render_template(ModuleTemplate, [
-        module_name=ModuleName,
-        date=Date,
-        type_definitions=TypesDef,
-        allocator_functions=AllocFuncs,
-        value_functions=ValueFuncs,
-        state_functions=StateFuncs,
-        runtime_functions=RuntimeFuncs,
-        native_predicates=NativeCode,
-        wam_predicates=WamCode,
-        wasm_exports=WasmExports
-    ], FullModule),
-
-    setup_call_cleanup(
-        open(OutputFile, write, Stream, [encoding(utf8)]),
-        format(Stream, "~w", [FullModule]),
-        close(Stream)
-    ),
-    format('WAM WASM module created at: ~w~n', [OutputFile]).
-
-%% generate_external_declarations(+Triple, -Decls)
-%  For native targets: declare malloc, free, snprintf, strcmp, printf.
-%  For wasm32: define malloc/free as bump allocator (self-contained),
-%  omit snprintf/strcmp/printf (not available in standalone WASM).
-%% stream_render_mustache(+Stream, +Template, +Substitutions) is det.
-%
-%  M116: streaming counterpart to render_template/3 for the
-%  module.ll.mustache top-level assembly. Walks the template scanning
-%  for {{key}} placeholders, writes each literal segment directly to
-%  Stream, looks up Key in Substitutions, writes the corresponding
-%  value. No full-IR atom is ever materialised in the Prolog atom
-%  table, which is what was driving the per-test SWI-stack pressure.
-%
-%  Only supports the flat {{key}} form -- the module.ll.mustache
-%  template doesn''t use sections or match blocks, so the simpler
-%  implementation is sufficient. Falls back to writing the rest of
-%  the template literally when no more placeholders are found.
-stream_render_mustache(Stream, Template, Subs) :-
-    atom_string(Template, S),
-    stream_render_loop(Stream, S, Subs).
-
-stream_render_loop(Stream, S, Subs) :-
-    ( sub_string(S, Before, 2, _, "{{")
-    -> sub_string(S, 0, Before, _, Prefix),
-       write(Stream, Prefix),
-       AfterOpen is Before + 2,
-       sub_string(S, AfterOpen, _, 0, Rest1),
-       ( sub_string(Rest1, KeyEnd, 2, _, "}}")
-       -> sub_string(Rest1, 0, KeyEnd, _, KeyStr),
-          atom_string(Key, KeyStr),
-          ( member(Key=Value, Subs)
-          -> write(Stream, Value)
-          ;  format(Stream, '{{~w}}', [Key])
-          ),
-          AfterClose is KeyEnd + 2,
-          sub_string(Rest1, AfterClose, _, 0, Rest2),
-          stream_render_loop(Stream, Rest2, Subs)
-       ;  % Unclosed {{ -- write the rest verbatim and stop.
-          write(Stream, '{{'),
-          write(Stream, Rest1)
-       )
-    ;  write(Stream, S)
-    ).
-
-generate_external_declarations(Triple, Decls) :-
-    ( sub_atom(Triple, 0, _, _, wasm32)
-    -> Decls = '
-; WASM bump allocator providing malloc/free symbols.
-; Heap starts at offset 65536 (64KB reserved for WASM stack).
-; free() is a no-op — memory is reclaimed by @wam_cleanup via arena rewind.
-@wam_malloc_ptr = internal global i64 65536
-
-define i8* @malloc(i64 %size) {
-entry:
-  %ptr_val = load i64, i64* @wam_malloc_ptr
-  %aligned = add i64 %size, 7
-  %masked = and i64 %aligned, -8
-  %new_ptr = add i64 %ptr_val, %masked
-  store i64 %new_ptr, i64* @wam_malloc_ptr
-  %result = inttoptr i64 %ptr_val to i8*
-  ret i8* %result
+; ModuleID = 'plawk_core_probe'
+; Generated by UnifyWeaver WAM-to-LLVM Hybrid Target
+; Date: 2026-06-08 20:36:14
+source_filename = "plawk_core_probe.ll"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-linux-gnu"
+
+; === Type Definitions ===
+; Generated by UnifyWeaver WAM-to-LLVM Target
+; Date: 2026-06-08 20:36:14
+; Module: plawk_core_probe
+
+; === Value Tagged Union ===
+; Tag: 0=Atom, 1=Integer, 2=Float, 3=Compound, 4=List, 5=Ref, 6=Unbound, 7=Bool
+%Value = type { i32, i64 }
+
+; === Compound and List (heap-allocated) ===
+%Compound = type { i8*, i32, %Value* }    ; functor, arity, args
+%List = type { i32, %Value* }             ; length, elements
+
+; === Instruction Tagged Union ===
+; Tag: 0-7 head unification, 8-15 body construction, 16-21 control, 22-24 choice, 25-27 indexing
+%Instruction = type { i32, i64, i64 }     ; tag, operand1, operand2
+
+; === Switch Table Entry (for switch_on_constant) ===
+; Used by indexing instructions (tag 25). Tables are emitted as private
+; global arrays of %SwitchEntry; the instruction's operand1 holds a
+; ptrtoint of the table pointer and operand2 holds the entry count.
+%SwitchEntry = type { i32, i64, i32 }     ; key_tag, key_payload, label_idx
+
+; === Indexed Fact Tables (for foreign kernels) ===
+; Used by transitive_closure, transitive_distance, and similar graph
+; kernels. Facts are emitted as global constant arrays; kernels scan
+; them via direct GEP loops. Atom values are stored as interned IDs
+; (same encoding used by switch_on_constant's atom keys).
+%AtomFactPair = type { i64, i64 }         ; from_atom_id, to_atom_id
+
+; Weighted edge fact for Dijkstra / A* / effective semantic distance.
+; Weight is an f64 semantic distance (1 - cosine_similarity).
+%WeightedFact = type { i64, i64, double } ; from, to, weight
+
+; === Stack Entries ===
+; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
+; y_save: for EnvFrame entries, snapshot of regs[16..63] at allocate time.
+; The LLVM target maps both Xn and Yn into the same `n+15` register index
+; (src/unifyweaver/bindings/llvm_wam_bindings.pl); without save/restore,
+; an inner predicate's `get_variable Y3, A1` clobbers the outer caller's
+; Y3 slot. allocate now snapshots regs[16..63] into y_save on push;
+; deallocate copies it back before popping. UnifyCtx / WriteCtx entries
+; do not use y_save but carry it as dead space (same struct type for
+; uniform pushes/pops).
+%StackEntry = type { i32, i64, %Value*, [48 x %Value], i32 }  ; type, aux, data, y_save, cut_barrier
+
+; === Trail Entry ===
+%TrailEntry = type { i32, %Value }        ; register index, old value
+
+; === Choice Point ===
+; agg_type field: -2 = foreign-result iterator (multi-result dispatch)
+;                 -1 = normal CP (not an aggregate frame)
+;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
+%ChoicePoint = type {
+    i32,                                   ; 0: next_pc
+    [64 x %Value],                         ; 1: saved registers
+    i32,                                   ; 2: trail mark
+    i32,                                   ; 3: saved cp
+    i32,                                   ; 4: agg_type (-1=normal, -2=foreign iter)
+    i32,                                   ; 5: agg_value_reg
+    i32,                                   ; 6: agg_result_reg
+    i32,                                   ; 7: agg_return_pc
+    i8*,                                   ; 8: foreign_results (ptr to %Value array)
+    i32,                                   ; 9: foreign_count (total results)
+    i32,                                   ; 10: foreign_cursor (next to yield)
+    i32,                                   ; 11: saved heap_top — rewound on backtrack
+    i32                                    ; 12: saved_b (backtrack level of caller)
 }
 
-define void @free(i8* %ptr) {
-  ret void
+; === WAM State ===
+%WamState = type {
+    i32,                                   ; 0: pc
+    [64 x %Value],                         ; 1: regs (A1..A16 → 0..15, X1..X48 → 16..63)
+    %StackEntry*,                          ; 2: stack
+    i32,                                   ; 3: stack_size
+    i32,                                   ; 4: stack_cap
+    %Value*,                               ; 5: heap
+    i32,                                   ; 6: heap_size
+    i32,                                   ; 7: heap_cap
+    %TrailEntry*,                          ; 8: trail
+    i32,                                   ; 9: trail_size
+    i32,                                   ; 10: trail_cap
+    i32,                                   ; 11: cp (continuation pointer)
+    %ChoicePoint*,                         ; 12: choice_points
+    i32,                                   ; 13: cp_count
+    i32,                                   ; 14: cp_cap
+    %Instruction*,                         ; 15: code
+    i32,                                   ; 16: code_length
+    i32*,                                  ; 17: labels (label → pc array)
+    i32,                                   ; 18: label_count
+    i1,                                    ; 19: halted
+    %Value*,                               ; 20: agg_accum (aggregate accumulator)
+    i32,                                   ; 21: agg_count
+    i32,                                   ; 22: agg_cap
+    i32,                                   ; 23: cut_barrier
+    i32                                    ; 24: last_entry_cpn
 }
 
-; Bump-allocator @realloc for WASM: allocate fresh, memcpy old data,
-; return new ptr. Old block is leaked (the bump allocator has no
-; freelist). Used by M5 growable trail/stack/CP allocators.
-;
-; Note: this doesn\'t know the old block\'s size, so it conservatively
-; copies up to %new_size bytes. The bump allocator only ever hands
-; out blocks aligned to 8 bytes, and grows always double, so this
-; over-copies by at most a factor of 2 — within the WASM page budget
-; that callers already accept.
-define i8* @realloc(i8* %old, i64 %new_size) {
-entry:
-  %is_null = icmp eq i8* %old, null
-  br i1 %is_null, label %fresh_alloc, label %do_copy
 
-fresh_alloc:
-  %new0 = call i8* @malloc(i64 %new_size)
-  ret i8* %new0
-
-do_copy:
-  %new1 = call i8* @malloc(i64 %new_size)
-  ; We don\'t know the old block\'s actual size; the WAM grow path
-  ; always doubles, so copying %new_size / 2 is safe (the old block
-  ; was at least that large). Use shr by 1 to avoid sdiv.
-  %half = lshr i64 %new_size, 1
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new1, i8* %old, i64 %half, i1 false)
-  ret i8* %new1
-}
-
-; Stub printf for WASM (no-op, returns 0).
-define i32 @printf(i8* %fmt, ...) {
-  ret i32 0
-}
-
-; Stub snprintf for WASM (no-op, returns 0).
-define i32 @snprintf(i8* %buf, i64 %size, i8* %fmt, ...) {
-  ret i32 0
-}
-
-; Stub strcmp for WASM (returns 0 = equal, conservative).
-define i32 @strcmp(i8* %a, i8* %b) {
-  ret i32 0
-}
-
-; Stub putchar for WASM (no-op, returns 0).
-define i32 @putchar(i32 %c) {
-  ret i32 0
-}
-'
-    ;  Decls = 'declare i8* @malloc(i64)
+; === External Declarations ===
+declare i8* @malloc(i64)
 declare i8* @realloc(i8*, i64)
 declare void @free(i8*)
 declare i32 @snprintf(i8*, i64, i8*, ...)
@@ -1595,800 +177,4815 @@ declare i64 @mktime(i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
-declare double @atan2(double, double)'
-    ).
+declare double @atan2(double, double)
+declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
+declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1)
+declare double @llvm.fabs.f64(double)
+declare double @llvm.trunc.f64(double)
+declare double @llvm.round.f64(double)
+declare double @llvm.floor.f64(double)
+declare double @llvm.ceil.f64(double)
+declare double @llvm.sqrt.f64(double)
+declare double @llvm.sin.f64(double)
+declare double @llvm.cos.f64(double)
+declare double @llvm.log.f64(double)
+declare double @llvm.exp.f64(double)
 
-%% generate_wasm_exports(+Predicates, -ExportCode)
-%  Generate WASM export wrappers that expose predicates as i32-returning
-%  functions. Each wrapper delegates to the predicate's own `@<pred>()`
-%  function (emitted by compile_wam_predicate_to_llvm for WAM-fallback
-%  predicates, or by the native LLVM lowering for native predicates),
-%  which has the correct instruction-array + label-table bound.
-%  Arena state is rewound via @wam_cleanup after each call so successive
-%  bench calls don't leak.
-generate_wasm_exports([], "").
-generate_wasm_exports(Predicates, ExportCode) :-
-    number_predicates(Predicates, 0, NumberedPreds),
-    findall(ExportFunc, (
-        member(Idx-PredIndicator, NumberedPreds),
-        (   PredIndicator = _:Pred/Arity -> true
-        ;   PredIndicator = Pred/Arity
-        ),
-        atom_string(Pred, PredStr),
-        build_llvm_undef_args(Arity, ArgsList),
-        format(atom(ExportFunc),
-'; WASM export: ~w/~w
-; Visibility: dso_local ensures symbol is retained by wasm-ld.
-define dso_local i32 @~w_wasm() #~w {
+; === Value Constructors & Inspectors ===
+; === Value Constructors ===
+;
+; All constructors / inspectors below are pure bit-manipulation on the
+; %Value tagged union — no memory access, no side effects. Mark them
+; `alwaysinline nounwind readnone` so each @step case in the WAM
+; dispatcher collapses to inline insertvalue / extractvalue / icmp,
+; matching what the C runtime gets from `static inline` on the equivalent
+; helpers in src/unifyweaver/targets/wam_c_runtime/wam_runtime.h.
+
+define %Value @value_integer(i64 %n) alwaysinline nounwind readnone {
+  %v1 = insertvalue %Value { i32 1, i64 undef }, i64 %n, 1
+  ret %Value %v1
+}
+
+define %Value @value_float(double %f) alwaysinline nounwind readnone {
+  %bits = bitcast double %f to i64
+  %v1 = insertvalue %Value { i32 2, i64 undef }, i64 %bits, 1
+  ret %Value %v1
+}
+
+define %Value @value_atom(i8* %name) alwaysinline nounwind readnone {
+  %ptr = ptrtoint i8* %name to i64
+  %v1 = insertvalue %Value { i32 0, i64 undef }, i64 %ptr, 1
+  ret %Value %v1
+}
+
+define %Value @value_ref(i32 %addr) alwaysinline nounwind readnone {
+  %ext = zext i32 %addr to i64
+  %v1 = insertvalue %Value { i32 5, i64 undef }, i64 %ext, 1
+  ret %Value %v1
+}
+
+define %Value @value_unbound(i8* %name) alwaysinline nounwind readnone {
+  %ptr = ptrtoint i8* %name to i64
+  %v1 = insertvalue %Value { i32 6, i64 undef }, i64 %ptr, 1
+  ret %Value %v1
+}
+
+define %Value @value_bool(i1 %b) alwaysinline nounwind readnone {
+  %ext = zext i1 %b to i64
+  %v1 = insertvalue %Value { i32 7, i64 undef }, i64 %ext, 1
+  ret %Value %v1
+}
+
+; === Value Inspectors ===
+
+define i32 @value_tag(%Value %v) alwaysinline nounwind readnone {
+  %tag = extractvalue %Value %v, 0
+  ret i32 %tag
+}
+
+define i64 @value_payload(%Value %v) alwaysinline nounwind readnone {
+  %p = extractvalue %Value %v, 1
+  ret i64 %p
+}
+
+; M13: Promote a Value (Integer or Float) to double. Integers go through
+; sitofp; Floats bitcast their payload back. Caller must guarantee
+; the value is numeric (tag == 1 or 2).
+define double @value_to_double(%Value %v) alwaysinline nounwind readnone {
+  %tag = extractvalue %Value %v, 0
+  %is_float = icmp eq i32 %tag, 2
+  %pay = extractvalue %Value %v, 1
+  br i1 %is_float, label %as_float, label %as_int
+as_float:
+  %fd = bitcast i64 %pay to double
+  ret double %fd
+as_int:
+  %id = sitofp i64 %pay to double
+  ret double %id
+}
+
+define i1 @value_is_unbound(%Value %v) alwaysinline nounwind readnone {
+  %tag = extractvalue %Value %v, 0
+  %is = icmp eq i32 %tag, 6
+  ret i1 %is
+}
+
+define i1 @value_is_number(%Value %v) alwaysinline nounwind readnone {
+  %tag = extractvalue %Value %v, 0
+  %is_int = icmp eq i32 %tag, 1
+  %is_float = icmp eq i32 %tag, 2
+  %result = or i1 %is_int, %is_float
+  ret i1 %result
+}
+
+; Structural equality on %Value.
+;
+;   Atomic / unbound (tag 0/1/2/5/6/7): tags match and payload bits match.
+;     Ref-vs-Ref payload compare succeeds only on the same heap slot —
+;     use @wam_deref_value before calling equals if you want to compare
+;     through Ref chains.
+;
+;   Compound (tag 3): same functor pointer, same arity, and recursively
+;     equal args. Two %Compound* values that happen to be the same
+;     pointer fast-path to true. Functor pointer equality works because
+;     every functor name is interned once into a single `@.fn_<name>`
+;     global — two compounds with the same functor name share that
+;     pointer. List cons-cells (functor ".", arity 2) fall through this
+;     path like any other compound.
+;
+; No occurs-check; no Ref-deref here (callers do that).
+;
+; Recursive — do NOT alwaysinline (LLVM rejects it). `inlinehint` lets
+; the optimizer inline non-recursive call sites; `readonly` allows CSE
+; of repeated equals on the same operand pair across the dispatch loop.
+define i1 @value_equals(%Value %a, %Value %b) inlinehint nounwind readonly {
 entry:
-  %result = call i1 @~w(~w)
-  call void @wam_cleanup()
-  %ret = zext i1 %result to i32
-  ret i32 %ret
-}', [PredStr, Arity, PredStr, Idx, PredStr, ArgsList])
-    ), ExportFuncs),
-    atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
-    findall(AttrGroup, (
-        member(Idx-PredIndicator, NumberedPreds),
-        (   PredIndicator = _:Pred/Arity -> true
-        ;   PredIndicator = Pred/Arity
-        ),
-        atom_string(Pred, PredStr),
-        format(atom(AttrGroup),
-'attributes #~w = { "wasm-export-name"="~w_wasm" }',
-            [Idx, PredStr])
-    ), AttrGroups),
-    atomic_list_concat(AttrGroups, '\n', AttrGroupsStr),
-    format(atom(ExportCode),
-'~w
+  %tag_a = extractvalue %Value %a, 0
+  %tag_b = extractvalue %Value %b, 0
+  %tags_eq = icmp eq i32 %tag_a, %tag_b
+  br i1 %tags_eq, label %tag_match, label %not_equal
 
-; WASM export attributes (one group per exported wrapper)
-~w', [ExportFuncsStr, AttrGroupsStr]).
+tag_match:
+  %is_compound = icmp eq i32 %tag_a, 3
+  br i1 %is_compound, label %compound_case, label %shallow_payload
 
-%% number_predicates(+Preds, +Start, -Numbered)
-%  Pair each predicate with a zero-based index used as the LLVM
-%  attribute-group id for its WASM export wrapper.
-number_predicates([], _, []).
-number_predicates([P|Rest], N, [N-P|RestNum]) :-
-    N1 is N + 1,
-    number_predicates(Rest, N1, RestNum).
+shallow_payload:
+  %pay_a = extractvalue %Value %a, 1
+  %pay_b = extractvalue %Value %b, 1
+  %pay_eq = icmp eq i64 %pay_a, %pay_b
+  ret i1 %pay_eq
 
-%% build_llvm_undef_args(+Arity, -ArgsStr)
-%  Produce a comma-separated list of `%Value undef` (Arity copies).
-%  Used by bench-style wrappers that just need to invoke the predicate
-%  without binding its arguments.
-build_llvm_undef_args(0, '') :- !.
-build_llvm_undef_args(Arity, ArgsStr) :-
-    Arity > 0,
-    length(Undefs, Arity),
-    maplist(=('%Value undef'), Undefs),
-    atomic_list_concat(Undefs, ', ', ArgsStr).
+compound_case:
+  %pa = extractvalue %Value %a, 1
+  %pb = extractvalue %Value %b, 1
+  %same_ptr = icmp eq i64 %pa, %pb
+  br i1 %same_ptr, label %equal, label %deep_check
 
-%% build_wam_wasm_module(+LLFile, +OutputName, -Commands)
-%  Generate shell commands to build a WASM module from the generated .ll file.
-build_wam_wasm_module(LLFile, OutputName, Commands) :-
-    format(atom(Commands),
-'#!/bin/bash
-# Build WAM WASM module from LLVM IR
-# Requires: LLVM toolchain with WASM backend:
-#   - llc (LLVM static compiler)
-#   - wasm-ld (WebAssembly linker, part of lld)
-# Install: apt install llvm lld  (or brew install llvm)
+deep_check:
+  %ap = inttoptr i64 %pa to %Compound*
+  %bp = inttoptr i64 %pb to %Compound*
+  %afn_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 0
+  %bfn_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 0
+  %afn = load i8*, i8** %afn_slot
+  %bfn = load i8*, i8** %bfn_slot
+  %fn_eq = icmp eq i8* %afn, %bfn
+  br i1 %fn_eq, label %check_arity, label %not_equal
 
-set -e
+check_arity:
+  %aar_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 1
+  %bar_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 1
+  %aar = load i32, i32* %aar_slot
+  %bar = load i32, i32* %bar_slot
+  %ar_eq = icmp eq i32 %aar, %bar
+  br i1 %ar_eq, label %args_init, label %not_equal
 
-# Toolchain check
-for tool in llc wasm-ld; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Error: $tool not found. Install LLVM + lld." >&2
-        exit 1
-    fi
-done
+args_init:
+  %aargs_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 2
+  %bargs_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 2
+  %aargs = load %Value*, %Value** %aargs_slot
+  %bargs = load %Value*, %Value** %bargs_slot
+  %has_args = icmp sgt i32 %aar, 0
+  br i1 %has_args, label %loop, label %equal
 
-echo "Compiling ~w to WASM..."
+loop:
+  %idx = phi i32 [ 0, %args_init ], [ %next_idx, %step ]
+  %ae_ptr = getelementptr %Value, %Value* %aargs, i32 %idx
+  %ae = load %Value, %Value* %ae_ptr
+  %be_ptr = getelementptr %Value, %Value* %bargs, i32 %idx
+  %be = load %Value, %Value* %be_ptr
+  %arg_eq = call i1 @value_equals(%Value %ae, %Value %be)
+  br i1 %arg_eq, label %step, label %not_equal
 
-# Step 1: Compile to WASM object (explicit triple for reproducibility)
-llc --mtriple=wasm32-unknown-unknown -filetype=obj ~w -o ~w.o
+step:
+  %next_idx = add i32 %idx, 1
+  %done = icmp sge i32 %next_idx, %aar
+  br i1 %done, label %equal, label %loop
 
-# Step 2: Link to WASM module (library mode, all symbols exported)
-wasm-ld --no-entry --export-all --allow-undefined ~w.o -o ~w.wasm
+equal:
+  ret i1 true
 
-# Step 3: Verify (optional)
-if command -v wasm-objdump >/dev/null 2>&1; then
-    echo "Exports:"
-    wasm-objdump -x ~w.wasm | grep "export" | head -10
-fi
+not_equal:
+  ret i1 false
+}
 
-echo "Created: ~w.wasm"
-echo "Size: $(wc -c < ~w.wasm) bytes"
-', [LLFile, LLFile, OutputName, OutputName, OutputName, OutputName, OutputName, OutputName]).
+; === Boxing/Unboxing Bridge ===
 
-%% read_template_file(+Path, -Content)
-read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
-    ;   format(atom(Content), "; Template not found: ~w", [Path])
-    ).
+define i64 @unbox_integer(%Value %v) alwaysinline nounwind readnone {
+  %p = extractvalue %Value %v, 1
+  ret i64 %p
+}
 
-%% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
-%
-%  Two-pass project-level compilation for WAM-fallback predicates:
-%
-%    Pass 1 (pass1_classify_predicates/4): classify each predicate as
-%      native / foreign-kernel / wam-fallback / failed. For wam-fallback
-%      and foreign-kernel preds, parse WAM to raw instruction parts +
-%      local labels and accumulate each predicate's cumulative start PC
-%      in a merged instruction array.
-%
-%    Label merge (build_merged_labels/2): shift every local label by
-%      its predicate's StartPC and union into a project-wide
-%      LabelName-AbsolutePC list. The entry label (e.g. 'sum_ints/3')
-%      lives at StartPC so cross-predicate `call sum_ints/3` resolves.
-%
-%    Pass 2 (pass2_emit_merged/5): re-encode every wam/foreign
-%      predicate's instructions against the merged LabelMap, emit ONE
-%      @module_code array + ONE @module_labels array, and per-predicate
-%      entry functions that share those globals but set their own start
-%      PC before calling @run_loop.
-%
-%  Prior to this, each wam-compiled predicate had its own @<pred>_code
-%  and @<pred>_labels arrays. An `execute sum_ints_args/5` inside
-%  sum_ints/3 looked up the label in sum_ints/3's local map, didn't
-%  find it, defaulted to index 0, and at runtime jumped to sum_ints/3's
-%  own first instruction — silent self-recursion. Same class of bug
-%  WAT had before PR #1476.
-compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    % M4: closure analysis — compute the set of predicates in this
-    % batch whose lowered kernels can be safely inter-linked via
-    % `call`/`execute`. A predicate joins the closure iff all of its
-    % clause-1 call/execute targets are also in the closure (computed
-    % to fixpoint). Passed through Options so pass1's per-pred
-    % lowerability check can consult it.
-    compute_lowered_closure(Predicates, Options, ClosureSet),
-    % M10: enable inline lowering of bagof/setof so they go through
-    % the same aggregate dispatch path as findall/aggregate_all rather
-    % than the runtime fallback (which is not wired up for LLVM).
-    % The WAM compiler treats bagof/setof as primitive calls when
-    % this flag is false; with it true they expand to begin_aggregate
-    % bagof/setof, ..., end_aggregate and the LLVM target dispatches
-    % to wam_apply_aggregation case 5 (bag/bagof) or 6 (set/setof).
-    ( memberchk(inline_bagof_setof(_), Options)
-    -> OptionsWithBS = Options
-    ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
-    ),
-    % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
-    % rather than the naive cut_ite. The LLVM target''s cut_ite was
-    % a "decrement cp_count by 1" stub, which silently cut the wrong
-    % choice point when the condition pushed inner CPs (e.g. a call
-    % to a multi-clause predicate). With get_level/cut Y_n we snapshot
-    % the cp_count into a permanent Y register before the try_me_else
-    % and restore it at the cut site, so soft cut works correctly
-    % regardless of inner CP pushes.
-    ( memberchk(ite_use_y_level(_), OptionsWithBS)
-    -> OptionsWithLevel = OptionsWithBS
-    ;  OptionsWithLevel = [ite_use_y_level(true) | OptionsWithBS]
-    ),
-    OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithLevel],
-    pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
-    build_merged_labels(Classified, NamePCPairs, LabelMap),
-    pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
-                      NativeParts, WamParts),
-    atomic_list_concat(NativeParts, '\n\n', NativeCode),
-    atomic_list_concat(WamParts, '\n\n', WamCode).
+define double @unbox_float(%Value %v) alwaysinline nounwind readnone {
+  %bits = extractvalue %Value %v, 1
+  %f = bitcast i64 %bits to double
+  ret double %f
+}
 
-%% compute_lowered_closure(+Predicates, +Options, -ClosureSet) is det.
-%
-%  M4 fixpoint analysis: returns the set of `Pred/Arity` indicators in
-%  this compile batch whose lowered kernels can call each other safely.
-%
-%  Algorithm:
-%    1. Collect every predicate that's gated for lowering and whose
-%       bytecode compiles cleanly. Call this the candidate set.
-%    2. Start with an empty closure. Iterate: find every candidate
-%       whose clause-1 body passes wam_llvm_lowerable_with_closure/4
-%       against the *current* closure. Add it. Repeat until no new
-%       members are discovered.
-%
-%  The fixpoint always terminates because the closure is monotonic
-%  and bounded by the candidate set. Predicates with no call/execute
-%  in their clause-1 body join on the first iteration.
-%
-%  When emit_mode is `interpreter` (the default), the closure is
-%  empty — no per-batch analysis needed.
-compute_lowered_closure(Predicates, Options, ClosureSet) :-
-    option(emit_mode(Mode), Options, interpreter),
-    ( Mode == interpreter
-    -> ClosureSet = []
-    ;  collect_lowerable_candidates(Predicates, Options, Candidates),
-       closure_fixpoint(Candidates, [], ClosureSet)
-    ).
+define i8* @unbox_atom(%Value %v) alwaysinline nounwind readnone {
+  %bits = extractvalue %Value %v, 1
+  %ptr = inttoptr i64 %bits to i8*
+  ret i8* %ptr
+}
 
-%% collect_lowerable_candidates(+Predicates, +Options, -Candidates).
-%
-%  Candidates is a list of `Pred/Arity-WamCode` pairs for predicates
-%  that (a) are gated for lowering via emit_mode_allows_lowering and
-%  (b) have a compileable WAM bytecode. Predicates that fail either
-%  check are excluded — they will fall through to the WAM-fallback
-%  branch of pass1 regardless of the closure.
-collect_lowerable_candidates([], _, []).
-collect_lowerable_candidates([PI|Rest], Options, Candidates) :-
-    ( PI = Module:Pred/Arity -> true
-    ; PI = Pred/Arity, Module = user
-    ),
-    ( emit_mode_allows_lowering(Module:Pred/Arity, Options),
-      catch(
-          wam_target:compile_predicate_to_wam(Module:Pred/Arity,
-              Options, Wam),
-          _, fail)
-    -> Candidates = [Pred/Arity-Wam | RestCands],
-       collect_lowerable_candidates(Rest, Options, RestCands)
-    ;  collect_lowerable_candidates(Rest, Options, Candidates)
-    ).
 
-closure_fixpoint(Candidates, CurrentSet, FinalSet) :-
-    findall(Pred/Arity,
-        ( member(Pred/Arity-Wam, Candidates),
-          \+ memberchk(Pred/Arity, CurrentSet),
-          catch(
-              wam_llvm_lowerable_with_closure(Pred/Arity, Wam,
-                  CurrentSet, _Shape),
-              _, fail)
-        ),
-        NewMembers),
-    ( NewMembers == []
-    -> FinalSet = CurrentSet
-    ;  append(NewMembers, CurrentSet, ExpandedSet),
-       closure_fixpoint(Candidates, ExpandedSet, FinalSet)
-    ).
+; === WAM State Management ===
+; === WAM State Management ===
+; Note: malloc/free/memcpy intrinsic are declared in module.ll.mustache.
 
-%% pass1_classify_predicates(+Preds, +Options, +StartPC, -Classified)
-%
-%  Classified is a list of records (in input order):
-%    native(PredIndicator, Arity, PredCode)
-%       — native-lowered (legacy llvm_target.pl or single-clause
-%         wam_llvm_lowered_emitter); emit PredCode as-is. PredCode
-%         already includes the `@<pred>` public-entry wrapper.
-%    wam(PredIndicator, Arity, RawInstrs, LocalLabels, StartPC, NumInstrs)
-%       — wam-fallback or foreign-kernel; goes into merged code.
-%         Public entry `@<pred>` is emitted by emit_one_entry_func.
-%    hybrid(PredIndicator, Arity, LoweredCode, RawInstrs, LocalLabels,
-%           StartPC, NumInstrs)
-%       — multi-clause predicate whose clause 1 is lowerable (M3).
-%         LoweredCode is the `@lowered_<pred>_<arity>` clause-1 fast
-%         path. The full bytecode (all clauses) goes into merged
-%         @module_code at StartPC. Public entry `@<pred>` is emitted
-%         by emit_hybrid_dispatcher and tries the fast path first,
-%         then falls back to @run_loop at StartPC on failure.
-%    failed(PredIndicator, Arity)
-%       — both native + wam failed; emit a comment.
-%
-%  StartPC threads through wam/foreign/hybrid records only; native
-%  and failed do not consume code slots.
-pass1_classify_predicates([], _, _, []).
-pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
-                          [Record | RestRecs]) :-
-    (   PredIndicator = Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity, Module = user
-    ),
-    (   lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
-    ->  format(user_error, '  ~w/~w: foreign kernel (~w)~n', [Pred, Arity, Kind]),
-        foreign_kernel_wam_text(Pred/Arity, Kind, Arity, Options, WamRaw),
-        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
-        NextPC is StartPC + NumInstrs
-    ;   catch(
-            llvm_target:compile_predicate_to_llvm(Module:Pred/Arity, Options, PredCode),
-            _, fail)
-    ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        Record = native(PredIndicator, Arity, PredCode),
-        NextPC = StartPC
-    ;   % WAM-lowered LLVM emission (wam_llvm_lowered_emitter).
-        %
-        % Gate: opt-in via emit_mode(Mode), where Mode is one of:
-        %   functions          — try to lower every predicate
-        %   mixed([P/A, ...])  — try to lower only the listed predicates
-        %   interpreter        — never lower (default; matches prior behaviour)
-        %
-        % Shape (returned by wam_llvm_lowerable/3):
-        %   single_clause   — full body is the lowered fn; no bytecode
-        %                     needed. Classify as Native; PredCode
-        %                     bundles the lowered fn + @<pred> wrapper.
-        %   multi_clause_c1 — clause 1 lowered as a fast path; full
-        %                     bytecode also emitted into @module_code
-        %                     so the dispatcher's slow path can run
-        %                     all clauses. Classify as Hybrid.
-        emit_mode_allows_lowering(Module:Pred/Arity, Options),
-        catch(
-            wam_target:compile_predicate_to_wam(Module:Pred/Arity,
-                Options, LowerWamRaw),
-            _, fail),
-        option(lowered_closure(Closure), Options, []),
-        % Use the closure-aware lowerability check: gates call/execute
-        % targets against the closure set computed in compile_predicates_for_llvm/4.
-        catch(
-            wam_llvm_lowerable_with_closure(Pred/Arity, LowerWamRaw,
-                Closure, LowerShape),
-            _, fail)
-    ->  catch(
-            lower_predicate_to_llvm(Pred/Arity, LowerWamRaw,
-                Options, LoweredCode),
-            LowerErr,
-            ( format(user_error,
-                '  ~w/~w: lowered emit failed (~w), falling back~n',
-                [Pred, Arity, LowerErr]),
-              fail
-            )),
-        ( LowerShape == single_clause
-        -> format(user_error,
-            '  ~w/~w: lowered LLVM emission (single-clause)~n',
-            [Pred, Arity]),
-           % Pack the lowered fn + thin @<pred> wrapper into one PredCode
-           % blob so the existing Native record path emits everything.
-           emit_native_wrapper(Pred/Arity, NativeWrapper),
-           atomic_list_concat([LoweredCode, '\n\n', NativeWrapper],
-               BundledCode),
-           Record = native(PredIndicator, Arity, BundledCode),
-           NextPC = StartPC
-        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain )
-        -> ( LowerShape == clause_chain
-           ->  format(user_error,
-                 '  ~w/~w: lowered LLVM emission (hybrid T5 first-arg dispatch + bytecode)~n',
-                 [Pred, Arity])
-           ;   format(user_error,
-                 '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
-                 [Pred, Arity])
-           ),
-           % Parse the WAM bytecode (all clauses) into the merge so the
-           % dispatcher's slow path can run it. The dispatcher entry
-           % is emitted in pass2 via emit_hybrid_dispatcher.
-           % clause_chain lowers ALL clauses as the fast path; the bytecode is
-           % still emitted so the unbound-first-arg case (which the lowered fn
-           % declines by returning false) is enumerated by @run_loop.
-           %
-           % Hybrid records use the bare Pred/Arity form (matching the
-           % wam-record convention) so partition / resolve / dispatch
-           % helpers can pattern-match the indicator uniformly.
-           parse_wam_to_pass1(Pred/Arity, LowerWamRaw, Arity, StartPC,
-               wam(Pred/Arity, _, RawInstrs, LocalLabels, StartPC, NumInstrs),
-               NumInstrs),
-           Record = hybrid(Pred/Arity, Arity, LoweredCode,
-               RawInstrs, LocalLabels, StartPC, NumInstrs),
-           NextPC is StartPC + NumInstrs
-        )
-    ;   option(wam_fallback(WamFB), Options, true),
-        WamFB \== false,
-        catch(
-            wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
-            _, fail)
-    ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
-        NextPC is StartPC + NumInstrs
-    ;   format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
-        Record = failed(PredIndicator, Arity),
-        NextPC = StartPC
-    ),
-    pass1_classify_predicates(Rest, Options, NextPC, RestRecs).
 
-%% emit_mode_allows_lowering(+PredIndicator, +Options) is semidet.
-%
-%  Gate for the wam_llvm_lowered_emitter branch in
-%  pass1_classify_predicates/4. Matches the F# target's
-%  `wam_fsharp_resolve_emit_mode/2` semantics:
-%
-%    emit_mode(functions)          → succeeds for every predicate.
-%    emit_mode(mixed([P/A, ...]))  → succeeds iff PredIndicator is
-%                                    in the list (Module:Pred/Arity
-%                                    or bare Pred/Arity).
-%    emit_mode(interpreter)        → always fails.
-%    no emit_mode option           → defaults to interpreter (fails).
-emit_mode_allows_lowering(Module:Pred/Arity, Options) :-
-    option(emit_mode(Mode), Options, interpreter),
-    Mode \== interpreter,
-    ( Mode == functions
-    -> true
-    ; Mode = mixed(List)
-    -> ( memberchk(Pred/Arity, List)
-       ; memberchk(Module:Pred/Arity, List)
-       )
-    ).
+; Create a new WamState with given code and labels
+define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %labels, i32 %label_count) {
+  %size = ptrtoint %WamState* getelementptr (%WamState, %WamState* null, i32 1) to i64
+  %mem = call i8* @malloc(i64 %size)
+  %vm = bitcast i8* %mem to %WamState*
 
-%% parse_wam_to_pass1(+Pred/Arity, +WamCode, +Arity, +StartPC,
-%%                    -wam(...), -NumInstrs)
-%  Shared between wam-fallback and foreign-kernel classifications.
-parse_wam_to_pass1(Pred/Arity, WamCode, ArityOut, StartPC,
-                   wam(Pred/Arity, ArityOut, RawInstrs, LocalLabels,
-                       StartPC, NumInstrs),
-                   NumInstrs) :-
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
-    wam_lines_pass1(Lines, 0, RawInstrs, LocalLabels),
-    length(RawInstrs, NumInstrs).
+  ; Initialize pc = 0
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  store i32 0, i32* %pc_ptr
 
-%% foreign_kernel_wam_text(+Pred/Arity, +Kind, +Arity, +Options, -WamCode)
-%  Produce the WAM text for a foreign kernel predicate.
-foreign_kernel_wam_text(Pred/Arity, Kind, _Arity, _Options, WamCode) :-
-    wam_llvm_foreign_kind_id(Kind, _KindId),
-    allocate_foreign_instance_id(Pred/Arity, Kind, InstanceId),
-    format(atom(WamCode), '~w/~w:\ncall_foreign ~w, ~w\nproceed',
-           [Pred, Arity, Kind, InstanceId]).
+  ; Initialize registers to zero. Prior code used llvm.memcpy with a
+  ; zeroinitializer source pointer — a pre-existing bug that evaluates
+  ; to null and segfaults at runtime. It went unnoticed until M5.7
+  ; execution testing because llvm-as and opt -passes=verify both
+  ; accept the bogus IR without complaint.
+  %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %regs_raw = bitcast %Value* %regs_ptr to i8*
+  %regs_size = mul i64 64, 16  ; 64 x sizeof(%Value) = 64 x {i32, i64}
+  call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
-%% build_merged_labels(+Classified, -NamePCPairs, -LabelMap)
-%  Shift each wam/foreign predicate's local labels by its StartPC and
-%  accumulate into NamePCPairs (LabelName-AbsolutePC, in predicate
-%  order). LabelMap is the derived LabelName-Index view used by the
-%  literal-resolution passes (index = physical slot in @module_labels).
-%  At runtime, @wam_label_pc reads @module_labels[Index] to get the PC.
-build_merged_labels(Classified, NamePCPairs, LabelMap) :-
-    build_merged_labels_entries(Classified, NamePCPairs),
-    build_label_index_map(NamePCPairs, LabelMap).
+  ; Allocate stack (initial capacity 1024 entries)
+  ; StackEntry: 4 + 8 + 8 + (48 * 16) = 20 + 768 = 788 bytes.
+  ; Round up to 800 for alignment.
+  %stack_mem = call i8* @malloc(i64 819200)  ; 1024 * 800
+  %stack_typed = bitcast i8* %stack_mem to %StackEntry*
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  store %StackEntry* %stack_typed, %StackEntry** %stack_ptr
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 0, i32* %ss_ptr
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  store i32 1024, i32* %sc_ptr
 
-build_merged_labels_entries([], []).
-build_merged_labels_entries([wam(_, _, _, LocalLabels, StartPC, _)|Rest],
-                            Entries) :- !,
-    shift_labels(LocalLabels, StartPC, Shifted),
-    build_merged_labels_entries(Rest, RestEntries),
-    append(Shifted, RestEntries, Entries).
-build_merged_labels_entries([hybrid(_, _, _, _, LocalLabels, StartPC, _)|Rest],
-                            Entries) :- !,
-    shift_labels(LocalLabels, StartPC, Shifted),
-    build_merged_labels_entries(Rest, RestEntries),
-    append(Shifted, RestEntries, Entries).
-build_merged_labels_entries([_|Rest], Entries) :-
-    build_merged_labels_entries(Rest, Entries).
+  ; Allocate heap (initial capacity 65536)
+  %heap_mem = call i8* @malloc(i64 1048576)  ; 65536 * 16
+  %heap_typed = bitcast i8* %heap_mem to %Value*
+  %hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  store %Value* %heap_typed, %Value** %hp_ptr
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  store i32 0, i32* %hs_ptr
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  store i32 65536, i32* %hc_ptr
 
-shift_labels([], _, []).
-shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
-    GlobalPC is LocalPC + Shift,
-    shift_labels(Rest, Shift, RestShifted).
+  ; Allocate trail (initial capacity 65536 entries, ~1.5 MB).
+  %trail_mem = call i8* @malloc(i64 1572864)  ; 65536 * 24
+  %trail_typed = bitcast i8* %trail_mem to %TrailEntry*
+  %tp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  store %TrailEntry* %trail_typed, %TrailEntry** %tp_ptr
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  store i32 0, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  store i32 65536, i32* %tc_ptr
 
-%% pass2_emit_merged(+Classified, +GlobalLabels, +Options,
-%%                   -NativeParts, -WamParts)
-%  Emit:
-%    - native predicates verbatim (→ NativeParts)
-%    - one @module_code array + one @module_labels array covering all
-%      wam/foreign predicates
-%    - per-predicate entry functions that share those globals
-%    - resolved switch tables (one per switch instruction)
-%  All of these go into WamParts.
-pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
-                  NativeParts, WamParts) :-
-    partition_classified(Classified,
-        NativeRecords, WamRecords, HybridRecords, FailedRecords),
-    % Native records' PredCode already includes both the lowered
-    % function AND the @<pred> wrapper. Hybrid records contribute
-    % their LoweredCode (just the @lowered_*_* fn); the matching
-    % @<pred> dispatcher is emitted in the WAM entry-funcs section
-    % because it needs InstrCount/LabelCount/StartPC.
-    maplist([native(_,_,Code), Code]>>true, NativeRecords, NativeCodes),
-    maplist([hybrid(_,_,LC,_,_,_,_), LC]>>true,
-            HybridRecords, HybridLowered),
-    append(NativeCodes, HybridLowered, NativeParts),
-    % WAM-like records (wam + hybrid) all participate in the merged
-    % @module_code. Their entry funcs differ — emit_one_entry_func
-    % vs emit_hybrid_dispatcher — dispatched on record type by
-    % emit_one_record_entry_func/5 inside emit_all_entry_funcs.
-    append(WamRecords, HybridRecords, WamLikeRecords),
-    (   WamLikeRecords == []
-    ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
-    ;   emit_merged_wam_section(WamLikeRecords, LabelMap, NamePCPairs, Options,
-                                MergedCode, EntryFuncs, SwitchDefs)
-    ),
-    maplist([failed(PI,A), C]>>format(atom(C),
-               '; ~w/~w: compilation failed', [PI, A]),
-            FailedRecords, FailedComments),
-    WamParts0 = [SwitchDefs, MergedCode, EntryFuncs | FailedComments],
-    exclude(==(''), WamParts0, WamParts).
+  ; Initialize cp = 0
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  store i32 0, i32* %cp_ptr
 
-partition_classified([], [], [], [], []).
-partition_classified([native(PI,A,C)|Rest], [native(PI,A,C)|RN], RW, RH, RF) :- !,
-    partition_classified(Rest, RN, RW, RH, RF).
-partition_classified([wam(P,A,I,L,S,N)|Rest], RN, [wam(P,A,I,L,S,N)|RW], RH, RF) :- !,
-    partition_classified(Rest, RN, RW, RH, RF).
-partition_classified([hybrid(P,A,LC,I,L,S,N)|Rest], RN, RW,
-                     [hybrid(P,A,LC,I,L,S,N)|RH], RF) :- !,
-    partition_classified(Rest, RN, RW, RH, RF).
-partition_classified([failed(PI,A)|Rest], RN, RW, RH, [failed(PI,A)|RF]) :-
-    partition_classified(Rest, RN, RW, RH, RF).
+  ; Allocate choice points (initial capacity 1024)
+  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1024) to i64
+  %cp_mem = call i8* @malloc(i64 %cpp_size)
+  %cp_typed = bitcast i8* %cp_mem to %ChoicePoint*
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  store %ChoicePoint* %cp_typed, %ChoicePoint** %cps_ptr
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  store i32 0, i32* %cpn_ptr
+  %cpc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  store i32 1024, i32* %cpc_ptr
 
-%% emit_merged_wam_section(+WamRecords, +GlobalLabels, +Options,
-%%                         -CodeGlobal, -EntryFuncs, -SwitchDefs)
-%
-%  Re-encodes every wam/foreign predicate's raw instruction parts
-%  against GlobalLabels, collects all literals into one big list, and
-%  produces:
-%    - CodeGlobal: @module_code = [N x %Instruction] [ ... ] + @module_labels
-%    - EntryFuncs: one `define i1 @<pred>(...)` per predicate, each
-%      setting start PC to its own StartPC before calling @run_loop
-%    - SwitchDefs: all switch-table globals referenced by the merged
-%      code (names are predicate-qualified already, collisions avoided)
-emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
-                        CodeGlobal, EntryFuncs, SwitchDefs) :-
-    resolve_all_wam_records(WamRecords, LabelMap, AllLiterals,
-                            AllSwitchDefs),
-    length(AllLiterals, InstrCount),
-    length(NamePCPairs, LabelCount),
-    retractall(wam_llvm_last_compile_counts(_, _)),
-    assertz(wam_llvm_last_compile_counts(InstrCount, LabelCount)),
-    (   InstrCount =:= 0
-    ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
-    ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
-                AllLiterals, Entries),
-        atomic_list_concat(Entries, ',\n', EntriesStr),
-        ( NamePCPairs == []
-        -> LabelsStr = "  i32 0",
-           LabelArraySize = 1
-        ;  maplist([_-PC, E]>>format(atom(E), '  i32 ~w', [PC]),
-                   NamePCPairs, LabelRows),
-           atomic_list_concat(LabelRows, ',\n', LabelsStr),
-           LabelArraySize = LabelCount
-        ),
-        emit_meta_call_dispatch(LabelMap, MetaCallDispatch),
-        format(string(CodeGlobal),
-"; === Merged WAM code and labels (project-level) ===
-@module_code = private constant [~w x %Instruction] [
-~w
-]
+  ; Store code pointer and length
+  %code_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
+  store %Instruction* %code, %Instruction** %code_ptr
+  %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
+  store i32 %code_len, i32* %cl_ptr
 
-@module_labels = private constant [~w x i32] [
-~w
-]
+  ; Store labels
+  %labels_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 17
+  store i32* %labels, i32** %labels_ptr
+  %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
+  store i32 %label_count, i32* %lc_ptr
 
-~w",
-            [InstrCount, EntriesStr, LabelArraySize, LabelsStr, MetaCallDispatch]),
-        emit_all_entry_funcs(WamRecords, Options,
-                             InstrCount, LabelCount, LabelArraySize,
-                             EntryFuncs),
-        ( AllSwitchDefs == []
-        -> SwitchDefs = ''
-        ;  atomic_list_concat(AllSwitchDefs, '\n', SwitchDefs)
-        )
-    ).
+  ; halted = false
+  %halt_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  store i1 false, i1* %halt_ptr
 
-emit_meta_call_dispatch(LabelMap, IR) :-
-    findall(entry(AtomId, Arity, LabelIdx),
-        ( member(Label-LabelIdx, LabelMap),
-          catch(split_functor_arity(Label, NameStr, Arity), _, fail),
-          Arity >= 0,
-          atom_string(NameAtom, NameStr),
-          intern_atom(NameAtom, AtomId)
-        ),
-        Entries0),
-    sort(Entries0, Entries),
-    length(Entries, Count),
-    (   Count =:= 0
-    ->  ArraySize = 1,
-        AtomRows = "  i64 0",
-        ArityRows = "  i32 0",
-        LabelRows = "  i32 0"
-    ;   ArraySize = Count,
-        findall(A, (member(entry(AtomId, _, _), Entries), format(atom(A), '  i64 ~w', [AtomId])), AtomList),
-        findall(R, (member(entry(_, Arity, _), Entries), format(atom(R), '  i32 ~w', [Arity])), ArityList),
-        findall(L, (member(entry(_, _, LabelIdx), Entries), format(atom(L), '  i32 ~w', [LabelIdx])), LabelList),
-        atomic_list_concat(AtomList, ',\n', AtomRows),
-        atomic_list_concat(ArityList, ',\n', ArityRows),
-        atomic_list_concat(LabelList, ',\n', LabelRows)
-    ),
-    format(string(IR),
-"; === Meta-call dispatch table: atom_id + arity -> label index ===
-@wam_meta_call_atom_ids = private constant [~w x i64] [
-~w
-]
-@wam_meta_call_arities = private constant [~w x i32] [
-~w
-]
-@wam_meta_call_label_indexes = private constant [~w x i32] [
-~w
-]
+  ; agg_accum: allocate initial capacity 64 (64 * sizeof(%Value) = 64 * 16)
+  %agg_mem = call i8* @malloc(i64 1024)
+  %agg_typed = bitcast i8* %agg_mem to %Value*
+  %agg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  store %Value* %agg_typed, %Value** %agg_ptr
+  %agc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  store i32 0, i32* %agc_ptr
+  %agcap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 22
+  store i32 64, i32* %agcap_ptr
 
-define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
+  ; Initialize cut_barrier = 0
+  %cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 0, i32* %cb_ptr
+
+  ; Initialize last_entry_cpn = 0
+  %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 0, i32* %lcpn_ptr
+
+  ret %WamState* %vm
+}
+
+; Release every malloc'd buffer owned by a %WamState and the state
+; struct itself. Callers MUST invoke this on any state produced by
+; @wam_state_new once they are done reading results — bench harnesses
+; loop state-new/run/free, and without this a 10k-iteration bench
+; leaks ~85KB per iteration (stack 6KB + heap 64KB + trail 6KB + CPs
+; ~1.5KB + agg_accum 1KB + state ~200B) and the process aborts on OOM.
+define void @wam_state_free(%WamState* %vm) {
 entry:
-  %arity_ok = icmp sge i32 %total_arity, 1
-  br i1 %arity_ok, label %read_goal, label %fail
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %stack_i8 = bitcast %StackEntry* %stack to i8*
+  call void @free(i8* %stack_i8)
 
-read_goal:
-  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %tag = extractvalue %Value %goal, 0
-  %is_atom = icmp eq i32 %tag, 0
-  br i1 %is_atom, label %atom_goal, label %fail
+  %heap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap = load %Value*, %Value** %heap_ptr
+  %heap_i8 = bitcast %Value* %heap to i8*
+  call void @free(i8* %heap_i8)
 
-atom_goal:
-  %atom_id = extractvalue %Value %goal, 1
-  %target_arity = sub i32 %total_arity, 1
+  %trail_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail = load %TrailEntry*, %TrailEntry** %trail_ptr
+  %trail_i8 = bitcast %TrailEntry* %trail to i8*
+  call void @free(i8* %trail_i8)
+
+  ; Iterate over choice points to free any unexhausted multi-result buffers.
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  br label %cp_loop
+
+cp_loop:
+  %i = phi i32 [ 0, %entry ], [ %i_next, %cp_cont ]
+  %cp_done = icmp uge i32 %i, %cpn
+  br i1 %cp_done, label %cp_done_label, label %cp_check
+
+cp_check:
+  %cp_entry = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %i
+  %at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 4
+  %at = load i32, i32* %at_ptr
+  %is_foreign = icmp eq i32 %at, -2
+  br i1 %is_foreign, label %cp_free_fr, label %cp_cont
+
+cp_free_fr:
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 8
+  %fr = load i8*, i8** %fr_ptr
+  %fr_null = icmp eq i8* %fr, null
+  br i1 %fr_null, label %cp_cont, label %cp_do_free
+
+cp_do_free:
+  call void @free(i8* %fr)
+  br label %cp_cont
+
+cp_cont:
+  %i_next = add i32 %i, 1
+  br label %cp_loop
+
+cp_done_label:
+  %cps_i8 = bitcast %ChoicePoint* %cps to i8*
+  call void @free(i8* %cps_i8)
+
+  %agg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %agg = load %Value*, %Value** %agg_ptr
+  %agg_i8 = bitcast %Value* %agg to i8*
+  call void @free(i8* %agg_i8)
+
+  %vm_i8 = bitcast %WamState* %vm to i8*
+  call void @free(i8* %vm_i8)
+  ret void
+}
+
+; === Hot per-instruction helpers ===
+;
+; The @step dispatcher in wam_llvm_target.pl calls 5-10 of these tiny
+; accessors per WAM instruction. Without `alwaysinline nounwind`, each
+; case keeps them as external calls — the C runtime gets the equivalent
+; helpers (`resolve_reg`, `trail_binding`, `wam_deref_ptr`) inlined for
+; free via `static inline` in wam_c_runtime/wam_runtime.h:474+. Marking
+; these `alwaysinline nounwind` lets LLVM SROA / mem2reg promote
+; %WamState field accesses across consecutive instructions, merge GEPs,
+; and turn the dispatch loop into the inline switch that
+; docs/WAM_PERF_CROSS_TARGET.md says "is universal across targets".
+
+; Get register value by index
+define %Value @wam_get_reg(%WamState* %vm, i32 %idx) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %val = load %Value, %Value* %reg_ptr
+  ret %Value %val
+}
+
+; Set register value by index
+define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  store %Value %val, %Value* %reg_ptr
+  ret void
+}
+
+; === FFI Bridge Helpers (for M5 native kernels) ===
+; Kernels called via @wam_execute_foreign_predicate use these to read and
+; write WAM registers without constructing %Value structs inline. All
+; helpers take a register index in the 0..31 range (A1..A16 → 0..15,
+; X1..X16 → 16..31).
+;
+; Value tag encoding (from types.ll.mustache):
+;   0 = Atom     (payload = interned atom id)
+;   1 = Integer  (payload = signed int as i64)
+;   2 = Float    (payload = double bitcast to i64)
+;   3 = Compound
+;   4 = List
+;   5 = Ref
+;   6 = Unbound
+;   7 = Bool     (payload = 0 or 1)
+
+; Get the tag of a register value.
+define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %tag = load i32, i32* %tag_ptr
+  ret i32 %tag
+}
+
+; Get the raw i64 payload of a register value. Caller is responsible for
+; knowing the tag (use wam_get_reg_tag first if the type is not known).
+define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  ret i64 %pay
+}
+
+; Get a register payload as a double. Tag must be 2 (Float) — the caller
+; is responsible for checking. Performs an i64 → double bitcast.
+define double @wam_get_reg_double(%WamState* %vm, i32 %idx) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  %d = bitcast i64 %pay to double
+  ret double %d
+}
+
+; Set a register to an Atom value with the given interned atom ID.
+define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 0, i32* %tag_ptr
+  store i64 %atom_id, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to an Integer value.
+define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 1, i32* %tag_ptr
+  store i64 %n, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to a Float value. Performs a double → i64 bitcast.
+define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) alwaysinline nounwind {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = bitcast double %d to i64
+  store i32 2, i32* %tag_ptr
+  store i64 %pay, i64* %pay_ptr
+  ret void
+}
+
+; Increment PC
+define void @wam_inc_pc(%WamState* %vm) alwaysinline nounwind {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  %pc = load i32, i32* %pc_ptr
+  %new_pc = add i32 %pc, 1
+  store i32 %new_pc, i32* %pc_ptr
+  ret void
+}
+
+; Get current PC
+define i32 @wam_get_pc(%WamState* %vm) alwaysinline nounwind {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  %pc = load i32, i32* %pc_ptr
+  ret i32 %pc
+}
+
+; Set PC
+define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  store i32 %pc, i32* %pc_ptr
+  ret void
+}
+
+; M5: Doubling-realloc grow for the trail. Called by @wam_trail_binding
+; (and @wam_trail_heap_binding) when the size hits the current cap.
+; CPs hold trail indices, not pointers, so post-realloc indices remain
+; valid; nothing else needs to be patched up.
+define void @wam_trail_grow(%WamState* %vm) {
+entry:
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %new_tc = mul i32 %tc, 2
+  %new_tc_i64 = zext i32 %new_tc to i64
+  %elem_size = ptrtoint %TrailEntry* getelementptr (%TrailEntry, %TrailEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_tc_i64, %elem_size
+  %trail_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %old_trail = load %TrailEntry*, %TrailEntry** %trail_ptr
+  %old_i8 = bitcast %TrailEntry* %old_trail to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_trail = bitcast i8* %new_i8 to %TrailEntry*
+  store %TrailEntry* %new_trail, %TrailEntry** %trail_ptr
+  store i32 %new_tc, i32* %tc_ptr
+  ret void
+}
+
+; Push trail entry (M5: grows automatically when at cap).
+define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) nounwind {
+entry:
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
+
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
+
+store:
+  ; Reload trail pointer — realloc may have moved it.
+  %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
+  %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
+
+  ; Save register index
+  %idx_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 0
+  store i32 %reg_idx, i32* %idx_ptr
+
+  ; Save current value
+  %old_val = call %Value @wam_get_reg(%WamState* %vm, i32 %reg_idx)
+  %val_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 1
+  store %Value %old_val, %Value* %val_ptr
+
+  ; Increment trail size
+  %new_ts = add i32 %ts, 1
+  store i32 %new_ts, i32* %ts_ptr
+  ret void
+}
+
+@.fmt_trail_oom = private constant [42 x i8] c"FATAL: WAM trail overflow at %d (cap=%d)\0A\00"
+@.fmt_arith_fail = private constant [26 x i8] c"ERROR: eval_arith failed\0A\00"
+
+
+; ============================================================================
+; M6: Growable heap allocator (with WriteCtx fixup)
+; ============================================================================
+;
+; The heap was the last fixed-size allocator after M5. The reason it was
+; held back: WriteCtx stack entries store a `%Value*` in their `data`
+; field that can point into the WAM heap (set by @wam_write_ctx_set_args
+; in get_list write mode), and a naive realloc would invalidate those
+; pointers — subsequent @wam_write_ctx_set_arg calls would write to
+; freed memory.
+;
+; M6 fixes that by walking the stack on heap grow and translating any
+; WriteCtx data pointer that was in the old heap range to the new heap
+; base + same byte offset. The walk only fires on the rare grow event
+; (geometric doubling — log N grows for N cells over the lifetime of a
+; query), and only inspects stack frames (cap is small even after the
+; M5 stack grow), so the amortised cost stays well under one cycle per
+; heap push.
+;
+; Refs (%Value{tag=5, payload=heap_addr}) hold heap INDICES (i32), not
+; pointers, so they survive realloc untouched. Same for any code that
+; reads heap[index] via @wam_heap_get — the index is stable.
+
+define void @wam_heap_grow(%WamState* %vm) {
+entry:
+  ; Snapshot old heap pointer + cap for the post-realloc fixup pass.
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %old_hc = load i32, i32* %hc_ptr
+  %heap_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %old_heap = load %Value*, %Value** %heap_ptr_ptr
+  ; Double the capacity and realloc.
+  %new_hc = mul i32 %old_hc, 2
+  %new_hc_i64 = zext i32 %new_hc to i64
+  %elem_size = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %new_bytes = mul i64 %new_hc_i64, %elem_size
+  %old_i8 = bitcast %Value* %old_heap to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_heap = bitcast i8* %new_i8 to %Value*
+  store %Value* %new_heap, %Value** %heap_ptr_ptr
+  store i32 %new_hc, i32* %hc_ptr
+  ; Fix up any WriteCtx data pointers that were in the old heap range.
+  call void @wam_fixup_writectx_after_heap_grow(%WamState* %vm,
+      %Value* %old_heap, i32 %old_hc, %Value* %new_heap)
+  ret void
+}
+
+; Walks the stack, translating any WriteCtx (type=2) entry whose
+; `data` pointer fell within the old heap range to the corresponding
+; offset inside the new heap.
+;
+; Pointers that lived in the arena (set by put_structure / get_structure
+; write mode) fall outside the old heap range and are left untouched
+; — the arena buffer is independent of the WAM heap.
+;
+; Other stack-entry types (EnvFrame type=0, UnifyCtx type=1) carry
+; data pointers that point into the arena (set by put_structure /
+; get_structure) or are null (EnvFrame doesn't use the field at all),
+; so they're skipped.
+define void @wam_fixup_writectx_after_heap_grow(
+    %WamState* %vm, %Value* %old_heap, i32 %old_cap, %Value* %new_heap) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_end = getelementptr %Value, %Value* %old_heap, i32 %old_cap
+  %old_base_i64 = ptrtoint %Value* %old_heap to i64
+  %old_end_i64 = ptrtoint %Value* %old_end to i64
+  %new_base_i64 = ptrtoint %Value* %new_heap to i64
   br label %loop
 
 loop:
-  %i = phi i32 [ 0, %atom_goal ], [ %next_i, %next ]
-  %done = icmp sge i32 %i, ~w
-  br i1 %done, label %fail, label %check
+  %i = phi i32 [ 0, %entry ], [ %i_next, %loop_continue ]
+  %done = icmp sge i32 %i, %ss
+  br i1 %done, label %exit, label %check_entry
 
-check:
-  %atom_ptr = getelementptr [~w x i64], [~w x i64]* @wam_meta_call_atom_ids, i32 0, i32 %i
-  %cand_atom = load i64, i64* %atom_ptr
-  %atom_match = icmp eq i64 %atom_id, %cand_atom
-  %arity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %i
-  %cand_arity = load i32, i32* %arity_ptr
-  %arity_match = icmp eq i32 %target_arity, %cand_arity
-  %match = and i1 %atom_match, %arity_match
-  br i1 %match, label %dispatch, label %next
+check_entry:
+  %entry_ptr = getelementptr %StackEntry, %StackEntry* %stack, i32 %i
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_writectx = icmp eq i32 %type, 2
+  br i1 %is_writectx, label %check_data, label %loop_continue
 
-next:
-  %next_i = add i32 %i, 1
+check_data:
+  %data_pp = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 2
+  %data_ptr = load %Value*, %Value** %data_pp
+  %is_null = icmp eq %Value* %data_ptr, null
+  br i1 %is_null, label %loop_continue, label %check_range
+
+check_range:
+  %data_i64 = ptrtoint %Value* %data_ptr to i64
+  %ge = icmp uge i64 %data_i64, %old_base_i64
+  %lt = icmp ult i64 %data_i64, %old_end_i64
+  %in_range = and i1 %ge, %lt
+  br i1 %in_range, label %translate, label %loop_continue
+
+translate:
+  %byte_offset = sub i64 %data_i64, %old_base_i64
+  %new_addr = add i64 %new_base_i64, %byte_offset
+  %new_data_ptr = inttoptr i64 %new_addr to %Value*
+  store %Value* %new_data_ptr, %Value** %data_pp
+  br label %loop_continue
+
+loop_continue:
+  %i_next = add i32 %i, 1
   br label %loop
 
-dispatch:
-  %label_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %i
-  %label_idx = load i32, i32* %label_ptr
+exit:
+  ret void
+}
+
+; Push value onto heap, return address. (M6: replaces the M5-era
+; exit(2) abort path with a doubling realloc + WriteCtx fixup. Refs
+; into the heap are unaffected because they store i32 indices, not
+; pointers.)
+define i32 @wam_heap_push(%WamState* %vm, %Value %val) nounwind {
+entry:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %hc = load i32, i32* %hc_ptr
+  %need_grow = icmp sge i32 %hs, %hc
+  br i1 %need_grow, label %grow, label %store_it
+
+grow:
+  call void @wam_heap_grow(%WamState* %vm)
+  br label %store_it
+
+store_it:
+  ; Reload heap pointer — realloc may have moved it.
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
+  store %Value %val, %Value* %slot
+  %new_hs = add i32 %hs, 1
+  store i32 %new_hs, i32* %hs_ptr
+  ret i32 %hs
+}
+
+@.fmt_heap_oom = private constant [41 x i8] c"FATAL: WAM heap overflow at %d (cap=%d)\0A\00"
+declare void @exit(i32)
+
+; Load / store a heap slot by absolute index. Used by the Ref-aware
+; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
+; that put_variable uses as shared storage for aliased registers.
+define %Value @wam_heap_get(%WamState* %vm, i32 %addr) alwaysinline nounwind {
+entry:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
+  br i1 %ok, label %load, label %abort
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
+  call void @exit(i32 3)
+  unreachable
+
+load:
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
+  %v = load %Value, %Value* %slot
+  ret %Value %v
+}
+
+@.fmt_heap_bounds = private constant [41 x i8] c"FATAL: WAM heap oob read at %d (cap=%d)\0A\00"
+
+define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) alwaysinline nounwind {
+entry:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
+  br i1 %ok, label %store, label %abort
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_heap_w_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
+  call void @exit(i32 3)
+  unreachable
+
+store:
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
+  store %Value %val, %Value* %slot
+  ret void
+}
+
+@.fmt_heap_w_bounds = private constant [42 x i8] c"FATAL: WAM heap oob write at %d (cap=%d)\0A\00"
+
+
+; Follow a Ref chain to a terminal non-Ref value. If V is Ref{addr},
+; load heap[addr] and continue until we reach a non-Ref. Returns the
+; terminal value (unbound sentinel if the chain ends on an unbound
+; heap cell — lets `value_is_unbound` fire downstream). Bounded by 64
+; hops as a safety guard against malformed chains; if the limit is
+; exceeded, returns the last seen cell.
+;
+; Bounded loop, called from many @step cases — alwaysinline + nounwind
+; matches the C runtime's `wam_deref_ptr` in wam_c_runtime/wam_runtime.h.
+define %Value @wam_deref_value(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %loop
+loop:
+  %cur = phi %Value [ %v, %entry ], [ %next, %follow ]
+  %i = phi i32 [ 0, %entry ], [ %i_next, %follow ]
+  %tag = extractvalue %Value %cur, 0
+  %is_ref = icmp eq i32 %tag, 5
+  %hop_ok = icmp slt i32 %i, 64
+  %cont = and i1 %is_ref, %hop_ok
+  br i1 %cont, label %follow, label %done
+follow:
+  %addr_i64 = extractvalue %Value %cur, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %next = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  %i_next = add i32 %i, 1
+  br label %loop
+done:
+  ret %Value %cur
+}
+
+; Read a register's value with full Ref-dereferencing. Used by binding
+; sites that want to inspect "is this logically unbound?" — a Ref to
+; an unbound heap cell reads back as the Unbound sentinel here.
+define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) alwaysinline nounwind {
+  %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
+  ret %Value %d
+}
+
+; Bind a register to a value. If the register currently holds a Ref
+; (put_variable aliasing), write through to the referenced heap cell
+; AND record a trail entry so a subsequent backtrack unwinds the
+; binding. No Ref-chain following — put_variable creates depth-1 Refs,
+; and more exotic chains would also require the structural-unify path
+; to produce them.
+define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
+entry:
+  %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %tag = extractvalue %Value %cur, 0
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %heap_bind, label %reg_bind
+heap_bind:
+  %addr_i64 = extractvalue %Value %cur, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
+  call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val)
+  ret void
+reg_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 %idx)
+  call void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val)
+  ret void
+}
+
+; Bind through a Ref value if it points to an Unbound heap cell.
+; Does NOT update any register.
+define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) alwaysinline nounwind {
+entry:
+  %tag = extractvalue %Value %ref_val, 0
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %check, label %done
+check:
+  %addr_i64 = extractvalue %Value %ref_val, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  %is_unb = call i1 @value_is_unbound(%Value %old)
+  br i1 %is_unb, label %bind, label %done
+bind:
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
+  call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %new_val)
+  br label %done
+done:
+  ret void
+}
+
+; M10: Proper recursive structural unification with binding.
+; Used by builtin_unify (=/2) when both operands are bound to
+; compounds -- the prior fallback to value_equals does shallow
+; structural equality and fails on lists like [11|_] vs [11|22|_]
+; (Ref vs Integer payloads). This routine:
+;   - Derefs both operands.
+;   - If either is Unbound, binds (through the Ref) and succeeds.
+;     Direct-Unbound operands (rare: only registers explicitly
+;     storing Unbound, no surrounding heap cell) cannot be bound
+;     and are reported as failure to keep the helper signature
+;     pointer-free; callers needing register-direct binding should
+;     handle that case separately before calling.
+;   - On same-tag bound operands: atomic-tag => payload compare;
+;     compound-tag => same functor+arity + recurse on args.
+; Recursive => NOT alwaysinline. `inlinehint` lets non-recursive
+; call sites still get inlined.
+define i1 @wam_unify_value(%WamState* %vm, %Value %a, %Value %b) inlinehint nounwind {
+entry:
+  %da = call %Value @wam_deref_value(%WamState* %vm, %Value %a)
+  %db = call %Value @wam_deref_value(%WamState* %vm, %Value %b)
+  %a_unb = call i1 @value_is_unbound(%Value %da)
+  br i1 %a_unb, label %bind_a, label %check_b_unb
+
+bind_a:
+  %a_tag = extractvalue %Value %a, 0
+  %a_is_ref = icmp eq i32 %a_tag, 5
+  br i1 %a_is_ref, label %bind_a_through, label %fail_no_binding
+
+bind_a_through:
+  %a_addr_i64 = extractvalue %Value %a, 1
+  %a_addr = trunc i64 %a_addr_i64 to i32
+  %a_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %a_old)
+  ; M104: if b is also a Ref to an unbound heap cell, store the
+  ; ORIGINAL b (the Ref) into a's cell rather than the deref'd
+  ; Unbound sentinel. That way a now points at b's cell, and
+  ; subsequent var(a) / var(b) / a == b / etc. all see them as
+  ; the same variable. Previously bind_a_through stored db (=
+  ; Unbound) which left a and b as two distinct unbound cells.
+  %ba_b_tag = extractvalue %Value %b, 0
+  %ba_b_is_ref = icmp eq i32 %ba_b_tag, 5
+  %ba_db_unb = call i1 @value_is_unbound(%Value %db)
+  %ba_alias = and i1 %ba_b_is_ref, %ba_db_unb
+  %ba_to_write = select i1 %ba_alias, %Value %b, %Value %db
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_to_write)
+  ret i1 true
+
+check_b_unb:
+  %b_unb = call i1 @value_is_unbound(%Value %db)
+  br i1 %b_unb, label %bind_b, label %both_bound
+
+bind_b:
+  %b_tag = extractvalue %Value %b, 0
+  %b_is_ref = icmp eq i32 %b_tag, 5
+  br i1 %b_is_ref, label %bind_b_through, label %fail_no_binding
+
+bind_b_through:
+  %b_addr_i64 = extractvalue %Value %b, 1
+  %b_addr = trunc i64 %b_addr_i64 to i32
+  %b_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %b_old)
+  ; M104: symmetric to bind_a_through -- if a is also an unbound
+  ; Ref, store the original a so they alias.
+  %bb_a_tag = extractvalue %Value %a, 0
+  %bb_a_is_ref = icmp eq i32 %bb_a_tag, 5
+  %bb_da_unb = call i1 @value_is_unbound(%Value %da)
+  %bb_alias = and i1 %bb_a_is_ref, %bb_da_unb
+  %bb_to_write = select i1 %bb_alias, %Value %a, %Value %da
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_to_write)
+  ret i1 true
+
+both_bound:
+  %tag_a = extractvalue %Value %da, 0
+  %tag_b = extractvalue %Value %db, 0
+  %tags_eq = icmp eq i32 %tag_a, %tag_b
+  br i1 %tags_eq, label %same_tag, label %fail
+
+same_tag:
+  %is_compound = icmp eq i32 %tag_a, 3
+  br i1 %is_compound, label %compound_unify, label %atomic_eq
+
+atomic_eq:
+  %pay_a = extractvalue %Value %da, 1
+  %pay_b = extractvalue %Value %db, 1
+  %pay_eq = icmp eq i64 %pay_a, %pay_b
+  ret i1 %pay_eq
+
+compound_unify:
+  %cpa = extractvalue %Value %da, 1
+  %cpb = extractvalue %Value %db, 1
+  %ptr_eq = icmp eq i64 %cpa, %cpb
+  br i1 %ptr_eq, label %success, label %deep_unify
+
+deep_unify:
+  %ap = inttoptr i64 %cpa to %Compound*
+  %bp = inttoptr i64 %cpb to %Compound*
+  %afn_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 0
+  %bfn_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 0
+  %afn = load i8*, i8** %afn_slot
+  %bfn = load i8*, i8** %bfn_slot
+  %fn_eq = icmp eq i8* %afn, %bfn
+  br i1 %fn_eq, label %check_arity, label %fail
+
+check_arity:
+  %aar_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 1
+  %bar_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 1
+  %aar = load i32, i32* %aar_slot
+  %bar = load i32, i32* %bar_slot
+  %ar_eq = icmp eq i32 %aar, %bar
+  br i1 %ar_eq, label %args_init, label %fail
+
+args_init:
+  %aargs_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 2
+  %bargs_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 2
+  %aargs = load %Value*, %Value** %aargs_slot
+  %bargs = load %Value*, %Value** %bargs_slot
+  %has_args = icmp sgt i32 %aar, 0
+  br i1 %has_args, label %args_loop, label %success
+
+args_loop:
+  %idx = phi i32 [ 0, %args_init ], [ %next_idx, %step ]
+  %ae_ptr = getelementptr %Value, %Value* %aargs, i32 %idx
+  %be_ptr = getelementptr %Value, %Value* %bargs, i32 %idx
+  %ae = load %Value, %Value* %ae_ptr
+  %be = load %Value, %Value* %be_ptr
+  %arg_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ae, %Value %be)
+  br i1 %arg_ok, label %step, label %fail
+
+step:
+  %next_idx = add i32 %idx, 1
+  %done2 = icmp sge i32 %next_idx, %aar
+  br i1 %done2, label %success, label %args_loop
+
+success:
+  ret i1 true
+fail:
+  ret i1 false
+fail_no_binding:
+  ret i1 false
+}
+
+; Trail a heap-cell binding. Uses the high bit (0x40000000) of the
+; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
+; register indices (which are always 0-63). unwind_trail reads that
+; bit to pick reg_set vs heap_set on restore.
+define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) nounwind {
+entry:
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
+
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
+
+store:
+  ; Reload trail pointer — realloc may have moved it.
+  %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
+  %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
+  %idx_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 0
+  %encoded = or i32 %addr, 1073741824
+  store i32 %encoded, i32* %idx_ptr
+  %val_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 1
+  store %Value %old_val, %Value* %val_ptr
+  %new_ts = add i32 %ts, 1
+  store i32 %new_ts, i32* %ts_ptr
+  ret void
+}
+
+; Set halted flag
+define void @wam_set_halted(%WamState* %vm, i1 %val) alwaysinline nounwind {
+  %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  store i1 %val, i1* %h_ptr
+  ret void
+}
+
+; Check halted flag
+define i1 @wam_is_halted(%WamState* %vm) alwaysinline nounwind {
+  %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  %h = load i1, i1* %h_ptr
+  ret i1 %h
+}
+
+; Get/set continuation pointer
+define i32 @wam_get_cp(%WamState* %vm) alwaysinline nounwind {
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cp = load i32, i32* %cp_ptr
+  ret i32 %cp
+}
+
+define void @wam_set_cp(%WamState* %vm, i32 %cp) alwaysinline nounwind {
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  store i32 %cp, i32* %cp_ptr
+  ret void
+}
+
+; Fetch instruction at current PC
+define %Instruction* @wam_fetch(%WamState* %vm) alwaysinline nounwind {
+entry:
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
+  %cl = load i32, i32* %cl_ptr
+  %in_bounds = icmp slt i32 %pc, %cl
+  br i1 %in_bounds, label %fetch, label %out_of_bounds
+
+fetch:
+  %code_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
+  %code_arr = load %Instruction*, %Instruction** %code_arr_ptr
+  %instr_ptr = getelementptr %Instruction, %Instruction* %code_arr, i32 %pc
+  ret %Instruction* %instr_ptr
+
+out_of_bounds:
+  ret %Instruction* null
+}
+
+; Look up label → PC (returns -1 if not found)
+define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) alwaysinline nounwind {
+entry:
+  %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
+  %lc = load i32, i32* %lc_ptr
+  %valid = icmp slt i32 %label_idx, %lc
+  br i1 %valid, label %lookup, label %not_found
+
+lookup:
+  %labels_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 17
+  %labels = load i32*, i32** %labels_ptr
+  %pc_slot = getelementptr i32, i32* %labels, i32 %label_idx
+  %pc = load i32, i32* %pc_slot
+  ret i32 %pc
+
+not_found:
+  ret i32 -1
+}
+
+; === Switch-on-constant dispatch ===
+; Linear-scans a %SwitchEntry table for a match against A1 (deref'd).
+; Returns:
+;   1 on match — PC already updated to the target label's PC
+;   2 on unbound — PC advanced by 1 (switch skipped, fall through)
+;   0 on no match — caller should return false (backtrack)
+define i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
+entry:
+  ; M9: deref A1 before the unbound-vs-bound branch. Without this,
+  ; first-arg-indexed multi-clause predicates called from inside an
+  ; aggregation body (findall / aggregate_all) get a Ref in A1 — the
+  ; put_value at the call site copies a put_variable-created Ref into
+  ; A1 — and the pre-M9 code mistook the Ref-payload for a constant
+  ; payload to scan against, never matching, and the body silently
+  ; failed instead of generating solutions. wam_get_reg_deref walks
+  ; the Ref chain so we see the underlying Unbound / Atom / Integer.
+  %a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %is_unbound = call i1 @value_is_unbound(%Value %a1)
+  br i1 %is_unbound, label %skip_switch, label %scan_init
+
+scan_init:
+  %a1_tag = extractvalue %Value %a1, 0
+  %a1_payload = extractvalue %Value %a1, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %scan_init ], [ %i_next, %continue ]
+  %done = icmp uge i32 %i, %count
+  br i1 %done, label %not_match, label %check
+
+check:
+  %entry_ptr = getelementptr %SwitchEntry, %SwitchEntry* %table, i32 %i
+  %key_tag_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 0
+  %key_tag = load i32, i32* %key_tag_ptr
+  %key_pay_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 1
+  %key_pay = load i64, i64* %key_pay_ptr
+  %tag_eq = icmp eq i32 %key_tag, %a1_tag
+  %pay_eq = icmp eq i64 %key_pay, %a1_payload
+  %match = and i1 %tag_eq, %pay_eq
+  br i1 %match, label %found, label %continue
+
+continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+found:
+  ; Look up target PC via label index.
+  ; Sentinel label_idx = -1 means "fall through" (first clause, the
+  ; "default" label in the WAM source).
+  %label_idx_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 2
+  %label_idx = load i32, i32* %label_idx_ptr
+  %is_default = icmp eq i32 %label_idx, -1
+  br i1 %is_default, label %fall_through, label %resolve_label
+
+fall_through:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 1
+
+resolve_label:
   %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
   %valid = icmp sge i32 %target_pc, 0
-  br i1 %valid, label %go, label %fail
+  br i1 %valid, label %do_jump, label %not_match
 
-go:
-  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+do_jump:
   call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i32 1
+
+skip_switch:
+  ; Unbound A1: advance PC, continue with next instruction.
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 2
+
+not_match:
+  ret i32 0
+}
+
+; Second-argument indexing dispatch. Identical to @wam_switch_on_constant
+; but reads A2 (register 1) instead of A1 (register 0).
+define i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
+entry:
+  ; M9: deref A2 — same fix as wam_switch_on_constant, see the
+  ; comment there for the rationale.
+  %a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %is_unbound = call i1 @value_is_unbound(%Value %a2)
+  br i1 %is_unbound, label %skip_switch, label %scan_init
+
+scan_init:
+  %a2_tag = extractvalue %Value %a2, 0
+  %a2_payload = extractvalue %Value %a2, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %scan_init ], [ %i_next, %continue ]
+  %done = icmp uge i32 %i, %count
+  br i1 %done, label %not_match, label %check
+
+check:
+  %entry_ptr = getelementptr %SwitchEntry, %SwitchEntry* %table, i32 %i
+  %key_tag_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 0
+  %key_tag = load i32, i32* %key_tag_ptr
+  %key_pay_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 1
+  %key_pay = load i64, i64* %key_pay_ptr
+  %tag_eq = icmp eq i32 %key_tag, %a2_tag
+  %pay_eq = icmp eq i64 %key_pay, %a2_payload
+  %match = and i1 %tag_eq, %pay_eq
+  br i1 %match, label %found, label %continue
+
+continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+found:
+  %label_idx_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 2
+  %label_idx = load i32, i32* %label_idx_ptr
+  %is_default = icmp eq i32 %label_idx, -1
+  br i1 %is_default, label %fall_through, label %resolve_label
+
+fall_through:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 1
+
+resolve_label:
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i32 1
+
+skip_switch:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 2
+
+not_match:
+  ret i32 0
+}
+
+; === Stack Context Helpers (for compound term read/write mode) ===
+
+; ============================================================================
+; M5: Growable stack + choice-point allocators
+; ============================================================================
+;
+; The stack, choice-point array, and trail (above) all start with the
+; modest initial capacity set in @wam_state_new and double via realloc
+; when a push hits the cap. Stack overflow used to silently write past
+; the end of the buffer (no overflow check was present in
+; wam_push_unify_ctx / wam_push_write_ctx / the allocate @step case);
+; CP overflow same. M5 routes every push through an ensure_capacity
+; helper that calls into the doubling-grow path.
+;
+; Pointer-stability invariant: the choice-point struct stores trail
+; marks and heap-top markers as INDICES (i32), not as pointers, so
+; trail-grow / CP-grow is transparent to backtrack. The stack stores
+; %Value* in its UnifyCtx / WriteCtx `data` field — for UnifyCtx those
+; point into the arena (allocated by put_structure), for WriteCtx via
+; @wam_write_ctx_set_args those can point into the WAM heap (get_list
+; write mode). Since this PR does NOT grow the heap (heap overflow
+; still exits via the existing abort path), those pointers remain
+; stable for the duration of any active WriteCtx and stack-grow itself
+; only moves the stack buffer, not the heap. Heap-grow is a follow-up
+; that would require either walking the stack on grow or changing the
+; WriteCtx data field to a heap-relative index.
+
+define void @wam_stack_grow(%WamState* %vm) {
+entry:
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %new_sc = mul i32 %sc, 2
+  %new_sc_i64 = zext i32 %new_sc to i64
+  %elem_size = ptrtoint %StackEntry* getelementptr (%StackEntry, %StackEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_sc_i64, %elem_size
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %old_stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_i8 = bitcast %StackEntry* %old_stack to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_stack = bitcast i8* %new_i8 to %StackEntry*
+  store %StackEntry* %new_stack, %StackEntry** %stack_ptr
+  store i32 %new_sc, i32* %sc_ptr
+  ret void
+}
+
+; Ensures there is at least one free slot at the top of the stack.
+; Callers MUST invoke this BEFORE reading the stack pointer (because
+; grow may realloc the buffer to a new address). All push helpers
+; below follow this discipline.
+define void @wam_stack_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %ovf = icmp sge i32 %ss, %sc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_stack_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+define void @wam_cp_grow(%WamState* %vm) {
+entry:
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %new_cc = mul i32 %cc, 2
+  %new_cc_i64 = zext i32 %new_cc to i64
+  %elem_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1) to i64
+  %new_bytes = mul i64 %new_cc_i64, %elem_size
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %old_cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %old_i8 = bitcast %ChoicePoint* %old_cps to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_cps = bitcast i8* %new_i8 to %ChoicePoint*
+  store %ChoicePoint* %new_cps, %ChoicePoint** %cps_ptr
+  store i32 %new_cc, i32* %cc_ptr
+  ret void
+}
+
+define void @wam_cp_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %cn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cn = load i32, i32* %cn_ptr
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %ovf = icmp sge i32 %cn, %cc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_cp_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+; Push a UnifyCtx (type=1) with args array and arg count.
+; M5: calls @wam_stack_ensure_capacity first so the buffer is grown
+; if at cap; reloads the stack pointer afterward in case realloc moved it.
+define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %ss
+  ; type = 1 (UnifyCtx)
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  store i32 1, i32* %type_ptr
+  ; aux = count (number of args remaining)
+  %count_ext = zext i32 %count to i64
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  store i64 %count_ext, i64* %aux_ptr
+  ; data = args pointer
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* %args, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld
+  %new_ss = add i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Push a WriteCtx (type=2) with write count.
+; For compound terms, data field stores the args %Value* pointer
+; so set_value/set_constant write directly into the compound's args array.
+; M5: routes through @wam_stack_ensure_capacity first.
+define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %ss
+  ; type = 2 (WriteCtx)
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  store i32 2, i32* %type_ptr
+  ; aux = count (remaining args to write)
+  %count_ext = zext i32 %count to i64
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  store i64 %count_ext, i64* %aux_ptr
+  ; data = null (will be set by put_structure after this call)
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* null, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld_w = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld_w
+  %new_ss = add i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Set the args pointer on the top WriteCtx (called by put_structure after push).
+define void @wam_write_ctx_set_args(%WamState* %vm, %Value* %args) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* %args, %Value** %data_ptr
+  ret void
+}
+
+; Write a value to the next slot in the compound args array.
+; Reads the args pointer and remaining count from the WriteCtx,
+; writes the value, decrements count, auto-pops when exhausted.
+define void @wam_write_ctx_set_arg(%WamState* %vm, %Value %val) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  ; Read remaining count.
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count64 = load i64, i64* %aux_ptr
+  %count = trunc i64 %count64 to i32
+  ; Read args pointer.
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  %args = load %Value*, %Value** %data_ptr
+  %is_null = icmp eq %Value* %args, null
+  br i1 %is_null, label %dec, label %write
+
+write:
+  ; Write value at args[0], then advance args to args+1.
+  store %Value %val, %Value* %args
+  %args_next = getelementptr %Value, %Value* %args, i32 1
+  store %Value* %args_next, %Value** %data_ptr
+  br label %dec
+
+dec:
+  ; Decrement count.
+  %new_count = sub i32 %count, 1
+  %new_count64 = zext i32 %new_count to i64
+  store i64 %new_count64, i64* %aux_ptr
+  ; Auto-pop if exhausted.
+  %done = icmp sle i32 %new_count, 0
+  br i1 %done, label %pop, label %ret
+pop:
+  store i32 %top_idx, i32* %ss_ptr
+  br label %ret
+ret:
+  ret void
+}
+
+
+; Peek top stack entry type (returns -1 if empty)
+define i32 @wam_peek_stack_type(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %ret_empty, label %peek
+
+peek:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  ret i32 %type
+
+ret_empty:
+  ret i32 -1
+}
+
+; Get UnifyCtx: return next arg from top UnifyCtx, decrement count, auto-pop when exhausted
+; Returns the arg Value, or {tag=6, payload=0} (unbound sentinel) if no ctx
+define %Value @wam_unify_ctx_next(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %no_ctx, label %check
+
+check:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_unify = icmp eq i32 %type, 1
+  br i1 %is_unify, label %get_arg, label %no_ctx
+
+get_arg:
+  ; Read aux (remaining count) and data (args pointer)
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count = load i64, i64* %aux_ptr
+  %count32 = trunc i64 %count to i32
+  %has_args = icmp sgt i32 %count32, 0
+  br i1 %has_args, label %pop_arg, label %no_ctx
+
+pop_arg:
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  %args = load %Value*, %Value** %data_ptr
+  ; We use a simple scheme: data points to the next arg to read,
+  ; aux counts down the remaining number of args.
+  %arg_ptr = load %Value, %Value* %args
+  ; Advance data pointer
+  %next_args = getelementptr %Value, %Value* %args, i32 1
+  store %Value* %next_args, %Value** %data_ptr
+  ; Decrement count
+  %new_count = sub i64 %count, 1
+  store i64 %new_count, i64* %aux_ptr
+  ; Auto-pop if exhausted
+  %exhausted = icmp eq i64 %new_count, 0
+  br i1 %exhausted, label %pop_entry, label %ret_arg
+
+pop_entry:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  br label %ret_arg
+
+ret_arg:
+  ret %Value %arg_ptr
+
+no_ctx:
+  ; Return unbound sentinel
+  %sentinel = insertvalue %Value { i32 6, i64 0 }, i64 0, 1
+  ret %Value %sentinel
+}
+
+; Decrement WriteCtx count; auto-pop when exhausted. Returns remaining count.
+define i32 @wam_write_ctx_dec(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %ret_zero, label %check
+
+check:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_write = icmp eq i32 %type, 2
+  br i1 %is_write, label %dec, label %ret_zero
+
+dec:
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count = load i64, i64* %aux_ptr
+  %new_count = sub i64 %count, 1
+  store i64 %new_count, i64* %aux_ptr
+  %exhausted = icmp eq i64 %new_count, 0
+  br i1 %exhausted, label %pop, label %ret_remaining
+
+pop:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret i32 0
+
+ret_remaining:
+  %rem = trunc i64 %new_count to i32
+  ret i32 %rem
+
+ret_zero:
+  ret i32 0
+}
+
+; Pop top stack entry
+define void @wam_pop_stack(%WamState* %vm) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %not_empty = icmp sgt i32 %ss, 0
+  br i1 %not_empty, label %do_pop, label %done
+
+do_pop:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  br label %done
+
+done:
+  ret void
+}
+
+; === Aggregate Frame Helpers ===
+; Support for aggregate_all(Template, Goal, Result):
+;   begin_aggregate: push a choice point with agg_type >= 0
+;   end_aggregate:   push value to accumulator, fail to trigger backtrack
+;   backtrack on agg frame -> finalize_aggregate applies the operator
+; Note: malloc and @llvm.memcpy.p0i8.p0i8.i64 are declared in module.ll.mustache.
+
+; Push a %Value to the aggregate accumulator, growing if needed.
+define void @wam_agg_push(%WamState* %vm, %Value %val) {
+entry:
+  %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  %count = load i32, i32* %count_ptr
+  %cap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 22
+  %cap = load i32, i32* %cap_ptr
+  %needs_grow = icmp sge i32 %count, %cap
+  br i1 %needs_grow, label %grow, label %store
+
+grow:
+  ; Double the capacity
+  %new_cap = mul i32 %cap, 2
+  store i32 %new_cap, i32* %cap_ptr
+  ; Allocate new buffer (16 bytes per %Value)
+  %new_cap64 = zext i32 %new_cap to i64
+  %new_bytes = mul i64 %new_cap64, 16
+  %new_mem = call i8* @malloc(i64 %new_bytes)
+  %new_typed = bitcast i8* %new_mem to %Value*
+  ; Copy old contents
+  %old_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %old_ptr = load %Value*, %Value** %old_ptr_ptr
+  %count64 = zext i32 %count to i64
+  %old_bytes = mul i64 %count64, 16
+  %new_raw = bitcast %Value* %new_typed to i8*
+  %old_raw = bitcast %Value* %old_ptr to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new_raw, i8* %old_raw, i64 %old_bytes, i1 false)
+  store %Value* %new_typed, %Value** %old_ptr_ptr
+  ; Free old buffer
+  call void @free(i8* %old_raw)
+  br label %store
+
+store:
+  %accum_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
+  %slot = getelementptr %Value, %Value* %accum_ptr, i32 %count
+  store %Value %val, %Value* %slot
+  %new_count = add i32 %count, 1
+  store i32 %new_count, i32* %count_ptr
+  ret void
+}
+
+; Apply the aggregation operator to the accumulator and return a %Value.
+; agg_type: 0=sum, 1=count, 2=min, 3=max, 4=collect, 5=bag
+; For count, we just return Integer(count).
+; For sum/min/max, we iterate over the %Value array.
+; M9: collect (agg_type=4) and bag (agg_type=5) build a Prolog
+; cons-cell list from the accumulator entries. Both return the same
+; shape — bag/findall preserves order/duplicates, set goes through a
+; downstream sort/dedup pass that doesn't change the per-entry shape.
+define %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum, i32 %count) {
+entry:
+  switch i32 %agg_type, label %default_case [
+    i32 0, label %sum_case
+    i32 1, label %count_case
+    i32 2, label %min_case
+    i32 3, label %max_case
+    i32 4, label %collect_case
+    i32 5, label %collect_case
+    i32 6, label %set_case
+  ]
+
+count_case:
+  %c_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
+  %cnt64 = sext i32 %count to i64
+  %c_final = insertvalue %Value %c_val, i64 %cnt64, 1
+  ret %Value %c_final
+
+sum_case:
+  ; M14: scan once for any Float entry. If all entries are Integer
+  ; we use the integer path (preserves precision; the original
+  ; behaviour). If any entry is a Float we use a double accumulator
+  ; -- previously the integer loop just added raw payload bits which
+  ; gave junk for Float entries (Float bits != the underlying value).
+  br label %sum_scan
+sum_scan:
+  %scan_i = phi i32 [0, %sum_case], [%scan_inext, %sum_scan_step]
+  %had_float = phi i1 [false, %sum_case], [%scan_new_hadf, %sum_scan_step]
+  %scan_done = icmp sge i32 %scan_i, %count
+  br i1 %scan_done, label %sum_dispatch, label %sum_scan_step
+sum_scan_step:
+  %scan_slot = getelementptr %Value, %Value* %accum, i32 %scan_i
+  %scan_val = load %Value, %Value* %scan_slot
+  %scan_tag = extractvalue %Value %scan_val, 0
+  %scan_is_f = icmp eq i32 %scan_tag, 2
+  %scan_new_hadf = or i1 %had_float, %scan_is_f
+  %scan_inext = add i32 %scan_i, 1
+  br label %sum_scan
+sum_dispatch:
+  br i1 %had_float, label %sum_float, label %sum_loop
+
+sum_loop:
+  %i_s = phi i32 [0, %sum_dispatch], [%next_s, %sum_body]
+  %acc_s = phi i64 [0, %sum_dispatch], [%new_acc_s, %sum_body]
+  %done_s = icmp sge i32 %i_s, %count
+  br i1 %done_s, label %sum_done, label %sum_body
+sum_body:
+  %slot_s = getelementptr %Value, %Value* %accum, i32 %i_s
+  %val_s = load %Value, %Value* %slot_s
+  %pay_s = extractvalue %Value %val_s, 1
+  %new_acc_s = add i64 %acc_s, %pay_s
+  %next_s = add i32 %i_s, 1
+  br label %sum_loop
+sum_done:
+  %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
+  %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
+  ret %Value %s_final
+
+sum_float:
+  br label %sum_floop
+sum_floop:
+  %i_sf = phi i32 [0, %sum_float], [%next_sf, %sum_fbody]
+  %acc_sf = phi double [0.0, %sum_float], [%new_acc_sf, %sum_fbody]
+  %done_sf = icmp sge i32 %i_sf, %count
+  br i1 %done_sf, label %sum_fdone, label %sum_fbody
+sum_fbody:
+  %slot_sf = getelementptr %Value, %Value* %accum, i32 %i_sf
+  %val_sf = load %Value, %Value* %slot_sf
+  ; Promote each entry to double -- Integers go via sitofp, Floats
+  ; reinterpret their payload bits.
+  %term_d = call double @value_to_double(%Value %val_sf)
+  %new_acc_sf = fadd double %acc_sf, %term_d
+  %next_sf = add i32 %i_sf, 1
+  br label %sum_floop
+sum_fdone:
+  %sf_val = call %Value @value_float(double %acc_sf)
+  ret %Value %sf_val
+
+min_case:
+  ; Initial value: take first element if count > 0, else 0
+  %has_m = icmp sgt i32 %count, 0
+  br i1 %has_m, label %min_init, label %min_empty
+min_empty:
+  %me_val = insertvalue %Value undef, i32 1, 0
+  %me_final = insertvalue %Value %me_val, i64 0, 1
+  ret %Value %me_final
+min_init:
+  %first_m = load %Value, %Value* %accum
+  %first_pay_m = extractvalue %Value %first_m, 1
+  br label %min_loop
+min_loop:
+  %i_m = phi i32 [1, %min_init], [%next_m, %min_body]
+  %best_m = phi i64 [%first_pay_m, %min_init], [%new_best_m, %min_body]
+  %done_m = icmp sge i32 %i_m, %count
+  br i1 %done_m, label %min_done, label %min_body
+min_body:
+  %slot_m = getelementptr %Value, %Value* %accum, i32 %i_m
+  %val_m = load %Value, %Value* %slot_m
+  %pay_m = extractvalue %Value %val_m, 1
+  %is_lt = icmp slt i64 %pay_m, %best_m
+  %new_best_m = select i1 %is_lt, i64 %pay_m, i64 %best_m
+  %next_m = add i32 %i_m, 1
+  br label %min_loop
+min_done:
+  ; PHI value %best_m is valid here as %min_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
+  %m_val = insertvalue %Value undef, i32 1, 0
+  %m_final = insertvalue %Value %m_val, i64 %best_m, 1
+  ret %Value %m_final
+
+max_case:
+  %has_x = icmp sgt i32 %count, 0
+  br i1 %has_x, label %max_init, label %max_empty
+max_empty:
+  %xe_val = insertvalue %Value undef, i32 1, 0
+  %xe_final = insertvalue %Value %xe_val, i64 0, 1
+  ret %Value %xe_final
+max_init:
+  %first_x = load %Value, %Value* %accum
+  %first_pay_x = extractvalue %Value %first_x, 1
+  br label %max_loop
+max_loop:
+  %i_x = phi i32 [1, %max_init], [%next_x, %max_body]
+  %best_x = phi i64 [%first_pay_x, %max_init], [%new_best_x, %max_body]
+  %done_x = icmp sge i32 %i_x, %count
+  br i1 %done_x, label %max_done, label %max_body
+max_body:
+  %slot_x = getelementptr %Value, %Value* %accum, i32 %i_x
+  %val_x = load %Value, %Value* %slot_x
+  %pay_x = extractvalue %Value %val_x, 1
+  %is_gt = icmp sgt i64 %pay_x, %best_x
+  %new_best_x = select i1 %is_gt, i64 %pay_x, i64 %best_x
+  %next_x = add i32 %i_x, 1
+  br label %max_loop
+max_done:
+  ; PHI value %best_x is valid here as %max_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
+  %x_val = insertvalue %Value undef, i32 1, 0
+  %x_final = insertvalue %Value %x_val, i64 %best_x, 1
+  ret %Value %x_final
+
+collect_case:
+  ; M9: build the result list from accum[count-1] down to accum[0].
+  ; Tail seed: empty-list Atom whose payload is the interned `[]`
+  ; atom id (set up at codegen time in wam_llvm_target.pl).
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0       ; tag 0 = Atom
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  ; If count == 0, just return the empty list.
+  %has_any = icmp sgt i32 %count, 0
+  br i1 %has_any, label %collect_setup, label %collect_done_empty
+
+collect_done_empty:
+  ret %Value %empty_v
+
+collect_setup:
+  call void @wam_arena_ensure()
+  br label %collect_loop
+
+collect_loop:
+  ; idx walks down from count-1 to 0; tail threads through.
+  %ci = phi i32 [ %count, %collect_setup ], [ %ci_prev, %collect_step ]
+  %tail = phi %Value [ %empty_v, %collect_setup ], [ %new_cons, %collect_step ]
+  %ci_done = icmp sle i32 %ci, 0
+  br i1 %ci_done, label %collect_finish, label %collect_step
+
+collect_step:
+  %ci_prev = sub i32 %ci, 1
+  %slot = getelementptr %Value, %Value* %accum, i32 %ci_prev
+  %head = load %Value, %Value* %slot
+  ; Allocate a fresh %Compound on the arena: { functor_ptr, arity, args_ptr }.
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cp_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %cp = bitcast i8* %cp_mem to %Compound*
+  ; Functor: `[|]` (cons). The string global @.fn__5B_7C_5D is
+  ; emitted by emit_functor_string_globals when "[|]" is in the
+  ; functor_string_global table — wam_llvm_target.pl asserts it
+  ; eagerly for the M9 collect path even if the source program
+  ; never explicitly constructs a cons cell.
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn_ptr  = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %fn_ptr, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  store i32 2, i32* %ar_slot
+  ; Allocate the 2-element args array on the arena.
+  %args_mem = call i8* @wam_arena_alloc(i64 32)         ; 2 * sizeof(%Value)
+  %args = bitcast i8* %args_mem to %Value*
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  store %Value* %args, %Value** %args_slot
+  ; args[0] = head, args[1] = tail.
+  %a0 = getelementptr %Value, %Value* %args, i32 0
+  store %Value %head, %Value* %a0
+  %a1 = getelementptr %Value, %Value* %args, i32 1
+  store %Value %tail, %Value* %a1
+  ; Wrap the compound as a %Value{tag=3, payload=ptrtoint(cp)}.
+  %cp_i64 = ptrtoint %Compound* %cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %cp_i64, 1
+  br label %collect_loop
+
+collect_finish:
+  ret %Value %tail
+
+set_case:
+  ; M10: setof / set -- sort the accumulator in place by (tag, payload)
+  ; lexicographic, then build a cons-cell chain skipping adjacent
+  ; duplicates. Same shape as collect_case but goes through an
+  ; insertion-sort + dedup pass first.
+  %set_has_any = icmp sgt i32 %count, 0
+  br i1 %set_has_any, label %set_sort_init, label %set_empty
+
+set_empty:
+  %set_e_id = load i64, i64* @wam_empty_list_atom_id
+  %set_ev0 = insertvalue %Value undef, i32 0, 0
+  %set_ev  = insertvalue %Value %set_ev0, i64 %set_e_id, 1
+  ret %Value %set_ev
+
+set_sort_init:
+  br label %set_sort_outer
+set_sort_outer:
+  %set_so_i = phi i32 [ 1, %set_sort_init ], [ %set_so_i1, %set_sort_done_inner ]
+  %set_so_more = icmp slt i32 %set_so_i, %count
+  br i1 %set_so_more, label %set_sort_pick, label %set_build_init
+set_sort_pick:
+  %set_so_key_ptr = getelementptr %Value, %Value* %accum, i32 %set_so_i
+  %set_so_key = load %Value, %Value* %set_so_key_ptr
+  %set_so_key_tag = extractvalue %Value %set_so_key, 0
+  %set_so_key_pay = extractvalue %Value %set_so_key, 1
+  br label %set_sort_inner
+set_sort_inner:
+  %set_si_j = phi i32 [ %set_so_i, %set_sort_pick ], [ %set_si_j_dec, %set_si_shift ]
+  %set_si_j_dec = sub i32 %set_si_j, 1
+  %set_si_j_pos = icmp sge i32 %set_si_j_dec, 0
+  br i1 %set_si_j_pos, label %set_si_cmp, label %set_si_done
+set_si_cmp:
+  %set_si_left_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j_dec
+  %set_si_left = load %Value, %Value* %set_si_left_ptr
+  ; M70: delegate to @wam_term_cmp (same migration as the plain msort
+  ; loop above). Same behaviour on integer-only setof; correct
+  ; standard order on atoms / compounds.
+  %set_si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %set_si_left, %Value %set_so_key)
+  %set_should_shift = icmp sgt i32 %set_si_cmp_r, 0
+  br i1 %set_should_shift, label %set_si_shift, label %set_si_done
+set_si_shift:
+  %set_si_dst_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_si_left, %Value* %set_si_dst_ptr
+  br label %set_sort_inner
+set_si_done:
+  %set_si_dst2_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_so_key, %Value* %set_si_dst2_ptr
+  br label %set_sort_done_inner
+set_sort_done_inner:
+  %set_so_i1 = add i32 %set_so_i, 1
+  br label %set_sort_outer
+
+set_build_init:
+  ; Build cons chain from i = count-1 down to 0, but skip when
+  ; accum[i] equals the value just emitted (the head of the running
+  ; chain). Since the array is sorted, duplicates are adjacent, so
+  ; comparing against the just-emitted head is sufficient for full
+  ; deduplication. The first element always emits.
+  call void @wam_arena_ensure()
+  %set_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %set_emptyv0 = insertvalue %Value undef, i32 0, 0
+  %set_emptyv  = insertvalue %Value %set_emptyv0, i64 %set_empty_id, 1
+  br label %set_build_loop
+
+set_build_loop:
+  %set_bi = phi i32 [ %count, %set_build_init ], [ %set_bi_prev, %set_build_step_or_skip ]
+  %set_btail = phi %Value [ %set_emptyv, %set_build_init ], [ %set_new_tail, %set_build_step_or_skip ]
+  %set_bi_done = icmp sle i32 %set_bi, 0
+  br i1 %set_bi_done, label %set_finish, label %set_check_dup
+
+set_check_dup:
+  %set_bi_prev = sub i32 %set_bi, 1
+  %set_head_ptr = getelementptr %Value, %Value* %accum, i32 %set_bi_prev
+  %set_head = load %Value, %Value* %set_head_ptr
+  ; If this is NOT the last unprocessed slot (bi_prev > 0), check
+  ; whether accum[bi_prev] equals accum[bi_prev - 1]. If equal, the
+  ; PRIOR pass will emit accum[bi_prev - 1]; we skip this one to
+  ; avoid the dup. Equivalent: emit only when current != prev.
+  %set_has_prior = icmp sgt i32 %set_bi_prev, 0
+  br i1 %set_has_prior, label %set_dup_check, label %set_emit
+
+set_dup_check:
+  %set_prior_idx = sub i32 %set_bi_prev, 1
+  %set_prior_ptr = getelementptr %Value, %Value* %accum, i32 %set_prior_idx
+  %set_prior = load %Value, %Value* %set_prior_ptr
+  %set_h_tag = extractvalue %Value %set_head, 0
+  %set_h_pay = extractvalue %Value %set_head, 1
+  %set_p_tag = extractvalue %Value %set_prior, 0
+  %set_p_pay = extractvalue %Value %set_prior, 1
+  %set_tags_eq = icmp eq i32 %set_h_tag, %set_p_tag
+  %set_pays_eq = icmp eq i64 %set_h_pay, %set_p_pay
+  %set_is_dup = and i1 %set_tags_eq, %set_pays_eq
+  br i1 %set_is_dup, label %set_skip, label %set_emit
+
+set_skip:
+  ; Drop this duplicate: tail stays the same, advance.
+  br label %set_build_step_or_skip
+
+set_emit:
+  ; Build a new cons cell: { [|]/2, [head, tail] }
+  %set_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %set_cp_mem = call i8* @wam_arena_alloc(i64 %set_cp_size)
+  %set_cp = bitcast i8* %set_cp_mem to %Compound*
+  %set_fn_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 0
+  %set_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %set_fn_ptr, i8** %set_fn_slot
+  %set_ar_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 1
+  store i32 2, i32* %set_ar_slot
+  %set_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %set_args = bitcast i8* %set_args_mem to %Value*
+  %set_args_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 2
+  store %Value* %set_args, %Value** %set_args_slot
+  %set_a0 = getelementptr %Value, %Value* %set_args, i32 0
+  store %Value %set_head, %Value* %set_a0
+  %set_a1 = getelementptr %Value, %Value* %set_args, i32 1
+  store %Value %set_btail, %Value* %set_a1
+  %set_cp_i64 = ptrtoint %Compound* %set_cp to i64
+  %set_nc0 = insertvalue %Value undef, i32 3, 0
+  %set_nc = insertvalue %Value %set_nc0, i64 %set_cp_i64, 1
+  br label %set_build_step_or_skip
+
+set_build_step_or_skip:
+  %set_new_tail = phi %Value [ %set_btail, %set_skip ], [ %set_nc, %set_emit ]
+  br label %set_build_loop
+
+set_finish:
+  ret %Value %set_btail
+
+default_case:
+  ; Unknown agg_type — return sentinel Atom 0.
+  %d_val = insertvalue %Value undef, i32 0, 0
+  %d_final = insertvalue %Value %d_val, i64 0, 1
+  ret %Value %d_final
+}
+
+; M10: msort/2 runtime helper. Walks the input list (a [|]/2 Compound
+; chain terminated by the `[]` Atom), copies elements into an arena
+; buffer, sorts in place with insertion sort, and rebuilds a [|]/2
+; Compound chain of the same length. Comparator: (tag, payload)
+; lexicographic so ints/atoms/floats all order consistently and
+; distinct tags sort apart. Compound vs compound currently compares
+; only the payload (the pointer) -- good enough for the typical
+; "sort a flat list of ints" case; structural ordering is M11 work.
+; Returns the new list's head Value (Compound, or the [] Atom when
+; the input is empty).
+
+; M21: recursive pretty-printer used by write/1 and friends.
+; Prints Integers, Floats, Atoms via existing format strings, and
+; Compounds as either list notation ([a, b, c] when the functor is
+; [|]/2) or term notation (functor(arg, ...)) otherwise. Unbound
+; cells render as `_`; unknown atoms (id out of range) render as
+; `?`. Recurses into compound args -- no depth limit, so a cyclic
+; term would loop, but the rest of the runtime never produces
+; cycles.
+define void @wam_write_value(%WamState* %vm, %Value %v) {
+entry:
+  %wv.d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %wv.tag = extractvalue %Value %wv.d, 0
+  switch i32 %wv.tag, label %wv.unbound [
+    i32 0, label %wv.atom
+    i32 1, label %wv.int
+    i32 2, label %wv.float
+    i32 3, label %wv.compound
+  ]
+
+wv.int:
+  %wv.iv = extractvalue %Value %wv.d, 1
+  %wv.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_lld, i64 %wv.iv)
+  ret void
+
+wv.float:
+  %wv.fb = extractvalue %Value %wv.d, 1
+  %wv.fv = bitcast i64 %wv.fb to double
+  %wv.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_dbl, double %wv.fv)
+  ret void
+
+wv.atom:
+  %wv.aid = extractvalue %Value %wv.d, 1
+  %wv.eid = load i64, i64* @wam_empty_list_atom_id
+  %wv.is_empty = icmp eq i64 %wv.aid, %wv.eid
+  br i1 %wv.is_empty, label %wv.empty_list, label %wv.atom_str
+
+wv.empty_list:
+  call i32 @putchar(i32 91)
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.atom_str:
+  %wv.str = call i8* @wam_atom_to_string(i64 %wv.aid)
+  %wv.null = icmp eq i8* %wv.str, null
+  br i1 %wv.null, label %wv.atom_unknown, label %wv.atom_go
+
+wv.atom_go:
+  %wv.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str, i8* %wv.str)
+  ret void
+
+wv.atom_unknown:
+  call i32 @putchar(i32 63)
+  ret void
+
+wv.unbound:
+  call i32 @putchar(i32 95)
+  ret void
+
+wv.compound:
+  %wv.cp_bits = extractvalue %Value %wv.d, 1
+  %wv.cp = inttoptr i64 %wv.cp_bits to %Compound*
+  %wv.fn_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 0
+  %wv.fn_ptr = load i8*, i8** %wv.fn_slot
+  %wv.ar_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 1
+  %wv.arity = load i32, i32* %wv.ar_slot
+  %wv.args_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 2
+  %wv.args = load %Value*, %Value** %wv.args_slot
+  ; Detect list notation by comparing the functor ptr to @.fn__5B_7C_5D
+  ; (the eager-registered [|]/2 string). Compound args of [|] are
+  ; (Head, Tail) where Tail recurses through more [|] cells or
+  ; terminates in the [] Atom.
+  %wv.bracket = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.is_list = icmp eq i8* %wv.fn_ptr, %wv.bracket
+  br i1 %wv.is_list, label %wv.list, label %wv.term
+
+wv.list:
+  call i32 @putchar(i32 91)
+  %wv.h0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.h0 = load %Value, %Value* %wv.h0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.h0)
+  %wv.t0_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.t0 = load %Value, %Value* %wv.t0_ptr
+  br label %wv.list_walk
+
+wv.list_walk:
+  %wv.cur = phi %Value [ %wv.t0, %wv.list ], [ %wv.cur_next, %wv.list_step ]
+  %wv.cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %wv.cur)
+  %wv.cur_tag = extractvalue %Value %wv.cur_d, 0
+  %wv.cur_is_atom = icmp eq i32 %wv.cur_tag, 0
+  br i1 %wv.cur_is_atom, label %wv.list_check_end, label %wv.list_check_cons
+
+wv.list_check_end:
+  %wv.cur_aid = extractvalue %Value %wv.cur_d, 1
+  %wv.eid2 = load i64, i64* @wam_empty_list_atom_id
+  %wv.cur_is_end = icmp eq i64 %wv.cur_aid, %wv.eid2
+  br i1 %wv.cur_is_end, label %wv.list_done, label %wv.list_improper
+
+wv.list_check_cons:
+  %wv.cur_is_cmp = icmp eq i32 %wv.cur_tag, 3
+  br i1 %wv.cur_is_cmp, label %wv.list_check_cons2, label %wv.list_improper
+
+wv.list_check_cons2:
+  %wv.cur_cp_bits = extractvalue %Value %wv.cur_d, 1
+  %wv.cur_cp = inttoptr i64 %wv.cur_cp_bits to %Compound*
+  %wv.cur_fn_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 0
+  %wv.cur_fn_ptr = load i8*, i8** %wv.cur_fn_slot
+  %wv.bracket2 = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.cur_is_list = icmp eq i8* %wv.cur_fn_ptr, %wv.bracket2
+  br i1 %wv.cur_is_list, label %wv.list_step, label %wv.list_improper
+
+wv.list_step:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  %wv.cur_args_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 2
+  %wv.cur_args = load %Value*, %Value** %wv.cur_args_slot
+  %wv.cur_h_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 0
+  %wv.cur_h = load %Value, %Value* %wv.cur_h_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_h)
+  %wv.cur_t_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 1
+  %wv.cur_next = load %Value, %Value* %wv.cur_t_ptr
+  br label %wv.list_walk
+
+wv.list_improper:
+  call i32 @putchar(i32 124)
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_d)
+  br label %wv.list_done
+
+wv.list_done:
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.term:
+  ; M22 / M23: detect infix / prefix operator notation before
+  ; falling through to the canonical functor(args) form.
+  ; Single-char ops (fn[1] == 0): M22 path.
+  ; Two-char ops (fn[1] != 0, fn[2] == 0): M23 path. Symbolic 2-byte
+  ; operators like ``->`` / ``:-`` / ``==`` / ``=<`` print without
+  ; spaces; word-like 2-char ops (``is``, ``mod``, ``xor``) need
+  ; word-boundary spacing and are deferred.
+  %wv.fn1_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 1
+  %wv.fn1 = load i8, i8* %wv.fn1_ptr
+  %wv.fn1_zero = icmp eq i8 %wv.fn1, 0
+  br i1 %wv.fn1_zero, label %wv.maybe_op, label %wv.maybe_op2
+
+wv.maybe_op:
+  %wv.fn0_char = load i8, i8* %wv.fn_ptr
+  %wv.is_binary = icmp eq i32 %wv.arity, 2
+  %wv.is_unary = icmp eq i32 %wv.arity, 1
+  br i1 %wv.is_binary, label %wv.binary_op, label %wv.unary_check
+
+wv.maybe_op2:
+  ; Only consider 2-char ops for arity=2.
+  %wv.b2 = icmp eq i32 %wv.arity, 2
+  br i1 %wv.b2, label %wv.check_2char, label %wv.canonical
+
+wv.check_2char:
+  ; fn[2] == 0 -> exactly 2 bytes (M23 path).
+  ; fn[2] != 0 -> maybe a 3-byte word op (M24 path).
+  %wv.fn2_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 2
+  %wv.fn2 = load i8, i8* %wv.fn2_ptr
+  %wv.fn2_zero = icmp eq i8 %wv.fn2, 0
+  br i1 %wv.fn2_zero, label %wv.binary_op2, label %wv.check_3char
+
+wv.check_3char:
+  ; fn[3] must be 0 -- only handle exactly 3-byte ops.
+  %wv.fn3_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 3
+  %wv.fn3 = load i8, i8* %wv.fn3_ptr
+  %wv.fn3_zero = icmp eq i8 %wv.fn3, 0
+  br i1 %wv.fn3_zero, label %wv.binary_op3, label %wv.canonical
+
+wv.binary_op3:
+  ; Pack (fn[0], fn[1], fn[2]) into i32:
+  ;   (fn[0] << 16) | (fn[1] << 8) | fn[2]
+  %wv.fn0_c3 = load i8, i8* %wv.fn_ptr
+  %wv.fn0_z3 = zext i8 %wv.fn0_c3 to i32
+  %wv.fn1_z3 = zext i8 %wv.fn1 to i32
+  %wv.fn2_z3 = zext i8 %wv.fn2 to i32
+  %wv.fn0_s3 = shl i32 %wv.fn0_z3, 16
+  %wv.fn1_s3 = shl i32 %wv.fn1_z3, 8
+  %wv.packed3_a = or i32 %wv.fn0_s3, %wv.fn1_s3
+  %wv.packed3 = or i32 %wv.packed3_a, %wv.fn2_z3
+  switch i32 %wv.packed3, label %wv.canonical [
+    i32 7171940, label %wv.infix_word3  ; ''m'' ''o'' ''d'' (109,111,100)
+    i32 7892850, label %wv.infix_word3  ; ''x'' ''o'' ''r'' (120,111,114)
+    i32 7497069, label %wv.infix_word3  ; ''r'' ''e'' ''m'' (114,101,109)
+    i32 6580598, label %wv.infix_word3  ; ''d'' ''i'' ''v'' (100,105,118)
+    i32 4012605, label %wv.infix3       ; ''='' '':'' ''='' -> ``=:=``
+    i32 4021309, label %wv.infix3       ; ''='' ''\\'' ''='' -> ``=\\=``
+    i32 4009518, label %wv.infix3       ; ''='' ''.'' ''.'' -> ``=..``
+    i32 6044989, label %wv.infix3       ; ''\\'' ''='' ''='' -> ``\\==``
+    i32 4209980, label %wv.infix3       ; ''@'' ''='' ''<'' -> ``@=<``
+    i32 4210237, label %wv.infix3       ; ''@'' ''>'' ''='' -> ``@>=``
+  ]
+
+wv.infix3:
+  ; Print: arg0 + fn[0..2] (no spaces, symbolic 3-byte op) + arg1.
+  %wv.s3_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.s3_a0 = load %Value, %Value* %wv.s3_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a0)
+  %wv.s3_fn0_i32 = zext i8 %wv.fn0_c3 to i32
+  call i32 @putchar(i32 %wv.s3_fn0_i32)
+  %wv.s3_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.s3_fn1_i32)
+  %wv.s3_fn2_i32 = zext i8 %wv.fn2 to i32
+  call i32 @putchar(i32 %wv.s3_fn2_i32)
+  %wv.s3_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.s3_a1 = load %Value, %Value* %wv.s3_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a1)
+  ret void
+
+wv.infix_word3:
+  ; Print: arg0 + '' '' + fn[0..2] + '' '' + arg1.
+  %wv.w3_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.w3_a0 = load %Value, %Value* %wv.w3_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w3_a0)
+  call i32 @putchar(i32 32)
+  %wv.w3_fn0_i32 = zext i8 %wv.fn0_c3 to i32
+  call i32 @putchar(i32 %wv.w3_fn0_i32)
+  %wv.w3_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.w3_fn1_i32)
+  %wv.w3_fn2_i32 = zext i8 %wv.fn2 to i32
+  call i32 @putchar(i32 %wv.w3_fn2_i32)
+  call i32 @putchar(i32 32)
+  %wv.w3_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.w3_a1 = load %Value, %Value* %wv.w3_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w3_a1)
+  ret void
+
+wv.binary_op2:
+  ; Pack (fn[0], fn[1]) into i16: (fn[0] << 8) | fn[1].
+  %wv.fn0_c2 = load i8, i8* %wv.fn_ptr
+  %wv.fn0_z16 = zext i8 %wv.fn0_c2 to i16
+  %wv.fn1_z16 = zext i8 %wv.fn1 to i16
+  %wv.fn0_shift = shl i16 %wv.fn0_z16, 8
+  %wv.packed = or i16 %wv.fn0_shift, %wv.fn1_z16
+  switch i16 %wv.packed, label %wv.canonical [
+    i16 11582, label %wv.infix2       ; ''-'' ''>'' -> ``->``
+    i16 14893, label %wv.infix2       ; '':'' ''-'' -> ``:-``
+    i16 15677, label %wv.infix2       ; ''='' ''='' -> ``==``
+    i16 23613, label %wv.infix2       ; ''\\'' ''='' -> ``\\=``
+    i16 15676, label %wv.infix2       ; ''='' ''<'' -> ``=<``
+    i16 15933, label %wv.infix2       ; ''>'' ''='' -> ``>=``
+    i16 12079, label %wv.infix2       ; ''/'' ''/'' -> ``//``
+    i16 10794, label %wv.infix2       ; ''*'' ''*'' -> ``**``
+    i16 26995, label %wv.infix_word2  ; ''i'' ''s'' -> `` is `` (word-spaced)
+  ]
+
+wv.infix2:
+  %wv.i2_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.i2_a0 = load %Value, %Value* %wv.i2_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a0)
+  %wv.i2_fn0_c = load i8, i8* %wv.fn_ptr
+  %wv.i2_fn0_i32 = zext i8 %wv.i2_fn0_c to i32
+  call i32 @putchar(i32 %wv.i2_fn0_i32)
+  %wv.i2_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.i2_fn1_i32)
+  %wv.i2_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.i2_a1 = load %Value, %Value* %wv.i2_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a1)
+  ret void
+
+wv.infix_word2:
+  ; Word-like 2-char op (``is``) -- emit `` is `` with surrounding
+  ; spaces so adjacent atoms / numbers don''t collide with the op
+  ; name. Same arg flow as wv.infix2.
+  %wv.w2_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.w2_a0 = load %Value, %Value* %wv.w2_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w2_a0)
+  call i32 @putchar(i32 32)
+  %wv.w2_fn0_c = load i8, i8* %wv.fn_ptr
+  %wv.w2_fn0_i32 = zext i8 %wv.w2_fn0_c to i32
+  call i32 @putchar(i32 %wv.w2_fn0_i32)
+  %wv.w2_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.w2_fn1_i32)
+  call i32 @putchar(i32 32)
+  %wv.w2_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.w2_a1 = load %Value, %Value* %wv.w2_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w2_a1)
+  ret void
+
+wv.binary_op:
+  ; Single-byte binary operators that print as infix without parens.
+  ; Precedence is not modelled yet -- a child operator with lower
+  ; priority than its parent should be parenthesised, but the
+  ; runtime doesn''t have an op-priority table yet.
+  switch i8 %wv.fn0_char, label %wv.canonical [
+    i8 43, label %wv.infix  ; ''+''
+    i8 45, label %wv.infix  ; ''-''
+    i8 42, label %wv.infix  ; ''*''
+    i8 47, label %wv.infix  ; ''/''
+    i8 61, label %wv.infix  ; ''=''
+    i8 60, label %wv.infix  ; ''<''
+    i8 62, label %wv.infix  ; ''>''
+    i8 58, label %wv.infix  ; '':''
+    i8 94, label %wv.infix  ; ''^''
+  ]
+
+wv.infix:
+  %wv.iarg0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.iarg0 = load %Value, %Value* %wv.iarg0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg0)
+  %wv.fn0_i32 = zext i8 %wv.fn0_char to i32
+  call i32 @putchar(i32 %wv.fn0_i32)
+  %wv.iarg1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.iarg1 = load %Value, %Value* %wv.iarg1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg1)
+  ret void
+
+wv.unary_check:
+  br i1 %wv.is_unary, label %wv.maybe_prefix, label %wv.canonical
+
+wv.maybe_prefix:
+  ; Only ``-`` is a meaningful single-char prefix op; ``+`` is a no-op
+  ; that real code never writes out. ``\+`` is two characters.
+  %wv.is_neg = icmp eq i8 %wv.fn0_char, 45
+  br i1 %wv.is_neg, label %wv.prefix, label %wv.canonical
+
+wv.prefix:
+  call i32 @putchar(i32 45)
+  %wv.parg_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.parg = load %Value, %Value* %wv.parg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.parg)
+  ret void
+
+wv.canonical:
+  %wv.fmt_str2 = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str2, i8* %wv.fn_ptr)
+  call i32 @putchar(i32 40)
+  br label %wv.term_loop
+
+wv.term_loop:
+  %wv.ti = phi i32 [ 0, %wv.canonical ], [ %wv.ti_next, %wv.term_after ]
+  %wv.done_t = icmp sge i32 %wv.ti, %wv.arity
+  br i1 %wv.done_t, label %wv.term_done, label %wv.term_iter
+
+wv.term_iter:
+  %wv.first = icmp eq i32 %wv.ti, 0
+  br i1 %wv.first, label %wv.term_arg, label %wv.term_sep
+
+wv.term_sep:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  br label %wv.term_arg
+
+wv.term_arg:
+  %wv.arg_ptr = getelementptr %Value, %Value* %wv.args, i32 %wv.ti
+  %wv.arg = load %Value, %Value* %wv.arg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.arg)
+  br label %wv.term_after
+
+wv.term_after:
+  %wv.ti_next = add i32 %wv.ti, 1
+  br label %wv.term_loop
+
+wv.term_done:
+  call i32 @putchar(i32 41)
+  ret void
+}
+
+define %Value @wam_msort_list(%WamState* %vm, %Value %head_in) inlinehint nounwind {
+entry:
+  call void @wam_arena_ensure()
+  ; ---- Pass 1: count elements ----
+  br label %count_loop
+count_loop:
+  %cnt_cur = phi %Value [ %head_in, %entry ], [ %cnt_next, %cnt_step ]
+  %cnt_n = phi i32 [ 0, %entry ], [ %cnt_n1, %cnt_step ]
+  %cnt_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cnt_cur)
+  %cnt_tag = extractvalue %Value %cnt_d, 0
+  %cnt_is_cmp = icmp eq i32 %cnt_tag, 3
+  br i1 %cnt_is_cmp, label %cnt_step, label %cnt_done
+cnt_step:
+  %cnt_cp_bits = extractvalue %Value %cnt_d, 1
+  %cnt_cp = inttoptr i64 %cnt_cp_bits to %Compound*
+  %cnt_args_slot = getelementptr %Compound, %Compound* %cnt_cp, i32 0, i32 2
+  %cnt_args = load %Value*, %Value** %cnt_args_slot
+  %cnt_tail_ptr = getelementptr %Value, %Value* %cnt_args, i32 1
+  %cnt_next = load %Value, %Value* %cnt_tail_ptr
+  %cnt_n1 = add i32 %cnt_n, 1
+  br label %count_loop
+cnt_done:
+  ; If the input was empty (only the [] atom), return it unchanged.
+  %is_empty = icmp eq i32 %cnt_n, 0
+  br i1 %is_empty, label %ret_empty, label %alloc_buf
+ret_empty:
+  ret %Value %cnt_d
+
+  ; ---- Allocate buffer of N Values ----
+alloc_buf:
+  %n64 = zext i32 %cnt_n to i64
+  %buf_bytes = shl i64 %n64, 4
+  %buf_mem = call i8* @wam_arena_alloc(i64 %buf_bytes)
+  %buf = bitcast i8* %buf_mem to %Value*
+
+  ; ---- Pass 2: copy elements into buffer ----
+  br label %copy_loop
+copy_loop:
+  %cp_cur = phi %Value [ %head_in, %alloc_buf ], [ %cp_next, %cp_step ]
+  %cp_i = phi i32 [ 0, %alloc_buf ], [ %cp_i1, %cp_step ]
+  %cp_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_cur)
+  %cp_tag = extractvalue %Value %cp_d, 0
+  %cp_is_cmp = icmp eq i32 %cp_tag, 3
+  br i1 %cp_is_cmp, label %cp_step, label %sort_init
+cp_step:
+  %cp_cp_bits = extractvalue %Value %cp_d, 1
+  %cp_cp = inttoptr i64 %cp_cp_bits to %Compound*
+  %cp_args_slot = getelementptr %Compound, %Compound* %cp_cp, i32 0, i32 2
+  %cp_args = load %Value*, %Value** %cp_args_slot
+  %cp_h_ptr = getelementptr %Value, %Value* %cp_args, i32 0
+  %cp_h = load %Value, %Value* %cp_h_ptr
+  ; Deref the head so the buffer stores the underlying value, not a
+  ; Ref into the input -- sorting by tag/payload needs the actual data.
+  %cp_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_h)
+  %cp_slot = getelementptr %Value, %Value* %buf, i32 %cp_i
+  store %Value %cp_h_d, %Value* %cp_slot
+  %cp_tail_ptr = getelementptr %Value, %Value* %cp_args, i32 1
+  %cp_next = load %Value, %Value* %cp_tail_ptr
+  %cp_i1 = add i32 %cp_i, 1
+  br label %copy_loop
+
+  ; ---- Insertion sort over buf[0..cnt_n) ----
+sort_init:
+  br label %sort_outer
+sort_outer:
+  %so_i = phi i32 [ 1, %sort_init ], [ %so_i1, %sort_done_inner ]
+  %so_more = icmp slt i32 %so_i, %cnt_n
+  br i1 %so_more, label %sort_pick, label %build_init
+sort_pick:
+  %so_key_ptr = getelementptr %Value, %Value* %buf, i32 %so_i
+  %so_key = load %Value, %Value* %so_key_ptr
+  %so_key_tag = extractvalue %Value %so_key, 0
+  %so_key_pay = extractvalue %Value %so_key, 1
+  br label %sort_inner
+sort_inner:
+  %si_j = phi i32 [ %so_i, %sort_pick ], [ %si_j_dec, %si_shift ]
+  %si_j_dec = sub i32 %si_j, 1
+  %si_j_pos = icmp sge i32 %si_j_dec, 0
+  br i1 %si_j_pos, label %si_cmp, label %si_done
+si_cmp:
+  %si_left_ptr = getelementptr %Value, %Value* %buf, i32 %si_j_dec
+  %si_left = load %Value, %Value* %si_left_ptr
+  ; M70: delegate to @wam_term_cmp -- proper standard term order
+  ; (alphabetic atoms, recursive compound, etc.) replaces the old
+  ; (tag, payload) ordering. Behaviour unchanged for integer-only
+  ; lists (which is what every existing msort test uses) and now
+  ; correct for atoms / floats / compounds.
+  %si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %si_left, %Value %so_key)
+  %should_shift = icmp sgt i32 %si_cmp_r, 0
+  br i1 %should_shift, label %si_shift, label %si_done
+si_shift:
+  %si_dst_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %si_left, %Value* %si_dst_ptr
+  br label %sort_inner
+si_done:
+  %si_dst2_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %so_key, %Value* %si_dst2_ptr
+  br label %sort_done_inner
+sort_done_inner:
+  %so_i1 = add i32 %so_i, 1
+  br label %sort_outer
+
+  ; ---- Build output [|]/2 chain from buf[n-1] down to buf[0] ----
+build_init:
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  br label %build_loop
+build_loop:
+  %bi = phi i32 [ %cnt_n, %build_init ], [ %bi_prev, %build_step ]
+  %btail = phi %Value [ %empty_v, %build_init ], [ %new_cons, %build_step ]
+  %bi_done = icmp sle i32 %bi, 0
+  br i1 %bi_done, label %build_finish, label %build_step
+build_step:
+  %bi_prev = sub i32 %bi, 1
+  %b_head_ptr = getelementptr %Value, %Value* %buf, i32 %bi_prev
+  %b_head = load %Value, %Value* %b_head_ptr
+  %b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %b_cp_mem = call i8* @wam_arena_alloc(i64 %b_cp_size)
+  %b_cp = bitcast i8* %b_cp_mem to %Compound*
+  %b_fn_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 0
+  %b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %b_fn_ptr, i8** %b_fn_slot
+  %b_ar_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 1
+  store i32 2, i32* %b_ar_slot
+  %b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %b_args = bitcast i8* %b_args_mem to %Value*
+  %b_args_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 2
+  store %Value* %b_args, %Value** %b_args_slot
+  %b_a0 = getelementptr %Value, %Value* %b_args, i32 0
+  store %Value %b_head, %Value* %b_a0
+  %b_a1 = getelementptr %Value, %Value* %b_args, i32 1
+  store %Value %btail, %Value* %b_a1
+  %b_cp_i64 = ptrtoint %Compound* %b_cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %b_cp_i64, 1
+  br label %build_loop
+build_finish:
+  ret %Value %btail
+}
+
+; Update the agg_return_pc of the nearest aggregate-frame CP.
+define void @wam_update_agg_return_pc(%WamState* %vm, i32 %return_pc) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  br label %loop
+
+loop:
+  %i = phi i32 [%cpn, %entry], [%i_next, %continue]
+  %done = icmp sle i32 %i, 0
+  br i1 %done, label %exit, label %check
+
+check:
+  %idx = sub i32 %i, 1
+  %cp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %idx
+  %agg_type_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_ptr, i32 0, i32 4
+  %agg_type = load i32, i32* %agg_type_ptr
+  %is_agg = icmp sge i32 %agg_type, 0
+  br i1 %is_agg, label %found, label %continue
+
+continue:
+  %i_next = sub i32 %i, 1
+  br label %loop
+
+found:
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_ptr, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_ptr
+  ret void
+
+exit:
+  ret void
+}
+
+; === Foreign Predicate Dispatch (M3 scaffolding) ===
+; Dispatches a call_foreign instruction to a native kernel.
+; In M3, every kind returns false — M5 will replace the stubs with real
+; kernel implementations (transitive_distance, weighted_shortest_path, etc).
+; When foreign_lowering is disabled (the default), the compile path emits
+; no call_foreign instructions and this function is never reached, so the
+; pure WAM behavior is preserved for testing.
+;
+; Kind IDs (keep in sync with wam_llvm_foreign_kind_id/2 in wam_llvm_target.pl):
+;   0 = category_ancestor
+;   1 = countdown_sum2
+;   2 = list_suffix2
+;   3 = transitive_closure2
+;   4 = transitive_distance3
+;   5 = weighted_shortest_path3
+;   6 = astar_shortest_path4
+; === M5.14: Bump arena allocator ===
+; WASM-portable arena for transient kernel allocations. Kernel helpers
+; (BFS, Dijkstra, A*) allocate scratch buffers at the start and free
+; everything at the end — a pattern that maps perfectly to bump allocation.
+;
+; Native: the arena is backed by a single malloc'd buffer.
+; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory.
+;
+; Usage:  mark → alloc … alloc → rewind (restores to mark).
+; NOTE: The arena implementation below uses module-level global state
+; and is NOT thread-safe. Multiple concurrent WamState instances
+; will race on these globals.
+
+@wam_arena_buf = internal global i8* null
+@wam_arena_pos = internal global i64 0
+@wam_arena_cap = internal global i64 0
+
+define void @wam_arena_init(i64 %cap) {
+  %buf = call i8* @malloc(i64 %cap)
+  store i8* %buf, i8** @wam_arena_buf
+  store i64 0, i64* @wam_arena_pos
+  store i64 %cap, i64* @wam_arena_cap
+  ret void
+}
+
+define void @wam_arena_destroy() {
+  %buf = load i8*, i8** @wam_arena_buf
+  %is_null = icmp eq i8* %buf, null
+  br i1 %is_null, label %done, label %do_free
+do_free:
+  call void @free(i8* %buf)
+  store i8* null, i8** @wam_arena_buf
+  store i64 0, i64* @wam_arena_pos
+  store i64 0, i64* @wam_arena_cap
+  br label %done
+done:
+  ret void
+}
+
+define i64 @wam_arena_mark() alwaysinline nounwind {
+  %pos = load i64, i64* @wam_arena_pos
+  ret i64 %pos
+}
+
+define void @wam_arena_rewind(i64 %mark) alwaysinline nounwind {
+  store i64 %mark, i64* @wam_arena_pos
+  ret void
+}
+
+; Reset the bump pointer to 0 without releasing the underlying buffer.
+; Cheaper than @wam_arena_destroy + next-iteration @wam_arena_init pair
+; (which does free + malloc of a 1 MiB buffer per query). Used by
+; @wam_cleanup so callers that loop over queries don't pay the
+; per-iteration alloc/free.
+define void @wam_arena_reset() alwaysinline nounwind {
+  store i64 0, i64* @wam_arena_pos
+  ret void
+}
+
+; Bump-allocates %size bytes (8-byte aligned). Returns null if arena
+; is exhausted — callers that need more than the arena provides should
+; fall back to malloc (not yet implemented; current kernels fit easily).
+define i8* @wam_arena_alloc(i64 %size) {
+entry:
+  ; Align size up to 8.
+  %size_plus_7 = add i64 %size, 7
+  %aligned = and i64 %size_plus_7, -8
+  %pos = load i64, i64* @wam_arena_pos
+  %new_pos = add i64 %pos, %aligned
+  %cap = load i64, i64* @wam_arena_cap
+  %overflow = icmp ugt i64 %new_pos, %cap
+  br i1 %overflow, label %oom, label %ok
+ok:
+  store i64 %new_pos, i64* @wam_arena_pos
+  %buf = load i8*, i8** @wam_arena_buf
+  %ptr = getelementptr i8, i8* %buf, i64 %pos
+  ret i8* %ptr
+oom:
+  ret i8* null
+}
+
+; Convenience: init arena if not already initialized, with a default
+; capacity large enough for most kernel workloads (1 MiB).
+define void @wam_arena_ensure() {
+  %buf = load i8*, i8** @wam_arena_buf
+  %need_init = icmp eq i8* %buf, null
+  br i1 %need_init, label %do_init, label %done
+do_init:
+  call void @wam_arena_init(i64 1048576)
+  br label %done
+done:
+  ret void
+}
+
+; Per-query cleanup: invalidates all arena pointers (compounds and
+; lists allocated via @wam_arena_alloc become unsafe to dereference)
+; but keeps the underlying buffer mapped so the next query reuses it.
+; This is what wam_llvm_target.pl's comments already advertise:
+;   "memory is reclaimed by @wam_cleanup via arena rewind"
+;   "Compounds are transient and reclaimed on @wam_cleanup"
+; A previous implementation called @wam_arena_destroy (free + next-iter
+; malloc), which made every WASM-exported predicate call pay the full
+; arena alloc/free cost. The arena-reset path drops per-iter cost from
+; ~240ns to ~190ns on the dispatch microbench (5-clause + arithmetic).
+;
+; To actually release the buffer (e.g. before module unload), call
+; @wam_full_shutdown instead.
+define void @wam_cleanup() alwaysinline nounwind {
+  call void @wam_arena_reset()
+  ret void
+}
+
+; Full release: hands the arena buffer back to malloc. Idempotent —
+; a second call is a no-op because @wam_arena_destroy checks the
+; null sentinel. Use this on module unload or process shutdown for
+; long-running hosts that want to reclaim the 1 MiB arena.
+define void @wam_full_shutdown() nounwind {
+  call void @wam_arena_destroy()
+  ret void
+}
+
+; === M5.2: BFS over an %AtomFactPair table ===
+; Computes the shortest path length (in edges) from %start to %target in
+; the directed graph described by an array of (from, to) atom ID pairs.
+;
+; On success, writes the distance to *%out_dist and returns true.
+; On failure (target unreachable, or start == target handled specially):
+;   - If %start == %target, writes 0 and returns true.
+;   - Otherwise returns false and does not touch *%out_dist.
+;
+; The caller must supply %max_atom_id — the largest atom ID that could
+; appear in either %start, %target, or any row of %table. This bounds
+; the visited / queue arrays. A safe upper bound is (2 * %len + 1) since
+; the table has at most 2*%len distinct atom IDs, but a tighter bound
+; improves cache behavior.
+;
+; Allocates three scratch buffers via the bump arena (visited, queue,
+; dqueue), all freed by arena rewind before return.
+define i1 @wam_bfs_atom_distance(
+    i64 %start, i64 %target,
+    %AtomFactPair* %table, i64 %len,
+    i64 %max_atom_id,
+    i64* %out_dist) {
+entry:
+  ; Edge case: start == target → distance 0, success, no allocation needed.
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store i64 0, i64* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  ; Size = (max_atom_id + 1) entries.
+  %n = add i64 %max_atom_id, 1
+  %vis_bytes = shl i64 %n, 2     ; n * 4
+  %q_bytes   = shl i64 %n, 3     ; n * 8
+  %dq_bytes  = shl i64 %n, 2     ; n * 4
+
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem   = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem  = call i8* @wam_arena_alloc(i64 %dq_bytes)
+
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue   = bitcast i8* %q_mem  to i64*
+  %dqueue  = bitcast i8* %dq_mem to i32*
+
+  ; Zero-init visited[].
+  br label %vis_init
+
+vis_init:
+  %vi = phi i64 [0, %alloc], [%vi_next, %vis_init_body]
+  %vi_cmp = icmp ult i64 %vi, %n
+  br i1 %vi_cmp, label %vis_init_body, label %seed
+
+vis_init_body:
+  %vi_slot = getelementptr i32, i32* %visited, i64 %vi
+  store i32 0, i32* %vi_slot
+  %vi_next = add i64 %vi, 1
+  br label %vis_init
+
+seed:
+  ; Mark start as visited and push onto queue with depth 0.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %loop
+
+loop:
+  %head = phi i64 [0, %seed], [%head_next, %loop_back]
+  %tail = phi i64 [1, %seed], [%tail_cur, %loop_back]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %pop, label %fail_free
+
+pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %depth = load i32, i32* %dq_slot
+  %head_next = add i64 %head, 1
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %pop], [%si_next, %scan_cont]
+  %tail_cur = phi i64 [%tail, %pop], [%tail_kept, %scan_cont]
+  %scan_cmp = icmp ult i64 %si, %len
+  br i1 %scan_cmp, label %scan_body, label %loop_back
+
+scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr   = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from = load i64, i64* %from_ptr
+  %to   = load i64, i64* %to_ptr
+
+  ; Skip rows whose from != current node.
+  %from_match = icmp eq i64 %from, %node
+  br i1 %from_match, label %check_to, label %scan_cont
+
+check_to:
+  ; Safety: skip if to > max_atom_id.
+  %to_in_range = icmp ule i64 %to, %max_atom_id
+  br i1 %to_in_range, label %check_visited, label %scan_cont
+
+check_visited:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to
+  %vis_to = load i32, i32* %vis_to_ptr
+  %is_unseen = icmp eq i32 %vis_to, 0
+  br i1 %is_unseen, label %visit, label %scan_cont
+
+visit:
+  store i32 1, i32* %vis_to_ptr
+  %new_depth = add i32 %depth, 1
+  %is_target = icmp eq i64 %to, %target
+  br i1 %is_target, label %hit, label %enqueue
+
+hit:
+  %new_depth_64 = sext i32 %new_depth to i64
+  store i64 %new_depth_64, i64* %out_dist
+  br label %free_buffers_ok
+
+enqueue:
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to, i64* %q_push
+  %dq_push = getelementptr i32, i32* %dqueue, i64 %tail_cur
+  store i32 %new_depth, i32* %dq_push
+  %tail_after_push = add i64 %tail_cur, 1
+  br label %scan_cont
+
+scan_cont:
+  ; Merge tail across all paths: unchanged on skip, +1 on enqueue.
+  %tail_kept = phi i64 [%tail_cur, %scan_body], [%tail_cur, %check_to], [%tail_cur, %check_visited], [%tail_after_push, %enqueue]
+  %si_next = add i64 %si, 1
+  br label %scan
+
+loop_back:
+  br label %loop
+
+free_buffers_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.3 + M5.14: Dijkstra over a %WeightedFact table ===
+; Computes the minimum-weight path distance from %start to %target in
+; a directed graph of (from, to, weight) triples. All weights must be
+; non-negative — negative edges produce undefined output (Dijkstra
+; doesn't handle them).
+;
+; On success, writes the distance (as a double) to *%out_dist and
+; returns true. On failure (target unreachable), returns false without
+; touching *%out_dist.
+;
+; M5.14 replaces the O(V²) linear-scan extract-min with a binary
+; min-heap using lazy deletion (no decrease-key). The heap stores
+; (priority, node_id) pairs. When a node's distance is improved via
+; edge relaxation, a new entry is inserted with the better priority
+; rather than updating in-place. Stale entries (already-visited nodes)
+; are skipped on extraction. This reduces the per-extraction cost from
+; O(V) to O(log H) where H ≤ E (number of heap entries).
+;
+; Total complexity: O((V + E) * log E) vs the prior O(V² + V*E).
+;
+; "Infinity" is encoded as 0x7FF0000000000000 (IEEE 754 +inf).
+
+; --- Binary min-heap helpers ---
+; The heap is stored as two parallel arrays: heap_keys (double*) and
+; heap_vals (i64*), plus a size counter. Capacity is pre-allocated to
+; max(V, E) + 1 to avoid realloc during the Dijkstra run.
+
+define void @heap_sift_up(double* %keys, i64* %vals, i64 %idx) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [%idx, %entry], [%parent, %do_swap]
+  %has_parent = icmp ugt i64 %i, 0
+  br i1 %has_parent, label %check, label %done
+
+check:
+  %i_minus_1 = sub i64 %i, 1
+  %parent = udiv i64 %i_minus_1, 2
+  %k_i_ptr = getelementptr double, double* %keys, i64 %i
+  %k_p_ptr = getelementptr double, double* %keys, i64 %parent
+  %k_i = load double, double* %k_i_ptr
+  %k_p = load double, double* %k_p_ptr
+  %should_swap = fcmp olt double %k_i, %k_p
+  br i1 %should_swap, label %do_swap, label %done
+
+do_swap:
+  store double %k_i, double* %k_p_ptr
+  store double %k_p, double* %k_i_ptr
+  %v_i_ptr = getelementptr i64, i64* %vals, i64 %i
+  %v_p_ptr = getelementptr i64, i64* %vals, i64 %parent
+  %v_i = load i64, i64* %v_i_ptr
+  %v_p = load i64, i64* %v_p_ptr
+  store i64 %v_i, i64* %v_p_ptr
+  store i64 %v_p, i64* %v_i_ptr
+  br label %loop
+
+done:
+  ret void
+}
+
+define void @heap_sift_down(double* %keys, i64* %vals, i64 %size, i64 %idx) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [%idx, %entry], [%smallest, %did_swap]
+  %i_times_2 = mul i64 %i, 2
+  %left = add i64 %i_times_2, 1
+  %right = add i64 %left, 1
+  br label %find_smallest
+
+find_smallest:
+  %s0 = phi i64 [%i, %loop]
+  ; Check left child.
+  %left_ok = icmp ult i64 %left, %size
+  br i1 %left_ok, label %cmp_left, label %check_right_only
+
+cmp_left:
+  %k_s0_ptr = getelementptr double, double* %keys, i64 %s0
+  %k_l_ptr = getelementptr double, double* %keys, i64 %left
+  %k_s0 = load double, double* %k_s0_ptr
+  %k_l = load double, double* %k_l_ptr
+  %left_better = fcmp olt double %k_l, %k_s0
+  %s1 = select i1 %left_better, i64 %left, i64 %s0
+  br label %check_right
+
+check_right_only:
+  %s1b = phi i64 [%s0, %find_smallest]
+  br label %check_right
+
+check_right:
+  %s1c = phi i64 [%s1, %cmp_left], [%s1b, %check_right_only]
+  %right_ok = icmp ult i64 %right, %size
+  br i1 %right_ok, label %cmp_right, label %maybe_swap
+
+cmp_right:
+  %k_s1_ptr = getelementptr double, double* %keys, i64 %s1c
+  %k_r_ptr = getelementptr double, double* %keys, i64 %right
+  %k_s1 = load double, double* %k_s1_ptr
+  %k_r = load double, double* %k_r_ptr
+  %right_better = fcmp olt double %k_r, %k_s1
+  %smallest_pre = select i1 %right_better, i64 %right, i64 %s1c
+  br label %maybe_swap
+
+maybe_swap:
+  %smallest = phi i64 [%s1c, %check_right], [%smallest_pre, %cmp_right]
+  %need_swap = icmp ne i64 %smallest, %i
+  br i1 %need_swap, label %did_swap, label %done
+
+did_swap:
+  %dk_i_ptr = getelementptr double, double* %keys, i64 %i
+  %dk_s_ptr = getelementptr double, double* %keys, i64 %smallest
+  %dk_i = load double, double* %dk_i_ptr
+  %dk_s = load double, double* %dk_s_ptr
+  store double %dk_i, double* %dk_s_ptr
+  store double %dk_s, double* %dk_i_ptr
+  %dv_i_ptr = getelementptr i64, i64* %vals, i64 %i
+  %dv_s_ptr = getelementptr i64, i64* %vals, i64 %smallest
+  %dv_i = load i64, i64* %dv_i_ptr
+  %dv_s = load i64, i64* %dv_s_ptr
+  store i64 %dv_i, i64* %dv_s_ptr
+  store i64 %dv_s, i64* %dv_i_ptr
+  br label %loop
+
+done:
+  ret void
+}
+
+define i1 @wam_dijkstra_weighted_distance(
+    i64 %start, i64 %target,
+    %WeightedFact* %table, i64 %len,
+    i64 %max_atom_id,
+    double* %out_dist) {
+entry:
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store double 0.0, double* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %n = add i64 %max_atom_id, 1
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes  = shl i64 %n, 2
+  ; Heap capacity: at most E insertions (one per relaxation).
+  %heap_cap = add i64 %len, 1
+  %heap_key_bytes = shl i64 %heap_cap, 3
+  %heap_val_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem  = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem   = call i8* @wam_arena_alloc(i64 %heap_key_bytes)
+  %hv_mem   = call i8* @wam_arena_alloc(i64 %heap_val_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  ; Init visited[] = 0.
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  ; Init best[] = +inf via loop (memset cannot produce IEEE 754 +inf).
+  br label %init_best
+
+init_best:
+  %ib_i = phi i64 [0, %alloc], [%ib_next, %init_best]
+  %ib_ptr = getelementptr double, double* %best, i64 %ib_i
+  store double 0x7FF0000000000000, double* %ib_ptr
+  %ib_next = add i64 %ib_i, 1
+  %ib_done = icmp uge i64 %ib_next, %n
+  br i1 %ib_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start
+  store double 0.0, double* %best_start
+  ; Insert start into heap with priority 0.0.
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double 0.0, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  ; Extract min from heap (skip stale entries via visited check).
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %fail_free, label %do_extract
+
+do_extract:
+  ; Read root (min).
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  ; Move last to root and sift down.
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  ; Check if this node was already visited (lazy deletion).
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  ; Mark visited.
+  store i32 1, i32* %rv_vis_ptr
+  ; If it's the target, we're done.
+  %is_target = icmp eq i64 %root_val, %target
+  br i1 %is_target, label %hit, label %relax
+
+hit:
+  store double %root_key, double* %out_dist
+  br label %free_ok
+
+relax:
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after_insert, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to   = load i64, i64* %fp_to
+  %edge_w    = load double, double* %fp_w
+
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %root_key, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_and_push, label %relax_cont
+
+store_and_push:
+  store double %alt, double* %best_to_ptr
+  ; Push new entry to heap (lazy: don't remove old one).
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %alt, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_and_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+free_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.4: A* over a %WeightedFact table ===
+; Same as @wam_dijkstra_weighted_distance but orders the frontier by
+; f(n) = g(n) + h(n) instead of just g(n), where g is the best known
+; actual distance from %start and h is a precomputed heuristic estimate
+; of the remaining distance to %target.
+;
+; The heuristic is supplied as a plain double[] indexed by atom ID;
+; %heuristic[i] = estimated distance from node i to %target. Must be
+; admissible (never overestimate) for the result to be optimal.
+;
+; Returns the same g value Dijkstra would return — the heuristic only
+; affects exploration order, not the reported distance.
+;
+; With a zero heuristic this degenerates to Dijkstra. We keep the two
+; helpers separate so the simpler one has no extra parameter and so
+; callers don't allocate a zeroed h[] when they don't want A*.
+define i1 @wam_astar_weighted_distance(
+    i64 %start, i64 %target,
+    %WeightedFact* %table, i64 %len,
+    double* %heuristic,
+    i64 %max_atom_id,
+    double* %out_dist) {
+entry:
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store double 0.0, double* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %n = add i64 %max_atom_id, 1
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes  = shl i64 %n, 2
+  ; Heap capacity: at most E insertions (one per relaxation).
+  %heap_cap = add i64 %len, 1
+  %heap_key_bytes = shl i64 %heap_cap, 3
+  %heap_val_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem  = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem   = call i8* @wam_arena_alloc(i64 %heap_key_bytes)
+  %hv_mem   = call i8* @wam_arena_alloc(i64 %heap_val_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  ; Init visited[] = 0.
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  ; Init best[] = +inf via loop.
+  br label %init_best
+
+init_best:
+  %ii = phi i64 [0, %alloc], [%ii_next, %init_best]
+  %best_slot = getelementptr double, double* %best, i64 %ii
+  store double 0x7FF0000000000000, double* %best_slot
+  %ii_next = add i64 %ii, 1
+  %ii_done = icmp uge i64 %ii_next, %n
+  br i1 %ii_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start
+  store double 0.0, double* %best_start
+  ; Insert start into heap with f = 0 + h(start).
+  %h_start_ptr = getelementptr double, double* %heuristic, i64 %start
+  %h_start = load double, double* %h_start_ptr
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double %h_start, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %fail_free, label %do_extract
+
+do_extract:
+  ; Read root (min f).
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  ; Move last to root and sift down.
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  ; Lazy deletion: skip already-visited nodes.
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  store i32 1, i32* %rv_vis_ptr
+  %is_target = icmp eq i64 %root_val, %target
+  br i1 %is_target, label %hit, label %relax
+
+hit:
+  ; Return g value (actual distance), not f.
+  %best_target_ptr = getelementptr double, double* %best, i64 %target
+  %best_target = load double, double* %best_target_ptr
+  store double %best_target, double* %out_dist
+  br label %free_ok
+
+relax:
+  ; Load the selected node's g value for edge relaxation.
+  %best_pick_ptr = getelementptr double, double* %best, i64 %root_val
+  %best_pick = load double, double* %best_pick_ptr
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after_insert, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to   = load i64, i64* %fp_to
+  %edge_w    = load double, double* %fp_w
+
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %best_pick, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_and_push, label %relax_cont
+
+store_and_push:
+  store double %alt, double* %best_to_ptr
+  ; Push with f = g_new + h(edge_to).
+  %h_to_ptr = getelementptr double, double* %heuristic, i64 %edge_to
+  %h_to = load double, double* %h_to_ptr
+  %f_new = fadd double %alt, %h_to
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %f_new, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_and_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+free_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.8: td3 common runner helper ===
+; The per-instance bodies generated by the M5.6 compile pipeline all
+; follow the same shape: check A1/A2 are atoms, call the BFS helper
+; with the (table, len, max_atom_id) that's specific to the instance,
+; write A3 on success. Rather than inline that whole sequence into
+; every switch case, we factor it into this helper and the generated
+; impl just passes the right arguments.
+;
+; This lets multiple foreign-lowered td3 predicates with different
+; edge tables share a single body of code, keeping the substituted
+; @wam_td3_kernel_impl small — each instance case is a GEP + a call.
+define i1 @wam_td3_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_is_atom = icmp eq i32 %s_tag, 0
+  br i1 %s_is_atom, label %check_t, label %bail
+
+check_t:
+  ; If A2 is unbound, use stream mode (enumerate all reachable pairs).
+  %t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %t_is_atom = icmp eq i32 %t_tag, 0
+  br i1 %t_is_atom, label %run_bfs, label %check_t_unbound
+
+check_t_unbound:
+  %t_is_unbound = icmp eq i32 %t_tag, 6
+  br i1 %t_is_unbound, label %stream, label %bail
+
+run_bfs:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %dist_slot = alloca i64
+  %ok = call i1 @wam_bfs_atom_distance(
+      i64 %start_id, i64 %target_id,
+      %AtomFactPair* %table, i64 %len,
+      i64 %max_atom_id,
+      i64* %dist_slot)
+  br i1 %ok, label %hit, label %bail
+
+hit:
+  %dist = load i64, i64* %dist_slot
+  call void @wam_set_reg_int(%WamState* %vm, i32 2, i64 %dist)
+  ret i1 true
+
+stream:
+  %st_ok = call i1 @wam_td3_stream_run(
+      %WamState* %vm,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %st_ok
+
+bail:
+  ret i1 false
+}
+
+; === M5.16: Stream-mode td3 (enumerate all reachable target/distance pairs) ===
+; Runs BFS from A1, collects all (node, distance) pairs into a result
+; array. Each result encodes both atom_id and distance into one %Value:
+; tag=1 (Integer), payload = (atom_id << 32) | distance.
+; On yield, the custom logic in a wrapper decodes both registers.
+;
+; For simplicity, we use the standard foreign iterator for A2 (atom values)
+; and store distances in a parallel i64 array. The iterator yields atom
+; values to A2; after each yield we manually write A3 from the distance array.
+; This is done by using a paired-result helper that wraps the push.
+;
+; Actually, the simplest correct approach: collect all (node, dist) pairs,
+; yield each as an Atom to A2 via the standard iterator, and encode the
+; distance into field 6 (agg_result_reg) of the choice point... No, that's
+; a hack.
+;
+; Cleanest approach: each result is a %Value pair (2 entries per result).
+; result[2*i] = Atom(node_id), result[2*i+1] = Integer(distance).
+; Push with count = num_pairs, result_reg = 1 (A2).
+; Override @wam_foreign_iter_next to also write result[2*cursor+1] to A3.
+;
+; But overriding the generic iterator is invasive. Instead: push a custom
+; foreign CP with a secondary array pointer. Too complex for now.
+;
+; Pragmatic solution: use the generic iterator for A2, and store distances
+; in a global scratch buffer that persists across backtracks. Since the
+; iterator restores registers from the CP before yielding, we can use a
+; global to pass the distance for each cursor value.
+;
+; FINAL DESIGN: Interleave atom and distance values in the result array.
+; result[2*i] = Atom(node_id), result[2*i+1] = Integer(distance).
+; total count = 2 * num_pairs. result_reg = 1 (A2).
+; After each iterator yield (which writes result[cursor] to A2), the cursor
+; is odd → next yield writes the distance to A2, which is wrong.
+;
+; OK, truly simplest: just yield atoms to A2 and DON'T write A3 in stream
+; mode. A3 stays unbound. This gives Prolog-correct semantics for
+; enumerating reachable targets without distances. For td3 stream mode
+; that's actually useful — callers who want distances can use the
+; deterministic mode with a specific target.
+define i1 @wam_td3_stream_run(
+    %WamState* %vm,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; BFS to collect all reachable nodes (reuse tc2 stream pattern).
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %dq_bytes = shl i64 %n, 2
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+  %dqueue = bitcast i8* %dq_mem to i32*
+
+  ; Result array: pairs of %Value (atom for A2, int for A3).
+  ; Max 2*n entries. malloc'd to outlive arena rewind.
+  %res_count_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_count_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  ; Seed BFS.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %bfs_loop
+
+bfs_loop:
+  %head = phi i64 [0, %entry], [%head_next, %bfs_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %bfs_scan_done]
+  %rcount = phi i64 [0, %entry], [%rcount_after, %bfs_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %bfs_pop, label %bfs_done
+
+bfs_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %depth = load i32, i32* %dq_slot
+  %head_next = add i64 %head, 1
+  %next_depth = add i32 %depth, 1
+  br label %bfs_scan
+
+bfs_scan:
+  %si = phi i64 [0, %bfs_pop], [%si_next, %bfs_scan_cont]
+  %tail_cur = phi i64 [%tail, %bfs_pop], [%tail_kept, %bfs_scan_cont]
+  %rc_cur = phi i64 [%rcount, %bfs_pop], [%rc_kept, %bfs_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %bfs_scan_body, label %bfs_scan_done
+
+bfs_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %bfs_check_to, label %bfs_scan_cont
+
+bfs_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %bfs_check_vis, label %bfs_scan_cont
+
+bfs_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %bfs_scan_cont, label %bfs_enqueue
+
+bfs_enqueue:
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %dq_push = getelementptr i32, i32* %dqueue, i64 %tail_cur
+  store i32 %next_depth, i32* %dq_push
+  %tail_inc = add i64 %tail_cur, 1
+  ; Store pair: result[2*rc] = Atom(to_id), result[2*rc+1] = Int(depth+1)
+  %ri_atom = shl i64 %rc_cur, 1
+  %ri_dist = or i64 %ri_atom, 1
+  %res_atom_ptr = getelementptr %Value, %Value* %results, i64 %ri_atom
+  %ra_tag = getelementptr %Value, %Value* %res_atom_ptr, i32 0, i32 0
+  store i32 0, i32* %ra_tag
+  %ra_pay = getelementptr %Value, %Value* %res_atom_ptr, i32 0, i32 1
+  store i64 %to_id, i64* %ra_pay
+  %res_dist_ptr = getelementptr %Value, %Value* %results, i64 %ri_dist
+  %rd_tag = getelementptr %Value, %Value* %res_dist_ptr, i32 0, i32 0
+  store i32 1, i32* %rd_tag
+  %nd64 = zext i32 %next_depth to i64
+  %rd_pay = getelementptr %Value, %Value* %res_dist_ptr, i32 0, i32 1
+  store i64 %nd64, i64* %rd_pay
+  %rc_inc = add i64 %rc_cur, 1
+  br label %bfs_scan_cont
+
+bfs_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %bfs_scan_body], [%tail_cur, %bfs_check_to], [%tail_cur, %bfs_check_vis], [%tail_inc, %bfs_enqueue]
+  %rc_kept = phi i64 [%rc_cur, %bfs_scan_body], [%rc_cur, %bfs_check_to], [%rc_cur, %bfs_check_vis], [%rc_inc, %bfs_enqueue]
+  %si_next = add i64 %si, 1
+  br label %bfs_scan
+
+bfs_scan_done:
+  %tail_after = phi i64 [%tail_cur, %bfs_scan]
+  %rcount_after = phi i64 [%rc_cur, %bfs_scan]
+  br label %bfs_loop
+
+bfs_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %no_results = icmp eq i64 %rcount, 0
+  br i1 %no_results, label %stream_fail, label %stream_yield
+
+stream_yield:
+  ; Yield first pair: result[0] → A2 (atom), result[1] → A3 (distance).
+  %first_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_atom = load %Value, %Value* %first_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_atom)
+  %first_dist_ptr = getelementptr %Value, %Value* %results, i64 1
+  %first_dist = load %Value, %Value* %first_dist_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %first_dist)
+
+  ; Push foreign choice point with paired results (2 entries per pair).
+  ; result_reg=1 (A2). The generic iterator will write atoms to A2,
+  ; but we need A3 too. We use result_reg=255 as a sentinel meaning
+  ; "paired mode" — the iterator writes result[2*i] to reg 1 and
+  ; result[2*i+1] to reg 2. For now, we just push the full array and
+  ; use the paired iterator @wam_foreign_iter_next_paired.
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %total_entries = shl i64 %rcount, 1
+  %total32 = trunc i64 %total_entries to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %total32,
+      i32 255,
+      i32 %pc)
+
+  ret i1 true
+
+stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.9: wsp3 common runner helper ===
+; Parallels @wam_td3_run but wraps @wam_dijkstra_weighted_distance
+; (the M5.3 helper) instead of BFS. The concrete M5.9
+; @wam_wsp3_kernel_impl substituted body calls this with per-instance
+; (table, len, max_atom_id).
+;
+; Signature differences from @wam_td3_run:
+;   - %table is a %WeightedFact*, not %AtomFactPair*
+;   - the result slot is double*, not i64*
+;   - success writes A3 via @wam_set_reg_double, not @wam_set_reg_int
+define i1 @wam_wsp3_run(%WamState* %vm, %WeightedFact* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %wsp_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %wsp_s_is_atom = icmp eq i32 %wsp_s_tag, 0
+  br i1 %wsp_s_is_atom, label %wsp_check_t, label %wsp_bail
+
+wsp_check_t:
+  %wsp_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %wsp_t_is_atom = icmp eq i32 %wsp_t_tag, 0
+  br i1 %wsp_t_is_atom, label %wsp_run_dijkstra, label %wsp_check_unbound
+
+wsp_check_unbound:
+  %wsp_t_unbound = icmp eq i32 %wsp_t_tag, 6
+  br i1 %wsp_t_unbound, label %wsp_stream, label %wsp_bail
+
+wsp_run_dijkstra:
+  %wsp_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %wsp_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %wsp_dist_slot = alloca double
+  %wsp_ok = call i1 @wam_dijkstra_weighted_distance(
+      i64 %wsp_start_id, i64 %wsp_target_id,
+      %WeightedFact* %table, i64 %len,
+      i64 %max_atom_id,
+      double* %wsp_dist_slot)
+  br i1 %wsp_ok, label %wsp_hit, label %wsp_bail
+
+wsp_hit:
+  %wsp_dist = load double, double* %wsp_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %wsp_dist)
+  ret i1 true
+
+wsp_stream:
+  %wsp_st_ok = call i1 @wam_wsp3_stream_run(
+      %WamState* %vm,
+      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %wsp_st_ok
+
+wsp_bail:
+  ret i1 false
+}
+
+; === M5.16: Stream-mode wsp3 (enumerate all reachable target/distance pairs) ===
+; Runs Dijkstra from A1, collects all reachable (node, best_distance) pairs.
+; Uses paired mode (result_reg=255): result[2*i] = Atom(node), result[2*i+1] = Float(dist).
+define i1 @wam_wsp3_stream_run(
+    %WamState* %vm,
+    %WeightedFact* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; Run full Dijkstra (target = impossible sentinel to force full exploration).
+  ; We use max_atom_id+1 as an unreachable target so Dijkstra visits everything.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes = shl i64 %n, 2
+  %heap_cap = add i64 %len, 1
+  %hk_bytes = shl i64 %heap_cap, 3
+  %hv_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem = call i8* @wam_arena_alloc(i64 %hk_bytes)
+  %hv_mem = call i8* @wam_arena_alloc(i64 %hv_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  br label %init_best
+
+init_best:
+  %ib_i = phi i64 [0, %entry], [%ib_next, %init_best]
+  %ib_ptr = getelementptr double, double* %best, i64 %ib_i
+  store double 0x7FF0000000000000, double* %ib_ptr
+  %ib_next = add i64 %ib_i, 1
+  %ib_done = icmp uge i64 %ib_next, %n
+  br i1 %ib_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start_id
+  store double 0.0, double* %best_start
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double 0.0, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start_id, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %dijkstra_done, label %do_extract
+
+do_extract:
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  store i32 1, i32* %rv_vis_ptr
+  br label %relax
+
+relax:
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to = load i64, i64* %fp_to
+  %edge_w = load double, double* %fp_w
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %root_key, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_push, label %relax_cont
+
+store_push:
+  store double %alt, double* %best_to_ptr
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %alt, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+dijkstra_done:
+  ; Collect all visited nodes (excluding start) with their best distances.
+  ; Result array: paired (atom, float) entries.
+  %res_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+  br label %collect
+
+collect:
+  %ci = phi i64 [0, %dijkstra_done], [%ci_next, %collect_cont]
+  %rc = phi i64 [0, %dijkstra_done], [%rc_after, %collect_cont]
+  %ci_cmp = icmp ult i64 %ci, %n
+  br i1 %ci_cmp, label %collect_check, label %collect_done
+
+collect_check:
+  ; Skip start node and unvisited nodes.
+  %is_start = icmp eq i64 %ci, %start_id
+  br i1 %is_start, label %collect_cont, label %collect_check_vis
+
+collect_check_vis:
+  %cv_ptr = getelementptr i32, i32* %visited, i64 %ci
+  %cv = load i32, i32* %cv_ptr
+  %cv_visited = icmp ne i32 %cv, 0
+  br i1 %cv_visited, label %collect_add, label %collect_cont
+
+collect_add:
+  %ra_idx = shl i64 %rc, 1
+  %rd_idx = or i64 %ra_idx, 1
+  %ra_ptr = getelementptr %Value, %Value* %results, i64 %ra_idx
+  %ra_tag_ptr = getelementptr %Value, %Value* %ra_ptr, i32 0, i32 0
+  store i32 0, i32* %ra_tag_ptr
+  %ra_pay_ptr = getelementptr %Value, %Value* %ra_ptr, i32 0, i32 1
+  store i64 %ci, i64* %ra_pay_ptr
+  %rd_ptr = getelementptr %Value, %Value* %results, i64 %rd_idx
+  %rd_tag_ptr = getelementptr %Value, %Value* %rd_ptr, i32 0, i32 0
+  store i32 2, i32* %rd_tag_ptr
+  %best_ci_ptr = getelementptr double, double* %best, i64 %ci
+  %best_ci = load double, double* %best_ci_ptr
+  %best_ci_i64 = bitcast double %best_ci to i64
+  %rd_pay_ptr = getelementptr %Value, %Value* %rd_ptr, i32 0, i32 1
+  store i64 %best_ci_i64, i64* %rd_pay_ptr
+  %rc_inc = add i64 %rc, 1
+  br label %collect_cont
+
+collect_cont:
+  %rc_after = phi i64 [%rc, %collect_check], [%rc, %collect_check_vis], [%rc_inc, %collect_add]
+  %ci_next = add i64 %ci, 1
+  br label %collect
+
+collect_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %no_results = icmp eq i64 %rc, 0
+  br i1 %no_results, label %wsp_stream_fail, label %wsp_stream_yield
+
+wsp_stream_yield:
+  ; Yield first pair.
+  %f_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %f_atom = load %Value, %Value* %f_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %f_atom)
+  %f_dist_ptr = getelementptr %Value, %Value* %results, i64 1
+  %f_dist = load %Value, %Value* %f_dist_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %f_dist)
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %total = shl i64 %rc, 1
+  %total32 = trunc i64 %total to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %total32,
+      i32 255,
+      i32 %pc)
+  ret i1 true
+
+wsp_stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.16: Category ancestor kernel ===
+; Depth-bounded BFS: enumerates all ancestors reachable from A1 within
+; max_depth hops via an edge table. Results are (ancestor, hops) pairs
+; yielded via the paired foreign iterator.
+;
+; A1 = start atom, A2 = result ancestor (unbound for stream), A3 = hops.
+; max_depth is compiled into the kernel as a constant parameter.
+define i1 @wam_ca_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id, i32 %max_depth) {
+entry:
+  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_is_atom = icmp eq i32 %s_tag, 0
+  br i1 %s_is_atom, label %check_a2, label %ca_bail
+
+check_a2:
+  %a2_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %a2_unbound = icmp eq i32 %a2_tag, 6
+  br i1 %a2_unbound, label %ca_stream, label %ca_bail
+
+ca_stream:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; BFS with depth tracking, bounded by max_depth.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %dq_bytes = shl i64 %n, 2
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+  %dqueue = bitcast i8* %dq_mem to i32*
+
+  ; Result array: paired (atom, int hops) entries.
+  %res_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %ca_bfs_loop
+
+ca_bfs_loop:
+  %head = phi i64 [0, %ca_stream], [%head_next, %ca_scan_done]
+  %tail = phi i64 [1, %ca_stream], [%tail_after, %ca_scan_done]
+  %rcount = phi i64 [0, %ca_stream], [%rcount_after, %ca_scan_done]
+  %ca_more = icmp ult i64 %head, %tail
+  br i1 %ca_more, label %ca_pop, label %ca_bfs_done
+
+ca_pop:
+  %ca_q_slot = getelementptr i64, i64* %queue, i64 %head
+  %ca_node = load i64, i64* %ca_q_slot
+  %ca_dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %ca_depth = load i32, i32* %ca_dq_slot
+  %head_next = add i64 %head, 1
+  %ca_next_depth = add i32 %ca_depth, 1
+  ; If next_depth > max_depth, don't explore further from this node.
+  %ca_depth_ok = icmp ule i32 %ca_next_depth, %max_depth
+  br i1 %ca_depth_ok, label %ca_scan, label %ca_scan_done_skip
+
+ca_scan_done_skip:
+  br label %ca_scan_done
+
+ca_scan:
+  %ca_si = phi i64 [0, %ca_pop], [%ca_si_next, %ca_scan_cont]
+  %ca_tail_cur = phi i64 [%tail, %ca_pop], [%ca_tail_kept, %ca_scan_cont]
+  %ca_rc_cur = phi i64 [%rcount, %ca_pop], [%ca_rc_kept, %ca_scan_cont]
+  %ca_si_cmp = icmp ult i64 %ca_si, %len
+  br i1 %ca_si_cmp, label %ca_scan_body, label %ca_scan_done
+
+ca_scan_body:
+  %ca_pair = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %ca_si
+  %ca_from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %ca_pair, i32 0, i32 0
+  %ca_to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %ca_pair, i32 0, i32 1
+  %ca_from = load i64, i64* %ca_from_ptr
+  %ca_to = load i64, i64* %ca_to_ptr
+  %ca_from_match = icmp eq i64 %ca_from, %ca_node
+  br i1 %ca_from_match, label %ca_check_to, label %ca_scan_cont
+
+ca_check_to:
+  %ca_to_ok = icmp ult i64 %ca_to, %n
+  br i1 %ca_to_ok, label %ca_check_vis, label %ca_scan_cont
+
+ca_check_vis:
+  %ca_vis_ptr = getelementptr i32, i32* %visited, i64 %ca_to
+  %ca_vis = load i32, i32* %ca_vis_ptr
+  %ca_already = icmp ne i32 %ca_vis, 0
+  br i1 %ca_already, label %ca_scan_cont, label %ca_enqueue
+
+ca_enqueue:
+  store i32 1, i32* %ca_vis_ptr
+  %ca_q_push = getelementptr i64, i64* %queue, i64 %ca_tail_cur
+  store i64 %ca_to, i64* %ca_q_push
+  %ca_dq_push = getelementptr i32, i32* %dqueue, i64 %ca_tail_cur
+  store i32 %ca_next_depth, i32* %ca_dq_push
+  %ca_tail_inc = add i64 %ca_tail_cur, 1
+  ; Store paired result: Atom(ancestor), Integer(hops).
+  %ca_ri_atom = shl i64 %ca_rc_cur, 1
+  %ca_ri_hops = or i64 %ca_ri_atom, 1
+  %ca_ra_ptr = getelementptr %Value, %Value* %results, i64 %ca_ri_atom
+  %ca_ra_tag = getelementptr %Value, %Value* %ca_ra_ptr, i32 0, i32 0
+  store i32 0, i32* %ca_ra_tag
+  %ca_ra_pay = getelementptr %Value, %Value* %ca_ra_ptr, i32 0, i32 1
+  store i64 %ca_to, i64* %ca_ra_pay
+  %ca_rh_ptr = getelementptr %Value, %Value* %results, i64 %ca_ri_hops
+  %ca_rh_tag = getelementptr %Value, %Value* %ca_rh_ptr, i32 0, i32 0
+  store i32 1, i32* %ca_rh_tag
+  %ca_nd64 = zext i32 %ca_next_depth to i64
+  %ca_rh_pay = getelementptr %Value, %Value* %ca_rh_ptr, i32 0, i32 1
+  store i64 %ca_nd64, i64* %ca_rh_pay
+  %ca_rc_inc = add i64 %ca_rc_cur, 1
+  br label %ca_scan_cont
+
+ca_scan_cont:
+  %ca_tail_kept = phi i64 [%ca_tail_cur, %ca_scan_body], [%ca_tail_cur, %ca_check_to], [%ca_tail_cur, %ca_check_vis], [%ca_tail_inc, %ca_enqueue]
+  %ca_rc_kept = phi i64 [%ca_rc_cur, %ca_scan_body], [%ca_rc_cur, %ca_check_to], [%ca_rc_cur, %ca_check_vis], [%ca_rc_inc, %ca_enqueue]
+  %ca_si_next = add i64 %ca_si, 1
+  br label %ca_scan
+
+ca_scan_done:
+  %tail_after = phi i64 [%ca_tail_cur, %ca_scan], [%tail, %ca_scan_done_skip]
+  %rcount_after = phi i64 [%ca_rc_cur, %ca_scan], [%rcount, %ca_scan_done_skip]
+  br label %ca_bfs_loop
+
+ca_bfs_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %ca_no_results = icmp eq i64 %rcount, 0
+  br i1 %ca_no_results, label %ca_fail, label %ca_yield
+
+ca_yield:
+  %ca_f_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %ca_f_atom = load %Value, %Value* %ca_f_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %ca_f_atom)
+  %ca_f_hops_ptr = getelementptr %Value, %Value* %results, i64 1
+  %ca_f_hops = load %Value, %Value* %ca_f_hops_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %ca_f_hops)
+  %ca_pc = call i32 @wam_get_pc(%WamState* %vm)
+  %ca_total = shl i64 %rcount, 1
+  %ca_total32 = trunc i64 %ca_total to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %ca_total32,
+      i32 255,
+      i32 %ca_pc)
+  ret i1 true
+
+ca_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+
+ca_bail:
+  ret i1 false
+}
+
+; Weak default for category_ancestor kernel impl.
+define weak i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+; === M5.13: countdown_sum2 common runner helper ===
+; Pure arithmetic: reads A1 as an integer N, computes S = N*(N+1)/2,
+; writes A2 as integer S. No tables needed — the same computation
+; works for every instance.
+define i1 @wam_cds2_run(%WamState* %vm) {
+entry:
+  %n_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %n_is_int = icmp eq i32 %n_tag, 1
+  br i1 %n_is_int, label %compute, label %cds_bail
+
+compute:
+  %n = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n_neg = icmp slt i64 %n, 0
+  br i1 %n_neg, label %cds_bail, label %do_sum
+
+do_sum:
+  ; S = N * (N + 1) / 2
+  %n_plus_1 = add i64 %n, 1
+  %n_times = mul i64 %n, %n_plus_1
+  %s = sdiv i64 %n_times, 2
+  call void @wam_set_reg_int(%WamState* %vm, i32 1, i64 %s)
+  ret i1 true
+
+cds_bail:
+  ret i1 false
+}
+
+; === M5.15: List suffix kernel ===
+; list_suffix2(List, Suffix): enumerates all suffixes of List via
+; backtracking. A list [a,b,c] has 4 suffixes: [a,b,c], [b,c], [c], [].
+;
+; List representation: tag=4, payload = pointer to %List = {i32 len, %Value* elems}.
+; Each suffix is a new %List struct pointing into the original elements
+; array at a different offset (zero-copy view).
+
+; Create a %Value with tag=4 (List) from a %List pointer.
+define %Value @wam_make_list_value(%List* %list_ptr) alwaysinline nounwind readnone {
+  %ptr_i64 = ptrtoint %List* %list_ptr to i64
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; Create an empty list value (length=0, null elements).
+; Uses a module-level constant to avoid allocation.
+@wam_empty_list = internal constant %List { i32 0, %Value* null }
+
+; Format strings for write/1 and nl/0 builtins.
+@.fmt_int = private constant [3 x i8] c"%d\00"
+@.fmt_nl  = private constant [2 x i8] c"\0A\00"
+; M12: extras used by format/2.
+@.fmt_lld = private constant [5 x i8] c"%lld\00"
+@.fmt_str = private constant [3 x i8] c"%s\00"
+@.fmt_dbl = private constant [3 x i8] c"%g\00"
+@.fmt_chr = private constant [3 x i8] c"%c\00"
+; M15: variable-precision fixed-point. printf "%.*f" reads the
+; precision from the argument list before the double.
+@.fmt_starf = private constant [5 x i8] c"%.*f\00"
+; Scientific notation, variable precision (~Ne directive).
+@.fmt_stare = private constant [5 x i8] c"%.*e\00"
+
+define %Value @wam_make_empty_list_value() alwaysinline nounwind readnone {
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %ptr_i64 = ptrtoint %List* @wam_empty_list to i64
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; list_suffix2 runner: reads A1 as a list, generates all suffixes,
+; pushes them as a foreign choice point, yields the first.
+;
+; If A1 is not a list (tag != 4), returns false.
+; If A2 is bound (tag=4, list), checks if A2 is a suffix of A1 (deterministic).
+; If A2 is unbound (tag=6), enumerates all suffixes (stream mode).
+define i1 @wam_ls2_run(%WamState* %vm) {
+entry:
+  %a1_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %a1_is_list = icmp eq i32 %a1_tag, 4
+  br i1 %a1_is_list, label %check_a2, label %bail
+
+check_a2:
+  %a2_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %a2_is_unbound = icmp eq i32 %a2_tag, 6
+  br i1 %a2_is_unbound, label %stream, label %bail
+
+stream:
+  ; Get A1 list pointer and length.
+  %a1_pay = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %list_ptr = inttoptr i64 %a1_pay to %List*
+  %len_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 0
+  %len = load i32, i32* %len_ptr
+  %elems_ptr_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 1
+  %elems = load %Value*, %Value** %elems_ptr_ptr
+
+  ; A list of length N has N+1 suffixes (including the list itself and []).
+  %len64 = zext i32 %len to i64
+  %nsuffixes64 = add i64 %len64, 1
+  %nsuffixes = add i32 %len, 1
+
+  ; Allocate result array + suffix structs in one block so a single
+  ; free() in the iterator pop path releases both.
+  ; Layout: [nsuffixes x %Value] [nsuffixes x %List]
+  %res_bytes = shl i64 %nsuffixes64, 4   ; * 16 (sizeof %Value)
+  %list_struct_size = ptrtoint %List* getelementptr (%List, %List* null, i32 1) to i64
+  %lists_bytes = mul i64 %nsuffixes64, %list_struct_size
+  %total_bytes = add i64 %res_bytes, %lists_bytes
+  %res_mem = call i8* @malloc(i64 %total_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+  %lists_offset = getelementptr i8, i8* %res_mem, i64 %res_bytes
+  %suffix_lists = bitcast i8* %lists_offset to %List*
+
+  ; Build suffixes: suffix[i] = {len-i, &elems[i]} for i=0..len.
+  br label %build_loop
+
+build_loop:
+  %bi = phi i64 [0, %stream], [%bi_next, %build_loop]
+  %bi32 = trunc i64 %bi to i32
+  %rem_len = sub i32 %len, %bi32
+  ; Create %List struct for this suffix.
+  %sl = getelementptr %List, %List* %suffix_lists, i64 %bi
+  %sl_len_ptr = getelementptr %List, %List* %sl, i32 0, i32 0
+  store i32 %rem_len, i32* %sl_len_ptr
+  %sl_elems_ptr = getelementptr %List, %List* %sl, i32 0, i32 1
+  ; For an empty input list, elems is null (from @wam_empty_list).
+  ; getelementptr of null+0 is null, resulting in an empty suffix struct
+  ; {len=0, elems=null}, which correctly matches @wam_empty_list.
+  %suffix_start = getelementptr %Value, %Value* %elems, i64 %bi
+  store %Value* %suffix_start, %Value** %sl_elems_ptr
+  ; Create %Value for this suffix (tag=4, payload=ptr to %List).
+  %sv = call %Value @wam_make_list_value(%List* %sl)
+  %res_slot = getelementptr %Value, %Value* %results, i64 %bi
+  store %Value %sv, %Value* %res_slot
+  %bi_next = add i64 %bi, 1
+  %bi_done = icmp uge i64 %bi_next, %nsuffixes64
+  br i1 %bi_done, label %yield_first, label %build_loop
+
+yield_first:
+  ; Yield result[0] (the full list itself) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Push foreign choice point for the remaining suffixes.
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %nsuffixes,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+bail:
+  ret i1 false
+}
+
+; Weak default for ls2 kernel impl (replaced by substitution pipeline
+; when list_suffix2 predicates are lowered).
+define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+; === M5.12: tc2 common runner helper ===
+; Boolean reachability: is there any path from start to target in the
+; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
+; distance — we only care about the success/failure return. No result
+; register is written (tc2 is arity 2: A1=start, A2=target).
+define i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %tc_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %tc_s_is_atom = icmp eq i32 %tc_s_tag, 0
+  br i1 %tc_s_is_atom, label %tc_check_t, label %tc_bail
+
+tc_check_t:
+  ; If A2 is unbound (tag=6), use stream mode (enumerate all reachable).
+  ; If A2 is an atom (tag=0), use deterministic mode (boolean check).
+  %tc_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %tc_t_is_atom = icmp eq i32 %tc_t_tag, 0
+  br i1 %tc_t_is_atom, label %tc_run_bfs, label %tc_check_unbound
+
+tc_check_unbound:
+  %tc_t_is_unbound = icmp eq i32 %tc_t_tag, 6
+  br i1 %tc_t_is_unbound, label %tc_stream, label %tc_bail
+
+tc_run_bfs:
+  %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %tc_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %tc_dist_slot = alloca i64
+  %tc_ok = call i1 @wam_bfs_atom_distance(
+      i64 %tc_start_id, i64 %tc_target_id,
+      %AtomFactPair* %table, i64 %len,
+      i64 %max_atom_id,
+      i64* %tc_dist_slot)
+  ret i1 %tc_ok
+
+tc_stream:
+  ; Stream mode: collect all reachable nodes via BFS, push as foreign
+  ; choice point, yield first result to A2.
+  %st_ok = call i1 @wam_tc2_stream_run(
+      %WamState* %vm,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %st_ok
+
+tc_bail:
+  ret i1 false
+}
+
+; === M5.14: Stream-mode tc2 (enumerate all reachable nodes) ===
+; Runs BFS from A1, collects all reachable nodes (excluding start) into
+; a %Value array, pushes a foreign choice point, and yields the first
+; result. On backtrack, the iterator yields subsequent reachable nodes.
+;
+; Returns false if no reachable nodes exist (start is isolated).
+; The result array is malloc'd (not arena) because it must outlive this
+; call — the choice point holds a pointer to it across backtracks.
+define i1 @wam_tc2_stream_run(
+    %WamState* %vm,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; Allocate scratch buffers for BFS (visited, queue) via arena.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+
+  ; Also allocate a result collector array (max n entries, %Value each).
+  ; This is malloc'd because it must persist in the choice point.
+  %res_bytes = shl i64 %n, 4   ; n * sizeof(%Value) = n * 16
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  ; Zero-init visited[].
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  ; Seed BFS with start.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  br label %bfs_loop
+
+bfs_loop:
+  %head = phi i64 [0, %entry], [%head_next, %bfs_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %bfs_scan_done]
+  %rcount = phi i64 [0, %entry], [%rcount_after, %bfs_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %bfs_pop, label %bfs_done
+
+bfs_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %head_next = add i64 %head, 1
+  br label %bfs_scan
+
+bfs_scan:
+  %si = phi i64 [0, %bfs_pop], [%si_next, %bfs_scan_cont]
+  %tail_cur = phi i64 [%tail, %bfs_pop], [%tail_kept, %bfs_scan_cont]
+  %rc_cur = phi i64 [%rcount, %bfs_pop], [%rc_kept, %bfs_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %bfs_scan_body, label %bfs_scan_done
+
+bfs_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %bfs_check_to, label %bfs_scan_cont
+
+bfs_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %bfs_check_vis, label %bfs_scan_cont
+
+bfs_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %bfs_scan_cont, label %bfs_enqueue
+
+bfs_enqueue:
+  ; Mark visited, enqueue, and add to results.
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %tail_inc = add i64 %tail_cur, 1
+  ; Append to results as Atom value (tag=0, payload=atom_id).
+  %res_slot = getelementptr %Value, %Value* %results, i64 %rc_cur
+  %res_tag = getelementptr %Value, %Value* %res_slot, i32 0, i32 0
+  store i32 0, i32* %res_tag
+  %res_pay = getelementptr %Value, %Value* %res_slot, i32 0, i32 1
+  store i64 %to_id, i64* %res_pay
+  %rc_inc = add i64 %rc_cur, 1
+  br label %bfs_scan_cont
+
+bfs_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %bfs_scan_body], [%tail_cur, %bfs_check_to], [%tail_cur, %bfs_check_vis], [%tail_inc, %bfs_enqueue]
+  %rc_kept = phi i64 [%rc_cur, %bfs_scan_body], [%rc_cur, %bfs_check_to], [%rc_cur, %bfs_check_vis], [%rc_inc, %bfs_enqueue]
+  %si_next = add i64 %si, 1
+  br label %bfs_scan
+
+bfs_scan_done:
+  %tail_after = phi i64 [%tail_cur, %bfs_scan]
+  %rcount_after = phi i64 [%rc_cur, %bfs_scan]
+  br label %bfs_loop
+
+bfs_done:
+  ; Free BFS scratch.
+  call void @wam_arena_rewind(i64 %arena_save)
+
+  ; If no reachable nodes, fail.
+  %no_results = icmp eq i64 %rcount, 0
+  br i1 %no_results, label %stream_fail, label %stream_yield
+
+stream_yield:
+  ; Yield first result (index 0) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Get current PC for return_pc (where to resume after each yield).
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+
+  ; Push foreign choice point for remaining results.
+  %rcount32 = trunc i64 %rcount to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %rcount32,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.12: Runtime heuristic builder ===
+; Scans a %WeightedFact direct-distance table and builds a per-node
+; heuristic array for a specific target. For each entry where
+; to == %target, writes weight into heuristic[from]. Entries for
+; nodes not in the direct-distance table default to 0.0 (admissible).
+;
+; Returns a malloc'd double* that the caller must free.
+define double* @wam_build_heuristic_from_table(
+    %WeightedFact* %dtable, i64 %dlen,
+    i64 %target, i64 %max_atom_id) {
+entry:
+  %n = add i64 %max_atom_id, 1
+  %bytes = shl i64 %n, 3
+  %mem = call i8* @malloc(i64 %bytes)
+  call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
+  %h = bitcast i8* %mem to double*
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %entry], [%si_next, %scan_next]
+  %si_cmp = icmp ult i64 %si, %dlen
+  br i1 %si_cmp, label %scan_body, label %done
+
+scan_body:
+  %fp = getelementptr %WeightedFact, %WeightedFact* %dtable, i64 %si
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 2
+  %from_id = load i64, i64* %fp_from
+  %to_id   = load i64, i64* %fp_to
+  %w       = load double, double* %fp_w
+  %is_target = icmp eq i64 %to_id, %target
+  br i1 %is_target, label %write_h, label %scan_next
+
+write_h:
+  %h_slot = getelementptr double, double* %h, i64 %from_id
+  store double %w, double* %h_slot
+  br label %scan_next
+
+scan_next:
+  %si_next = add i64 %si, 1
+  br label %scan
+
+done:
+  ret double* %h
+}
+
+; === M5.10: astar4 common runner helper ===
+; Parallels @wam_wsp3_run but wraps @wam_astar_weighted_distance
+; (the M5.4 A* helper). Uses a zeroed heuristic array — the caller
+; allocates and passes it. This means A* degenerates to Dijkstra
+; (same results, same complexity). A future refinement can supply a
+; non-zero heuristic via a separate global or a query-time callback.
+;
+; For M5.10, the zero-heuristic path validates the full A* pipeline
+; end-to-end without requiring a target-dependent heuristic mechanism
+; (the heuristic depends on which target is being queried, which is a
+; runtime value).
+define i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %table, i64 %len, double* %heuristic, i64 %max_atom_id) {
+entry:
+  %as_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %as_s_is_atom = icmp eq i32 %as_s_tag, 0
+  br i1 %as_s_is_atom, label %as_check_t, label %as_bail
+
+as_check_t:
+  %as_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %as_t_is_atom = icmp eq i32 %as_t_tag, 0
+  br i1 %as_t_is_atom, label %as_run, label %as_check_unbound
+
+as_check_unbound:
+  %as_t_unbound = icmp eq i32 %as_t_tag, 6
+  br i1 %as_t_unbound, label %as_stream, label %as_bail
+
+as_stream:
+  ; Stream mode: enumerate all reachable (target, distance) pairs.
+  ; Heuristic only affects exploration order for single-target queries;
+  ; for full enumeration the result set is identical to Dijkstra.
+  %as_st_ok = call i1 @wam_wsp3_stream_run(
+      %WamState* %vm,
+      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %as_st_ok
+
+as_run:
+  %as_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %as_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_dist_slot = alloca double
+  %as_ok = call i1 @wam_astar_weighted_distance(
+      i64 %as_start_id, i64 %as_target_id,
+      %WeightedFact* %table, i64 %len,
+      double* %heuristic,
+      i64 %max_atom_id,
+      double* %as_dist_slot)
+  br i1 %as_ok, label %as_hit, label %as_bail
+
+as_hit:
+  %as_dist = load double, double* %as_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %as_dist)
+  ret i1 true
+
+as_bail:
+  ret i1 false
+}
+
+; === M5.5 + M5.8 + M5.9 + M5.10: Foreign kernel impl default stubs ===
+; The dispatcher's stub_{transitive_distance3, weighted_shortest_path3}
+; cases delegate to @wam_td3_kernel_impl and @wam_wsp3_kernel_impl
+; respectively, passing the instance_id encoded in the call_foreign
+; instruction's op2. The default implementations below return false
+; for any instance, so pure WAM modules behave as if foreign dispatch
+; is disabled.
+;
+; When foreign_lowering is enabled, the compile pipeline emits a
+; non-default definition of each relevant function in place of the
+; default. The substituted version contains a `switch i32 %instance`
+; with one case per registered foreign-lowered predicate, each with
+; its own baked-in table as a module-local private constant.
+;
+; LLVM 21 disallows two definitions of the same function in one
+; module, so the compile path picks one or the other (weak default
+; or concrete substituted body) at template-rendering time.
+define weak i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %instance) {
+entry:
+  switch i32 %kind, label %not_registered [
+    i32 0, label %stub_category_ancestor
+    i32 1, label %stub_countdown_sum2
+    i32 2, label %stub_list_suffix2
+    i32 3, label %stub_transitive_closure2
+    i32 4, label %stub_transitive_distance3
+    i32 5, label %stub_weighted_shortest_path3
+    i32 6, label %stub_astar_shortest_path4
+  ]
+
+stub_category_ancestor:
+  %ca_r = call i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %ca_r
+
+stub_countdown_sum2:
+  %cds_r = call i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %cds_r
+
+stub_list_suffix2:
+  %ls_r = call i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %ls_r
+
+stub_transitive_closure2:
+  %tc_r = call i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %tc_r
+
+stub_transitive_distance3:
+  ; Delegate to the user-provided impl, passing the instance_id so
+  ; the concrete substituted body can dispatch to the right
+  ; per-predicate edge table. The pure-WAM path never reaches this
+  ; case because no call_foreign instructions are emitted.
+  %td3_r = call i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %td3_r
+
+stub_weighted_shortest_path3:
+  ; Delegate to the user-provided impl, passing the instance_id so
+  ; the concrete substituted body can dispatch to the right
+  ; per-predicate weighted-edge table.
+  %wsp_r = call i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %wsp_r
+
+stub_astar_shortest_path4:
+  %as_r = call i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %as_r
+
+not_registered:
+  ret i1 false
+}
+
+; Finalize the top aggregate frame: apply aggregation, bind result reg,
+; restore state, pop CP. Returns true on success, false if no agg frame.
+define i1 @wam_finalize_aggregate(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %has_cp = icmp sgt i32 %cpn, 0
+  br i1 %has_cp, label %check, label %fail
+
+check:
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+  %agg_type_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 4
+  %agg_type = load i32, i32* %agg_type_ptr
+  %is_agg = icmp sge i32 %agg_type, 0
+  br i1 %is_agg, label %do_finalize, label %fail
+
+do_finalize:
+  ; Read agg frame fields
+  %res_reg_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 6
+  %res_reg = load i32, i32* %res_reg_ptr
+  %ret_pc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %ret_pc = load i32, i32* %ret_pc_ptr
+
+  ; Apply aggregation over accumulator
+  %accum_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
+  %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  %count = load i32, i32* %count_ptr
+  %result = call %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum_ptr, i32 %count)
+
+  ; Restore trail (unwind to CP's mark)
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  ; Restore registers from CP
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  ; M9: bind via wam_bind_reg so the result propagates through Refs
+  ; — when the caller's L is an unbound var (Ref to a heap cell), the
+  ; binding needs to write through to the heap cell to be visible at
+  ; the caller's site. Pre-M9 wam_set_reg just overwrote the register
+  ; slot, leaving the heap cell unbound and the caller unable to read
+  ; the aggregation result.
+  call void @wam_trail_binding(%WamState* %vm, i32 %res_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %res_reg, %Value %result)
+
+  ; Pop the aggregate frame
+  store i32 %top_idx, i32* %cpn_ptr
+
+  ; Clear the accumulator
+  store i32 0, i32* %count_ptr
+
+  ; Set PC to return_pc
+  call void @wam_set_pc(%WamState* %vm, i32 %ret_pc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
   ret i1 true
 
 fail:
   ret i1 false
-}",
-        [ArraySize, AtomRows, ArraySize, ArityRows, ArraySize, LabelRows,
-         Count, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize]).
-%% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
-%%                         -AllSwitchDefs)
-%  Resolves each record's raw instructions against GlobalLabels and
-%  concatenates the literal lists in predicate order. Switch-table
-%  names are predicate-qualified so flattening doesn't collide.
-resolve_all_wam_records([], _, [], []).
-resolve_all_wam_records([wam(Pred/_Arity, _, RawInstrs, _, _, _)|Rest],
-                        GlobalLabels, AllLiterals, AllSwitchDefs) :- !,
-    atom_string(Pred, PredStr),
-    maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
-    resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
-    resolve_all_wam_records(Rest, GlobalLabels, RestLits, RestDefs),
-    append(ResolvedLits, RestLits, AllLiterals),
-    append(SwitchDefs, RestDefs, AllSwitchDefs).
-resolve_all_wam_records([hybrid(Pred/_Arity, _, _, RawInstrs, _, _, _)|Rest],
-                        GlobalLabels, AllLiterals, AllSwitchDefs) :- !,
-    % Hybrid records (M3) participate in the merged @module_code on
-    % equal footing with pure wam records — same resolution pass over
-    % their RawInstrs, same per-predicate switch-table namespace.
-    % The dispatcher entry (which uses the merged PC) is emitted by
-    % emit_one_record_entry_func/5, not here.
-    atom_string(Pred, PredStr),
-    maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
-    resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
-    resolve_all_wam_records(Rest, GlobalLabels, RestLits, RestDefs),
-    append(ResolvedLits, RestLits, AllLiterals),
-    append(SwitchDefs, RestDefs, AllSwitchDefs).
+}
 
-%% emit_all_entry_funcs(+WamRecords, +Options,
-%%                      +InstrCount, +LabelCount, +LabelArraySize,
-%%                      -EntryFuncs)
-%  One `define i1 @<pred>(...)` per wam/foreign predicate. All share
-%  @module_code and @module_labels, setting PC = StartPC before
-%  invoking the run loop.
-emit_all_entry_funcs(WamLikeRecords, _Options, InstrCount, LabelCount,
-                     LabelArraySize, EntryFuncs) :-
-    maplist(emit_one_record_entry_func(InstrCount, LabelCount, LabelArraySize),
-            WamLikeRecords, Funcs),
-    atomic_list_concat(Funcs, '\n\n', EntryFuncs).
-
-%% emit_one_record_entry_func(+IC, +LC, +LAS, +Record, -Func)
-%
-%  Dispatcher: wam records use the standard entry-func shape;
-%  hybrid records (M3) get the fast-path-plus-slow-path dispatcher
-%  from the lowered emitter.
-emit_one_record_entry_func(InstrCount, LabelCount, LabelArraySize,
-                           wam(Pred/Arity, _, _, _, StartPC, _),
-                           Func) :- !,
-    emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
-                        wam(Pred/Arity, _, _, _, StartPC, _),
-                        Func).
-emit_one_record_entry_func(InstrCount, _LabelCount, LabelArraySize,
-                           hybrid(Pred/Arity, _, _, _, _, StartPC, _),
-                           Func) :- !,
-    emit_hybrid_dispatcher(Pred/Arity, StartPC,
-                           InstrCount, LabelArraySize, Func).
-
-emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
-                    wam(Pred/Arity, _, _, _, StartPC, _),
-                    Func) :-
-    atom_string(Pred, PredStr),
-    build_llvm_arg_setup(Arity, ArgSetup),
-    build_llvm_param_list(Arity, ParamList),
-    % Per-predicate start-PC global. External drivers that build their
-    % own VM (bypassing the entry function) need to know where the
-    % predicate starts in @module_code. The name matches the pattern
-    % used by test tooling for regex extraction.
-    format(atom(Func),
-'; WAM-compiled predicate: ~w/~w (merged module code, start PC ~w)
-@~w_start_pc = private constant i32 ~w
-
-define i1 @~w(~w) {
+; === M5.14: Multi-result foreign dispatch ===
+; Pushes a foreign-result choice point onto the CP stack. The choice
+; point stores a pointer to a pre-computed %Value array, the total
+; count, and a cursor starting at 0. On first call the kernel yields
+; result[0]; on each backtrack @wam_foreign_iter_next advances the
+; cursor and yields the next result.
+;
+; %results: pointer to a heap-allocated %Value array (count elements)
+; %count:   number of results
+; %result_reg: which WAM register to bind each result to
+; %return_pc:  PC to restore when the iterator is exhausted
+;
+; The first result (index 0) is NOT yielded here — the caller is
+; expected to write result[0] to the register and proceed. This
+; function just saves the state for backtracking.
+define void @wam_push_foreign_choice_point(
+    %WamState* %vm,
+    i8* %results,
+    i32 %count,
+    i32 %result_reg,
+    i32 %return_pc) {
 entry:
-  %vm = call %WamState* @wam_state_new(
-    %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
-    i32 ~w,
-    i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
-    i32 ~w)
-  call void @wam_set_pc(%WamState* %vm, i32 ~w)
-~w
-  %result = call i1 @run_loop(%WamState* %vm)
-  ; Free the state before returning so repeated bench-loop invocations
-  ; (N thousand per workload) do not leak ~~85 KB per call.
-  call void @wam_state_free(%WamState* %vm)
-  ret i1 %result
-}',
-        [PredStr, Arity, StartPC,
-         PredStr, StartPC,
-         PredStr, ParamList,
-         InstrCount, InstrCount,
-         InstrCount,
-         LabelArraySize, LabelArraySize,
-         LabelCount,
-         StartPC,
-         ArgSetup]).
+  ; M5: ensure cap before reading cps pointer (grow may realloc).
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
 
-%% compile_foreign_kernel_predicate(+PredArity, +Kind, +Arity, +Options, -PredCode).
-%
-%  Generate an LLVM predicate body consisting of a single
-%  `call_foreign Kind, InstanceId` instruction followed by `proceed`.
-%  Takes the WAM-fallback compile path (not native) so the result
-%  plugs into the same %Instruction array / step dispatch machinery
-%  as any WAM-compiled predicate.
-%
-%  M5.8: op2 of call_foreign is now the instance_id (not arity). The
-%  instance_id is the predicate's zero-based position among the
-%  registered specs for its kind, matching the switch case layout
-%  emitted by build_td3_instance_switch/3.
-compile_foreign_kernel_predicate(Pred/Arity, Kind, _Arity, Options, PredCode) :-
-    wam_llvm_foreign_kind_id(Kind, _KindId),  % fail fast if kind unknown
-    allocate_foreign_instance_id(Pred/Arity, Kind, InstanceId),
-    format(atom(WamCode), 'call_foreign ~w, ~w\nproceed', [Kind, InstanceId]),
-    compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, PredCode).
+  %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
 
-%% allocate_foreign_instance_id(+PredArity, +Kind, -InstanceId).
-%
-%  Looks up PredArity's position among the registered specs for Kind.
-%  The position is stable within a compile because llvm_foreign_kernel_spec/3
-%  is a dynamic fact table and findall/3 preserves assertion order.
-%  If PredArity isn't in the table this fails — it should have been
-%  added via one of the M5.6 entry paths before compile.
-allocate_foreign_instance_id(PredArity, Kind, InstanceId) :-
-    findall(P,
-        llvm_foreign_kernel_spec(P, Kind, _),
-        AllPreds),
-    nth0(InstanceId, AllPreds, PredArity), !.
+  ; next_pc = 0 (unused for foreign iter — backtrack handler reads cursor instead)
+  %npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 0
+  store i32 0, i32* %npc_ptr
 
-% ============================================================================
-% PHASE 2: step_wam/3 → LLVM switch dispatch
-% ============================================================================
+  ; Save registers (for trail-based restoration on final exhaustion)
+  %dst_regs = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
 
-%% compile_step_wam_to_llvm(+Options, -LLVMCode)
-%  Generates the step() function body as an LLVM switch on instruction tag.
-compile_step_wam_to_llvm(_Options, LLVMCode) :-
-    findall(Case, compile_llvm_step_case(Case), Cases),
-    atomic_list_concat(Cases, '\n', CasesCode),
-    % M7: !prof branch_weights on the @step switch. These are relative
-    % weights estimated from typical Prolog workload instruction
-    % frequencies (head unification + body construction + control
-    % dominate; backtrack-only opcodes are rare). LLVM uses them to
-    % order the switch lowering — at x86 -O2 the cases are dense
-    % enough that a jump table is generated regardless, but the
-    % weights still influence branch prediction on the per-case
-    % inner branches and can help on architectures (ARM, RISC-V)
-    % where the switch lowers to a balanced binary search.
-    %
-    % The metadata MUST be a reference (`!prof !N`) — inline `!{...}`
-    % is not valid for !prof in LLVM IR. We define the node as
-    % `!wam_step_branch_weights` at module scope right after @step's
-    % closing brace; the named metadata avoids collision with any
-    % numeric `!N` ids the module might pick up from other sources
-    % (LTO bitcode, debug info, etc.).
-    %
-    % First weight is for the `default` label (taken only on a
-    % malformed bytecode tag, so 1). The 33 case weights match the
-    % opcode order in the switch above (tag 0..32).
-    format(atom(LLVMCode),
-'; M7 @step branch weights (!prof !99 below) — relative frequencies
+  ; Save trail mark
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 2
+  store i32 %ts, i32* %tm_ptr
+
+  ; Save CP
+  %cp_val_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cp_val = load i32, i32* %cp_val_ptr
+  %scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 3
+  store i32 %cp_val, i32* %scp_ptr
+
+  ; Mark as foreign iterator (agg_type = -2)
+  %at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 4
+  store i32 -2, i32* %at_ptr
+
+  ; Store result_reg in field 5 (agg_value_reg — repurposed)
+  %rr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 5
+  store i32 %result_reg, i32* %rr_ptr
+
+  ; Store return_pc in field 7 (agg_return_pc — repurposed)
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_ptr
+
+  ; Store foreign iterator fields
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 8
+  store i8* %results, i8** %fr_ptr
+  %fc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 9
+  store i32 %count, i32* %fc_ptr
+  ; Cursor: for single mode (result_reg != 255), starts at 1.
+  ; For paired mode (result_reg == 255), starts at 2 (result[0..1] already yielded).
+  %is_paired_mode = icmp eq i32 %result_reg, 255
+  %initial_cursor = select i1 %is_paired_mode, i32 2, i32 1
+  %cur_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 10
+  store i32 %initial_cursor, i32* %cur_ptr
+
+  ; Save heap_top (field 11) — needed for backtrack to rewind properly.
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 11
+  store i32 %hs, i32* %sht_ptr
+
+  ; Increment CP count
+  %new_cpn = add i32 %cpn, 1
+  store i32 %new_cpn, i32* %cpn_ptr
+
+  ret void
+}
+
+; Advance the foreign result iterator on the top choice point.
+; Called by @backtrack when it detects agg_type == -2.
+;
+; If cursor < count: restore registers from CP, write result[cursor]
+;   to the result register, advance cursor, set PC to return_pc, return true.
+; If cursor >= count: pop the CP and return false (exhaust).
+define i1 @wam_foreign_iter_next(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+
+  ; Read cursor and count
+  %cur_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 10
+  %cursor = load i32, i32* %cur_ptr
+  %fc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 9
+  %count = load i32, i32* %fc_ptr
+
+  %exhausted = icmp uge i32 %cursor, %count
+  br i1 %exhausted, label %pop_cp, label %yield
+
+yield:
+  ; Restore registers from CP (so each result starts from clean state)
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  ; Unwind trail to CP's saved mark
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  ; Read result register mode
+  %rr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 5
+  %result_reg = load i32, i32* %rr_ptr
+  %is_paired = icmp eq i32 %result_reg, 255
+  br i1 %is_paired, label %yield_paired, label %yield_single
+
+yield_single:
+  ; Read result[cursor], write to result_reg. M28: route through
+  ; trail_binding + bind_reg instead of set_reg so a result_reg
+  ; that holds a Ref into the heap (e.g. the put_value Y_var, A_n
+  ; pattern that aggregate_all uses for its value reg) gets the
+  ; underlying heap cell bound. Without this, the next iteration''s
+  ; deref of the Y-aliased reg sees Unbound and the aggregator
+  ; collects a sentinel instead of the yielded value.
+  %fr_ptr_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %results_raw_s = load i8*, i8** %fr_ptr_s
+  %results_s = bitcast i8* %results_raw_s to %Value*
+  %cursor_64_s = zext i32 %cursor to i64
+  %val_ptr_s = getelementptr %Value, %Value* %results_s, i64 %cursor_64_s
+  %val_s = load %Value, %Value* %val_ptr_s
+  call void @wam_trail_binding(%WamState* %vm, i32 %result_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
+  %next_cursor_s = add i32 %cursor, 1
+  br label %yield_done
+
+yield_paired:
+  ; Paired mode: result[cursor] → reg 1 (A2), result[cursor+1] → reg 2 (A3).
+  ; Cursor advances by 2. M28: same trail + bind change as yield_single.
+  %fr_ptr_p = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %results_raw_p = load i8*, i8** %fr_ptr_p
+  %results_p = bitcast i8* %results_raw_p to %Value*
+  %cursor_64_p = zext i32 %cursor to i64
+  %val1_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p
+  %val1 = load %Value, %Value* %val1_ptr
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %val1)
+  %cursor_64_p1 = add i64 %cursor_64_p, 1
+  %val2_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p1
+  %val2 = load %Value, %Value* %val2_ptr
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %val2)
+  %next_cursor_p = add i32 %cursor, 2
+  br label %yield_done
+
+yield_done:
+  %next_cursor = phi i32 [%next_cursor_s, %yield_single], [%next_cursor_p, %yield_paired]
+  store i32 %next_cursor, i32* %cur_ptr
+
+  ; Set PC to return_pc (proceed to next instruction after the foreign call)
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %rpc = load i32, i32* %rpc_ptr
+  call void @wam_set_pc(%WamState* %vm, i32 %rpc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+
+  ret i1 true
+
+pop_cp:
+  ; Iterator exhausted — pop the choice point.
+  store i32 %top_idx, i32* %cpn_ptr
+
+  ; Free the malloc'd result array before popping.
+  %pop_fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %pop_fr = load i8*, i8** %pop_fr_ptr
+  %pop_fr_null = icmp eq i8* %pop_fr, null
+  br i1 %pop_fr_null, label %pop_restore, label %pop_free_results
+
+pop_free_results:
+  call void @free(i8* %pop_fr)
+  br label %pop_restore
+
+pop_restore:
+  ; Restore registers and trail one last time.
+  %pop_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %pop_src = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %pop_dst_raw = bitcast %Value* %pop_dst to i8*
+  %pop_src_raw = bitcast %Value* %pop_src to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pop_dst_raw, i8* %pop_src_raw, i64 512, i1 false)
+
+  %pop_tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %pop_tm = load i32, i32* %pop_tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %pop_tm)
+
+  ; Restore CP
+  %pop_scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 3
+  %pop_scp = load i32, i32* %pop_scp_ptr
+  call void @wam_set_cp(%WamState* %vm, i32 %pop_scp)
+
+  ; M28: after popping the exhausted foreign-iter CP, retry backtrack
+  ; on the now-exposed CP underneath. Without this, an aggregate
+  ; sitting below a between/3 iterator never finalises -- foreign_
+  ; iter_next''s false return goes straight back to run_loop which
+  ; reads it as "no more solutions" and fails the whole goal.
+  %pop_retry = call i1 @backtrack(%WamState* %vm)
+  ret i1 %pop_retry
+}
+
+
+; === WAM Runtime (step + run_loop + helpers) ===
+; === WAM Runtime: Step + Run Loop + Helpers ===
+; Transpiled from wam_runtime.pl step_wam/3 and run_loop/2
+
+; Step: execute a single WAM instruction via switch dispatch
+; M7 @step branch weights (!prof !99 below) — relative frequencies
 ; estimated from typical Prolog workloads. The slot order in !99
 ; matches the switch case order: slot 0 = default (malformed tag),
 ; slot k+1 = case for tag k (k = 0..32). Per-opcode weights:
@@ -2405,7 +5002,7 @@ compile_step_wam_to_llvm(_Options, LLVMCode) :-
 ;   switch_on_const_a2 5,  begin_aggregate    5,  end_aggregate      5
 ;   call_foreign      10,  cut_ite            5,  jump               5
 ; At -O2 on x86 the dense 0..32 range typically lowers to a jump
-; table regardless, but the weights still inform LLVM\'s per-case
+; table regardless, but the weights still inform LLVM's per-case
 ; inner-branch ordering and help on ARM/RISC-V backends that use a
 ; balanced-binary-search lowering.
 define i1 @step(%WamState* %vm, %Instruction* %instr) {
@@ -2454,30 +5051,8 @@ entry:
     i32 34, label %cut
   ], !prof !99
 
-~w
-
-default:
-  ret i1 false
-}
-
-; M7 step-dispatch branch weights — relative frequencies estimated
-; from typical Prolog workloads. Operand layout (must match the
-; switch case order above):
-;   slot 0 = default (malformed tag)
-;   slot k+1 = case for tag k, k = 0..32
-; Comments inside the operand list aren\'t allowed (the LLVM IR
-; parser rejects `;` mid-operand), so the per-opcode rationale lives
-; in the comment block above the @step definition.
-!99 = !{!\"branch_weights\", i32 1, i32 50, i32 80, i32 100, i32 20, i32 20, i32 30, i32 30, i32 10, i32 50, i32 80, i32 100, i32 20, i32 10, i32 20, i32 30, i32 30, i32 50, i32 50, i32 80, i32 50, i32 100, i32 60, i32 30, i32 5, i32 10, i32 10, i32 5, i32 5, i32 5, i32 5, i32 10, i32 5, i32 5, i32 5, i32 5}', [CasesCode]).
-
-compile_llvm_step_case(CaseCode) :-
-    wam_llvm_case(Label, BodyCode),
-    format(atom(CaseCode), '~w:\n~w', [Label, BodyCode]).
-
-% --- Head Unification Instructions ---
-
-wam_llvm_case('get_constant',
-'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
+get_constant:
+  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
   ; Deref the register so a put_variable-aliased Ref reads as its
   ; underlying heap-stored value (Unbound for fresh vars). Bind via
   ; wam_bind_reg so the shared heap cell — and any other Y/A registers
@@ -2509,20 +5084,18 @@ gc.match:
   ret i1 true
 
 gc.fail:
-  ret i1 false').
-
-wam_llvm_case('get_variable',
-'  ; op1 = Xn index, op2 = Ai index
+  ret i1 false
+get_variable:
+  ; op1 = Xn index, op2 = Ai index
   %gv.ai = trunc i64 %op2 to i32
   %gv.xn = trunc i64 %op1 to i32
   %gv.val = call %Value @wam_get_reg(%WamState* %vm, i32 %gv.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %gv.xn)
   call void @wam_set_reg(%WamState* %vm, i32 %gv.xn, %Value %gv.val)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('get_value',
-'  ; op1 = Xn index, op2 = Ai index — unify. Deref both sides for the
+  ret i1 true
+get_value:
+  ; op1 = Xn index, op2 = Ai index — unify. Deref both sides for the
   ; is_unbound check; bind via wam_bind_reg to propagate through Refs.
   %gval.ai = trunc i64 %op2 to i32
   %gval.xn = trunc i64 %op1 to i32
@@ -2556,12 +5129,9 @@ gval.match:
   ret i1 true
 
 gval.fail:
-  ret i1 false').
-
-% --- Structure/List Head Unification ---
-
-wam_llvm_case('get_structure',
-'  ; get_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
+  ret i1 false
+get_structure:
+  ; get_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
   %gs.op2_32 = trunc i64 %op2 to i32
   %gs.arity = lshr i32 %gs.op2_32, 16
   %gs.ai = and i32 %gs.op2_32, 65535
@@ -2596,10 +5166,9 @@ gs.read:
   ret i1 true
 
 gs.fail:
-  ret i1 false').
-
-wam_llvm_case('get_list',
-'  ; get_list: op1 = Ai register index
+  ret i1 false
+get_list:
+  ; get_list: op1 = Ai register index
   ; M10: handle the Compound representation produced by the new
   ; put_list. Tag dispatch:
   ;   tag=3 Compound -> READ mode: extract args, push UnifyCtx(2)
@@ -2663,10 +5232,9 @@ gl.write:
   ret i1 true
 
 gl.fail:
-  ret i1 false').
-
-wam_llvm_case('unify_variable',
-'  ; unify_variable: op1 = Xn register index
+  ret i1 false
+unify_variable:
+  ; unify_variable: op1 = Xn register index
   ; Read mode (UnifyCtx on stack): pop next arg, store in Xn
   ; Write mode (WriteCtx on stack): create unbound var on heap, store in Xn
   %uv.xn = trunc i64 %op1 to i32
@@ -2691,11 +5259,9 @@ uv.write:
   call void @wam_trail_binding(%WamState* %vm, i32 %uv.xn)
   call void @wam_set_reg(%WamState* %vm, i32 %uv.xn, %Value %uv.ref)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-
-wam_llvm_case('unify_value',
-'  ; unify_value: op1 = Xn register index
+  ret i1 true
+unify_value:
+  ; unify_value: op1 = Xn register index
   ; Read mode: unify Xn with next arg from UnifyCtx
   ; Write mode: push Xn value onto heap
   %uvl.xn = trunc i64 %op1 to i32
@@ -2737,10 +5303,9 @@ uvl.write:
   ret i1 true
 
 uvl.fail:
-  ret i1 false').
-
-wam_llvm_case('unify_constant',
-'  ; unify_constant: op1 = constant value (packed)
+  ret i1 false
+unify_constant:
+  ; unify_constant: op1 = constant value (packed)
   ; Read mode: check next arg equals constant
   ; Write mode: push constant onto heap
   %uc.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
@@ -2769,13 +5334,9 @@ uc.write:
   ret i1 true
 
 uc.fail:
-  ret i1 false').
-
-
-% --- Body Construction Instructions ---
-
-wam_llvm_case('put_constant',
-'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
+  ret i1 false
+put_constant:
+  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
   ; Lower 16 bits: register index. Upper bits: %Value tag.
   ; 0 = Atom, 1 = Integer, 2 = Float, etc. See value.ll.mustache.
   %pc.op2_32 = trunc i64 %op2 to i32
@@ -2788,11 +5349,9 @@ wam_llvm_case('put_constant',
   call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pc.old, %Value %pc.val2)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-
-wam_llvm_case('put_variable',
-'  ; op1 = Xn index, op2 = Ai index
+  ret i1 true
+put_variable:
+  ; op1 = Xn index, op2 = Ai index
   ; Allocate a fresh heap cell holding Unbound, then place Ref{addr}
   ; into BOTH Xn and Ai so they alias through the heap. Subsequent
   ; binding builtins (functor/3, arg/3, is/2, =/2, get_value) write
@@ -2812,11 +5371,9 @@ wam_llvm_case('put_variable',
   call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.ref)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pv.old, %Value %pv.ref)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-
-wam_llvm_case('put_value',
-'  ; op1 = Xn index, op2 = Ai index
+  ret i1 true
+put_value:
+  ; op1 = Xn index, op2 = Ai index
   %pvl.xn = trunc i64 %op1 to i32
   %pvl.ai = trunc i64 %op2 to i32
   %pvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.xn)
@@ -2825,11 +5382,9 @@ wam_llvm_case('put_value',
   call void @wam_set_reg(%WamState* %vm, i32 %pvl.ai, %Value %pvl.val)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pvl.old, %Value %pvl.val)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-
-wam_llvm_case('put_structure',
-'  ; put_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
+  ret i1 true
+put_structure:
+  ; put_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
   ; Allocate %Compound struct + args array from the arena (not malloc).
   ; Compounds are transient and reclaimed on @wam_cleanup().
   %ps.fn_ptr = inttoptr i64 %op1 to i8*
@@ -2862,15 +5417,14 @@ wam_llvm_case('put_structure',
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('put_list',
-'  ; put_list: op1 = Ai register index
-  ; M10: build a [|]/2 Compound on the arena (matches put_structure''s
+  ret i1 true
+put_list:
+  ; put_list: op1 = Ai register index
+  ; M10: build a [|]/2 Compound on the arena (matches put_structure's
   ; representation). Prior impl used a heap-marker (Atom sentinel +
-  ; 2 unbound cells) which deref''d to an Atom -- the resulting list
+  ; 2 unbound cells) which deref'd to an Atom -- the resulting list
   ; was incompatible with put_structure [|]/2 (Compound) and with
-  ; findall''s collect_case output, so any cross-built unification
+  ; findall's collect_case output, so any cross-built unification
   ; silently failed (Compound vs Atom tag mismatch).
   %pl.ai = trunc i64 %op1 to i32
   call void @wam_arena_ensure()
@@ -2905,10 +5459,9 @@ wam_llvm_case('put_list',
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('set_variable',
-'  ; set_variable: op1 = Xn register index
+  ret i1 true
+set_variable:
+  ; set_variable: op1 = Xn register index
   ; Allocate a fresh heap cell holding Unbound, then place Ref{addr}
   ; into BOTH the compound args (via WriteCtx) and Xn so they alias.
   %sv.xn = trunc i64 %op1 to i32
@@ -2919,11 +5472,9 @@ wam_llvm_case('set_variable',
   call void @wam_trail_binding(%WamState* %vm, i32 %sv.xn)
   call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.ref)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-
-wam_llvm_case('set_value',
-'  ; set_value: op1 = Xn register index
+  ret i1 true
+set_value:
+  ; set_value: op1 = Xn register index
   ; Write Xn value into the compound args array via WriteCtx.
   ; M10: if Xn is a direct Unbound (no backing heap cell -- usually
   ; because get_variable copied a direct-Unbound input arg verbatim),
@@ -2949,22 +5500,18 @@ sve.promote:
 sve.write:
   call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.val)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('set_constant',
-'  ; set_constant: op1 = constant payload, op2 = tag (0=atom, 1=integer)
+  ret i1 true
+set_constant:
+  ; set_constant: op1 = constant payload, op2 = tag (0=atom, 1=integer)
   ; Write constant into the compound args array via WriteCtx.
   %sc.tag = trunc i64 %op2 to i32
   %sc.val = insertvalue %Value undef, i32 %sc.tag, 0
   %sc.val2 = insertvalue %Value %sc.val, i64 %op1, 1
   call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sc.val2)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-% --- Control Instructions ---
-
-wam_llvm_case('allocate',
-'  ; Push environment frame: save CP on stack and snapshot Y-regs.
+  ret i1 true
+allocate:
+  ; Push environment frame: save CP on stack and snapshot Y-regs.
   ; Y-regs (regs[16..31]) share physical slots with X-regs in this
   ; target; save/restore at allocate/deallocate boundaries gives each
   ; clause its own isolated Y-space — an inner predicate writing its
@@ -3014,10 +5561,9 @@ wam_llvm_case('allocate',
   %alloc.new_ss = add i32 %alloc.ss, 1
   store i32 %alloc.new_ss, i32* %alloc.ss_ptr
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('deallocate',
-'  ; Pop environment frame: scan backward for EnvFrame (type == 0), restore CP
+  ret i1 true
+deallocate:
+  ; Pop environment frame: scan backward for EnvFrame (type == 0), restore CP
   %dealloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %dealloc.ss = load i32, i32* %dealloc.ss_ptr
   %dealloc.has_frames = icmp sgt i32 %dealloc.ss, 0
@@ -3071,10 +5617,9 @@ dealloc.restore:
 
 dealloc.done:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('do_call',
-'  ; op1 = label index or -1 for meta-call, op2 = arity
+  ret i1 true
+do_call:
+  ; op1 = label index or -1 for meta-call, op2 = arity
   %call.label = trunc i64 %op1 to i32
   %call.pc = call i32 @wam_get_pc(%WamState* %vm)
   %call.next = add i32 %call.pc, 1
@@ -3106,10 +5651,9 @@ call.go:
   ret i1 true
 
 call.fail:
-  ret i1 false').
-
-wam_llvm_case('do_execute',
-'  ; op1 = label index or -1 for meta-call, op2 = total arity for meta-call
+  ret i1 false
+do_execute:
+  ; op1 = label index or -1 for meta-call, op2 = total arity for meta-call
   %exec.label = trunc i64 %op1 to i32
   %exec.is_meta = icmp slt i32 %exec.label, 0
   br i1 %exec.is_meta, label %exec.meta, label %exec.static
@@ -3138,10 +5682,9 @@ exec.go:
   ret i1 true
 
 exec.fail:
-  ret i1 false').
-
-wam_llvm_case('proceed',
-'  ; Return to continuation or halt
+  ret i1 false
+proceed:
+  ; Return to continuation or halt
   %proc.cp = call i32 @wam_get_cp(%WamState* %vm)
   %proc.is_halt = icmp eq i32 %proc.cp, 0
   br i1 %proc.is_halt, label %proc.halt, label %proc.return
@@ -3153,10 +5696,9 @@ proc.halt:
 proc.return:
   call void @wam_set_pc(%WamState* %vm, i32 %proc.cp)
   call void @wam_set_cp(%WamState* %vm, i32 0)
-  ret i1 true').
-
-wam_llvm_case('builtin_call',
-'  ; op1 = builtin op id, op2 = arity
+  ret i1 true
+builtin_call:
+  ; op1 = builtin op id, op2 = arity
   %bi.op = trunc i64 %op1 to i32
   %bi.arity = trunc i64 %op2 to i32
   %bi.result = call i1 @execute_builtin(%WamState* %vm, i32 %bi.op, i32 %bi.arity)
@@ -3167,12 +5709,9 @@ bi.ok:
   ret i1 true
 
 bi.fail:
-  ret i1 false').
-
-% --- Choice Point Instructions ---
-
-wam_llvm_case('try_me_else',
-'  ; op1 = label index for alternative
+  ret i1 false
+try_me_else:
+  ; op1 = label index for alternative
   %tme.label = trunc i64 %op1 to i32
   %tme.next_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %tme.label)
   ; M5: ensure CP array has room before reading its pointer.
@@ -3217,7 +5756,7 @@ wam_llvm_case('try_me_else',
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
   ; M10: snapshot the CURRENT cut_barrier into saved_b so trust_me /
-  ; retry_me_else can restore it on this CP''s removal. Pre-M10 we
+  ; retry_me_else can restore it on this CP's removal. Pre-M10 we
   ; stored cpn here AND overwrote the global cb with cpn, which
   ; corrupted any outer ITE/clause cut barrier that an inner
   ; try_me_else encountered. With this change cb stays at the
@@ -3232,10 +5771,9 @@ wam_llvm_case('try_me_else',
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('retry_me_else',
-'  ; op1 = label index for next alternative
+  ret i1 true
+retry_me_else:
+  ; op1 = label index for next alternative
   ; If no CP exists (e.g., entered via switch_on_constant), just advance PC.
   %rme.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %rme.cpn = load i32, i32* %rme.cpn_ptr
@@ -3263,10 +5801,9 @@ rme.no_cp:
 
 rme.done:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('trust_me',
-'  ; Pop top choice point if one exists, otherwise just advance PC.
+  ret i1 true
+trust_me:
+  ; Pop top choice point if one exists, otherwise just advance PC.
   %tm.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %tm.cpn = load i32, i32* %tm.cpn_ptr
   %tm.has_cp = icmp sgt i32 %tm.cpn, 0
@@ -3289,40 +5826,30 @@ tm.pop:
 
 tm.done:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('switch_on_constant',
-'  ; op1 = ptrtoint of %SwitchEntry* table
+  ret i1 true
+switch_on_constant:
+  ; op1 = ptrtoint of %SwitchEntry* table
   ; op2 = entry count
   %soc.table = inttoptr i64 %op1 to %SwitchEntry*
   %soc.count = trunc i64 %op2 to i32
   %soc.result = call i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %soc.table, i32 %soc.count)
   ; 0 = no match (backtrack), 1 = matched (PC updated), 2 = unbound (PC advanced)
   %soc.ok = icmp ne i32 %soc.result, 0
-  ret i1 %soc.ok').
-
-% switch_on_structure: nop fallthrough — safe because the try_me_else/retry_me_else
-% chain still produces correct results. Proper implementation is a follow-up milestone.
-wam_llvm_case('switch_on_structure',
-'  ; Nop fallthrough: just advance PC and continue to the try_me_else chain.
+  ret i1 %soc.ok
+switch_on_structure:
+  ; Nop fallthrough: just advance PC and continue to the try_me_else chain.
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-% switch_on_constant_a2: like switch_on_constant but indexes on A2.
-wam_llvm_case('switch_on_constant_a2',
-'  ; op1 = ptrtoint of %SwitchEntry* table
+  ret i1 true
+switch_on_constant_a2:
+  ; op1 = ptrtoint of %SwitchEntry* table
   ; op2 = entry count
   %soca2.table = inttoptr i64 %op1 to %SwitchEntry*
   %soca2.count = trunc i64 %op2 to i32
   %soca2.result = call i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %soca2.table, i32 %soca2.count)
   %soca2.ok = icmp ne i32 %soca2.result, 0
-  ret i1 %soca2.ok').
-
-% begin_aggregate: push an aggregate-frame choice point and reset accumulator.
-% op1 = (agg_type)
-% op2 = (value_reg_idx << 16) | result_reg_idx
-wam_llvm_case('begin_aggregate',
-'  %ba.agg_type = trunc i64 %op1 to i32
+  ret i1 %soca2.ok
+begin_aggregate:
+  %ba.agg_type = trunc i64 %op1 to i32
   %ba.op2_trunc = trunc i64 %op2 to i32
   %ba.val_reg = lshr i32 %ba.op2_trunc, 16
   %ba.res_reg = and i32 %ba.op2_trunc, 65535
@@ -3383,13 +5910,9 @@ wam_llvm_case('begin_aggregate',
   store i32 0, i32* %ba.accnt_ptr
 
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-% end_aggregate: push value to accumulator, update nearest agg frame's
-% return PC, then fail to trigger backtrack (which calls finalize).
-% op1 = value_reg_idx
-wam_llvm_case('end_aggregate',
-'  %ea.val_reg = trunc i64 %op1 to i32
+  ret i1 true
+end_aggregate:
+  %ea.val_reg = trunc i64 %op1 to i32
   ; M11: freeze (deref + deep-copy compounds) before push. Per-
   ; iteration values are typically Refs into the volatile heap
   ; region; backtrack between iterations rewinds the heap, so a
@@ -3405,26 +5928,16 @@ wam_llvm_case('end_aggregate',
   ; Push value to accumulator
   call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
 
-  ; Update the nearest aggregate frame''s return_pc = current PC + 1
+  ; Update the nearest aggregate frame's return_pc = current PC + 1
   %ea.pc = call i32 @wam_get_pc(%WamState* %vm)
   %ea.ret_pc = add i32 %ea.pc, 1
   call void @wam_update_agg_return_pc(%WamState* %vm, i32 %ea.ret_pc)
 
   ; Fail to force backtrack — backtrack will check the agg frame and
   ; either re-run inner goals (if there are prior CPs) or finalize.
-  ret i1 false').
-
-% call_foreign: dispatch to a native foreign kernel.
-% op1 = foreign kind ID (see wam_llvm_foreign_kind_id/2)
-% op2 = instance_id (M5.8 — selects which of possibly several
-%   foreign-lowered predicates of the same kind should run). Arity is
-%   implicit per kernel kind (td3=3, wsp3=3, astar=4) so it doesn't
-%   need to live in the instruction.
-% On success, advance PC then return true so the run loop continues
-% to the next instruction. On failure, return false without advancing
-% so the run loop backtracks from the current PC.
-wam_llvm_case('call_foreign',
-'  %cf.kind = trunc i64 %op1 to i32
+  ret i1 false
+call_foreign:
+  %cf.kind = trunc i64 %op1 to i32
   %cf.instance = trunc i64 %op2 to i32
   %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.instance)
   br i1 %cf.result, label %cf.success, label %cf.fail
@@ -3434,12 +5947,9 @@ cf.success:
   ret i1 true
 
 cf.fail:
-  ret i1 false').
-
-% --- If-then-else control flow ---
-
-wam_llvm_case('cut_ite',
-'  ; Soft cut: pop only the most recent choice point (the ITE guard CP),
+  ret i1 false
+cut_ite:
+  ; Soft cut: pop only the most recent choice point (the ITE guard CP),
   ; preserving any outer CPs. Unlike !/0 which zeros cp_count, cut_ite
   ; decrements by 1 iff cp_count > 0.
   %ci.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
@@ -3454,10 +5964,9 @@ ci.pop:
 
 ci.advance:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('jump',
-'  ; Unconditional jump: set PC to op1 (label-resolved absolute PC in
+  ret i1 true
+jump:
+  ; Unconditional jump: set PC to op1 (label-resolved absolute PC in
   ; @module_labels). Used after the then-branch of if-then-else to
   ; skip over the else-branch.
   ; op1 itself is a label index — dereference via wam_label_pc.
@@ -3471,12 +5980,11 @@ j.go:
   ret i1 true
 
 j.fail:
-  ret i1 false').
-
-wam_llvm_case('get_level',
-'  ; M17: snapshot the current cp_count into a Y register so cut Y_n
+  ret i1 false
+get_level:
+  ; M17: snapshot the current cp_count into a Y register so cut Y_n
   ; can restore it later. Used for proper if-then-else soft cut --
-  ; pre-M17 the LLVM target''s cut_ite just decremented cp_count by 1,
+  ; pre-M17 the LLVM target's cut_ite just decremented cp_count by 1,
   ; which silently cut the wrong CP when the condition pushed inner
   ; multi-clause CPs. op1 = Y register index.
   %gl.yn = trunc i64 %op1 to i32
@@ -3487,10 +5995,9 @@ wam_llvm_case('get_level',
   call void @wam_trail_binding(%WamState* %vm, i32 %gl.yn)
   call void @wam_set_reg(%WamState* %vm, i32 %gl.yn, %Value %gl.v)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
-
-wam_llvm_case('cut',
-'  ; M17: restore cp_count from the snapshot stored in Y_n by an
+  ret i1 true
+cut:
+  ; M17: restore cp_count from the snapshot stored in Y_n by an
   ; earlier get_level. Cuts the if-then-else CP and any inner CPs
   ; the condition pushed. op1 = Y register index.
   %cy.yn = trunc i64 %op1 to i32
@@ -3506,34 +6013,54 @@ cy.go:
   br label %cy.skip
 cy.skip:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+  ret i1 true
 
-% ============================================================================
-% PHASE 3: Helper predicates → LLVM functions
-% ============================================================================
+default:
+  ret i1 false
+}
 
-%% compile_wam_helpers_to_llvm(+Options, -LLVMCode)
-%  Generates LLVM IR for WAM runtime helpers.
-compile_wam_helpers_to_llvm(Options, LLVMCode) :-
-    compile_backtrack_to_llvm(BacktrackCode),
-    compile_unwind_trail_to_llvm(UnwindCode),
-    compile_execute_builtin_to_llvm(Options, BuiltinCode),
-    compile_eval_arith_to_llvm(ArithCode),
-    compile_copy_term_to_llvm(CopyTermCode),
-    compile_term_cmp_to_llvm(TermCmpCode),
-    compile_ssp_emit_segment_to_llvm(SspCode),
-    atomic_list_concat([
-        BacktrackCode, '\n\n',
-        UnwindCode, '\n\n',
-        BuiltinCode, '\n\n',
-        ArithCode, '\n\n',
-        CopyTermCode, '\n\n',
-        TermCmpCode, '\n\n',
-        SspCode
-    ], LLVMCode).
+; M7 step-dispatch branch weights — relative frequencies estimated
+; from typical Prolog workloads. Operand layout (must match the
+; switch case order above):
+;   slot 0 = default (malformed tag)
+;   slot k+1 = case for tag k, k = 0..32
+; Comments inside the operand list aren't allowed (the LLVM IR
+; parser rejects `;` mid-operand), so the per-opcode rationale lives
+; in the comment block above the @step definition.
+!99 = !{!"branch_weights", i32 1, i32 50, i32 80, i32 100, i32 20, i32 20, i32 30, i32 30, i32 10, i32 50, i32 80, i32 100, i32 20, i32 10, i32 20, i32 30, i32 30, i32 50, i32 50, i32 80, i32 50, i32 100, i32 60, i32 30, i32 5, i32 10, i32 10, i32 5, i32 5, i32 5, i32 5, i32 10, i32 5, i32 5, i32 5, i32 5}
 
-compile_backtrack_to_llvm(Code) :-
-    Code = 'define i1 @backtrack(%WamState* %vm) {
+; Run loop: execute instructions until halt or failure (musttail trampoline)
+define i1 @run_loop(%WamState* %vm) {
+entry:
+  %halted = call i1 @wam_is_halted(%WamState* %vm)
+  br i1 %halted, label %success, label %fetch_instr
+
+fetch_instr:
+  %instr = call %Instruction* @wam_fetch(%WamState* %vm)
+  %null_check = icmp eq %Instruction* %instr, null
+  br i1 %null_check, label %failure, label %do_step
+
+do_step:
+  %ok = call i1 @step(%WamState* %vm, %Instruction* %instr)
+  br i1 %ok, label %continue, label %try_backtrack
+
+continue:
+  %result = musttail call i1 @run_loop(%WamState* %vm)
+  ret i1 %result
+
+try_backtrack:
+  %bt_ok = call i1 @backtrack(%WamState* %vm)
+  br i1 %bt_ok, label %continue, label %failure
+
+success:
+  ret i1 true
+
+failure:
+  ret i1 false
+}
+
+; Backtrack, unwind_trail, execute_builtin, eval_arith
+define i1 @backtrack(%WamState* %vm) {
 entry:
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %cpn = load i32, i32* %cpn_ptr
@@ -3607,10 +6134,9 @@ restore:
 
 fail:
   ret i1 false
-}'.
+}
 
-compile_unwind_trail_to_llvm(Code) :-
-    Code = 'define void @unwind_trail(%WamState* %vm, i32 %saved_mark) {
+define void @unwind_trail(%WamState* %vm, i32 %saved_mark) {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
@@ -3653,18 +6179,12 @@ unwind_reg:
 
 done:
   ret void
-}'.
+}
 
-compile_execute_builtin_to_llvm(Options, Code) :-
-    % M113: resolve target OS for struct dirent / struct tm offsets.
-    % Default mode is auto (derive from target_triple); callers can
-    % override with target_os(linux|darwin|freebsd|...).
-    target_os_resolved(Options, OS),
-    target_dirent_d_name_offset(OS, DirentNameOff),
-    Template = '; Execute builtin operations
+; Execute builtin operations
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
-;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
+;   5 = =:=/2, 6 = =\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
 ;   10 = !/0, 11 = write/1, 12 = nl/0
 ;   13 = atom/1, 14 = integer/1, 15 = float/1, 16 = number/1
 ;   17 = compound/1, 18 = var/1, 19 = nonvar/1, 20 = is_list/1
@@ -3841,7 +6361,7 @@ entry:
 builtin_is:
   ; A1 is result, A2 is expression. M11: go through eval_arith_value
   ; so `**` with a negative integer exponent returns a Float instead
-  ; of the integer eval_arith''s 0. Everything else still routes
+  ; of the integer eval_arith's 0. Everything else still routes
   ; through integer eval_arith (boxed via value_integer).
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %is.result_val = call %Value @eval_arith_value(%WamState* %vm, %Value %is.a2)
@@ -4067,7 +6587,7 @@ builtin_is_list_check:
   ret i1 %ilc.r
 
 builtin_neq:
-  ; \\==/2: not structurally equal
+  ; \==/2: not structurally equal
   %neq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %neq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %neq.eq = call i1 @value_equals(%Value %neq.a1, %Value %neq.a2)
@@ -4081,7 +6601,7 @@ builtin_write:
   ; ``[|]/2`` functor special-cases to list notation. The previous
   ; M19 inline dispatch lives on inside the helper.
   ; M61: display/1 dispatches to this same label since our runtime
-  ; doesn''t (yet) distinguish operator vs canonical print modes.
+  ; doesn't (yet) distinguish operator vs canonical print modes.
   %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   call void @wam_write_value(%WamState* %vm, %Value %wr.a1)
   ret i1 true
@@ -4100,7 +6620,7 @@ builtin_keysort:
   ; of -/2 K-V pairs, ordered by the Key (args[0]) under standard
   ; term order. Supported key types: Integer, Float, Atom. Compound
   ; keys are treated as equal (so they retain input order — which
-  ; isn''t SWI-correct but doesn''t crash).
+  ; isn't SWI-correct but doesn't crash).
   ; Three-pass: count + validate; insertion-sort; build cons chain.
   %ks.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   call void @wam_arena_ensure()
@@ -4792,7 +7312,7 @@ df.unlink:
 builtin_make_directory:
   ; M74: make_directory(+Path) -- atom Path. Calls libc mkdir(path,
   ; 0o755); succeeds iff mkdir returns 0. (0o755 = 493 decimal --
-  ; rwxr-xr-x, the conventional ``mkdir'' default; subject to umask.)
+  ; rwxr-xr-x, the conventional ``mkdir' default; subject to umask.)
   %mkd.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %mkd.t1 = extractvalue %Value %mkd.a1, 0
   %mkd.is_atom = icmp eq i32 %mkd.t1, 0
@@ -4966,7 +7486,7 @@ gev.copy:
 builtin_setenv:
   ; M77: setenv(+Name, +Value) -- both atoms. Calls libc
   ; setenv(name, value, 1) -- the trailing 1 is the "overwrite"
-  ; flag, matching SWI-Prolog''s set-without-checking semantics.
+  ; flag, matching SWI-Prolog's set-without-checking semantics.
   ; Succeeds iff setenv returns 0.
   %se.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %se.t1 = extractvalue %Value %se.a1, 0
@@ -5020,10 +7540,10 @@ sh1.run:
 builtin_shell2:
   ; M78: shell(+Command, ?Status) -- atom Command; unifies Status
   ; with WEXITSTATUS(raw) (decoded exit code 0..255), matching
-  ; SWI-Prolog''s convention. For abnormal termination (signal,
+  ; SWI-Prolog's convention. For abnormal termination (signal,
   ; system() == -1) Status reflects the high bits as encoded
   ; by the kernel; callers can compare against 0 for ``ran and
-  ; exited cleanly''.
+  ; exited cleanly'.
   %sh2.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %sh2.t1 = extractvalue %Value %sh2.a1, 0
   %sh2.is_atom = icmp eq i32 %sh2.t1, 0
@@ -5049,7 +7569,7 @@ builtin_working_directory:
   ; M79: working_directory(?Old, ?New) -- unifies Old with the
   ; current CWD read via getcwd. If New is an atom, chdir to
   ; that path; if New is unbound, it gets unified with Old as
-  ; well (the canonical ``query mode'' for working_directory(D,D)).
+  ; well (the canonical ``query mode' for working_directory(D,D)).
   ; 4096-byte stack buffer covers PATH_MAX on Linux.
   %wd.buf = alloca [4096 x i8]
   %wd.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %wd.buf, i32 0, i32 0
@@ -5110,8 +7630,8 @@ builtin_sleep:
   ; long sleeps (more than ~71 minutes) silently truncate; for
   ; typical usage this is fine. Returns success unconditionally
   ; once the call returns (any signal that woke usleep early
-  ; still counts as a successful sleep). Prefix ``slp.'' to avoid
-  ; the ``sl.'' collision with builtin_sum_list (M42).
+  ; still counts as a successful sleep). Prefix ``slp.' to avoid
+  ; the ``sl.' collision with builtin_sum_list (M42).
   %slp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %slp.t1 = extractvalue %Value %slp.a1, 0
   %slp.is_int = icmp eq i32 %slp.t1, 1
@@ -5238,7 +7758,7 @@ rb.draw:
 builtin_format_time:
   ; M91: format_time(?Atom, +Format, +Stamp) -- Stamp is the get_time-
   ; style epoch seconds (Integer or Float), Format is a strftime atom
-  ; (e.g. ``%Y-%m-%d %H:%M:%S''), result Atom is the rendered string.
+  ; (e.g. ``%Y-%m-%d %H:%M:%S'), result Atom is the rendered string.
   ; Pipeline: time_t = (i64)Stamp -> localtime_r(&t, &tm) ->
   ; strftime(buf, 256, fmt, &tm) -> intern buf as atom -> unify.
   ; struct tm on x86-64 glibc is 56 bytes; alloca 64 for headroom.
@@ -5320,7 +7840,7 @@ h1.do_exit:
 builtin_unsetenv:
   ; M93: unsetenv(+Name) -- complements M77 setenv/2. Name must be an
   ; atom; non-atom fails. libc unsetenv returns 0 on success and -1
-  ; only on EINVAL (invalid name like one containing ``=''). Treats
+  ; only on EINVAL (invalid name like one containing ``='). Treats
   ; an unset-when-not-set as success, matching SWI-Prolog semantics.
   %us.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %us.t1 = extractvalue %Value %us.a1, 0
@@ -5393,9 +7913,9 @@ builtin_getppid:
 
 builtin_set_random:
   ; M97: set_random(+Option) -- seeds libc srand48. Option must be
-  ; the compound seed/1 with an Integer arg (matches SWI''s
+  ; the compound seed/1 with an Integer arg (matches SWI's
   ; set_random/1 calling convention). Other Option shapes fail
-  ; rather than erroring -- this isn''t the place to validate every
+  ; rather than erroring -- this isn't the place to validate every
   ; SWI-side option since the only one with a libc-mappable
   ; semantic is the seed/1 compound.
   %sr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -5436,7 +7956,7 @@ builtin_stamp_date_time:
   ; M98: stamp_date_time(+Stamp, -DateTime, +TZ) -- decompose a Unix
   ; epoch Stamp (Integer or Float) into the 9-arity SWI date/9
   ; compound: date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst).
-  ; TZ is required to be an Atom (`local'' is the only accepted
+  ; TZ is required to be an Atom (`local' is the only accepted
   ; value for now -- gmt/UTC and integer offsets fall back to the
   ; same localtime_r path; the slot just records the requested
   ; name as the TZName component).
@@ -5589,7 +8109,7 @@ builtin_date_time_stamp:
   ; M99: date_time_stamp(+DateTime, -Stamp) -- inverse of M98. Takes
   ; a date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst) compound,
   ; populates a struct tm, calls mktime, returns Stamp as Float
-  ; (matching SWI''s convention so that round-tripping through
+  ; (matching SWI's convention so that round-tripping through
   ; stamp_date_time / date_time_stamp preserves the Float type from
   ; get_time). Compound shape check borrows the M97 pattern:
   ; tag check + arity 9 + functor strcmp against "date".
@@ -5688,7 +8208,7 @@ dts.fill_tm:
   %dts.tm_buf = alloca [64 x i8]
   %dts.tm_ptr = getelementptr [64 x i8], [64 x i8]* %dts.tm_buf, i32 0, i32 0
   ; Zero the buffer so the unused padding bytes (and tm_gmtoff/tm_zone
-  ; if present) don''t hand mktime random stack contents.
+  ; if present) don't hand mktime random stack contents.
   call void @llvm.memset.p0i8.i64(i8* %dts.tm_ptr, i8 0, i64 64, i1 false)
   %dts.y_val = call i64 @value_payload(%Value %dts.y)
   %dts.y_adj = sub i64 %dts.y_val, 1900
@@ -5729,12 +8249,12 @@ dts.fill_tm:
   %dts.isdst_p = bitcast i8* %dts.isdst_p_i8 to i32*
   store i32 %dts.dst_i32, i32* %dts.isdst_p
   ; mktime returns time_t == i64 on x86-64 Linux. -1 signals an
-  ; invalid struct tm (mktime couldn''t represent it as time_t).
+  ; invalid struct tm (mktime couldn't represent it as time_t).
   %dts.t = call i64 @mktime(i8* %dts.tm_ptr)
   %dts.bad = icmp eq i64 %dts.t, -1
   br i1 %dts.bad, label %dts.fail, label %dts.do_unify
 dts.do_unify:
-  ; Pack as Float to match SWI''s get_time-style stamp convention.
+  ; Pack as Float to match SWI's get_time-style stamp convention.
   %dts.t_d = sitofp i64 %dts.t to double
   %dts.t_bits = bitcast double %dts.t_d to i64
   %dts.v0 = insertvalue %Value undef, i32 2, 0
@@ -5745,7 +8265,7 @@ dts.do_unify:
 
 builtin_chmod:
   ; M102: chmod(+Path, +Mode) -- Path is atom, Mode is Integer
-  ; (interpreted as octal in source via the user''s 0o... or 0''o...
+  ; (interpreted as octal in source via the user's 0o... or 0'o...
   ; literal; the WAM just receives the i64 payload). Succeeds iff
   ; libc chmod returns 0.
   %ch.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -5789,7 +8309,7 @@ builtin_term_variables:
 builtin_numbervars:
   ; M105: numbervars(+Term, +Start, -End) -- walks Term depth-first
   ; left-to-right and binds each free variable to a fresh
-  ; ''$VAR''(N) compound, where N starts at Start and increments by 1
+  ; '$VAR'(N) compound, where N starts at Start and increments by 1
   ; per binding. End is unified with the final counter (Start +
   ; number_of_vars_bound). Start must be Integer; non-Integer fails.
   ; Same Ref-aliasing guarantees as M104: a single var with multiple
@@ -5878,7 +8398,7 @@ dirf.loop:
   br i1 %dirf.entry_null, label %dirf.close, label %dirf.append
 dirf.append:
   ; Build a new cons cell [|](Atom, acc) on the arena.
-__M113_DIRENT_NAME_PTR__
+  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 19
   %dirf.name_len = call i64 @strlen(i8* %dirf.name_ptr)
   %dirf.bufsize = add i64 %dirf.name_len, 1
   %dirf.buf = call i8* @wam_arena_alloc(i64 %dirf.bufsize)
@@ -6071,9 +8591,9 @@ builtin_ground:
 
 builtin_file_base_name:
   ; M118: file_base_name(+Path, -Base) -- basename(1) semantics.
-  ; Scan Path backwards for the last ''/''; return everything
-  ; after it (or the whole string if no ''/''). Special cases:
-  ; ''/'' or any path ending in ''/'' returns ''''. Path must be
+  ; Scan Path backwards for the last '/'; return everything
+  ; after it (or the whole string if no '/'). Special cases:
+  ; '/' or any path ending in '/' returns ''. Path must be
   ; Atom; non-atom fails the type guard.
   %fbn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %fbn.t1 = call i32 @value_tag(%Value %fbn.a1)
@@ -6095,7 +8615,7 @@ fbn.empty:
   ; Empty path -> empty atom.
   br label %fbn.intern_with_zero
 fbn.loop:
-  ; i counts down from len-1 looking for ''/''. No-slash exit through %step.
+  ; i counts down from len-1 looking for '/'. No-slash exit through %step.
   %fbn.i = phi i64 [ %fbn.i_init, %fbn.scan_init ], [ %fbn.i_dec, %fbn.step ]
   %fbn.cp = getelementptr i8, i8* %fbn.path, i64 %fbn.i
   %fbn.c = load i8, i8* %fbn.cp
@@ -6106,7 +8626,7 @@ fbn.step:
   %fbn.i_dec = sub i64 %fbn.i, 1
   br i1 %fbn.done, label %fbn.no_slash, label %fbn.loop
 fbn.no_slash:
-  ; No ''/'' anywhere -> base = whole string.
+  ; No '/' anywhere -> base = whole string.
   %fbn.start_a = phi i8* [ %fbn.path, %fbn.step ]
   %fbn.baselen_a = phi i64 [ %fbn.len, %fbn.step ]
   br label %fbn.intern
@@ -6144,9 +8664,9 @@ fbn.unify:
 
 builtin_file_directory_name:
   ; M118: file_directory_name(+Path, -Dir) -- dirname(1)-style.
-  ; Scan Path backwards for last ''/''. If found at index 0 the
-  ; result is ''/'' (root). If found at index >0 the result is the
-  ; prefix [0..i). If no ''/'' (or empty path), the result is ''.''.
+  ; Scan Path backwards for last '/'. If found at index 0 the
+  ; result is '/' (root). If found at index >0 the result is the
+  ; prefix [0..i). If no '/' (or empty path), the result is '.'.
   ; Path must be Atom.
   %fdn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %fdn.t1 = call i32 @value_tag(%Value %fdn.a1)
@@ -6175,7 +8695,7 @@ fdn.step:
   %fdn.i_dec = sub i64 %fdn.i, 1
   br i1 %fdn.done, label %fdn.dot, label %fdn.loop
 fdn.dot:
-  ; No ''/'' or empty -> result is ''.''. Intern "." (1 byte + null).
+  ; No '/' or empty -> result is '.'. Intern "." (1 byte + null).
   call void @wam_arena_ensure()
   %fdn.dot_buf = call i8* @wam_arena_alloc(i64 2)
   store i8 46, i8* %fdn.dot_buf
@@ -6184,7 +8704,7 @@ fdn.dot:
   %fdn.dot_aid = call i64 @wam_intern_atom(i8* %fdn.dot_buf, i64 1)
   br label %fdn.unify
 fdn.found:
-  ; Slash at index i. If i == 0 -> root ''/''. Else dir = [0..i).
+  ; Slash at index i. If i == 0 -> root '/'. Else dir = [0..i).
   %fdn.is_root = icmp eq i64 %fdn.i, 0
   br i1 %fdn.is_root, label %fdn.root, label %fdn.prefix
 fdn.root:
@@ -6215,15 +8735,15 @@ fdn.unify:
 builtin_file_name_extension:
   ; M119: file_name_extension(?Base, ?Ext, ?File)
   ; Two modes:
-  ;  - Reverse (split): File is Atom -> scan basename for last ''.''
-  ;    (skipping leading dots and not crossing ''/'' boundary). If
+  ;  - Reverse (split): File is Atom -> scan basename for last '.'
+  ;    (skipping leading dots and not crossing '/' boundary). If
   ;    found, unify Base with prefix and Ext with suffix. Otherwise
-  ;    Base = File, Ext = '''' (empty atom).
+  ;    Base = File, Ext = '' (empty atom).
   ;  - Forward (join): Base and Ext are both Atom -> File = Base
-  ;    ++ ''.'' ++ Ext, or just Base if Ext is empty.
+  ;    ++ '.' ++ Ext, or just Base if Ext is empty.
   ; Insufficient instantiation (e.g. File var with Base or Ext var)
   ; fails. SWI semantics: dot at position 0 of the path or
-  ; immediately after a ''/'' (leading-dot / hidden-file convention)
+  ; immediately after a '/' (leading-dot / hidden-file convention)
   ; is NOT an extension separator.
   %fne.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %fne.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
@@ -6262,7 +8782,7 @@ fne.maybe_dot:
   %fne.is_dot = icmp eq i8 %fne.c, 46
   br i1 %fne.is_dot, label %fne.check_prev, label %fne.step
 fne.check_prev:
-  ; Reject leading dots (path[i-1] == ''/'' or i == 0). Loop bounds
+  ; Reject leading dots (path[i-1] == '/' or i == 0). Loop bounds
   ; ensure i >= 1, so prev is in range.
   %fne.prev_idx = sub i64 %fne.i, 1
   %fne.prev_cp = getelementptr i8, i8* %fne.f_str, i64 %fne.prev_idx
@@ -6295,7 +8815,7 @@ fne.found:
   br label %fne.split_unify
 
 fne.no_ext:
-  ; Base = whole File, Ext = ''.
+  ; Base = whole File, Ext = '.
   call void @wam_arena_ensure()
   %fne.f_buflen = add i64 %fne.f_len, 1
   %fne.f_buf = call i8* @wam_arena_alloc(i64 %fne.f_buflen)
@@ -6376,7 +8896,7 @@ fne.join_unify:
 builtin_read_link:
   ; M120: read_link(+Path, -Target) -- libc readlink wrapper.
   ; Reads the target of a symbolic link. Path must be Atom. Fails
-  ; if Path is not a symlink (EINVAL), doesn''t exist (ENOENT),
+  ; if Path is not a symlink (EINVAL), doesn't exist (ENOENT),
   ; or any other libc error. Returns the link target as an atom
   ; (not null-terminated by libc, so we null-terminate ourselves).
   ; PATH_MAX-sized stack buffer (4096) covers any portable path.
@@ -6453,10 +8973,10 @@ builtin_link:
   ; hard link at NewPath that refers to the same inode as OldPath.
   ; Both args must be Atom. Succeeds iff libc returns 0; EXDEV
   ; (cross-device), EEXIST (NewPath already exists), ENOENT
-  ; (OldPath missing or NewPath''s parent missing), EPERM (not
+  ; (OldPath missing or NewPath's parent missing), EPERM (not
   ; allowed on this fs) etc. all map to Prolog fail. Unlike
   ; symlink, OldPath must exist (no dangling-hardlink concept --
-  ; the kernel bumps the inode''s link count immediately).
+  ; the kernel bumps the inode's link count immediately).
   %lnk.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %lnk.t1 = call i32 @value_tag(%Value %lnk.a1)
   %lnk.is_atom1 = icmp eq i32 %lnk.t1, 0
@@ -6485,7 +9005,7 @@ lnk.do:
 
 builtin_is_absolute_file_name:
   ; M122: is_absolute_file_name(+Path) -- true iff Path is an
-  ; absolute path (starts with ''/'' on POSIX). Empty atom is NOT
+  ; absolute path (starts with '/' on POSIX). Empty atom is NOT
   ; absolute. Path must be Atom; non-atom fails the type guard.
   %iaf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %iaf.t1 = call i32 @value_tag(%Value %iaf.a1)
@@ -6563,13 +9083,13 @@ samf.read:
 
 builtin_tmp_file:
   ; M123: tmp_file(+Base, -Path) -- race-free temp file creation via
-  ; libc mkstemp. Builds the template ``/tmp/<Base>_XXXXXX'' in a
+  ; libc mkstemp. Builds the template ``/tmp/<Base>_XXXXXX' in a
   ; PATH_MAX-sized stack buffer, calls mkstemp (which mutates the
-  ; ``XXXXXX'' in-place with a unique suffix AND creates the file
-  ; atomically), then closes the fd we don''t need and returns
+  ; ``XXXXXX' in-place with a unique suffix AND creates the file
+  ; atomically), then closes the fd we don't need and returns
   ; the resolved Path as an atom.
   ;
-  ; Diverges from SWI semantics: SWI''s tmp_file/2 returns a name
+  ; Diverges from SWI semantics: SWI's tmp_file/2 returns a name
   ; only without creating the file (racy); we always create an
   ; empty file. Callers can delete and re-create if they really
   ; need an unused name.
@@ -6586,10 +9106,10 @@ tmpf.go:
   br i1 %tmpf.base_null, label %tmpf.fail, label %tmpf.build
 tmpf.build:
   %tmpf.base_len = call i64 @strlen(i8* %tmpf.base)
-  ; PATH_MAX = 4096 -- ``/tmp/'' (5) + base + ``_XXXXXX'' (7) + ``\0'' (1).
+  ; PATH_MAX = 4096 -- ``/tmp/' (5) + base + ``_XXXXXX' (7) + `` ' (1).
   %tmpf.buf = alloca [4096 x i8]
   %tmpf.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %tmpf.buf, i32 0, i32 0
-  ; Write ``/tmp/'' (5 bytes).
+  ; Write ``/tmp/' (5 bytes).
   %tmpf.b0 = getelementptr i8, i8* %tmpf.buf_ptr, i64 0
   store i8 47, i8* %tmpf.b0
   %tmpf.b1 = getelementptr i8, i8* %tmpf.buf_ptr, i64 1
@@ -6600,12 +9120,12 @@ tmpf.build:
   store i8 112, i8* %tmpf.b3
   %tmpf.b4 = getelementptr i8, i8* %tmpf.buf_ptr, i64 4
   store i8 47, i8* %tmpf.b4
-  ; Copy Base after ``/tmp/''.
+  ; Copy Base after ``/tmp/'.
   %tmpf.after_prefix = getelementptr i8, i8* %tmpf.buf_ptr, i64 5
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tmpf.after_prefix, i8* %tmpf.base, i64 %tmpf.base_len, i1 false)
   %tmpf.after_base_off = add i64 5, %tmpf.base_len
   %tmpf.after_base = getelementptr i8, i8* %tmpf.buf_ptr, i64 %tmpf.after_base_off
-  ; Write ``_XXXXXX'' (7 bytes) + null terminator (1 byte).
+  ; Write ``_XXXXXX' (7 bytes) + null terminator (1 byte).
   store i8 95, i8* %tmpf.after_base
   %tmpf.x1 = getelementptr i8, i8* %tmpf.after_base, i64 1
   store i8 88, i8* %tmpf.x1
@@ -6727,7 +9247,7 @@ builtin_nice:
   ; M125: nice(+Inc) -- libc nice wrapper; adjust process priority
   ; by Inc (positive = lower priority, negative = higher; requires
   ; privilege for negative). Always succeeds in Prolog regardless
-  ; of libc''s -1-on-error since we can''t distinguish -1-as-prio
+  ; of libc's -1-on-error since we can't distinguish -1-as-prio
   ; from -1-as-error without errno. Inc must be Integer.
   %nic.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %nic.t1 = call i32 @value_tag(%Value %nic.a1)
@@ -6743,7 +9263,7 @@ nic.go:
 
 builtin_getpriority:
   ; M125: getpriority(-Prio) -- libc getpriority(PRIO_PROCESS, 0)
-  ; reads the current process'' niceness. PRIO_PROCESS = 0, who = 0
+  ; reads the current process' niceness. PRIO_PROCESS = 0, who = 0
   ; (self) on Linux. Returns a signed value in [-20, 19]. We
   ; always succeed; the libc -1-vs-error ambiguity is benign for
   ; self-read on a live process.
@@ -6756,7 +9276,7 @@ builtin_getpriority:
 
 builtin_setpriority:
   ; M125: setpriority(+Prio) -- libc setpriority(PRIO_PROCESS, 0,
-  ; Prio) sets the current process'' niceness. Prio must be
+  ; Prio) sets the current process' niceness. Prio must be
   ; Integer (typically [-20, 19]; clamped by the kernel).
   ; Succeeds iff libc returns 0; EPERM (raising priority beyond
   ; RLIMIT_NICE), EACCES, etc. fail.
@@ -6871,7 +9391,7 @@ gln.intern:
 
 builtin_uname_sysname:
   ; M127: uname_sysname(-Sysname) -- returns the kernel name
-  ; (typically ''Linux'', ''Darwin'', ''FreeBSD'') from libc uname.
+  ; (typically 'Linux', 'Darwin', 'FreeBSD') from libc uname.
   ; struct utsname on Linux glibc: 6 fields of 65 bytes each
   ; (sysname/nodename/release/version/machine/domainname). Offsets
   ; on other POSIX OSes differ (macOS uses 256-byte fields) -- a
@@ -6902,7 +9422,7 @@ uns.intern:
 
 builtin_uname_machine:
   ; M127: uname_machine(-Machine) -- returns the hardware arch
-  ; (typically ''x86_64'', ''aarch64'', ''arm64'') from libc uname.
+  ; (typically 'x86_64', 'aarch64', 'arm64') from libc uname.
   ; machine field is at offset 4*65 = 260 on Linux glibc.
   %unm.buf = alloca [512 x i8]
   %unm.buf_ptr = getelementptr [512 x i8], [512 x i8]* %unm.buf, i32 0, i32 0
@@ -7121,7 +9641,7 @@ wfa.success:
 
 builtin_append_atom_to_file:
   ; M130: append_atom_to_file(+Path, +Content) -- writes Content
-  ; to Path, creating it if it doesn''t exist and appending to
+  ; to Path, creating it if it doesn't exist and appending to
   ; any existing contents. Uses O_WRONLY|O_CREAT|O_APPEND
   ; (= 1089 on Linux glibc: 1|64|1024) with mode 0644. Same
   ; short-write loop as write_atom_to_file -- only the open
@@ -7195,7 +9715,7 @@ builtin_strerror:
   ; Returns the human-readable description of Errno as an atom
   ; ("No such file or directory", "Permission denied", etc.).
   ; Errno must be Integer; non-int fails type guard. libc returns
-  ; a pointer into static thread-local storage that''s safe to
+  ; a pointer into static thread-local storage that's safe to
   ; intern immediately.
   %ser.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ser.t1 = call i32 @value_tag(%Value %ser.a1)
@@ -7311,10 +9831,10 @@ pst.read:
 
 builtin_path_join:
   ; M133: path_join(+Base, +Rel, -Full) -- joins Base and Rel into
-  ; Full, inserting exactly one ''/'' between them (skipping the
+  ; Full, inserting exactly one '/' between them (skipping the
   ; insertion if Base already ends with one). If Rel is absolute
-  ; (first char is ''/''), Full = Rel and Base is ignored -- matches
-  ; the standard ''absolute path overrides'' semantics of os.path.join,
+  ; (first char is '/'), Full = Rel and Base is ignored -- matches
+  ; the standard 'absolute path overrides' semantics of os.path.join,
   ; Path/, and pathjoin in major languages. Empty-Base / empty-Rel
   ; fast paths skip the slash logic.
   %pj.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -7341,7 +9861,7 @@ pj.have_b:
 pj.measure:
   %pj.blen = call i64 @strlen(i8* %pj.b)
   %pj.rlen = call i64 @strlen(i8* %pj.r)
-  ; If Rel starts with ''/'', it''s absolute -- return Rel verbatim.
+  ; If Rel starts with '/', it's absolute -- return Rel verbatim.
   %pj.r_has = icmp sgt i64 %pj.rlen, 0
   br i1 %pj.r_has, label %pj.check_abs, label %pj.use_base
 pj.check_abs:
@@ -7369,7 +9889,7 @@ pj.use_base:
   %pj.base_aid = call i64 @wam_intern_atom(i8* %pj.base_buf, i64 %pj.blen)
   br label %pj.unify
 pj.check_base:
-  ; Both non-empty; decide whether to insert ''/'' based on whether
+  ; Both non-empty; decide whether to insert '/' based on whether
   ; Base already ends with one. Base of length 0 -> just use Rel.
   %pj.b_has = icmp sgt i64 %pj.blen, 0
   br i1 %pj.b_has, label %pj.measure_slash, label %pj.use_rel
@@ -7386,7 +9906,7 @@ pj.measure_slash:
   %pj.full_buflen = add i64 %pj.total, 1
   %pj.full_buf = call i8* @wam_arena_alloc(i64 %pj.full_buflen)
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.full_buf, i8* %pj.b, i64 %pj.blen, i1 false)
-  ; Insert ''/'' if needed.
+  ; Insert '/' if needed.
   br i1 %pj.has_slash, label %pj.copy_rel, label %pj.insert_slash
 pj.insert_slash:
   %pj.slash_pos = getelementptr i8, i8* %pj.full_buf, i64 %pj.blen
@@ -7415,7 +9935,7 @@ builtin_system_to_atom:
   ; preserved verbatim (callers can sub_atom-trim if they want
   ; chomped output).
   ;
-  ; Buffer: 64 KB single arena allocation, read with the buffer''s
+  ; Buffer: 64 KB single arena allocation, read with the buffer's
   ; remaining length as the per-call fread limit. Output > 64 KB
   ; causes failure (no growable buffer in the current arena).
   ; Cmd must be Atom; non-atom or popen failure (fork/exec out
@@ -7432,7 +9952,7 @@ sta.go:
   %sta.cmd_null = icmp eq i8* %sta.cmd, null
   br i1 %sta.cmd_null, label %sta.fail, label %sta.open
 sta.open:
-  ; Build the "r\0" mode string on the stack.
+  ; Build the "r " mode string on the stack.
   %sta.mode = alloca [2 x i8]
   %sta.mode_ptr = getelementptr [2 x i8], [2 x i8]* %sta.mode, i32 0, i32 0
   store i8 114, i8* %sta.mode_ptr
@@ -7478,7 +9998,7 @@ sta.close:
 builtin_atom_to_system:
   ; M135: atom_to_system(+Cmd, +Content) -- input-side companion
   ; to M134 system_to_atom/2. Opens a pipe to Cmd via popen(cmd,
-  ; "w") and writes Content''s bytes as the command''s stdin, then
+  ; "w") and writes Content's bytes as the command's stdin, then
   ; pclose to flush + wait. Succeeds iff pclose returns 0 (subprocess
   ; exited cleanly with status 0). Both args must be Atom.
   ;
@@ -7507,7 +10027,7 @@ ats.have_cmd:
   %ats.body_null = icmp eq i8* %ats.body, null
   br i1 %ats.body_null, label %ats.fail, label %ats.open
 ats.open:
-  ; "w\0" mode string on stack.
+  ; "w " mode string on stack.
   %ats.mode = alloca [2 x i8]
   %ats.mode_ptr = getelementptr [2 x i8], [2 x i8]* %ats.mode, i32 0, i32 0
   store i8 119, i8* %ats.mode_ptr
@@ -7546,10 +10066,10 @@ builtin_atom_split:
   ; atom; multi-char separators fail the length guard.
   ;
   ; Examples:
-  ;   atom_split(''a,b,c'', '','', P) -> P = [a, b, c].
-  ;   atom_split('''', '','', P)      -> P = [''''].
-  ;   atom_split('','', '','', P)      -> P = ['''', ''''].
-  ;   atom_split(abc, '','', P)       -> P = [abc].
+  ;   atom_split('a,b,c', ',', P) -> P = [a, b, c].
+  ;   atom_split('', ',', P)      -> P = [''].
+  ;   atom_split(',', ',', P)      -> P = ['', ''].
+  ;   atom_split(abc, ',', P)       -> P = [abc].
   ;
   ; Algorithm: walk Atom right-to-left so each sep encounter can
   ; prepend the just-discovered substring directly (no reversal
@@ -7668,7 +10188,7 @@ as.finalize_loop:
   %as.fin_v = insertvalue %Value %as.fin_v0, i64 %as.fin_cp_i64, 1
   br label %as.unify_loop
 as.finalize_empty:
-  ; len == 0: result is [''].
+  ; len == 0: result is ['].
   call void @wam_arena_ensure()
   %as.es_buf = call i8* @wam_arena_alloc(i64 1)
   store i8 0, i8* %as.es_buf
@@ -7820,9 +10340,9 @@ uf.tagmatch:
   br i1 %uf.is_cmp, label %uf.deep, label %uf.atomic
 
 uf.deep:
-  ; Compounds: read the raw register values (NOT the deref''d ones) so
+  ; Compounds: read the raw register values (NOT the deref'd ones) so
   ; wam_unify_value can re-deref through any Ref chains its recursion
-  ; uncovers. Pass the deref''d ones too via a fresh call -- equivalent
+  ; uncovers. Pass the deref'd ones too via a fresh call -- equivalent
   ; here because the top-level deref already happened.
   %uf.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %uf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
@@ -8494,7 +11014,7 @@ builtin_format2:
   ; ~n prints newline; ~~ prints a literal tilde; anything else
   ; (unknown directives) passes through verbatim. Bound at the
   ; module via the M12 @wam_atom_strings global, so a literal format
-  ; atom like ''hello ~w~n'' resolves at runtime to its C string.
+  ; atom like 'hello ~w~n' resolves at runtime to its C string.
   %f2.fmt_v = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %f2.fmt_id = extractvalue %Value %f2.fmt_v, 1
   %f2.fmt_p0 = call i8* @wam_atom_to_string(i64 %f2.fmt_id)
@@ -8607,7 +11127,7 @@ f2.precision_print:
 
 f2.precision_no_arg:
   ; No arg available: silently skip the directive but advance the
-  ; pointer past the terminator so we don''t loop forever.
+  ; pointer past the terminator so we don't loop forever.
   %f2.p_after_pna = getelementptr i8, i8* %f2.np, i32 1
   br label %f2.iter_end
 
@@ -8725,7 +11245,7 @@ f2.done:
 
 builtin_atom_length:
   ; M19: atom_length/2 -- A1 = atom, A2 = Integer length.
-  ; Looks up A1''s atom id in @wam_atom_strings to get the underlying
+  ; Looks up A1's atom id in @wam_atom_strings to get the underlying
   ; C string, walks it counting bytes until the null terminator, and
   ; binds A2 to Integer(count). Non-atom A1 silently fails (returns
   ; false). Reverse mode (length->atom) is not supported -- it would
@@ -8791,7 +11311,7 @@ aco.lookup:
   br i1 %aco.str_null, label %aco.fail, label %aco.measure
 aco.measure:
   ; First pass: walk to find the length so we can build the chain
-  ; from the back forward (using the same pattern as findall''s
+  ; from the back forward (using the same pattern as findall's
   ; collect_case).
   br label %aco.measure_loop
 aco.measure_loop:
@@ -8927,7 +11447,7 @@ builtin_char_code:
   ; M26: char_code(C, X) -- C is a single-char atom, X is its code.
   ; Three modes:
   ;   forward (C bound atom, X unbound or Integer):
-  ;     look up C''s string, take the first byte, bind X = Integer(byte)
+  ;     look up C's string, take the first byte, bind X = Integer(byte)
   ;   reverse (X bound Integer, C unbound):
   ;     look up @wam_char_to_atom_id[X], bind C = Atom(id) if printable
   ;   check (both bound): verify code matches first byte of atom string
@@ -8987,7 +11507,7 @@ builtin_atom_chars:
   ; bytes get atom id 0 (renders ``?``).
   ; Reverse (A1 unbound, A2 = list of atoms): count + validate each
   ; element is an atom, allocate buffer, copy first byte of each
-  ; element''s string, null-terminate, intern, bind A1.
+  ; element's string, null-terminate, intern, bind A1.
   %ach.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ach.t1 = extractvalue %Value %ach.a1, 0
   %ach.is_atom = icmp eq i32 %ach.t1, 0
@@ -9030,7 +11550,7 @@ ach.build_step:
   %ach.cp_b = getelementptr i8, i8* %ach.str, i32 %ach.bi_prev
   %ach.ch_b = load i8, i8* %ach.cp_b
   %ach.ch_b64 = zext i8 %ach.ch_b to i64
-  ; Look up the char''s atom id via @wam_char_to_atom. Out-of-range
+  ; Look up the char's atom id via @wam_char_to_atom. Out-of-range
   ; or non-printable bytes return 0, which renders as ``?``.
   %ach.char_aid = call i64 @wam_char_to_atom(i64 %ach.ch_b64)
   %ach.char_v0 = insertvalue %Value undef, i32 0, 0
@@ -9310,7 +11830,7 @@ builtin_sub_atom:
   ; extraction mode only. Requires A1 bound atom, A2 + A3 bound
   ; non-negative Integers. Computes After = n - Before - Length, fails
   ; if any of Before / Length / After is negative or the span exceeds
-  ; the source atom''s length. Then memcpys the [Before, Before+Length)
+  ; the source atom's length. Then memcpys the [Before, Before+Length)
   ; slice into an arena buffer, interns it, and unifies A4 with
   ; Integer(After) and A5 with the new atom. Full nondeterministic
   ; enumeration over Before / Length is deferred to a later milestone.
@@ -9384,7 +11904,7 @@ sba.unify5:
 
 builtin_atom_number:
   ; M32: atom_number(?Atom, ?Number) -- integer mode only.
-  ;   A1 bound atom: parse digits (with optional leading ''-''), unify
+  ;   A1 bound atom: parse digits (with optional leading '-'), unify
   ;     A2 with Integer(value). Empty / sign-only / non-digit input
   ;     fails cleanly.
   ;   A1 unbound + A2 bound Integer: snprintf the value with %lld,
@@ -9409,7 +11929,7 @@ anu.fwd_lookup:
 anu.parse_init:
   ; Inspect first byte to decide sign.
   %anu.c0 = load i8, i8* %anu.str
-  %anu.is_neg = icmp eq i8 %anu.c0, 45   ; ASCII ''-''
+  %anu.is_neg = icmp eq i8 %anu.c0, 45   ; ASCII '-'
   br i1 %anu.is_neg, label %anu.sel_neg, label %anu.sel_pos
 anu.sel_neg:
   %anu.pn0 = getelementptr i8, i8* %anu.str, i32 1
@@ -9473,7 +11993,7 @@ builtin_number_codes:
   ;     chain and unify A2 with the head.
   ;   A1 unbound + A2 bound list of Integer codes: count + validate
   ;     each head is Integer, copy bytes into an arena buffer, then
-  ;     parse digits (with optional leading ''-'') and bind A1 with
+  ;     parse digits (with optional leading '-') and bind A1 with
   ;     the resulting Integer.
   ;   Other modes fail. Float parsing / formatting deferred.
   %nco.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -9595,7 +12115,7 @@ nco.r_fill_step:
   br label %nco.r_fill_loop
 nco.r_parse_init:
   ; Null-terminate the assembled buffer, then parse like atom_number
-  ; (optional leading ''-'', then >=1 digit, accumulate).
+  ; (optional leading '-', then >=1 digit, accumulate).
   %nco.r_term = getelementptr i8, i8* %nco.r_buf, i32 %nco.r_cnt
   store i8 0, i8* %nco.r_term
   %nco.r_c0 = load i8, i8* %nco.r_buf
@@ -9646,7 +12166,7 @@ builtin_number_chars:
   ;     emitting an Atom-per-byte cons chain. Heads are single-char
   ;     atoms from @wam_char_to_atom; unify A2 with the chain head.
   ;   A1 unbound + A2 bound list of single-char Atoms: count +
-  ;     validate Atom heads, copy each element''s first byte into a
+  ;     validate Atom heads, copy each element's first byte into a
   ;     buffer, null-terminate, parse with the atom_number/2 digit
   ;     loop, bind A1 = Integer.
   ;   Other modes fail. Float parsing / formatting deferred.
@@ -9817,7 +12337,7 @@ nch.r_parse_done:
   ret i1 %nch.r_uok
 
 builtin_upcase_atom:
-  ; M35: upcase_atom(+Atom, ?Upper) -- map ''a''..''z'' to ''A''..''Z'',
+  ; M35: upcase_atom(+Atom, ?Upper) -- map 'a'..'z' to 'A'..'Z',
   ; pass other bytes through unchanged. Requires A1 bound atom; A2
   ; can be unbound (binds) or bound atom (unify-equality check).
   %uca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -9855,7 +12375,7 @@ uca.x_loop:
 uca.x_step:
   %uca.xsrc = getelementptr i8, i8* %uca.str, i64 %uca.xi
   %uca.xch = load i8, i8* %uca.xsrc
-  ; Lowercase if ''a''..''z'' (97..122), else passthrough.
+  ; Lowercase if 'a'..'z' (97..122), else passthrough.
   %uca.xge = icmp uge i8 %uca.xch, 97
   %uca.xle = icmp ule i8 %uca.xch, 122
   %uca.xlow = and i1 %uca.xge, %uca.xle
@@ -9876,7 +12396,7 @@ uca.x_term:
   ret i1 %uca.uok
 
 builtin_downcase_atom:
-  ; M35: downcase_atom(+Atom, ?Lower) -- map ''A''..''Z'' to ''a''..''z'',
+  ; M35: downcase_atom(+Atom, ?Lower) -- map 'A'..'Z' to 'a'..'z',
   ; pass other bytes through unchanged. Same shape as upcase_atom but
   ; with the inverse byte transform.
   %dca.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
@@ -9914,7 +12434,7 @@ dca.x_loop:
 dca.x_step:
   %dca.xsrc = getelementptr i8, i8* %dca.str, i64 %dca.xi
   %dca.xch = load i8, i8* %dca.xsrc
-  ; Uppercase if ''A''..''Z'' (65..90), else passthrough.
+  ; Uppercase if 'A'..'Z' (65..90), else passthrough.
   %dca.xge = icmp uge i8 %dca.xch, 65
   %dca.xle = icmp ule i8 %dca.xch, 90
   %dca.xupp = and i1 %dca.xge, %dca.xle
@@ -10223,7 +12743,7 @@ app.b_bind:
 
 builtin_memberchk:
   ; M40: memberchk(?Elem, +List) -- deterministic membership check.
-  ; Walks A2''s [|]/2 chain; for each head, save the trail position,
+  ; Walks A2's [|]/2 chain; for each head, save the trail position,
   ; try wam_unify_value(A1, head). On success return true immediately
   ; (no CP push -- memberchk is deterministic). On failure, unwind
   ; the trail back to the saved mark and advance to the tail. Empty
@@ -10262,7 +12782,7 @@ mck.fail:
 builtin_delete:
   ; M41: delete(+List, ?Elem, ?Result) -- filter out matches.
   ; Three-pass:
-  ;   1. count A1''s elements n;
+  ;   1. count A1's elements n;
   ;   2. allocate arr of n %Values, walk A1 again; for each head,
   ;      save trail mark + try wam_unify_value(A2, head). Match
   ;      succeeds: skip head, keep the binding (so subsequent
@@ -10594,7 +13114,7 @@ mnl.done:
 builtin_subtract:
   ; M44: subtract(+List1, +List2, ?Difference) -- elements of List1
   ; that have no unify-match in List2. Three-pass:
-  ;   1. count A1''s elements n;
+  ;   1. count A1's elements n;
   ;   2. allocate arr of n %Values; for each A1 head, inner-walk A2
   ;      with the trial-unify + rollback pattern (memberchk inline).
   ;      Match found anywhere in A2: skip the head, keep the binding
@@ -10721,7 +13241,7 @@ sbt.b_bind:
 
 builtin_intersection:
   ; M45: intersection(+List1, +List2, ?Common) -- elements of List1
-  ; that have a unify-match in List2 (i.e. subtract''s keep/skip
+  ; that have a unify-match in List2 (i.e. subtract's keep/skip
   ; logic inverted: match -> keep, no-match -> skip).
   %ist.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ist.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
@@ -10852,7 +13372,7 @@ builtin_union:
   ;      arr[out_idx++] = head.
   ;   5. walk arr back-to-front prepending each entry onto [] and
   ;      unify A3 with the chain.
-  ; SWI semantics keep A1''s own dupes (so union([1,1], [1]) = [1, 1])
+  ; SWI semantics keep A1's own dupes (so union([1,1], [1]) = [1, 1])
   ; and only filter A2 against A1.
   %uni.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %uni.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
@@ -10900,7 +13420,7 @@ uni.alloc:
   %uni.arr = bitcast i8* %uni.arr_mem to %Value*
   br label %uni.f1_loop
 uni.f1_loop:
-  ; Fill arr[0..n1-1] with A1''s heads in order.
+  ; Fill arr[0..n1-1] with A1's heads in order.
   %uni.f1_cur = phi %Value [ %uni.a1, %uni.alloc ], [ %uni.f1_next, %uni.f1_step ]
   %uni.f1_idx = phi i32 [ 0, %uni.alloc ], [ %uni.f1_idx1, %uni.f1_step ]
   %uni.f1_done_b = icmp sge i32 %uni.f1_idx, %uni.c1_cnt
@@ -11689,7 +14209,7 @@ pkv.r_bind:
 
 builtin_atomic_list_concat:
   ; M52/M55: atomic_list_concat(+List, ?Atom) -- atoms-and-integers.
-  ; Walks A1 summing each head''s rendered string length (atom-length
+  ; Walks A1 summing each head's rendered string length (atom-length
   ; for Atoms, snprintf-return-value for Integers); allocates a
   ; single buffer; walks again memcpying atoms and re-snprintfing
   ; Integers at the running offset. Float / Compound / other heads
@@ -11790,7 +14310,7 @@ alc.f_try_int:
 alc.f_load_atom:
   %alc.f_aid = extractvalue %Value %alc.f_h_d, 1
   %alc.f_str = call i8* @wam_atom_to_string(i64 %alc.f_aid)
-  ; Measure this atom''s length again (second pass).
+  ; Measure this atom's length again (second pass).
   br label %alc.f_m_loop
 alc.f_int_write:
   ; snprintf %lld directly into the output buffer at the running offset.
@@ -12048,7 +14568,7 @@ alc3.f_done:
 alc3.split_entry:
   ; M54: split mode -- A1 unbound, A2 sep atom (already validated +
   ; measured into %alc3.smn), A3 bound source atom. Empty separator
-  ; fails (can''t infinitely split). Three-pass:
+  ; fails (can't infinitely split). Three-pass:
   ;   1. Measure source atom -> atom_len. Scan source looking for sep
   ;      occurrences, counting parts (parts = matches + 1).
   ;   2. Allocate parts_arr of %Value; re-scan, at each match intern
@@ -12152,7 +14672,7 @@ alc3.s_f_match:
   ; sep matched at position i -- intern atom_str[start..i] as a part.
   %alc3.s_f_seg_ptr = getelementptr i8, i8* %alc3.s_atom_str, i64 %alc3.s_f_start
   %alc3.s_f_seg_len = sub i64 %alc3.s_f_i, %alc3.s_f_start
-  ; intern_atom expects str + length (doesn''t require null term).
+  ; intern_atom expects str + length (doesn't require null term).
   %alc3.s_f_seg_id = call i64 @wam_intern_atom(i8* %alc3.s_f_seg_ptr, i64 %alc3.s_f_seg_len)
   %alc3.s_f_seg_v0 = insertvalue %Value undef, i32 0, 0
   %alc3.s_f_seg_v = insertvalue %Value %alc3.s_f_seg_v0, i64 %alc3.s_f_seg_id, 1
@@ -12245,7 +14765,7 @@ ctp.lookup:
   %ctp.any_null = or i1 %ctp.c_null, %ctp.t_null
   br i1 %ctp.any_null, label %ctp.fail, label %ctp.measure_c
 ctp.measure_c:
-  ; Verify A1''s atom is exactly one byte long. char_type requires a
+  ; Verify A1's atom is exactly one byte long. char_type requires a
   ; single-char atom.
   %ctp.c0 = load i8, i8* %ctp.c_str
   %ctp.c0_zero = icmp eq i8 %ctp.c0, 0
@@ -12360,7 +14880,7 @@ ctp.do_lower:
   ret i1 %ctp.l_any
 ctp.do_space:
   ; ISO Prolog: space includes ASCII space (32), HT (9), VT (11), FF (12),
-  ; LF (10), CR (13). Same set as ``white'' for now; SWI distinguishes
+  ; LF (10), CR (13). Same set as ``white' for now; SWI distinguishes
   ; further but we collapse them.
   %ctp.s_sp = icmp eq i8 %ctp.c0, 32
   %ctp.s_ht = icmp eq i8 %ctp.c0, 9
@@ -12375,7 +14895,7 @@ ctp.do_space:
   %ctp.s_any = or i1 %ctp.s_d, %ctp.s_cr
   ret i1 %ctp.s_any
 ctp.do_white:
-  ; SWI ``white'' = space + tab only.
+  ; SWI ``white' = space + tab only.
   %ctp.w_sp = icmp eq i8 %ctp.c0, 32
   %ctp.w_ht = icmp eq i8 %ctp.c0, 9
   %ctp.w_any = or i1 %ctp.w_sp, %ctp.w_ht
@@ -12385,7 +14905,7 @@ ctp.do_ascii:
   %ctp.as_any = icmp ult i8 %ctp.c0, 128
   ret i1 %ctp.as_any
 ctp.do_punct:
-  ; SWI ``punct'' = printable graphical character that is not alphanumeric
+  ; SWI ``punct' = printable graphical character that is not alphanumeric
   ; or space. ASCII 33..126 minus alnum minus space.
   %ctp.p_ge33 = icmp uge i8 %ctp.c0, 33
   %ctp.p_le126 = icmp ule i8 %ctp.c0, 126
@@ -12433,15 +14953,15 @@ ctp.do_csymf:
   %ctp.csf_any = or i1 %ctp.csf_letter, %ctp.csf_us
   ret i1 %ctp.csf_any
 ctp.do_newline:
-  ; ``newline'' and ``end_of_line'' both match LF (and CR for end_of_line).
+  ; ``newline' and ``end_of_line' both match LF (and CR for end_of_line).
   %ctp.n_lf = icmp eq i8 %ctp.c0, 10
   %ctp.n_cr = icmp eq i8 %ctp.c0, 13
   %ctp.n_any = or i1 %ctp.n_lf, %ctp.n_cr
   ret i1 %ctp.n_any
 
 builtin_compare:
-  ; M59/M64: compare(?Order, @T1, @T2). Order is bound to ''<'', ''='',
-  ; or ''>'' per the standard order of terms. Delegates to the M64
+  ; M59/M64: compare(?Order, @T1, @T2). Order is bound to '<', '=',
+  ; or '>' per the standard order of terms. Delegates to the M64
   ; @wam_term_cmp helper which handles all four supported categories
   ; (Atom / Integer / Float / Compound) with proper recursion on
   ; compound args.
@@ -12449,9 +14969,9 @@ builtin_compare:
   %cmp.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
   %cmp.r = call i32 @wam_term_cmp(%WamState* %vm, %Value %cmp.a2, %Value %cmp.a3)
   ; Look up the three result atoms via the char-to-atom table (M26).
-  %cmp.lt_id = call i64 @wam_char_to_atom(i64 60)   ; ''<''
-  %cmp.eq_id = call i64 @wam_char_to_atom(i64 61)   ; ''=''
-  %cmp.gt_id = call i64 @wam_char_to_atom(i64 62)   ; ''>''
+  %cmp.lt_id = call i64 @wam_char_to_atom(i64 60)   ; '<'
+  %cmp.eq_id = call i64 @wam_char_to_atom(i64 61)   ; '='
+  %cmp.gt_id = call i64 @wam_char_to_atom(i64 62)   ; '>'
   %cmp.lt = icmp slt i32 %cmp.r, 0
   %cmp.gt = icmp sgt i32 %cmp.r, 0
   %cmp.mid = select i1 %cmp.gt, i64 %cmp.gt_id, i64 %cmp.eq_id
@@ -12564,7 +15084,7 @@ mb.check_var:
   %mb.r_var = call i1 @value_is_unbound(%Value %mb.a2)
   ret i1 %mb.r_var
 mb.check_nonvar:
-  ; Also reached by ``ground'' since we don''t have full ground analysis;
+  ; Also reached by ``ground' since we don't have full ground analysis;
   ; a non-unbound argument is treated as ground for this guard.
   %mb.r_nonvar_unb = call i1 @value_is_unbound(%Value %mb.a2)
   %mb.r_nonvar = xor i1 %mb.r_nonvar_unb, true
@@ -12585,8 +15105,8 @@ mb.check_callable:
   ret i1 %mb.r_call
 mb.check_list:
   ; list = [] atom, OR a Compound with arity 2 (cons). This is a
-  ; shallow check (doesn''t recursively verify the tail is a proper
-  ; list). Matches SWI''s ``proper_list-or-empty'' fast-path approximate.
+  ; shallow check (doesn't recursively verify the tail is a proper
+  ; list). Matches SWI's ``proper_list-or-empty' fast-path approximate.
   %mb.r_l_is_atom = icmp eq i32 %mb.v_tag, 0
   br i1 %mb.r_l_is_atom, label %mb.list_check_empty, label %mb.list_check_compound
 mb.list_check_empty:
@@ -12617,43 +15137,43 @@ mb.bool_strcmp:
   br i1 %mb.r_b_null, label %mb.bool_no, label %mb.bool_actual_cmp
 mb.bool_actual_cmp:
   %mb.r_b_c0 = load i8, i8* %mb.r_b_str
-  %mb.r_b_t = icmp eq i8 %mb.r_b_c0, 116    ; ''t'' for true
-  %mb.r_b_f = icmp eq i8 %mb.r_b_c0, 102    ; ''f'' for false
+  %mb.r_b_t = icmp eq i8 %mb.r_b_c0, 116    ; 't' for true
+  %mb.r_b_f = icmp eq i8 %mb.r_b_c0, 102    ; 'f' for false
   ; Verify length matches (4 for true, 5 for false). We just check
   ; that the first byte is t or f and the rest matches via strcmp.
-  ; Simpler: just strcmp against ``true'' or ``false''.
+  ; Simpler: just strcmp against ``true' or ``false'.
   %mb.r_b_first = or i1 %mb.r_b_t, %mb.r_b_f
   br i1 %mb.r_b_first, label %mb.bool_full_cmp, label %mb.bool_no
 mb.bool_full_cmp:
-  ; Compare against ``true'' literal (4 chars). Need a static string.
-  ; Reuse @.fn_atom (5 chars c"atom\00") -- no, just inline-test via
+  ; Compare against ``true' literal (4 chars). Need a static string.
+  ; Reuse @.fn_atom (5 chars c"atom ") -- no, just inline-test via
   ; byte comparisons. Easier: assume single-byte uniqueness and
   ; require atom length == 4 (true) or == 5 (false).
   %mb.r_b_p1_ptr = getelementptr i8, i8* %mb.r_b_str, i32 1
   %mb.r_b_p1 = load i8, i8* %mb.r_b_p1_ptr
-  %mb.r_b_t_ok2 = icmp eq i8 %mb.r_b_p1, 114   ; ''r'' in true
-  %mb.r_b_f_ok2 = icmp eq i8 %mb.r_b_p1, 97    ; ''a'' in false
+  %mb.r_b_t_ok2 = icmp eq i8 %mb.r_b_p1, 114   ; 'r' in true
+  %mb.r_b_f_ok2 = icmp eq i8 %mb.r_b_p1, 97    ; 'a' in false
   %mb.r_b_p2_ptr = getelementptr i8, i8* %mb.r_b_str, i32 2
   %mb.r_b_p2 = load i8, i8* %mb.r_b_p2_ptr
-  %mb.r_b_t_ok3 = icmp eq i8 %mb.r_b_p2, 117   ; ''u''
-  %mb.r_b_f_ok3 = icmp eq i8 %mb.r_b_p2, 108   ; ''l''
+  %mb.r_b_t_ok3 = icmp eq i8 %mb.r_b_p2, 117   ; 'u'
+  %mb.r_b_f_ok3 = icmp eq i8 %mb.r_b_p2, 108   ; 'l'
   %mb.r_b_p3_ptr = getelementptr i8, i8* %mb.r_b_str, i32 3
   %mb.r_b_p3 = load i8, i8* %mb.r_b_p3_ptr
-  %mb.r_b_t_ok4 = icmp eq i8 %mb.r_b_p3, 101   ; ''e'' in true
-  %mb.r_b_f_ok4 = icmp eq i8 %mb.r_b_p3, 115   ; ''s'' in false
+  %mb.r_b_t_ok4 = icmp eq i8 %mb.r_b_p3, 101   ; 'e' in true
+  %mb.r_b_f_ok4 = icmp eq i8 %mb.r_b_p3, 115   ; 's' in false
   %mb.r_b_p4_ptr = getelementptr i8, i8* %mb.r_b_str, i32 4
   %mb.r_b_p4 = load i8, i8* %mb.r_b_p4_ptr
   %mb.r_b_t_ok5 = icmp eq i8 %mb.r_b_p4, 0     ; null terminator for true
-  %mb.r_b_f_ok5 = icmp eq i8 %mb.r_b_p4, 101   ; ''e'' in false
+  %mb.r_b_f_ok5 = icmp eq i8 %mb.r_b_p4, 101   ; 'e' in false
   %mb.r_b_p5_ptr = getelementptr i8, i8* %mb.r_b_str, i32 5
   %mb.r_b_p5 = load i8, i8* %mb.r_b_p5_ptr
   %mb.r_b_f_ok6 = icmp eq i8 %mb.r_b_p5, 0     ; null terminator for false
-  ; ``true'' matches if first 4 bytes are t/r/u/e AND byte 4 is null.
+  ; ``true' matches if first 4 bytes are t/r/u/e AND byte 4 is null.
   %mb.r_b_t_ab = and i1 %mb.r_b_t, %mb.r_b_t_ok2
   %mb.r_b_t_abc = and i1 %mb.r_b_t_ab, %mb.r_b_t_ok3
   %mb.r_b_t_abcd = and i1 %mb.r_b_t_abc, %mb.r_b_t_ok4
   %mb.r_b_t_all = and i1 %mb.r_b_t_abcd, %mb.r_b_t_ok5
-  ; ``false'' matches if first 5 bytes are f/a/l/s/e AND byte 5 is null.
+  ; ``false' matches if first 5 bytes are f/a/l/s/e AND byte 5 is null.
   %mb.r_b_f_ab = and i1 %mb.r_b_f, %mb.r_b_f_ok2
   %mb.r_b_f_abc = and i1 %mb.r_b_f_ab, %mb.r_b_f_ok3
   %mb.r_b_f_abcd = and i1 %mb.r_b_f_abc, %mb.r_b_f_ok4
@@ -12666,23 +15186,55 @@ mb.bool_no:
 
 unknown:
   ret i1 false
-}',
-    % M113/M114: substitute the dirent-d_name lookup IR. For static
-    % OS modes this is a single getelementptr with a literal offset.
-    % For target_os(adapt), it is a call to the runtime probe helper
-    % plus a getelementptr that uses the returned offset.
-    target_dirent_name_ptr_ir(OS, DirentNameOff, NamePtrIR),
-    atomic_list_concat(Parts, '__M113_DIRENT_NAME_PTR__', Template),
-    atomic_list_concat(Parts, NamePtrIR, ExecuteIR),
-    % Append the M114 runtime probe helper. Always emitted -- it is
-    % dead code when no caller is in adapt mode, which llc / clang
-    % link-time DCE strips. Keeping it unconditional means the IR
-    % template stays the same shape regardless of mode.
-    target_dirent_probe_helper_ir(HelperIR),
-    atomic_list_concat([ExecuteIR, HelperIR], '\n\n', Code).
+}
 
-compile_eval_arith_to_llvm(Code) :-
-    Code = '; Evaluate arithmetic expression
+; === M114 runtime dirent::d_name offset probe ===
+@.uw_dot_dir = private constant [2 x i8] c".\00"
+@uw_dirent_d_name_offset_cache = private global i64 -1
+
+define i64 @wam_dirent_d_name_offset() {
+entry:
+  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
+  %unset = icmp slt i64 %cached, 0
+  br i1 %unset, label %probe, label %done
+done:
+  ret i64 %cached
+probe:
+  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
+  %dir = call i8* @opendir(i8* %dot_ptr)
+  %dir_null = icmp eq i8* %dir, null
+  br i1 %dir_null, label %fallback, label %read
+read:
+  %entry_ptr = call i8* @readdir(i8* %dir)
+  %entry_null = icmp eq i8* %entry_ptr, null
+  br i1 %entry_null, label %fallback_close, label %scan_init
+scan_init:
+  br label %scan_loop
+scan_loop:
+  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
+  %too_far = icmp uge i64 %i, 256
+  br i1 %too_far, label %fallback_close, label %scan_check
+scan_check:
+  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
+  %b = load i8, i8* %byte_ptr
+  %is_dot = icmp eq i8 %b, 46
+  br i1 %is_dot, label %scan_found, label %scan_step
+scan_step:
+  %i_next = add i64 %i, 1
+  br label %scan_loop
+scan_found:
+  %close_ret = call i32 @closedir(i8* %dir)
+  store i64 %i, i64* @uw_dirent_d_name_offset_cache
+  ret i64 %i
+fallback_close:
+  %close_ret2 = call i32 @closedir(i8* %dir)
+  br label %fallback
+fallback:
+  store i64 19, i64* @uw_dirent_d_name_offset_cache
+  ret i64 19
+}
+
+; Evaluate arithmetic expression
 ; Takes a Value, returns the integer payload.
 ; For compound ops (tag=3), extracts functor and recursively evaluates args.
 ; For register refs (tag=6 unbound with name starting A/X), dereferences.
@@ -12738,10 +15290,10 @@ eval_binary:
   ; Dispatch on functor: check first char for +, -, *, /
   %fn_first = load i8, i8* %fn_ptr
   switch i8 %fn_first, label %check_named_binary [
-    i8 43, label %do_add     ; \'+\'
-    i8 45, label %do_sub     ; \'-\'
-    i8 42, label %do_mul     ; \'*\'
-    i8 47, label %do_div     ; \'/\'
+    i8 43, label %do_add     ; '+'
+    i8 45, label %do_sub     ; '-'
+    i8 42, label %do_mul     ; '*'
+    i8 47, label %do_div     ; '/'
   ]
 
 do_add:
@@ -12754,11 +15306,11 @@ do_sub:
 
 do_mul:
   ; M10: disambiguate `**` (power) from `*` (multiply) by inspecting
-  ; the second byte of the functor name. `*` has fn[1] = \\0;
-  ; `**` has fn[1] = \'*\'. Anything else falls through to plain `*`.
+  ; the second byte of the functor name. `*` has fn[1] = \0;
+  ; `**` has fn[1] = '*'. Anything else falls through to plain `*`.
   %mul_fn_second_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %mul_fn_second = load i8, i8* %mul_fn_second_ptr
-  %mul_is_pow = icmp eq i8 %mul_fn_second, 42  ; \'*\'
+  %mul_is_pow = icmp eq i8 %mul_fn_second, 42  ; '*'
   br i1 %mul_is_pow, label %do_pow, label %do_mul_plain
 
 do_mul_plain:
@@ -12804,16 +15356,16 @@ do_div_ok:
 check_named_binary:
   ; Check for named binary ops: mod, max, min (match on first char m).
   %nb_first = load i8, i8* %fn_ptr
-  %nb_is_m = icmp eq i8 %nb_first, 109  ; \'m\'
+  %nb_is_m = icmp eq i8 %nb_first, 109  ; 'm'
   br i1 %nb_is_m, label %nb_check_second, label %fail
 
 nb_check_second:
   %nb_second_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_second = load i8, i8* %nb_second_ptr
   switch i8 %nb_second, label %fail [
-    i8 111, label %do_mod   ; \'o\' → mod
-    i8 97, label %do_max    ; \'a\' → max
-    i8 105, label %do_min   ; \'i\' → min
+    i8 111, label %do_mod   ; 'o' → mod
+    i8 97, label %do_max    ; 'a' → max
+    i8 105, label %do_min   ; 'i' → min
   ]
 
 do_mod:
@@ -12843,8 +15395,8 @@ eval_unary:
   %u_val = call i64 @eval_arith(%WamState* %vm, %Value %u_arg)
   %u_fn_first = load i8, i8* %fn_ptr
   switch i8 %u_fn_first, label %fail [
-    i8 45, label %do_neg     ; \'-\' → negation
-    i8 97, label %do_abs     ; \'a\' → abs
+    i8 45, label %do_neg     ; '-' → negation
+    i8 97, label %do_abs     ; 'a' → abs
   ]
 
 do_neg:
@@ -12888,7 +15440,7 @@ ev_atomic_in:
 
 ev_atom_const:
   ; M83: arithmetic atom constants. Currently pi and e; failable
-  ; otherwise. Resolve the atom''s name to a C string, then strcmp
+  ; otherwise. Resolve the atom's name to a C string, then strcmp
   ; against the registered functor strings.
   %atc.aid = extractvalue %Value %expr, 1
   %atc.str = call i8* @wam_atom_to_string(i64 %atc.aid)
@@ -12943,9 +15495,9 @@ ev_eval_binary:
     i8 45, label %ev_sub
     i8 42, label %ev_mul_or_pow
     i8 47, label %ev_div
-    i8 60, label %ev_shl_check    ; ''<'' -> << (M84)
-    i8 62, label %ev_shr_check    ; ''>'' -> >> (M84)
-    i8 92, label %ev_bor_check    ; ''\\'' -> \\/ (M85)
+    i8 60, label %ev_shl_check    ; '<' -> << (M84)
+    i8 62, label %ev_shr_check    ; '>' -> >> (M84)
+    i8 92, label %ev_bor_check    ; '\' -> \/ (M85)
   ]
 
 ev_add:
@@ -13064,14 +15616,14 @@ ev_pow_pos_finish:
   ret %Value %pow_pos_v
 
 ev_div:
-  ; M85: second-byte check disambiguates ``/'' (division) from
-  ; ``/\\'' (bitwise AND). ``/\\'' has fn_ptr[1] = ''\\'' (92).
+  ; M85: second-byte check disambiguates ``/' (division) from
+  ; ``/\' (bitwise AND). ``/\' has fn_ptr[1] = '\' (92).
   %div.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %div.fn1 = load i8, i8* %div.fn1_ptr
   %div.is_band = icmp eq i8 %div.fn1, 92
   br i1 %div.is_band, label %ev_band, label %ev_div_normal
 ev_band:
-  ; M85: /\\ -- integer bitwise AND.
+  ; M85: /\ -- integer bitwise AND.
   %band.a_i = extractvalue %Value %a, 1
   %band.b_i = extractvalue %Value %b, 1
   %band.r = and i64 %band.a_i, %band.b_i
@@ -13105,9 +15657,9 @@ ev_div_f_go:
   ret %Value %div_v_f
 
 ev_shl_check:
-  ; M84: << is the only ``<''-prefix binary arith op. Verify the
-  ; second byte is also ``<'' (60) so a stray ``<=''/``<+''/etc.
-  ; doesn''t fall through to ev_shl.
+  ; M84: << is the only ``<'-prefix binary arith op. Verify the
+  ; second byte is also ``<' (60) so a stray ``<='/``<+'/etc.
+  ; doesn't fall through to ev_shl.
   %shl.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %shl.fn1 = load i8, i8* %shl.fn1_ptr
   %shl.is_lt = icmp eq i8 %shl.fn1, 60
@@ -13136,10 +15688,10 @@ ev_shr:
   ret %Value %shr.v
 
 ev_bor_check:
-  ; M85: ``\\'' (92) is the first byte of binary ``\\/'' (bitwise OR).
-  ; Verify the second byte is ``/'' (47); fail otherwise (the only
-  ; other ``\\''-prefix binary in standard Prolog arithmetic would
-  ; be ``\\='' or ``\\=='' which are unification/equality, not
+  ; M85: ``\' (92) is the first byte of binary ``\/' (bitwise OR).
+  ; Verify the second byte is ``/' (47); fail otherwise (the only
+  ; other ``\'-prefix binary in standard Prolog arithmetic would
+  ; be ``\=' or ``\==' which are unification/equality, not
   ; arith).
   %bor.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %bor.fn1 = load i8, i8* %bor.fn1_ptr
@@ -13159,16 +15711,16 @@ ev_check_named_binary:
   ; log/2 -- functor name starts with ``l`` (M82).
   ; xor -- functor name starts with ``x`` (M83, integer bitwise).
   switch i8 %fn0, label %ev_zero [
-    i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
-    i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
-    i8 103, label %ev_gcd         ; ''g'' -> gcd
-    i8 108, label %ev_log2        ; ''l'' -> log/2
-    i8 120, label %ev_xor         ; ''x'' -> xor
+    i8 109, label %ev_nb_second   ; 'm' -> mod | max | min
+    i8 97,  label %ev_nb_a_second ; 'a' -> atan2
+    i8 103, label %ev_gcd         ; 'g' -> gcd
+    i8 108, label %ev_log2        ; 'l' -> log/2
+    i8 120, label %ev_xor         ; 'x' -> xor
   ]
 ev_nb_a_second:
-  ; M81: only atan2 starts with ``a'' in the binary path. Verify the
-  ; second byte is ``t'' so a stray ``a''-prefixed binary name
-  ; doesn''t pretend to be atan2.
+  ; M81: only atan2 starts with ``a' in the binary path. Verify the
+  ; second byte is ``t' so a stray ``a'-prefixed binary name
+  ; doesn't pretend to be atan2.
   %nba.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nba.fn1 = load i8, i8* %nba.fn1_ptr
   %nba.is_t = icmp eq i8 %nba.fn1, 116
@@ -13292,16 +15844,16 @@ ev_eval_unary:
   ; prefixes have collisions handled by second-byte dispatch in the
   ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
-    i8 45,  label %ev_neg       ; ''-''
-    i8 97,  label %ev_a_disambig ; ''a'' -> abs | asin | acos | atan
-    i8 114, label %ev_round     ; ''r''
-    i8 102, label %ev_floor     ; ''f''
-    i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
-    i8 115, label %ev_sqrt_sign ; ''s'' -> sqrt | sign | sin
-    i8 116, label %ev_trunc_tan ; ''t'' -> truncate | tan
-    i8 108, label %ev_log       ; ''l''
-    i8 101, label %ev_exp       ; ''e''
-    i8 92,  label %ev_bnot      ; ''\\'' -> unary bitwise NOT (M85)
+    i8 45,  label %ev_neg       ; '-'
+    i8 97,  label %ev_a_disambig ; 'a' -> abs | asin | acos | atan
+    i8 114, label %ev_round     ; 'r'
+    i8 102, label %ev_floor     ; 'f'
+    i8 99,  label %ev_ceil_cos  ; 'c' -> ceiling | cos
+    i8 115, label %ev_sqrt_sign ; 's' -> sqrt | sign | sin
+    i8 116, label %ev_trunc_tan ; 't' -> truncate | tan
+    i8 108, label %ev_log       ; 'l'
+    i8 101, label %ev_exp       ; 'e'
+    i8 92,  label %ev_bnot      ; '\' -> unary bitwise NOT (M85)
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -13330,17 +15882,17 @@ ev_abs_f:
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
 
-; M80: second-byte dispatch for ''a''-prefix unary functions.
-; ``abs'' alone keeps the original ev_abs path; asin / acos / atan
+; M80: second-byte dispatch for 'a'-prefix unary functions.
+; ``abs' alone keeps the original ev_abs path; asin / acos / atan
 ; route to libm and always return Float.
 ev_a_disambig:
   %ad.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %ad.fn1 = load i8, i8* %ad.fn1_ptr
   switch i8 %ad.fn1, label %ev_zero [
-    i8 98,  label %ev_abs   ; ''b'' -> abs
-    i8 115, label %ev_asin  ; ''s'' -> asin
-    i8 99,  label %ev_acos  ; ''c'' -> acos
-    i8 116, label %ev_atan  ; ''t'' -> atan
+    i8 98,  label %ev_abs   ; 'b' -> abs
+    i8 115, label %ev_asin  ; 's' -> asin
+    i8 99,  label %ev_acos  ; 'c' -> acos
+    i8 116, label %ev_atan  ; 't' -> atan
   ]
 
 ev_asin:
@@ -13362,15 +15914,15 @@ ev_atan:
   ret %Value %atan_v
 
 ev_bnot:
-  ; M85: unary ``\\'' -- integer bitwise NOT. xor with all-ones is
-  ; the LLVM idiom (no dedicated ``not'' instruction).
+  ; M85: unary ``\' -- integer bitwise NOT. xor with all-ones is
+  ; the LLVM idiom (no dedicated ``not' instruction).
   %bnot.u_i = extractvalue %Value %u, 1
   %bnot.r = xor i64 %bnot.u_i, -1
   %bnot.v = call %Value @value_integer(i64 %bnot.r)
   ret %Value %bnot.v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
-; double, apply the LLVM intrinsic, return Integer (Prolog''s
+; double, apply the LLVM intrinsic, return Integer (Prolog's
 ; truncate/round/floor/ceiling all yield Integer results).
 ev_trunc:
   br i1 %u_is_float, label %ev_trunc_f, label %ev_trunc_i
@@ -13406,12 +15958,12 @@ ev_floor_f:
   ret %Value %floor_v
 
 ev_trunc_tan:
-  ; ''t'' -> truncate (second byte ''r'') | tan (second byte ''a'').
+  ; 't' -> truncate (second byte 'r') | tan (second byte 'a').
   %tt_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %tt_fn1 = load i8, i8* %tt_fn1_ptr
   switch i8 %tt_fn1, label %ev_zero [
-    i8 114, label %ev_trunc  ; ''r''
-    i8 97,  label %ev_tan    ; ''a''
+    i8 114, label %ev_trunc  ; 'r'
+    i8 97,  label %ev_tan    ; 'a'
   ]
 
 ev_tan:
@@ -13438,13 +15990,13 @@ ev_exp:
   ret %Value %exp_v
 
 ev_ceil_cos:
-  ; Disambiguate ceiling vs cos on the second byte: ''e'' -> ceiling,
-  ; ''o'' -> cos. Anything else falls back to ev_zero.
+  ; Disambiguate ceiling vs cos on the second byte: 'e' -> ceiling,
+  ; 'o' -> cos. Anything else falls back to ev_zero.
   %cc_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %cc_fn1 = load i8, i8* %cc_fn1_ptr
   switch i8 %cc_fn1, label %ev_zero [
-    i8 101, label %ev_ceil  ; ''e''
-    i8 111, label %ev_cos   ; ''o''
+    i8 101, label %ev_ceil  ; 'e'
+    i8 111, label %ev_cos   ; 'o'
   ]
 
 ev_cos:
@@ -13471,16 +16023,16 @@ ev_sqrt_sign:
   %ss_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %ss_fn1 = load i8, i8* %ss_fn1_ptr
   switch i8 %ss_fn1, label %ev_zero [
-    i8 113, label %ev_sqrt        ; ''q''
-    i8 105, label %ev_sign_or_sin ; ''i''
+    i8 113, label %ev_sqrt        ; 'q'
+    i8 105, label %ev_sign_or_sin ; 'i'
   ]
 
 ev_sign_or_sin:
   %ssi_fn2_ptr = getelementptr i8, i8* %fn_ptr, i32 2
   %ssi_fn2 = load i8, i8* %ssi_fn2_ptr
   switch i8 %ssi_fn2, label %ev_zero [
-    i8 103, label %ev_sign  ; ''g'' (sign)
-    i8 110, label %ev_sin   ; ''n'' (sin)
+    i8 103, label %ev_sign  ; 'g' (sign)
+    i8 110, label %ev_sin   ; 'n' (sin)
   ]
 
 ev_sin:
@@ -13498,7 +16050,7 @@ ev_sqrt:
 
 ev_sign:
   ; sign returns Integer for Integer input, Float for Float input
-  ; (mirroring Prolog''s usual type-preserving sign).
+  ; (mirroring Prolog's usual type-preserving sign).
   br i1 %u_is_float, label %ev_sign_f, label %ev_sign_i
 ev_sign_i:
   %sign_i = extractvalue %Value %u, 1
@@ -13520,14 +16072,13 @@ ev_sign_f:
 ev_zero:
   ; Unknown / fail -- return Integer 0 as a benign placeholder. The
   ; legacy @eval_arith printed an error to stderr here; for the
-  ; tagged path we just box zero so callers don''t crash on an
+  ; tagged path we just box zero so callers don't crash on an
   ; unrecognized expression.
   %z_v = call %Value @value_integer(i64 0)
   ret %Value %z_v
-}'.
+}
 
-compile_copy_term_to_llvm(Code) :-
-    Code = '; Recursively copy a %Value, allocating fresh %Compound cells from
+; Recursively copy a %Value, allocating fresh %Compound cells from
 ; the arena for any compound encountered. Atomic values (Atom / Integer /
 ; Float / Bool) are returned by value. Unbound values return a fresh
 ; Unbound sentinel — a proper impl would use a variable-map to preserve
@@ -13637,10 +16188,10 @@ tv.unbound:
   store %Value* %tv.args, %Value** %tv.args_slot
   %tv.head_ptr = getelementptr %Value, %Value* %tv.args, i32 0
   ; Store the ORIGINAL %term (a Ref into the heap cell), not the
-  ; deref''d Unbound payload. Var identity matters: callers do
+  ; deref'd Unbound payload. Var identity matters: callers do
   ; term_variables(foo(X, _), [V|_]) followed by V == X, which
   ; needs V and X to share the same Ref address. Storing the
-  ; deref''d Unbound would give a tag-6 sentinel that compares
+  ; deref'd Unbound would give a tag-6 sentinel that compares
   ; unequal to the original Ref.
   store %Value %term, %Value* %tv.head_ptr
   %tv.tail_ptr = getelementptr %Value, %Value* %tv.args, i32 1
@@ -13729,7 +16280,7 @@ ig.false:
 }
 
 ; M105: recursive depth-first left-to-right walk that binds each
-; Unbound variable encountered to a fresh ''$VAR''(N) compound on
+; Unbound variable encountered to a fresh '$VAR'(N) compound on
 ; the arena. Counter n is threaded through and returned -- caller
 ; gets the next-available N to unify with End.
 define i64 @wam_numbervars_walk(%WamState* %vm, %Value %term, i64 %n) {
@@ -13745,10 +16296,10 @@ nw.atomic:
   ret i64 %n
 
 nw.unbound:
-  ; Build the ''$VAR''(n) compound on the arena. Then bind the
-  ; variable''s heap cell to it via wam_trail_heap_binding + heap_set
+  ; Build the '$VAR'(n) compound on the arena. Then bind the
+  ; variable's heap cell to it via wam_trail_heap_binding + heap_set
   ; so backtrack restores. Use the ORIGINAL term (a Ref) to locate
-  ; the heap cell; deref''d nw.t is just an Unbound sentinel.
+  ; the heap cell; deref'd nw.t is just an Unbound sentinel.
   call void @wam_arena_ensure()
   %nw.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
   %nw.cp_mem = call i8* @wam_arena_alloc(i64 %nw.cp_size)
@@ -13818,7 +16369,7 @@ nw.ret_n:
 ; end_aggregate to capture per-iteration findall / setof results
 ; whose Compound args otherwise point into the per-iteration heap
 ; region that backtrack reclaims, silently aliasing every accumulated
-; entry to the LAST iteration''s values.
+; entry to the LAST iteration's values.
 ;
 ; Atoms / Integers / Floats pass through. Unbounds after deref stay
 ; unbound (best effort -- typical aggregate templates have all vars
@@ -13884,16 +16435,9 @@ fz_done:
   %new_val0 = insertvalue %Value undef, i32 3, 0
   %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
   ret %Value %new_val
-}'.
+}
 
-%% compile_term_cmp_to_llvm(-IR)
-%
-%  M64: emit @wam_term_cmp(vm, v1, v2) -> i32 (-1, 0, +1) per standard
-%  term order. Supports Atom / Integer / Float / Compound with proper
-%  recursion through compound args. Used by builtin_compare (and
-%  future keysort / sort migrations).
-compile_term_cmp_to_llvm(Code) :-
-    Code = '; M64: standard-term-order compare. Returns -1, 0, or +1.
+; M64: standard-term-order compare. Returns -1, 0, or +1.
 ; Category order (ISO): Number < Atom < Compound. Within each
 ; category, atoms by strcmp, numbers by value (mixed int/float
 ; widened to double), compounds by arity then functor then args
@@ -14017,16 +16561,9 @@ cmp_args_continue:
   br label %cmp_args_loop
 cmp_args_equal:
   ret i32 0
-}'.
+}
 
-%% compile_ssp_emit_segment_to_llvm(-IR)
-%
-%  M68: emit @ssp_emit_segment(vm, src, seg_start, seg_end, pad, arr, idx)
-%  -- strips pad chars from both ends of src[seg_start..seg_end), interns
-%  the resulting substring as an Atom, and stores the Value at arr[idx].
-%  Used by builtin_split_string to emit each segment.
-compile_ssp_emit_segment_to_llvm(Code) :-
-    Code = '; M68: split_string segment emitter -- strip pad chars from both ends,
+; M68: split_string segment emitter -- strip pad chars from both ends,
 ; intern the resulting substring, and store the Atom Value into arr[idx].
 define void @ssp_emit_segment(%WamState* %vm, i8* %src, i64 %seg_start, i64 %seg_end, i8* %pad, %Value* %arr, i32 %arr_idx) {
 entry:
@@ -14089,333 +16626,285 @@ do_intern:
   %slot = getelementptr %Value, %Value* %arr, i32 %arr_idx
   store %Value %atom_v, %Value* %slot
   ret void
-}'.
-
-% ============================================================================
-% ASSEMBLY: Combine Phase 2 + Phase 3 into complete runtime
-% ============================================================================
-
-%% compile_wam_runtime_to_llvm(+Options, -LLVMCode)
-%  Generates the combined step function + all helper functions.
-compile_wam_runtime_to_llvm(Options, LLVMCode) :-
-    compile_step_wam_to_llvm(Options, StepCode),
-    compile_wam_helpers_to_llvm(Options, HelpersCode),
-    atomic_list_concat([StepCode, '\n\n', HelpersCode], LLVMCode).
-
-% ============================================================================
-% PHASE 4: WAM instructions → LLVM struct literals
-% ============================================================================
-
-%% wam_instruction_to_llvm_literal(+WamInstr, -LLVMLiteral)
-%  Converts a WAM instruction term to an LLVM %Instruction struct literal.
-
-wam_instruction_to_llvm_literal(get_constant(C, Ai), Lit) :-
-    llvm_pack_value(C, PackedVal),
-    reg_name_to_index(Ai, RegIdx),
-    ( integer(C) -> Tag = 1 ; Tag = 0 ),
-    Op2 is (Tag << 16) \/ RegIdx,
-    format(atom(Lit), '{ i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
-wam_instruction_to_llvm_literal(get_variable(Xn, Ai), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 1, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_instruction_to_llvm_literal(get_value(Xn, Ai), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 2, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_instruction_to_llvm_literal(get_structure(F, Ai), Lit) :-
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 3, i64 0, i64 ~w } ; get_structure ~w', [AiIdx, F]).
-wam_instruction_to_llvm_literal(get_list(Ai), Lit) :-
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 4, i64 ~w, i64 0 }', [AiIdx]).
-wam_instruction_to_llvm_literal(unify_variable(Xn), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    format(atom(Lit), '{ i32 5, i64 ~w, i64 0 }', [XnIdx]).
-wam_instruction_to_llvm_literal(unify_value(Xn), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    format(atom(Lit), '{ i32 6, i64 ~w, i64 0 }', [XnIdx]).
-wam_instruction_to_llvm_literal(unify_constant(C), Lit) :-
-    llvm_pack_value(C, PackedVal),
-    format(atom(Lit), '{ i32 7, i64 ~w, i64 0 }', [PackedVal]).
-
-wam_instruction_to_llvm_literal(put_constant(C, Ai), Lit) :-
-    llvm_pack_value(C, PackedVal),
-    reg_name_to_index(Ai, RegIdx),
-    format(atom(Lit), '{ i32 8, i64 ~w, i64 ~w }', [PackedVal, RegIdx]).
-wam_instruction_to_llvm_literal(put_variable(Xn, Ai), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 9, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_instruction_to_llvm_literal(put_value(Xn, Ai), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 10, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_instruction_to_llvm_literal(put_structure(F, Ai), Lit) :-
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 11, i64 0, i64 ~w } ; put_structure ~w', [AiIdx, F]).
-wam_instruction_to_llvm_literal(put_list(Ai), Lit) :-
-    reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 12, i64 ~w, i64 0 }', [AiIdx]).
-wam_instruction_to_llvm_literal(set_variable(Xn), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    format(atom(Lit), '{ i32 13, i64 ~w, i64 0 }', [XnIdx]).
-wam_instruction_to_llvm_literal(set_value(Xn), Lit) :-
-    reg_name_to_index(Xn, XnIdx),
-    format(atom(Lit), '{ i32 14, i64 ~w, i64 0 }', [XnIdx]).
-wam_instruction_to_llvm_literal(set_constant(C), Lit) :-
-    llvm_pack_value(C, PackedVal),
-    format(atom(Lit), '{ i32 15, i64 ~w, i64 0 }', [PackedVal]).
-
-wam_instruction_to_llvm_literal(allocate, '{ i32 16, i64 0, i64 0 }').
-wam_instruction_to_llvm_literal(deallocate, '{ i32 17, i64 0, i64 0 }').
-wam_instruction_to_llvm_literal(proceed, '{ i32 20, i64 0, i64 0 }').
-wam_instruction_to_llvm_literal(builtin_call(Op, N), Lit) :-
-    builtin_op_to_id(Op, OpId),
-    format(atom(Lit), '{ i32 21, i64 ~w, i64 ~w } ; builtin_call ~w', [OpId, N, Op]).
-wam_instruction_to_llvm_literal(trust_me, '{ i32 24, i64 0, i64 0 }').
-
-% Label-referencing instructions: the /2 form cannot resolve labels.
-% Callers must use wam_instruction_to_llvm_literal/3 with a LabelMap,
-% or the text-parser path (wam_line_to_llvm_literal_resolved/3).
-wam_instruction_to_llvm_literal(call(P, _N), _) :-
-    throw(error(label_resolution_required(call, P),
-          'Use wam_instruction_to_llvm_literal/3 with a LabelMap for call/execute/try_me_else/retry_me_else')).
-wam_instruction_to_llvm_literal(execute(P), _) :-
-    throw(error(label_resolution_required(execute, P),
-          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
-wam_instruction_to_llvm_literal(try_me_else(L), _) :-
-    throw(error(label_resolution_required(try_me_else, L),
-          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
-wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
-    throw(error(label_resolution_required(retry_me_else, L),
-          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
-
-wam_meta_call_label(Label) :-
-    wam_meta_call_total_arity(Label, _).
-
-wam_meta_call_total_arity(Label, Arity) :-
-    (   atom(Label)
-    ->  atom_string(Label, LabelString)
-    ;   string(Label)
-    ->  LabelString = Label
-    ),
-    sub_string(LabelString, 0, 5, _, "call/"),
-    sub_string(LabelString, 5, _, 0, ArityString),
-    number_string(Arity, ArityString),
-    Arity >= 1.
-
-%% wam_instruction_to_llvm_literal(+WamInstr, +LabelMap, -LLVMLiteral)
-%  Label-aware variant. LabelMap is a list of LabelName-Index pairs.
-%  NOTE: trailing `; comment` was removed because LLVM treats `;` as a
-%  line comment to end-of-line, which eats the comma separator in array
-%  constants and produces a parser error.
-wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
-    (   wam_meta_call_label(P)
-    ->  LabelIdx = -1
-    ;   lookup_label_index(P, LabelMap, LabelIdx)
-    ),
-    format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
-wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
-    (   wam_meta_call_label(P)
-    ->  LabelIdx = -1,
-        wam_meta_call_total_arity(P, Arity)
-    ;   lookup_label_index(P, LabelMap, LabelIdx),
-        Arity = 0
-    ),
-    format(atom(Lit), '{ i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
-wam_instruction_to_llvm_literal(try_me_else(Label), LabelMap, Lit) :- !,
-    lookup_label_index(Label, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 22, i64 ~w, i64 0 }', [LabelIdx]).
-wam_instruction_to_llvm_literal(retry_me_else(Label), LabelMap, Lit) :- !,
-    lookup_label_index(Label, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 23, i64 ~w, i64 0 }', [LabelIdx]).
-% Non-label instructions delegate to the /2 form
-wam_instruction_to_llvm_literal(Instr, _LabelMap, Lit) :-
-    wam_instruction_to_llvm_literal(Instr, Lit).
-
-% Switch instructions are deferred: they reference side-table globals that
-% the predicate compiler emits in a second pass. See compile_wam_predicate_to_llvm.
-wam_instruction_to_llvm_literal(switch_on_constant(Entries), switch_deferred(constant, Entries)).
-wam_instruction_to_llvm_literal(switch_on_structure(_Entries),
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_instruction_to_llvm_literal(switch_on_constant_a2(_Entries),
-    '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
-
-% Label pseudo-instruction
-wam_instruction_to_llvm_literal(label(L), Lit) :-
-    format(atom(Lit), '; label: ~w', [L]).
-
-% Fallback
-wam_instruction_to_llvm_literal(Instr, Lit) :-
-    format(atom(Lit), '; TODO: ~w', [Instr]).
-
-% --- Atom table (string interning) ---
-% Assigns unique sequential integer IDs to atoms. Two atoms with the
-% same name always get the same ID; different names always get different IDs.
-% This avoids hash collisions that would cause silent correctness bugs.
-
-:- dynamic functor_string_global/2. % functor_string_global(NameStr, LenPlus1)
-
-%% emit_functor_string_globals(-IR)
-%  Emits LLVM global constants for functor names collected during WAM
-%  compilation (by put_structure instructions). Each functor ``name'' becomes
-%  @.fn_name = private constant [N x i8] c"name\00".
-%
-%  M85: bytes that interact with the trailing ``\00'' null terminator
-%  in LLVM IR string syntax (``\'' and ``"'') are escaped to ``\NN''
-%  per-byte hex. Other bytes are left raw, since string_codes /
-%  maplist / append over every character of every functor string adds
-%  up to a lot of intermediate-list allocation when the same emit
-%  runs hundreds of times in one swipl session (M88 OOM tripped over
-%  this at ~580 modules in).
-emit_functor_string_globals(IR) :-
-    findall(GlobalDef,
-        ( functor_string_global(NameStr, Len),
-          sanitize_functor_for_llvm(NameStr, SaneName),
-          llvm_ir_string_content(NameStr, SafeContent),
-          format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
-              [SaneName, Len, SafeContent])
-        ),
-        Defs),
-    ( Defs == []
-    -> IR = ''
-    ;  atomic_list_concat(Defs, '\n', IR)
-    ).
-
-%% llvm_ir_string_content(+Str, -Safe)
-%  Wrap Str so it can be dropped between c"..." quotes in LLVM IR.
-%  Fast path: if the input is pure printable ASCII with no ``\'' or
-%  ``"'', it''s already safe -- return as-is. Slow path: escape
-%  problem bytes (and any non-printable ones) to ``\NN'' hex.
-llvm_ir_string_content(Str, Safe) :-
-    ( name_needs_llvm_escape(Str)
-    -> string_codes(Str, Codes),
-       phrase(escape_ir_bytes(Codes), SafeCodes),
-       string_codes(Safe, SafeCodes)
-    ;  Safe = Str
-    ).
-
-name_needs_llvm_escape(Str) :-
-    string_codes(Str, Codes),
-    member(C, Codes),
-    ( C < 32 ; C > 126 ; C =:= 0'\\ ; C =:= 0'" ),
-    !.
-
-escape_ir_bytes([]) --> [].
-escape_ir_bytes([C|Cs]) -->
-    ( { C >= 32, C =< 126, C =\= 0'\\, C =\= 0'" }
-    -> [C]
-    ;  { Hi is (C >> 4) /\ 0xF,
-         Lo is C /\ 0xF,
-         hex_digit(Hi, H),
-         hex_digit(Lo, L) },
-       [0'\\, H, L]
-    ),
-    escape_ir_bytes(Cs).
-
-%% emit_atom_string_globals(-IR)
-%
-%  M12: emit per-atom string globals and a runtime lookup table so the
-%  format/2 builtin (and any other runtime code that needs to print an
-%  atom by id) can resolve an interned atom id back to a printable
-%  C string.
-%
-%  Layout:
-%    @.atom_str_<id> = private constant [N x i8] c"<name>\00"   (per atom)
-%    @wam_atom_strings = private constant [Max+1 x i8*] [ ... ]  (lookup)
-%    @wam_atom_string_count = private constant i32 Max+1        (bounds)
-%
-%  Atom ids start at 1 (id 0 is reserved); slot 0 of the lookup array
-%  is the null pointer so a guarded lookup of "atom 0" returns null.
-emit_atom_string_globals(IR) :-
-    findall(Id-Name, atom_table_entry(Name, Id), Pairs0),
-    ( Pairs0 == []
-    -> % Emit a minimal stub so format/2 and any other runtime code that
-       % references @wam_atom_to_string still links. One null slot is
-       % enough -- atom-id lookups will all return null and the printer
-       % silently skips them.
-       IR = '@wam_atom_strings = private constant [1 x i8*] [i8* null]
-@wam_atom_string_count = private constant i32 1
-@wam_char_to_atom_id = private constant [128 x i64] zeroinitializer
-@wam_atom_dyn_ptr   = global i8** null
-@wam_atom_dyn_count = global i32 0
-@wam_atom_dyn_cap   = global i32 0
-
-define i8* @wam_atom_to_string(i64 %id) {
-  ret i8* null
 }
 
-define i64 @wam_char_to_atom(i64 %ch) {
-  ret i64 0
-}
 
-define i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand) {
-  ret i1 false
-}
+; === Native Predicates (unboxed i64/double/i1) ===
 
-define i64 @wam_intern_atom(i8* %str, i64 %len) {
-  ret i64 0
-}'
-    ;  sort(Pairs0, Pairs),   % sort by id
-       last(Pairs, MaxId-_),
-       ArrSize is MaxId + 1,
-       % Per-atom string globals.
-       findall(StrGlobal,
-           ( member(Id-Name, Pairs),
-             escape_llvm_string(Name, Escaped, EscapedByteLen),
-             ArrLen is EscapedByteLen + 1,
-             format(atom(StrGlobal),
-                 '@.atom_str_~w = private constant [~w x i8] c"~w\\00"',
-                 [Id, ArrLen, Escaped])
-           ),
-           StrGlobals),
-       % Lookup table: slot 0 = null, slot Id = ptr to @.atom_str_<Id>.
-       findall(SlotEntry,
-           ( numlist(0, MaxId, Idxs),
-             member(Idx, Idxs),
-             ( Idx == 0
-             -> SlotEntry = 'i8* null'
-             ;  member(Idx-IdxName, Pairs)
-             -> escape_llvm_string(IdxName, _, IdxByteLen),
-                IdxArrLen is IdxByteLen + 1,
-                format(atom(SlotEntry),
-                    'i8* getelementptr ([~w x i8], [~w x i8]* @.atom_str_~w, i32 0, i32 0)',
-                    [IdxArrLen, IdxArrLen, Idx])
-             ;  SlotEntry = 'i8* null'
-             )
-           ),
-           Slots),
-       atomic_list_concat(Slots, ',\n  ', SlotsStr),
-       % M26: char -> atom_id reverse lookup for the printable ASCII
-       % range. Indices 0..31 and 127 are 0 (no atom); 32..126 hold
-       % the interned id from the eager pass at write_wam_llvm_project
-       % entry. char_code/2 reverse mode and atom_chars/2 forward use
-       % this to map a byte to its single-char atom id without a
-       % runtime string compare.
-       findall(CharSlot,
-           ( numlist(0, 127, ChIdxs),
-             member(Ch, ChIdxs),
-             ( Ch >= 32, Ch =< 126,
-               char_code(ChAtom, Ch),
-               atom_table_entry(ChAtom, ChId)
-             -> format(atom(CharSlot), 'i64 ~w', [ChId])
-             ;  CharSlot = 'i64 0'
-             )
-           ),
-           CharSlots),
-       atomic_list_concat(CharSlots, ', ', CharSlotsStr),
-       format(atom(LookupTable),
-'@wam_atom_strings = private constant [~w x i8*] [
-  ~w
+@.fn__2E = private constant [2 x i8] c".\00"
+@.fn__5B_5D = private constant [3 x i8] c"[]\00"
+@.fn__5B_7C_5D = private constant [4 x i8] c"[|]\00"
+@.fn__2D = private constant [2 x i8] c"-\00"
+@.fn_alpha = private constant [6 x i8] c"alpha\00"
+@.fn_alnum = private constant [6 x i8] c"alnum\00"
+@.fn_digit = private constant [6 x i8] c"digit\00"
+@.fn_upper = private constant [6 x i8] c"upper\00"
+@.fn_lower = private constant [6 x i8] c"lower\00"
+@.fn_space = private constant [6 x i8] c"space\00"
+@.fn_ascii = private constant [6 x i8] c"ascii\00"
+@.fn_white = private constant [6 x i8] c"white\00"
+@.fn_punct = private constant [6 x i8] c"punct\00"
+@.fn_csym = private constant [5 x i8] c"csym\00"
+@.fn_csymf = private constant [6 x i8] c"csymf\00"
+@.fn_newline = private constant [8 x i8] c"newline\00"
+@.fn_end_5Fof_5Fline = private constant [12 x i8] c"end_of_line\00"
+@.fn_atom = private constant [5 x i8] c"atom\00"
+@.fn_integer = private constant [8 x i8] c"integer\00"
+@.fn_float = private constant [6 x i8] c"float\00"
+@.fn_number = private constant [7 x i8] c"number\00"
+@.fn_compound = private constant [9 x i8] c"compound\00"
+@.fn_var = private constant [4 x i8] c"var\00"
+@.fn_nonvar = private constant [7 x i8] c"nonvar\00"
+@.fn_atomic = private constant [7 x i8] c"atomic\00"
+@.fn_callable = private constant [9 x i8] c"callable\00"
+@.fn_ground = private constant [7 x i8] c"ground\00"
+@.fn_list = private constant [5 x i8] c"list\00"
+@.fn_boolean = private constant [8 x i8] c"boolean\00"
+@.fn_pi = private constant [3 x i8] c"pi\00"
+@.fn_e = private constant [2 x i8] c"e\00"
+@.fn_seed = private constant [5 x i8] c"seed\00"
+@.fn_date = private constant [5 x i8] c"date\00"
+@.fn_local = private constant [6 x i8] c"local\00"
+@.fn__24VAR = private constant [5 x i8] c"$VAR\00"
+@.fn__2B = private constant [2 x i8] c"+\00"
+@.fn_plawk_5Foptions = private constant [14 x i8] c"plawk_options\00"
+@.fn_outputs = private constant [8 x i8] c"outputs\00"
+; M9: empty-list atom id for the findall / aggregate_all(bag/set)
+; collect path. Read by @wam_apply_aggregation when building the
+; result cons-cell chain (the tail of the final cell is an Atom
+; %Value with payload = this id).
+@wam_empty_list_atom_id = private constant i64 1
+@.atom_str_1 = private constant [3 x i8] c"[]\00"
+@.atom_str_2 = private constant [2 x i8] c" \00"
+@.atom_str_3 = private constant [2 x i8] c"!\00"
+@.atom_str_4 = private constant [2 x i8] c"\22\00"
+@.atom_str_5 = private constant [2 x i8] c"#\00"
+@.atom_str_6 = private constant [2 x i8] c"$\00"
+@.atom_str_7 = private constant [2 x i8] c"%\00"
+@.atom_str_8 = private constant [2 x i8] c"&\00"
+@.atom_str_9 = private constant [2 x i8] c"'\00"
+@.atom_str_10 = private constant [2 x i8] c"(\00"
+@.atom_str_11 = private constant [2 x i8] c")\00"
+@.atom_str_12 = private constant [2 x i8] c"*\00"
+@.atom_str_13 = private constant [2 x i8] c"+\00"
+@.atom_str_14 = private constant [2 x i8] c",\00"
+@.atom_str_15 = private constant [2 x i8] c"-\00"
+@.atom_str_16 = private constant [2 x i8] c".\00"
+@.atom_str_17 = private constant [2 x i8] c"/\00"
+@.atom_str_18 = private constant [2 x i8] c"0\00"
+@.atom_str_19 = private constant [2 x i8] c"1\00"
+@.atom_str_20 = private constant [2 x i8] c"2\00"
+@.atom_str_21 = private constant [2 x i8] c"3\00"
+@.atom_str_22 = private constant [2 x i8] c"4\00"
+@.atom_str_23 = private constant [2 x i8] c"5\00"
+@.atom_str_24 = private constant [2 x i8] c"6\00"
+@.atom_str_25 = private constant [2 x i8] c"7\00"
+@.atom_str_26 = private constant [2 x i8] c"8\00"
+@.atom_str_27 = private constant [2 x i8] c"9\00"
+@.atom_str_28 = private constant [2 x i8] c":\00"
+@.atom_str_29 = private constant [2 x i8] c";\00"
+@.atom_str_30 = private constant [2 x i8] c"<\00"
+@.atom_str_31 = private constant [2 x i8] c"=\00"
+@.atom_str_32 = private constant [2 x i8] c">\00"
+@.atom_str_33 = private constant [2 x i8] c"?\00"
+@.atom_str_34 = private constant [2 x i8] c"@\00"
+@.atom_str_35 = private constant [2 x i8] c"A\00"
+@.atom_str_36 = private constant [2 x i8] c"B\00"
+@.atom_str_37 = private constant [2 x i8] c"C\00"
+@.atom_str_38 = private constant [2 x i8] c"D\00"
+@.atom_str_39 = private constant [2 x i8] c"E\00"
+@.atom_str_40 = private constant [2 x i8] c"F\00"
+@.atom_str_41 = private constant [2 x i8] c"G\00"
+@.atom_str_42 = private constant [2 x i8] c"H\00"
+@.atom_str_43 = private constant [2 x i8] c"I\00"
+@.atom_str_44 = private constant [2 x i8] c"J\00"
+@.atom_str_45 = private constant [2 x i8] c"K\00"
+@.atom_str_46 = private constant [2 x i8] c"L\00"
+@.atom_str_47 = private constant [2 x i8] c"M\00"
+@.atom_str_48 = private constant [2 x i8] c"N\00"
+@.atom_str_49 = private constant [2 x i8] c"O\00"
+@.atom_str_50 = private constant [2 x i8] c"P\00"
+@.atom_str_51 = private constant [2 x i8] c"Q\00"
+@.atom_str_52 = private constant [2 x i8] c"R\00"
+@.atom_str_53 = private constant [2 x i8] c"S\00"
+@.atom_str_54 = private constant [2 x i8] c"T\00"
+@.atom_str_55 = private constant [2 x i8] c"U\00"
+@.atom_str_56 = private constant [2 x i8] c"V\00"
+@.atom_str_57 = private constant [2 x i8] c"W\00"
+@.atom_str_58 = private constant [2 x i8] c"X\00"
+@.atom_str_59 = private constant [2 x i8] c"Y\00"
+@.atom_str_60 = private constant [2 x i8] c"Z\00"
+@.atom_str_61 = private constant [2 x i8] c"[\00"
+@.atom_str_62 = private constant [2 x i8] c"\5C\00"
+@.atom_str_63 = private constant [2 x i8] c"]\00"
+@.atom_str_64 = private constant [2 x i8] c"^\00"
+@.atom_str_65 = private constant [2 x i8] c"_\00"
+@.atom_str_66 = private constant [2 x i8] c"`\00"
+@.atom_str_67 = private constant [2 x i8] c"a\00"
+@.atom_str_68 = private constant [2 x i8] c"b\00"
+@.atom_str_69 = private constant [2 x i8] c"c\00"
+@.atom_str_70 = private constant [2 x i8] c"d\00"
+@.atom_str_71 = private constant [2 x i8] c"e\00"
+@.atom_str_72 = private constant [2 x i8] c"f\00"
+@.atom_str_73 = private constant [2 x i8] c"g\00"
+@.atom_str_74 = private constant [2 x i8] c"h\00"
+@.atom_str_75 = private constant [2 x i8] c"i\00"
+@.atom_str_76 = private constant [2 x i8] c"j\00"
+@.atom_str_77 = private constant [2 x i8] c"k\00"
+@.atom_str_78 = private constant [2 x i8] c"l\00"
+@.atom_str_79 = private constant [2 x i8] c"m\00"
+@.atom_str_80 = private constant [2 x i8] c"n\00"
+@.atom_str_81 = private constant [2 x i8] c"o\00"
+@.atom_str_82 = private constant [2 x i8] c"p\00"
+@.atom_str_83 = private constant [2 x i8] c"q\00"
+@.atom_str_84 = private constant [2 x i8] c"r\00"
+@.atom_str_85 = private constant [2 x i8] c"s\00"
+@.atom_str_86 = private constant [2 x i8] c"t\00"
+@.atom_str_87 = private constant [2 x i8] c"u\00"
+@.atom_str_88 = private constant [2 x i8] c"v\00"
+@.atom_str_89 = private constant [2 x i8] c"w\00"
+@.atom_str_90 = private constant [2 x i8] c"x\00"
+@.atom_str_91 = private constant [2 x i8] c"y\00"
+@.atom_str_92 = private constant [2 x i8] c"z\00"
+@.atom_str_93 = private constant [2 x i8] c"{\00"
+@.atom_str_94 = private constant [2 x i8] c"|\00"
+@.atom_str_95 = private constant [2 x i8] c"}\00"
+@.atom_str_96 = private constant [2 x i8] c"~\00"
+@.atom_str_97 = private constant [5 x i8] c"text\00"
+@.atom_str_98 = private constant [11 x i8] c"item_field\00"
+@.atom_str_99 = private constant [13 x i8] c"print_fields\00"
+@.atom_str_100 = private constant [11 x i8] c"print_item\00"
+@.atom_str_101 = private constant [18 x i8] c"normalize_outputs\00"
+@.atom_str_102 = private constant [14 x i8] c"state_outputs\00"
+@.atom_str_103 = private constant [14 x i8] c"append_output\00"
+@.atom_str_104 = private constant [4 x i8] c"ofs\00"
+@.atom_str_105 = private constant [3 x i8] c"fs\00"
+@.atom_str_106 = private constant [3 x i8] c"nf\00"
+@.atom_str_107 = private constant [3 x i8] c"nr\00"
+@.atom_str_108 = private constant [17 x i8] c"item_field_count\00"
+@.atom_str_109 = private constant [18 x i8] c"increment_counter\00"
+@.atom_str_110 = private constant [14 x i8] c"state_counter\00"
+
+@wam_atom_strings = private constant [111 x i8*] [
+  i8* null,
+  i8* getelementptr ([3 x i8], [3 x i8]* @.atom_str_1, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_2, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_3, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_4, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_5, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_6, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_7, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_8, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_9, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_10, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_11, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_12, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_13, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_14, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_15, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_16, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_17, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_18, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_19, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_20, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_21, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_22, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_23, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_24, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_25, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_26, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_27, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_28, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_29, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_30, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_31, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_32, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_33, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_34, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_35, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_36, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_37, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_38, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_39, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_40, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_41, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_42, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_43, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_44, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_45, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_46, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_47, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_48, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_49, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_50, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_51, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_52, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_53, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_54, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_55, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_56, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_57, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_58, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_59, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_60, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_61, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_62, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_63, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_64, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_65, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_66, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_67, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_68, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_69, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_70, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_71, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_72, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_73, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_74, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_75, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_76, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_77, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_78, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_79, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_80, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_81, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_82, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_83, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_84, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_85, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_86, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_87, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_88, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_89, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_90, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_91, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_92, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_93, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_94, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_95, i32 0, i32 0),
+  i8* getelementptr ([2 x i8], [2 x i8]* @.atom_str_96, i32 0, i32 0),
+  i8* getelementptr ([5 x i8], [5 x i8]* @.atom_str_97, i32 0, i32 0),
+  i8* getelementptr ([11 x i8], [11 x i8]* @.atom_str_98, i32 0, i32 0),
+  i8* getelementptr ([13 x i8], [13 x i8]* @.atom_str_99, i32 0, i32 0),
+  i8* getelementptr ([11 x i8], [11 x i8]* @.atom_str_100, i32 0, i32 0),
+  i8* getelementptr ([18 x i8], [18 x i8]* @.atom_str_101, i32 0, i32 0),
+  i8* getelementptr ([14 x i8], [14 x i8]* @.atom_str_102, i32 0, i32 0),
+  i8* getelementptr ([14 x i8], [14 x i8]* @.atom_str_103, i32 0, i32 0),
+  i8* getelementptr ([4 x i8], [4 x i8]* @.atom_str_104, i32 0, i32 0),
+  i8* getelementptr ([3 x i8], [3 x i8]* @.atom_str_105, i32 0, i32 0),
+  i8* getelementptr ([3 x i8], [3 x i8]* @.atom_str_106, i32 0, i32 0),
+  i8* getelementptr ([3 x i8], [3 x i8]* @.atom_str_107, i32 0, i32 0),
+  i8* getelementptr ([17 x i8], [17 x i8]* @.atom_str_108, i32 0, i32 0),
+  i8* getelementptr ([18 x i8], [18 x i8]* @.atom_str_109, i32 0, i32 0),
+  i8* getelementptr ([14 x i8], [14 x i8]* @.atom_str_110, i32 0, i32 0)
 ]
-@wam_atom_string_count = private constant i32 ~w
-@wam_char_to_atom_id = private constant [128 x i64] [~w]
+@wam_atom_string_count = private constant i32 111
+@wam_char_to_atom_id = private constant [128 x i64] [i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, i64 9, i64 10, i64 11, i64 12, i64 13, i64 14, i64 15, i64 16, i64 17, i64 18, i64 19, i64 20, i64 21, i64 22, i64 23, i64 24, i64 25, i64 26, i64 27, i64 28, i64 29, i64 30, i64 31, i64 32, i64 33, i64 34, i64 35, i64 36, i64 37, i64 38, i64 39, i64 40, i64 41, i64 42, i64 43, i64 44, i64 45, i64 46, i64 47, i64 48, i64 49, i64 50, i64 51, i64 52, i64 53, i64 54, i64 55, i64 56, i64 57, i64 58, i64 59, i64 60, i64 61, i64 62, i64 63, i64 64, i64 65, i64 66, i64 67, i64 68, i64 69, i64 70, i64 71, i64 72, i64 73, i64 74, i64 75, i64 76, i64 77, i64 78, i64 79, i64 80, i64 81, i64 82, i64 83, i64 84, i64 85, i64 86, i64 87, i64 88, i64 89, i64 90, i64 91, i64 92, i64 93, i64 94, i64 95, i64 96, i64 0]
 
 ; M29: runtime-interned atom table. Atoms with id >= the static
 ; count above live here, indexed by (id - static_count). The table
-; is malloc''d on first intern and grown by realloc; entries are
-; malloc''d C strings owned by the table.
+; is malloc'd on first intern and grown by realloc; entries are
+; malloc'd C strings owned by the table.
 @wam_atom_dyn_ptr   = global i8** null
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
@@ -14427,7 +16916,7 @@ entry:
   %in_static = icmp ult i64 %id, %cnt64
   br i1 %in_static, label %lookup_static, label %check_dyn
 lookup_static:
-  %slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %id
+  %slot_ptr = getelementptr [111 x i8*], [111 x i8*]* @wam_atom_strings, i32 0, i64 %id
   %s = load i8*, i8** %slot_ptr
   ret i8* %s
 check_dyn:
@@ -14489,7 +16978,7 @@ check_term:
 
 ; M29: intern an atom by (str, len). Linear scan over static then
 ; dynamic table; if found, return existing id. If not found, copy
-; the string into a malloc''d block, append to the dynamic table
+; the string into a malloc'd block, append to the dynamic table
 ; (growing via realloc as needed), and return the new id.
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
 entry:
@@ -14502,7 +16991,7 @@ scan_static:
   %s_done = icmp uge i64 %s_i, %st_cnt_64
   br i1 %s_done, label %scan_dyn_init, label %scan_static_check
 scan_static_check:
-  %st_slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %s_i
+  %st_slot_ptr = getelementptr [111 x i8*], [111 x i8*]* @wam_atom_strings, i32 0, i64 %s_i
   %st_cand = load i8*, i8** %st_slot_ptr
   %st_null = icmp eq i8* %st_cand, null
   br i1 %st_null, label %scan_static_step, label %scan_static_cmp
@@ -14580,1259 +17069,651 @@ do_copy:
   store i32 %new_cnt, i32* @wam_atom_dyn_count
   %new_id = add i64 %st_cnt_64, %dyn_cnt_64
   ret i64 %new_id
-}',
-           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize, ArrSize, ArrSize]),
-       atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
-       atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
-    ).
+}
 
-%% escape_llvm_string(+Name, -Escaped, -ByteLen)
-%
-%  Encode an arbitrary atom name as the body of an LLVM `c"..."`
-%  string literal. Printable ASCII (0x20..0x7E except `"` and `\\`)
-%  passes through; everything else (including spaces, since those
-%  print fine, but tildes / newlines / quotes / backslashes that the
-%  WAM compiler''s format-string interning produces) emits as `\HH`.
-%  ByteLen is the number of underlying bytes in the unescaped name,
-%  which is also the length the runtime needs for the array size.
-escape_llvm_string(Name, Escaped, ByteLen) :-
-    ( atom(Name) -> atom_codes(Name, Codes)
-    ; string(Name) -> string_codes(Name, Codes)
-    ; Codes = Name
-    ),
-    length(Codes, ByteLen),
-    escape_llvm_codes(Codes, EscCodes),
-    string_codes(Escaped, EscCodes).
 
-escape_llvm_codes([], []).
-escape_llvm_codes([C|Cs], Out) :-
-    ( C >= 0x20, C =< 0x7E, C \== 0x22, C \== 0x5C
-    -> Out = [C|Rest],
-       escape_llvm_codes(Cs, Rest)
-    ;  Hi is (C >> 4) /\ 0xF,
-       Lo is C /\ 0xF,
-       hex_digit(Hi, HiC),
-       hex_digit(Lo, LoC),
-       Out = [0'\\, HiC, LoC | Rest],
-       escape_llvm_codes(Cs, Rest)
-    ).
 
-%% sanitize_functor_for_llvm(+Name, -Sanitized)
-%  Produce a bijective LLVM-identifier encoding of Name. Alphanumeric
-%  bytes pass through unchanged; everything else (including underscore)
-%  is hex-escaped as `_HH`. Bijectivity matters: two distinct functor
-%  strings must never collapse to the same LLVM global name, or we get
-%  `redefinition of global` when llc sees the bench module (which
-%  references e.g. both `+` and `*` as functors).
-sanitize_functor_for_llvm(Name, Sanitized) :-
-    ( atom(Name) -> atom_string(Name, Str)
-    ; string(Name) -> Str = Name
-    ; Str = Name
-    ),
-    string_codes(Str, Codes),
-    sanitize_codes(Codes, SanCodes),
-    string_codes(Sanitized, SanCodes).
+; === WAM-Compiled Predicates (boxed %Value) ===
+; === Merged WAM code and labels (project-level) ===
+@module_code = private constant [245 x %Instruction] [
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 5, i64 17, i64 0 },
+  %Instruction { i32 5, i64 18, i64 0 },
+  %Instruction { i32 5, i64 19, i64 0 },
+  %Instruction { i32 2, i64 18, i64 1 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 5, i64 17, i64 0 },
+  %Instruction { i32 5, i64 18, i64 0 },
+  %Instruction { i32 5, i64 19, i64 0 },
+  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 6, i64 16, i64 0 },
+  %Instruction { i32 6, i64 17, i64 0 },
+  %Instruction { i32 5, i64 20, i64 0 },
+  %Instruction { i32 6, i64 19, i64 0 },
+  %Instruction { i32 10, i64 20, i64 0 },
+  %Instruction { i32 11, i64 ptrtoint ([2 x i8]* @.fn__2B to i64), i64 131073 },
+  %Instruction { i32 14, i64 18, i64 0 },
+  %Instruction { i32 15, i64 1, i64 1 },
+  %Instruction { i32 21, i64 0, i64 2 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 26, i64 0, i64 0 },
+  %Instruction { i32 22, i64 3, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 7, i64 97, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 5, i64 17, i64 0 },
+  %Instruction { i32 1, i64 18, i64 1 },
+  %Instruction { i32 10, i64 17, i64 0 },
+  %Instruction { i32 10, i64 18, i64 1 },
+  %Instruction { i32 21, i64 31, i64 2 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 24, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 7, i64 97, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 1, i64 17, i64 1 },
+  %Instruction { i32 10, i64 16, i64 0 },
+  %Instruction { i32 10, i64 17, i64 1 },
+  %Instruction { i32 21, i64 31, i64 2 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 16, i64 0 },
+  %Instruction { i32 1, i64 17, i64 1 },
+  %Instruction { i32 10, i64 16, i64 0 },
+  %Instruction { i32 10, i64 17, i64 1 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 19, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 16, i64 0 },
+  %Instruction { i32 1, i64 17, i64 1 },
+  %Instruction { i32 10, i64 16, i64 0 },
+  %Instruction { i32 10, i64 17, i64 1 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 19, i64 2, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 20, i64 0 },
+  %Instruction { i32 5, i64 21, i64 0 },
+  %Instruction { i32 5, i64 22, i64 0 },
+  %Instruction { i32 5, i64 48, i64 0 },
+  %Instruction { i32 1, i64 51, i64 1 },
+  %Instruction { i32 33, i64 52, i64 0 },
+  %Instruction { i32 22, i64 8, i64 0 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 11, i64 ptrtoint ([14 x i8]* @.fn_plawk_5Foptions to i64), i64 131073 },
+  %Instruction { i32 13, i64 50, i64 0 },
+  %Instruction { i32 13, i64 49, i64 0 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 34, i64 52, i64 0 },
+  %Instruction { i32 10, i64 51, i64 0 },
+  %Instruction { i32 10, i64 50, i64 1 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 32, i64 9, i64 0 },
+  %Instruction { i32 24, i64 0, i64 0 },
+  %Instruction { i32 10, i64 51, i64 0 },
+  %Instruction { i32 8, i64 2, i64 1 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 20, i64 0 },
+  %Instruction { i32 5, i64 21, i64 0 },
+  %Instruction { i32 5, i64 22, i64 0 },
+  %Instruction { i32 5, i64 48, i64 0 },
+  %Instruction { i32 1, i64 51, i64 1 },
+  %Instruction { i32 33, i64 52, i64 0 },
+  %Instruction { i32 22, i64 11, i64 0 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 11, i64 ptrtoint ([14 x i8]* @.fn_plawk_5Foptions to i64), i64 131073 },
+  %Instruction { i32 13, i64 49, i64 0 },
+  %Instruction { i32 13, i64 50, i64 0 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 34, i64 52, i64 0 },
+  %Instruction { i32 10, i64 51, i64 0 },
+  %Instruction { i32 10, i64 50, i64 1 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 32, i64 12, i64 0 },
+  %Instruction { i32 24, i64 0, i64 0 },
+  %Instruction { i32 10, i64 51, i64 0 },
+  %Instruction { i32 8, i64 2, i64 1 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 49, i64 0 },
+  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 5, i64 20, i64 0 },
+  %Instruction { i32 5, i64 21, i64 0 },
+  %Instruction { i32 5, i64 22, i64 0 },
+  %Instruction { i32 5, i64 23, i64 0 },
+  %Instruction { i32 3, i64 0, i64 2 },
+  %Instruction { i32 6, i64 20, i64 0 },
+  %Instruction { i32 5, i64 50, i64 0 },
+  %Instruction { i32 6, i64 22, i64 0 },
+  %Instruction { i32 6, i64 23, i64 0 },
+  %Instruction { i32 10, i64 21, i64 0 },
+  %Instruction { i32 9, i64 48, i64 1 },
+  %Instruction { i32 18, i64 15, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 12, i64 1, i64 0 },
+  %Instruction { i32 14, i64 49, i64 0 },
+  %Instruction { i32 15, i64 1, i64 0 },
+  %Instruction { i32 9, i64 51, i64 2 },
+  %Instruction { i32 21, i64 55, i64 3 },
+  %Instruction { i32 10, i64 50, i64 0 },
+  %Instruction { i32 11, i64 ptrtoint ([8 x i8]* @.fn_outputs to i64), i64 65537 },
+  %Instruction { i32 14, i64 51, i64 0 },
+  %Instruction { i32 21, i64 24, i64 2 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 5, i64 17, i64 0 },
+  %Instruction { i32 5, i64 18, i64 0 },
+  %Instruction { i32 5, i64 19, i64 0 },
+  %Instruction { i32 1, i64 20, i64 1 },
+  %Instruction { i32 10, i64 17, i64 0 },
+  %Instruction { i32 10, i64 20, i64 1 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 19, i64 15, i64 0 },
+  %Instruction { i32 22, i64 16, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 2, i64 16, i64 1 },
+  %Instruction { i32 21, i64 10, i64 0 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 23, i64 18, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 0, i64 1, i64 0 },
+  %Instruction { i32 0, i64 1, i64 1 },
+  %Instruction { i32 21, i64 10, i64 0 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 24, i64 0, i64 0 },
+  %Instruction { i32 1, i64 16, i64 0 },
+  %Instruction { i32 2, i64 16, i64 1 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 19, i64 0 },
+  %Instruction { i32 1, i64 49, i64 1 },
+  %Instruction { i32 1, i64 50, i64 2 },
+  %Instruction { i32 8, i64 0, i64 65536 },
+  %Instruction { i32 10, i64 19, i64 1 },
+  %Instruction { i32 9, i64 48, i64 2 },
+  %Instruction { i32 18, i64 22, i64 3 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 10, i64 49, i64 1 },
+  %Instruction { i32 10, i64 50, i64 2 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 19, i64 13, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 48, i64 0 },
+  %Instruction { i32 1, i64 52, i64 1 },
+  %Instruction { i32 1, i64 53, i64 2 },
+  %Instruction { i32 10, i64 52, i64 0 },
+  %Instruction { i32 9, i64 49, i64 1 },
+  %Instruction { i32 18, i64 10, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 10, i64 49, i64 1 },
+  %Instruction { i32 9, i64 50, i64 2 },
+  %Instruction { i32 21, i64 74, i64 3 },
+  %Instruction { i32 10, i64 50, i64 0 },
+  %Instruction { i32 9, i64 51, i64 1 },
+  %Instruction { i32 21, i64 49, i64 2 },
+  %Instruction { i32 10, i64 51, i64 0 },
+  %Instruction { i32 10, i64 52, i64 1 },
+  %Instruction { i32 10, i64 53, i64 2 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 19, i64 13, i64 0 },
+  %Instruction { i32 26, i64 0, i64 0 },
+  %Instruction { i32 22, i64 23, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 0, i64 0, i64 65536 },
+  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 7, i64 97, i64 0 },
+  %Instruction { i32 5, i64 16, i64 0 },
+  %Instruction { i32 5, i64 17, i64 0 },
+  %Instruction { i32 2, i64 16, i64 2 },
+  %Instruction { i32 21, i64 10, i64 0 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 23, i64 25, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 48, i64 0 },
+  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 7, i64 97, i64 0 },
+  %Instruction { i32 5, i64 19, i64 0 },
+  %Instruction { i32 5, i64 49, i64 0 },
+  %Instruction { i32 1, i64 50, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 21, i64 14, i64 1 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 8, i64 0, i64 65537 },
+  %Instruction { i32 21, i64 1, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 10, i64 49, i64 1 },
+  %Instruction { i32 10, i64 50, i64 2 },
+  %Instruction { i32 21, i64 52, i64 3 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 },
+  %Instruction { i32 24, i64 0, i64 0 },
+  %Instruction { i32 16, i64 0, i64 0 },
+  %Instruction { i32 1, i64 48, i64 0 },
+  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 7, i64 97, i64 0 },
+  %Instruction { i32 5, i64 49, i64 0 },
+  %Instruction { i32 1, i64 50, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 21, i64 14, i64 1 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 8, i64 0, i64 65537 },
+  %Instruction { i32 21, i64 1, i64 2 },
+  %Instruction { i32 10, i64 48, i64 0 },
+  %Instruction { i32 10, i64 49, i64 1 },
+  %Instruction { i32 10, i64 50, i64 2 },
+  %Instruction { i32 21, i64 52, i64 3 },
+  %Instruction { i32 17, i64 0, i64 0 },
+  %Instruction { i32 20, i64 0, i64 0 }
+]
 
-%% split_functor_arity(+Str, -NameStr, -Arity) is det.
-%
-%  Parses a Prolog functor/arity string ("foo/2") into name and arity,
-%  splitting on the LAST `/` rather than the first. This handles
-%  predicate / functor names that themselves contain `/`:
-%
-%    "foo/2"   → Name = "foo",  Arity = 2
-%    "//2"     → Name = "/",    Arity = 2   (integer division)
-%    "/3"      → Name = "",     Arity = 3   (degenerate but accepted)
-%    "a/b/4"   → Name = "a/b",  Arity = 4   (no native equivalent but
-%                                            correct under this rule)
-%
-%  Used by put_structure / get_structure / call / execute literal
-%  emitters in both the bytecode pipeline and the lowered emitter.
-%  Throws if there's no `/` in the input (callers expect a Name/Arity
-%  shape; absence of `/` is a bytecode bug).
-split_functor_arity(Str0, Name, Arity) :-
-    ( atom(Str0) -> atom_string(Str0, S)
-    ; string(Str0) -> S = Str0
-    ; S = Str0
-    ),
-    split_string(S, "/", "", Parts),
-    length(Parts, NParts),
-    ( NParts < 2
-    -> throw(error(split_functor_arity_no_slash(S), _))
-    ;  true
-    ),
-    last(Parts, ArityStr),
-    number_string(Arity, ArityStr),
-    NameCount is NParts - 1,
-    length(NameParts, NameCount),
-    append(NameParts, [_], Parts),
-    atomic_list_concat(NameParts, "/", Name).
+@module_labels = private constant [27 x i32] [
+  i32 0,
+  i32 7,
+  i32 23,
+  i32 34,
+  i32 35,
+  i32 43,
+  i32 50,
+  i32 57,
+  i32 76,
+  i32 80,
+  i32 82,
+  i32 101,
+  i32 105,
+  i32 107,
+  i32 134,
+  i32 145,
+  i32 153,
+  i32 154,
+  i32 160,
+  i32 161,
+  i32 164,
+  i32 177,
+  i32 196,
+  i32 208,
+  i32 209,
+  i32 227,
+  i32 228
+]
 
-%% register_functor_string(+NameStr) is det.
-%
-%  Idempotent assert into the functor_string_global/2 table. Callers
-%  that emit `@.fn_<sane>` references must call this so the matching
-%  `@.fn_<sane> = private constant [N x i8] c"<name>\00"` global is
-%  emitted by emit_functor_string_globals/1 at module assembly time.
-%
-%  Accepts a string OR an atom — converted to string internally so the
-%  table key is consistent.
-register_functor_string(Name) :-
-    ( atom(Name) -> atom_string(Name, NameStr)
-    ; string(Name) -> NameStr = Name
-    ; NameStr = Name
-    ),
-    string_length(NameStr, Len),
-    LenPlus1 is Len + 1,
-    ( functor_string_global(NameStr, _) -> true
-    ; assertz(functor_string_global(NameStr, LenPlus1))
-    ).
+; === Meta-call dispatch table: atom_id + arity -> label index ===
+@wam_meta_call_atom_ids = private constant [13 x i64] [
+  i64 98,
+  i64 99,
+  i64 100,
+  i64 101,
+  i64 102,
+  i64 103,
+  i64 104,
+  i64 105,
+  i64 106,
+  i64 107,
+  i64 108,
+  i64 109,
+  i64 110
+]
+@wam_meta_call_arities = private constant [13 x i32] [
+  i32 3,
+  i32 3,
+  i32 3,
+  i32 2,
+  i32 2,
+  i32 3,
+  i32 2,
+  i32 2,
+  i32 2,
+  i32 2,
+  i32 2,
+  i32 2,
+  i32 2
+]
+@wam_meta_call_label_indexes = private constant [13 x i32] [
+  i32 22,
+  i32 21,
+  i32 20,
+  i32 15,
+  i32 14,
+  i32 13,
+  i32 10,
+  i32 7,
+  i32 6,
+  i32 5,
+  i32 2,
+  i32 1,
+  i32 0
+]
 
-sanitize_codes([], []).
-sanitize_codes([C|Cs], [C|Out]) :-
-    ( C >= 0'a, C =< 0'z
-    ; C >= 0'A, C =< 0'Z
-    ; C >= 0'0, C =< 0'9
-    ), !,
-    sanitize_codes(Cs, Out).
-sanitize_codes([C|Cs], [0'_,H,L|Out]) :-
-    Hi is (C >> 4) /\ 0xF,
-    Lo is C /\ 0xF,
-    hex_digit(Hi, H),
-    hex_digit(Lo, L),
-    sanitize_codes(Cs, Out).
-
-hex_digit(N, C) :- N < 10, !, C is N + 0'0.
-hex_digit(N, C) :- C is N - 10 + 0'A.
-:- dynamic atom_table_entry/2.   % atom_table_entry(AtomName, Id)
-:- dynamic atom_table_next_id/1. % atom_table_next_id(NextId)
-atom_table_next_id(1).           % Start from 1; 0 reserved for empty
-
-%% intern_atom(+AtomName, -Id)
-%  Returns the unique integer ID for AtomName, allocating a new one if needed.
-intern_atom(AtomName, Id) :-
-    (   atom_table_entry(AtomName, Id)
-    ->  true
-    ;   retract(atom_table_next_id(Id)),
-        NextId is Id + 1,
-        assertz(atom_table_next_id(NextId)),
-        assertz(atom_table_entry(AtomName, Id))
-    ).
-
-% ----------------------------------------------------------------------
-% M113: target-platform abstraction for libc struct layouts.
-% Most libc *functions* are POSIX-portable, but the *struct field
-% offsets* we read at IR-emit time (struct dirent for M107, struct tm
-% for M91/M98/M99, struct stat for M73-M76) are libc-specific. To keep
-% IR generation cross-target, callers pick a strategy via
-%   target_os(auto)    -- (default) derive OS from target_triple option
-%   target_os(linux)   -- explicit; linux | darwin | freebsd | netbsd
-%                          | openbsd | wasi | ... (atom)
-% adapt-at-runtime (a third mode that emits a probe to discover offsets
-% at program startup) is a follow-up milestone -- see todo at end of
-% this block.
-
-%% target_os_from_triple(+Triple, -OS) is det.
-%  Maps an LLVM target triple ("x86_64-pc-linux-gnu", "x86_64-apple-darwin",
-%  "x86_64-unknown-freebsd13.0", "wasm32-unknown-wasi", ...) to a short
-%  atom we can pattern-match against in layout predicates.
-target_os_from_triple(Triple, OS) :-
-    atom_string(Triple, S),
-    (   sub_string(S, _, _, _, "linux")   -> OS = linux
-    ;   sub_string(S, _, _, _, "darwin")  -> OS = darwin
-    ;   sub_string(S, _, _, _, "freebsd") -> OS = freebsd
-    ;   sub_string(S, _, _, _, "openbsd") -> OS = openbsd
-    ;   sub_string(S, _, _, _, "netbsd")  -> OS = netbsd
-    ;   sub_string(S, _, _, _, "wasi")    -> OS = wasi
-    ;   sub_string(S, _, _, _, "windows") -> OS = windows
-    ;   sub_string(S, _, _, _, "mingw")   -> OS = windows
-    ;   OS = linux   % default to linux on unknown triples (warns elsewhere)
-    ).
-
-%% resolve_target_os(+Options, -OS) is det.
-%  Consults the Options list for target_os(Mode):
-%   - target_os(auto)  (default if absent) -> derive from target_triple
-%   - target_os(<atom>) (linux/darwin/etc.) -> use that OS directly
-target_os_resolved(Options, OS) :-
-    ( option(target_os(Mode), Options) -> true ; Mode = auto ),
-    ( Mode == auto
-    -> ( option(target_triple(T), Options)
-       -> target_os_from_triple(T, OS)
-       ;  OS = linux
-       )
-    ;  OS = Mode
-    ).
-
-%% target_dirent_d_name_offset(+OS, -Offset) is det.
-%  Byte offset of d_name within struct dirent on the named OS.
-%  Linux glibc: ino(8) + off(8) + reclen(2) + type(1) = 19.
-%  Darwin (BSD libc): ino(8) + seekoff(8) + reclen(2) + namlen(2) + type(1) = 21.
-%  FreeBSD/NetBSD/OpenBSD vary -- 11/12 historically, modern is 21.
-%  WASI uses dirent compatible with Linux (the wasi-libc preview).
-target_dirent_d_name_offset(linux,   19).
-target_dirent_d_name_offset(darwin,  21).
-target_dirent_d_name_offset(freebsd, 21).
-target_dirent_d_name_offset(netbsd,  21).
-target_dirent_d_name_offset(openbsd, 21).
-target_dirent_d_name_offset(wasi,    19).
-target_dirent_d_name_offset(adapt,   0).   % unused -- adapt uses helper.
-target_dirent_d_name_offset(_, 19).        % fall-back
-
-%% target_dirent_name_ptr_ir(+OS, +StaticOff, -IR) is det.
-%  Produce the IR snippet that defines %dirf.name_ptr from
-%  %dirf.entry. For static OS modes this is one getelementptr with a
-%  literal byte offset. For target_os(adapt) it calls the runtime
-%  probe helper @wam_dirent_d_name_offset (always emitted in the
-%  module) and uses the i64 it returns.
-target_dirent_name_ptr_ir(adapt, _Off, IR) :- !,
-    atomic_list_concat([
-        '  %dirf.dno = call i64 @wam_dirent_d_name_offset()',
-        '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 %dirf.dno'
-    ], '\n', IR).
-target_dirent_name_ptr_ir(_OS, Off, IR) :-
-    format(atom(IR), '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 ~w', [Off]).
-
-%% target_dirent_probe_helper_ir(-IR) is det.
-%  M114: emit the runtime probe helper that discovers struct dirent''s
-%  d_name byte offset for the current process. Strategy: opendir("."),
-%  readdir once (always returns the "." entry first), scan the buffer
-%  for the first ''.'' byte (256 bytes max -- d_name is bounded by
-%  NAME_MAX on every supported platform), closedir. Cache the result
-%  in a private i64 global so subsequent calls reuse the probe. On
-%  failure (opendir/readdir error), fall back to 19 (Linux default)
-%  so callers continue with sane semantics even in chroots without /.
-target_dirent_probe_helper_ir(IR) :-
-    IR = '; === M114 runtime dirent::d_name offset probe ===
-@.uw_dot_dir = private constant [2 x i8] c".\\00"
-@uw_dirent_d_name_offset_cache = private global i64 -1
-
-define i64 @wam_dirent_d_name_offset() {
+define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
 entry:
-  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
-  %unset = icmp slt i64 %cached, 0
-  br i1 %unset, label %probe, label %done
-done:
-  ret i64 %cached
-probe:
-  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
-  %dir = call i8* @opendir(i8* %dot_ptr)
-  %dir_null = icmp eq i8* %dir, null
-  br i1 %dir_null, label %fallback, label %read
-read:
-  %entry_ptr = call i8* @readdir(i8* %dir)
-  %entry_null = icmp eq i8* %entry_ptr, null
-  br i1 %entry_null, label %fallback_close, label %scan_init
-scan_init:
-  br label %scan_loop
-scan_loop:
-  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
-  %too_far = icmp uge i64 %i, 256
-  br i1 %too_far, label %fallback_close, label %scan_check
-scan_check:
-  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
-  %b = load i8, i8* %byte_ptr
-  %is_dot = icmp eq i8 %b, 46
-  br i1 %is_dot, label %scan_found, label %scan_step
-scan_step:
-  %i_next = add i64 %i, 1
-  br label %scan_loop
-scan_found:
-  %close_ret = call i32 @closedir(i8* %dir)
-  store i64 %i, i64* @uw_dirent_d_name_offset_cache
-  ret i64 %i
-fallback_close:
-  %close_ret2 = call i32 @closedir(i8* %dir)
-  br label %fallback
-fallback:
-  store i64 19, i64* @uw_dirent_d_name_offset_cache
-  ret i64 19
-}'.
+  %arity_ok = icmp sge i32 %total_arity, 1
+  br i1 %arity_ok, label %read_goal, label %fail
 
-%% target_struct_tm_size(+OS, -SizeBytes) is det.
-%  Glibc struct tm is 56 bytes; Darwin/BSD also 56 with same field
-%  order (the GNU tm_gmtoff/tm_zone extension is also present on
-%  Darwin and modern BSDs).
-target_struct_tm_size(_, 56).
+read_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tag = extractvalue %Value %goal, 0
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_goal, label %fail
 
-%% target_struct_tm_gmtoff_offset(+OS, -Offset) is det.
-target_struct_tm_gmtoff_offset(linux,   40).
-target_struct_tm_gmtoff_offset(darwin,  40).
-target_struct_tm_gmtoff_offset(freebsd, 40).
-target_struct_tm_gmtoff_offset(_, 40).
+atom_goal:
+  %atom_id = extractvalue %Value %goal, 1
+  %target_arity = sub i32 %total_arity, 1
+  br label %loop
 
-% TODO: target_os(adapt) -- emit a small startup probe that opens
-% "." via opendir, calls readdir once (which always returns "." as
-% the first entry), and computes the d_name offset from where the
-% '.' byte lands in the buffer. Result stored in a runtime global so
-% builtin_directory_files reads the resolved offset instead of a
-% compile-time constant. Defer to a future milestone.
+loop:
+  %i = phi i32 [ 0, %atom_goal ], [ %next_i, %next ]
+  %done = icmp sge i32 %i, 13
+  br i1 %done, label %fail, label %check
 
-% --- Value packing helpers ---
+check:
+  %atom_ptr = getelementptr [13 x i64], [13 x i64]* @wam_meta_call_atom_ids, i32 0, i32 %i
+  %cand_atom = load i64, i64* %atom_ptr
+  %atom_match = icmp eq i64 %atom_id, %cand_atom
+  %arity_ptr = getelementptr [13 x i32], [13 x i32]* @wam_meta_call_arities, i32 0, i32 %i
+  %cand_arity = load i32, i32* %arity_ptr
+  %arity_match = icmp eq i32 %target_arity, %cand_arity
+  %match = and i1 %atom_match, %arity_match
+  br i1 %match, label %dispatch, label %next
 
-llvm_pack_value(atom(A), Packed) :- !,
-    intern_atom(A, Packed).
-llvm_pack_value(integer(I), I) :- !.
-llvm_pack_value(N, N) :- integer(N), !.
-llvm_pack_value(N, Packed) :- float(N), !, Packed is truncate(N).
-llvm_pack_value(A, Packed) :- atom(A), !, intern_atom(A, Packed).
-llvm_pack_value(_, 0).
+next:
+  %next_i = add i32 %i, 1
+  br label %loop
 
-% --- Builtin op name → integer ID mapping ---
+dispatch:
+  %label_ptr = getelementptr [13 x i32], [13 x i32]* @wam_meta_call_label_indexes, i32 0, i32 %i
+  %label_idx = load i32, i32* %label_ptr
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  %valid = icmp sge i32 %target_pc, 0
+  br i1 %valid, label %go, label %fail
 
-builtin_op_to_id('is/2', 0).
-builtin_op_to_id('>/2', 1).
-builtin_op_to_id('</2', 2).
-builtin_op_to_id('>=/2', 3).
-builtin_op_to_id('=</2', 4).
-builtin_op_to_id('=:=/2', 5).
-builtin_op_to_id('=\\=/2', 6).
-builtin_op_to_id('==/2', 7).
-builtin_op_to_id('true/0', 8).
-builtin_op_to_id('fail/0', 9).
-builtin_op_to_id('!/0', 10).
-builtin_op_to_id('write/1', 11).
-builtin_op_to_id('nl/0', 12).
-builtin_op_to_id('atom/1', 13).
-builtin_op_to_id('integer/1', 14).
-builtin_op_to_id('float/1', 15).
-builtin_op_to_id('number/1', 16).
-builtin_op_to_id('compound/1', 17).
-builtin_op_to_id('var/1', 18).
-builtin_op_to_id('nonvar/1', 19).
-builtin_op_to_id('is_list/1', 20).
-builtin_op_to_id('\\==/2', 21).
-builtin_op_to_id('succ/2', 22).
-builtin_op_to_id('plus/3', 23).
-builtin_op_to_id('=/2', 24).
-builtin_op_to_id('\\=/2', 25).
-builtin_op_to_id('functor/3', 26).
-builtin_op_to_id('arg/3', 27).
-builtin_op_to_id('=../2', 28).
-builtin_op_to_id('copy_term/2', 29).
-builtin_op_to_id('msort/2', 30).
-builtin_op_to_id('length/2', 31).
-builtin_op_to_id('format/2', 32).
-builtin_op_to_id('format/1', 33).
-builtin_op_to_id('atom_length/2', 35).
-builtin_op_to_id('atom_codes/2', 36).
-builtin_op_to_id('char_code/2', 37).
-builtin_op_to_id('atom_chars/2', 38).
-builtin_op_to_id('between/3', 39).
-builtin_op_to_id('atom_concat/3', 40).
-builtin_op_to_id('sub_atom/5', 41).
-builtin_op_to_id('atom_number/2', 42).
-builtin_op_to_id('number_codes/2', 43).
-builtin_op_to_id('number_chars/2', 44).
-builtin_op_to_id('upcase_atom/2', 45).
-builtin_op_to_id('downcase_atom/2', 46).
-builtin_op_to_id('string_concat/3', 47).  % alias of atom_concat/3
-builtin_op_to_id('string_length/2', 48).  % alias of atom_length/2
-builtin_op_to_id('atom_string/2', 49).    % atom <-> string (runtime treats both as atoms)
-builtin_op_to_id('string_to_atom/2', 50). % string_to_atom(?S, ?A) -- same as atom_string but swapped
-builtin_op_to_id('nth0/3', 51).
-builtin_op_to_id('nth1/3', 52).
-builtin_op_to_id('last/2', 53).
-builtin_op_to_id('reverse/2', 54).
-builtin_op_to_id('append/3', 55).
-builtin_op_to_id('memberchk/2', 56).
-builtin_op_to_id('delete/3', 57).
-builtin_op_to_id('numlist/3', 58).
-builtin_op_to_id('sum_list/2', 59).
-builtin_op_to_id('sumlist/2', 60).   % alias of sum_list/2
-builtin_op_to_id('max_list/2', 61).
-builtin_op_to_id('min_list/2', 62).
-builtin_op_to_id('subtract/3', 63).
-builtin_op_to_id('intersection/3', 64).
-builtin_op_to_id('union/3', 65).
-builtin_op_to_id('list_to_set/2', 66).
-builtin_op_to_id('string_chars/2', 67).  % alias of atom_chars/2
-builtin_op_to_id('string_codes/2', 68).  % alias of atom_codes/2
-builtin_op_to_id('string_code/3', 69).   % string_code(+Idx, +Str, -Code) 1-based
-builtin_op_to_id('pairs_keys/2', 70).    % extract keys from K-V pair list
-builtin_op_to_id('pairs_values/2', 71).  % extract values
-builtin_op_to_id('pairs_keys_values/3', 72). % forward only: split pairs -> keys + values
-builtin_op_to_id('atomic_list_concat/2', 73). % concat list of atoms (atoms only mode)
-builtin_op_to_id('atomic_list_concat/3', 74). % concat with separator atom (atoms-only forward)
-builtin_op_to_id('char_type/2', 75).          % char classification (check mode)
-builtin_op_to_id('compare/3', 76).            % three-way term order (num/atom)
-builtin_op_to_id('must_be/2', 77).            % type guard (fail-instead-of-throw)
-builtin_op_to_id('display/1', 78).            % alias of write/1 (operator-free print)
-builtin_op_to_id('writeln/1', 79).            % write/1 + nl/0 combined
-builtin_op_to_id('keysort/2', 80).            % stable sort of K-V pairs by Key
-builtin_op_to_id('sort/2', 81).               % sort + dedup under standard term order
-builtin_op_to_id('tab/1', 82).                % I/O: print N spaces.
-builtin_op_to_id('put_char/1', 83).           % I/O: print first byte of single-char atom.
-builtin_op_to_id('put_code/1', 84).           % I/O: print byte value as char.
-builtin_op_to_id('split_string/4', 85).       % split atom on any char from SepChars; strip pad chars from segments.
-builtin_op_to_id('@</2', 86).                 % standard order: less than.
-builtin_op_to_id('@=</2', 87).                % standard order: less or equal.
-builtin_op_to_id('@>/2', 88).                 % standard order: greater than.
-builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal.
-builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
-builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular file.
-builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
-builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
-builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
-builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
-builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
-builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
-builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
-builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value or fail.
-builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
-builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
-builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
-builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
-builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
-builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
-builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
-builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
-builtin_op_to_id('random/1', 108).            % libc drand48() in [0, 1) as Float.
-builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
-builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
-builtin_op_to_id('halt/0', 111).              % libc exit(0).
-builtin_op_to_id('halt/1', 112).              % libc exit(Code).
-builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
-builtin_op_to_id('getuid/1', 114).            % libc getuid() as Integer.
-builtin_op_to_id('geteuid/1', 115).           % libc geteuid() as Integer.
-builtin_op_to_id('getgid/1', 116).            % libc getgid() as Integer.
-builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
-builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
-builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
-builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
-builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
-builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
-builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
-builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
-builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
-builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
-builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
-builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
-builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
-builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
-builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
-builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound vars.
-builtin_op_to_id('file_base_name/2', 133).    % basename(1): part after last ''/''.
-builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last ''/'' (or ''.'').
-builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''.'' (basename-scoped).
-builtin_op_to_id('read_link/2', 136).         % libc readlink -- symlink target as atom.
-builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
-builtin_op_to_id('link/2', 138).              % libc link(old, new) -- hard link.
-builtin_op_to_id('is_absolute_file_name/1', 139). % true iff first char is ''/''.
-builtin_op_to_id('same_file/2', 140).         % stat both, compare st_dev + st_ino.
-builtin_op_to_id('tmp_file/2', 141).          % mkstemp-based race-free temp file.
-builtin_op_to_id('mkfifo/2', 142).            % libc mkfifo(path, mode).
-builtin_op_to_id('umask/2', 143).             % libc umask(?Old, +New).
-builtin_op_to_id('monotonic_time/1', 144).    % clock_gettime(CLOCK_MONOTONIC) as Float.
-builtin_op_to_id('nice/1', 145).              % libc nice(inc) -- adjust priority.
-builtin_op_to_id('getpriority/1', 146).       % libc getpriority(PRIO_PROCESS, 0).
-builtin_op_to_id('setpriority/1', 147).       % libc setpriority(PRIO_PROCESS, 0, prio).
-builtin_op_to_id('getrlimit/2', 148).         % libc getrlimit(Res, &rlim) -- soft limit.
-builtin_op_to_id('setrlimit/2', 149).         % libc setrlimit(Res, &rlim) -- soft limit only.
-builtin_op_to_id('getlogin/1', 150).          % libc getlogin() as atom.
-builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as atom.
-builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
-builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
-builtin_op_to_id('read_file_to_atom/2', 154). % stat + open + read loop -> intern as atom.
-builtin_op_to_id('write_atom_to_file/2', 155). % open(O_TRUNC) + write loop + close.
-builtin_op_to_id('append_atom_to_file/2', 156). % open(O_APPEND) + write loop + close.
-builtin_op_to_id('errno/1', 157).             % thread-local errno via __errno_location.
-builtin_op_to_id('strerror/2', 158).          % libc strerror(errno) as atom.
-builtin_op_to_id('process_max_rss/1', 159).   % getrusage ru_maxrss (KB on Linux).
-builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seconds.
-builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
-builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (absolute Rel wins).
-builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
-builtin_op_to_id('atom_to_system/2', 164).    % popen(cmd, "w") + fwrite + pclose, succeed iff status 0.
-builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep -> list of substring atoms.
-% Catch-all for builtin names with no dedicated dispatch entry. Must
-% be a value that no real builtin uses AND that the switch in
-% @execute_builtin has no case for, so dispatch falls through to the
-% %unknown label (ret i1 false). 99 was previously used here, but
-% 99 is also the dispatch case for getenv/2 -- so `\+ G' where G is
-% any non-builtin or a non-dispatched builtin would route to
-% builtin_getenv, read whatever junk reg 0 held, and return false
-% instead of running the metacall semantics. 200 is well above the
-% currently-defined range and not in the switch.
-builtin_op_to_id(_, 200).  % Unknown
+go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i1 true
 
-% ============================================================================
-% WAM line parser → LLVM struct literals (from WAM assembly text)
-% ============================================================================
+fail:
+  ret i1 false
+}
 
-%% compile_wam_predicate_to_llvm(+Pred/Arity, +WamCode, +Options, -LLVMCode)
-%  Takes WAM instruction output and produces LLVM IR with instruction
-%  array and label table as global constants.
-compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
-    atom_string(Pred, PredStr),
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_llvm(Lines, 0, LLVMLiterals, LabelEntries),
-    % Second pass: resolve switch_deferred terms to real instruction literals
-    % while emitting per-switch %SwitchEntry table globals.
-    resolve_switch_tables(LLVMLiterals, PredStr, 0, ResolvedLiterals, SwitchTableDefs),
-    length(ResolvedLiterals, InstrCount),
-    length(LabelEntries, LabelCount),
-    % Build instruction array entries
-    maplist([Lit, Entry]>>(format(atom(Entry), '  ~w', [Lit])), ResolvedLiterals, Entries),
-    atomic_list_concat(Entries, ',\n', EntriesStr),
-    % Build label array entries. When the predicate has zero labels we
-    % still emit a 1-element placeholder (LLVM rejects [0 x i32] with a
-    % 1-element initializer, and vice versa). The logical count passed
-    % to wam_state_new stays zero, but the declared array type has to
-    % match the initializer length so the two are tracked separately.
-    maplist([_-Idx, Entry]>>(format(atom(Entry), '  i32 ~w', [Idx])), LabelEntries, LabelRows),
-    (   LabelRows == []
-    ->  LabelsStr = "  i32 0",
-        LabelArraySize = 1
-    ;   atomic_list_concat(LabelRows, ',\n', LabelsStr),
-        LabelArraySize = LabelCount
-    ),
-    % Build arg setup
-    build_llvm_arg_setup(Arity, ArgSetup),
-    build_llvm_param_list(Arity, ParamList),
-    % Join switch table definitions (may be empty)
-    ( SwitchTableDefs == []
-    -> SwitchTablesStr = ""
-    ;  atomic_list_concat(SwitchTableDefs, '\n', SwitchTablesStr0),
-       format(atom(SwitchTablesStr), '~w\n', [SwitchTablesStr0])
-    ),
-    format(atom(LLVMCode),
-'; WAM-compiled predicate: ~w/~w
-~w@~w_code = private constant [~w x %Instruction] [
-~w
-]
+; WAM-compiled predicate: state_counter/2 (merged module code, start PC 0)
+@state_counter_start_pc = private constant i32 0
 
-@~w_labels = private constant [~w x i32] [
-~w
-]
-
-define i1 @~w(~w) {
+define i1 @state_counter(%Value %a1, %Value %a2) {
 entry:
   %vm = call %WamState* @wam_state_new(
-    %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
-    i32 ~w,
-    i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
-    i32 ~w)
-~w
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
   ret i1 %result
 }
-', [PredStr, Arity,
-    SwitchTablesStr,
-    PredStr, InstrCount, EntriesStr,
-    PredStr, LabelArraySize, LabelsStr,
-    PredStr, ParamList,
-    InstrCount, InstrCount, PredStr, InstrCount,
-    LabelArraySize, LabelArraySize, PredStr, LabelCount,
-    ArgSetup]).
 
-%% resolve_switch_tables(+LiteralsIn, +PredStr, +NextIdx, -LiteralsOut, -TableDefs)
-%  Walks the literal list, replacing switch_deferred/2 terms with real
-%  %Instruction literals referencing freshly-allocated switch table globals.
-resolve_switch_tables([], _, _, [], []).
-resolve_switch_tables([switch_deferred(constant, Entries) | Rest], PredStr, Idx,
-        [InstrLit | RestOut], [TableDef | RestDefs]) :- !,
-    length(Entries, Count),
-    format(atom(TableName), '~w_switch_~w', [PredStr, Idx]),
-    render_switch_entries(Entries, EntryLines),
-    atomic_list_concat(EntryLines, ',\n', EntriesStr),
-    format(atom(TableDef),
-'@~w = private constant [~w x %SwitchEntry] [
-~w
-]',         [TableName, Count, EntriesStr]),
-    format(atom(InstrLit),
-'%Instruction { i32 25, i64 ptrtoint ([~w x %SwitchEntry]* @~w to i64), i64 ~w }',
-        [Count, TableName, Count]),
-    Idx1 is Idx + 1,
-    resolve_switch_tables(Rest, PredStr, Idx1, RestOut, RestDefs).
-resolve_switch_tables([switch_deferred(constant_a2, Entries) | Rest], PredStr, Idx,
-        [InstrLit | RestOut], [TableDef | RestDefs]) :- !,
-    length(Entries, Count),
-    format(atom(TableName), '~w_switch_a2_~w', [PredStr, Idx]),
-    render_switch_entries(Entries, EntryLines),
-    atomic_list_concat(EntryLines, ',\n', EntriesStr),
-    format(atom(TableDef),
-'@~w = private constant [~w x %SwitchEntry] [
-~w
-]',         [TableName, Count, EntriesStr]),
-    format(atom(InstrLit),
-'%Instruction { i32 27, i64 ptrtoint ([~w x %SwitchEntry]* @~w to i64), i64 ~w }',
-        [Count, TableName, Count]),
-    Idx1 is Idx + 1,
-    resolve_switch_tables(Rest, PredStr, Idx1, RestOut, RestDefs).
-resolve_switch_tables([Lit | Rest], PredStr, Idx, [Lit | RestOut], RestDefs) :-
-    resolve_switch_tables(Rest, PredStr, Idx, RestOut, RestDefs).
+; WAM-compiled predicate: increment_counter/2 (merged module code, start PC 7)
+@increment_counter_start_pc = private constant i32 7
 
-render_switch_entries([], []).
-render_switch_entries([entry(Tag, Pay, LabelIdx) | Rest], [Line | RestLines]) :-
-    format(atom(Line),
-        '  %SwitchEntry { i32 ~w, i64 ~w, i32 ~w }',
-        [Tag, Pay, LabelIdx]),
-    render_switch_entries(Rest, RestLines).
+define i1 @increment_counter(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 7)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% llvm_emit_atom_fact2_table(+TableName, +Pairs, -LLVMGlobal)
-%
-%  Emit a private global constant array of %AtomFactPair entries for
-%  a list of (FromAtom, ToAtom) facts. Both atoms are interned via
-%  intern_atom/2 so the IDs stay consistent with switch_on_constant
-%  tables and kernel lookups.
-%
-%  Example:
-%      llvm_emit_atom_fact2_table('category_parent_table',
-%          [fact('Physics', 'Science'), fact('Chemistry', 'Science')],
-%          Code)
-%
-%  Produces an LLVM global definition:
-%      @category_parent_table = private constant [2 x %AtomFactPair] [
-%        %AtomFactPair { i64 1, i64 2 },
-%        %AtomFactPair { i64 3, i64 2 }
-%      ]
-%
-llvm_emit_atom_fact2_table(TableName, Pairs, Code) :-
-    maplist(render_atom_fact_pair, Pairs, Lines),
-    length(Pairs, Count),
-    (   Count == 0
-    ->  format(atom(Code),
-            '@~w = private constant [1 x %AtomFactPair] [%AtomFactPair { i64 0, i64 0 }]',
-            [TableName])
-    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
-        format(atom(Code),
-'@~w = private constant [~w x %AtomFactPair] [
-~w
-]', [TableName, Count, EntriesStr])
-    ).
+; WAM-compiled predicate: item_field_count/2 (merged module code, start PC 23)
+@item_field_count_start_pc = private constant i32 23
 
-render_atom_fact_pair(fact(From, To), Line) :-
-    intern_atom(From, FromId),
-    intern_atom(To, ToId),
-    format(atom(Line),
-        '  %AtomFactPair { i64 ~w, i64 ~w }',
-        [FromId, ToId]).
-render_atom_fact_pair(From-To, Line) :-
-    render_atom_fact_pair(fact(From, To), Line).
+define i1 @item_field_count(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 23)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% llvm_emit_weighted_edge_table(+TableName, +Triples, -LLVMGlobal)
-%
-%  Emit a private global constant array of %WeightedFact entries for
-%  a list of (From, To, Weight) weighted edges. Atoms interned, weight
-%  emitted as a double (LLVM requires decimal form for fp constants).
-%
-%  Example:
-%      llvm_emit_weighted_edge_table('cat_weighted',
-%          [edge('ml', 'ai', 0.12), edge('ai', 'cs', 0.18)], Code)
-%
-llvm_emit_weighted_edge_table(TableName, Triples, Code) :-
-    maplist(render_weighted_fact, Triples, Lines),
-    length(Triples, Count),
-    (   Count == 0
-    ->  format(atom(Code),
-            '@~w = private constant [1 x %WeightedFact] [%WeightedFact { i64 0, i64 0, double 0.0 }]',
-            [TableName])
-    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
-        format(atom(Code),
-'@~w = private constant [~w x %WeightedFact] [
-~w
-]', [TableName, Count, EntriesStr])
-    ).
+; WAM-compiled predicate: nr/2 (merged module code, start PC 43)
+@nr_start_pc = private constant i32 43
 
-render_weighted_fact(edge(From, To, Weight), Line) :-
-    intern_atom(From, FromId),
-    intern_atom(To, ToId),
-    format_weight_literal(Weight, WeightStr),
-    format(atom(Line),
-        '  %WeightedFact { i64 ~w, i64 ~w, double ~w }',
-        [FromId, ToId, WeightStr]).
-render_weighted_fact(From-To-Weight, Line) :-
-    render_weighted_fact(edge(From, To, Weight), Line).
+define i1 @nr(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 43)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% format_weight_literal(+Weight, -Str)
-%  LLVM's double literal parser requires either decimal form (3.14) or
-%  hex form. An integer printed as "1" is rejected where a double is
-%  expected; we must emit "1.0". Also, "0" must become "0.0".
-format_weight_literal(W, Str) :-
-    number(W),
-    ( integer(W)
-    -> format(string(Str), '~w.0', [W])
-    ;  format(string(Str), '~w', [W])
-    ).
+; WAM-compiled predicate: nf/2 (merged module code, start PC 50)
+@nf_start_pc = private constant i32 50
 
-%% wam_lines_to_llvm(+Lines, +PC, -LLVMLits, -LabelEntries)
-%  Two-pass approach: first collect all labels and raw instruction parts,
-%  then generate LLVM literals with resolved label indices.
-wam_lines_to_llvm(Lines, StartPC, LLVMLits, LabelEntries) :-
-    % Pass 1: collect labels and raw instruction parts
-    wam_lines_pass1(Lines, StartPC, RawInstrs, LabelEntries),
-    % Build label name → index mapping (position in label array)
-    build_label_index_map(LabelEntries, LabelMap),
-    % Pass 2: generate LLVM literals with label resolution
-    maplist(resolve_llvm_literal(LabelMap), RawInstrs, LLVMLits).
+define i1 @nf(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 50)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% wam_lines_pass1(+Lines, +PC, -RawInstrs, -Labels)
-%  First pass: separate labels from instructions, track PC.
-wam_lines_pass1([], _, [], []).
-wam_lines_pass1([Line|Rest], PC, RawInstrs, Labels) :-
-    % M12: quote-aware split. A `put_constant 'hello world~n', A1`
-    % bytecode line has whitespace inside the single-quoted atom; the
-    % old space/tab split shattered it into garbage parts that the
-    % per-instruction parser couldn't recognise and fell to the
-    % `; TODO: ...` stub, which broke @module_code array length
-    % accounting at llc time. Now `'...'` groups are preserved as a
-    % single Part (with the quotes still attached -- downstream
-    % clean_comma + llvm_pack_value_str strips them).
-    quote_aware_split(Line, Parts),
-    delete(Parts, "", CleanParts),
-    (   CleanParts == []
-    ->  wam_lines_pass1(Rest, PC, RawInstrs, Labels)
-    ;   CleanParts = [First|_],
-        (   sub_string(First, _, 1, 0, ":")
-        ->  sub_string(First, 0, _, 1, LabelName),
-            Labels = [LabelName-PC | RestLabels],
-            wam_lines_pass1(Rest, PC, RawInstrs, RestLabels)
-        ;   RawInstrs = [CleanParts | RestInstrs],
-            NPC is PC + 1,
-            wam_lines_pass1(Rest, NPC, RestInstrs, Labels)
-        )
-    ).
+; WAM-compiled predicate: fs/2 (merged module code, start PC 57)
+@fs_start_pc = private constant i32 57
 
-%% quote_aware_split(+Line, -Parts)
-%
-%  Split Line on whitespace while preserving single-quoted runs as a
-%  single Part. Quote escapes inside a quoted run follow the standard
-%  Prolog convention: a doubled `''` is a single literal apostrophe.
-%  Quotes themselves stay in the returned Part (so callers can tell a
-%  quoted atom from an unquoted identifier); the downstream
-%  clean_comma + llvm_pack_value_str path handles stripping.
-quote_aware_split(Line, Parts) :-
-    ( atom(Line) -> atom_codes(Line, Codes)
-    ; string(Line) -> string_codes(Line, Codes)
-    ; Codes = Line
-    ),
-    qa_split(Codes, [], Parts).
+define i1 @fs(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 57)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-% qa_split(+Codes, +CurAcc, -PartsOut)
-qa_split([], [], []) :- !.
-qa_split([], Acc, [Part]) :-
-    reverse(Acc, AccF),
-    string_codes(Part, AccF).
-qa_split([C|Cs], Acc, Out) :-
-    ( ( C == 0' ; C == 0'\t )
-    -> ( Acc == []
-       -> qa_split(Cs, [], Out)
-       ;  reverse(Acc, AccF),
-          string_codes(Part, AccF),
-          Out = [Part | Rest],
-          qa_split(Cs, [], Rest)
-       )
-    ; C == 0''
-    -> % Enter a single-quoted run. Read codes verbatim (handling
-       % doubled `''` as an escape) until the closing quote.
-       qa_quoted([C|Cs], Acc, AccQ, Cs2),
-       qa_split(Cs2, AccQ, Out)
-    ;  qa_split(Cs, [C|Acc], Out)
-    ).
+; WAM-compiled predicate: ofs/2 (merged module code, start PC 82)
+@ofs_start_pc = private constant i32 82
 
-% qa_quoted(+Codes, +AccIn, -AccOut, -RestCodes)
-%  Codes starts with the opening `'`. Reads through to the matching
-%  closing `'`, preserving the quotes (and any escaped doubles) in AccOut.
-qa_quoted([Q|Cs], AccIn, AccOut, RestOut) :-
-    Q = 0'',
-    qa_quoted_body(Cs, [Q|AccIn], AccOut, RestOut).
+define i1 @ofs(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 82)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-qa_quoted_body([], Acc, Acc, []).
-qa_quoted_body([0'', 0''|Cs], Acc, AccOut, RestOut) :- !,
-    % Escaped apostrophe: keep both in the accumulator.
-    qa_quoted_body(Cs, [0'', 0''|Acc], AccOut, RestOut).
-qa_quoted_body([0''|Cs], Acc, [0''|Acc], Cs) :- !.
-qa_quoted_body([C|Cs], Acc, AccOut, RestOut) :-
-    qa_quoted_body(Cs, [C|Acc], AccOut, RestOut).
+; WAM-compiled predicate: append_output/3 (merged module code, start PC 107)
+@append_output_start_pc = private constant i32 107
 
-%% build_label_index_map(+LabelEntries, -LabelMap)
-%  Creates an assoc mapping label names to their index in the label array.
-build_label_index_map(LabelEntries, LabelMap) :-
-    length(LabelEntries, _),
-    foldl(add_label_entry, LabelEntries, 0-[], _-LabelMap).
+define i1 @append_output(%Value %a1, %Value %a2, %Value %a3) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 107)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-add_label_entry(Name-_PC, Idx-Map, NextIdx-[Name-Idx|Map]) :-
-    NextIdx is Idx + 1.
+; WAM-compiled predicate: state_outputs/2 (merged module code, start PC 134)
+@state_outputs_start_pc = private constant i32 134
 
-%% resolve_llvm_literal(+LabelMap, +Parts, -LLVMLit)
-%  Second pass: generate LLVM literal with resolved label indices.
-resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
-    wam_line_to_llvm_literal_resolved(Parts, LabelMap, LLVMLit).
+define i1 @state_outputs(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 134)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% wam_line_to_llvm_literal_resolved(+Parts, +LabelMap, -LLVMLit)
-%  Converts parsed WAM instruction text to LLVM %Instruction struct literal,
-%  with label names resolved to indices via LabelMap.
+; WAM-compiled predicate: normalize_outputs/2 (merged module code, start PC 145)
+@normalize_outputs_start_pc = private constant i32 145
 
-%% lookup_label_index(+LabelName, +LabelMap, -Index)
-%  Find label index in map. Behaviour on unknown labels depends on context:
-%  - Default: warn on stderr, return 0 (for external predicate references)
-%  - With wam_strict_labels(true) in Options: throw an error
-lookup_label_index(LabelName, LabelMap, Index) :-
-    lookup_label_index(LabelName, LabelMap, [], Index).
-lookup_label_index(LabelName, LabelMap, Options, Index) :-
-    (   member(LabelName-Index, LabelMap)
-    ->  true
-    ;   (   option(wam_strict_labels(true), Options)
-        ->  throw(error(unknown_label(LabelName),
-                'Label not found in LabelMap — enable wam_strict_labels(false) to allow fallback'))
-        ;   format(user_error,
-                'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
-                [LabelName]),
-            Index = 0
-        )
-    ).
+define i1 @normalize_outputs(%Value %a1, %Value %a2) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 145)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-% Instructions that need label resolution:
-% NOTE: trailing `; comment` removed — LLVM line comments eat the comma
-% separator in array constants. The label name is preserved for humans by
-% having `llvm-dis` show labels resolved from the label array, not inline.
-wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
-    clean_comma(P, CP), clean_comma(N, CN),
-    (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    (   wam_meta_call_label(CP)
-    ->  LabelIdx = -1
-    ;   lookup_label_index(CP, LabelMap, LabelIdx)
-    ),
-    format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
-wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
-    clean_comma(P, CP),
-    (   wam_meta_call_label(CP)
-    ->  LabelIdx = -1,
-        wam_meta_call_total_arity(CP, Arity)
-    ;   lookup_label_index(CP, LabelMap, LabelIdx),
-        Arity = 0
-    ),
-    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
-wam_line_to_llvm_literal_resolved(["try_me_else", L], LabelMap, Lit) :- !,
-    clean_comma(L, CL),
-    lookup_label_index(CL, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 22, i64 ~w, i64 0 }', [LabelIdx]).
-wam_line_to_llvm_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
-    clean_comma(L, CL),
-    lookup_label_index(CL, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 }', [LabelIdx]).
-wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
-    clean_comma(L, CL),
-    lookup_label_index(CL, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
-wam_line_to_llvm_literal_resolved(["switch_on_constant_fallthrough" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-% switch_on_constant: defer until compile_wam_predicate_to_llvm can
-% allocate a switch table global. Returns a switch_deferred(_) term.
-wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
-        switch_deferred(constant, Entries)) :- !,
-    parse_switch_entries(EntryParts, LabelMap, Entries).
-wam_line_to_llvm_literal_resolved(["switch_on_structure" | _], _, Lit) :- !,
-    % nop fallthrough — the try_me_else chain still runs.
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | EntryParts], LabelMap,
-        switch_deferred(constant_a2, Entries)) :- !,
-    parse_switch_entries(EntryParts, LabelMap, Entries).
-% switch_on_term / switch_on_term_a2: type-based dispatch that falls
-% back to the try_me_else / retry_me_else chain. The LLVM target does
-% not implement these yet, so emit a nop and let the linear chain run.
-wam_line_to_llvm_literal_resolved(["switch_on_term" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-wam_line_to_llvm_literal_resolved(["switch_on_term_a2" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-% try / retry / trust (no `_me_else` suffix): emitted by the WAM
-% compiler''s indexed-dispatch group pass to chain together clauses
-% that share an indexing key. The LLVM target''s switch_on_constant
-% / switch_on_term are nop fallthroughs, so the indexed body never
-% gets entered and these instructions are unreachable in practice;
-% emit nop so they fall through to the next instruction (which
-% continues the try_me_else / retry_me_else / trust_me chain).
-wam_line_to_llvm_literal_resolved(["try" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-wam_line_to_llvm_literal_resolved(["retry" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-wam_line_to_llvm_literal_resolved(["trust" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-% All other instructions: delegate to existing parser (no labels needed)
-wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
-    wam_line_to_llvm_literal(Parts, Lit).
+; WAM-compiled predicate: print_item/3 (merged module code, start PC 164)
+@print_item_start_pc = private constant i32 164
 
-%% parse_switch_entries(+Parts, +LabelMap, -Entries)
-%  Each part is "key:label" possibly with trailing comma. Produces a list
-%  of entry(KeyTag, KeyPayload, LabelIdx) terms. LabelMap has string keys
-%  (from wam_lines_pass1 using sub_string), so we pass label strings
-%  directly without converting to atoms.
-parse_switch_entries([], _, []).
-parse_switch_entries([Part | Rest], LabelMap, [Entry | RestEntries]) :-
-    clean_comma(Part, Clean),
-    ( sub_string(Clean, Before, 1, After, ":")
-    -> sub_string(Clean, 0, Before, _, KeyStr),
-       sub_string(Clean, _, After, 0, LabelStr)
-    ;  KeyStr = Clean, LabelStr = ""
-    ),
-    % Pack the key: integer keys use tag=1, atom keys use tag=0 with interned id.
-    ( number_string(N, KeyStr)
-    -> KeyTag = 1, KeyPayload = N
-    ;  KeyTag = 0,
-       atom_string(KeyAtom, KeyStr),
-       intern_atom(KeyAtom, KeyPayload)
-    ),
-    % "default" is a pseudo-label meaning "fall through to next instruction".
-    % Encode as sentinel -1 which the runtime helper maps to "advance PC".
-    ( LabelStr == "default"
-    -> LabelIdx = -1
-    ;  % Pass the string directly — LabelMap has string keys.
-       ( lookup_label_index(LabelStr, LabelMap, LabelIdx)
-       -> true
-       ;  LabelIdx = 0
-       )
-    ),
-    Entry = entry(KeyTag, KeyPayload, LabelIdx),
-    parse_switch_entries(Rest, LabelMap, RestEntries).
+define i1 @print_item(%Value %a1, %Value %a2, %Value %a3) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 164)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-%% wam_line_to_llvm_literal(+Parts, -LLVMLit)
-%  Converts parsed WAM instruction text to LLVM %Instruction struct literal.
-%  For non-label-referencing instructions only. Label-referencing instructions
-%  are handled by wam_line_to_llvm_literal_resolved/3 above.
+; WAM-compiled predicate: print_fields/3 (merged module code, start PC 177)
+@print_fields_start_pc = private constant i32 177
 
-wam_line_to_llvm_literal(["get_constant", C, Ai], Lit) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi),
-    llvm_pack_value_str(CC, PackedVal),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, RegIdx),
-    % Determine tag: integers get tag=1, atoms get tag=0.
-    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
-    % Pack tag into op2 high bits: op2 = (tag << 16) | reg_idx.
-    Op2 is (Tag << 16) \/ RegIdx,
-    format(atom(Lit), '%Instruction { i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
-wam_line_to_llvm_literal(["get_variable", Xn, Ai], Lit) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 1, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_line_to_llvm_literal(["get_value", Xn, Ai], Lit) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 2, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_line_to_llvm_literal(["get_structure", FN, Ai], Lit) :-
-    clean_comma(FN, _CFN), clean_comma(Ai, CAi),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 3, i64 0, i64 ~w }', [AiIdx]).
-wam_line_to_llvm_literal(["get_list", Ai], Lit) :-
-    clean_comma(Ai, CAi),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 4, i64 ~w, i64 0 }', [AiIdx]).
-wam_line_to_llvm_literal(["unify_variable", Xn], Lit) :-
-    clean_comma(Xn, CXn),
-    atom_string(CXn, CXnAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    format(atom(Lit), '%Instruction { i32 5, i64 ~w, i64 0 }', [XnIdx]).
-wam_line_to_llvm_literal(["unify_value", Xn], Lit) :-
-    clean_comma(Xn, CXn),
-    atom_string(CXn, CXnAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    format(atom(Lit), '%Instruction { i32 6, i64 ~w, i64 0 }', [XnIdx]).
-wam_line_to_llvm_literal(["unify_constant", C], Lit) :-
-    clean_comma(C, CC),
-    llvm_pack_value_str(CC, PackedVal),
-    format(atom(Lit), '%Instruction { i32 7, i64 ~w, i64 0 }', [PackedVal]).
+define i1 @print_fields(%Value %a1, %Value %a2, %Value %a3) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 177)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, RegIdx),
-    set_constant_literal_parts(CC, PayloadStr, Tag),
-    % Encode op2 = (tag << 16) | reg_idx. Float literals (tag=2) and
-    % integers (tag=1) and atoms (tag=0) all routed through the
-    % shared set_constant_literal_parts helper so float constants
-    % survive the WAM-text round-trip as `bitcast (double <c> to i64)`
-    % rather than a bare `0.5` that llc rejects.
-    Op2 is (Tag << 16) \/ RegIdx,
-    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }',
-        [PayloadStr, Op2]).
-wam_line_to_llvm_literal(["put_variable", Xn, Ai], Lit) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 9, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_line_to_llvm_literal(["put_value", Xn, Ai], Lit) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 10, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
-wam_line_to_llvm_literal(["put_structure", FN, Ai], Lit) :-
-    clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, AiIdx),
-    % Parse functor/arity from "name/N" format. Use split_functor_arity/3
-    % which splits on the LAST `/` so functor names that contain `/`
-    % (e.g. the integer-division operator `//`) parse correctly. The
-    % naive split_string(_, "/", "", [Name, Arity]) fails on `//2`
-    % because consecutive separators produce an empty middle part.
-    atom_string(CFN, CFNStr),
-    split_functor_arity(CFNStr, NameStr, Arity),
-    string_length(NameStr, NameLen),
-    NameLenPlus1 is NameLen + 1,
-    % Encode: op1 = ptrtoint of functor string global, op2 = (arity << 16) | reg_idx.
-    Op2 is (Arity << 16) \/ AiIdx,
-    % Sanitize functor name for LLVM identifier (replace special chars).
-    sanitize_functor_for_llvm(NameStr, SaneName),
-    format(atom(Lit),
-        '%Instruction { i32 11, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w }',
-        [NameLenPlus1, SaneName, Op2]),
-    % Record functor string for emission as global. Route through
-    % register_functor_string so the table key normalises to a
-    % string regardless of whether NameStr arrives as an atom or
-    % string -- otherwise an eager-registered "[|]" (string key)
-    % and a lazy-registered '[|]' (atom key from split_functor_arity)
-    % both get emitted, causing `redefinition of global` in llc.
-    register_functor_string(NameStr).
-wam_line_to_llvm_literal(["put_list", Ai], Lit) :-
-    clean_comma(Ai, CAi),
-    atom_string(CAi, CAiAtom),
-    reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 12, i64 ~w, i64 0 }', [AiIdx]).
-wam_line_to_llvm_literal(["set_variable", Xn], Lit) :-
-    clean_comma(Xn, CXn),
-    atom_string(CXn, CXnAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    format(atom(Lit), '%Instruction { i32 13, i64 ~w, i64 0 }', [XnIdx]).
-wam_line_to_llvm_literal(["set_value", Xn], Lit) :-
-    clean_comma(Xn, CXn),
-    atom_string(CXn, CXnAtom),
-    reg_name_to_index(CXnAtom, XnIdx),
-    format(atom(Lit), '%Instruction { i32 14, i64 ~w, i64 0 }', [XnIdx]).
-wam_line_to_llvm_literal(["set_constant", C], Lit) :-
-    clean_comma(C, CC),
-    set_constant_literal_parts(CC, PayloadStr, Tag),
-    format(atom(Lit), '%Instruction { i32 15, i64 ~w, i64 ~w }',
-        [PayloadStr, Tag]).
+; WAM-compiled predicate: item_field/3 (merged module code, start PC 196)
+@item_field_start_pc = private constant i32 196
 
-%% set_constant_literal_parts(+Str, -PayloadStr, -Tag)
-%
-%  Resolve a textual constant from a `set_constant` / `put_constant`
-%  bytecode line to its (Tag, Payload) representation. Integer
-%  literals box as Integer (tag=1); float literals box as Float
-%  (tag=2) with the IEEE-754 bit pattern in the payload via
-%  bitcast double <c> to i64. Atoms intern through the runtime
-%  atom table and box as Atom (tag=0).
-set_constant_literal_parts(CC, PayloadStr, Tag) :-
-    (   number_string(N, CC)
-    ->  ( integer(N)
-        ->  Tag = 1,
-            format(atom(PayloadStr), '~w', [N])
-        ;   % Float: emit as a bitcast of the double constant to i64
-            %   `i64 bitcast (double 0.5 to i64)`
-            % so llc sees a valid i64 initializer at compile time.
-            Tag = 2,
-            format(atom(PayloadStr),
-                'bitcast (double ~w to i64)', [N])
-        )
-    ;   Tag = 0,
-        strip_quoted_atom(CC, Unquoted),
-        atom_string(A, Unquoted),
-        intern_atom(A, AtomId),
-        format(atom(PayloadStr), '~w', [AtomId])
-    ).
+define i1 @item_field(%Value %a1, %Value %a2, %Value %a3) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([245 x %Instruction], [245 x %Instruction]* @module_code, i32 0, i32 0),
+    i32 245,
+    i32* getelementptr ([27 x i32], [27 x i32]* @module_labels, i32 0, i32 0),
+    i32 27)
+  call void @wam_set_pc(%WamState* %vm, i32 196)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}
 
-wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
-wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
+; === Interop Bridge ===
 
-% begin_aggregate type, ValueReg, ResultReg [, WitnessRegs]
-% The WitnessRegs 4th arg is emitted by the WAM compiler for bagof/setof
-% (M10) to support ISO grouping. The LLVM runtime does not use witness
-% grouping yet -- ignore the witness string and fall through to the
-% same dispatch as the 3-arg form.
-wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr], Lit) :- !,
-    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
-wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr, _Witness], Lit) :- !,
-    begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit).
-
-begin_aggregate_lit(TypeStr, ValRegStr, ResRegStr, Lit) :-
-    clean_comma(TypeStr, CT), clean_comma(ValRegStr, CV), clean_comma(ResRegStr, CR),
-    atom_string(CTAtom, CT),
-    agg_type_id(CTAtom, TypeId),
-    atom_string(CVAtom, CV), reg_name_to_index(CVAtom, ValIdx),
-    atom_string(CRAtom, CR), reg_name_to_index(CRAtom, ResIdx),
-    % Pack op2 = (val_idx << 16) | res_idx
-    Op2 is (ValIdx << 16) \/ ResIdx,
-    format(atom(Lit), '%Instruction { i32 28, i64 ~w, i64 ~w }', [TypeId, Op2]).
-
-% end_aggregate ValueReg
-wam_line_to_llvm_literal(["end_aggregate", ValRegStr], Lit) :- !,
-    clean_comma(ValRegStr, CV),
-    atom_string(CVAtom, CV),
-    reg_name_to_index(CVAtom, ValIdx),
-    format(atom(Lit), '%Instruction { i32 29, i64 ~w, i64 0 }', [ValIdx]).
-
-% agg_type_id(+Name, -Id): pack aggregation operator name to integer id.
-agg_type_id(sum, 0).
-agg_type_id(count, 1).
-agg_type_id(min, 2).
-agg_type_id(max, 3).
-agg_type_id(collect, 4).
-agg_type_id(bag, 5).
-% M10: set / setof / bagof -> sort + dedup of the accumulator. The
-% bagof case keeps duplicates; only set/setof dedup. Use the same id
-% (6) for both -- they share the sort+build path, dedup is a runtime
-% switch driven by which agg_type the bytecode sets.
-agg_type_id(set, 6).
-agg_type_id(setof, 6).
-agg_type_id(bagof, 5).  % bagof keeps duplicates, same as bag
-agg_type_id(_, 4).  % fallback: collect
-
-% call_foreign KindName, InstanceId
-% Dispatches to a registered native foreign kernel. The kind name is
-% resolved via wam_llvm_foreign_kind_id/2 to a stable integer ID that
-% matches the first-level switch in @wam_execute_foreign_predicate.
-% InstanceId is a compile-time-unique discriminator within a kind —
-% the second-level switch inside the per-kind impl (e.g.
-% @wam_td3_kernel_impl) uses it to pick the right per-predicate
-% edge table. Arity is implicit per kind and is not in the
-% instruction (M5.8 change — op2 used to carry arity).
-wam_line_to_llvm_literal(["call_foreign", KindStr, InstanceStr], Lit) :- !,
-    clean_comma(KindStr, CK), clean_comma(InstanceStr, CI),
-    atom_string(KAtom, CK),
-    ( wam_llvm_foreign_kind_id(KAtom, KindId)
-    -> true
-    ;  KindId = 999  % sentinel for unknown — dispatch returns false
-    ),
-    ( number_string(Instance, CI) -> true ; Instance = 0 ),
-    format(atom(Lit), '%Instruction { i32 30, i64 ~w, i64 ~w }', [KindId, Instance]).
-
-%% wam_llvm_foreign_kind_id(+Kind, -Id)
-%  Map a foreign kernel kind name (atom) to its integer dispatch ID.
-%  The IDs must stay in sync with the switch cases in
-%  @wam_execute_foreign_predicate in state.ll.mustache.
-%  M3 establishes the IDs; M5 will fill in the actual kernel bodies.
-wam_llvm_foreign_kind_id(category_ancestor,        0).
-wam_llvm_foreign_kind_id(countdown_sum2,           1).
-wam_llvm_foreign_kind_id(list_suffix2,             2).
-wam_llvm_foreign_kind_id(transitive_closure2,      3).
-wam_llvm_foreign_kind_id(transitive_distance3,     4).
-wam_llvm_foreign_kind_id(weighted_shortest_path3,  5).
-wam_llvm_foreign_kind_id(astar_shortest_path4,     6).
-% call, execute, try_me_else, retry_me_else are handled by
-% wam_line_to_llvm_literal_resolved/3 (label resolution required).
-wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').
-wam_line_to_llvm_literal(["builtin_call", Op, N], Lit) :-
-    clean_comma(Op, COp), clean_comma(N, CN),
-    (   number_string(Num, CN) -> true ; Num = 0 ),
-    ( atom(COp) -> COpAtom = COp ; atom_string(COpAtom, COp) ),
-    builtin_op_to_id(COpAtom, OpId),
-    format(atom(Lit), '%Instruction { i32 21, i64 ~w, i64 ~w }', [OpId, Num]).
-wam_line_to_llvm_literal(["trust_me"], '%Instruction { i32 24, i64 0, i64 0 }').
-
-% Switch instructions: handled in the label-resolved variant (need LabelMap).
-% The /2 form only sees them without labels, so produce nop fallthrough.
-% The real path goes through wam_line_to_llvm_literal_resolved/3 below.
-wam_line_to_llvm_literal(["switch_on_constant"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough (no LabelMap here)
-wam_line_to_llvm_literal(["switch_on_structure"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
-    '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["switch_on_term"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["switch_on_term_a2"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["try"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["retry"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-wam_line_to_llvm_literal(["trust"|_],
-    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
-
-wam_line_to_llvm_literal(["cut_ite"],
-    '%Instruction { i32 31, i64 0, i64 0 }').
-
-% M17: get_level Y_n / cut Y_n -- proper soft cut for if-then-else.
-wam_line_to_llvm_literal(["get_level", Yn], Lit) :-
-    clean_comma(Yn, CYn),
-    atom_string(CYnAtom, CYn),
-    reg_name_to_index(CYnAtom, YnIdx),
-    format(atom(Lit), '%Instruction { i32 33, i64 ~w, i64 0 }', [YnIdx]).
-wam_line_to_llvm_literal(["cut", Yn], Lit) :-
-    clean_comma(Yn, CYn),
-    atom_string(CYnAtom, CYn),
-    reg_name_to_index(CYnAtom, YnIdx),
-    format(atom(Lit), '%Instruction { i32 34, i64 ~w, i64 0 }', [YnIdx]).
-
-% jump without a label map errors — label-referencing. Text parser that
-% produces label-free literals is only used for the non-resolved path
-% (unit-test fixtures). Throw so the bug is loud.
-wam_line_to_llvm_literal(["jump", _], _) :-
-    throw(error(label_resolution_required(jump, "provide a LabelMap"),
-                _)).
-
-wam_line_to_llvm_literal(["switch_on_constant_fallthrough" | _],
-    '%Instruction { i32 26, i64 0, i64 0 }') :- !.
-
-wam_line_to_llvm_literal(Parts, Lit) :-
-    atomic_list_concat(Parts, " ", Line),
-    format(atom(Lit), '; TODO: ~w', [Line]).
-
-% --- Utility predicates ---
-
-clean_comma(S, Clean) :-
-    (   sub_string(S, Before, 1, 0, ",")
-    ->  sub_string(S, 0, Before, 1, Clean)
-    ;   Clean = S
-    ).
-
-llvm_pack_value_str(Str, Packed) :-
-    (   number_string(N, Str)
-    ->  Packed = N
-    ;   strip_quoted_atom(Str, Unquoted),
-        atom_string(A, Unquoted),
-        llvm_pack_value(atom(A), Packed)
-    ).
-
-%% strip_quoted_atom(+S, -Inner)
-%
-%  If S is a single-quoted atom representation `'...'`, return the
-%  inner string with `''` un-escaped to `'`. Otherwise return S
-%  unchanged.
-strip_quoted_atom(Str, Inner) :-
-    string_length(Str, L),
-    ( L >= 2,
-      sub_string(Str, 0, 1, _, "'"),
-      sub_string(Str, _, 1, 0, "'")
-    -> InnerLen is L - 2,
-       sub_string(Str, 1, InnerLen, 1, Body),
-       % Un-escape `''` (Prolog''s quoted-atom escape for `'`).
-       % Most format strings don''t contain `'`, so this is a no-op
-       % in the common path.
-       string_codes(Body, BodyCodes),
-       unescape_quotes(BodyCodes, UnescCodes),
-       string_codes(Inner, UnescCodes)
-    ;  Inner = Str
-    ).
-
-unescape_quotes([], []).
-unescape_quotes([0'', 0''|Cs], [0''|Rest]) :- !,
-    unescape_quotes(Cs, Rest).
-unescape_quotes([C|Cs], [C|Rest]) :-
-    unescape_quotes(Cs, Rest).
-
-% NOTE: we don't take a %WamState param — the function creates its own vm
-% via wam_state_new() in the entry block. Taking %vm as a param conflicted
-% with the local %vm created inside the body.
-build_llvm_param_list(0, "") :- !.
-build_llvm_param_list(Arity, ParamList) :-
-    numlist(1, Arity, Indices),
-    maplist([I, S]>>(format(atom(S), "%Value %a~w", [I])), Indices, Parts),
-    atomic_list_concat(Parts, ', ', ParamList).
-
-build_llvm_arg_setup(0, "") :- !.
-build_llvm_arg_setup(Arity, Setup) :-
-    numlist(1, Arity, Indices),
-    maplist([I, S]>>(
-        RegIdx is I - 1,
-        format(atom(S),
-            '  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %a~w)',
-            [RegIdx, I])
-    ), Indices, Parts),
-    atomic_list_concat(Parts, '\n', Setup).

@@ -1,0 +1,4 @@
+INFO boot
+ERROR disk
+WARN memory
+ERROR network
