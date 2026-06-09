@@ -987,6 +987,93 @@ func (vm *WamState) formatStringDirective(value Value) (string, bool) {
 	return b.String(), true
 }
 
+func (vm *WamState) canonicalTermString(value Value) string {
+	value = vm.deref(value)
+	if isEmptyListValue(value) {
+		return "[]"
+	}
+	if items, ok := vm.listToSlice(value); ok {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, vm.canonicalTermString(item))
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	switch t := value.(type) {
+	case *Atom:
+		return canonicalAtomText(t.Name)
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10)
+	case *Float:
+		return strconv.FormatFloat(t.Val, 'g', -1, 64)
+	case *Compound:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Structure:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Unbound:
+		return "_"
+	case *Ref:
+		return fmt.Sprintf("ref(%d)", t.Addr)
+	default:
+		return value.String()
+	}
+}
+
+func (vm *WamState) canonicalCompoundString(name string, args []Value) string {
+	if len(args) == 0 {
+		return canonicalAtomText(name)
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, vm.canonicalTermString(arg))
+	}
+	return canonicalAtomText(name) + "(" + strings.Join(parts, ", ") + ")"
+}
+
+func canonicalAtomText(name string) string {
+	if !canonicalAtomNeedsQuote(name) {
+		return name
+	}
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range name {
+		if r == '\'' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
+func canonicalAtomNeedsQuote(name string) bool {
+	if name == "[]" {
+		return false
+	}
+	if name == "" {
+		return true
+	}
+	if _, err := strconv.ParseInt(name, 10, 64); err == nil {
+		return true
+	}
+	if _, err := strconv.ParseFloat(name, 64); err == nil {
+		return true
+	}
+	first := true
+	for _, r := range name {
+		if first {
+			if !unicode.IsLower(r) {
+				return true
+			}
+			first = false
+		}
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+			return true
+		}
+	}
+	return false
+}
+
 func formatTemplateText(v Value) (string, bool) {
 	switch t := v.(type) {
 	case *Atom:
@@ -1434,6 +1521,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return true
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
+		return true
+	case "write_canonical/1":
+		fmt.Print(vm.canonicalTermString(arg1))
 		return true
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
