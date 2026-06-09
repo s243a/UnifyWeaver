@@ -281,6 +281,45 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
+cargo_available :-
+    catch(
+        (   process_create(path(cargo), ['--version'],
+                [stdout(pipe(S)), stderr(pipe(_)), process(Pid)]),
+            read_string(S, _, _),
+            close(S),
+            process_wait(Pid, exit(0))
+        ),
+        _,
+        fail).
+
+cargo_test_project(ProjectDir, TestName, Result) :-
+    (   cargo_available
+    ->  format(atom(Cmd), 'cd "~w" && cargo test --test ~w 2>&1',
+            [ProjectDir, TestName]),
+        catch(
+            (   process_create(path(sh), ['-c', Cmd],
+                    [stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+                read_string(Out, _, OutStr),
+                close(Out),
+                read_string(Err, _, ErrStr),
+                close(Err),
+                process_wait(Pid, exit(ExitCode))
+            ),
+            E,
+            (   format(user_error, 'cargo test error: ~w~n', [E]),
+                ExitCode = -1,
+                OutStr = "",
+                ErrStr = ""
+            )
+        ),
+        (   ExitCode == 0
+        ->  Result = ok
+        ;   atomic_list_concat([OutStr, ErrStr], '\n', FullOutput),
+            Result = error(ExitCode, FullOutput)
+        )
+    ;   Result = not_available
+    ).
+
 check_brace_balance(String) :-
     string_chars(String, Chars),
     count_chars(Chars, '{', Open),
@@ -417,14 +456,19 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
         sub_string(S, _, _, _, 'builtin_state'),
-        sub_string(S, _, _, _, 'eprintln!'),
         %% Phase 4: Group A term inspection builtins are present.
         sub_string(S, _, _, _, '"functor/3"'),
         sub_string(S, _, _, _, '"arg/3"'),
         sub_string(S, _, _, _, '"=../2"'),
         sub_string(S, _, _, _, '"copy_term/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
-        sub_string(S, _, _, _, 'copy_term_walk')
+        sub_string(S, _, _, _, 'copy_term_walk'),
+        %% Runtime-parser bridge support and the parser-required text/list builtins.
+        sub_string(S, _, _, _, '"atom_codes/2"'),
+        sub_string(S, _, _, _, '"number_codes/2"'),
+        sub_string(S, _, _, _, '"reverse/2"'),
+        sub_string(S, _, _, _, '"term_to_atom/2"'),
+        sub_string(S, _, _, _, 'bind_compiled_parse_atom')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
     ).
@@ -1777,6 +1821,166 @@ test_runtime_parser_compiled_includes_parser_and_wrappers :-
         fail_test(Test, 'runtime_parser(compiled) did not include parser/wrapper labels')
     ).
 
+test_runtime_parser_compiled_arity_qualified_wrappers :-
+    Test = 'WAM-Rust: compiled runtime parser wrappers are arity-qualified',
+    TmpDir = 'output/test_wam_rust_runtime_parser_arity_wrappers',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_arity_wrappers'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub fn read_term_from_atom_2'),
+        sub_string(LibStr, _, _, _, 'pub fn read_term_from_atom_3'),
+        sub_string(LibStr, _, _, _, 'pub fn parse_term_from_atom_3'),
+        sub_string(LibStr, _, _, _, 'pub fn parse_term_from_atom_4')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) emitted duplicate non-arity-qualified wrapper names')
+    ).
+
+test_runtime_parser_compiled_cargo_checks_wrappers :-
+    Test = 'WAM-Rust: compiled runtime parser support crate cargo-checks',
+    TmpDir = 'output/test_wam_rust_runtime_parser_cargo_check',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_cargo_check'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        cargo_check_project(TmpDir, Result),
+        (   Result = ok
+        ;   Result = not_available
+        )
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) support crate failed cargo check')
+    ).
+
+write_runtime_parser_bridge_test(ProjectDir) :-
+    directory_file_path(ProjectDir, 'tests', TestsDir),
+    make_directory_path(TestsDir),
+    directory_file_path(TestsDir, 'parser_bridge.rs', TestPath),
+    setup_call_cleanup(
+        open(TestPath, write, S),
+        write(S, 'use std::collections::HashMap;
+
+use rust_parser_bridge_e2e::state::WamState;
+use rust_parser_bridge_e2e::value::Value;
+use rust_parser_bridge_e2e::{
+    canonical_op_table_1, parse_atom_to_term_2, parse_term_from_atom_3,
+    parse_term_from_codes_3,
+};
+
+fn empty_vm() -> WamState {
+    WamState::new(Vec::new(), HashMap::new())
+}
+
+fn deref_named(vm: &WamState, name: &str) -> Value {
+    vm.deref_heap(&vm.deref_var(&Value::Unbound(name.to_string())))
+}
+
+fn op_table(vm: &mut WamState) -> Value {
+    assert!(canonical_op_table_1(vm, Value::Unbound("Ops".to_string())));
+    deref_named(vm, "Ops")
+}
+
+#[test]
+fn compiled_runtime_parser_parses_public_entries() {
+    let mut vm = empty_vm();
+    let ops = op_table(&mut vm);
+    vm.reset_query();
+    assert!(parse_term_from_atom_3(
+        &mut vm,
+        Value::Atom("p(a)".to_string()),
+        ops,
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+
+    let mut vm = empty_vm();
+    let ops = op_table(&mut vm);
+    vm.reset_query();
+    let codes = Value::List("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
+    assert!(parse_term_from_codes_3(
+        &mut vm,
+        codes,
+        ops,
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+}
+
+#[test]
+fn compiled_runtime_parser_bridge_parses_atom() {
+    let mut vm = empty_vm();
+    assert!(parse_atom_to_term_2(
+        &mut vm,
+        Value::Atom("p(a)".to_string()),
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+}
+'),
+        close(S)
+    ).
+
+test_runtime_parser_compiled_executes_parser_bridge :-
+    Test = 'WAM-Rust: compiled runtime parser bridge executes parser',
+    TmpDir = 'output/test_wam_rust_runtime_parser_bridge_e2e',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_bridge_e2e'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        write_runtime_parser_bridge_test(TmpDir),
+        cargo_test_project(TmpDir, parser_bridge, Result)
+    ->  (   (Result = ok ; Result = not_available)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true),
+            pass(Test)
+        ;   (   Result = error(_, Output)
+            ->  format(user_error,
+                    'runtime parser bridge cargo test failed:~n~w~n',
+                    [Output])
+            ;   true
+            ),
+            catch(delete_directory_and_contents(TmpDir), _, true),
+            fail_test(Test,
+                'runtime_parser(compiled) parser bridge did not execute')
+        )
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test,
+            'runtime_parser(compiled) parser bridge did not generate')
+    ).
+
+test_rust_wam_constant_tokens_strip_quotes :-
+    Test = 'WAM-Rust: WAM constant tokens preserve quoted atoms as atoms',
+    (   wam_rust_target:wam_line_to_rust_instr(
+            ["unify_constant", "':-'"], user:test/0, [], R1),
+        wam_rust_target:wam_line_to_rust_instr(
+            ["set_constant", "'42'"], user:test/0, [], R2),
+        sub_string(R1, _, _, _, 'Value::Atom(":-".to_string())'),
+        sub_string(R2, _, _, _, 'Value::Atom("42".to_string())'),
+        \+ sub_string(R2, _, _, _, 'Value::Integer(42)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'quoted WAM constants were rendered with quotes or numeric type')
+    ).
+
 test_runtime_parser_default_excludes_wrappers :-
     Test = 'WAM-Rust: runtime_parser(auto) does not bundle parser wrappers',
     TmpDir = 'output/test_wam_rust_runtime_parser_default',
@@ -2119,6 +2323,10 @@ run_tests :-
     test_runtime_parser_off_rejects_read,
     test_runtime_parser_off_allows_forward_term_to_atom,
     test_runtime_parser_compiled_includes_parser_and_wrappers,
+    test_runtime_parser_compiled_arity_qualified_wrappers,
+    test_runtime_parser_compiled_cargo_checks_wrappers,
+    test_runtime_parser_compiled_executes_parser_bridge,
+    test_rust_wam_constant_tokens_strip_quotes,
     test_runtime_parser_default_excludes_wrappers,
     test_parser_resilience,
     test_cross_predicate_shared_wam,
