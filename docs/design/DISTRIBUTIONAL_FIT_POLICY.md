@@ -240,7 +240,63 @@ The cache hit is valid only when the cached state was built under compatible sem
 
 This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact and the requested functional can be evaluated exactly from the stored state. It becomes a controlled approximation when the cached distribution is a fitted representation, or when the requested functional is evaluated through an approximate basis.
 
-## 8. Scoped fixed-point generation
+## 8. Cache admission and eviction
+
+Distribution caches should not use blind overwrite-on-collision. A collided insert
+is a policy decision: keeping a root-near, high-reuse suffix summary may be more
+valuable than admitting a newly computed deep node.
+
+The cache should score both the incumbent and the candidate:
+
+```prolog
+cache_score(Node, Entry, Score) :-
+    Score is expected_reuse(Node)
+          * recompute_cost_saved(Entry)
+          * root_proximity_bonus(Node)
+          * accuracy_value(Entry)
+          / storage_cost(Entry).
+```
+
+Useful score signals:
+
+- parent distance to root, with a bonus for nodes closer to the root;
+- estimated descendant or query-reuse count;
+- observed hit frequency and recency;
+- cost to recompute the distribution or scoped fixed-point cone;
+- representation quality, with exact states usually worth more than fitted ones;
+- cumulative-basis storage cost, since each materialised basis consumes space;
+- semantic compatibility width, meaning how many likely queries can reuse the
+  same root/statistic/cycle-policy/budget-horizon entry.
+
+On collision, admit only if the candidate is meaningfully better:
+
+```prolog
+admit_candidate if candidate_score > incumbent_score * hysteresis
+```
+
+The hysteresis factor prevents churn when two similarly useful entries map to the
+same slot. If the candidate loses, the runtime can still return the just-computed
+value to the current query; it simply does not install it in the shared cache.
+
+Eviction should also be layered. Raw exact distributions are expensive to
+recompute and should generally outlive derived cumulative bases. Cumulative
+bases can be evicted first because they can be rebuilt from raw state. Parametric
+tail parameters are compact and may be worth retaining if their error bounds are
+still valid. A practical eviction order is:
+
+```prolog
+1. cold custom cumulative bases
+2. cold moment / weighted-power bases
+3. cold mass CDFs when raw state is still available
+4. approximate fitted states with weak reuse
+5. exact raw states, especially near-root entries, only under pressure
+```
+
+For Wikipedia-style root-anchored metrics, the default bias should be: retain
+near-root exact distributions, retain high-reuse ancestor nodes, and evict deep
+low-hit cumulative bases before overwriting root-proximal entries.
+
+## 9. Scoped fixed-point generation
 
 Fixed-point distribution generation does not need to materialise the whole graph for a single node query. For a target node `V`, first restrict work to the ancestor cone relevant to `V`: all nodes that can reach the root by parent edges and can also reach `V` by reversing the parent relation. Then compute distributions from the root outward only inside that scoped subgraph, stopping when the target node's distribution has been produced or the configured depth/horizon is exhausted.
 
@@ -265,7 +321,7 @@ Three execution modes fall out:
 
 This scoped mode is the bridge between graph search and global fixed-point evaluation. It preserves the recurrence form, but its worklist is cut down by the query's ancestor cone and by cached boundary distributions encountered during evaluation.
 
-## 9. Open validation work
+## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
 
@@ -274,6 +330,7 @@ The next implementation-facing work is a parity harness:
 3. fitted truncated-tail representation over the same nodes;
 4. functional-level error checks for `min_support`, `bounded_average`, `reachability_mass`, `tail_mass`, `entropy`, and `weighted_power_mean`;
 5. cumulative-basis tests showing mass, interval, moment, and weighted-power lookups agree with raw histogram scans;
-6. policy-selection tests showing that a user predicate can override the default without changing target code.
+6. cache-admission tests showing near-root/high-reuse entries survive collisions against lower-score entries;
+7. policy-selection tests showing that a user predicate can override the default without changing target code.
 
 Only after those checks pass should the policy be used for enwiki-scale materialisation.
