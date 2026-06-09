@@ -1136,6 +1136,38 @@
        (= (last ints) high)
        (= ints (vec (range (first ints) (inc high))))))
 
+(defn between-results [low high]
+  (mapv (fn [value] {:bindings {3 value}})
+        (range low (inc high))))
+
+(defn apply-between-solution [state resume-pc]
+  (let [low (deref-value (:bindings state)
+                         (or (reg-get-raw state "A1") ::unbound))
+        high (deref-value (:bindings state)
+                          (or (reg-get-raw state "A2") ::unbound))
+        value (deref-value (:bindings state)
+                           (or (reg-get-raw state "A3") ::unbound))
+        low-int (numlist-int-value state low)
+        high-int (numlist-int-value state high)
+        value-int (numlist-int-value state value)]
+    (cond
+      (not (and (integer? low-int) (integer? high-int)))
+      (backtrack state)
+
+      (> low-int high-int)
+      (backtrack state)
+
+      (integer? value-int)
+      (if (and (<= low-int value-int) (<= value-int high-int))
+        (advance state)
+        (backtrack state))
+
+      (logic-var? value)
+      (apply-first-foreign-solution state resume-pc (between-results low-int high-int))
+
+      :else
+      (backtrack state))))
+
 (defn apply-numlist-solution [state]
   (let [low (deref-value (:bindings state)
                          (or (reg-get-raw state "A1") ::unbound))
@@ -2836,6 +2868,9 @@
 
           "select/3"
           (apply-select-solution state (inc (:pc state)))
+
+          "between/3"
+          (apply-between-solution state (inc (:pc state)))
 
           "numlist/3"
           (apply-numlist-solution state)

@@ -518,6 +518,10 @@ clojure_direct_builtin("select/3", "3").
 clojure_direct_builtin("select/3", 3).
 clojure_direct_builtin('select/3', "3").
 clojure_direct_builtin('select/3', 3).
+clojure_direct_builtin("between/3", "3").
+clojure_direct_builtin("between/3", 3).
+clojure_direct_builtin('between/3', "3").
+clojure_direct_builtin('between/3', 3).
 clojure_direct_builtin("numlist/3", "3").
 clojure_direct_builtin("numlist/3", 3).
 clojure_direct_builtin('numlist/3', "3").
@@ -974,6 +978,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "select/3" ; Op == 'select/3'),
     !,
     format(atom(Expr), '(runtime/apply-select-solution ~w (inc (:pc ~w)))', [S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "between/3" ; Op == 'between/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-between-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "numlist/3" ; Op == 'numlist/3'),
