@@ -388,6 +388,10 @@ pub struct WamState {
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
     /// !/0 truncates choice_points to this depth instead of clearing all.
     pub cut_barrier: usize,
+    /// Pending barrier captured before a predicate clause choice point was
+    /// pushed. The following Allocate consumes it so neck cuts commit to the
+    /// current clause instead of leaving the predicate alternative alive.
+    pub pending_cut_barrier: Option<usize>,
     /// Step counter for limiting exploration on dense cyclic graphs.
     pub step_count: u64,
     /// Maximum steps per query (0 = unlimited).
@@ -448,6 +452,7 @@ impl WamState {
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
+            pending_cut_barrier: None,
             step_count: 0,
             step_limit: 0,
             backtrack_count: 0,
@@ -807,6 +812,7 @@ impl WamState {
         self.cp = 0;
         self.var_counter = 0;
         self.cut_barrier = 0;
+        self.pending_cut_barrier = None;
         self.step_count = 0;
         self.backtrack_count = 0;
         self.aggregate_acc.clear();
@@ -1046,6 +1052,44 @@ impl WamState {
                 }
                 val.clone()
             }
+            Value::Str(full_str, args) => {
+                let derefed: Vec<Value> = args.iter()
+                    .map(|a| self.deref_heap(&self.deref_var(a)))
+                    .collect();
+                let inner = if full_str.starts_with("str(") && full_str.ends_with(')') {
+                    &full_str[4..full_str.len() - 1]
+                } else {
+                    full_str
+                };
+                let functor = if let Some(slash) = inner.rfind('/') {
+                    match inner[slash + 1..].parse::<usize>() {
+                        Ok(arity) if arity == derefed.len() => &inner[..slash],
+                        _ => inner,
+                    }
+                } else {
+                    inner
+                };
+                if self.is_cons_functor(functor) && derefed.len() == 2 {
+                    let head = derefed[0].clone();
+                    let tail = derefed[1].clone();
+                    match tail {
+                        Value::List(mut items) => {
+                            items.insert(0, head);
+                            return Value::List(items);
+                        }
+                        Value::Atom(ref s) if s == "[]" => {
+                            return Value::List(vec![head]);
+                        }
+                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
+                    }
+                }
+                Value::Str(functor.to_string(), derefed)
+            }
+            Value::List(items) => {
+                Value::List(items.iter()
+                    .map(|i| self.deref_heap(&self.deref_var(i)))
+                    .collect())
+            }
             Value::Ref(addr) => {
                 if let Some(Value::Str(full_str, _)) = self.heap.get(*addr) {
                     // Parse functor/arity from str(F/N) format
@@ -1074,7 +1118,7 @@ impl WamState {
                                         Value::Atom(ref s) if s == "[]" => {
                                             return Value::List(vec![head]);
                                         }
-                                        _ => return Value::List(vec![head, tail]),
+                                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
                                     }
                                 }
                             }
@@ -1276,6 +1320,8 @@ impl WamState {
             "execute" if args.len() == 1 =>
                 Some(Instruction::Execute(args[0].clone())),
             "proceed" => Some(Instruction::Proceed),
+            "jump" if args.len() == 1 =>
+                Some(Instruction::Jump(args[0].clone())),
             "builtin_call" if args.len() == 2 => {
                 let arity = args[1].parse::<usize>().ok()?;
                 Some(Instruction::BuiltinCall(args[0].clone(), arity))

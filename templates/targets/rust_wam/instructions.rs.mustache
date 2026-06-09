@@ -80,6 +80,8 @@ pub enum Instruction {
     ExecutePc(usize),
     /// Return from predicate (jump to CP).
     Proceed,
+    /// Unconditional jump to a label.
+    Jump(String),
     /// No-op: advances the program counter by one. Emitted for WAM
     /// instructions the Rust backend does not (yet) translate — chiefly the
     /// first-argument indexing hints (switch_on_term, ...). Indexing is only
