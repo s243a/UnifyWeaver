@@ -202,6 +202,12 @@ This is the formal statement that the node-DP is **not an approximation** — it
 the same quantity, reorganised from "sum over paths" to "sum over path-lengths
 weighted by path-count," which collapses the exponential to `O(edges·max_depth)`.
 
+For large supports, the exact path-length buckets may later be represented by a
+hybrid exact-prefix plus finite-support tail fit. That representation choice is
+specified separately in `DISTRIBUTIONAL_FIT_POLICY.md`; it does not change the
+semantics of this section, only how the finite distribution is stored and
+propagated.
+
 ## 6. Materialised output layout (`materialize(ingest)`)
 
 When materialised at ingest, the metric is stored in the Phase-1 LMDB next to the
