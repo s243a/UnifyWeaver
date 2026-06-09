@@ -11,7 +11,7 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 > **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
 > [Specification](PLAWK_SPECIFICATION.md) ·
-> [Submodule README](../../src/unifyweaver/plawk/README.md)
+> [Submodule README](../../examples/plawk/README.md)
 
 ---
 
@@ -123,7 +123,33 @@ with the buffered reader in Phase 1.
 **Success:** a Prolog program behaving like a minimal `awk`, using only the core
 predicates, with determinism demonstrated.
 
-Lands in `src/unifyweaver/plawk/core/`.
+Lands in `examples/plawk/core/`.
+
+### Phase-0 compile probe status (2026-06-08)
+
+The first WAM/LLVM probes now live under `examples/plawk/probes/`.
+
+- **Core helper probe:** `state_counter/2`, `increment_counter/2`,
+  `item_field/3`, `item_field_count/2`, `nr/2`, `nf/2`, `fs/2`, `ofs/2`,
+  `append_output/3`, `state_outputs/2`, `print_item/3`, and `print_fields/3`
+  generate LLVM IR through WAM fallback when all private helper callees are
+  listed explicitly. This exposed a current project-compile limitation:
+  private helper dependencies such as `normalize_outputs/2` are not pulled into
+  the WAM/LLVM predicate set automatically. The generated helper probe now
+  verifies with `llvm-as`; the earlier `%Instruction` array mismatch was fixed
+  by lowering `switch_on_constant_fallthrough` to a real no-op instruction
+  instead of a `; TODO` comment inside `@module_code`.
+- **Loop probe:** `process_all/4` now emits IR without unresolved-label warnings,
+  and the generated loop probe verifies with `llvm-as`. WAM/LLVM recognizes
+  `call/N` bytecode targets and routes atom-goal meta-calls through a generated
+  numeric dispatch table keyed by `(atom_id, effective_arity)` to a label index,
+  preserving the existing numeric label-to-PC jump path. This keeps the hot path
+  numeric rather than doing string lookup at runtime. Compound closure calls
+  still need a follow-up extension to dispatch on compiled functor identity plus
+  base arguments.
+- **Reader probe:** intentionally deferred. The Phase-0 reader uses
+  `read_file_to_string/3` as a SWI-only slurp shortcut; Phase 1 still needs the
+  buffered streaming input builtin described in Finding 3.
 
 ---
 
@@ -164,7 +190,7 @@ lines — identical behaviour to Phase 0, running as compiled LLVM.
 `END`; actions `print`, basic `printf`, `$N = expr`, var assignment, `++`/`+=`/
 `is`, `if/else`, `next`, `break`; specials `$0`/`$N`/`NR`/`NF`/`FS`/`OFS`.
 
-Parser/codegen land in `src/unifyweaver/plawk/{parser,codegen}/`.
+Parser/codegen land in `examples/plawk/{parser,codegen}/`.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

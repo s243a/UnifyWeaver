@@ -11,7 +11,7 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 > **Companion docs:** [Specification](PLAWK_SPECIFICATION.md) ·
 > [Implementation Plan](PLAWK_IMPLEMENTATION_PLAN.md) ·
-> [Submodule README](../../src/unifyweaver/plawk/README.md)
+> [Submodule README](../../examples/plawk/README.md)
 
 ---
 

@@ -1,0 +1,4 @@
+INFO api ready
+ERROR disk full
+WARN api slow
+ERROR net down
