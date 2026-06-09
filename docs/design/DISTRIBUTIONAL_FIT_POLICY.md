@@ -325,6 +325,8 @@ This scoped mode is the bridge between graph search and global fixed-point evalu
 
 The next implementation-facing work is a parity harness:
 
+The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
+
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;
 3. fitted truncated-tail representation over the same nodes;
