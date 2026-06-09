@@ -1680,6 +1680,51 @@
       :else
       (backtrack state))))
 
+(defn split-string-parts [source separators pad-chars]
+  (let [sep-set (set separators)
+        pad-set (set pad-chars)
+        trim-pad (fn [part]
+                   (let [chars (vec part)
+                         size (count chars)
+                         start (loop [idx 0]
+                                 (if (and (< idx size) (contains? pad-set (chars idx)))
+                                   (recur (inc idx))
+                                   idx))
+                         end (loop [idx size]
+                               (if (and (> idx start) (contains? pad-set (chars (dec idx))))
+                                 (recur (dec idx))
+                                 idx))]
+                     (apply str (subvec chars start end))))]
+    (loop [remaining (seq source)
+           current []
+           out []]
+      (if-let [ch (first remaining)]
+        (if (contains? sep-set ch)
+          (recur (next remaining) [] (conj out (trim-pad (apply str current))))
+          (recur (next remaining) (conj current ch) out))
+        (conj out (trim-pad (apply str current)))))))
+
+(defn apply-split-string-solution [state]
+  (let [source-value (deref-value (:bindings state)
+                                  (or (reg-get-raw state "A1") ::unbound))
+        separators-value (deref-value (:bindings state)
+                                      (or (reg-get-raw state "A2") ::unbound))
+        pad-value (deref-value (:bindings state)
+                               (or (reg-get-raw state "A3") ::unbound))
+        out (deref-value (:bindings state)
+                         (or (reg-get-raw state "A4") ::unbound))
+        source-text (atom-number-text state source-value)
+        separators-text (atom-number-text state separators-value)
+        pad-text (atom-number-text state pad-value)]
+    (if (and (some? source-text) (some? separators-text) (some? pad-text))
+      (let [parts (split-string-parts source-text separators-text pad-text)
+            [next-state parts-term] (atomic-concat-list-term state parts)
+            [ok unified-state] (unify-values next-state out parts-term)]
+        (if ok
+          (advance unified-state)
+          (backtrack state)))
+      (backtrack state))))
+
 (defn char-code-text [state value]
   (let [text (atom-text state value)]
     (when (and (string? text) (= 1 (count text)))
@@ -2906,6 +2951,9 @@
 
           "string_code/3"
           (apply-string-code-solution state)
+
+          "split_string/4"
+          (apply-split-string-solution state)
 
           "char_type/2"
           (apply-char-type-solution state)
