@@ -2104,7 +2104,7 @@ python_plan_compile_predicate(Options, PredIndicator, Wam) :-
 	(   IrMode = wam_text
 	->  compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamText),
 	    python_wam_text_plan(WamText, Wam)
-	;   IrMode = wam_items_bridge
+	;   (IrMode = wam_items_bridge ; IrMode = wam_items_native)
 	->  compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], Items),
 	    python_wam_items_plan(Items, Wam)
 	).
@@ -2117,9 +2117,6 @@ python_wam_emit_ir_mode(Options, IrMode) :-
 	wam_ir_mode(wam_python, EmitMode, Options, IrMode),
 	(   IrMode == direct_target
 	->  throw(error(domain_error(wam_python_ir_mode, direct_target),
-	                python_plan_compile_predicate/3))
-	;   IrMode == wam_items_native
-	->  throw(error(existence_error(wam_ir_mode, wam_items_native),
 	                python_plan_compile_predicate/3))
 	;   true
 	).

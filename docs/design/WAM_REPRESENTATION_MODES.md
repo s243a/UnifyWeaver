@@ -49,6 +49,13 @@ conservative:
 WAM-specific targets may reject `direct_target`; callers should use the ordinary
 non-WAM target when they want direct target-native code.
 
+Python also accepts an explicit `wam_ir(wam_items_native)` override for
+interpreter-mode predicate emission. Today that target path consumes the common
+structured WAM items directly and is output-equivalent to `wam_items_bridge`;
+the shared `compile_predicate_to_wam_items/3` producer is still implemented as a
+text-to-items bridge. Once the shared producer becomes native, this explicit
+mode will skip WAM text end-to-end without changing the Python emitter.
+
 Lua, R, and Elixir follow the same partial migration shape as Python:
 interpreter-mode generated predicates consume common WAM items through the
 bridge, while lowered emission keeps the text path because lowerability analysis
