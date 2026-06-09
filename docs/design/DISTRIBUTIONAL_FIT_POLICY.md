@@ -158,7 +158,57 @@ Diagnostics should be emitted into the recurrence strategy trace:
 
 The important invariant is that approximation is not silent. A query that uses a closed-form tail should leave a trace explaining why the representation changed.
 
-## 6. Open validation work
+## 6. Cached distributions as search boundary conditions
+
+A cached distribution can act as a boundary condition for later path search. During a per-query path aggregate, if the traversal reaches a node `N` with a valid distribution state for the same root and statistic, the search does not need to enumerate below `N`. It can integrate the cached distribution over the remaining path budget and add that contribution to the aggregate.
+
+Conceptually:
+
+```prolog
+remaining_budget = TotalBudget - CostSoFar
+contribution = integrate_distribution(
+    CachedDistributionAtN,
+    MetricFunctional,
+    remaining_budget)
+```
+
+This is expectation-like, but the integration is specific to the functional being computed. For a bounded average it contributes weighted mass and weighted length. For reachability mass it contributes the CDF up to the remaining budget. For `weighted_power_mean(N, Budget)` it contributes the weighted power sum over the admissible support. For entropy it contributes the entropy term of the admissible finite slice.
+
+The cache hit is valid only when the cached state was built under compatible semantics:
+
+- same root or an explicitly compatible boundary;
+- same edge direction and path statistic;
+- compatible cycle policy and path admissibility rules;
+- compatible representation policy, or a representation with known error bounds for the requested functional.
+
+This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact; it becomes a controlled approximation when the cached distribution is a fitted representation.
+
+## 7. Scoped fixed-point generation
+
+Fixed-point distribution generation does not need to materialise the whole graph for a single node query. For a target node `V`, first restrict work to the ancestor cone relevant to `V`: all nodes that can reach the root by parent edges and can also reach `V` by reversing the parent relation. Then compute distributions from the root outward only inside that scoped subgraph, stopping when the target node's distribution has been produced or the configured depth/horizon is exhausted.
+
+The parent-only shape is:
+
+```prolog
+scope(V) = ancestors_to_root(V) intersect descendants_from_root(root)
+
+for each node U in root-outward order within scope(V):
+    P_U[S + step] = aggregate over parents(U) that are also in scope(V)
+```
+
+Equivalently, when evaluating one node, every parent distribution is computed recursively on demand and memoised, but only for parents that are ancestors of the node under evaluation. This gives the fixed-point recurrence the same distributional semantics without forcing an all-nodes materialisation.
+
+Three execution modes fall out:
+
+| Mode | Use when |
+|------|----------|
+| `per_query_distribution` | One or a few target nodes; compute only the target's ancestor cone |
+| `scoped_fixed_point` | Many targets in the same topical subtree; reuse the scoped distribution table |
+| `global_materialized` | Fixed root and high query volume justify whole-graph precomputation |
+
+This scoped mode is the bridge between graph search and global fixed-point evaluation. It preserves the recurrence form, but its worklist is cut down by the query's ancestor cone and by cached boundary distributions encountered during evaluation.
+
+## 8. Open validation work
 
 The next implementation-facing work is a parity harness:
 

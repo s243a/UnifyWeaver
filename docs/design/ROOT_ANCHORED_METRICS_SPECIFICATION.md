@@ -229,6 +229,11 @@ Query semantics against a materialised table:
   improve the best?" consults `metric_min_dist_to_root[N]`; if
   `stored_min + remaining_budget` cannot beat the incumbent, the branch is cut.
   This is the branch-prune the philosophy doc motivates.
+- **Distribution-cache cutoffs** are the distributional analogue: when a path
+  aggregate reaches a node with a compatible cached path-statistic distribution,
+  the traversal can integrate that distribution over the remaining budget instead
+  of enumerating the suffix. See `DISTRIBUTIONAL_FIT_POLICY.md` for the
+  compatibility and error-bound rules.
 
 A materialised table is only valid for the root it was built against; a different
 root needs either its own table or the `kernel` mode.
