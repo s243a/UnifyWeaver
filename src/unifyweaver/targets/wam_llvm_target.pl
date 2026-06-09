@@ -1738,13 +1738,14 @@ read_template_file(Path, Content) :-
 %  own first instruction — silent self-recursion. Same class of bug
 %  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
+    expand_wam_llvm_project_predicates(Predicates, Options, ExpandedPredicates),
     % M4: closure analysis — compute the set of predicates in this
     % batch whose lowered kernels can be safely inter-linked via
     % `call`/`execute`. A predicate joins the closure iff all of its
     % clause-1 call/execute targets are also in the closure (computed
     % to fixpoint). Passed through Options so pass1's per-pred
     % lowerability check can consult it.
-    compute_lowered_closure(Predicates, Options, ClosureSet),
+    compute_lowered_closure(ExpandedPredicates, Options, ClosureSet),
     % M10: enable inline lowering of bagof/setof so they go through
     % the same aggregate dispatch path as findall/aggregate_all rather
     % than the runtime fallback (which is not wired up for LLVM).
@@ -1769,12 +1770,70 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     ;  OptionsWithLevel = [ite_use_y_level(true) | OptionsWithBS]
     ),
     OptionsWithClosure = [lowered_closure(ClosureSet)|OptionsWithLevel],
-    pass1_classify_predicates(Predicates, OptionsWithClosure, 0, Classified),
+    pass1_classify_predicates(ExpandedPredicates, OptionsWithClosure, 0, Classified),
     build_merged_labels(Classified, NamePCPairs, LabelMap),
     pass2_emit_merged(Classified, LabelMap, NamePCPairs, OptionsWithClosure,
                       NativeParts, WamParts),
     atomic_list_concat(NativeParts, '\n\n', NativeCode),
     atomic_list_concat(WamParts, '\n\n', WamCode).
+
+%% expand_wam_llvm_project_predicates(+Roots, +Options, -Expanded) is det.
+%
+%  Compute a conservative same-module helper closure before project-level
+%  classification. WAM fallback emits cross-predicate calls as numeric label
+%  references inside the merged code array, so local private helpers must be in
+%  the same project batch as their roots. Builtins and predicates without local
+%  clauses remain on the existing builtin/external paths.
+expand_wam_llvm_project_predicates(Roots, Options, Expanded) :-
+    expand_wam_llvm_project_predicates_(Roots, Options, Roots, Expanded0),
+    list_to_set(Expanded0, Expanded).
+
+expand_wam_llvm_project_predicates_([], _, Seen, Seen).
+expand_wam_llvm_project_predicates_([PI|Queue], Options, Seen0, Expanded) :-
+    (   wam_llvm_project_predicate_targets(PI, Options, Targets0)
+    ->  exclude({Seen0}/[T]>>memberchk(T, Seen0), Targets0, NewTargets),
+        append(Seen0, NewTargets, Seen1),
+        append(Queue, NewTargets, Queue1)
+    ;   Seen1 = Seen0,
+        Queue1 = Queue
+    ),
+    expand_wam_llvm_project_predicates_(Queue1, Options, Seen1, Expanded).
+
+wam_llvm_project_predicate_targets(PI, Options, Targets) :-
+    normalize_project_predicate_indicator(PI, Module, _Pred, _Arity),
+    catch(wam_target:compile_predicate_to_wam(PI, Options, WamRaw), _, fail),
+    wam_dependency_instrs(WamRaw, Instrs),
+    call_execute_targets(Instrs, TargetPAs),
+    findall(Module:TargetPred/TargetArity,
+        ( member(TargetPred/TargetArity, TargetPAs),
+          TargetPred \== call,
+          \+ wam_target:is_builtin_pred(TargetPred, TargetArity),
+          current_predicate(Module:TargetPred/TargetArity),
+          functor(TargetHead, TargetPred, TargetArity),
+          predicate_property(Module:TargetHead, interpreted)
+        ),
+        Targets0),
+    sort(Targets0, Targets).
+
+normalize_project_predicate_indicator(Module:Pred/Arity, Module, Pred, Arity) :- !.
+normalize_project_predicate_indicator(Pred/Arity, user, Pred, Arity).
+
+wam_dependency_instrs(WamRaw, Instrs) :-
+    ( atom(WamRaw) -> atom_string(WamRaw, WamStr)
+    ; string(WamRaw) -> WamStr = WamRaw
+    ),
+    split_string(WamStr, "\n", "", Lines),
+    findall(Instr,
+        ( member(Line, Lines),
+          split_string(Line, " \t,", " \t,", Parts0),
+          delete(Parts0, "", Parts),
+          wam_dependency_instr_from_parts(Parts, Instr)
+        ),
+        Instrs).
+
+wam_dependency_instr_from_parts(["call", Target, ArityText | _], call(Target, Arity)) :-
+    number_string(Arity, ArityText), !.
+wam_dependency_instr_from_parts(["execute", Target | _], execute(Target)) :- !.
 
 %% compute_lowered_closure(+Predicates, +Options, -ClosureSet) is det.
 %

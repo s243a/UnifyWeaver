@@ -132,11 +132,11 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 - **Core helper probe:** `state_counter/2`, `increment_counter/2`,
   `item_field/3`, `item_field_count/2`, `nr/2`, `nf/2`, `fs/2`, `ofs/2`,
   `append_output/3`, `state_outputs/2`, `print_item/3`, and `print_fields/3`
-  generate LLVM IR through WAM fallback when all private helper callees are
-  listed explicitly. This exposed a current project-compile limitation:
-  private helper dependencies such as `normalize_outputs/2` are not pulled into
-  the WAM/LLVM predicate set automatically. The generated helper probe now
-  verifies with `llvm-as`; the earlier `%Instruction` array mismatch was fixed
+  generate LLVM IR through WAM fallback. WAM/LLVM now computes a conservative
+  same-module helper closure before project classification, so private helper
+  dependencies such as `normalize_outputs/2` no longer need to be listed as
+  probe roots. The generated helper probe now verifies with `llvm-as`; the
+  earlier `%Instruction` array mismatch was fixed
   by lowering `switch_on_constant_fallthrough` to a real no-op instruction
   instead of a `; TODO` comment inside `@module_code`.
 - **Loop probe:** `process_all/4` now emits IR without unresolved-label warnings,

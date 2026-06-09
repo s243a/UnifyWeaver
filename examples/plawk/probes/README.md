@@ -31,8 +31,9 @@ swipl -q -s examples/plawk/probes/generate_core_probe.pl -t halt
 
 Result: succeeds and writes `examples/plawk/generated/plawk_core_probe.ll`. All
 listed PLAWK helper predicates currently compile through the WAM fallback path.
-Private helper callees must be listed explicitly; omitting `normalize_outputs/2`
-caused unresolved-label warnings in the first run.
+Private same-module helper callees are now pulled into the WAM/LLVM project
+closure automatically; `normalize_outputs/2` is intentionally omitted from the
+probe roots and still resolves.
 Verifier status: `llvm-as examples/plawk/generated/plawk_core_probe.ll -o /dev/null` now passes. The previous `%Instruction` array mismatch was caused by `switch_on_constant_fallthrough` being emitted as a `; TODO` comment inside `@module_code`; WAM/LLVM now lowers that instruction to a real no-op fallthrough literal.
 
 ### Loop probe
