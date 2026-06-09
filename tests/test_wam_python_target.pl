@@ -402,10 +402,20 @@ test(compile_all_generated_predicate_rejects_direct_target_ir,
     wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
         [wam_ir(direct_target)], _).
 
-test(compile_all_generated_predicate_rejects_native_items_until_available,
-     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+test(compile_all_generated_predicate_accepts_native_items_ir) :-
     wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
-        [wam_ir(wam_items_native)], _).
+        [wam_ir(wam_items_native)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_native_items_matches_bridge) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_bridge)], BridgeCode),
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], NativeCode),
+    assertion(NativeCode == BridgeCode).
 :- end_tests(wam_python_items_mode_audit).
 
 % ============================================================================
