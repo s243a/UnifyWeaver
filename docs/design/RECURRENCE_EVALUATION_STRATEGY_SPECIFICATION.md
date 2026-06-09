@@ -118,6 +118,7 @@ Intent signals express the user's required outcome. They bypass the cost model w
 | `b_eff(F)` | calibration declaration | Friendship-paradox-corrected effective branching factor |
 | `branching_d(F)` | calibration declaration | Mean child branching factor `D` |
 | `contraction_r(F)` | calibration declaration | Convergence ratio `r = b'/(b_eff·D)` |
+| `distribution_fit_policy(P)` | manifest / caller option | User-selected or default policy for representing finite path-statistic distributions. The policy controls when exact histograms switch to hybrid or parametric finite-support approximations; see `DISTRIBUTIONAL_FIT_POLICY.md` |
 
 The three calibration signals (`b_eff`, `branching_d`, `contraction_r`) are *independent* — partial availability (e.g. `b_eff` and `branching_d` known but `r` not yet computed) is expressed naturally by including only the available signals.
 
