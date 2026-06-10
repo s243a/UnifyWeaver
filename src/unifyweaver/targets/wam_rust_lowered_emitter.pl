@@ -357,8 +357,11 @@ emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :
 '// ~w — lowered from ~w/~w (T5 first-argument dispatch)
 pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
     with_output_to(string(Body),
-        ( format("    let t5a1 = vm.get_reg(\"A1\").unwrap_or(Value::Uninit);~n"),
-          format("    if t5a1.is_unbound() { return false; }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+        ( % The per-guard dispatch compares the first argument in place (no
+          % `let t5a1 = get_reg(...)` clone, no `Value::Atom("...")` per guard).
+          % An unbound / non-matching first arg matches no guard and returns
+          % false, deferring to the entry wrapper's interpreter fallback exactly
+          % as the old explicit is_unbound() check did.
           emit_rust_guards(Guards, ForeignPreds),
           format("    false~n") )),
     format(string(Footer), '}', []),
@@ -366,8 +369,13 @@ pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
 
 emit_rust_guards([], _).
 emit_rust_guards([guard(V, Rem) | Rest], ForeignPreds) :-
-    rust_val_literal(V, RustVal),
-    format("    if t5a1 == ~w {~n", [RustVal]),
+    wam_classify_constant_token(V, Class),
+    ( Class = atom(Name)
+    ->  escape_rust_string(Name, Esc),
+        format("    if vm.match_reg_atom(\"A1\", \"~w\") == Some(true) {~n", [Esc])
+    ;   rust_val_literal(V, RustVal),
+        format("    if vm.get_reg(\"A1\").map_or(false, |__v| __v == ~w) {~n", [RustVal])
+    ),
     emit_instrs(Rem, "        ", ForeignPreds),
     format("    }~n"),
     emit_rust_guards(Rest, ForeignPreds).
@@ -458,19 +466,39 @@ emit_one(fail, I) :-
 
 % --- Head unification (get_*) ---
 
+% get_constant — the hot head-match. For an ATOM constant we compare the
+% register against the &str in place (vm.match_reg_atom), avoiding the two heap
+% allocations the old `get_reg() != Value::Atom("...".to_string())` form paid
+% per comparison. Integer/other constants keep the (allocation-free, Copy)
+% Value comparison.
 emit_one(get_constant(CStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
-    rust_val_literal(CStr, RustVal),
-    format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
-    format("~w    } else if _a != ~w {~n", [I, RustVal]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    wam_classify_constant_token(CStr, Class),
+    ( Class = atom(Name)
+    ->  escape_rust_string(Name, Esc),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    match vm.match_reg_atom(\"~w\", \"~w\") {~n", [I, Ai, Esc]),
+        format("~w        Some(true) => {}~n", [I]),
+        format("~w        Some(false) => return false,~n", [I]),
+        format("~w        None => {~n", [I]),
+        format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w            vm.put_reg(\"~w\", Value::Atom(\"~w\".to_string()));~n", [I, Ai, Esc]),
+        format("~w        }~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ;   rust_val_literal(CStr, RustVal),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
+        format("~w    if _a.is_unbound() {~n", [I]),
+        format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
+        format("~w    } else if _a != ~w {~n", [I, RustVal]),
+        format("~w        return false;~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
@@ -489,12 +517,13 @@ emit_one(get_nil(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_nil ~w~n", [I, AiStr]),
     format("~w{~n", [I]),
-    format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
-    format("~w    } else if _a != Value::Atom(\"[]\".to_string()) {~n", [I]),
-    format("~w        return false;~n", [I]),
+    format("~w    match vm.match_reg_atom(\"~w\", \"[]\") {~n", [I, Ai]),
+    format("~w        Some(true) => {}~n", [I]),
+    format("~w        Some(false) => return false,~n", [I]),
+    format("~w        None => {~n", [I]),
+    format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
+    format("~w            vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
+    format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
 

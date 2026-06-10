@@ -779,6 +779,59 @@ impl WamState {
         }
     }
 
+    /// Borrow a register's raw value (no Y-register routing for A/X regs; the
+    /// topmost env frame for Y regs). Returns `None` for an uninitialised or
+    /// missing slot. Unlike `get_reg`/`get_reg_raw` this does NOT clone, so the
+    /// hot head-match path can compare in place.
+    #[inline]
+    pub fn get_reg_ref(&self, name: &str) -> Option<&Value> {
+        if name.starts_with('Y') && name.len() > 1
+            && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit())
+        {
+            for entry in self.stack.iter().rev() {
+                if let StackEntry::Env(_, y_regs) = entry {
+                    return match y_regs.get(name) {
+                        Some(Value::Uninit) | None => None,
+                        Some(v) => Some(v),
+                    };
+                }
+            }
+            None
+        } else {
+            let idx = Self::reg_index(name);
+            match self.regs.get(idx) {
+                Some(Value::Uninit) | None => None,
+                Some(v) => Some(v),
+            }
+        }
+    }
+
+    /// Allocation-free `get_constant`-style head match: deref the register (by
+    /// reference, following the binding chain like `deref_var`) and compare its
+    /// atom against `atom` without building a `Value::Atom(String)` on either
+    /// side. Returns `Some(true)` (bound & equal), `Some(false)` (bound but not
+    /// an equal atom — the caller fails the clause), or `None` (unbound — the
+    /// caller binds). Mirrors the old `get_reg() != Value::Atom("...")` path,
+    /// minus its two per-comparison heap allocations.
+    #[inline]
+    pub fn match_reg_atom(&self, name: &str, atom: &str) -> Option<bool> {
+        match self.get_reg_ref(name) {
+            None => Some(false),
+            Some(v) => self.deref_match_atom(v, atom),
+        }
+    }
+
+    fn deref_match_atom(&self, val: &Value, atom: &str) -> Option<bool> {
+        match val {
+            Value::Unbound(name) => match self.bindings.get(name) {
+                Some(bound) => self.deref_match_atom(bound, atom),
+                None => None,
+            },
+            Value::Atom(s) => Some(s == atom),
+            _ => Some(false),
+        }
+    }
+
     /// Bind an unbound variable name to a value in the binding table.
     /// Also records a trail entry so that backtracking can undo this binding.
     pub fn bind_var(&mut self, var_name: &str, val: Value) {
