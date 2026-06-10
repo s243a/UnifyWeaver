@@ -30,6 +30,7 @@
 	is_ite_block_py/2,               % +Instrs, -Blocks
 	emit_ite_block_py/5,             % +FuncName, +Blocks, +Indent, +Opts, -Lines
 	py_structured_clause1/2,         % +WamCode, -StructuredInstrs (soft-cut ITE)
+	py_multi_clause_1/2,             % +WamCode, -Clause1Instrs (T3 clause-1 slice)
 	emit_structured_python/4         % +FunctorArity, +Structured, +Opts, -Lines
 ]).
 
@@ -206,6 +207,32 @@ py_structured_clause1(WamCode, Structured) :-
 	\+ member(retry_me_else(_), Structured),
 	\+ member(trust_me, Structured),
 	forall(member(I, Structured), py_supported_structured(I)).
+
+%% py_multi_clause_1(+WamCode, -Clause1Instrs) is semidet.
+%  T3 — multi-clause clause-1 fast path. True when the predicate is genuinely
+%  multi-clause (parse_wam_text_py has dropped any switch_on_* indexing prefix,
+%  so the parsed stream opens with the predicate-level try_me_else, and clauses
+%  2+ begin with retry_me_else / trust_me) AND clause 1 is a clean
+%  deterministic, fully-supported body. Clause1Instrs is the clause-1 slice
+%  (try_me_else stripped, up to and including its proceed/fail), ready for
+%  emit_lowered_python. Clauses 2+ are left to the bytecode interpreter,
+%  reached by backtracking when the lowered clause 1 fails — see the registrar
+%  in wam_python_target.pl, which keeps the leading try_me_else (it pushes the
+%  choice point onto clause 2) and the clause-2+ bytecode, replacing only
+%  clause 1's body with a call_lowered to this function.
+%
+%  Single-clause soft-cut ITE predicates also open with try_me_else, but they
+%  are claimed by py_structured_clause1 first; the cut_ite/jump guards here
+%  decline them defensively.
+py_multi_clause_1(WamCode, Clause1Instrs) :-
+	( is_list(WamCode) -> Instrs0 = WamCode ; parse_wam_text_py(WamCode, Instrs0) ),
+	once(append(_Prefix, [try_me_else(_)|Rest], Instrs0)),
+	( member(retry_me_else(_), Rest) ; member(trust_me, Rest) ),
+	take_to_proceed_py(Rest, Clause1Instrs),
+	\+ has_choice_point_instr(Clause1Instrs),   % clause 1 itself is deterministic
+	\+ member(cut_ite, Clause1Instrs),           % not an ITE clause-1 (py_structured handles those)
+	\+ member(jump(_), Clause1Instrs),
+	forall(member(I, Clause1Instrs), py_supported_structured(I)).
 
 %% take_to_proceed_py(+Instrs, -Clause1) — up to and including the first
 %  proceed / fail terminator (label/1 markers pass through to the

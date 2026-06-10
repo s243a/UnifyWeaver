@@ -104,7 +104,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ✗ | ✗ | **✓** | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✓ | ✗ | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
 | wat     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -112,10 +112,19 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
   back to the interpreter for clauses 2+ — documented in their lowerability
-  gates). **python T3 = ✗**: `is_deterministic_pred_py` rejects *any*
-  `try_me_else`, so a try-chain predicate stays in the interpreter; python's
-  only multi-clause lowering is T5 (its `is_ite_block_py` detection of the
-  switch-indexed, no-`try_me_else` shape → `if/elif/else`).
+  gates). **python T3 = ✓** (now): `py_multi_clause_1` extracts clause 1 of a
+  multi-clause predicate to a lowered `pred_*` function; the registrar keeps
+  the FULL bytecode but replaces clause 1's body with a `call_lowered`,
+  retaining the leading `try_me_else` and clauses 2+ verbatim. On clause-1
+  success the `call_lowered` falls through to `proceed` (the clause-2 choice
+  point is left for backtracking); on failure the runtime's `call_lowered`
+  handler calls `fail()`, popping that choice point (restoring trail + regs)
+  and resuming the interpreter at clause 2 — an emitter-only change, no runtime
+  modification. Because a T3 `pred_*` is clause-1-only (not the whole
+  predicate), a predicate that *directly* calls a T3 predicate is kept in the
+  interpreter (`whole_predicate_lowering/3` gate), so the T3 fallback is always
+  reached through a bytecode call. Python keeps T5 too (its `is_ite_block_py`
+  `if/elif/else` for the switch-indexed, no-`try_me_else` shape).
 - **T5** (clause_chain) is now implemented across the hybrid targets via the
   shared `wam_clause_chain` front-end: scala, rust, cpp, go, haskell, fsharp,
   llvm, lua, r (plus python's original `is_ite_block_py` `if/elif/else` form).
@@ -197,8 +206,11 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   WAT-runtime limitation — a condition's variable binding is not propagated
   into the then-branch — is present in BOTH the lowered and interpreter paths,
   so the lowering is faithful; that runtime fix is tracked separately.)
-- **python T3** — python still lacks the clause-1 fast path (its only
-  multi-clause lowering is T5); a small, contained gap.
+- **python T3** — **DONE.** Python now lowers a multi-clause predicate's
+  clause 1 (fast path) with interpreter fallback for clauses 2+ (see the T3
+  verification note above), so the T3 column is ✓ for every target that has a
+  clause-1 fast path. `test_wam_python_lowered_t3` exec-tests clause-1 hit,
+  clause-2/3 fallback, and a lowered-vs-interpreter parity battery.
 - **T10 (mode-driven specialisation)** and **T11 (LCO)** are essentially
   one-target experiments (R, and LLVM's `musttail`) that could generalise.
 - **T7 (parallel)** is real only in Elixir; Clojure/Python have `_branch`
