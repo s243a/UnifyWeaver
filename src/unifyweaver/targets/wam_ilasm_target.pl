@@ -136,7 +136,7 @@ compile_step_wam_to_cil(_Options, CILCode) :-
     format(atom(CILCode),
 '.method public static bool step(class WamState vm, class Instruction instr) cil managed {
     .maxstack 8
-    .locals init (int32 regIdx, int64 op1, int64 op2, class Value val)
+    .locals init (int32 regIdx, int64 op1, int64 op2, class Value val, class StackEntry se)
     // Load instruction fields
     ldarg.1
     ldfld int32 Instruction::Tag
@@ -148,7 +148,8 @@ compile_step_wam_to_cil(_Options, CILCode) :-
             L_set_value, L_set_constant,
             L_allocate, L_deallocate, L_call, L_execute,
             L_proceed, L_builtin_call,
-            L_try_me_else, L_retry_me_else, L_trust_me)
+            L_try_me_else, L_retry_me_else, L_trust_me,
+            L_cut_ite, L_jump)
     // Default: unknown instruction
     ldc.i4.0
     ret
@@ -163,43 +164,53 @@ compile_cil_step_case(CaseCode) :-
 % --- Head Unification Instructions ---
 
 wam_cil_case('L_get_constant',
-'    // get_constant: op1=packed value, op2=register index
+'    // get_constant: op1=packed value, op2=(tag<<16)|reg_idx
+    // Lower 16 bits of op2: register index. Upper bits: value tag
+    // (0=Atom, 1=Integer) — same packing as the LLVM WAM target.
     ldarg.1
     ldfld int64 Instruction::Op2
     conv.i4
+    ldc.i4 65535
+    and
     stloc.0                          // regIdx
+    ldarg.0
     ldarg.0
     ldloc.0
     callvirt instance class Value WamState::GetReg(int32)
-    stloc.3                          // val = current reg value
+    callvirt instance class Value WamState::Deref(class Value)
+    stloc.3                          // val = dereferenced reg value
     ldloc.3
-    callvirt instance bool Value::IsUnbound()
+    isinst UnboundValue
     brfalse L_gc_check
-    // Unbound: bind to constant
+    // Unbound: bind the cell to the constant (alias-preserving)
     ldarg.0
-    ldloc.0
-    callvirt instance void WamState::TrailBinding(int32)
-    ldarg.0
-    ldloc.0
+    ldloc.3
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    ldc.i4 16
+    shr
     ldarg.1
     ldfld int64 Instruction::Op1
-    newobj instance void IntegerValue::.ctor(int64)
-    callvirt instance void WamState::SetReg(int32, class Value)
+    call class Value PrologGenerated.Program::make_constant(int32, int64)
+    callvirt instance void WamState::BindVar(class Value, class Value)
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret
 L_gc_check:
-    // Bound: check equality (simplified — integer comparison)
-    ldloc.3
-    isinst IntegerValue
-    brfalse L_gc_fail
-    ldloc.3
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    // Bound: compare with expected constant
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    ldc.i4 16
+    shr
     ldarg.1
     ldfld int64 Instruction::Op1
-    bne.un L_gc_fail
+    call class Value PrologGenerated.Program::make_constant(int32, int64)
+    ldloc.3
+    callvirt instance bool Value::ValueEquals(class Value)
+    brfalse L_gc_fail
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
@@ -275,10 +286,10 @@ wam_cil_case('L_get_value',
 L_gv_check_x:
     // Check equality
     ldloc.3
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance class Value WamState::GetReg(int32)
     callvirt instance bool Value::ValueEquals(class Value)
     brfalse L_gv_fail
@@ -550,10 +561,13 @@ L_uc_write:
 % --- Body Construction Instructions ---
 
 wam_cil_case('L_put_constant',
-'    // put_constant: store value in register
+'    // put_constant: store constant in register
+    // op1=packed value, op2=(tag<<16)|reg_idx (0=Atom, 1=Integer)
     ldarg.1
     ldfld int64 Instruction::Op2
     conv.i4
+    ldc.i4 65535
+    and
     stloc.0
     ldarg.0
     ldloc.0
@@ -561,8 +575,13 @@ wam_cil_case('L_put_constant',
     ldarg.0
     ldloc.0
     ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    ldc.i4 16
+    shr
+    ldarg.1
     ldfld int64 Instruction::Op1
-    newobj instance void IntegerValue::.ctor(int64)
+    call class Value PrologGenerated.Program::make_constant(int32, int64)
     callvirt instance void WamState::SetReg(int32, class Value)
     ldarg.0
     callvirt instance void WamState::IncPC()
@@ -607,10 +626,10 @@ wam_cil_case('L_put_variable',
 
 wam_cil_case('L_put_value',
 '    // put_value: copy Xn to Ai
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance class Value WamState::GetReg(int32)
     stloc.3
     ldarg.1
@@ -711,10 +730,10 @@ wam_cil_case('L_set_variable',
 
 wam_cil_case('L_set_value',
 '    // set_value: push Xn value onto heap
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance class Value WamState::GetReg(int32)
     stloc.3
     ldarg.0
@@ -743,6 +762,8 @@ wam_cil_case('L_set_constant',
 
 wam_cil_case('L_allocate',
 '    // allocate: push environment frame saving CP
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     newobj instance void StackEntry::.ctor()
     dup
     ldc.i4.0
@@ -751,45 +772,36 @@ wam_cil_case('L_allocate',
     ldarg.0
     ldfld int32 WamState::CP
     stfld int32 StackEntry::Aux       // save CP
-    ldarg.0
-    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
-    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(class StackEntry)
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(!0)
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret').
 
 wam_cil_case('L_deallocate',
-'    // deallocate: pop environment frame, restore CP
+'    // deallocate: pop environment frame (top of stack, type 0), restore CP
     ldarg.0
     ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
     ldc.i4.0
     ble L_dealloc_done
-    // Scan backward for EnvFrame (type == 0)
     ldarg.0
     ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     dup
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
-    dup
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    stloc.s 4
+    ldloc.s 4
     ldfld int32 StackEntry::Type
-    ldc.i4.0
-    bne.un L_dealloc_skip
-    // Restore CP
+    brtrue L_dealloc_done             // not an EnvFrame (type != 0): skip
+    // Restore CP from saved frame
+    ldarg.0
+    ldloc.s 4
     ldfld int32 StackEntry::Aux
-    ldarg.0
-    ldfld int32 WamState::CP
-    pop
-    ldarg.0
-    callvirt instance void WamState::SetReg(int32, class Value)  // placeholder
-    br L_dealloc_pop
-L_dealloc_skip:
-    pop
-    br L_dealloc_done
-L_dealloc_pop:
+    stfld int32 WamState::CP
+    // Pop the frame
     ldarg.0
     ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     dup

@@ -327,6 +327,59 @@ class WamRuntime(private val program: WamProgram) {
         return jumpToLabel(state, target)
     }
 
+    // M148: arithmetic evaluation for is/2 and the arith compares.
+    // Handles numeric leaves and the standard binary/unary operators
+    // built via put_structure. Returns null for non-evaluable input
+    // (ISO lax semantics: the builtin then fails).
+    fun evalArith(state: WamState, value: Value?): Value? {
+        return when (val d = state.resolve(value)) {
+            is Value.IntVal -> d
+            is Value.FloatVal -> d
+            is Value.Struct -> {
+                val parts = d.functor.split("/")
+                val name = parts.getOrNull(0) ?: return null
+                if (d.args.size == 2) {
+                    val a = evalArith(state, d.args[0]) ?: return null
+                    val b = evalArith(state, d.args[1]) ?: return null
+                    if (a is Value.IntVal && b is Value.IntVal) {
+                        val x = a.value; val y = b.value
+                        when (name) {
+                            "+" -> Value.IntVal(x + y)
+                            "-" -> Value.IntVal(x - y)
+                            "*" -> Value.IntVal(x * y)
+                            "//" -> if (y == 0L) null else Value.IntVal(x / y)
+                            "mod" -> if (y == 0L) null else Value.IntVal(Math.floorMod(x, y))
+                            "/" -> if (y == 0L) null else if (x % y == 0L) Value.IntVal(x / y) else Value.FloatVal(x.toDouble() / y)
+                            else -> null
+                        }
+                    } else {
+                        val x = arithDouble(a); val y = arithDouble(b)
+                        when (name) {
+                            "+" -> Value.FloatVal(x + y)
+                            "-" -> Value.FloatVal(x - y)
+                            "*" -> Value.FloatVal(x * y)
+                            "/" -> if (y == 0.0) null else Value.FloatVal(x / y)
+                            else -> null
+                        }
+                    }
+                } else if (d.args.size == 1 && name == "-") {
+                    when (val a = evalArith(state, d.args[0])) {
+                        is Value.IntVal -> Value.IntVal(-a.value)
+                        is Value.FloatVal -> Value.FloatVal(-a.value)
+                        else -> null
+                    }
+                } else null
+            }
+            else -> null
+        }
+    }
+
+    fun arithDouble(v: Value): Double = when (v) {
+        is Value.IntVal -> v.value.toDouble()
+        is Value.FloatVal -> v.value
+        else -> Double.NaN
+    }
+
     fun step(state: WamState, instruction: Instruction): Boolean {
         when (instruction.op) {
             "label" -> {
@@ -537,6 +590,58 @@ class WamRuntime(private val program: WamProgram) {
                     state.pc += 1
                     return true
                 }
+                // M148: the table previously implemented ONLY =/2 - every
+                // other builtin (var/1, is/2, =:=/2, even true/0) failed
+                // closed, so no type check or arithmetic ever ran.
+                when (op) {
+                    "true/0" -> { state.pc += 1; return true }
+                    "var/1" -> {
+                        if (state.deref(state.readRegister("A1")) !is Value.Var) return false
+                        state.pc += 1; return true
+                    }
+                    "nonvar/1" -> {
+                        if (state.deref(state.readRegister("A1")) is Value.Var) return false
+                        state.pc += 1; return true
+                    }
+                    "atom/1" -> {
+                        if (state.deref(state.readRegister("A1")) !is Value.Atom) return false
+                        state.pc += 1; return true
+                    }
+                    "integer/1" -> {
+                        if (state.deref(state.readRegister("A1")) !is Value.IntVal) return false
+                        state.pc += 1; return true
+                    }
+                    "number/1" -> {
+                        val d = state.deref(state.readRegister("A1"))
+                        if (d !is Value.IntVal && d !is Value.FloatVal) return false
+                        state.pc += 1; return true
+                    }
+                    "atomic/1" -> {
+                        when (state.deref(state.readRegister("A1"))) {
+                            is Value.Atom, is Value.IntVal, is Value.FloatVal -> { state.pc += 1; return true }
+                            else -> return false
+                        }
+                    }
+                    "is/2" -> {
+                        val result = evalArith(state, state.readRegister("A2")) ?: return false
+                        if (!state.unify(state.readRegister("A1"), result)) return false
+                        state.pc += 1; return true
+                    }
+                    "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
+                        val a = arithDouble(evalArith(state, state.readRegister("A1")) ?: return false)
+                        val b = arithDouble(evalArith(state, state.readRegister("A2")) ?: return false)
+                        val ok = when (op) {
+                            "=:=/2" -> a == b
+                            "=\\=/2" -> a != b
+                            "</2" -> a < b
+                            ">/2" -> a > b
+                            "=</2" -> a <= b
+                            else -> a >= b
+                        }
+                        if (!ok) return false
+                        state.pc += 1; return true
+                    }
+                }
                 return false
             }
             "call" -> {
@@ -565,6 +670,36 @@ class WamRuntime(private val program: WamProgram) {
             }
             "fail" -> {
                 return false
+            }
+            "cut_ite" -> {
+                // M148: if-then-else commit. Previously unimplemented (fail
+                // closed), so a successful condition backtracked through the
+                // try_me_else choicepoint into the else branch - the M144
+                // bug class, fifth target found with it.
+                state.choicePoints.removeLastOrNull()
+                state.pc += 1
+                return true
+            }
+            "jump" -> {
+                val label = instruction.args.getOrNull(0) as? String ?: return false
+                val target = currentCode.labels[label] ?: return false
+                state.pc = target
+                return true
+            }
+            "get_level" -> {
+                val reg = instruction.args.getOrNull(0) as? String ?: return false
+                state.writeRegister(reg, Value.IntVal(state.choicePoints.size.toLong()))
+                state.pc += 1
+                return true
+            }
+            "cut" -> {
+                val reg = instruction.args.getOrNull(0) as? String ?: return false
+                val depth = (state.deref(state.readRegister(reg)) as? Value.IntVal)?.value?.toInt()
+                if (depth != null) {
+                    while (state.choicePoints.size > depth) state.choicePoints.removeAt(state.choicePoints.lastIndex)
+                }
+                state.pc += 1
+                return true
             }
             else -> {
                 // Unsupported instructions fail closed.  The generated registrar still
