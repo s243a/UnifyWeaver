@@ -87,7 +87,62 @@ representation_policy(...)
 metric_functional(...)
 ```
 
-## 4. User override surface
+## 4. Cumulative bases are acceleration layers
+
+A cumulative distribution function is useful, but it is not a replacement for
+the distribution state. It accelerates budgeted queries whose weighting function
+has been chosen in advance.
+
+The basic mass CDF is:
+
+```prolog
+cumulative_basis(mass).
+F0_v[B] = sum_{S <= B} P_v[S]
+```
+
+With that basis, reachability mass and interval mass are cheap:
+
+```prolog
+mass(S <= B) = F0_v[B]
+mass(B1 < S <= B2) = F0_v[B2] - F0_v[B1]
+```
+
+Other expectation forms need their own cumulative basis:
+
+```prolog
+cumulative_basis(moment(1)).
+F1_v[B] = sum_{S <= B} S * P_v[S]
+
+cumulative_basis(weighted_power(N)).
+FN_v[B] = sum_{S <= B} (S + 1)^(-N) * P_v[S]
+
+cumulative_basis(custom(Name)).
+FG_v[B] = sum_{S <= B} g_Name(S) * P_v[S]
+```
+
+This makes common functionals constant-time or interval-difference lookups, but
+each stored basis costs memory or storage. The representation policy should
+therefore decide which bases to materialise:
+
+```prolog
+cached_distribution(
+    raw_state(DistributionState),
+    cumulative_basis([mass, moment(1), weighted_power(N)]),
+    storage_policy(StoragePolicy)).
+```
+
+The default should be conservative: always expose mass when the support is wide
+enough to make repeated scans expensive; store first moments or weighted-power
+bases only when the workload asks for those functionals often enough to justify
+the space. For exact histograms with small support, scanning bins may be cheaper
+than storing cumulative arrays.
+
+For an arbitrary function `g(S)`, a CDF alone is insufficient. The runtime must
+either scan the exact bins, use an analytic integral supplied by the parametric
+family, evaluate a stored `custom(Name)` basis, approximate numerically, or emit
+a diagnostic that the requested functional has no supported cumulative basis.
+
+## 5. User override surface
 
 The long-term design goal is that users can modify the policy without rewriting target code. The compiler should expose a predicate hook that selects or overrides the representation policy.
 
@@ -134,7 +189,7 @@ default_distribution_policy(Node, Summary, Functional, Signals, Choice)
 
 User predicates can call the default and override only selected cases. This keeps the policy extensible without making target adapters depend on project-specific Prolog code.
 
-## 5. Cost and diagnostics
+## 6. Cost and diagnostics
 
 The representation switch should be driven by both cost and value:
 
@@ -152,13 +207,15 @@ Diagnostics should be emitted into the recurrence strategy trace:
 - exact support size;
 - chosen family;
 - fitted finite support range;
+- materialised cumulative bases;
 - estimated error for the selected functional;
 - fallback reason if no family passed the threshold;
+- fallback reason if a requested functional has no matching cumulative basis;
 - whether a user selection predicate overrode the default.
 
 The important invariant is that approximation is not silent. A query that uses a closed-form tail should leave a trace explaining why the representation changed.
 
-## 6. Cached distributions as search boundary conditions
+## 7. Cached distributions as search boundary conditions
 
 A cached distribution can act as a boundary condition for later path search. During a per-query path aggregate, if the traversal reaches a node `N` with a valid distribution state for the same root and statistic, the search does not need to enumerate below `N`. It can integrate the cached distribution over the remaining path budget and add that contribution to the aggregate.
 
@@ -172,7 +229,7 @@ contribution = integrate_distribution(
     remaining_budget)
 ```
 
-This is expectation-like, but the integration is specific to the functional being computed. For a bounded average it contributes weighted mass and weighted length. For reachability mass it contributes the CDF up to the remaining budget. For `weighted_power_mean(N, Budget)` it contributes the weighted power sum over the admissible support. For entropy it contributes the entropy term of the admissible finite slice.
+This is expectation-like, but the integration is specific to the functional being computed. For reachability mass it can use the mass CDF up to the remaining budget. For a bounded average it needs both mass and first-moment cumulative bases. For `weighted_power_mean(N, Budget)` it needs the matching weighted-power basis. For entropy it needs either a raw distribution scan, an analytic family-specific entropy calculation over the finite slice, or a stored custom basis.
 
 The cache hit is valid only when the cached state was built under compatible semantics:
 
@@ -181,9 +238,65 @@ The cache hit is valid only when the cached state was built under compatible sem
 - compatible cycle policy and path admissibility rules;
 - compatible representation policy, or a representation with known error bounds for the requested functional.
 
-This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact; it becomes a controlled approximation when the cached distribution is a fitted representation.
+This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact and the requested functional can be evaluated exactly from the stored state. It becomes a controlled approximation when the cached distribution is a fitted representation, or when the requested functional is evaluated through an approximate basis.
 
-## 7. Scoped fixed-point generation
+## 8. Cache admission and eviction
+
+Distribution caches should not use blind overwrite-on-collision. A collided insert
+is a policy decision: keeping a root-near, high-reuse suffix summary may be more
+valuable than admitting a newly computed deep node.
+
+The cache should score both the incumbent and the candidate:
+
+```prolog
+cache_score(Node, Entry, Score) :-
+    Score is expected_reuse(Node)
+          * recompute_cost_saved(Entry)
+          * root_proximity_bonus(Node)
+          * accuracy_value(Entry)
+          / storage_cost(Entry).
+```
+
+Useful score signals:
+
+- parent distance to root, with a bonus for nodes closer to the root;
+- estimated descendant or query-reuse count;
+- observed hit frequency and recency;
+- cost to recompute the distribution or scoped fixed-point cone;
+- representation quality, with exact states usually worth more than fitted ones;
+- cumulative-basis storage cost, since each materialised basis consumes space;
+- semantic compatibility width, meaning how many likely queries can reuse the
+  same root/statistic/cycle-policy/budget-horizon entry.
+
+On collision, admit only if the candidate is meaningfully better:
+
+```prolog
+admit_candidate if candidate_score > incumbent_score * hysteresis
+```
+
+The hysteresis factor prevents churn when two similarly useful entries map to the
+same slot. If the candidate loses, the runtime can still return the just-computed
+value to the current query; it simply does not install it in the shared cache.
+
+Eviction should also be layered. Raw exact distributions are expensive to
+recompute and should generally outlive derived cumulative bases. Cumulative
+bases can be evicted first because they can be rebuilt from raw state. Parametric
+tail parameters are compact and may be worth retaining if their error bounds are
+still valid. A practical eviction order is:
+
+```prolog
+1. cold custom cumulative bases
+2. cold moment / weighted-power bases
+3. cold mass CDFs when raw state is still available
+4. approximate fitted states with weak reuse
+5. exact raw states, especially near-root entries, only under pressure
+```
+
+For Wikipedia-style root-anchored metrics, the default bias should be: retain
+near-root exact distributions, retain high-reuse ancestor nodes, and evict deep
+low-hit cumulative bases before overwriting root-proximal entries.
+
+## 9. Scoped fixed-point generation
 
 Fixed-point distribution generation does not need to materialise the whole graph for a single node query. For a target node `V`, first restrict work to the ancestor cone relevant to `V`: all nodes that can reach the root by parent edges and can also reach `V` by reversing the parent relation. Then compute distributions from the root outward only inside that scoped subgraph, stopping when the target node's distribution has been produced or the configured depth/horizon is exhausted.
 
@@ -208,14 +321,18 @@ Three execution modes fall out:
 
 This scoped mode is the bridge between graph search and global fixed-point evaluation. It preserves the recurrence form, but its worklist is cut down by the query's ancestor cone and by cached boundary distributions encountered during evaluation.
 
-## 8. Open validation work
+## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
+
+The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
 
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;
 3. fitted truncated-tail representation over the same nodes;
 4. functional-level error checks for `min_support`, `bounded_average`, `reachability_mass`, `tail_mass`, `entropy`, and `weighted_power_mean`;
-5. policy-selection tests showing that a user predicate can override the default without changing target code.
+5. cumulative-basis tests showing mass, interval, moment, and weighted-power lookups agree with raw histogram scans;
+6. cache-admission tests showing near-root/high-reuse entries survive collisions against lower-score entries;
+7. policy-selection tests showing that a user predicate can override the default without changing target code.
 
 Only after those checks pass should the policy be used for enwiki-scale materialisation.
