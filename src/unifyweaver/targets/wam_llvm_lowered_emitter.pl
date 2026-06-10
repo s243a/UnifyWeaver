@@ -73,6 +73,11 @@
 :- use_module(wam_ite_structurer, [structure_ite/2]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
 
+% wam_llvm_lowerable/3's clauses are interleaved with the T4 helper
+% llvm_all_clauses_lowerable/1 (kept next to the multi_clause_n gate it
+% serves); declare it discontiguous so SWI does not warn.
+:- discontiguous wam_llvm_lowerable/3.
+
 % NB: we DO NOT `:- use_module(wam_llvm_target, ...)` here, because
 % wam_llvm_target.pl `:- use_module`s this file in turn. The two
 % predicates we borrow from the target — wam_instruction_to_llvm_literal/2
@@ -226,9 +231,32 @@ wam_llvm_lowerable(_PI, WamCode, Shape) :-
     is_deterministic_pred_llvm(C1),
     forall(member(I, C1), supported(I)),
     ( has_choice_point_instrs(Instrs)
-    -> Shape = multi_clause_c1
+    -> ( llvm_all_clauses_lowerable(Instrs)
+       -> Shape = multi_clause_n   % T4: every clause lowered inline
+       ;  Shape = multi_clause_c1  % T3: clause 1 inline, bytecode for 2+
+       )
     ;  Shape = single_clause
     ).
+
+%% llvm_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause of a multi-clause predicate is a clean supported
+%  deterministic body (no inner ITE / call / execute, ends in a terminal) —
+%  the T4 (multi_clause_n) condition. Such a predicate lowers all clauses
+%  inline (tried in order with a register/trail restore between attempts), so
+%  the interpreter is never entered for the predicate. Clauses containing a
+%  call / execute keep the multi_clause_c1 path (their callees may not be
+%  lowered in this module).
+llvm_all_clauses_lowerable(Instrs) :-
+    llvm_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),
+             \+ member(cut_ite, Cl),
+             \+ member(jump(_), Cl),
+             \+ member(call(_, _), Cl),
+             \+ member(execute(_), Cl),
+             forall(member(I, Cl), supported(I)),
+             last(Cl, Last), ( Last == proceed ; Last == fail ) )).
 
 % ITE / negation / once: clause 1 contains an internal choice point
 % (try_me_else) that is NOT a multi-clause separator but a soft-cut block
@@ -466,6 +494,10 @@ lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     llvm_structured_clause1(WamCode, Structured), !,
     lower_ite_predicate_to_llvm(PI, Structured, LLVMCode).
 lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
+    ( is_list(WamCode) -> MCInstrs = WamCode ; parse_wam_text(WamCode, MCInstrs) ),
+    llvm_all_clauses_lowerable(MCInstrs), !,
+    lower_multi_clause_n_to_llvm(PI, MCInstrs, LLVMCode).
+lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     llvm_lowered_func_name(Pred/Arity, FuncName),
     (   is_list(WamCode) -> Instrs = WamCode
@@ -579,6 +611,101 @@ emit_clause_chain_blocks([Clause|Rest], StartN, [ClauseStr|More]) :-
     emit_all_instrs(RestInstrs, N2, RestBlocks),
     atomic_list_concat([FirstBlock|RestBlocks], '\n', ClauseStr),
     emit_clause_chain_blocks(Rest, NextStartN, More).
+
+% ============================================================================
+% T4: multi-clause, all clauses inline (multi_clause_n)
+%
+%  Generalises the T5 clause-chain emit to predicates that do NOT discriminate
+%  on a distinct first-argument constant: every clause is lowered inline and
+%  tried in order, but — unlike T5, where only the head get_constant decides
+%  the clause — ANY instruction failure rolls back to the next clause. Because
+%  a partially-run clause may have clobbered the A-registers (put_* / get_value)
+%  and bound variables (trailed), each retry first restores the entry register
+%  snapshot (memcpy, exactly as a bytecode try_me_else choice point saves them)
+%  and unwinds the trail to the entry mark. The first clause runs on the fresh
+%  entry state; clause K (K>1) is preceded by a clause_K_restore block. The
+%  last clause's failures go to %lowered_fail (the hybrid wrapper then re-runs
+%  the bytecode, which also fails — sound). First-solution / deterministic-
+%  prefix semantics, strictly more than multi_clause_c1.
+% ============================================================================
+
+%% lower_multi_clause_n_to_llvm(+PI, +Instrs, -LLVMCode) is det.
+lower_multi_clause_n_to_llvm(PI, Instrs, LLVMCode) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
+    llvm_lowered_func_name(Pred/Arity, FuncName),
+    llvm_split_clauses(Instrs, Clauses),
+    emit_t4_clauses(Clauses, 0, 1, ClauseBlocks),
+    atomic_list_concat(ClauseBlocks, '\n', ClauseStr),
+    format(atom(LLVMCode),
+'; === lowered kernel (T4 all-clauses inline): ~w/~w ===
+; Every clause is lowered; any instruction failure restores the entry
+; register snapshot + trail mark and falls through to the next clause.
+define i1 @~w(%WamState* %vm) {
+entry:
+  %t4.regbuf = alloca [64 x %Value]
+  %t4.regbuf_raw = bitcast [64 x %Value]* %t4.regbuf to i8*
+  %t4.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %t4.src_raw = bitcast %Value* %t4.src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %t4.regbuf_raw, i8* %t4.src_raw, i64 1024, i1 false)
+  %t4.tm_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %t4.tmv = load i32, i32* %t4.tm_ptr
+  br label %pc_0
+
+~w
+
+lowered_succeed:
+  ret i1 true
+
+lowered_fail:
+  ret i1 false
+}',
+        [Pred, Arity, FuncName, ClauseStr]).
+
+%% emit_t4_clauses(+Clauses, +StartN, +Idx, -Blocks) is det.
+%  Emit each clause's blocks. Clause Idx (1-based) starts at block pc_<StartN>;
+%  every instruction's failure edge points at the next clause's restore block
+%  (clause_<Idx+1>_restore), or %lowered_fail for the last clause. Clauses 2+
+%  are preceded by a restore block that re-snapshots the registers + unwinds
+%  the trail before re-entering at pc_<StartN>.
+emit_t4_clauses([], _, _, []).
+emit_t4_clauses([Cl | Rest], StartN, Idx, [Block | More]) :-
+    length(Cl, Len),
+    NextStartN is StartN + Len,
+    NextIdx is Idx + 1,
+    ( Rest == []
+    ->  FailLabel = lowered_fail
+    ;   format(atom(FailLabel), 'clause_~w_restore', [NextIdx])
+    ),
+    emit_all_instrs_f(Cl, StartN, FailLabel, InstrBlocks),
+    atomic_list_concat(InstrBlocks, '\n', InstrStr),
+    ( Idx =:= 1
+    ->  Block = InstrStr
+    ;   t4_restore_block(Idx, StartN, RestoreStr),
+        atomic_list_concat([RestoreStr, InstrStr], '\n', Block)
+    ),
+    emit_t4_clauses(Rest, NextStartN, NextIdx, More).
+
+%% emit_all_instrs_f(+Instrs, +StartN, +FailLabel, -Blocks) is det.
+%  Like emit_all_instrs, but every instruction's failure edge is redirected to
+%  FailLabel (instead of the default %lowered_fail).
+emit_all_instrs_f([], _, _, []).
+emit_all_instrs_f([I | Rest], N, FailLabel, [Block | More]) :-
+    next_label(Rest, N, NextLabel),
+    emit_instr_f(I, N, NextLabel, FailLabel, Block),
+    N1 is N + 1,
+    emit_all_instrs_f(Rest, N1, FailLabel, More).
+
+%% t4_restore_block(+Idx, +StartN, -Str) — restore the entry register snapshot
+%  and trail mark, then branch into clause Idx at pc_<StartN>.
+t4_restore_block(Idx, StartN, Str) :-
+    format(atom(Str),
+'clause_~w_restore:
+  %t4.dst~w = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %t4.dst~w_raw = bitcast %Value* %t4.dst~w to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %t4.dst~w_raw, i8* %t4.regbuf_raw, i64 1024, i1 false)
+  call void @unwind_trail(%WamState* %vm, i32 %t4.tmv)
+  br label %pc_~w',
+        [Idx, Idx, Idx, Idx, Idx, StartN]).
 
 %% llvm_split_clauses(+Instrs, -Clauses) is semidet.
 %  Split the parsed instruction list (which opens with try_me_else) at the
