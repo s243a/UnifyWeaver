@@ -1928,10 +1928,15 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                BundledCode),
            Record = native(PredIndicator, Arity, BundledCode),
            NextPC = StartPC
-        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain )
+        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain
+           ; LowerShape == multi_clause_n )
         -> ( LowerShape == clause_chain
            ->  format(user_error,
                  '  ~w/~w: lowered LLVM emission (hybrid T5 first-arg dispatch + bytecode)~n',
+                 [Pred, Arity])
+           ;   LowerShape == multi_clause_n
+           ->  format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid T4 all-clauses inline + bytecode)~n',
                  [Pred, Arity])
            ;   format(user_error,
                  '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
