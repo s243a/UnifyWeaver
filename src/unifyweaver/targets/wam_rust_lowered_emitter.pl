@@ -83,6 +83,12 @@ instr_from_parts(["retry_me_else", L], retry_me_else(L)).
 instr_from_parts(["trust_me"], trust_me).
 instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
+% M144: Y-level soft cut, now the Rust compile path's default ITE form
+% (ite_use_y_level(true)). The shared structurer's is_commit/1 already
+% accepts cut(Yn); get_level is a no-op in the lowered if/else since
+% the structurer consumes the commit.
+instr_from_parts(["get_level", Y], get_level(Y)).
+instr_from_parts(["cut", Y], cut(Y)).
 
 % =====================================================================
 % Label-preserving parse + if-then-else structuring
@@ -276,6 +282,8 @@ rust_supported(call_foreign(_, _)).
 rust_supported(try_me_else(_)).
 rust_supported(trust_me).
 rust_supported(cut_ite).
+rust_supported(cut(_)).       % M144: Y-level soft cut commit
+rust_supported(get_level(_)). % M144: cut-level capture (no-op when lowered)
 rust_supported(jump(_)).
 
 % =====================================================================
@@ -737,6 +745,8 @@ emit_one(call_foreign(PredStr, ArStr), I) :-
 emit_one(try_me_else(_), _) :- !.
 emit_one(trust_me, _) :- !.
 emit_one(cut_ite, _) :- !.
+emit_one(cut(_), _) :- !.        % M144: commit consumed by the structurer
+emit_one(get_level(_), _) :- !.  % M144: level capture: no-op in lowered if/else
 emit_one(jump(_), _) :- !.
 
 % --- Fallback ---

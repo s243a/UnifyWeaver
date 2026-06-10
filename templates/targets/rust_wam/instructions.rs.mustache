@@ -89,6 +89,18 @@ pub enum Instruction {
     /// chain run is correct; emitting a real instruction (rather than a
     /// dropped comment) keeps every later label PC aligned.
     NoOp,
+    /// M144: capture the current choice-point depth into a register
+    /// (the WAM `get_level Yn` half of if-then-else's soft cut).
+    GetLevel(String),
+    /// M144: truncate the choice-point stack to the depth saved by
+    /// GetLevel (the `cut Yn` commit). Previously if-then-else compiled
+    /// its commit to `cut_ite`, which the Rust backend translated to
+    /// NoOp - the condition's success never committed, so a failing
+    /// then-branch backtracked into the else branch.
+    CutTo(String),
+    /// M144: legacy single-CP if-then-else commit (cut_ite). Pops the
+    /// ITE guard choice point; only emitted when ite_use_y_level is off.
+    CutIte,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
     /// Start collecting solutions for an aggregate.
