@@ -99,6 +99,13 @@ lua_line_term(["try_me_else", L], try_me_else(L)) :- !.
 lua_line_term(["trust_me"], trust_me) :- !.
 lua_line_term(["jump", L], jump(L)) :- !.
 lua_line_term(["cut_ite"], cut_ite) :- !.
+% M17 Y-level soft cut (ite_use_y_level(true), which the Lua target enables):
+% `cut Yn` is the if-then-else commit (the structurer drops it; the if/else
+% structure provides the commit semantics), and `get_level Yn` snapshots the
+% cut level in the clause prefix. Without parsing `cut Yn` into cut(Yn) the
+% shared structurer's is_commit/1 never matched, so the block was not folded
+% and the predicate fell back to the interpreter.
+lua_line_term(["cut", Yn], cut(Yn)) :- !.
 lua_line_term(["builtin_call", Op, Ar], builtin_call(Op, Ar)) :- !.
 lua_line_term(Parts, line(Parts)).
 
@@ -215,6 +222,10 @@ line_supported(Line) :-
 
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
+% M17 cut-level snapshot, emitted in the clause prefix of a Y-level
+% if-then-else / negation / once. Rendered verbatim (the Lua runtime's
+% I.GetLevel handles it); the paired `cut Yn` is folded away by the structurer.
+parts_supported(["get_level", _]).
 parts_supported(["proceed"]).
 parts_supported(["fail"]).
 parts_supported(["get_constant", _, _]).
