@@ -11,14 +11,18 @@ see `WAM_REPRESENTATION_MODES.md`.
 The first implementation step is intentionally conservative:
 
 - `compile_predicate_to_wam_text/3` is now the explicit legacy text API.
-- `compile_predicate_to_wam_items/3` is available as a bridge: it compiles text
-  through the existing generator and normalizes it with `wam_text_to_items/2`.
+- `compile_predicate_to_wam_items/3` is available as the structured API. It now
+  emits single-clause fact predicates and simple one-goal user-predicate tail
+  calls directly as items, and falls back to the existing text generator plus
+  `wam_text_to_items/2` for multi-goal rules, multi-clause predicates,
+  aggregates, indexing, lowered builtins, and other complex shapes.
 - `compile_predicate_to_wam/3` still returns text by default for compatibility
   with the existing targets. The default-output flip described below remains a
   later migration step after more callers consume items directly.
 
 The final API shape below is still the target design; current code deliberately
-lands the low-risk bridge first.
+lands native item emission incrementally, with the compatibility bridge retained
+until the full WAM emitter can become items-first.
 
 ## 1. Public API
 

@@ -56,32 +56,49 @@ compile_predicate(PredArity, Options, Code) :-
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
     compile_predicate_to_wam_text(PredIndicator, Options, Code).
 
-%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
-%  Compile a predicate to canonical WAM text.
-compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
-    % Handle module qualification
-    (   PredIndicator = Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
+%% resolve_wam_predicate_indicator(+PredIndicator, +Options,
+%%                                 -Module, -Pred, -Arity) is semidet.
+%  Normalise the supported predicate-indicator forms used by both text and
+%  items producers.
+resolve_wam_predicate_indicator(PredIndicator, Options, Module, Pred, Arity) :-
+    (   PredIndicator = Module:Pred/Arity
+    ->  true
+    ;   PredIndicator = Pred/Arity
+    ->  option(module(Module), Options, user)
     ;   format(user_error, 'WAM target: invalid predicate indicator ~w~n', [PredIndicator]),
         fail
-    ),
+    ).
+
+%% wam_predicate_clauses(+PredIndicator, +Options, -Pred, -Arity, -Clauses)
+%  Fetch clauses once so the text and items entry points share identical
+%  predicate resolution and missing-predicate behaviour.
+wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses) :-
+    resolve_wam_predicate_indicator(PredIndicator, Options, Module, Pred, Arity),
     functor(Head, Pred, Arity),
-    % Find all clauses for the predicate in the specified module
     findall(Head-Body, clause(Module:Head, Body), Clauses),
     (   Clauses = []
     ->  format(user_error, 'WAM target: no clauses for ~w:~w/~w~n', [Module, Pred, Arity]),
         fail
-    ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
+    ;   true
     ).
 
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
+    wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses),
+    compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code).
+
 %% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
-%  Compile a predicate to structured WAM items. This bridge keeps the legacy
-%  text generator as the source of truth for now, then normalizes through the
-%  shared parser. A later generator pass can replace this with direct item
-%  emission without changing target-facing call sites.
+%  Compile a predicate to structured WAM items. Facts and simple one-goal user
+%  tail calls use direct item emission. More complex predicates fall back to the
+%  text generator plus shared parser until the full WAM emitter is items-first.
 compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
-    compile_predicate_to_wam_text(PredIndicator, Options, Code),
-    wam_text_to_items(Code, Items).
+    wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses),
+    (   compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items)
+    ->  true
+    ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code),
+        wam_text_to_items(Code, Items)
+    ).
 
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
@@ -183,6 +200,170 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  combine_clauses_and_chains(ClausesCode, DispatchChains, ChainedClauses),
         format(string(Code), "~w~n~w~n~w", [Label, IndexHeader, ChainedClauses])
     ;   format(string(Code), "~w~n~w", [Label, ClausesCode])
+    ).
+
+%% compile_clauses_to_wam_items_native(+Pred, +Arity, +Clauses, +Options, -Items)
+%  Direct items path for simple single-clause predicates. This is the first
+%  incremental native producer slice; aggregates, indexing, lowered builtins,
+%  multi-goal rules, and peephole-sensitive shapes intentionally fall back to
+%  the legacy text bridge.
+compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
+    normalize_goals(Body, []),
+    !,
+    Head =.. [_|Args],
+    empty_varmap(V0),
+    compile_head_arguments_items(Args, 1, V0, _V1, HeadItems),
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    append(HeadItems, [proceed], InstrItems),
+    Items = [label(Label)|InstrItems].
+compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
+    normalize_goals(Body, [Goal]),
+    native_simple_execute_goal(Goal),
+    !,
+    Head =.. [_|Args],
+    empty_varmap(V0),
+    pre_assign_permanent_vars([Goal], V0, V0a),
+    compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
+    compile_goal_execute_items_simple(Goal, V1, _Vf, GoalItems),
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    append(HeadItems, GoalItems, InstrItems),
+    Items = [label(Label), allocate|InstrItems].
+
+native_simple_execute_goal(Goal) :-
+    callable(Goal),
+    Goal =.. [GoalPred|Args],
+    length(Args, Arity),
+    \+ is_builtin_pred(GoalPred, Arity),
+    forall(member(Arg, Args), native_simple_goal_arg(Arg)).
+
+native_simple_goal_arg(Arg) :-
+    var(Arg), !.
+native_simple_goal_arg(Arg) :-
+    atomic(Arg).
+
+compile_goal_execute_items_simple(Goal, V0, Vf, Items) :-
+    Goal =.. [GoalPred|Args],
+    length(Args, Arity),
+    compile_put_arguments_items_simple(Args, 1, V0, Vf, PutItems),
+    wam_functor_token(GoalPred, Arity, PredTok),
+    append(PutItems, [deallocate, execute(PredTok)], Items).
+
+compile_put_arguments_items_simple([], _, V, V, []).
+compile_put_arguments_items_simple([Arg|Rest], I, V0, Vf, Items) :-
+    compile_put_argument_items_simple(Arg, I, V0, V1, ArgItems),
+    NI is I + 1,
+    compile_put_arguments_items_simple(Rest, NI, V1, Vf, RestItems),
+    append(ArgItems, RestItems, Items).
+
+compile_put_argument_items_simple(Arg, I, V0, V1, Items) :-
+    wam_arg_register(I, Ai),
+    (   var(Arg)
+    ->  (   get_var_reg(Arg, V0, Reg)
+        ->  wam_operand_string(Reg, RegTok),
+            Items = [put_value(RegTok, Ai)],
+            V1 = V0
+        ;   get_yi_alloc(Arg, V0, YReg, V1)
+        ->  wam_operand_string(YReg, YRegTok),
+            Items = [put_variable(YRegTok, Ai)]
+        ;   next_x_reg(V0, XReg, VTemp),
+            bind_var(Arg, XReg, VTemp, V1),
+            wam_operand_string(XReg, XRegTok),
+            Items = [put_variable(XRegTok, Ai)]
+        )
+    ;   atomic(Arg)
+    ->  quote_wam_constant(Arg, ArgTok),
+        Items = [put_constant(ArgTok, Ai)],
+        V1 = V0
+    ).
+
+compile_head_arguments_items([], _, V, V, []).
+compile_head_arguments_items([Arg|Rest], I, V0, Vf, Items) :-
+    compile_head_argument_items(Arg, I, V0, V1, ArgItems),
+    NI is I + 1,
+    compile_head_arguments_items(Rest, NI, V1, Vf, RestItems),
+    append(ArgItems, RestItems, Items).
+
+compile_head_argument_items(Arg, I, V0, V1, Items) :-
+    wam_arg_register(I, Ai),
+    (   var(Arg)
+    ->  (   get_var_reg(Arg, V0, Reg)
+        ->  wam_operand_string(Reg, RegTok),
+            Items = [get_value(RegTok, Ai)],
+            V1 = V0
+        ;   get_yi_alloc(Arg, V0, YReg, V1)
+        ->  wam_operand_string(YReg, YRegTok),
+            Items = [get_variable(YRegTok, Ai)]
+        ;   next_x_reg(V0, XReg, VTemp),
+            bind_var(Arg, XReg, VTemp, V1),
+            wam_operand_string(XReg, XRegTok),
+            Items = [get_variable(XRegTok, Ai)]
+        )
+    ;   atomic(Arg)
+    ->  quote_wam_constant(Arg, ArgTok),
+        Items = [get_constant(ArgTok, Ai)],
+        V1 = V0
+    ;   is_list_term(Arg)
+    ->  Arg = [H|T],
+        compile_unify_arguments_items([H, T], V0, V1, SubItems),
+        Items = [get_list(Ai)|SubItems]
+    ;   compound(Arg)
+    ->  Arg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        wam_functor_token(F, SArity, FunctorTok),
+        compile_unify_arguments_items(SubArgs, V0, V1, SubItems),
+        Items = [get_structure(FunctorTok, Ai)|SubItems]
+    ).
+
+compile_unify_arguments_items([], V, V, []).
+compile_unify_arguments_items([Arg|Rest], V0, Vf, Items) :-
+    (   var(Arg)
+    ->  (   get_var_reg(Arg, V0, Reg)
+        ->  wam_operand_string(Reg, RegTok),
+            ArgItems = [unify_value(RegTok)],
+            V1 = V0
+        ;   get_yi_alloc(Arg, V0, YReg, V1)
+        ->  wam_operand_string(YReg, YRegTok),
+            ArgItems = [unify_variable(YRegTok)]
+        ;   next_x_reg(V0, XReg, VTemp),
+            bind_var(Arg, XReg, VTemp, V1),
+            wam_operand_string(XReg, XRegTok),
+            ArgItems = [unify_variable(XRegTok)]
+        )
+    ;   atomic(Arg)
+    ->  quote_wam_constant(Arg, ArgTok),
+        ArgItems = [unify_constant(ArgTok)],
+        V1 = V0
+    ;   compound(Arg)
+    ->  Arg =.. [F|NestedArgs],
+        length(NestedArgs, NArity),
+        next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V1a),
+        wam_operand_string(XReg, XRegTok),
+        wam_functor_token(F, NArity, FunctorTok),
+        compile_unify_arguments_items(NestedArgs, V1a, V1, NestedItems),
+        ArgItems = [unify_variable(XRegTok), get_structure(FunctorTok, XRegTok)|NestedItems]
+    ;   next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V1),
+        wam_operand_string(XReg, XRegTok),
+        ArgItems = [unify_variable(XRegTok)]
+    ),
+    compile_unify_arguments_items(Rest, V1, Vf, RestItems),
+    append(ArgItems, RestItems, Items).
+
+wam_arg_register(I, Ai) :-
+    format(string(Ai), "A~w", [I]).
+
+wam_functor_token(F, Arity, Token) :-
+    format(string(Token), "~w/~w", [F, Arity]).
+
+wam_operand_string(Value, String) :-
+    (   string(Value)
+    ->  String = Value
+    ;   atom(Value)
+    ->  atom_string(Value, String)
+    ;   number(Value)
+    ->  number_string(Value, String)
+    ;   term_string(Value, String)
     ).
 
 combine_clauses_and_chains(ClausesCode, "", ClausesCode) :- !.
