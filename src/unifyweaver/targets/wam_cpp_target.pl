@@ -3512,6 +3512,20 @@ struct AggregateGroupIterator {
     std::size_t return_pc = 0;
 };
 
+// T4 (multi_clause_n): clause-entry snapshot a lowered function restores
+// between clause attempts. The lowered function enumerates every clause
+// itself (first-solution / deterministic-prefix), so the interpreter is never
+// entered for the predicate. Mirrors the ChoicePoint reg/trail/env/cut
+// restore; var_counter is monotonic (unique unbound names) and intentionally
+// not restored.
+struct ClauseSnapshot {
+    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::size_t trail_mark = 0;
+    std::size_t cut_barrier = 0;
+    std::vector<EnvFrame> saved_env_stack;
+    std::size_t cp_count = 0;
+};
+
 struct WamState {
     std::unordered_map<std::string, CellPtr> regs;
     std::unordered_map<std::string, std::size_t> labels;
@@ -3751,6 +3765,11 @@ struct WamState {
     // Used by lowered if-then-else when the condition fails, before the
     // else branch runs.
     void    unwind_trail_to(std::size_t mark);
+
+    // T4 (multi_clause_n): capture / restore the clause-entry state a lowered
+    // function tries each clause against — see ClauseSnapshot.
+    ClauseSnapshot lo_clause_snapshot() const;
+    void           lo_restore_clause(const ClauseSnapshot& snap);
 
     // Unification: takes Cell pointers so binding works correctly.
     bool    unify_cells(CellPtr a, CellPtr b);
@@ -4183,6 +4202,24 @@ void WamState::unwind_trail_to(std::size_t mark) {
         trail.pop_back();
         *t.cell = std::move(t.prev);
     }
+}
+
+ClauseSnapshot WamState::lo_clause_snapshot() const {
+    ClauseSnapshot s;
+    s.saved_regs      = regs;
+    s.trail_mark      = trail.size();
+    s.cut_barrier     = cut_barrier;
+    s.saved_env_stack = env_stack;
+    s.cp_count        = choice_points.size();
+    return s;
+}
+
+void WamState::lo_restore_clause(const ClauseSnapshot& snap) {
+    unwind_trail_to(snap.trail_mark);
+    regs        = snap.saved_regs;
+    cut_barrier = snap.cut_barrier;
+    env_stack   = snap.saved_env_stack;
+    if (choice_points.size() > snap.cp_count) choice_points.resize(snap.cp_count);
 }
 
 void WamState::bind_cell(CellPtr cell, Value v) {
