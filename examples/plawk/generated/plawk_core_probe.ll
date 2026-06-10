@@ -1015,6 +1015,20 @@ entry:
 check:
   %addr_i64 = extractvalue %Value %ref_val, 1
   %addr = trunc i64 %addr_i64 to i32
+  ; M139: never write a Ref back into its own cell. put_variable
+  ; places the SAME Ref{addr} into both Xn and Ai; a later
+  ; put_value Xn, Ai then arrives here with ref_val = new_val =
+  ; Ref{addr}, and binding would store Ref{addr} INTO cell addr --
+  ; a self-referential cell that derefs to itself, so var/1 sees
+  ; the variable as bound and every later unification corrupts.
+  ; The registers already alias through this cell; skip.
+  %nv_tag = extractvalue %Value %new_val, 0
+  %nv_is_ref = icmp eq i32 %nv_tag, 5
+  %nv_addr_i64 = extractvalue %Value %new_val, 1
+  %same_addr = icmp eq i64 %nv_addr_i64, %addr_i64
+  %self_ref = and i1 %nv_is_ref, %same_addr
+  br i1 %self_ref, label %done, label %check_cell
+check_cell:
   %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
   %is_unb = call i1 @value_is_unbound(%Value %old)
   br i1 %is_unb, label %bind, label %done
@@ -5121,7 +5135,13 @@ gval.bind_x:
   ret i1 true
 
 gval.check_eq:
-  %gval.eq = call i1 @value_equals(%Value %gval.va, %Value %gval.vx)
+  ; M138: get_value is a unify instruction, not an equality test.
+  ; Both sides are bound here, so @wam_unify_value runs its both_bound
+  ; path: identical payload compare for atomics, deep unification for
+  ; compounds (binding any unbound args, with trailing). The previous
+  ; @value_equals wrongly failed p(X, X) heads called with unifiable
+  ; compounds like p(f(A), f(B)).
+  %gval.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %gval.va, %Value %gval.vx)
   br i1 %gval.eq, label %gval.match, label %gval.fail
 
 gval.match:
@@ -5270,16 +5290,22 @@ unify_value:
   br i1 %uvl.is_read, label %uvl.read, label %uvl.write
 
 uvl.read:
-  ; Read mode: get expected arg, compare with register
+  ; Read mode: get expected arg, unify with register
   %uvl.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
   %uvl.actual = call %Value @wam_get_reg(%WamState* %vm, i32 %uvl.xn)
-  ; Succeed if equal, or if either is unbound (bind the unbound one)
-  %uvl.eq = call i1 @value_equals(%Value %uvl.expected, %Value %uvl.actual)
   %uvl.exp_unb = call i1 @value_is_unbound(%Value %uvl.expected)
   %uvl.act_unb = call i1 @value_is_unbound(%Value %uvl.actual)
-  %uvl.ok1 = or i1 %uvl.eq, %uvl.exp_unb
-  %uvl.ok = or i1 %uvl.ok1, %uvl.act_unb
-  br i1 %uvl.ok, label %uvl.read_ok, label %uvl.fail
+  ; If either side is directly unbound, keep the original bind-the-
+  ; unbound-one logic below. M138: when BOTH are bound, this is a
+  ; unification (the old @value_equals wrongly failed bound-bound
+  ; compounds with unifiable args, and compared Ref-wrapped values
+  ; by address since neither side is dereffed here).
+  %uvl.any_unb = or i1 %uvl.exp_unb, %uvl.act_unb
+  br i1 %uvl.any_unb, label %uvl.read_ok, label %uvl.both_bound
+
+uvl.both_bound:
+  %uvl.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %uvl.expected, %Value %uvl.actual)
+  br i1 %uvl.eq, label %uvl.read_done, label %uvl.fail
 
 uvl.read_ok:
   ; If actual is unbound, bind it to expected
@@ -5359,28 +5385,39 @@ put_variable:
   ; value via deref. Without this aliasing, binding Ai leaves Xn
   ; stuck on a stale Unbound sentinel — the bug that caused
   ; sum_ints / fib / term_depth to compute wrong results.
+  ; M139: no bind-through of Ai's previous occupant. Two put_variable
+  ; in a row over the same Ai (e.g. staging args for consecutive
+  ; builtin calls) left the first variable's unbound Ref in Ai; the
+  ; old @wam_bind_through_if_unbound_ref(old_Ai, fresh_ref) then bound
+  ; that LIVE variable to the new fresh one, silently aliasing two
+  ; unrelated variables. Overwriting an argument register must never
+  ; bind what it previously held.
   %pv.xn = trunc i64 %op1 to i32
   %pv.ai = trunc i64 %op2 to i32
   %pv.unb = call %Value @value_unbound(i8* null)
   %pv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pv.unb)
   %pv.ref = call %Value @value_ref(i32 %pv.addr)
-  %pv.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pv.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.xn)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.xn, %Value %pv.ref)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.ref)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pv.old, %Value %pv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 put_value:
   ; op1 = Xn index, op2 = Ai index
+  ; M139: pure register copy, per standard WAM. This previously also
+  ; called @wam_bind_through_if_unbound_ref(old_Ai, val), which BOUND
+  ; whatever unbound variable happened to occupy Ai before the copy --
+  ; aliasing two unrelated variables. E.g. in
+  ;   var(X), R is 1, X = x
+  ; the put_value Y2, A1 staging R for is/2 found A1 still holding
+  ; X's Ref and bound X to R, so X = x then saw 1. Overwriting an
+  ; argument register must never bind its previous occupant.
   %pvl.xn = trunc i64 %op1 to i32
   %pvl.ai = trunc i64 %op2 to i32
   %pvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.xn)
-  %pvl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pvl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pvl.ai, %Value %pvl.val)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pvl.old, %Value %pvl.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 put_structure:
@@ -6516,9 +6553,13 @@ ane.float:
   ret i1 %ane.fr
 
 builtin_eq:
-  %eq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %eq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %eq.r = call i1 @value_equals(%Value %eq.a1, %Value %eq.a2)
+  ; M137: route through @wam_strict_eq so nested compound args get
+  ; dereffed at every level. The legacy @value_equals only derefs at
+  ; the top (caller does it) and compared Ref payloads at depth -- so
+  ; multi-cons-cell list equality silently failed.
+  %eq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %eq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %eq.r = call i1 @wam_strict_eq(%WamState* %vm, %Value %eq.a1, %Value %eq.a2)
   ret i1 %eq.r
 
 builtin_true:
@@ -6587,10 +6628,12 @@ builtin_is_list_check:
   ret i1 %ilc.r
 
 builtin_neq:
-  ; \==/2: not structurally equal
-  %neq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %neq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %neq.eq = call i1 @value_equals(%Value %neq.a1, %Value %neq.a2)
+  ; Structurally not equal (op id 21). M137: route through
+  ; @wam_strict_eq so nested compounds compare properly (see
+  ; @wam_strict_eq doc above and the M137 commit).
+  %neq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %neq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %neq.eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %neq.a1, %Value %neq.a2)
   %neq.r = xor i1 %neq.eq, true
   ret i1 %neq.r
 
@@ -6883,7 +6926,11 @@ srt.d_step:
   %srt.d_out_prev_idx = sub i32 %srt.d_out, 1
   %srt.d_out_prev_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out_prev_idx
   %srt.d_out_prev = load %Value, %Value* %srt.d_out_prev_slot
-  %srt.d_eq = call i1 @value_equals(%Value %srt.d_in_val, %Value %srt.d_out_prev)
+  ; M138: dedup is ==/2 equality (NOT unification — sort/2 must keep
+  ; f(X) and f(Y) distinct and never bind), and adjacent elements can
+  ; be compounds whose args are heap Refs that @value_equals compared
+  ; by address — sort([f(g(a)), f(g(a))], L) kept both duplicates.
+  %srt.d_eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %srt.d_in_val, %Value %srt.d_out_prev)
   br i1 %srt.d_eq, label %srt.d_after, label %srt.d_keep
 srt.d_keep:
   %srt.d_out_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out
@@ -10529,7 +10576,10 @@ ag.a3_bind:
   ret i1 true
 
 ag.a3_check:
-  %ag.a3_eq = call i1 @value_equals(%Value %ag.a3, %Value %ag.arg_val)
+  ; M138: bound A3 must UNIFY with the extracted arg (ISO arg/3), and
+  ; the arg slot may hold a Ref that @value_equals compared by address.
+  ; @wam_unify_value derefs both sides and deep-unifies compounds.
+  %ag.a3_eq = call i1 @wam_unify_value(%WamState* %vm, %Value %ag.a3, %Value %ag.arg_val)
   ret i1 %ag.a3_eq
 
 ag.fail:
@@ -16276,6 +16326,127 @@ ig.true:
   ret i1 true
 
 ig.false:
+  ret i1 false
+}
+
+; M137: proper deref-at-every-level strict equality for ==/2 and the
+; structurally-inequal sibling (op id 21).
+; The pre-existing @value_equals (in value.ll.mustache) compares tags
+; and payloads shallowly and only derefs the top-level operands via the
+; caller. Recursive arg comparison loads the heap-stored %Value
+; verbatim, which means if an arg slot holds a Ref (the case for many
+; put_structure-built compounds), tag-eq becomes Ref==Ref and the
+; payload comparison is heap-address-vs-heap-address -- almost always
+; false even when the deref'd values are identical. Symptom uncovered
+; in M136: ``[a, b] == [a, b]' returned false for two literal lists.
+;
+; This helper derefs on entry AND inside the recursive arg loop so
+; structural equality holds regardless of how nested args are stored.
+;
+; M138: deref via @wam_deref_keep_var, NOT @wam_deref_value. The full
+; deref collapses a Ref-to-unbound-cell into the shared Unbound
+; sentinel { tag 6, payload 0 }, which erases variable identity --
+; X == Y would be true for two DISTINCT fresh vars (and sort/2 dedup
+; would merge f(X) with f(Y)). Stopping at the last Ref keeps the
+; variable represented as Ref{cell}, so the tag-5 shallow payload
+; compare becomes cell-address identity: X == X true, X == Y false.
+
+; Chase Ref chains but stop at the final Ref when the referenced cell
+; is unbound -- the Ref IS the variable's identity. Bound cells chase
+; through as usual. Hop-limited like @wam_deref_value.
+define %Value @wam_deref_keep_var(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %dkv.loop
+dkv.loop:
+  %dkv.cur = phi %Value [ %v, %entry ], [ %dkv.cell, %dkv.follow ]
+  %dkv.i = phi i32 [ 0, %entry ], [ %dkv.i_next, %dkv.follow ]
+  %dkv.tag = extractvalue %Value %dkv.cur, 0
+  %dkv.is_ref = icmp eq i32 %dkv.tag, 5
+  %dkv.hop_ok = icmp slt i32 %dkv.i, 64
+  %dkv.cont = and i1 %dkv.is_ref, %dkv.hop_ok
+  br i1 %dkv.cont, label %dkv.peek, label %dkv.done
+dkv.peek:
+  %dkv.addr_i64 = extractvalue %Value %dkv.cur, 1
+  %dkv.addr = trunc i64 %dkv.addr_i64 to i32
+  %dkv.cell = call %Value @wam_heap_get(%WamState* %vm, i32 %dkv.addr)
+  %dkv.cell_unb = call i1 @value_is_unbound(%Value %dkv.cell)
+  br i1 %dkv.cell_unb, label %dkv.done, label %dkv.follow
+dkv.follow:
+  %dkv.i_next = add i32 %dkv.i, 1
+  br label %dkv.loop
+dkv.done:
+  ret %Value %dkv.cur
+}
+
+define i1 @wam_strict_eq(%WamState* %vm, %Value %a, %Value %b) {
+entry:
+  %seq.da = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %seq.db = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %seq.tag_a = extractvalue %Value %seq.da, 0
+  %seq.tag_b = extractvalue %Value %seq.db, 0
+  %seq.tags_eq = icmp eq i32 %seq.tag_a, %seq.tag_b
+  br i1 %seq.tags_eq, label %seq.same_tag, label %seq.not_equal
+
+seq.same_tag:
+  %seq.is_compound = icmp eq i32 %seq.tag_a, 3
+  br i1 %seq.is_compound, label %seq.compound_case, label %seq.shallow_payload
+
+seq.shallow_payload:
+  %seq.pay_a = extractvalue %Value %seq.da, 1
+  %seq.pay_b = extractvalue %Value %seq.db, 1
+  %seq.pay_eq = icmp eq i64 %seq.pay_a, %seq.pay_b
+  ret i1 %seq.pay_eq
+
+seq.compound_case:
+  %seq.pa = extractvalue %Value %seq.da, 1
+  %seq.pb = extractvalue %Value %seq.db, 1
+  %seq.same_ptr = icmp eq i64 %seq.pa, %seq.pb
+  br i1 %seq.same_ptr, label %seq.equal, label %seq.deep_check
+
+seq.deep_check:
+  %seq.ap = inttoptr i64 %seq.pa to %Compound*
+  %seq.bp = inttoptr i64 %seq.pb to %Compound*
+  %seq.afn_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 0
+  %seq.bfn_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 0
+  %seq.afn = load i8*, i8** %seq.afn_slot
+  %seq.bfn = load i8*, i8** %seq.bfn_slot
+  %seq.fn_eq = icmp eq i8* %seq.afn, %seq.bfn
+  br i1 %seq.fn_eq, label %seq.check_arity, label %seq.not_equal
+
+seq.check_arity:
+  %seq.aar_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 1
+  %seq.bar_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 1
+  %seq.aar = load i32, i32* %seq.aar_slot
+  %seq.bar = load i32, i32* %seq.bar_slot
+  %seq.ar_eq = icmp eq i32 %seq.aar, %seq.bar
+  br i1 %seq.ar_eq, label %seq.args_init, label %seq.not_equal
+
+seq.args_init:
+  %seq.aargs_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 2
+  %seq.bargs_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 2
+  %seq.aargs = load %Value*, %Value** %seq.aargs_slot
+  %seq.bargs = load %Value*, %Value** %seq.bargs_slot
+  %seq.has_args = icmp sgt i32 %seq.aar, 0
+  br i1 %seq.has_args, label %seq.loop, label %seq.equal
+
+seq.loop:
+  %seq.idx = phi i32 [ 0, %seq.args_init ], [ %seq.next_idx, %seq.step ]
+  %seq.ae_ptr = getelementptr %Value, %Value* %seq.aargs, i32 %seq.idx
+  %seq.ae = load %Value, %Value* %seq.ae_ptr
+  %seq.be_ptr = getelementptr %Value, %Value* %seq.bargs, i32 %seq.idx
+  %seq.be = load %Value, %Value* %seq.be_ptr
+  %seq.arg_eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %seq.ae, %Value %seq.be)
+  br i1 %seq.arg_eq, label %seq.step, label %seq.not_equal
+
+seq.step:
+  %seq.next_idx = add i32 %seq.idx, 1
+  %seq.done = icmp sge i32 %seq.next_idx, %seq.aar
+  br i1 %seq.done, label %seq.equal, label %seq.loop
+
+seq.equal:
+  ret i1 true
+
+seq.not_equal:
   ret i1 false
 }
 
