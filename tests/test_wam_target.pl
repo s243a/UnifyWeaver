@@ -6,7 +6,8 @@
 :- use_module('../src/unifyweaver/targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
-:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2, test_alias/2.
+:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2,
+           test_alias/2, test_len/2.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
@@ -16,6 +17,9 @@ test_grandparent(X, Z) :- test_parent(X, Y), test_parent(Y, Z).
 
 %% Simple forwarding rule — exercises native items for a one-goal tail call.
 test_alias(X, Y) :- test_parent(X, Y).
+
+%% Simple builtin rule — exercises native items for generic builtin_call.
+test_len(L, N) :- length(L, N).
 
 %% Recursive ancestor rule
 test_ancestor(X, Y) :- test_parent(X, Y).
@@ -356,18 +360,64 @@ test_wam_items_native_simple_tail_call :-
     ;   fail_test(Test, 'Native simple-tail-call items do not match canonical WAM text shape')
     ).
 
-test_wam_items_api_rule_fallback :-
-    Test = 'WAM: items API rule fallback',
+test_wam_items_native_multi_goal_rule :-
+    Test = 'WAM: native items API for simple multi-goal rule',
+    ExpectedItems = [
+        label("test_grandparent/2"),
+        allocate,
+        get_variable("X3", "A1"),
+        get_variable("Y2", "A2"),
+        put_value("X3", "A1"),
+        put_variable("Y1", "A2"),
+        call("test_parent/2", "2"),
+        put_value("Y1", "A1"),
+        put_value("Y2", "A2"),
+        deallocate,
+        execute("test_parent/2")
+    ],
     (   wam_target:compile_predicate_to_wam(user:test_grandparent/2, [], LegacyCode),
         wam_target:compile_predicate_to_wam_text(user:test_grandparent/2, [], TextCode),
         wam_target:compile_predicate_to_wam_items(user:test_grandparent/2, [], Items),
         LegacyCode == TextCode,
+        Items == ExpectedItems,
+        wam_text_to_items(TextCode, Items),
         member(label("test_grandparent/2"), Items),
         member(allocate, Items),
         member(call("test_parent/2", "2"), Items),
         member(execute("test_parent/2"), Items)
     ->  pass(Test)
     ;   fail_test(Test, 'Explicit text/items APIs do not match legacy WAM output')
+    ).
+
+test_wam_items_native_simple_builtin :-
+    Test = 'WAM: native items API for simple builtin call',
+    ExpectedItems = [
+        label("test_len/2"),
+        get_variable("X1", "A1"),
+        get_variable("X2", "A2"),
+        put_value("X1", "A1"),
+        put_value("X2", "A2"),
+        builtin_call("length/2", "2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_len/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_len/2, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native simple-builtin items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_api_compound_arg_fallback :-
+    Test = 'WAM: items API compound body arg fallback',
+    (   wam_target:compile_predicate_to_wam_text(user:test_wrap/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_wrap/1, [], Items),
+        Items == BridgeItems,
+        member(put_structure("pair/2", "A1"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Compound body arg fallback does not match canonical WAM text shape')
     ).
 
 %% Run all tests
@@ -385,7 +435,9 @@ run_tests :-
     test_wam_module,
     test_wam_items_native_single_fact,
     test_wam_items_native_simple_tail_call,
-    test_wam_items_api_rule_fallback,
+    test_wam_items_native_multi_goal_rule,
+    test_wam_items_native_simple_builtin,
+    test_wam_items_api_compound_arg_fallback,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,

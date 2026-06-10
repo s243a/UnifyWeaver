@@ -12,10 +12,11 @@ The first implementation step is intentionally conservative:
 
 - `compile_predicate_to_wam_text/3` is now the explicit legacy text API.
 - `compile_predicate_to_wam_items/3` is available as the structured API. It now
-  emits single-clause fact predicates and simple one-goal user-predicate tail
-  calls directly as items, and falls back to the existing text generator plus
-  `wam_text_to_items/2` for multi-goal rules, multi-clause predicates,
-  aggregates, indexing, lowered builtins, and other complex shapes.
+  emits single-clause facts, simple user-predicate calls, generic builtin calls,
+  and conjunctions of those simple shapes directly as items. It falls back to
+  the existing text generator plus `wam_text_to_items/2` for multi-clause
+  predicates, aggregates, indexing, lowered builtins, control flow, compound
+  body arguments, and other complex shapes.
 - `compile_predicate_to_wam/3` still returns text by default for compatibility
   with the existing targets. The default-output flip described below remains a
   later migration step after more callers consume items directly.
