@@ -3751,6 +3751,50 @@ test_m139_ite_var_bind(_, R) :-
     % Same shape inside an if-then-else condition.
     ( var(X), X = done -> R is 1 ; R is 0 ).   % 1 (got 0)
 
+% M140: the remaining put-instruction bind-throughs (follow-up to
+% M139). put_constant / put_structure / put_list also bound any live
+% unbound variable whose Ref happened to remain in the target register
+% when staging an argument for the NEXT goal. The bind-through is now
+% conditional on register class: A-register writes (staging) never
+% bind the old occupant; X/Y-register writes keep it because top-down
+% structure chaining (set_variable Xn placeholder, then
+% put_structure/put_list into Xn) depends on the bind-through to link
+% nested cells into their parent -- see test_msort_head's input list
+% build. get_list keeps its bind-through unconditionally: that one is
+% the legitimate write-mode head binding (the register's variable is
+% unbound by definition of entering write mode, and binding it to the
+% fresh cons cell IS the instruction's job).
+
+:- dynamic test_m140_put_constant/2.
+test_m140_put_constant(_, R) :-
+    % put_constant staging foo for atom/1 found X's Ref in A1 and
+    % bound X to foo.
+    var(X), atom(foo), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_constant_int/2.
+test_m140_put_constant_int(_, R) :-
+    var(X), integer(7), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_structure/2.
+test_m140_put_structure(_, R) :-
+    % put_structure building f(a) bound X to the compound.
+    var(X), compound(f(a)), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_list/2.
+test_m140_put_list(_, R) :-
+    % put_list building [a] corrupted X. (compound/1 rather than
+    % is_list/1 because is_list([a]) fails standalone on this engine
+    % -- separate pre-existing put_list-representation bug.)
+    var(X), compound([a]), ( var(X) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m140_get_list_write/2.
+:- dynamic m140_mklist/1.
+m140_mklist([a]).
+test_m140_get_list_write(_, R) :-
+    % Guard: get_list write mode must STILL bind an unbound call arg
+    % to the constructed list (the one bind-through kept).
+    m140_mklist(L), ( L == [a] -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -7002,6 +7046,17 @@ test_all :-
                    test_m139_no_alias_on_put_value, 0, 1),
        run_test_r0('ITE: var(X), X=done -> 1',
                    test_m139_ite_var_bind, 0, 1),
+       format('--- M140 remaining put-instruction bind-throughs ---~n'),
+       run_test_r0('put_constant must not bind old occupant -> 1',
+                   test_m140_put_constant, 0, 1),
+       run_test_r0('put_constant int variant -> 1',
+                   test_m140_put_constant_int, 0, 1),
+       run_test_r0('put_structure must not bind old occupant -> 1',
+                   test_m140_put_structure, 0, 1),
+       run_test_r0('put_list must not bind old occupant -> 1',
+                   test_m140_put_list, 0, 1),
+       run_test_r0('get_list write mode still binds -> 1',
+                   test_m140_get_list_write + [m140_mklist/1], 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

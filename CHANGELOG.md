@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM LLVM target (M140): remaining put-instruction bind-throughs**
+  — completes the M139 audit. `put_constant`, `put_structure`, and
+  `put_list` called `@wam_bind_through_if_unbound_ref(old, val)`
+  unconditionally, binding any live unbound variable whose Ref
+  remained in the target register when staging an argument:
+  `var(X), atom(foo)` bound X to `foo`, `var(X), compound(f(a))`
+  bound X to the compound, and the list variant corrupted X the same
+  way. The bind-through is **conditional on register class** now:
+  A-register writes (index < 16) are pure staging for the next goal
+  and never bind the old occupant; X/Y-register writes keep the
+  bind-through because top-down structure chaining depends on it —
+  `set_variable Xn` leaves a Ref to the parent compound's arg slot
+  in `Xn`, and the following `put_structure [|]/2, Xn` binding
+  through that Ref is what links the nested cell into its parent
+  (e.g. building `[33, 11, 22]` in `test_msort_head`; full removal
+  broke it, caught by the suite). `get_list` keeps its bind-through —
+  the legitimate write-mode head binding, guarded by a regression
+  test. Five tests in the new
+  `--- M140 remaining put-instruction bind-throughs ---` section.
+  Found but out of scope: `is_list([a])` fails standalone (the
+  pre-existing put_list heap-marker-representation limitation).
 - **WAM LLVM target (M139): permanent-variable corruption via the
   put-instruction bind-through.** The pre-existing bug noted in the
   M138 test comments: top-level fresh-variable goals mis-executed —
