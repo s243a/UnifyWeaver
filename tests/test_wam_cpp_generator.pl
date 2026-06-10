@@ -3796,9 +3796,11 @@ test(lowerability_clause_chain) :-
 
 % A multi-clause predicate whose head does NOT discriminate on a distinct
 % first-arg constant (here the first argument is bound via get_variable, not
-% get_constant) is not a clause chain, so it still lowers as multi_clause_1
-% (clause 1 inline, clauses 2+ via the interpreter fallback).
-test(lowerability_multi_clause_1) :-
+% get_constant) is not a clause chain (T5). Its clauses are all clean supported
+% deterministic bodies, so it now lowers as T4 (multi_clause_n): every clause is
+% emitted inline, tried in order with a restore between attempts (previously it
+% was multi_clause_1 -- clause 1 inline, clauses 2+ via the interpreter).
+test(lowerability_multi_clause_n) :-
     Instrs = [try_me_else("L2"),
               get_variable("X1", "A1"),
               proceed,
@@ -3806,7 +3808,7 @@ test(lowerability_multi_clause_1) :-
               get_variable("X1", "A1"),
               proceed],
     wam_cpp_lowerable(wam_cpp_choice/1, Instrs, Reason),
-    assertion(Reason == multi_clause_1).
+    assertion(Reason == multi_clause_n).
 
 test(is_deterministic_helper) :-
     assertion(is_deterministic_pred_cpp([proceed])),
