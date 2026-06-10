@@ -54,6 +54,12 @@ Start with the simplest semantics:
 - cycle policy: use the same bounded/visited policy as the exact search oracle;
 - approximation: none.
 
+Use `scripts/sample_distribution_cache_subtree.py` to turn a resolved
+`child<TAB>parent` category edge list into a bounded benchmark subtree and
+target list before passing it to `scripts/distribution_cache_benchmark.py`.
+The sampler owns root selection, depth capping, and admin/container filtering;
+the benchmark runner owns measurement over the resulting TSV.
+
 Under those constraints, cached-distribution search should be semantically exact.
 Any discrepancy against full exact search is a bug in orientation, budget
 accounting, normalization, cycle policy, or path-statistic handling.
