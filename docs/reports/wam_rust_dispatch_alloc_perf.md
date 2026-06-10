@@ -108,3 +108,37 @@ That dominates the allocation cost for many-clause T4. It is a less common shape
 `clauses × reg-file-size` and would be the thing to optimise (e.g. restore only
 the trail + the actually-written A-registers) before pushing T4 to wide
 predicates.
+
+## Sweep to other targets
+
+The per-comparison atom allocation is **representation-specific**. Survey of the
+lowered targets:
+
+| target | atom repr | per-cmp alloc? | action |
+|---|---|---|---|
+| rust | `Value::Atom(String)` | yes (get_reg clone + RHS temp) | fixed (`match_reg_atom`) |
+| cpp  | `Value{std::string s}` | yes (get_reg copy + RHS temp) | fixed (`match_reg_atom`) |
+| go   | interned `*Atom` (cached ref) | no | clean |
+| llvm | interned i32 atom id | no | clean |
+| haskell | interned `Atom Int` | no | clean |
+| scala | interned int (atom table) | no | clean |
+| lua  | interned (intern_table) | no | clean |
+| clojure | interned via `normalize-literal-term` / `interned-equal?` | no (a hash lookup, not an alloc) | clean |
+| fsharp | `Atom of string`, but `get_constant` **delegates to `step`** (.NET interns string literals) | not the inline hot-alloc shape | left as is |
+
+### C++ result
+
+Same fix as Rust (`WamState::match_reg_atom` reads the register cell in place —
+no `Value` copy, no temporary `Value::Atom`; `deref` is a no-op in C++'s
+cell-mutates-in-place model). Measured (g++ -O2, 5M iters):
+
+| benchmark | before | after | speedup |
+|---|---:|---:|:-:|
+| single-clause `wide/20` | 5821 ms | 3351 ms | **1.74×** |
+| `d64/1` T5 dispatch, 64 atoms, worst case | 8446 ms | 6266 ms | **1.35×** |
+
+The win is smaller than Rust's because **C++ stores the register file as
+`std::unordered_map<std::string, CellPtr>`** — every register access also pays a
+string-keyed hash lookup that the allocation fix does not touch. That hash-map
+register file (vs Rust/Go's flat `Vec`/array indexed by an int) is the **next**
+C++ bottleneck and a bigger structural change; noted here for later.
