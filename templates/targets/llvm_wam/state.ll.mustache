@@ -624,6 +624,20 @@ entry:
 check:
   %addr_i64 = extractvalue %Value %ref_val, 1
   %addr = trunc i64 %addr_i64 to i32
+  ; M139: never write a Ref back into its own cell. put_variable
+  ; places the SAME Ref{addr} into both Xn and Ai; a later
+  ; put_value Xn, Ai then arrives here with ref_val = new_val =
+  ; Ref{addr}, and binding would store Ref{addr} INTO cell addr --
+  ; a self-referential cell that derefs to itself, so var/1 sees
+  ; the variable as bound and every later unification corrupts.
+  ; The registers already alias through this cell; skip.
+  %nv_tag = extractvalue %Value %new_val, 0
+  %nv_is_ref = icmp eq i32 %nv_tag, 5
+  %nv_addr_i64 = extractvalue %Value %new_val, 1
+  %same_addr = icmp eq i64 %nv_addr_i64, %addr_i64
+  %self_ref = and i1 %nv_is_ref, %same_addr
+  br i1 %self_ref, label %done, label %check_cell
+check_cell:
   %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
   %is_unb = call i1 @value_is_unbound(%Value %old)
   br i1 %is_unb, label %bind, label %done
