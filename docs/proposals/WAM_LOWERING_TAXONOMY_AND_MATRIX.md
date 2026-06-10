@@ -97,7 +97,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
 | rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
-| cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
 | fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
@@ -169,18 +169,24 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   above). Remaining T4/T5 holes are intentional: clojure has no distinct
   first-arg dispatch (T4 only); python's multi-clause story is its T5
   `if/elif/else`; wat has neither yet.
-- **T6 (first-arg indexing)** — **Rust** now has a *gated* T6 (`~`): it
-  reuses the T5 `wam_clause_chain` front-end, but when the discriminators are
-  all atoms and there are ≥ `t6_min_clauses` of them (default 8) the back-end
-  emits a native two-stage `match` (string switch → integer jump table)
-  instead of the if-cascade. The other targets still drop the `switch_on_*`
-  prefix and try clauses in order. This is the natural next advancement after
-  T5 (same clause-head analysis, switch back-end): shared front-end,
-  per-target back-end — high leverage, and a perf win that's sound behind a
-  gate. Measured on generated Rust: a tie at 4 clauses, 1.55× at 8, 5.7× at
-  64, 12.7× at 256 — so it is gated to the many-clause case (see
-  `docs/reports/wam_rust_dispatch_alloc_perf.md`); the compiler flattens the
-  cascade for few clauses (matching the prior Go array-dispatch result).
+- **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
+  both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
+  are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the
+  back-end replaces the if-cascade with a native indexed dispatch — Rust a
+  two-stage `match` (string switch → integer jump table); C++ a static
+  `std::unordered_map<std::string,int>` (no native string switch) → `switch`.
+  The other targets still drop the `switch_on_*` prefix and try clauses in
+  order. This is the natural next advancement after T5 (same clause-head
+  analysis, switch back-end): shared front-end, per-target back-end — high
+  leverage, and a perf win that's sound behind a gate. Measured on generated
+  code (tie at 4 clauses; then growing with N): Rust 1.55× at 8, 5.7× at 64,
+  12.7× at 256; C++ 2.1× at 8, 11.6× at 64, 40.8× at 256 (see
+  `docs/reports/wam_rust_dispatch_alloc_perf.md`). The compiler flattens the
+  cascade for few clauses (matching the prior Go array-dispatch result), hence
+  the gate. Int-interned targets (go/llvm/haskell/scala/lua) are the remaining
+  candidates but carry the highest "lost to the compiler" risk (an int
+  equality chain is already switch-converted), so each needs a per-target
+  benchmark before shipping.
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
