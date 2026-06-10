@@ -4014,9 +4014,13 @@ ane.float:
   ret i1 %ane.fr
 
 builtin_eq:
-  %eq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %eq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %eq.r = call i1 @value_equals(%Value %eq.a1, %Value %eq.a2)
+  ; M137: route through @wam_strict_eq so nested compound args get
+  ; dereffed at every level. The legacy @value_equals only derefs at
+  ; the top (caller does it) and compared Ref payloads at depth -- so
+  ; multi-cons-cell list equality silently failed.
+  %eq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %eq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %eq.r = call i1 @wam_strict_eq(%WamState* %vm, %Value %eq.a1, %Value %eq.a2)
   ret i1 %eq.r
 
 builtin_true:
@@ -4085,10 +4089,12 @@ builtin_is_list_check:
   ret i1 %ilc.r
 
 builtin_neq:
-  ; \\==/2: not structurally equal
-  %neq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %neq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %neq.eq = call i1 @value_equals(%Value %neq.a1, %Value %neq.a2)
+  ; Structurally not equal (op id 21). M137: route through
+  ; @wam_strict_eq so nested compounds compare properly (see
+  ; @wam_strict_eq doc above and the M137 commit).
+  %neq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %neq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %neq.eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %neq.a1, %Value %neq.a2)
   %neq.r = xor i1 %neq.eq, true
   ret i1 %neq.r
 
@@ -13743,6 +13749,91 @@ ig.true:
   ret i1 true
 
 ig.false:
+  ret i1 false
+}
+
+; M137: proper deref-at-every-level strict equality for ==/2 and the
+; structurally-inequal sibling (op id 21).
+; The pre-existing @value_equals (in value.ll.mustache) compares tags
+; and payloads shallowly and only derefs the top-level operands via the
+; caller. Recursive arg comparison loads the heap-stored %Value
+; verbatim, which means if an arg slot holds a Ref (the case for many
+; put_structure-built compounds), tag-eq becomes Ref==Ref and the
+; payload comparison is heap-address-vs-heap-address -- almost always
+; false even when the deref''d values are identical. Symptom uncovered
+; in M136: ``[a, b] == [a, b]'' returned false for two literal lists.
+;
+; This helper derefs on entry AND inside the recursive arg loop so
+; structural equality holds regardless of how nested args are stored.
+define i1 @wam_strict_eq(%WamState* %vm, %Value %a, %Value %b) {
+entry:
+  %seq.da = call %Value @wam_deref_value(%WamState* %vm, %Value %a)
+  %seq.db = call %Value @wam_deref_value(%WamState* %vm, %Value %b)
+  %seq.tag_a = extractvalue %Value %seq.da, 0
+  %seq.tag_b = extractvalue %Value %seq.db, 0
+  %seq.tags_eq = icmp eq i32 %seq.tag_a, %seq.tag_b
+  br i1 %seq.tags_eq, label %seq.same_tag, label %seq.not_equal
+
+seq.same_tag:
+  %seq.is_compound = icmp eq i32 %seq.tag_a, 3
+  br i1 %seq.is_compound, label %seq.compound_case, label %seq.shallow_payload
+
+seq.shallow_payload:
+  %seq.pay_a = extractvalue %Value %seq.da, 1
+  %seq.pay_b = extractvalue %Value %seq.db, 1
+  %seq.pay_eq = icmp eq i64 %seq.pay_a, %seq.pay_b
+  ret i1 %seq.pay_eq
+
+seq.compound_case:
+  %seq.pa = extractvalue %Value %seq.da, 1
+  %seq.pb = extractvalue %Value %seq.db, 1
+  %seq.same_ptr = icmp eq i64 %seq.pa, %seq.pb
+  br i1 %seq.same_ptr, label %seq.equal, label %seq.deep_check
+
+seq.deep_check:
+  %seq.ap = inttoptr i64 %seq.pa to %Compound*
+  %seq.bp = inttoptr i64 %seq.pb to %Compound*
+  %seq.afn_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 0
+  %seq.bfn_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 0
+  %seq.afn = load i8*, i8** %seq.afn_slot
+  %seq.bfn = load i8*, i8** %seq.bfn_slot
+  %seq.fn_eq = icmp eq i8* %seq.afn, %seq.bfn
+  br i1 %seq.fn_eq, label %seq.check_arity, label %seq.not_equal
+
+seq.check_arity:
+  %seq.aar_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 1
+  %seq.bar_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 1
+  %seq.aar = load i32, i32* %seq.aar_slot
+  %seq.bar = load i32, i32* %seq.bar_slot
+  %seq.ar_eq = icmp eq i32 %seq.aar, %seq.bar
+  br i1 %seq.ar_eq, label %seq.args_init, label %seq.not_equal
+
+seq.args_init:
+  %seq.aargs_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 2
+  %seq.bargs_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 2
+  %seq.aargs = load %Value*, %Value** %seq.aargs_slot
+  %seq.bargs = load %Value*, %Value** %seq.bargs_slot
+  %seq.has_args = icmp sgt i32 %seq.aar, 0
+  br i1 %seq.has_args, label %seq.loop, label %seq.equal
+
+seq.loop:
+  %seq.idx = phi i32 [ 0, %seq.args_init ], [ %seq.next_idx, %seq.step ]
+  %seq.ae_ptr = getelementptr %Value, %Value* %seq.aargs, i32 %seq.idx
+  %seq.ae = load %Value, %Value* %seq.ae_ptr
+  %seq.be_ptr = getelementptr %Value, %Value* %seq.bargs, i32 %seq.idx
+  %seq.be = load %Value, %Value* %seq.be_ptr
+  %seq.arg_eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %seq.ae, %Value %seq.be)
+  br i1 %seq.arg_eq, label %seq.step, label %seq.not_equal
+
+seq.step:
+  %seq.next_idx = add i32 %seq.idx, 1
+  %seq.done = icmp sge i32 %seq.next_idx, %seq.aar
+  br i1 %seq.done, label %seq.equal, label %seq.loop
+
+seq.equal:
+  ret i1 true
+
+seq.not_equal:
   ret i1 false
 }
 
