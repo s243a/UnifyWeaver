@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM C + C++ targets (M143): var-var unification created no
+  alias.** Found by a behavioral sweep of 8 targets with the
+  M139/M140 probe shapes (Rust, Python, Go, Haskell, F#, Scala
+  interpreters: clean). Both runtimes copied one unbound marker over
+  the other when unifying two unbound cells, leaving the variables
+  independent: `X = Y, X = 1, Y = 2` **succeeded** and
+  `X = Y, X = 42, Y =:= 42` failed — in the C++ case in both
+  interpreter and lowered modes, since the bug sat in the shared
+  runtime (`unify_cells`).
+  - **C** (`wam_c_runtime/wam_runtime.h`): the unbound-unbound case
+    now installs a `VAL_REF` from one cell to the other's heap slot
+    (preferring a heap-resident referent; two non-heap cells keep
+    the legacy copy as a last resort).
+  - **C++** (`wam_cpp_target.pl` runtime): the cell model has no Ref
+    tag and 100+ direct payload-read sites, so instead of a
+    forwarding tag the fix records var-var **alias pairs**;
+    `bind_cell` propagates a later real value across the alias graph
+    (each write individually trailed), and `alias_pop` trail entries
+    dissolve pairs on backtrack. All 13 inline trail-unwind loops
+    were routed through the alias-aware `unwind_trail_to` (the
+    first cut left them raw and segfaulted on backtrack over an
+    alias entry).
+  - New gated exec regression tests: `tests/test_wam_c_var_alias.pl`
+    and `tests/test_wam_cpp_var_alias.pl` (chain, conflict-must-fail,
+    3-deep chain, alias-dissolves-on-backtrack).
+- **WAM LLVM test harness (M142): integer tag-check in exec-driver
+  result reads.** Both integer drivers returned the raw payload of
+  the result register — a non-integer result leaked its atom id or
+  heap address as a mystery exit code (a test ending in `X = x`
+  exited 90, the atom id of `x`), producing two red-herring diagnoses
+  during the M138–M141 work. The drivers now deref the result and
+  require an Integer tag: wrong tag exits 254 with an explanatory
+  message, and predicate failure (255) gets one too.
+
+### Known issues (found by the M143 sweep, not yet fixed)
+- **Rust WAM target (interpreter mode):** if-then-else does not
+  commit to the then-branch — `( 1 =:= 1 -> R is 1 ; R is 0 )`
+  queried with R=0 succeeds by backtracking into the else branch.
+  Lowered mode is correct.
+- **Haskell WAM target (ST mode):** `runMutableRegs` writes
+  `GetLevel Yn` register operands (ids 201+) straight into the
+  STArray sized to `maxRegId = 199` — any if-then-else predicate
+  crashes with an index error on the ST path (the pure-`run` path
+  routes Y-regs through env frames and is correct).
+- **Scala WAM target (lowered mode):** the lowered emitter
+  (`wam_scala_lowered_emitter.pl:632`) emits a bare `{ ... }` block
+  after a call statement; scalac parses the brace as an argument
+  list (`Unit does not take parameters`) — `emit_mode(functions)`
+  projects using `put_variable Yn, A1` do not compile.
 - **WAM LLVM target (M141): `is_list/1` never succeeded.** The
   follow-up flagged in M140: `builtin_is_list_check` accepted only
   the legacy tag-4 List value, but the engine builds lists as

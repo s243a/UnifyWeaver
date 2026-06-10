@@ -800,6 +800,33 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
         
         if (d1 == d2) continue;
         
+        if (d1->tag == VAL_UNBOUND && d2->tag == VAL_UNBOUND) {
+            /* M143: var-var unification must ALIAS the two cells, not
+               copy one unbound marker over the other (which left them
+               independent: X = Y, X = 1, Y = 2 succeeded). Install a
+               VAL_REF from one cell to the other's heap slot so a later
+               binding through either is seen by both. Prefer pointing
+               the ref at a heap-resident cell; if only one cell lives
+               in H_array, redirect the non-heap one at it. Two non-heap
+               unbound cells (no heap slot to reference) keep the legacy
+               copy as a last resort. */
+            long i1 = d1 - state->H_array;
+            long i2 = d2 - state->H_array;
+            bool in1 = (i1 >= 0 && i1 < (long)state->H);
+            bool in2 = (i2 >= 0 && i2 < (long)state->H);
+            if (in2) {
+                trail_binding(state, d1);
+                d1->tag = VAL_REF;
+                d1->data.ref_addr = (int)i2;
+            } else if (in1) {
+                trail_binding(state, d2);
+                d2->tag = VAL_REF;
+                d2->data.ref_addr = (int)i1;
+            } else {
+                wam_bind(state, d1, d2);
+            }
+            continue;
+        }
         if (d1->tag == VAL_UNBOUND || d2->tag == VAL_UNBOUND) {
             WamValue *unbound = (d1->tag == VAL_UNBOUND) ? d1 : d2;
             WamValue *other = (d1->tag == VAL_UNBOUND) ? d2 : d1;
