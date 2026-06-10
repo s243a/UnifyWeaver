@@ -172,3 +172,32 @@ The win is smaller than Rust's because **C++ stores the register file as
 string-keyed hash lookup that the allocation fix does not touch. That hash-map
 register file (vs Rust/Go's flat `Vec`/array indexed by an int) is the **next**
 C++ bottleneck and a bigger structural change; noted here for later.
+
+### C++ register file: hash-map -> flat array (the "next bottleneck", now done)
+
+Followed up on the C++ register-file finding above. `regs` changed from
+`std::unordered_map<std::string, CellPtr>` to a flat `std::vector<CellPtr>`
+indexed by `reg_index(name)` (A1->0.., X1->100..; Y registers still live in env
+frames). The six `saved_regs` snapshots (ChoicePoint + catcher/negation/conj/
+disj/ifthen frames) became vectors too; every snapshot/restore site is a
+whole-container copy/move, so no backtracking logic changed.
+
+Measured (g++ -O2, 5M iters, both **on top of** the allocation fix):
+
+| benchmark | map | flat array | speedup |
+|---|---:|---:|:-:|
+| single-clause `wide/20` (20 reg accesses/call) | 3360 ms | 1609 ms | **2.09×** |
+| `d64/1` T5 dispatch (1 reg access, 64 atom compares) | 6310 ms | 5975 ms | 1.06× |
+
+The win **scales with register accesses per call**: `wide/20` does 20 head
+matches and gains 2.09×; `d64/1` reads only A1 per guard (the cost is the 64
+atom comparisons, which indexing does not touch) so it barely moves. Typical
+clauses (a few head args + body temporaries) land in between. Combined with the
+allocation fix the total over the original map+`Value::Atom` baseline is **3.6×**
+on `wide/20`.
+
+Correctness: `test_wam_cpp_lowered_{t4,t5,ite_exec}` plus ~20 diverse
+backtracking/control e2e subtests (member enumeration, findall/bagof/setof,
+maplist, recursive arithmetic, cut, append, reverse) all pass. The full
+`test_wam_cpp_generator` suite is simply slow (dozens of programs compiled at
+-O0), not changed by this; it needs a longer timeout than the default.
