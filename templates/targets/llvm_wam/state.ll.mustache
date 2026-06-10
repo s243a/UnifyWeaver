@@ -592,9 +592,37 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) alwaysinline nounwind
 ; Bind a register to a value. If the register currently holds a Ref
 ; (put_variable aliasing), write through to the referenced heap cell
 ; AND record a trail entry so a subsequent backtrack unwinds the
-; binding. No Ref-chain following — put_variable creates depth-1 Refs,
-; and more exotic chains would also require the structural-unify path
-; to produce them.
+; binding.
+; M140: follows the Ref CHAIN to its end before writing. =/2 var-var
+; aliasing stores Ref{cell2} into cell1, so a later binding arriving
+; via Ref{cell1} must land in cell2 -- the cell every alias of the
+; variable reads -- not in cell1 (which would leave the partner
+; variable unbound; broke ``X = Y, X = 42, Y =:= 42'').
+; @wam_last_ref returns the last Ref in the chain -- the one whose
+; cell holds a non-Ref (Unbound for fresh chains, or a bound value
+; for the rebinding case, where writing at the chain end matches the
+; old one-hop behavior for depth-1 Refs).
+define %Value @wam_last_ref(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %lr.loop
+lr.loop:
+  %lr.cur = phi %Value [ %v, %entry ], [ %lr.cell, %lr.follow ]
+  %lr.i = phi i32 [ 0, %entry ], [ %lr.i_next, %lr.follow ]
+  %lr.addr_i64 = extractvalue %Value %lr.cur, 1
+  %lr.addr = trunc i64 %lr.addr_i64 to i32
+  %lr.cell = call %Value @wam_heap_get(%WamState* %vm, i32 %lr.addr)
+  %lr.cell_tag = extractvalue %Value %lr.cell, 0
+  %lr.cell_is_ref = icmp eq i32 %lr.cell_tag, 5
+  %lr.hop_ok = icmp slt i32 %lr.i, 64
+  %lr.cont = and i1 %lr.cell_is_ref, %lr.hop_ok
+  br i1 %lr.cont, label %lr.follow, label %lr.done
+lr.follow:
+  %lr.i_next = add i32 %lr.i, 1
+  br label %lr.loop
+lr.done:
+  ret %Value %lr.cur
+}
+
 define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
@@ -602,7 +630,8 @@ entry:
   %is_ref = icmp eq i32 %tag, 5
   br i1 %is_ref, label %heap_bind, label %reg_bind
 heap_bind:
-  %addr_i64 = extractvalue %Value %cur, 1
+  %last = call %Value @wam_last_ref(%WamState* %vm, %Value %cur)
+  %addr_i64 = extractvalue %Value %last, 1
   %addr = trunc i64 %addr_i64 to i32
   %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
   call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
@@ -678,22 +707,48 @@ bind_a:
   br i1 %a_is_ref, label %bind_a_through, label %fail_no_binding
 
 bind_a_through:
-  %a_addr_i64 = extractvalue %Value %a, 1
+  ; M140: bind at the END of a's Ref chain, not its first Ref. After
+  ; X = Y aliases cell1 -> Ref{cell2}, a later X = 42 arrives with
+  ; a = Ref{cell1}; writing 42 into cell1 would leave cell2 -- the
+  ; cell Y reads -- unbound. @wam_deref_keep_var returns the last
+  ; Ref in the chain (the one whose cell is actually Unbound), so
+  ; the write lands where every alias of the variable sees it.
+  %a_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %a_addr_i64 = extractvalue %Value %a_last, 1
   %a_addr = trunc i64 %a_addr_i64 to i32
-  %a_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
-  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %a_old)
-  ; M104: if b is also a Ref to an unbound heap cell, store the
-  ; ORIGINAL b (the Ref) into a's cell rather than the deref'd
-  ; Unbound sentinel. That way a now points at b's cell, and
-  ; subsequent var(a) / var(b) / a == b / etc. all see them as
-  ; the same variable. Previously bind_a_through stored db (=
-  ; Unbound) which left a and b as two distinct unbound cells.
+  ; M104: if b is also a Ref to an unbound heap cell, store b's
+  ; chain-end Ref into a's cell rather than the deref'd Unbound
+  ; sentinel. That way a now points at b's cell, and subsequent
+  ; var(a) / var(b) / a == b / etc. all see them as the same
+  ; variable. (M140: chain-end rather than original b, so chains
+  ; stay depth-bounded; and if both chains already end at the SAME
+  ; cell, the variables are already aliased -- writing would create
+  ; a self-referential cell, so succeed without binding.)
   %ba_b_tag = extractvalue %Value %b, 0
   %ba_b_is_ref = icmp eq i32 %ba_b_tag, 5
   %ba_db_unb = call i1 @value_is_unbound(%Value %db)
   %ba_alias = and i1 %ba_b_is_ref, %ba_db_unb
-  %ba_to_write = select i1 %ba_alias, %Value %b, %Value %db
-  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_to_write)
+  br i1 %ba_alias, label %bind_a_alias, label %bind_a_value
+
+bind_a_alias:
+  %ba_b_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %ba_b_addr_i64 = extractvalue %Value %ba_b_last, 1
+  %ba_same_cell = icmp eq i64 %ba_b_addr_i64, %a_addr_i64
+  br i1 %ba_same_cell, label %bind_a_done, label %bind_a_store_alias
+
+bind_a_store_alias:
+  %baa_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %baa_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_b_last)
+  br label %bind_a_done
+
+bind_a_value:
+  %bav_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %bav_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %db)
+  br label %bind_a_done
+
+bind_a_done:
   ret i1 true
 
 check_b_unb:
@@ -706,18 +761,36 @@ bind_b:
   br i1 %b_is_ref, label %bind_b_through, label %fail_no_binding
 
 bind_b_through:
-  %b_addr_i64 = extractvalue %Value %b, 1
+  ; M140: symmetric to bind_a_through -- bind at the END of b's Ref
+  ; chain, alias to a's chain-end Ref, skip if already the same cell.
+  %b_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %b_addr_i64 = extractvalue %Value %b_last, 1
   %b_addr = trunc i64 %b_addr_i64 to i32
-  %b_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
-  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %b_old)
-  ; M104: symmetric to bind_a_through -- if a is also an unbound
-  ; Ref, store the original a so they alias.
   %bb_a_tag = extractvalue %Value %a, 0
   %bb_a_is_ref = icmp eq i32 %bb_a_tag, 5
   %bb_da_unb = call i1 @value_is_unbound(%Value %da)
   %bb_alias = and i1 %bb_a_is_ref, %bb_da_unb
-  %bb_to_write = select i1 %bb_alias, %Value %a, %Value %da
-  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_to_write)
+  br i1 %bb_alias, label %bind_b_alias, label %bind_b_value
+
+bind_b_alias:
+  %bb_a_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %bb_a_addr_i64 = extractvalue %Value %bb_a_last, 1
+  %bb_same_cell = icmp eq i64 %bb_a_addr_i64, %b_addr_i64
+  br i1 %bb_same_cell, label %bind_b_done, label %bind_b_store_alias
+
+bind_b_store_alias:
+  %bba_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %bba_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_a_last)
+  br label %bind_b_done
+
+bind_b_value:
+  %bbv_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %bbv_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %da)
+  br label %bind_b_done
+
+bind_b_done:
   ret i1 true
 
 both_bound:

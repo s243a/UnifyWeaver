@@ -2977,10 +2977,23 @@ wam_llvm_case('put_constant',
   %pc.tag_i32 = lshr i32 %pc.op2_32, 16
   %pc.val = insertvalue %Value undef, i32 %pc.tag_i32, 0
   %pc.val2 = insertvalue %Value %pc.val, i64 %op1, 1
-  %pc.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pc.reg_idx)
+  ; M140: bind-through only for non-argument registers. Writing an
+  ; A register is pure staging for the next goal -- the old
+  ; bind-through bound any live unbound variable whose Ref remained
+  ; there (``var(X), atom(foo)'' bound X to foo). X/Y registers can
+  ; hold set_variable placeholder Refs from top-down structure
+  ; chaining, where binding through IS the linking mechanism.
   call void @wam_trail_binding(%WamState* %vm, i32 %pc.reg_idx)
-  call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
+  %pc.is_areg = icmp ult i32 %pc.reg_idx, 16
+  br i1 %pc.is_areg, label %pc.store, label %pc.chain
+
+pc.chain:
+  %pc.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pc.old, %Value %pc.val2)
+  br label %pc.store
+
+pc.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -3060,10 +3073,25 @@ wam_llvm_case('put_structure',
   %ps.cp_i64 = ptrtoint %Compound* %ps.cp to i64
   %ps.val0 = insertvalue %Value undef, i32 3, 0
   %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
-  %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
+  ; M140: bind-through only for non-argument registers (see
+  ; put_constant). A-reg writes are staging -- the old unconditional
+  ; bind-through bound a live variable left in Ai to the freshly
+  ; built compound (``var(X), compound(f(a))'' bound X to f(a)).
+  ; X/Y-reg writes are top-down structure chaining: set_variable Xn
+  ; left a Ref to the parent''s arg slot in Xn, and binding through
+  ; it links this new cell into the parent (e.g. the [33,11,22]
+  ; build in test_msort_head).
   call void @wam_trail_binding(%WamState* %vm, i32 %ps.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
+  %ps.is_areg = icmp ult i32 %ps.ai, 16
+  br i1 %ps.is_areg, label %ps.store, label %ps.chain
+
+ps.chain:
+  %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ps.old, %Value %ps.val)
+  br label %ps.store
+
+ps.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
@@ -3102,10 +3130,19 @@ wam_llvm_case('put_list',
   %pl.cp_i64 = ptrtoint %Compound* %pl.cp to i64
   %pl.val0 = insertvalue %Value undef, i32 3, 0
   %pl.val = insertvalue %Value %pl.val0, i64 %pl.cp_i64, 1
-  %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
+  ; M140: bind-through only for non-argument registers (see
+  ; put_structure -- same staging-vs-chaining split).
   call void @wam_trail_binding(%WamState* %vm, i32 %pl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
+  %pl.is_areg = icmp ult i32 %pl.ai, 16
+  br i1 %pl.is_areg, label %pl.store, label %pl.chain
+
+pl.chain:
+  %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.val)
+  br label %pl.store
+
+pl.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
   ; WriteCtx writes into args[0..1] via set_constant/set_variable/set_value.
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
