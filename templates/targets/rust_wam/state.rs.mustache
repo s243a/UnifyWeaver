@@ -832,6 +832,32 @@ impl WamState {
         }
     }
 
+    /// Allocation-free first-argument indexing (T6) read: deref the register
+    /// (by reference, following the binding chain) and, if it resolves to a
+    /// bound atom, borrow its `&str`. Returns `None` for an unbound register or
+    /// a bound non-atom value. The caller `match`es the returned `&str` against
+    /// the clause discriminators (a native string `switch`), so neither this
+    /// read nor the dispatch allocates. The borrow is confined to producing a
+    /// `Copy` selector, so the matched clause body can take `&mut self` freely.
+    #[inline]
+    pub fn match_reg_atom_str<'a>(&'a self, name: &str) -> Option<&'a str> {
+        match self.get_reg_ref(name) {
+            None => None,
+            Some(v) => self.deref_atom_str(v),
+        }
+    }
+
+    fn deref_atom_str<'a>(&'a self, val: &'a Value) -> Option<&'a str> {
+        match val {
+            Value::Unbound(name) => match self.bindings.get(name) {
+                Some(bound) => self.deref_atom_str(bound),
+                None => None,
+            },
+            Value::Atom(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     /// Bind an unbound variable name to a value in the binding table.
     /// Also records a trail entry so that backtracking can undo this binding.
     pub fn bind_var(&mut self, var_name: &str, val: Value) {

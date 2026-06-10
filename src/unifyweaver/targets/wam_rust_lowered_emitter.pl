@@ -321,9 +321,9 @@ lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     ;   ForeignPreds = []
     ),
     nb_setval(rust_ite_ctr, 0),
-    (   % T5 first-argument-constant dispatch takes precedence.
+    (   % T5/T6 first-argument-constant dispatch takes precedence.
         rust_clause_chain_lowerable(Instrs, Guards)
-    ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, Options, RustLines)
     ;   % T4: a multi-clause predicate whose clauses are all supported
         % deterministic bodies (but not a distinct-first-arg chain) — lower
         % every clause inline, tried in order with a restore between attempts.
@@ -344,15 +344,54 @@ pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
         RustLines = [Header, Body, Footer]
     ).
 
-%% emit_clause_chain_rust(+FuncName, +Pred, +Arity, +Guards, +FK, -RustLines)
-%  Emit T5: deref the first argument once; if it is still unbound, defer to
-%  the entry wrapper's interpreter fallback (the unbound case is genuinely
-%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
-%  bound value against each clause's distinct discriminator and running that
-%  clause's remainder (which self-terminates: its `proceed` emits
-%  `return true`). A bound value matching no clause returns false (the
-%  predicate fails; the wrapper's fresh re-run also fails — sound).
-emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
+%% emit_clause_chain_rust(+FuncName, +Pred, +Arity, +Guards, +FK, +Options, -RustLines)
+%  Multi-clause first-argument dispatch with two back-ends sharing the
+%  `wam_clause_chain` front-end's guard list:
+%
+%   * T5 (default) — an if-cascade comparing the first arg against each
+%     clause's distinct discriminator in place (allocation-free
+%     `match_reg_atom`).
+%   * T6 (gated) — when every discriminator is an atom AND there are at least
+%     `t6_min_clauses` of them, emit a native two-stage `match`: a string
+%     `match` that maps the first arg's atom to a `Copy` selector index (the
+%     immutable borrow ends there, so the clause body can take `&mut vm`),
+%     then an integer `match` (a jump table) dispatching to the remainder.
+%
+%  T6 is gated because for few clauses the compiler flattens the if-cascade to
+%  equivalent code (an earlier array-dispatch experiment lost to the compiler),
+%  so the native switch only pays off once the linear scan is long enough — see
+%  docs/reports/wam_rust_dispatch_alloc_perf.md.
+%
+%  Both back-ends treat an unbound / non-matching first arg as a `false`
+%  return, deferring to the entry wrapper's interpreter fallback (sound: the
+%  wrapper's fresh re-run enumerates clauses, and a genuine no-match also
+%  fails there). Each clause remainder self-terminates (`proceed` -> `return
+%  true`).
+emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, Options, RustLines) :-
+    (   rust_t6_applicable(Guards, Options)
+    ->  emit_clause_chain_match_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ;   emit_clause_chain_cascade_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ).
+
+%% rust_t6_applicable(+Guards, +Options) is semidet.
+%  True when first-arg indexing (T6 native match) should be used instead of the
+%  T5 if-cascade: every discriminator is an atom (so a string `match` applies)
+%  and the clause count meets the gate threshold.
+rust_t6_applicable(Guards, Options) :-
+    rust_t6_min_clauses(Options, Min),
+    length(Guards, N),
+    N >= Min,
+    forall(member(guard(V, _), Guards), wam_classify_constant_token(V, atom(_))).
+
+%% rust_t6_min_clauses(+Options, -N)
+%  Clause-count gate for T6. Override with the `t6_min_clauses(N)` option;
+%  defaults to a conservative threshold above which the native `match` beats
+%  the compiler-flattened if-cascade (see the perf report).
+rust_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+% --- T5 back-end: if-cascade ---
+emit_clause_chain_cascade_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
     format(string(Header),
 '// ~w — lowered from ~w/~w (T5 first-argument dispatch)
 pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
@@ -366,6 +405,41 @@ pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
           format("    false~n") )),
     format(string(Footer), '}', []),
     RustLines = [Header, Body, Footer].
+
+% --- T6 back-end: native two-stage match (string switch -> jump table) ---
+emit_clause_chain_match_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T6 first-argument indexing / native match)
+pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    // String switch -> Copy selector (immutable borrow ends here).~n"),
+          format("    let _t6sel: i64 = match vm.match_reg_atom_str(\"A1\") {~n"),
+          emit_rust_t6_selectors(Guards, 0),
+          format("        _ => return false,  // unbound (defer to interpreter) or no clause matches~n"),
+          format("    };~n"),
+          format("    match _t6sel {  // integer jump table~n"),
+          emit_rust_t6_arms(Guards, 0, ForeignPreds),
+          format("        _ => {}~n"),
+          format("    }~n"),
+          format("    false~n") )),
+    format(string(Footer), '}', []),
+    RustLines = [Header, Body, Footer].
+
+emit_rust_t6_selectors([], _).
+emit_rust_t6_selectors([guard(V, _) | Rest], I) :-
+    wam_classify_constant_token(V, atom(Name)),
+    escape_rust_string(Name, Esc),
+    format("        Some(\"~w\") => ~w,~n", [Esc, I]),
+    I1 is I + 1,
+    emit_rust_t6_selectors(Rest, I1).
+
+emit_rust_t6_arms([], _, _).
+emit_rust_t6_arms([guard(_, Rem) | Rest], I, ForeignPreds) :-
+    format("        ~w => {~n", [I]),
+    emit_instrs(Rem, "            ", ForeignPreds),
+    format("        }~n"),
+    I1 is I + 1,
+    emit_rust_t6_arms(Rest, I1, ForeignPreds).
 
 emit_rust_guards([], _).
 emit_rust_guards([guard(V, Rem) | Rest], ForeignPreds) :-

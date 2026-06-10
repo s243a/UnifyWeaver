@@ -66,11 +66,11 @@ scan comparing `Value::Atom(k.clone())` ran at 2899 ms vs 323 ms comparing
 All Rust lowered tests (`t4`, `t5`, `ite_exec`, `save_regs`) still pass, so the
 change is purely an allocation removal — no semantic change.
 
-## Where T6 (first-arg indexing / native `match`) will win — for later
+## Where T6 (first-arg indexing / native `match`) wins — now implemented (gated) for Rust
 
-We benchmarked T6 (`match` on the first arg) **before** doing T6, to check it is
-actually a win (compilers optimise dispatch aggressively; an earlier Go
-array-dispatch experiment *lost* to the compiler). Findings, on the 64-key
+We benchmarked T6 (`match` on the first arg) **before** building it, to check it
+is actually a win (compilers optimise dispatch aggressively; an earlier Go
+array-dispatch experiment *lost* to the compiler). The initial 64-key
 micro-benchmark:
 
 | dispatch (64 keys, worst case) | time |
@@ -80,23 +80,53 @@ micro-benchmark:
 | `match(&str)` (T6 native switch) | 118 ms |
 | `HashMap` (array/map dispatch) | 110 ms |
 
-Conclusions for a future T6:
+T6 is now **implemented for the Rust lowered emitter, behind a clause-count
+gate** (`emit_clause_chain_match_rust`). When the `wam_clause_chain` guards are
+**all atoms** and there are at least `t6_min_clauses` of them (option, **default
+8**), the emitter replaces the T5 if-cascade with a native **two-stage `match`**:
+a string `match` mapping the first arg's atom to a `Copy` selector index (the
+immutable borrow of the register ends there, via `WamState::match_reg_atom_str`,
+so the clause body can take `&mut vm`), then an integer `match` — a jump table —
+dispatching to the clause remainder. Below the gate it stays the T5 cascade.
+
+### Measured on the *generated* code (release + lto, 5M dispatches, keys rotated over the whole key space)
+
+| N clauses | T5 cascade | T6 `match` | speedup |
+|---:|---:|---:|:-:|
+| 4 (gate declines → stays T5) | 126 ms | 129 ms | 1.0× (tie) |
+| 8 (gate threshold) | 157 ms | 101 ms | **1.55×** |
+| 16 | 260 ms | 101 ms | **2.6×** |
+| 64 | 876 ms | 153 ms | **5.7×** |
+| 256 | 2991 ms | 236 ms | **12.7×** |
+
+This is the *generated* code (not a micro-benchmark): the T5 cascade is O(N)
+(average ≈ N/2 string compares), while T6 is roughly flat (a string-match
+decision tree → integer jump table). The crossover is below the gate — at N=8
+T6 already wins 1.55×, and the win grows with clause count.
+
+Conclusions (validated):
 
 1. **For few clauses (the typical 2–5), dispatch shape is noise** — the
-   compiler flattens `match` / if-cascade / map to the same thing. T6 is **not**
-   worth it there. (Matches the prior Go result; do **not** sweep blindly.)
-2. **For many clauses, a native `match` is a real ~3–6× over the (now
-   allocation-free) linear scan** — `match(&str)` 118 ms vs linear `&str`
-   679 ms at 64 keys. So T6 has a genuine niche: **first-arg-indexed predicates
-   with many clauses.** It must be **gated to a clause-count threshold** and
-   re-benchmarked per target (string-atom targets get a comparison-tree `match`;
-   int-interned-atom targets get a true jump table → bigger win).
+   compiler flattens `match` / if-cascade / map to the same thing (confirmed:
+   N=4 is a tie). T6 is **not** worth it there, so the gate declines and emits
+   the T5 cascade. (Matches the prior Go result; do **not** sweep blindly.)
+2. **For many clauses, a native `match` is a real 1.5–12.7× over the (now
+   allocation-free) linear scan**, growing with N. So T6's niche is
+   **first-arg-indexed predicates with many atom clauses**, and it is gated to
+   the clause-count threshold accordingly.
 3. **Map/array dispatch is not a win** (110 ms ≈ `match` 118 ms but with more
-   machinery) — consistent with the earlier Go experience. Prefer the host's
-   native `switch`/`match` over an explicit table.
+   machinery) — consistent with the earlier Go experience. We use the host's
+   native `match`, not an explicit table.
 
-So: revisit T6 only for the many-clause case, gated on clause count, verified
-per target — the allocation fix above is the universal win and lands first.
+### Porting to other targets
+
+The gate + front-end are reusable; only the back-end emit differs. **String-atom
+targets** (cpp) get the same string-`match` decision tree. **Int-interned-atom
+targets** (go, llvm, haskell, scala, lua) get a *true* single-stage jump table on
+the interned id — a bigger win and simpler emit — but each must be re-benchmarked
+because, on ints, the compiler more readily converts even the T5 if-cascade into
+a switch (the "lost to the compiler" risk is highest there). Gate on clause
+count and verify per target.
 
 ## A second bottleneck (noted for later): T4 `lo_restore_clause`
 
