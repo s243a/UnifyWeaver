@@ -3640,6 +3640,76 @@ test_seq_atom_eq_still_works(_, R) :-
 test_seq_int_eq_still_works(_, R) :-
     ( 42 == 42 -> R is 1 ; R is 0 ).   % 1
 
+% M138: audit of the remaining @value_equals call sites after M137.
+% get_value / unify_value(read) / arg-3 are unify instructions and now
+% route bound-bound compares through @wam_unify_value; sort/2 dedup is
+% ==/2 equality over possibly-Ref-arg compounds and now uses
+% @wam_strict_eq.
+
+:- dynamic test_m138_gv_ground/2.
+:- dynamic m138_dup/2.
+m138_dup(X, X).
+test_m138_gv_ground(_, R) :-
+    % get_value bound-bound with structurally-equal ground compounds.
+    ( m138_dup(f(a), f(a)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_gv_unifies/2.
+test_m138_gv_unifies(_, R) :-
+    % get_value must UNIFY, not test equality: f(X) ~ f(Y) binds X = Y.
+    % Failed under the old @value_equals comparison.
+    ( m138_dup(f(X), f(Y)), X == Y -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_gv_mismatch_rejects/2.
+test_m138_gv_mismatch_rejects(_, R) :-
+    % Non-unifiable compounds must still fail.
+    ( m138_dup(f(a), f(b)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m138_arg_bound_compound/2.
+test_m138_arg_bound_compound(_, R) :-
+    % arg/3 with bound compound A3: the extracted arg slot may hold a
+    % Ref that the old @value_equals compared by heap address.
+    ( arg(1, h(f(a)), f(a)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_arg_bound_rejects/2.
+test_m138_arg_bound_rejects(_, R) :-
+    ( arg(1, h(f(a)), f(b)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m138_sort_dedup_nested/2.
+test_m138_sort_dedup_nested(_, R) :-
+    % Duplicate compounds with Ref-stored args survived dedup under
+    % the old shallow @value_equals.
+    sort([f(g(a)), f(g(a))], L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_m138_sort_dedup_lists/2.
+test_m138_sort_dedup_lists(_, R) :-
+    % Multi-cons-cell list duplicates (the original M137 shape).
+    sort([[a, b], [a, b]], L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_m138_sort_keeps_distinct/2.
+test_m138_sort_keeps_distinct(_, R) :-
+    % sort/2 must NOT merge f(X) with f(Y) (== distinct) nor bind them:
+    % dedup is equality, not unification.
+    sort([f(X), f(Y)], L),
+    length(L, N),
+    ( var(X), var(Y), X \== Y -> R is N ; R is 0 ).   % 2
+
+:- dynamic test_m138_var_eq_self/2.
+test_m138_var_eq_self(_, R) :-
+    % Variable identity under ==/2: X == X via the same cell.
+    ( X == X -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_var_neq_distinct/2.
+test_m138_var_neq_distinct(_, R) :-
+    % Distinct fresh vars are NOT ==-equal. Before the M138
+    % @wam_deref_keep_var fix, both X and Y collapsed to the shared
+    % Unbound sentinel { tag 6, payload 0 } and compared equal.
+    % Compared through compounds because bare top-level fresh-var
+    % goals (put_variable Yn + builtin_call) mis-execute even for
+    % var/1 on unmodified main -- a separate pre-existing bug.
+    ( f(X) \== f(Y) -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -6859,6 +6929,27 @@ test_all :-
                    test_seq_atom_eq_still_works, 0, 1),
        run_test_r0('42 == 42 still works -> 1',
                    test_seq_int_eq_still_works, 0, 1),
+       format('--- M138 value_equals call-site audit ---~n'),
+       run_test_r0('get_value f(a)=f(a) -> 1',
+                   test_m138_gv_ground + [m138_dup/2], 0, 1),
+       run_test_r0('get_value f(X)~f(Y) unifies -> 1',
+                   test_m138_gv_unifies + [m138_dup/2], 0, 1),
+       run_test_r0('get_value f(a)~f(b) rejects -> 1',
+                   test_m138_gv_mismatch_rejects + [m138_dup/2], 0, 1),
+       run_test_r0('arg(1,h(f(a)),f(a)) -> 1',
+                   test_m138_arg_bound_compound, 0, 1),
+       run_test_r0('arg(1,h(f(a)),f(b)) rejects -> 1',
+                   test_m138_arg_bound_rejects, 0, 1),
+       run_test_r0('sort dedup nested compounds -> 1',
+                   test_m138_sort_dedup_nested, 0, 1),
+       run_test_r0('sort dedup list elements -> 1',
+                   test_m138_sort_dedup_lists, 0, 1),
+       run_test_r0('sort keeps f(X),f(Y) distinct unbound -> 2',
+                   test_m138_sort_keeps_distinct, 0, 2),
+       run_test_r0('X == X -> 1',
+                   test_m138_var_eq_self, 0, 1),
+       run_test_r0('X \\== Y distinct fresh vars -> 1',
+                   test_m138_var_neq_distinct, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
