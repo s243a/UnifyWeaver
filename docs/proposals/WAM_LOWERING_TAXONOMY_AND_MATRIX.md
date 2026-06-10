@@ -96,14 +96,14 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| cpp     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| go      | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| haskell | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
-| clojure | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
-| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
-| lua     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
+| clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
+| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
 | python  | ✓ | ✓ T2a | ✗ | ✗ | **✓** | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
@@ -116,7 +116,11 @@ Verification notes:
   `try_me_else`, so a try-chain predicate stays in the interpreter; python's
   only multi-clause lowering is T5 (its `is_ite_block_py` detection of the
   switch-indexed, no-`try_me_else` shape → `if/elif/else`).
-- **T5** is python-only and is the form wanted for Scala (the "`->` form").
+- **T5** (clause_chain) is now implemented across the hybrid targets via the
+  shared `wam_clause_chain` front-end: scala, rust, cpp, go, haskell, fsharp,
+  llvm, lua, r (plus python's original `is_ite_block_py` `if/elif/else` form).
+  clojure declines T5 (no distinct-first-arg dispatch; it has T4 instead);
+  elixir/wat = ✗. Each has a gated `*_lowered_t5` exec test.
 - **T7**: elixir is the only real implementation (`Task.async_stream` +
   `par_wrap_segment`); clojure/python have `_branch` scaffolds (counted `~`).
   go's clause-parallel goroutines live in the *non-WAM* `go_target.pl` direct
@@ -135,32 +139,47 @@ Verification notes:
   no target does general recursion→loop.
 - elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
   R's closure-per-clause shape — counted ✓ but architecturally distinct.
-- **scala T4** (added later): every clause is emitted inline as a sibling
-  `Boolean` closure, tried in order with a trail/register restore between
-  attempts (`WamRuntime.loRestoreClause`); the entry has no `runPredicate`
-  fallback, so the interpreter is never entered for the predicate. Scala's
-  lowered runtime only ever takes a predicate's first solution (`loCall` /
-  `loExecute` — deterministic-prefix), so unlike R/elixir it needs no
-  retry/iter choice point for clauses 2+; gated below T5 (clause_chain) and
-  above multi_clause_1, so only multi-clause predicates that don't
-  discriminate on a distinct first-arg constant take this path.
+- **T4** (multi_clause_n) is now implemented across the hybrid targets:
+  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua (plus r and
+  elixir's prior CP-model versions). Every clause is lowered inline and tried
+  in order; the interpreter is never entered for the predicate's own clause
+  dispatch. Two families:
+  - **imperative** (scala/rust/cpp/go/lua/llvm): snapshot the registers +
+    trail at entry, restore between clause attempts (e.g. `loRestoreClause`,
+    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR). These runtimes
+    take a predicate's first solution (deterministic-prefix), so — unlike
+    R/elixir — no retry/iter choice point is needed.
+  - **functional** (haskell/fsharp): immutability gives a free per-clause
+    restore — each clause runs against the unchanged input state, chained
+    with `mplus` / `Option.orElseWith`; no runtime change.
+  clojure (immutable state-maps) gained its first multi-clause lowering here
+  (previously a no-op stub → interpreter). Each has a gated `*_lowered_t4`
+  exec test using a non-distinct-first-arg predicate that exercises the
+  non-first clauses natively. T4 is gated below T5 (clause_chain) and above
+  multi_clause_1/c1.
 
 ---
 
 ## 3. What the matrix shows (gaps)
 
-Reading down the columns:
+Reading down the columns (after the T5 and T4 sweeps landed):
 
-- **T5 (multi-clause → `->` chain)** is implemented only by Python. This is
-  the form flagged for Scala. It is a genuinely different lowering from
-  T3/T4 and is portable to every structurer-style target.
-- **T4 (multi-clause all-clauses)** exists only in R. Everyone else stops at
-  T3 (clause-1 + interpreter fallback), so clauses 2..n always pay the
-  interpreter hop.
-- **T6 (first-arg indexing)** — nobody lowers it; all targets drop the
-  `switch_on_*` prefix and try clauses in order.
+- **T5 (multi-clause → first-arg dispatch)** and **T4 (multi-clause all
+  clauses)** are now ✓ across the hybrid targets (see the verification notes
+  above). Remaining T4/T5 holes are intentional: clojure has no distinct
+  first-arg dispatch (T4 only); python's multi-clause story is its T5
+  `if/elif/else`; wat has neither yet.
+- **T6 (first-arg indexing)** — *nobody* lowers it; all targets drop the
+  `switch_on_*` prefix and try clauses in order. This is the natural next
+  advancement after T5: the same clause-head analysis, but the back-end
+  emits a native `switch`/jump-table on the first argument's principal
+  functor instead of an if-cascade. Shared front-end, per-target back-end —
+  high leverage, and a perf win that's sound behind a gate.
 - **T2 (ITE)** — complete everywhere **except WAT** (the one remaining ITE
-  gap; WAT has native `if/then/else` + `block`, so it's tractable).
+  gap; WAT has native `if/then/else` + `block`, so it's tractable). Closing
+  it makes the T2 column fully ✓.
+- **python T3** — python still lacks the clause-1 fast path (its only
+  multi-clause lowering is T5); a small, contained gap.
 - **T10 (mode-driven specialisation)** and **T11 (LCO)** are essentially
   one-target experiments (R, and LLVM's `musttail`) that could generalise.
 - **T7 (parallel)** is real only in Elixir; Clojure/Python have `_branch`
