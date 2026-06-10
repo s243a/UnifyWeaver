@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Kotlin target (M148): builtin table and ITE commit.** The
+  final sweep target (kotlinc 2.1.0). The runtime's `builtin_call`
+  case implemented ONLY `=/2` — `var/1`, `nonvar/1`, `atom/1`,
+  `is/2`, `=:=/2`, even `true/0` all failed closed, and `cut_ite`
+  was registered but had no `step()` case, so a successful ITE
+  condition backtracked into the else branch (the M144 bug class,
+  fifth target found with it). Added: six type-check builtins,
+  `true/0`, `is/2` + the arith comparison family backed by a new
+  `evalArith` (numeric leaves + standard binary/unary operators),
+  and `cut_ite`/`jump`/`get_level`/`cut` step cases. Var-var
+  aliasing was probed CLEAN (no M143 bug). All 15 probe query legs
+  now pass; `test_wam_kotlin_target` 9/9.
 - **WAM Elixir target (M147): interpreter mode entirely broken; type
   checks missing in all modes.** Round 2 of the cross-target sweep
   (Lua, R, Clojure, WAT: clean) found four layered defects:
