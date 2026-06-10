@@ -107,7 +107,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | python  | ✓ | ✓ T2a | ✗ | ✗ | **✓** | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | **✗** | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
@@ -181,9 +181,16 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   64, 12.7× at 256 — so it is gated to the many-clause case (see
   `docs/reports/wam_rust_dispatch_alloc_perf.md`); the compiler flattens the
   cascade for few clauses (matching the prior Go array-dispatch result).
-- **T2 (ITE)** — complete everywhere **except WAT** (the one remaining ITE
-  gap; WAT has native `if/then/else` + `block`, so it's tractable). Closing
-  it makes the T2 column fully ✓.
+- **T2 (ITE)** — now **complete across every target**, including WAT: the
+  lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
+  and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
+  with a `br` on first failure, a saved trail mark, and `$unwind_trail` before
+  the else). `test_wam_wat_lowered_t2` exec-tests branch selection / negation /
+  once / sequential+nested ITE via wat2wasm+node, and asserts the lowered fast
+  path matches the bytecode interpreter on every case. (A pre-existing
+  WAT-runtime limitation — a condition's variable binding is not propagated
+  into the then-branch — is present in BOTH the lowered and interpreter paths,
+  so the lowering is faithful; that runtime fix is tracked separately.)
 - **python T3** — python still lacks the clause-1 fast path (its only
   multi-clause lowering is T5); a small, contained gap.
 - **T10 (mode-driven specialisation)** and **T11 (LCO)** are essentially
@@ -226,8 +233,9 @@ Score each candidate gap on four axes, then sequence:
    (`is_ite_block_py`) to cross-check the shared front-end against. Lands
    behind the existing `emit_mode(functions)` gate with interpreter
    fallback → low risk.
-2. **WAT T2 (ITE).** Closes the last ITE cell; small, gated, exec-testable
-   (`wat2wasm` + `node`). Finishes the T2 column.
+2. **WAT T2 (ITE). — DONE.** Closed the last ITE cell; gated, exec-tested
+   (`wat2wasm` + `node`) with a lowered-vs-interpreter parity check. The T2
+   column is now fully ✓.
 3. **T4 (multi-clause all-clauses)** for the structurer targets, reusing R's
    iter-CP shape as the reference. Removes the interpreter hop for fully
    supported predicates that aren't first-arg-discriminable (so don't get
