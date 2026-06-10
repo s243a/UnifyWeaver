@@ -156,6 +156,8 @@ supported(builtin_call(_, _)).
 % loop for backtrack-driven solution collection. Delegating individual
 % step calls breaks because EndAggregate needs to loop.
 supported(cut_ite).
+supported(cut(_)).       % Y-level soft cut (ite_use_y_level mode)
+supported(get_level(_)). % captures the cut level in the clause prefix
 supported(jump(_)).
 supported(retry_me_else(_)).
 supported(trust_me).  % consumed by if-then-else pattern detection in emit_instrs
@@ -676,6 +678,11 @@ struct_item(_PC, try_me_else(L), try_me_else(L)) :- !.
 struct_item(_PC, jump(L),        jump(L))        :- !.
 struct_item(_PC, trust_me,       trust_me)       :- !.
 struct_item(_PC, cut_ite,        cut_ite)        :- !.
+% Y-level soft cut (ite_use_y_level mode): the structurer's is_commit
+% accepts cut(Yn), so keep it bare just like cut_ite. The matching
+% get_level Yn capture in the clause prefix is a no-op in the lowered
+% if/else (the structurer consumes the commit), handled by emit_one.
+struct_item(_PC, cut(Y),         cut(Y))         :- !.
 struct_item(_PC, builtin_call(Op, N), builtin_call(Op, N)) :- neg_commit_op(Op), !.
 struct_item(PC, Instr, pc(PC, Instr)).
 
@@ -749,6 +756,11 @@ emit_structured([builtin_call(Op, N)|Rest], SV, Ind, FP) :- !,
     ).
 % A bare cut_ite outside any ITE block (defensive; should not occur).
 emit_structured([cut_ite|Rest], SV, Ind, FP) :- !,
+    (   Rest == [] -> format("~wreturn ~w~n", [Ind, SV])
+    ;   emit_structured(Rest, SV, Ind, FP)
+    ).
+% A bare cut(Yn) outside any ITE block (defensive; should not occur).
+emit_structured([cut(_)|Rest], SV, Ind, FP) :- !,
     (   Rest == [] -> format("~wreturn ~w~n", [Ind, SV])
     ;   emit_structured(Rest, SV, Ind, FP)
     ).
@@ -1013,6 +1025,12 @@ emit_one(end_aggregate(ValRegStr), PC, SV, SVout, I, _FP) :-
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (EndAggregate ~w)~n",
            [I, SVout, SV, PC, ValReg]).
+
+% ---- GetLevel — no-op in the lowered if/else ----
+% get_level Yn captures the choice-point level for the matching cut Yn
+% commit. The structurer consumes the commit when folding the ITE, so
+% the lowered code has no choice point to cut — nothing to capture.
+emit_one(get_level(_), _PC, SV, SV, _I, _FP) :- !.
 
 % ---- CutIte — delegate to step ----
 emit_one(cut_ite, PC, SV, SVout, I, _FP) :-

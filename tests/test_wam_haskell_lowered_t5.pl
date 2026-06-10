@@ -63,7 +63,7 @@ test(t5_exec_parity) :-
     % 2. Test harness calling the lowered functions directly (bound first arg).
     atomic_list_concat([Dir, '/src/TestMain.hs'], TestPath),
     haskell_t5_source(Src),
-    setup_call_cleanup(open(TestPath, write, S), write(S, Src), close(S)),
+    setup_call_cleanup(open(TestPath, write, S, [encoding(utf8)]), write(S, Src), close(S)),
     % 3. Compile + run.
     atomic_list_concat([Dir, '/src'], SrcDir),
     atomic_list_concat([Dir, '/t5_test'], Bin),
