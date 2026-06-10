@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Rust target (M144): if-then-else never committed.** The
+  sweep-found known issue: `cut_ite` was translated to
+  `Instruction::NoOp`, so a then-branch failure backtracked into the
+  else branch (`( 1 =:= 1 -> R is 1 ; R is 0 )` queried with R=0
+  succeeded). The Rust compile path now defaults
+  `ite_use_y_level(true)` and the runtime implements
+  `GetLevel`/`CutTo` (snapshot/truncate the choice-point stack, with
+  the Y-register read going through the env-frame-aware `get_reg`),
+  cutting the guard plus any inner condition choice points exactly.
+  Legacy `cut_ite` maps to a real single-CP `CutIte` rather than
+  NoOp. The lowered emitter accepts the new `get_level`/`cut Yn`
+  bytecode (commit consumed by the shared structurer). Pre-existing
+  unrelated failure noted: `test_wam_rust_runtime` e2e fails
+  identically on unmodified main.
 - **WAM C + C++ targets (M143): var-var unification created no
   alias.** Found by a behavioral sweep of 8 targets with the
   M139/M140 probe shapes (Rust, Python, Go, Haskell, F#, Scala

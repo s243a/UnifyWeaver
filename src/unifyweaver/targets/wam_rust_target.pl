@@ -730,6 +730,33 @@ wam_instruction_arm('Instruction::Jump(label)', Body) :-
 wam_instruction_arm('Instruction::NoOp', Body) :-
     Body = '                self.pc += 1; true'.
 
+% M144: if-then-else soft cut. GetLevel snapshots the choice-point
+% depth into a (permanent) register before the condition's try_me_else;
+% CutTo restores it at the commit point, removing the ITE guard CP plus
+% any CPs the condition pushed - regardless of how many that was.
+wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
+    Body = '                let depth = Value::Integer(self.choice_points.len() as i64);
+                self.trail_binding(yn);
+                self.put_reg(yn, depth);
+                self.pc += 1;
+                true'.
+
+wam_instruction_arm('Instruction::CutTo(yn)', Body) :-
+    Body = '                // get_reg (not get_reg_raw): Y registers live in the
+                // topmost env frame, where GetLevel stored the depth.
+                if let Some(v) = self.get_reg(yn) {
+                    if let Value::Integer(depth) = self.deref_var(&v) {
+                        self.choice_points.truncate(depth as usize);
+                    }
+                }
+                self.pc += 1;
+                true'.
+
+wam_instruction_arm('Instruction::CutIte', Body) :-
+    Body = '                self.choice_points.pop();
+                self.pc += 1;
+                true'.
+
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
 
@@ -3220,7 +3247,19 @@ wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
 wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::Jump("~w".to_string())', [Label]).
-wam_line_to_rust_instr(["cut_ite"], _, _, "Instruction::NoOp").
+% M144: legacy cut_ite (only emitted when ite_use_y_level is off) pops
+% the single ITE guard CP. Mis-cuts when the condition pushed inner CPs
+% - the same limitation the LLVM target had pre-M17 - but strictly
+% better than the previous NoOp translation, which never committed at
+% all. The Rust compile path now defaults ite_use_y_level(true), so
+% normal compiles emit get_level/cut instead.
+wam_line_to_rust_instr(["cut_ite"], _, _, "Instruction::CutIte").
+wam_line_to_rust_instr(["get_level", Yn], _, _, Rust) :-
+    clean_comma(Yn, CYn),
+    format(string(Rust), 'Instruction::GetLevel("~w".to_string())', [CYn]).
+wam_line_to_rust_instr(["cut", Yn], _, _, Rust) :-
+    clean_comma(Yn, CYn),
+    format(string(Rust), 'Instruction::CutTo("~w".to_string())', [CYn]).
 % Indexing instructions
 wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
@@ -3756,7 +3795,17 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ;   % Fall back to WAM compilation
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+        % M144: emit if-then-else with get_level Yn / cut Yn rather than
+        % the legacy cut_ite. The naive single-CP cut_ite mis-commits
+        % when the condition pushes inner choice points; get_level/cut
+        % snapshots and restores the CP depth exactly (same change the
+        % LLVM target made in M17). The Rust runtime now implements
+        % both instructions.
+        ( memberchk(ite_use_y_level(_), Options)
+        -> WamOptions = Options
+        ;  WamOptions = [ite_use_y_level(true)|Options]
+        ),
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode),
         (   option(foreign_lowering(ForeignSpec), Options),
             rust_foreign_spec(Pred/Arity, ForeignSpec, _, _)
         ->  % Foreign-lowered: compile individually (not shared WAM)
