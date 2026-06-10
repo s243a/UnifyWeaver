@@ -3708,7 +3708,48 @@ test_m138_var_neq_distinct(_, R) :-
     % Compared through compounds because bare top-level fresh-var
     % goals (put_variable Yn + builtin_call) mis-execute even for
     % var/1 on unmodified main -- a separate pre-existing bug.
+    % (Fixed in M139 -- see the M139 section -- but this test keeps
+    % the compound shape since it targets ==/2 identity, not the
+    % put_value aliasing bug.)
     ( f(X) \== f(Y) -> R is 1 ; R is 0 ).   % 1
+
+% M139: permanent-variable (Y-reg) corruption via put_value's
+% bind-through. put_variable Yn, Ai places the SAME Ref into both
+% registers; a later put_value over Ai called
+% @wam_bind_through_if_unbound_ref(old_Ai, val) which either (a) wrote
+% the Ref back into its own cell (self-reference: var/1 then saw the
+% variable as bound, unification corrupted), or (b) bound the live
+% unbound variable that previously occupied Ai to the incoming value
+% (aliasing two unrelated variables). Fixed by a self-reference guard
+% in the helper plus making put_value a pure register copy.
+
+:- dynamic test_m139_var_then_bind/2.
+test_m139_var_then_bind(_, R) :-
+    % The original failing shape: var(X) on a permanent, bound later.
+    var(X), X = done, R is 1.   % 1 (failed: exit 255)
+
+:- dynamic test_m139_var_twice/2.
+test_m139_var_twice(_, R) :-
+    % No binding at all -- the second var/1 saw the self-referential
+    % cell as bound.
+    var(X), var(X), R is 1.   % 1 (failed: exit 255)
+
+:- dynamic test_m139_var_nonvar_consistent/2.
+test_m139_var_nonvar_consistent(_, R) :-
+    % The smoking gun: var(X) and nonvar(X) both succeeded on the
+    % same unbound variable.
+    ( var(X), nonvar(X) -> R is 0 ; R is 1 ).   % 1 (got 0)
+
+:- dynamic test_m139_no_alias_on_put_value/2.
+test_m139_no_alias_on_put_value(_, R) :-
+    % put_value staging R0 for is/2 found X's Ref still in A1 and
+    % bound X to R0 -- so X = x then failed against 1.
+    var(X), R0 is 1, X = x, R is R0.   % 1
+
+:- dynamic test_m139_ite_var_bind/2.
+test_m139_ite_var_bind(_, R) :-
+    % Same shape inside an if-then-else condition.
+    ( var(X), X = done -> R is 1 ; R is 0 ).   % 1 (got 0)
 
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
@@ -6950,6 +6991,17 @@ test_all :-
                    test_m138_var_eq_self, 0, 1),
        run_test_r0('X \\== Y distinct fresh vars -> 1',
                    test_m138_var_neq_distinct, 0, 1),
+       format('--- M139 put_value Y-reg aliasing ---~n'),
+       run_test_r0('var(X), X=done -> 1',
+                   test_m139_var_then_bind, 0, 1),
+       run_test_r0('var(X), var(X) -> 1',
+                   test_m139_var_twice, 0, 1),
+       run_test_r0('var/nonvar consistent on same var -> 1',
+                   test_m139_var_nonvar_consistent, 0, 1),
+       run_test_r0('put_value must not alias old occupant -> 1',
+                   test_m139_no_alias_on_put_value, 0, 1),
+       run_test_r0('ITE: var(X), X=done -> 1',
+                   test_m139_ite_var_bind, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

@@ -2830,30 +2830,41 @@ wam_llvm_case('put_variable',
   ; value via deref. Without this aliasing, binding Ai leaves Xn
   ; stuck on a stale Unbound sentinel — the bug that caused
   ; sum_ints / fib / term_depth to compute wrong results.
+  ; M139: no bind-through of Ai''s previous occupant. Two put_variable
+  ; in a row over the same Ai (e.g. staging args for consecutive
+  ; builtin calls) left the first variable''s unbound Ref in Ai; the
+  ; old @wam_bind_through_if_unbound_ref(old_Ai, fresh_ref) then bound
+  ; that LIVE variable to the new fresh one, silently aliasing two
+  ; unrelated variables. Overwriting an argument register must never
+  ; bind what it previously held.
   %pv.xn = trunc i64 %op1 to i32
   %pv.ai = trunc i64 %op2 to i32
   %pv.unb = call %Value @value_unbound(i8* null)
   %pv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pv.unb)
   %pv.ref = call %Value @value_ref(i32 %pv.addr)
-  %pv.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pv.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.xn)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.xn, %Value %pv.ref)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.ref)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pv.old, %Value %pv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 
 wam_llvm_case('put_value',
 '  ; op1 = Xn index, op2 = Ai index
+  ; M139: pure register copy, per standard WAM. This previously also
+  ; called @wam_bind_through_if_unbound_ref(old_Ai, val), which BOUND
+  ; whatever unbound variable happened to occupy Ai before the copy --
+  ; aliasing two unrelated variables. E.g. in
+  ;   var(X), R is 1, X = x
+  ; the put_value Y2, A1 staging R for is/2 found A1 still holding
+  ; X''s Ref and bound X to R, so X = x then saw 1. Overwriting an
+  ; argument register must never bind its previous occupant.
   %pvl.xn = trunc i64 %op1 to i32
   %pvl.ai = trunc i64 %op2 to i32
   %pvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.xn)
-  %pvl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pvl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pvl.ai, %Value %pvl.val)
-  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pvl.old, %Value %pvl.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 

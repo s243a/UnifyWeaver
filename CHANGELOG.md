@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM LLVM target (M139): permanent-variable corruption via the
+  put-instruction bind-through.** The pre-existing bug noted in the
+  M138 test comments: top-level fresh-variable goals mis-executed —
+  `var(X), X = done` failed, and `var(X)` followed by `nonvar(X)`
+  BOTH succeeded on the same unbound variable. Root cause:
+  `put_variable Yn, Ai` places the same `Ref{addr}` into both
+  registers, and the later `put_value`/`put_variable` over `Ai`
+  called `@wam_bind_through_if_unbound_ref(old_Ai, val)`, which
+  either (a) wrote the Ref back into its own cell — a
+  self-referential cell that derefs to itself, so `var/1` saw the
+  variable as bound and every later unification corrupted — or
+  (b) bound the live unbound variable previously occupying `Ai` to
+  the incoming value, silently aliasing two unrelated variables
+  (e.g. in `var(X), R0 is 1, X = x` the `put_variable` staging `R0`
+  bound `X` to `R0`, so `X = x` then failed against `1`). Fixed
+  three ways: a self-reference guard in
+  `@wam_bind_through_if_unbound_ref` (never store a Ref into its own
+  cell), `put_value` is now a pure register copy per standard WAM,
+  and `put_variable` no longer binds `Ai`'s previous occupant. The
+  remaining bind-through callers (`put_constant`, `put_structure`,
+  `put_list`, `get_list`) are unchanged but now protected by the
+  self-reference guard. Five regression tests in the new
+  `--- M139 put_value Y-reg aliasing ---` section.
 - **WAM LLVM target (M138): `@value_equals` call-site audit** — the
   follow-up flagged in the M137 (#2929) review. Three bound-bound
   compare sites used shallow equality where WAM semantics require
