@@ -60,6 +60,12 @@ target list before passing it to `scripts/distribution_cache_benchmark.py`.
 The sampler owns root selection, depth capping, and admin/container filtering;
 the benchmark runner owns measurement over the resulting TSV.
 
+Use `scripts/export_distribution_cache_edges.py` when starting from the
+resolved SimpleWiki SQLite database created by `examples/benchmark/parse_simplewiki_dump.py`.
+Existing benchmark artifacts may already provide numeric `category_parent.tsv`
+files; those can be sampled directly when run with the matching numeric root
+from their `root_categories.tsv` sidecar.
+
 Under those constraints, cached-distribution search should be semantically exact.
 Any discrepancy against full exact search is a bug in orientation, budget
 accounting, normalization, cycle policy, or path-statistic handling.
