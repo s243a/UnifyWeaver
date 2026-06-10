@@ -2763,13 +2763,31 @@ gs.check_unb:
   br i1 %gs.unb, label %gs.write, label %gs.fail
 
 gs.write:
-  ; Write mode: push functor marker on heap, bind Ai to Ref, push WriteCtx
-  %gs.marker = call %Value @value_atom(i8* null)
-  %gs.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gs.marker)
-  %gs.ref = call %Value @value_ref(i32 %gs.addr)
+  ; Write mode: allocate a Compound and bind Ai to it.
+  %gs.fn_ptr = inttoptr i64 %op1 to i8*
+  call void @wam_arena_ensure()
+  %gs.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %gs.cp_mem = call i8* @wam_arena_alloc(i64 %gs.cp_size)
+  %gs.wcp = bitcast i8* %gs.cp_mem to %Compound*
+  %gs.wfn_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 0
+  store i8* %gs.fn_ptr, i8** %gs.wfn_slot
+  %gs.war_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 1
+  store i32 %gs.arity, i32* %gs.war_slot
+  %gs.arity64 = zext i32 %gs.arity to i64
+  %gs.args_bytes = shl i64 %gs.arity64, 4
+  %gs.args_mem = call i8* @wam_arena_alloc(i64 %gs.args_bytes)
+  %gs.wargs = bitcast i8* %gs.args_mem to %Value*
+  %gs.wargs_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 2
+  store %Value* %gs.wargs, %Value** %gs.wargs_slot
+  %gs.wcp_i64 = ptrtoint %Compound* %gs.wcp to i64
+  %gs.wval0 = insertvalue %Value undef, i32 3, 0
+  %gs.wval = insertvalue %Value %gs.wval0, i64 %gs.wcp_i64, 1
+  %gs.old = call %Value @wam_get_reg(%WamState* %vm, i32 %gs.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %gs.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.ref)
+  call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.wval)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %gs.old, %Value %gs.wval)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %gs.arity)
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gs.wargs)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -14712,7 +14730,16 @@ wam_instruction_to_llvm_literal(get_value(Xn, Ai), Lit) :-
     format(atom(Lit), '{ i32 2, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
 wam_instruction_to_llvm_literal(get_structure(F, Ai), Lit) :-
     reg_name_to_index(Ai, AiIdx),
-    format(atom(Lit), '{ i32 3, i64 0, i64 ~w } ; get_structure ~w', [AiIdx, F]).
+    atom_string(F, FStr),
+    split_functor_arity(FStr, NameStr, Arity),
+    string_length(NameStr, NameLen),
+    NameLenPlus1 is NameLen + 1,
+    Op2 is (Arity << 16) \/ AiIdx,
+    sanitize_functor_for_llvm(NameStr, SaneName),
+    format(atom(Lit),
+        '{ i32 3, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w } ; get_structure ~w',
+        [NameLenPlus1, SaneName, Op2, F]),
+    register_functor_string(NameStr).
 wam_instruction_to_llvm_literal(get_list(Ai), Lit) :-
     reg_name_to_index(Ai, AiIdx),
     format(atom(Lit), '{ i32 4, i64 ~w, i64 0 }', [AiIdx]).
@@ -16092,6 +16119,20 @@ wam_line_to_llvm_literal(["get_constant", C, Ai], Lit) :-
     % Pack tag into op2 high bits: op2 = (tag << 16) | reg_idx.
     Op2 is (Tag << 16) \/ RegIdx,
     format(atom(Lit), '%Instruction { i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
+wam_line_to_llvm_literal(["get_structure", FN, Ai], Lit) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    atom_string(CAi, CAiAtom),
+    reg_name_to_index(CAiAtom, AiIdx),
+    atom_string(CFN, CFNStr),
+    split_functor_arity(CFNStr, NameStr, Arity),
+    string_length(NameStr, NameLen),
+    NameLenPlus1 is NameLen + 1,
+    Op2 is (Arity << 16) \/ AiIdx,
+    sanitize_functor_for_llvm(NameStr, SaneName),
+    format(atom(Lit),
+        '%Instruction { i32 3, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w }',
+        [NameLenPlus1, SaneName, Op2]),
+    register_functor_string(NameStr).
 wam_line_to_llvm_literal(["get_variable", Xn, Ai], Lit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
