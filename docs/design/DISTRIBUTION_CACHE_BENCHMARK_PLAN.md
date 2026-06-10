@@ -203,7 +203,32 @@ Do not introduce child-direction paths until parent-only exact cache semantics
 and admission policy are measured. Parent-only distributions can later bound or
 prioritize child-inclusive searches.
 
-## 9. Output artifacts
+## 9. Future directions
+
+The first benchmark deliberately measures exact parent-only histograms. Later
+passes can test cheaper summaries and approximations once exact-cache semantics
+are stable.
+
+One future direction is to compute scalar support bounds before deciding whether
+to build a full distribution:
+
+```text
+L_min(v) = shortest parent-only path length from v to root
+L_max(v) = longest parent-only path length from v to root, under the active cycle policy
+support(P_v) <= [L_min(v), L_max(v)]
+```
+
+Those bounds give fast budget edge cases and may help initialise finite-support
+approximations. If real parent-path distributions tend toward a recognisable
+family, such as a binomial-like, truncated-normal, or truncated-geometric shape,
+the benchmark can add approximation modes that compare fitted distributions
+against exact SimpleWiki histograms before trying enwiki-scale runs.
+
+Treat this as a later phase, not part of the first parity harness. The first
+requirement remains exact agreement between full enumeration, cached exact
+histograms, and cumulative bases.
+
+## 10. Output artifacts
 
 Each benchmark run should emit machine-readable records and one summary table:
 
@@ -221,7 +246,7 @@ The summary should include:
 - exactness failures, if any;
 - best observed policy under a fixed storage budget.
 
-## 10. Decision criteria
+## 11. Decision criteria
 
 Use the benchmark to choose defaults:
 
