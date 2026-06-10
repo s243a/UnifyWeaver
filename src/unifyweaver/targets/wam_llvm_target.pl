@@ -1783,7 +1783,16 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
 %  the same project batch as their roots. Builtins and predicates without local
 %  clauses remain on the existing builtin/external paths.
 expand_wam_llvm_project_predicates(Roots, Options, Expanded) :-
-    expand_wam_llvm_project_predicates_(Roots, Options, Roots, Expanded0),
+    % M141: normalize roots to Module:Pred/Arity BEFORE seeding the
+    % seen-set. Discovered call targets are always emitted qualified
+    % (user:node/1), so an unqualified root (node/1) never matched
+    % the memberchk dedup and its predicate was compiled into the
+    % merged module TWICE -- llc then rejected the duplicate
+    % @<pred>_switch_N globals ("redefinition of global").
+    maplist([PI, M:P/A]>>normalize_project_predicate_indicator(PI, M, P, A),
+            Roots, NormRoots0),
+    list_to_set(NormRoots0, NormRoots),
+    expand_wam_llvm_project_predicates_(NormRoots, Options, NormRoots, Expanded0),
     list_to_set(Expanded0, Expanded).
 
 expand_wam_llvm_project_predicates_([], _, Seen, Seen).

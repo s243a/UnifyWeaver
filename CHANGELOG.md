@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deref, false for atoms, partial lists (`[a|_]`), and unbound
   variables. Six tests in the new
   `--- M141 is_list/1 cons-chain walk ---` section.
+- **WAM LLVM target (M141): duplicate predicate compilation with
+  unqualified root specs.** `expand_wam_llvm_project_predicates`
+  discovers call targets in qualified form (`user:node/1`), but the
+  seen-set dedup compared them against the raw root list — an
+  unqualified root (`node/1`) never matched, so the predicate was
+  compiled into the merged module twice and `llc` rejected the
+  duplicate `@<pred>_switch_N` globals (`redefinition of global`).
+  Roots are now normalized to `Module:Pred/Arity` before seeding the
+  expansion. Surfaced by `test_sum_float` failing in isolation;
+  previously masked by in-suite test ordering.
 - **WAM LLVM target (M140): remaining put-instruction bind-throughs**
   — completes the M139 audit. `put_constant`, `put_structure`, and
   `put_list` called `@wam_bind_through_if_unbound_ref(old, val)`
