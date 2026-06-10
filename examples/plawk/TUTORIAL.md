@@ -93,8 +93,11 @@ Reader = text_file_reader(Path, FieldSeparator)
 ```
 
 The reader converts each line into a `record(text, Line, Fields)` item. Phase 0
-uses a whole-file SWI reader for convenience; the implementation plan tracks the
-target-side streaming reader needed for compiled unbounded input.
+uses a whole-file SWI reader for convenience. The compiled smoke in
+`tests/test_plawk_compiled_stream_core.pl` now exercises the target-side
+streaming reader: it opens a file with `stream_open/2`, reads lines with
+`read_line/2`, splits fields with `atom_split/3`, and runs a PLAWK-style
+handler in a native LLVM binary.
 
 ### Handler
 

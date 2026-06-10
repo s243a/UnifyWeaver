@@ -15756,7 +15756,7 @@ builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (a
 builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
 builtin_op_to_id('atom_to_system/2', 164).    % popen(cmd, "w") + fwrite + pclose, succeed iff status 0.
 builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep -> list of substring atoms.
-builtin_op_to_id('stream_open/2', 166).       % open + malloc-backed buffered line-reader handle.
+builtin_op_to_id('stream_open/2', 166).       % open + table-backed buffered line-reader handle.
 builtin_op_to_id('read_line/2', 167).         % buffered line read; EOF unifies end_of_file.
 builtin_op_to_id('stream_close/1', 168).      % close + free line-reader handle.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
