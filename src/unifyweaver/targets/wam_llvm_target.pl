@@ -1152,8 +1152,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     option(target_triple(Triple), Options, 'x86_64-pc-linux-gnu'),
     option(target_datalayout(DataLayout), Options,
         'e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128'),
-    get_time(TimeStamp),
-    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+    option(generated_date(Date), Options, 'reproducible'),
 
     % M5.6: populate the foreign kernel spec table.
     % Path (a) directives have already run by load time. Path (b) is
@@ -1352,8 +1351,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
 %  iterative run_loop (no musttail), i32 pointers.
 write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
     option(module_name(ModuleName), Options, 'wam_wasm'),
-    get_time(TimeStamp),
-    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+    option(generated_date(Date), Options, 'reproducible'),
 
     % WASM type definitions
     read_template_file('templates/targets/llvm_wam_wasm/types.ll.mustache', TypesTemplate),
