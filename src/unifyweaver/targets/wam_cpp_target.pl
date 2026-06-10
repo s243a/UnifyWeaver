@@ -3752,6 +3752,12 @@ struct WamState {
     // (caller binds). Reads the register cell in place: no Value copy, and no
     // temporary Value::Atom on the right-hand side.
     int     match_reg_atom(const std::string& name, const char* atom) const;
+    // T6 first-argument indexing: deref the register in place and, if it
+    // resolves to a bound atom, return a pointer to its std::string (no copy,
+    // no allocation); return nullptr for unbound / non-atom. The pointee lives
+    // in the register cell, stable for the duration of the lowered call, so the
+    // caller can look it up in a static dispatch map and switch on the result.
+    const std::string* match_reg_atom_str(const std::string& name) const;
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
@@ -4225,6 +4231,24 @@ int WamState::match_reg_atom(const std::string& name, const char* atom) const {
         case Value::Tag::Uninit:  return -1;
         default:                  return 0;
     }
+}
+
+const std::string* WamState::match_reg_atom_str(const std::string& name) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return nullptr;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return nullptr;
+        v = it->second.get();
+    } else {
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return nullptr;
+        v = regs[i].get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already dereferenced.
+    return v->tag == Value::Tag::Atom ? &v->s : nullptr;
 }
 
 void WamState::put_reg(const std::string& name, Value v) {

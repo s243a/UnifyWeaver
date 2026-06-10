@@ -288,9 +288,9 @@ lower_predicate_to_cpp(PI, WamCode, Options, CppLines) :-
     ;   ForeignPreds = []
     ),
     nb_setval(cpp_ite_ctr, 0),
-    (   % T5 first-argument-constant dispatch takes precedence.
+    (   % T5/T6 first-argument-constant dispatch takes precedence.
         cpp_clause_chain_lowerable(Instrs, Guards)
-    ->  emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines)
+    ->  emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, Options, CppLines)
     ;   % T4: a multi-clause predicate whose clauses are all supported
         % deterministic bodies (but not a distinct-first-arg chain) — lower
         % every clause inline, tried in order with a restore between attempts.
@@ -311,16 +311,56 @@ bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
         CppLines = [Header, Body, Footer]
     ).
 
-%% emit_clause_chain_cpp(+FuncName, +Pred, +Arity, +Guards, +FK, -CppLines)
-%  Emit T5: read+deref the first argument once; if it is still unbound, defer
-%  to the entry wrapper's interpreter fallback (the unbound case is genuinely
-%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
-%  bound value against each clause's distinct discriminator and running that
-%  clause's remainder (which self-terminates: its `proceed` emits
-%  `return true`). A bound value matching no clause returns false (the
-%  predicate fails; the wrapper's fresh re-run also fails — sound, since the
-%  discriminators are distinct).
-emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
+%% emit_clause_chain_cpp(+FuncName, +Pred, +Arity, +Guards, +FK, +Options, -CppLines)
+%  Multi-clause first-argument dispatch with two back-ends sharing the
+%  `wam_clause_chain` front-end's guard list:
+%
+%   * T5 (default) — an if-cascade comparing the first arg against each
+%     clause's distinct discriminator in place (allocation-free
+%     `match_reg_atom`).
+%   * T6 (gated) — when every discriminator is an atom AND there are at least
+%     `t6_min_clauses` of them, replace the linear cascade with a static
+%     `std::unordered_map<std::string,int>` built once, looked up by the
+%     deref'd first-arg atom (via the no-copy `match_reg_atom_str`), then a
+%     `switch` (jump table) on the resulting index. C++ has no native string
+%     switch, so the map IS the indexing structure: one hash + one compare +
+%     a jump, instead of up to N derefs + string compares.
+%
+%  T6 is gated because for few clauses the compiler flattens the if-cascade to
+%  equivalent code (an earlier array-dispatch experiment lost to the compiler),
+%  so the map/switch only pays off once the linear scan is long enough — see
+%  docs/reports/wam_rust_dispatch_alloc_perf.md (the Rust analysis; the same
+%  string-atom shape applies to C++).
+%
+%  Both back-ends treat an unbound / non-matching first arg as a `false`
+%  return, deferring to the entry wrapper's interpreter fallback (sound: the
+%  discriminators are distinct, so a fresh bytecode re-run also fails). Each
+%  clause remainder self-terminates (`proceed` -> `return true`).
+emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, Options, CppLines) :-
+    (   cpp_t6_applicable(Guards, Options)
+    ->  emit_clause_chain_map_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines)
+    ;   emit_clause_chain_cascade_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines)
+    ).
+
+%% cpp_t6_applicable(+Guards, +Options) is semidet.
+%  True when first-arg indexing (T6 map/switch) should be used instead of the
+%  T5 if-cascade: every discriminator is an atom and the clause count meets the
+%  gate threshold.
+cpp_t6_applicable(Guards, Options) :-
+    cpp_t6_min_clauses(Options, Min),
+    length(Guards, N),
+    N >= Min,
+    forall(member(guard(V, _), Guards), wam_classify_constant_token(V, atom(_))).
+
+%% cpp_t6_min_clauses(+Options, -N)
+%  Clause-count gate for T6. Override with the `t6_min_clauses(N)` option;
+%  defaults to a conservative threshold above which the map/switch beats the
+%  compiler-flattened if-cascade.
+cpp_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+% --- T5 back-end: if-cascade ---
+emit_clause_chain_cascade_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
     format(string(Header),
 '// ~w — lowered from ~w/~w (T5 first-argument dispatch)
 bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
@@ -333,6 +373,42 @@ bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
           format("    return false;~n") )),
     format(string(Footer), '}', []),
     CppLines = [Header, Body, Footer].
+
+% --- T6 back-end: static unordered_map -> switch (jump table) ---
+emit_clause_chain_map_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T6 first-argument indexing / map+switch)
+bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    const std::string* _t6s = vm->match_reg_atom_str(\"A1\");~n"),
+          format("    if (!_t6s) return false;  // unbound (defer to interpreter) or non-atom~n"),
+          format("    static const std::unordered_map<std::string,int> _t6map = {~n"),
+          emit_cpp_t6_map_entries(Guards, 0),
+          format("    };~n"),
+          format("    auto _t6it = _t6map.find(*_t6s);~n"),
+          format("    if (_t6it == _t6map.end()) return false;  // no clause matches~n"),
+          format("    switch (_t6it->second) {  // jump table~n"),
+          emit_cpp_t6_cases(Guards, 0, ForeignPreds),
+          format("    }~n"),
+          format("    return false;~n") )),
+    format(string(Footer), '}', []),
+    CppLines = [Header, Body, Footer].
+
+emit_cpp_t6_map_entries([], _).
+emit_cpp_t6_map_entries([guard(V, _) | Rest], I) :-
+    wam_classify_constant_token(V, atom(Name)),
+    local_escape_cpp_string(Name, Esc),
+    format("        {\"~w\", ~w},~n", [Esc, I]),
+    I1 is I + 1,
+    emit_cpp_t6_map_entries(Rest, I1).
+
+emit_cpp_t6_cases([], _, _).
+emit_cpp_t6_cases([guard(_, Rem) | Rest], I, ForeignPreds) :-
+    format("        case ~w: {~n", [I]),
+    emit_instrs(Rem, "            ", ForeignPreds),
+    format("        } break;~n"),
+    I1 is I + 1,
+    emit_cpp_t6_cases(Rest, I1, ForeignPreds).
 
 emit_cpp_guards([], _).
 emit_cpp_guards([guard(V, Rem) | Rest], ForeignPreds) :-
