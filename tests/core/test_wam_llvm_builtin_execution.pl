@@ -3795,6 +3795,16 @@ test_m140_get_list_write(_, R) :-
     % to the constructed list (the one bind-through kept).
     m140_mklist(L), ( L == [a] -> R is 1 ; R is 0 ).   % 1
 
+:- dynamic test_m140_deep_chain_propagates/2.
+test_m140_deep_chain_propagates(_, R) :-
+    % Removing the staging bind-throughs unmasked this: bindings
+    % wrote at the FIRST Ref of an alias chain, not its end, so
+    % after X = Y the binding X = 42 landed in the alias-link cell
+    % and Y stayed unbound. Three-deep chain to exercise
+    % @wam_last_ref beyond one hop.
+    X = Y, Y = Z, X = 42,
+    ( Z =:= 42 -> R is 1 ; R is 0 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -7057,6 +7067,8 @@ test_all :-
                    test_m140_put_list, 0, 1),
        run_test_r0('get_list write mode still binds -> 1',
                    test_m140_get_list_write + [m140_mklist/1], 0, 1),
+       run_test_r0('X=Y, Y=Z, X=42, Z=:=42 (deep chain) -> 1',
+                   test_m140_deep_chain_propagates, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
