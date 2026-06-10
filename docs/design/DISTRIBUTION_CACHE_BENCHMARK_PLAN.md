@@ -95,6 +95,14 @@ For each `(D_pre, B_search)` cell, run the same sampled target set under:
 | `cached_mass_cdf` | Stop at cached nodes and use mass CDF for reachability-mass queries |
 | `cached_basis` | Use mass + selected cumulative bases for bounded average or weighted power |
 
+The cached node is a boundary condition, not merely a lookup table. For a target
+node `V`, a hit at ancestor `A` replaces the suffix search from `A` to the root
+only when the cached distribution has a compatible root, horizon, statistic,
+admissibility policy, and target scope. Global root tables are reusable as broad
+boundary conditions; per-query tables are reusable only inside the ancestor cone
+they were computed for. The benchmark should therefore count cache hits by both
+node and boundary compatibility, not just by node id.
+
 The first pass may implement only `full_exact` and `cached_histogram`. Add CDF
 modes once the raw suffix-cutoff semantics are verified.
 
@@ -231,8 +239,8 @@ The first benchmark deliberately measures exact parent-only histograms. Later
 passes can test cheaper summaries and approximations once exact-cache semantics
 are stable.
 
-One future direction is to compute scalar support bounds before deciding whether
-to build a full distribution:
+One near-term extension is to compute scalar support bounds before deciding
+whether to build a full distribution:
 
 ```text
 L_min(v) = shortest parent-only path length from v to root
@@ -240,15 +248,35 @@ L_max(v) = longest parent-only path length from v to root, under the active cycl
 support(P_v) <= [L_min(v), L_max(v)]
 ```
 
-Those bounds give fast budget edge cases and may help initialise finite-support
-approximations. If real parent-path distributions tend toward a recognisable
-family, such as a binomial-like, truncated-normal, or truncated-geometric shape,
-the benchmark can add approximation modes that compare fitted distributions
-against exact SimpleWiki histograms before trying enwiki-scale runs.
+When the requested functional is only `min_support` or `max_support`, these are
+not approximations; the scalar recurrence is the whole computation. When the
+requested functional is a bounded aggregate, the bounds are pruning and planning
+state rather than a replacement for `P_v`:
 
-Treat this as a later phase, not part of the first parity harness. The first
-requirement remains exact agreement between full enumeration, cached exact
-histograms, and cumulative bases.
+```text
+if L_min(v) > remaining_budget: suffix contributes zero
+if L_max(v) <= remaining_budget: suffix is fully inside the budget
+if L_max(v) - L_min(v) is small: exact histogram is likely cheap
+if L_max(v) - L_min(v) is large: prefer a cached boundary or fitted tail candidate
+```
+
+This lets deeper layers carry cheap min/max summaries while the planner decides
+where full histograms are still worth materialising.
+
+Another future direction is approximation from bounds plus low-order statistics.
+The min/max interval gives finite support, while observed branching and second
+moment estimates can help choose a candidate family. If real parent-path
+distributions tend toward a recognisable finite-support form, such as
+binomial-like, truncated-normal, or truncated-geometric, the benchmark can add
+approximation modes that compare fitted distributions against exact SimpleWiki
+histograms before trying enwiki-scale runs. The fitted state must still be
+anchored to the same root/boundary, horizon, path statistic, and target scope as
+the exact state it replaces.
+
+Treat fitted distributions as a later phase, not part of the first parity
+harness. Scalar min/max bounds are safe to introduce earlier because they can be
+validated directly against the exact oracle and used only for pruning decisions
+until the approximation policy is measured.
 
 ## 10. Output artifacts
 
