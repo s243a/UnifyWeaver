@@ -228,6 +228,7 @@ emit_instrs([], Indent) :-
 emit_instrs(Instrs, Indent) :-
     length(Instrs, Len),
     format("~w(let [s0 state~n", [Indent]),
+    format("~w      c0 true~n", [Indent]),
     emit_instr_bindings(Instrs, 0, Indent),
     format("~w      ]~n", [Indent]),
     format("~w  s~w)~n", [Indent, Len]).
@@ -236,11 +237,16 @@ emit_instr_bindings([], _, _).
 emit_instr_bindings([Instr|Rest], Index, Indent) :-
     NextIndex is Index + 1,
     format(atom(InState), 's~w', [Index]),
+    format(atom(InCont), 'c~w', [Index]),
+    format(atom(OutState), 's~w', [NextIndex]),
+    format(atom(OutCont), 'c~w', [NextIndex]),
     emit_lowered_expr(Instr, InState, Expr),
     instr_comment(Instr, Comment),
     format("~w      ;; ~w~n", [Indent, Comment]),
-    format("~w      s~w (if (= :running (:status ~w)) ~w ~w)~n",
-           [Indent, NextIndex, InState, Expr, InState]),
+    format("~w      ~w (if ~w ~w ~w)~n",
+           [Indent, OutState, InCont, Expr, InState]),
+    format("~w      ~w (runtime/lowered-step-advanced? ~w ~w ~w)~n",
+           [Indent, OutCont, InCont, InState, OutState]),
     emit_instr_bindings(Rest, NextIndex, Indent).
 
 % =====================================================================
