@@ -3220,15 +3220,20 @@ stepST _ _ !pw CutIte =
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- M17 soft cut (see the pure `step` GetLevel/Cut for semantics).
+-- M145: route the register access through putRegST/getRegST. GetLevel''s
+-- operand is a Y register (id 201+), which lives in the topmost env
+-- frame on the ST path -- the old raw writeArray/readArray hit the
+-- STArray sized (1, maxRegId=199) and crashed every if-then-else
+-- predicate with an index error.
 stepST _ regs !pw (GetLevel reg) = do
-  writeArray regs reg (Integer (pwCPsLen pw))
-  return $ Just pw { pwPC = pwPC pw + 1 }
+  pw'' <- putRegST regs reg (Integer (pwCPsLen pw)) pw
+  return $ Just pw'' { pwPC = pwPC pw + 1 }
 
 stepST _ regs !pw (Cut reg) = do
-  v <- readArray regs reg
-  case v of
-    Integer n -> return $ Just pw { pwPC = pwPC pw + 1
-                                  , pwCPs = take n (pwCPs pw), pwCPsLen = n }
+  mv <- getRegST regs reg pw
+  case mv of
+    Just (Integer n) -> return $ Just pw { pwPC = pwPC pw + 1
+                                         , pwCPs = take n (pwCPs pw), pwCPsLen = n }
     _ -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- Type-checking builtins

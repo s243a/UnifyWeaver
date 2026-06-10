@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Haskell target (M145): ST-mode crash on every if-then-else
+  predicate.** The sweep-found known issue: `stepST`'s
+  `GetLevel`/`Cut` handlers used raw `writeArray`/`readArray` on the
+  register STArray sized `(1, maxRegId=199)`, but their operands are
+  Y registers (ids 201+), which live in env frames on the ST path —
+  any ITE predicate crashed `runMutableRegs` with an index error
+  (the runner the generated default `Main.hs` actually uses). Both
+  handlers now route through the env-frame-aware
+  `putRegST`/`getRegST`. All 5 sweep probes now pass on both the
+  pure and ST runners.
+- **WAM Scala target (M146): lowered mode uncompilable with
+  `put_variable`.** The sweep-found known issue: the lowered emitter
+  emitted a bare `{ val v = ... }` block after a call statement,
+  which scalac parses as an argument list to the preceding
+  expression (`Unit does not take parameters`) — every
+  `emit_mode(functions)` project containing `put_variable Yn, A1`
+  failed to compile. Now emitted as `locally { ... }`, forcing
+  statement position. Lowered projects compile and the sweep probes
+  pass with R=1/R=0 discriminators.
 - **WAM Rust target (M144): if-then-else never committed.** The
   sweep-found known issue: `cut_ite` was translated to
   `Instruction::NoOp`, so a then-branch failure backtracked into the
@@ -56,21 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require an Integer tag: wrong tag exits 254 with an explanatory
   message, and predicate failure (255) gets one too.
 
-### Known issues (found by the M143 sweep, not yet fixed)
-- **Rust WAM target (interpreter mode):** if-then-else does not
-  commit to the then-branch — `( 1 =:= 1 -> R is 1 ; R is 0 )`
-  queried with R=0 succeeds by backtracking into the else branch.
-  Lowered mode is correct.
-- **Haskell WAM target (ST mode):** `runMutableRegs` writes
-  `GetLevel Yn` register operands (ids 201+) straight into the
-  STArray sized to `maxRegId = 199` — any if-then-else predicate
-  crashes with an index error on the ST path (the pure-`run` path
-  routes Y-regs through env frames and is correct).
-- **Scala WAM target (lowered mode):** the lowered emitter
-  (`wam_scala_lowered_emitter.pl:632`) emits a bare `{ ... }` block
-  after a call statement; scalac parses the brace as an argument
-  list (`Unit does not take parameters`) — `emit_mode(functions)`
-  projects using `put_variable Yn, A1` do not compile.
 - **WAM LLVM target (M141): `is_list/1` never succeeded.** The
   follow-up flagged in M140: `builtin_is_list_check` accepted only
   the legacy tag-4 List value, but the engine builds lists as

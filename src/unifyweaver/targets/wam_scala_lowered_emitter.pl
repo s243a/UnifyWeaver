@@ -629,7 +629,12 @@ emit_one_scala(put_constant(CStr, AiStr), I, _) :-
     format("~wWamRuntime.setReg(s, ~w, ~w)~n", [I, Ai, Term]).
 emit_one_scala(put_variable(XnStr, AiStr), I, _) :-
     scala_lowered_reg_index(XnStr, Xn), scala_lowered_reg_index(AiStr, Ai),
-    format("~w{ val v = WamRuntime.freshVar(s); WamRuntime.setReg(s, ~w, v); s.regs(~w) = v }~n",
+    % M146: `locally { ... }`, not a bare `{ ... }` block. A bare block
+    % on the line after a call statement is parsed by scalac as an
+    % argument list to that call ("Unit does not take parameters"),
+    % so every lowered project containing put_variable failed to
+    % compile. `locally` forces statement position.
+    format("~wlocally { val v = WamRuntime.freshVar(s); WamRuntime.setReg(s, ~w, v); s.regs(~w) = v }~n",
            [I, Xn, Ai]).
 emit_one_scala(put_value(XnStr, AiStr), I, _) :-
     scala_lowered_reg_index(XnStr, Xn), scala_lowered_reg_index(AiStr, Ai),
