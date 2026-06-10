@@ -96,7 +96,7 @@ def support_width(l_min, l_max):
     return l_max - l_min
 
 
-def target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_max, exact_error=None):
+def target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_max, parent_degree, exact_error=None):
     hist_min = min(hist) if hist else None
     hist_max = max(hist) if hist else None
     width = support_width(l_min, l_max)
@@ -111,6 +111,7 @@ def target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_m
         "L_max": l_max,
         "support_width": width,
         "hist_support_min": hist_min,
+        "parent_degree": parent_degree,
         "hist_support_max": hist_max,
         "hist_support_width": hist_width,
         "path_count": sum(hist.values()),
@@ -167,8 +168,9 @@ def run_graph_support_bounds(
         except ValueError as exc:
             l_min, l_max = None, None
             exact_error = str(exc)
+        parent_degree = len(parents.get(target, []))
 
-        records.append(target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_max, exact_error))
+        records.append(target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_max, parent_degree, exact_error))
         for budget in budgets:
             records.append(
                 budget_signal_record(
@@ -200,6 +202,29 @@ def run_fixture_support_bounds(fixture_name, fixture, budgets, narrow_width=2, w
     )
 
 
+def parent_branching_moments(rows):
+    degrees = [r["parent_degree"] for r in rows if r.get("parent_degree") is not None]
+    if not degrees:
+        return {
+            "nodes": 0,
+            "nonzero_parent_nodes": 0,
+            "mean_parent_degree": 0.0,
+            "second_parent_degree_moment": 0.0,
+            "size_biased_parent_branching": 0.0,
+            "max_parent_degree": 0,
+        }
+    mean = statistics.mean(degrees)
+    second = statistics.mean([degree * degree for degree in degrees])
+    return {
+        "nodes": len(degrees),
+        "nonzero_parent_nodes": sum(1 for degree in degrees if degree > 0),
+        "mean_parent_degree": mean,
+        "second_parent_degree_moment": second,
+        "size_biased_parent_branching": 0.0 if mean == 0 else second / mean,
+        "max_parent_degree": max(degrees),
+    }
+
+
 def summarize(records):
     target_records = [r for r in records if r["record_type"] == "target_bounds"]
     signal_records = [r for r in records if r["record_type"] == "budget_signal"]
@@ -207,6 +232,7 @@ def summarize(records):
     widths = [r["support_width"] for r in validated if r["support_width"] is not None]
     path_counts = [r["path_count"] for r in validated]
     failures = [r for r in validated if not r["bounds_match_histogram"]]
+    global_parent_moments = parent_branching_moments(validated)
 
     lines = [
         "# Parent Support Bounds Benchmark Summary",
@@ -225,6 +251,21 @@ def summarize(records):
             p95_width=percentile(widths, 95),
             max_width=max(widths, default=0),
             mean_paths=statistics.mean(path_counts) if path_counts else 0.0,
+        ),
+        "",
+        "## Parent Branching Moments",
+        "",
+        "`E[p^2]/E[p]` is the size-biased parent branching signal over the selected reachable nodes, where `p` is the node's parent degree in the benchmark graph.",
+        "",
+        "| nodes | nonzero_parent_nodes | E[p] | E[p^2] | E[p^2]/E[p] | max_p |",
+        "|-------|----------------------|------|--------|-------------|-------|",
+        "| {nodes} | {nonzero} | {mean:.6f} | {second:.6f} | {size_biased:.6f} | {max_p} |".format(
+            nodes=global_parent_moments["nodes"],
+            nonzero=global_parent_moments["nonzero_parent_nodes"],
+            mean=global_parent_moments["mean_parent_degree"],
+            second=global_parent_moments["second_parent_degree_moment"],
+            size_biased=global_parent_moments["size_biased_parent_branching"],
+            max_p=global_parent_moments["max_parent_degree"],
         ),
         "",
         "## Budget Signals",
@@ -259,20 +300,24 @@ def summarize(records):
         "",
         "## Root-Distance Buckets",
         "",
-        "| L_min | targets | mean_width | max_width | mean_path_count |",
-        "|-------|---------|------------|-----------|-----------------|",
+        "| L_min | targets | mean_width | max_width | mean_path_count | E[p] | E[p^2]/E[p] | max_p |",
+        "|-------|---------|------------|-----------|-----------------|------|-------------|-------|",
     ])
     for l_min in sorted(bucket_rows):
         rows = bucket_rows[l_min]
         row_widths = [r["support_width"] for r in rows if r["support_width"] is not None]
         row_paths = [r["path_count"] for r in rows]
+        row_moments = parent_branching_moments(rows)
         lines.append(
-            "| {l_min} | {targets} | {mean_width:.3f} | {max_width} | {mean_paths:.3f} |".format(
+            "| {l_min} | {targets} | {mean_width:.3f} | {max_width} | {mean_paths:.3f} | {mean_parent:.6f} | {size_biased:.6f} | {max_p} |".format(
                 l_min=l_min,
                 targets=len(rows),
                 mean_width=statistics.mean(row_widths) if row_widths else 0.0,
                 max_width=max(row_widths, default=0),
                 mean_paths=statistics.mean(row_paths) if row_paths else 0.0,
+                mean_parent=row_moments["mean_parent_degree"],
+                size_biased=row_moments["size_biased_parent_branching"],
+                max_p=row_moments["max_parent_degree"],
             )
         )
     return "\n".join(lines) + "\n"

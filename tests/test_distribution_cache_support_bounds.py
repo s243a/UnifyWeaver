@@ -6,7 +6,11 @@
 import unittest
 from pathlib import Path
 
-from scripts.distribution_cache_support_bounds import run_graph_support_bounds, summarize
+from scripts.distribution_cache_support_bounds import (
+    parent_branching_moments,
+    run_graph_support_bounds,
+    summarize,
+)
 from tools.distribution_cache_support import (
     FIXTURES,
     ROOT,
@@ -37,6 +41,16 @@ class DistributionCacheSupportBoundsTests(unittest.TestCase):
         self.assertEqual(support_bounds("B", parents), (1, 2))
         self.assertEqual(max_parent_distance("C", parents), 3)
 
+    def test_parent_branching_moments_report_size_biased_parent_degree(self):
+        records = run_graph_support_bounds(
+            "tiny_fixture", "diamond", FIXTURES["diamond"]["parents"], FIXTURES["diamond"]["targets"], [2], ROOT
+        )
+        target_records = [record for record in records if record["record_type"] == "target_bounds"]
+        moments = parent_branching_moments(target_records)
+
+        self.assertEqual(moments["max_parent_degree"], 2)
+        self.assertAlmostEqual(moments["size_biased_parent_branching"], 1.5)
+
     def test_support_bounds_runner_reports_budget_pruning_categories(self):
         records = run_graph_support_bounds(
             "tiny_fixture",
@@ -58,6 +72,7 @@ class DistributionCacheSupportBoundsTests(unittest.TestCase):
         summary = summarize(records)
         self.assertIn("# Parent Support Bounds Benchmark Summary", summary)
         self.assertIn("zero_by_min", summary)
+        self.assertIn("E[p^2]/E[p]", summary)
         self.assertIn("Root-Distance Buckets", summary)
 
     def test_file_backed_simplewiki_sample_bounds_match_exact_histograms(self):
