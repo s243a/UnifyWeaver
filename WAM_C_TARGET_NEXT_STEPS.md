@@ -1,24 +1,18 @@
 # WAM C Target - Status And Next Steps
 
-Status date: 2026-05-31
+Status date: 2026-06-07
 
 Latest branch verification:
 
-- `investigate/wam-c-child-csr-scale-sweep` based on `main` at `05de16c8`
-  (`Merge pull request #2662 from s243a/investigate/wam-c-larger-artifact-layouts`)
-- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
-- `python3 -m py_compile examples/benchmark/benchmark_effective_distance_matrix.py examples/benchmark/benchmark_target_matrix.py examples/benchmark/benchmark_common.py tests/test_benchmark_target_matrix.py`
-- `python3 tests/test_benchmark_target_matrix.py`
-- `python3 -m py_compile examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py tests/test_wam_c_child_csr_scale_sweep.py`
-- `python3 tests/test_wam_c_child_csr_scale_sweep.py`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales dev --target-sets c-wam-child-search-layouts --repetitions 1 --baseline-target c-wam-accumulated-child-scan --run-timeout-seconds 180`
-- `python3 examples/benchmark/benchmark_effective_distance_matrix.py --scales 10x --target-sets c-wam-child-csr-layouts --compile-only-targets c-wam-accumulated-child-csr,c-wam-accumulated-child-csr-drop,c-wam-accumulated-child-csr-lmdb-offset --baseline-target c-wam-accumulated-child-csr`
-- `python3 examples/benchmark/benchmark_wam_c_child_csr_scale_sweep.py`
+- `investigate/wam-c-meta-goal-call-n` based on `main` at `08b21f86`
+  (`Merge pull request #2916 from
+  s243a/investigate/wam-c-meta-goal-ite`)
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
 - `git diff --check`
 
 Active branch:
 
-- `investigate/wam-c-child-csr-scale-sweep`
+- `investigate/wam-c-meta-goal-call-n`
 
 This file replaces the older implementation plan. The four original C follow-up
 items are now complete on `main`; the remaining work is feature parity with the
@@ -82,6 +76,22 @@ more mature hybrid WAM targets, especially Haskell and Rust.
 | `astar_shortest_path4` native kernel | Done | C shared-kernel detector accepts `astar_shortest_path4`, emits detected setup, registers a native arity-4 foreign handler, and covers direct plus detected-project executable smokes over weighted and direct-distance edges |
 | Accumulated runtime edge-index fix | Done | Lazy child indexes for `WamState` and `WamFactSource` remove repeated full-edge scans; `10x` accumulated C targets now run around 0.065-0.071s with output parity versus Prolog at 0.202s |
 | Native weighted-kernel float output | Done | C runtime has `VAL_FLOAT`, numeric unification, double weighted/direct edge storage, and executable weighted/A* smokes for fractional 1.5 results while preserving exact-integer outputs as `VAL_INT` |
+| Control instruction parity smoke | Done | `INSTR_GET_LEVEL`, `INSTR_CUT`, `INSTR_CUT_ITE`, and `INSTR_JUMP` now parse, emit, and execute; generated executable smoke covers `\+/1` and if-then-else success/failure paths |
+| Precise if-then-else cut scope smoke | Done | C target tests now compile `ite_use_y_level(true)` WAM with `get_level`/`cut` and run a nondeterministic-condition scope regression that must not backtrack into the else branch after commit |
+| Explicit cut call-scope fix | Done | `!/0` now prunes to the current call barrier instead of clearing all choice points; generated executable smoke preserves an outer disjunction alternative across an inner predicate cut |
+| `forall/2` control smoke | Done | Generated executable smoke covers the shared nested soft-cut rewrite for `forall/2` all-pass, action-fail, subset, and empty-generator cases |
+| `findall/3` collect aggregate surface | Done | C now parses and executes shared `begin_aggregate collect` / `end_aggregate` WAM for simple `findall/3`, preserving generator choice points under aggregate frames and building non-empty/empty result lists |
+| `findall/3` nested/template smoke | Done | C now parses compiler temporary `_XTn` registers and the generated executable smoke covers helper-nested `findall/3`, `pair(X, [X])` templates, and `[X, X]` templates |
+| Direct inline nested `findall/3` lowering | Done | Inner-body `findall/3` now lowers to nested aggregate opcodes instead of `call findall/3`; local aggregate result slots are initialized before finalization, and the executable smoke covers `findall(X, (item(X), findall(Y, item(Y), Ys), Ys = [a,b]), L)` |
+| No-witness `bagof/3` and `setof/3` aggregate surface | Done | C parses the shared 4-field no-witness `begin_aggregate bagof/setof` form, `bagof/3` preserves duplicate solution order and fails empty, and `setof/3` sorts/deduplicates and fails empty |
+| Bound-witness `bagof/3` and `setof/3` grouping | Done | C parses witness register lists into aggregate payload arrays, copies witness tuples per aggregate item, selects the caller-bound witness group, and covers grouped `bagof/3` order plus grouped `setof/3` sort/dedup in an executable smoke |
+| Existential `^/2` aggregate body lowering | Done | Goal-level `^/2` wrappers are transparent in inner call positions, witness discovery still suppresses quantified variables, and the C executable smoke covers flattened existential `bagof/3` plus sorted/deduplicated existential `setof/3` |
+| Unbound-witness `bagof/3` and `setof/3` group enumeration | Done | C retains aggregate groups behind a backtrackable iterator, binds each witness/result group through a synthetic aggregate-group choicepoint, and covers outer `findall/3` consuming all grouped `bagof/3` and `setof/3` alternatives |
+| Runtime aggregate meta-call dispatch | Done | C dispatches non-inline runtime `findall/3`, `bagof/3`, and `setof/3` calls through meta aggregate frames, invokes simple callable goal terms, and covers non-inline `bagof/3` / `setof/3` executable smoke without `inline_bagof_setof(true)` |
+| Runtime conjunction goal-term dispatch | Done | C preserves `,/2` functors in WAM-to-C parsing, dispatches conjunction goal terms through a synthetic continuation frame, snapshots frame depth in choicepoints, and covers non-inline aggregate bodies with conjunction in `bagof/3` and `setof/3` |
+| Runtime disjunction goal-term dispatch | Done | C dispatches `;/2` goal terms by placing the right branch behind a synthetic choicepoint, snapshots disjunction-frame depth in choicepoints, and covers non-inline aggregate bodies with disjunction in `bagof/3` and `setof/3` |
+| Runtime if-then-else goal-term dispatch | Done | C recognizes `;(->(If, Then), Else)` goal terms, commits on the first condition success by pruning condition alternatives and the else fallback, and covers non-inline aggregate bodies with if-then-else in `bagof/3` and `setof/3` |
+| Runtime `call/N` goal-term expansion | Done | C expands `call/1` through `call/N` goal terms by appending extra arguments to atom or partial-structure callables before reusing normal meta-goal dispatch, and covers non-inline aggregate bodies with `call/N` in `bagof/3` and `setof/3` |
 
 ## Current C Target Baseline
 
@@ -92,8 +102,9 @@ The C target is now a credible small WAM backend:
   structures, lists, and unification.
 - Supports `set_variable`, `set_value`, and `set_constant` for generated body
   term construction.
-- Supports `call`, `execute`, `proceed`, `allocate`, `deallocate`, and
-  choice-point instructions.
+- Supports `call`, `execute`, `proceed`, `allocate`, `deallocate`,
+  choice-point instructions, and control opcodes for `get_level`, `cut`,
+  `cut_ite`, and `jump`.
 - Supports `switch_on_constant`, `switch_on_structure`, `switch_on_term`,
   second-argument constant dispatch, and direct list dispatch.
 - Uses a tagged `InstructionPayload` union instead of a single wide instruction
@@ -129,8 +140,19 @@ The C target is now a credible small WAM backend:
   `kernels_on` / `kernels_off` accumulated target pairs.
 - Has executable smokes for generated runtime, cross-predicate calls,
   foreign calls, native category ancestor, file-backed facts, streaming native
-  results, real multi-clause predicates, structure indexing, `is_list/1`, and
-  `=/2`.
+  results, real multi-clause predicates, structure indexing, `is_list/1`,
+  `=/2`, negation, legacy `cut_ite` if-then-else, and precise
+  `get_level`/`cut` if-then-else, explicit `!/0` call-scope behavior, and
+  `forall/2`'s generated soft-cut rewrite.
+- Supports aggregate surfaces: generated `findall/3` lowering through
+  `begin_aggregate collect` / `end_aggregate`, including empty and non-empty
+  result lists, helper-nested aggregate calls, direct inline nested `findall/3`
+  bodies, compound/list templates, no-witness `bagof/3` / `setof/3`,
+  caller-bound witness grouping for `bagof/3` / `setof/3`, and
+  existential `^/2` suppression plus unbound witness group enumeration inside
+  inline `bagof/3` / `setof/3` bodies. It also has runtime meta-call dispatch
+  for non-inline aggregate calls over simple callable goal terms and
+  conjunction/disjunction/if-then-else/`call/N` goal terms.
 - Has an executable smoke for a generated multi-recursive Fibonacci-style
   arithmetic program.
 
@@ -153,8 +175,8 @@ missing important target features; `Missing` = no comparable C path yet.
 | Second-arg indexing | Partial | Partial/Done | Partial/Done | C has constant A2 dispatch; broaden tests if this becomes hot. |
 | Predicate dispatch map | Done | Done | Done | C now uses open-addressing hash table. |
 | Builtin calls | Partial | Broader | Broader | C has a growing builtin set, including generated-Prolog coverage over `functor/3`, `arg/3`, and `atom_concat/3`; next builtin gaps should be chosen from concrete benchmark demand. |
-| Aggregates (`findall`/`bagof`/`setof`) | Missing | Present in hybrid/lowered paths | Present in interpreter/lowered paths | Add only after C has enough runtime term-copy and list construction coverage. |
-| Negation / control builtins | Partial | Broader | Broader | C likely needs explicit tests for `\+/1`, cut interactions, and if-then-else lowering. |
+| Aggregates (`findall`/`bagof`/`setof`) | Partial | Present in hybrid/lowered paths | Present in interpreter/lowered paths | C now has simple, helper-nested, templated, and direct inline nested `findall/3` collect support plus no-witness, caller-bound witness, existential `^/2`, and unbound witness group enumeration for inline `bagof/3` / `setof/3`; runtime meta-call aggregate dispatch now covers simple callable, conjunction, disjunction, if-then-else, and `call/N` goals, while broader meta-goal forms remain gaps. |
+| Negation / control builtins | Partial/Done | Broader | Broader | C now executes shared WAM control opcodes for `\+/1`, legacy `cut_ite` if-then-else, precise `get_level`/`cut` if-then-else, explicit `!/0` scoped to the current predicate call barrier, and generated `forall/2` soft-cut rewrites; residual work should be driven by concrete meta-control demand. |
 | Foreign predicate instruction (`CallForeign`) | Partial/Done | Done | Done | C has deterministic handler dispatch plus integer result collection for native kernels. |
 | Native recursive kernels | Partial/Done | Done | Done | C has detected `category_ancestor/4` setup, all-hop collection for that kernel, native transitive closure/distance/parent-distance/step-parent-distance handlers, weighted shortest path, and A* shortest path with integer and fractional result coverage; remaining parity gaps are broader integration details. |
 | Shared kernel detector integration | Partial/Done | Done | Done | C reuses `recursive_kernel_detection.pl` for `category_ancestor/4`, `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, and `astar_shortest_path4`; Haskell and Rust still have broader wrapper/fact-layout integration. |
@@ -167,6 +189,409 @@ missing important target features; `Missing` = no comparable C path yet.
 | Instruction layout efficiency | Done | N/A | N/A | C now packs instruction fields into tag-specific payload arms; benchmark larger generated programs if layout becomes performance-sensitive. |
 
 ## Recommended Next Branches
+
+### Completed: `investigate/wam-c-meta-goal-call-n`
+
+Goal: extend C aggregate meta-call goal dispatch to `call/N` goal expansion.
+
+Evidence:
+
+- C recognizes `call/1` through `call/N` goal terms before normal predicate
+  lookup.
+- `call/1` invokes the callable directly.
+- `call/N` expands atom callables and partial-structure callables by appending
+  extra arguments into a temporary heap goal term, then reuses normal meta-goal
+  dispatch.
+- The executable smoke covers non-inline `bagof/3` and `setof/3` bodies with
+  `call/2`, `call/3`, partial-structure `call/2`, and sorted/deduplicated set
+  output.
+
+Remaining gaps:
+
+- Broader meta-goal parity should now be driven by concrete benchmark or user
+  programs rather than the aggregate `call/N` sequence.
+
+### Completed: `investigate/wam-c-meta-goal-ite`
+
+Goal: extend C aggregate meta-call goal dispatch from conjunction and
+disjunction to if-then-else goal terms in aggregate bodies.
+
+Evidence:
+
+- The C runtime now has a small if-then-else frame stack plus synthetic
+  condition-success and else-fallback continuations.
+- Choicepoint snapshots preserve if-then-else frame depth, and restore/prune
+  paths trim frames with the rest of runtime backtracking state.
+- Runtime `;(->(If, Then), Else)` goal terms push an else fallback before
+  evaluating `If`; on the first condition success, C prunes condition
+  alternatives and the else fallback before invoking `Then`.
+- The same continuation path also handles deterministic `true` conditions and
+  deterministic builtin condition success instead of leaving negative synthetic
+  continuations in `state->P`.
+- The real-Prolog executable smoke compiles non-inline `bagof/3` and
+  `setof/3` bodies containing if-then-else, verifies the generated WAM still
+  uses `execute bagof/3` / `execute setof/3`, and checks condition-commit,
+  else-fallback, and sorted/deduplicated set output.
+
+Remaining gaps:
+
+- Later branches closed the aggregate `call/N` gap; remaining meta-goal parity
+  work should be driven by concrete benchmark or user programs.
+
+### Completed: `investigate/wam-c-meta-goal-disjunction`
+
+Goal: extend C aggregate meta-call goal dispatch from conjunction to
+disjunction goal terms in aggregate bodies.
+
+Evidence:
+
+- The C runtime now has a small disjunction frame stack and synthetic
+  right-branch choicepoint target.
+- Choicepoint snapshots preserve disjunction-frame depth, and restore/prune
+  paths trim frames with the rest of runtime backtracking state.
+- Runtime `;/2` goal terms run all left-branch alternatives first, then resume
+  the right branch through normal WAM backtracking when the synthetic
+  choicepoint is selected.
+- The real-Prolog executable smoke compiles non-inline `bagof/3` and
+  `setof/3` bodies containing disjunction, verifies the generated WAM still
+  uses `execute bagof/3` / `execute setof/3`, and checks ordered bag output
+  plus sorted/deduplicated set output across both branches.
+
+Remaining gaps:
+
+- Later branches closed the aggregate if-then-else and `call/N` gaps; remaining
+  meta-goal parity work should be driven by concrete benchmark or user
+  programs.
+
+### Completed: `investigate/wam-c-meta-goal-composition`
+
+Goal: extend the first C aggregate meta-call path from simple callable goals to
+conjunction goal terms in aggregate bodies.
+
+Evidence:
+
+- The C runtime now has a small conjunction frame stack and synthetic
+  conjunction return continuation.
+- Choicepoint snapshots preserve conjunction-frame depth, and restore/prune
+  paths trim frames with the rest of runtime backtracking state.
+- Runtime `,/2` goal terms dispatch the left goal first, then re-dispatch the
+  right goal on each left-goal success, preserving normal retry behavior for
+  both sides under aggregate collection.
+- The WAM text parser now keeps leading-comma functors such as `,/2` intact
+  instead of treating the comma as a field separator during pass 2.
+- The real-Prolog executable smoke compiles non-inline `bagof/3` and `setof/3`
+  bodies containing conjunction, verifies the generated WAM still uses
+  `execute bagof/3` / `execute setof/3`, and checks ordered bag output plus
+  sorted/deduplicated set output.
+
+Remaining gaps:
+
+- Later branches closed the aggregate disjunction, if-then-else, and `call/N`
+  gaps; remaining meta-goal parity work should be driven by concrete benchmark
+  or user programs.
+
+### Completed: `investigate/wam-c-meta-aggregate-dispatch`
+
+Goal: route non-inline runtime calls to `findall/3`, `bagof/3`, and `setof/3`
+through C aggregate machinery instead of failing normal predicate lookup.
+
+Evidence:
+
+- The C step loop now intercepts `call` and `execute` for `findall/3`,
+  `bagof/3`, and `setof/3` before predicate-hash lookup.
+- Meta aggregate frames store heap-reference template/result values directly,
+  preserving variable sharing after the wrapper predicate reuses A-registers
+  for aggregate arguments.
+- Synthetic meta collect/finalize continuations collect each goal solution,
+  retry the goal through normal backtracking, and finalize empty/non-empty
+  `findall/3`, `bagof/3`, and `setof/3` results through the existing aggregate
+  list and grouping code.
+- The real-Prolog executable smoke compiles `bagof/3` and `setof/3` without
+  `inline_bagof_setof(true)`, verifies the generated WAM contains
+  `execute bagof/3` / `execute setof/3` rather than inline aggregate opcodes,
+  and checks ordered `bagof/3`, sorted/deduplicated `setof/3`, and empty
+  `bagof/3` failure.
+
+Remaining gaps:
+
+- Later branches extended the first meta-call implementation through
+  conjunction, disjunction, if-then-else, and `call/N` goal terms. Remaining
+  parity work should be driven by concrete benchmark or user programs.
+
+### Completed: `investigate/wam-c-bagof-setof-unbound-witness-groups`
+
+Goal: make inline `bagof/3` and `setof/3` enumerate all unbound witness groups
+on backtracking instead of returning only the first discovered group.
+
+Evidence:
+
+- The C runtime now has a retained aggregate-group iterator stack and a
+  synthetic aggregate-group choicepoint target.
+- Choicepoint snapshots preserve the iterator depth, and pruning trims stale
+  iterators so cuts and top-level query cleanup do not leave retained groups
+  behind.
+- Aggregate finalization partitions collected template rows by witness tuple
+  when witness registers are unbound, binds the first group immediately, and
+  leaves later groups as backtrackable alternatives.
+- The real-Prolog executable smoke compiles grouped `bagof/3` and `setof/3`
+  helper predicates, then uses an outer `findall/3` to consume every witness
+  group. It verifies grouped `bagof/3` preserves row order and grouped
+  `setof/3` sorts/deduplicates each group.
+
+Reason:
+
+- The previous branches closed no-witness, caller-bound witness, and
+  existential suppression semantics.
+- Full unbound witness enumeration was the remaining inline aggregate semantic
+  gap and required runtime state rather than another compiler-only lowering.
+- Meta-call aggregate dispatch remains separate because it requires runtime
+  goal-term execution for `findall/3`, `bagof/3`, and `setof/3` calls that are
+  not inlined by the compiler.
+
+### Completed: `investigate/wam-c-bagof-setof-existential-surface`
+
+Goal: make inline `bagof/3` and `setof/3` treat goal-level `^/2` as
+existential quantification instead of compiling it as a runtime predicate call.
+
+Evidence:
+
+- The shared WAM compiler strips goal-level `^/2` wrappers in inner call
+  positions and compiles the RHS directly.
+- Existing witness discovery still walks the original aggregate goal, so
+  variables on the LHS of `^/2` are excluded from the emitted witness-register
+  list.
+- The real-Prolog executable smoke compiles `bagof(X, Y^pair(X, Y), L)` and
+  `setof(X, Y^pair(X, Y), L)`, verifies the generated WAM has an empty witness
+  field and no `call ^/2`, and checks that C flattens across witness values for
+  `bagof/3` while sorting/deduplicating for `setof/3`.
+
+Reason:
+
+- The previous branch made caller-bound witness groups work when the witness
+  register is supplied by the caller.
+- Existential suppression is the complementary case: it removes a variable from
+  grouping and can reuse the no-witness aggregate finalizer.
+- The follow-up
+  `investigate/wam-c-bagof-setof-unbound-witness-groups` branch adds the
+  runtime iterator and choicepoint machinery for full unbound group
+  enumeration.
+
+### Completed: `investigate/wam-c-bagof-setof-witness-surface`
+
+Goal: extend the no-witness `bagof/3` / `setof/3` C aggregate surface to the
+first grouped witness case where the witness variable is supplied by the caller.
+
+Evidence:
+
+- The C WAM aggregate payload now stores parsed witness register indices instead
+  of a raw witness string.
+- Aggregate frames copy a witness tuple alongside each collected template item.
+- Finalization selects the matching caller-bound witness group, unifies witness
+  registers with the selected key, preserves duplicate order for grouped
+  `bagof/3`, and sorts/deduplicates selected-group items for grouped `setof/3`.
+- The real-Prolog executable smoke compiles `bagof(X, pair(X, Y), L)` and
+  `setof(X, pair(X, Y), L)`, calls them with `Y = red` and `Y = blue`, verifies
+  the grouped bag/set results, and verifies a missing witness fails.
+
+Reason:
+
+- The previous branch proved the no-witness aggregate semantics and stored-term
+  sorting/deduplication path.
+- This branch deliberately handled the caller-bound witness case first. Follow
+  ups cover existential suppression and full unbound witness group enumeration.
+
+### Completed: `investigate/wam-c-bagof-setof-aggregate-surface`
+
+Goal: extend the C aggregate runtime from `findall/3` collection into the
+compiler's no-witness `bagof/3` and `setof/3` surface.
+
+Evidence:
+
+- The C WAM parser accepts `begin_aggregate bagof/setof, Template, Result, ''`
+  and rejects non-empty witness strings instead of silently compiling grouped
+  semantics that the C runtime does not yet implement.
+- The aggregate finalizer now supports `bagof` and `setof`: `bagof` fails on
+  empty generators while preserving duplicate solution order, and `setof`
+  fails empty then sorts and deduplicates copied stored terms before list
+  materialization.
+- The real-Prolog executable smoke compiles `bagof/3` and `setof/3` with
+  `inline_bagof_setof(true)`, checks no `call bagof/3` / `call setof/3`
+  remains, verifies duplicate bag output, verifies sorted unique set output,
+  and checks empty-generator failure for both predicates.
+
+Reason:
+
+- Direct inline nested `findall/3` proved that nested aggregate frames and local
+  aggregate result variables work in C.
+- Follow-up branches cover caller-bound witness grouping, inner existential
+  `^/2` suppression, and full unbound witness group enumeration.
+
+### Completed: `investigate/wam-c-inline-nested-findall-lowering`
+
+Goal: close the direct inline nested `findall/3` gap left by the helper-nested
+smoke branch, so aggregate bodies can contain another `findall/3` without
+falling through to an unsupported runtime `call findall/3`.
+
+Evidence:
+
+- `compile_inner_call_goals/4` now dispatches `findall/3` through
+  `compile_findall/6`, so inner-body aggregates emit nested
+  `begin_aggregate collect` / `end_aggregate` WAM.
+- `compile_aggregate_all/6` initializes a newly introduced local result
+  register before `begin_aggregate`, allowing nested aggregate finalization to
+  bind local variables such as `Ys` reliably.
+- The real-Prolog `findall/3` executable smoke now rejects any generated
+  `call findall/3` in the direct inline nested case and checks the compiled C
+  executable returns `[a,b]` for a guarded nested aggregate body.
+
+Reason:
+
+- The prior nested/template branch proved that C aggregate frames survived
+  helper-nested calls and copied compound/list templates, but direct inline
+  nested `findall/3` still compiled as a normal call in inner-goal positions.
+- The first direct inline attempt exposed a separate register-initialization
+  bug: a local aggregate result variable could be assigned a Y register without
+  a backing unbound cell, causing aggregate finalization to fail before later
+  goals could inspect that result.
+
+### Completed: `investigate/wam-c-findall-nested-template-smoke`
+
+Goal: harden the first C `findall/3` aggregate surface against generated WAM
+shapes that appear once templates contain nested lists or helper predicates run
+their own `findall/3`.
+
+Evidence:
+
+- The C WAM register parser now accepts compiler temporary `_XTn` registers,
+  mapping them to high X-register slots for structure/list construction.
+- The real-Prolog `findall/3` executable smoke now covers helper-nested
+  aggregate frames while an outer aggregate frame is open.
+- The same smoke validates copied compound and list templates:
+  `pair(X, [X])` and `[X, X]`.
+
+Reason:
+
+- Generated compound/list templates use temporary registers that the first
+  aggregate branch did not parse.
+- The follow-up `investigate/wam-c-inline-nested-findall-lowering` branch closes
+  the direct inline nested compiler/runtime gap; this branch remains the
+  helper-nested and template-copying proof point.
+
+### Completed: `investigate/wam-c-findall-aggregate-surface`
+
+Goal: give the C target its first shared aggregate opcode surface by executing
+simple generated `findall/3` through `begin_aggregate collect` /
+`end_aggregate`.
+
+Evidence:
+
+- WAM text and C literal parsing now cover `begin_aggregate collect` and
+  `end_aggregate`.
+- The C runtime keeps generator choice points alive while an aggregate frame is
+  open, copies each template result into runtime-owned storage, and finalizes
+  to a normal WAM list.
+- Executable smoke coverage runs generated non-empty, empty, and pre-bound
+  result-list `findall/3` calls and checks aggregate/call/choice stacks are
+  balanced afterward.
+
+Reason:
+
+- `forall/2` proved shared control lowering, but aggregates needed new runtime
+  term-copy and list-construction behavior.
+- This branch deliberately limits the surface to simple collection. `bagof/3`,
+  `setof/3`, witness grouping, sorting/deduplication, and broader aggregate
+  forms remain separate parity work.
+
+### Completed: `investigate/wam-c-forall-control-smoke`
+
+Goal: prove that C executes the shared WAM compiler's nested soft-cut rewrite
+for `forall/2`.
+
+Evidence:
+
+- Generated WAM coverage asserts `forall/2` compiles through `cut_ite` control
+  flow rather than a runtime `forall/2` builtin.
+- Executable smoke coverage runs all-pass, action-fail, subset, and
+  empty-generator `forall/2` cases over nondeterministic user predicates.
+- Each generated C run checks that public calls leave the choice-point and
+  call-barrier stacks balanced.
+
+Reason:
+
+- Recent C control branches fixed and covered the underlying cut and soft-cut
+  semantics. `forall/2` was the next higher-level meta-control construct that
+  reuses those paths.
+- This branch confirms parity without adding new runtime surface area; future
+  control work should come from concrete benchmark or conformance demand.
+
+### Completed: `investigate/wam-c-explicit-cut-scope`
+
+Goal: fix C `!/0` so explicit cut prunes only to the current predicate call
+barrier, not to zero choice points globally.
+
+Evidence:
+
+- `wam_run_predicate` now pushes a top-level call barrier before entering the
+  predicate and restores the caller's barrier stack after execution.
+- C `!/0` reads the current barrier from `call_bases[call_base_top - 1]` and
+  calls `wam_prune_choice_points` instead of assigning `state->B = 0`.
+- Executable smoke coverage runs an inner predicate with `!` under an outer
+  disjunction. The outer branch fails after the inner cut, and the outer
+  alternative must still be available.
+
+Reason:
+
+- The previous control branches proved compiler-lowered cut forms, but explicit
+  `!/0` still used a global clear. That was too strong for nested predicate
+  calls and could erase caller choice points.
+- The existing C call-base stack already held the correct call-entry choice
+  depth for normal calls; this branch reuses it as the explicit cut barrier
+  and adds a top-level public-call barrier for `wam_run_predicate`.
+
+### Completed: `investigate/wam-c-precise-ite-cut-scope`
+
+Goal: prove that the C target can execute the newer shared WAM
+`ite_use_y_level(true)` if-then-else lowering that commits with
+`get_level`/`cut` rather than the legacy single-pop `cut_ite`.
+
+Evidence:
+
+- Codegen coverage asserts precise ITE WAM contains `get_level` and `cut`
+  while omitting `cut_ite`.
+- Generated C coverage asserts those WAM instructions emit typed
+  `INSTR_GET_LEVEL` and `INSTR_CUT` payloads.
+- Executable smoke coverage runs success/failure ITE cases plus a
+  nondeterministic-condition scope regression where a later guard must not
+  backtrack into the else branch after the commit.
+
+Reason:
+
+- The previous control branch implemented all needed opcodes, but default C
+  coverage still mostly exercised the legacy `cut_ite` path.
+- This branch closes the immediate proof gap for the precise cut-barrier mode
+  already used by the LLVM hybrid WAM path and available to future C target
+  options.
+
+### Completed: `investigate/wam-c-control-builtins-parity`
+
+Goal: close the immediate C control-instruction parity gap for the shared WAM
+compiler opcodes used by negation and if-then-else lowering.
+
+Evidence:
+
+- C runtime tags, payloads, parser support, generated literals, and dispatch
+  arms now cover `get_level`, `cut`, `cut_ite`, and `jump`.
+- Generated executable smoke coverage exercises `\+/1` and if-then-else for
+  both success and failure paths.
+- The focused WAM-C target suite and effective-distance benchmark suite pass.
+
+Reason:
+
+- The C target already had choice points and builtin dispatch, but generated
+  Prolog control constructs could still emit unsupported shared WAM opcodes.
+- Supporting these opcodes is a narrow parity step with Rust/Haskell behavior
+  and keeps the next benchmark-driven gaps from being blocked by control-flow
+  lowering.
 
 ### Completed: `feat/wam-c-native-kernel-float-output`
 
@@ -190,7 +615,7 @@ Reason:
 - Weighted/A* native kernels previously covered only integer results, while
   Haskell and Rust had broader numeric-result surfaces.
 
-### Active: `investigate/wam-c-child-search-runtime-sweep`
+### Completed Investigation: `investigate/wam-c-child-search-runtime-sweep`
 
 Goal: measure whether the newer parent-only LMDB and reverse CSR artifact
 layouts remain the right defaults at larger category scales, without forcing
@@ -263,19 +688,343 @@ Implemented so far:
   bounded child expansion query shape, not reverse CSR lookup itself, is the
   blocker beyond smoke scale.
 
-Open measurement:
+Branch conclusion before pruning follow-up:
 
-- Use compile-only rows for routine generated-project comparisons through
-  `10k`, use `--artifact-only` for `50k_cats` and `100k_cats` size checks, and
-  use the WAM-C CSR lookup microbenchmark when choosing sorted-array versus
-  LMDB-offset file-backed layouts. Schedule full child-search runtime rows
-  only for `dev` unless the query shape or expansion policy changes.
-- The next child-search improvement should focus on pruning/query policy, not
-  on in-memory CSR. The file-backed sorted-array lookup is already cheap in the
-  narrow runtime benchmark.
+- The sweep showed full child-search runtime rows should stay smoke-scale until
+  query pruning changed.
+- The next child-search improvement needed to focus on pruning/query policy,
+  not in-memory CSR. The file-backed sorted-array lookup was already cheap in
+  the narrow runtime benchmark.
 - Parent-only TSV and LMDB targets remain the priority memory structures for
   current effective-distance workloads. Reverse CSR targets are now available
   for future child-path variants and artifact-layout measurements.
+
+### Completed Investigation: `investigate/wam-c-child-search-root-distance-pruning`
+
+Goal: bring WAM-C child-search pruning closer to the F# and Haskell hybrid WAM
+kernels by adding the root-distance lower bound that makes bounded child path
+exploration viable beyond smoke scale.
+
+Implemented so far:
+
+- Added a per-query `WamBidirectionalDistanceMap` to the generated C runtime.
+  It is built by BFS from the requested root over child edges, using the
+  attached reverse CSR artifact when available and falling back to the loaded
+  parent-edge table when no CSR is attached.
+- Parent and child frontier candidates now require
+  `next_cost + min_parent_hops_to_root * parent_step_cost <= budget`. Missing
+  min-distance entries are pruned, matching the F#/Haskell behavior for nodes
+  that cannot route back to the requested root.
+- Changed bounded child-search generator defaults from effectively unbounded
+  child exploration to `parent_step_cost(1.0)`, `child_step_cost(3.0)`, and
+  `child_search_budget(10.0)`. Explicit options still override these values.
+- Updated CSR smokes so reverse CSR fixtures contain both the expansion row and
+  the root-descendant row required by root-distance calibration.
+
+Evidence:
+
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `dev` runtime sweep: parent-only and all child-search layouts now agree on
+  `19` rows; child CSR, pread/drop CSR, LMDB-offset CSR, and scan complete in
+  roughly `0.004-0.005s`.
+- `10x` runtime sweep with a `60s` timeout: sorted-array CSR completes in
+  `1.460s`, pread/drop CSR in `1.449s`, LMDB-offset CSR in `1.479s`, and
+  scan fallback in `4.100s`. The prior child-search timeout is gone, and all
+  child-search layouts agree on `187` rows. Parent-only remains faster
+  (`0.066s`) and emits `183` rows, so the output mismatch is expected when
+  child paths are enabled.
+
+Branch conclusion before cache follow-up:
+
+- The min-distance map was intentionally per-query in this branch. The next
+  useful follow-up was root-keyed cache reuse because effective-distance runs
+  query the same roots repeatedly.
+- The CSR path is now fast enough to be useful at `10x`; the next scalability
+  question is query policy and repeated-root reuse, not raw CSR lookup cost.
+
+### Completed Investigation: `investigate/wam-c-root-distance-cache`
+
+Goal: reuse root-distance calibration across repeated effective-distance
+queries that share the same root, without adding a preprocessing artifact yet.
+
+Implemented so far:
+
+- Added an opaque `bidirectional_min_distance_cache` pointer to `WamState`.
+- The generated C runtime now keeps a root-keyed linked list of
+  `WamBidirectionalDistanceMap` entries. `wam_collect_bidirectional_ancestor_hops`
+  reuses an existing root map when possible and builds a new one only on a
+  cache miss.
+- Cache entries are freed by `wam_free_state` and invalidated when category
+  parent facts, category IDs, or the attached child CSR artifact change.
+- Executable smokes assert that a successful bidirectional query populates the
+  cache and that fact/CSR mutations clear it.
+
+Evidence:
+
+- `swipl -q -g run_tests -t halt tests/test_wam_c_target.pl`
+- `swipl -q -g run_tests -t halt tests/test_wam_c_effective_distance_benchmark.pl`
+- `dev` runtime sweep: all layouts still agree on `19` rows; child-search
+  layouts complete in roughly `0.004-0.005s`.
+- `10x` runtime sweep with a `60s` timeout: sorted-array CSR completes in
+  `0.110s`, pread/drop CSR in `0.101s`, LMDB-offset CSR in `0.102s`, and scan
+  fallback in `0.128s`. This is down from about `1.45s` for CSR and `4.10s`
+  for scan after root-distance pruning but before root-cache reuse.
+- `1k` runtime sweep with a `60s` timeout: parent-only and all child-search
+  layouts agree on `580` rows; sorted-array CSR completes in `0.584s`,
+  pread/drop CSR in `0.598s`, LMDB-offset CSR in `0.567s`, and scan fallback
+  in `0.708s`.
+- `5k` runtime sweep with a `60s` timeout: parent-only and all child-search
+  layouts agree on `3,224` rows; sorted-array CSR completes in `2.992s`,
+  pread/drop CSR in `3.185s`, LMDB-offset CSR in `3.394s`, and scan fallback
+  in `3.679s`.
+
+Open measurement:
+
+- Root-distance maps can now be reused within a generated query run, but they
+  are still runtime-local. Persisting `min_distance(root,node)` in LMDB or a
+  compact artifact could reduce cold-start work for workloads with stable roots,
+  but it adds preprocessing time, storage, invalidation complexity, and planner
+  surface area. That option should be gated by the cost analyzer rather than
+  made a default.
+- The next scalability check should run larger child-search sweeps and compare
+  root-cache memory growth against the number of distinct roots.
+
+### Completed Investigation: `investigate/wam-c-child-search-scale-ceiling`
+
+Goal: find the next full-generated WAM-C child-search scale ceiling after
+root-distance cache reuse, while reporting enough cache-input shape data to
+decide whether persisted min-distance artifacts need cost-planner support.
+
+Implemented so far:
+
+- `benchmark_wam_c_child_search_runtime_sweep.py` now appends
+  `wam_c_child_search_cache_inputs` rows for each requested scale. The row
+  reports root count, distinct category IDs, parent-edge rows,
+  article-category rows, maximum root-cache maps, and the worst-case
+  `roots * category_ids` distance-entry upper bound.
+- Added `--skip-cache-input-summary` for callers that need the wrapper to emit
+  only matrix rows.
+- Added focused unit coverage for the cache-input summary calculation on a
+  tiny fixture with multiple roots, parent edges, and article-category rows.
+- WAM-C effective-distance matrix compile-only rows now include build phase
+  timings in their message field, so large generated builds can be attributed
+  to Prolog generation, LMDB seeding, reverse-CSR offset seeding, or C
+  compilation.
+- Added `benchmark_wam_c_bidirectional_kernel.py`, a narrow WAM-C runtime
+  harness that builds optional reverse-CSR artifacts from benchmark TSVs,
+  loads parent edges and category IDs into `WamState`, and times
+  `wam_collect_bidirectional_ancestor_hops` over sampled category/root queries
+  without generating the full effective-distance WAM-C facts program. The
+  output now splits setup into parent TSV loading, parent-edge registration,
+  category-ID loading, query TSV loading, reverse-CSR artifact loading, CSR
+  attachment, and kernel registration.
+- WAM-C category IDs now maintain hash indexes for atom-to-ID and ID-to-atom
+  lookup while preserving the existing stable category-ID array for iteration
+  and fallback. This removes the duplicate-registration scan during setup and
+  avoids scanning all category IDs when CSR child IDs are converted back to
+  atoms.
+- WAM-C FactSource parent-edge registration now bulk appends loaded edge
+  arrays into `WamState`, reusing already-interned edge atoms when the source
+  was loaded by the same state and invalidating child indexes/root-distance
+  cache once per source instead of once per edge.
+- WAM-C atom interning now uses a dynamic hash table that grows and rehashes
+  as large benchmark datasets intern tens of thousands of category atoms,
+  avoiding long chains in the old fixed 512-bucket table without inflating each
+  stack-allocated `WamState`.
+- WAM-C effective-distance reverse-CSR generation now builds an assoc from the
+  category-ID map before converting category-parent edges to parent/child ID
+  pairs. This removes the previous repeated `memberchk/2` scan over all
+  category IDs for each edge.
+
+Evidence:
+
+- `10k` runtime sweep with parent-only comparison and a `120s` per-invocation
+  timeout completed. Parent-only WAM-C emitted `5,192` rows in `6.058s`, while
+  all child-search layouts agreed on `5,262` rows. Sorted-array CSR completed
+  in `6.503s`, buffered-pread-drop CSR in `6.327s`, LMDB-offset CSR in
+  `6.708s`, and scan fallback in `8.133s`.
+- The same `10k` run reported
+  `roots=1 category_ids=8247 parent_edges=25227 article_category_rows=10326 max_cache_maps=1 max_distance_entries_upper_bound=8247`.
+- `50k_cats` and `100k_cats` currently share the same category-parent graph
+  shape for this cache calculation:
+  `roots=4054 category_ids=84136 parent_edges=196900 max_cache_maps=4054 max_distance_entries_upper_bound=341087344`.
+  Their article-category rows differ: `50k_cats` has `50,000`, and
+  `100k_cats` has `84,136`.
+- Before assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `6.750s`, split into
+  `generate_s=6.051` and `compile_s=0.699`. `50k_cats` compile-only took
+  `437.955s`, split into `generate_s=428.912` and `compile_s=9.042`.
+- After assoc-backed category-ID lookup in CSR generation, `10k`
+  compile-only for `c-wam-accumulated-child-csr` took `2.032s`, split into
+  `generate_s=1.128` and `compile_s=0.904`. `50k_cats` compile-only took
+  `17.796s`, split into `generate_s=8.760` and `compile_s=9.036`. Artifact
+  bytes stayed the same: `10k` has `category_parent_tsv_bytes=1266946`,
+  `reverse_csr_index_bytes=118672`, and `reverse_csr_values_bytes=100908`;
+  `50k_cats` has `category_parent_tsv_bytes=10126909`,
+  `reverse_csr_index_bytes=678752`, and `reverse_csr_values_bytes=787600`.
+- Before assoc-backed category-ID lookup in CSR generation, a constrained
+  full-generated `50k_cats` matrix attempt over
+  `c-wam-accumulated,c-wam-accumulated-child-csr` produced no matrix rows after
+  several minutes. The old compile-only phase split above explains that missing
+  row: project generation alone was multi-minute.
+- After assoc-backed category-ID lookup in CSR generation, a bounded
+  single-target generated `50k_cats` run for
+  `c-wam-accumulated-child-csr` timed out at `300s` with no matrix row. Since
+  compile-only for that target is now `17.796s`, the remaining full-generated
+  ceiling is generated execution, result enumeration, query volume, or runner
+  output timing rather than CSR file creation.
+- After adding generated-runner root/query caps and stderr timing probes, a
+  `50k_cats` run capped at `100` article/root queries completed in `0.172s`
+  of generated runtime with `setup_ms=120.323`, `query_ms=38.815`, and no
+  result rows. A one-article/all-root run completed `4054` queries in `1.509s`
+  of generated runtime with `setup_ms=124.893`, `query_ms=1370.613`, one
+  result row, and `first_result_ms=990.534`.
+- After pre-indexing generated article-category rows by article, the same
+  `100`-query cap completed in `0.165s` of generated runtime with
+  `setup_ms=127.881` and `query_ms=21.676`. The same one-article/all-root run
+  completed in `0.721s` of generated runtime with `setup_ms=132.850`,
+  `query_ms=569.122`, one result row, and `first_result_ms=387.293`. An
+  uncapped `10k` `c-wam-accumulated-child-csr` smoke produced the same `5262`
+  rows in `5.406s`, down from the earlier `6.503s` sorted-array CSR row.
+- After adding generated-runner article/root name filters and stride/offset
+  sampling, a sampled `50k_cats` run with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. It completed
+  `2050` generated queries in `1.549s`, with `setup_ms=130.866`,
+  `query_ms=1403.952`, one result row, and `first_result_ms=1141.808`.
+- On that same sampled `50k_cats` query set, parent-only WAM-C produced no
+  rows with `query_ms=1425.065`. The child-search variants all produced the
+  same one-row output: scan fallback took `query_ms=4988.927`, sorted CSR took
+  `query_ms=1439.475`, buffered-drop CSR took `query_ms=1433.230`, and
+  LMDB-offset CSR took `query_ms=1334.566`.
+- A result-capped `50k_cats` child-search run without article/root sampling
+  reached `50` result rows after `72,977` generated queries. The CSR storage
+  variants produced matching output hashes: sorted CSR took `query_ms=11731.611`,
+  buffered-drop CSR took `query_ms=11319.778`, and LMDB-offset CSR took
+  `query_ms=10540.272`. The first standalone sorted-CSR result-capped run
+  measured `query_ms=10407.918`, so this comparison is enough to show the
+  remaining full-matrix cost is per-query traversal volume, not CSR storage
+  disagreement.
+- After adding generated-runner traversal counters, a sorted-CSR result-capped
+  `50k_cats` run reached the same `50` rows after `72,977` queries with
+  `query_ms=11049.112`. It visited `72,977` article-category slices, made
+  `72,975` parent collector calls, found `626` parent path results, and spent
+  `parent_collect_ms=8008.670`. It made `72,932` child collector calls, found
+  only `11` child path results, and spent `child_collect_ms=3022.342`.
+- After adding cached parent-reachability prefiltering, the same sorted-CSR
+  result-capped run reached the same `50` rows after `72,977` queries with
+  `query_ms=4718.503`. Parent reachability checks took
+  `parent_reachability_ms=2668.182`, but they pruned `72,932` parent DFS calls:
+  parent collector calls dropped from `72,975` to `43`, and
+  `parent_collect_ms` dropped from `8008.670` to `9.889`. Child collection is
+  now the largest remaining measured traversal cost, with `72,932` calls,
+  `11` child path results, and `child_collect_ms=2024.048`. An uncapped `10k`
+  `c-wam-accumulated-child-csr` smoke still produced `5262` rows with the same
+  output hash and improved from `5.406s` to `3.983s`.
+- After adding capped child-reachability prefiltering, the same sorted-CSR
+  result-capped `50k_cats` run preserved the `8da5f8534aba` output hash and
+  reached `50` rows after `72,977` queries with `query_ms=3122.296`.
+  Child prefiltering checked the `72,932` parent-pruned pairs, pruned `72,927`
+  of them, found `5` plausible child candidates, and took
+  `child_prefilter_ms=494.637`. Child collector calls dropped from `72,932`
+  to `5`, while preserving the same `11` child path results and reducing
+  `child_collect_ms` from `2024.048` to `0.881`.
+- After adding per-article candidate-root filtering with a default
+  `candidate_filter_min_roots=256`, the same sorted-CSR result-capped
+  `50k_cats` run again preserved the `8da5f8534aba` output hash and reached
+  `50` rows after `72,977` ordered query pairs, but only entered category
+  traversal for `50` pairs. Candidate filtering processed `19` articles,
+  marked `52` candidate roots, skipped `72,927` impossible roots, and took
+  `candidate_filter_ms=28.418`. End-to-end query time fell to
+  `query_ms=541.447`. The default threshold keeps the filter off for one-root
+  workloads: uncapped `10k` stayed at `5262` rows with hash `51be51c22aa7`,
+  `candidate_filter_articles=0`, and `query_ms=3963.402`.
+- After replacing the dense filtered-root loop with a sparse candidate-root
+  schedule when no query cap is active, the same result-capped `50k_cats` run
+  preserved the `8da5f8534aba` hash and the logical `72,977` query-pair count,
+  scheduled `52` candidate roots across `19` articles, and reduced
+  `query_ms` to `485.270`. The one-root `10k` guardrail stayed off as
+  intended with hash `51be51c22aa7`, `candidate_schedule_articles=0`, and
+  `query_ms=3674.656`. The matrix runner exposes
+  `--wam-c-candidate-filter-min-roots` so sweeps can tune or disable the
+  threshold without regenerating C.
+- Broader sampled validation on `50k_cats` with `article_stride=1000` and
+  `root_stride=100` selected `50` articles and `41` roots. Forced sparse
+  scheduling and dense traversal both produced `1` row with hash
+  `e2bde0c720fe`, but dense traversal was faster (`query_ms=25.390`) than
+  sparse scheduling (`query_ms=100.436`) because candidate discovery cost
+  dominated at only `41` roots. With the then-default
+  `candidate_filter_min_roots=256`, the same sample stayed dense by default,
+  preserved the hash, and reported `candidate_filter_articles=0` with
+  `query_ms=26.435`. This is why the default root threshold is conservative and
+  the CLI override exists.
+- The generated runner now resolves the default candidate-root threshold through
+  `cost_model:resolve_candidate_filter_min_roots/2`, so Prolog workload options
+  can declare `candidate_filter_min_roots(N)`, `always`, `off`, or `auto`.
+  `auto` currently preserves the measured dense-root ceiling by generating
+  `512`, while `UW_WAM_C_EFFECTIVE_CANDIDATE_FILTER_MIN_ROOTS` remains a runtime
+  override for sweeps.
+- Before category-ID indexing, narrow runtime evidence bypassing full WAM-C
+  project generation at `10k` showed `100` warm-cache sampled queries over one
+  root taking `8,905.525ms` with sorted-array CSR. Runtime setup was
+  `213.149ms`, split into `7.322ms` parent TSV load, `7.269ms` parent-edge
+  registration, `198.187ms` category-ID load, `0.053ms` query TSV load, and
+  `0.256ms` reverse-CSR load.
+- After category-ID indexing, the same `10k` sorted-array CSR narrow row took
+  `456.704ms` for `100` warm-cache sampled queries and produced the same
+  `17,047` path results and checksum. Runtime setup dropped to `20.257ms`,
+  with category-ID load down to `6.108ms`.
+- After bulk parent-edge registration, the same `10k` sorted-array CSR narrow
+  row took `450.202ms` for `100` warm-cache sampled queries. Runtime setup
+  dropped to `13.125ms`, with parent-edge registration down to `0.129ms`.
+- After dynamic atom-table rehashing, the same `10k` sorted-array CSR narrow
+  row took `438.787ms` for `100` warm-cache sampled queries. Runtime setup was
+  `13.080ms`, with parent TSV load at `7.001ms` and category-ID load at
+  `5.549ms`.
+- The same narrow runner at `50k_cats` with sorted-array CSR, `10` warm-cache
+  sampled queries, and one sampled root completed without full source
+  generation before category-ID indexing. Runtime setup/loading took
+  `23,647.238ms`, split into
+  `297.197ms` parent TSV load, `613.616ms` parent-edge registration,
+  `22,734.748ms` category-ID load, `0.027ms` query TSV load, and `1.424ms`
+  reverse-CSR load. The measured query loop took `0.348ms`, artifact build
+  took `0.106s`, and the run produced `10` path results.
+- After category-ID indexing, the `50k_cats` sorted-array CSR narrow row
+  dropped to `1,150.795ms` setup, split into `309.277ms` parent TSV load,
+  `637.056ms` parent-edge registration, `203.145ms` category-ID load,
+  `0.024ms` query TSV load, and `1.015ms` reverse-CSR load. The measured query
+  loop took `0.042ms` for the same `10` sampled queries and produced the same
+  checksum.
+- After bulk parent-edge registration, the `50k_cats` sorted-array CSR narrow
+  row dropped to `507.700ms` setup, split into `285.517ms` parent TSV load,
+  `1.270ms` parent-edge registration, `219.686ms` category-ID load, `0.024ms`
+  query TSV load, and `0.977ms` reverse-CSR load. The measured query loop took
+  `0.061ms` for the same `10` sampled queries and produced the same checksum.
+- After dynamic atom-table rehashing, the `50k_cats` sorted-array CSR narrow
+  row dropped to `144.934ms` setup, split into `65.613ms` parent TSV load,
+  `1.749ms` parent-edge registration, `76.071ms` category-ID load, `0.019ms`
+  query TSV load, and `1.012ms` reverse-CSR load. The measured query loop took
+  `0.010ms` for the same `10` sampled queries and produced the same checksum.
+- A `dev` LMDB-offset narrow smoke completed with `3` sampled queries,
+  `setup_ms=0.172`, `reverse_csr_offsets_lmdb_bytes=32768`, and nonzero path
+  results after dynamic atom-table rehashing.
+
+Open measurement:
+
+- Runtime setup is no longer the large `50k_cats` ceiling in the narrow
+  runner, and full generated-project compile-only generation is no longer the
+  multi-minute ceiling after assoc-backed CSR ID lookup. Generated article-row
+  slicing removes the full `ARTICLE_CATEGORY_COUNT` scan from each query. The
+  remaining full-runner ceiling is the Cartesian `ARTICLE_COUNT * ROOT_COUNT`
+  query product plus per-query WAM/path collection cost; generated-runner
+  sampling can now measure that cost without launching the full matrix.
+- Evaluate whether a parent-edge artifact or LMDB-backed setup path can avoid
+  copying every parent edge into `WamState` when the hot query path uses the
+  sorted child CSR plus parent-child index.
+- Compare observed root-cache entry counts against the worst-case
+  `341,087,344` entry bound before adding persisted `min_distance(root,node)`.
+  Persisted distance maps still need to be justified by the cost analyzer
+  because they add preprocessing, storage, and invalidation work.
 
 ### Completed Investigation: `investigate/wam-c-next-benchmark-demand`
 
@@ -464,15 +1213,124 @@ After hash-bucket row dispatch but before compact row tables:
 | `100x` | 1600 | match | 0.004s | 0.008s | 1.81x |
 | `1k` | 4000 | match | 0.005s | 0.031s | 5.79x |
 
+### Completed Investigation: `investigate/wam-c-candidate-filter-calibration`
+
+Goal: make the candidate-root filter threshold calibration repeatable enough to
+decide whether `auto` should stay at the current dense-root ceiling or consume
+measured workload costs.
+
+Implemented so far:
+
+- Added `benchmark_wam_c_candidate_filter_threshold_sweep.py`, a thin wrapper
+  around the effective-distance matrix runner. It sweeps root-count profiles
+  (`low`, `medium`, `high-capped`) against threshold policies (`auto`,
+  `always`, `off`, or explicit integers) and emits TSV or Markdown summaries.
+- The summary extracts generated-runner counters from the matrix message field:
+  selected article/root counts, output hash, dense hash agreement, query time,
+  candidate-filter time, schedule roots, skipped roots, and category visits.
+- Added unit coverage for threshold alias parsing, matrix command construction,
+  message parsing, dense-baseline selection, and TSV rendering.
+- The generated effective-distance runner now uses `CLOCK_MONOTONIC` for setup
+  and query counters, matching the narrower WAM-C timing harnesses and avoiding
+  wall-clock adjustments in calibration rows.
+
+Evidence:
+
+- Dry-run over `50k_cats` low/high-capped profiles prints the expected matrix
+  commands, with `auto` omitting the runtime override, `always` passing
+  `--wam-c-candidate-filter-min-roots 1`, and `off` passing a large threshold.
+- Live `dev` low-profile smoke over `auto,always,off` preserved the same
+  `e94e9c7a70e3` output hash for all three policies. `auto` and `off` stayed
+  dense, while `always` used sparse scheduling and reported
+  `candidate_schedule_roots=1`.
+- Full `50k_cats` threshold sweep over `low,medium,high-capped` profiles and
+  `auto,always,16,64,256,1024,off` preserved output hashes for every row.
+  Low selected `50` articles and `41` roots; `auto` stayed dense
+  (`query_ms=25.338`) while forced sparse rows were much slower
+  (`query_ms=108.324` for `always`, `114.917` for `16`). High-capped selected
+  all `4,054` roots and reached the same `50` rows with hash `8da5f8534aba`;
+  `auto` stayed sparse with `query_ms=483.756`, while `off` dense traversal
+  took `query_ms=4546.297`.
+- The medium profile selected `50` articles and `406` roots with hash
+  `226c7fdad57d`. One full sweep put sparse `auto` at `query_ms=119.097` and
+  dense `off` at `105.482`; a focused 3-repetition medium rerun put `auto` at
+  `106.188`, `256` at `108.198`, `512` dense at `100.884`, `1024` dense at
+  `110.546`, and `off` at `130.339`. Treat this as the noisy boundary region,
+  not as a reason to move the default yet.
+
+### Completed Investigation: `investigate/wam-c-candidate-filter-boundary-repeatability`
+
+Goal: pin the noisy candidate-root filter crossover with repeatable boundary
+profiles and change the generated `auto` threshold only when boundary evidence
+supports it.
+
+Implemented so far:
+
+- Added boundary calibration profiles around the crossover band:
+  `boundary-250`, `boundary-500`, and `boundary-800`.
+- Changed the cost-model `auto` dense-root ceiling from `255` to `511`, so the
+  generated default `candidate_filter_min_roots` becomes `512`.
+- Kept `candidate_filter_min_roots(N)`, `always`, `off`, and the environment
+  override available for workloads whose measured crossover differs.
+
+Evidence:
+
+- Dry-run coverage confirms the boundary profiles pass the expected root
+  strides into the existing effective-distance matrix runner.
+- A 3-repetition `50k_cats` boundary sweep over
+  `boundary-250,medium,boundary-500,boundary-800` and `auto,256,512,off`
+  preserved output hashes for every row.
+- Explicit `512` is the simulated new `auto` threshold on the old build:
+  `254` selected roots stay dense, `406` roots stay in the noisy dense-favored
+  boundary band, `507` roots are near parity, and `811` roots choose sparse
+  scheduling with much lower query time than dense traversal.
+- After changing the generated default to `512`, a focused sanity sweep showed
+  `medium` (`406` selected roots) staying dense with matching hash
+  `226c7fdad57d`, while `boundary-800` (`811` selected roots) used sparse
+  scheduling with matching hash `92be2a9b5ac1`.
+
+### Completed Investigation: `investigate/wam-c-candidate-filter-observability`
+
+Goal: make threshold sweep output self-describing enough that future
+calibration rows show both the requested policy and the resolved runtime
+threshold.
+
+Implemented so far:
+
+- The candidate-filter sweep summary now fills `threshold_min_roots` for
+  `auto` rows from the generated runner's `candidate_filter_min_roots` metric.
+- Explicit threshold rows still report the requested override, even when the
+  runner message also includes the resolved threshold metric.
+- Unit coverage pins `auto -> 512` observability and explicit-threshold
+  precedence in the summary renderer.
+
+Evidence:
+
+- The low-profile `dev` sweep over `auto,off` is enough to verify the rendered
+  `auto` row reports `threshold_min_roots=512` without rerunning the larger
+  boundary matrix.
+
 ## Suggested Immediate Next Step
 
-Use `benchmark_wam_c_child_csr_scale_sweep.py` for routine compile-only
-generated-project artifact comparisons through `10k`, and use
-`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only --scales
-50k_cats,100k_cats` for large category-graph artifact bytes. Use
-`benchmark_wam_c_reverse_csr_lookup.py` for narrow WAM-C runtime lookup costs.
-Use `benchmark_wam_c_child_search_runtime_sweep.py` only for smoke-scale
-end-to-end child-search runs until the expansion policy is narrowed. The current
-evidence supports keeping sorted-array file-backed CSR as the first child-lookup
-layout, deferring in-memory compressed CSR, and next improving child-search
-pruning/cost policy before spending more effort on storage layout.
+The aggregate parity sequence now has inline no-witness, caller-bound witness,
+existential `^/2`, unbound witness group enumeration, runtime meta-call
+aggregate dispatch for simple callable goals, conjunction goal-term dispatch,
+disjunction goal-term dispatch, if-then-else goal-term dispatch, and `call/N`
+goal expansion inside meta aggregate bodies. The next aggregate/meta-goal work
+should be driven by concrete generated programs or benchmark demand rather than
+another obvious core meta-call form. For C parity, the next narrow candidate is
+likely broader classic-program stress coverage or project-generator/test
+scaffolding depth, unless a benchmark exposes a specific builtin or control
+gap.
+
+For the effective-distance/CSR line, result-capped and sampled runs already
+confirm child-CSR variants agree, and parent plus child reachability prefilters
+remove most avoidable traversal work inside each visited article/root pair. The
+next useful work there is feeding measured query/artifact costs into the
+resolver only if future datasets show a sharper crossover or if manual
+threshold overrides become common. Keep
+`benchmark_wam_c_child_csr_scale_sweep.py --artifact-only` for large
+category-graph artifact bytes, and use `benchmark_wam_c_reverse_csr_lookup.py`
+only when changing CSR lookup storage. Do not persist root-distance maps to
+LMDB or a separate artifact by default; add that only behind a cost-analyzer
+decision that can justify the extra preprocessing and invalidation surface.

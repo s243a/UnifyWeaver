@@ -150,6 +150,18 @@
 (func $set_mode (param $m i32)
   (i32.store (i32.const 65564) (local.get $m)))
 
+;; --- S register (read-mode structure-argument pointer) ---
+;; Heap byte-address of the NEXT argument cell to read while matching a
+;; compound/list head in read mode. get_structure/get_list set it to the
+;; first arg cell; unify_variable/unify_value/unify_constant consume one
+;; 12-byte cell each and advance it. Stored at 65568 (free slot between
+;; the mode flag at 65564 and the register file at 65600).
+(func $get_s (result i32)
+  (i32.load (i32.const 65568)))
+
+(func $set_s (param $a i32)
+  (i32.store (i32.const 65568) (local.get $a)))
+
 ;; --- Register file ---
 ;; A1-A32 (indices 0-31) and X temporaries live in the fixed register
 ;; file at 65600. Y registers (indices 32-63) live in the current

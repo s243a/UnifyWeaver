@@ -37,6 +37,8 @@
     recommend_access_pattern/5, % +KKeys, +WBytes, +RFreeBytes, +Constants, -Pattern
     resolve_reverse_index/2,    % +Options, -ReverseIndex
     validate_reverse_index_option/2, % +Spec, -Normalized
+    resolve_candidate_filter_min_roots/2,
+                                % +Options, -MinRoots
 
     %% LMDB materialisation-mode resolver (eager | lazy | cached)
     resolve_auto_lmdb_materialisation/2, % +Options, -Mode
@@ -262,6 +264,29 @@ resolve_reverse_index_spec(auto, Options, ReverseIndex) :-
     ).
 resolve_reverse_index_spec(Spec, _Options, ReverseIndex) :-
     validate_reverse_index_option(Spec, ReverseIndex).
+
+%! resolve_candidate_filter_min_roots(+Options, -MinRoots) is det.
+%
+%  Resolve the root-count threshold for WAM-C candidate-root filtering.
+%  The current auto policy encodes the measured low-root dense ceiling:
+%  keep candidate discovery off until at least 512 selected roots unless
+%  an explicit workload option overrides it.
+resolve_candidate_filter_min_roots(Options, MinRoots) :-
+    option(candidate_filter_min_roots(Spec), Options, auto),
+    resolve_candidate_filter_min_roots_spec(Spec, Options, MinRoots).
+
+resolve_candidate_filter_min_roots_spec(auto, Options, MinRoots) :-
+    !,
+    option(candidate_filter_dense_root_ceiling(DenseRootCeiling), Options, 511),
+    validate_nonnegative_integer(candidate_filter_dense_root_ceiling,
+                                 DenseRootCeiling),
+    MinRoots is DenseRootCeiling + 1.
+resolve_candidate_filter_min_roots_spec(always, _Options, 0) :- !.
+resolve_candidate_filter_min_roots_spec(off, _Options, 9223372036854775807) :- !.
+resolve_candidate_filter_min_roots_spec(never, _Options, 9223372036854775807) :- !.
+resolve_candidate_filter_min_roots_spec(MinRoots, _Options, MinRoots) :-
+    validate_nonnegative_integer(candidate_filter_min_roots, MinRoots),
+    !.
 
 %! validate_reverse_index_option(+Spec, -Normalized) is det.
 %

@@ -2867,6 +2867,41 @@ test_runtime_list_walkers_accept_both_cons_tags :-
     ;   fail_test(Test, 'list walkers do not accept both cons tags')
     ).
 
+test_runtime_empty_list_constant_alias :-
+    Test = 'Runtime: native [] aliases WAM "[]" for constant matching and unification',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'def constant_match?("[]", []), do: true'),
+        sub_string(S, _, _, _, 'def constant_match?([], "[]"), do: true'),
+        sub_string(S, _, _, _, 'constant_match?(v1, v2) -> {:ok, state}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'runtime does not alias native [] and WAM "[]"')
+    ).
+
+test_runtime_structural_unify_aliases_cons_tags :-
+    Test = 'Runtime: structural unification aliases ./2 and [|]/2 cons tags',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'),
+        sub_string(S, _, _, _, 'args1 = heap_slice(state, addr1 + 1, arity)'),
+        sub_string(S, _, _, _, 'args2 = heap_slice(state, addr2 + 1, arity)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'structural unify still requires identical cons tags')
+    ).
+
+test_lowered_empty_list_constant_alias :-
+    Test = 'Lowering: empty-list constants accept native [] from list destructuring',
+    wam_elixir_lowered_emitter:wam_elixir_lower_instr(get_constant("[]", "A1"), 1, [], p, "clause_main", GetCode),
+    wam_elixir_lowered_emitter:wam_elixir_lower_instr(switch_on_constant(["[]:L_nil"]), 1, [], p, "clause_main", SwitchCode),
+    atom_string(GetCode, GetS),
+    atom_string(SwitchCode, SwitchS),
+    (   sub_string(GetS, _, _, _, 'WamRuntime.constant_match?(val, "[]")'),
+        sub_string(SwitchS, _, _, _, '"[]" -> throw({:return'),
+        sub_string(SwitchS, _, _, _, '[] -> throw({:return')
+    ->  pass(Test)
+    ;   fail_test(Test, 'lowered empty-list constant still rejects native []')
+    ).
+
 %% Backslash-escape regression: `=\=/2` op name must be emitted as
 %  `"=\\=/2"` in the lowered call site so Elixir parses it as the
 %  runtime string `=\=/2` (5 chars). Without escaping, Elixir 1.14+
@@ -2913,13 +2948,13 @@ test_lowered_emits_integer_literals :-
             lower_predicate_to_elixir(int_p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
             % Positive: bare integer literal in head-match comparison.
-            sub_string(S, _, _, _, 'val == 1'),
-            sub_string(S, _, _, _, 'val == 2'),
-            sub_string(S, _, _, _, 'val == 3'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 1)'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 2)'),
+            sub_string(S, _, _, _, 'WamRuntime.constant_match?(val, 3)'),
             % Negative: stringified form must NOT appear.
-            \+ sub_string(S, _, _, _, 'val == "1"'),
-            \+ sub_string(S, _, _, _, 'val == "2"'),
-            \+ sub_string(S, _, _, _, 'val == "3"')
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "1")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "2")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "3")')
         ->  pass(Test)
         ;   fail_test(Test, 'integer constants stringified — head-match would silently fail')
         ),
@@ -3477,6 +3512,9 @@ run_tests :-
     test_runtime_default_arm_throws_unknown_builtin,
     test_lowered_put_structure_links_unbound_heap_ref,
     test_runtime_list_walkers_accept_both_cons_tags,
+    test_runtime_empty_list_constant_alias,
+    test_runtime_structural_unify_aliases_cons_tags,
+    test_lowered_empty_list_constant_alias,
     test_lowered_escapes_backslash_in_builtin_call,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,

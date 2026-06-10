@@ -1,0 +1,129 @@
+[1/5] Loading edges...
+[2/5] BFS from root...
+  Reachable: 79,375
+[3/5] Computing D, b_eff on Articles topical subgraph...
+  D = 4.914  b_eff = 14.828
+
+[4/5] Sampling 100 random pairs, computing carrot + d_wPow...
+    #  u_depth  v_depth  carrot_h    B   paths    d_wPow     diff note
+    1        4        4         4   12       2     5.000   +0.000 EXACT  (0.1s)
+    2        7        6         9   21       0        --       -- no_path  (5.0s)
+    3        7        6        10   26       0        --       -- no_path  (5.0s)
+    4        6        6         7   23       0        --       -- no_path  (5.0s)
+    5        5        8         8   28       0        --       -- no_path  (5.0s)
+    6        8        6         8   16       0        --       -- no_path  (5.0s)
+    7        6        4        10   22      45    10.029   -0.971 SHORTCUT  (3.8s)
+    8        6        6        13   29       0        --       -- no_path  (5.0s)
+    9        8        8        13   41       0        --       -- no_path  (5.0s)
+   10        6        5         9   25       0        --       -- no_path  (5.0s)
+   11        7        6        11   27       0        --       -- no_path  (5.0s)
+   12        7        7         5   17      24     6.000   +0.000 EXACT  (5.0s)
+   13        8        8        15   35       0        --       -- no_path  (5.0s)
+   14        7        7         4   12       3     5.000   +0.000 EXACT  (0.0s)
+   15        5        4        10   18       0        --       -- no_path  (5.0s)
+   16        5        7        14   38       4    13.112   -1.888 SHORTCUT  (5.0s)
+   17        4        7         6   26       0        --       -- no_path  (5.0s)
+   18        8        5        10   18       1    11.000   +0.000 EXACT  (1.9s)
+   19        7        7        14   34       1    11.000   -4.000 SHORTCUT  (5.0s)
+   20        7        6         6   14       0        --       -- no_path  (0.0s)
+   21        6       10        11   35       0        --       -- no_path  (5.0s)
+   22        8        8        11   27       0        --       -- no_path  (5.0s)
+   23        7        8        10   26       0        --       -- no_path  (5.0s)
+   24        7        8        11   31       0        --       -- no_path  (5.0s)
+   25        8        6        10   26       0        --       -- no_path  (5.0s)
+   26        7        7         8   24       0        --       -- no_path  (5.0s)
+   27        6        6        16   36       7    16.527   -0.473 near  (5.0s)
+   28        4        5        11   27       0        --       -- no_path  (5.0s)
+   29        7        7        14   34       0        --       -- no_path  (5.0s)
+   30        6        7         4   12       1     5.000   +0.000 EXACT  (0.1s)
+   31        9        4        10   18       1    11.000   +0.000 EXACT  (0.9s)
+   32        8        6         8   20       1     8.000   -1.000 SHORTCUT  (5.0s)
+   33        5        6         5   17       1     6.000   +0.000 EXACT  (0.1s)
+   34        6        4        11   23      78     9.126   -2.874 SHORTCUT  (5.0s)
+   35        5        7         8   20       2     9.626   +0.626 stretched  (5.0s)
+   36        9        6         9   21       3    10.000   -0.000 EXACT  (5.0s)
+   37        5        6        10   22       1     7.000   -4.000 SHORTCUT  (5.0s)
+   38        6        7         7   23       2     8.000   +0.000 EXACT  (5.0s)
+   39        7        5         4    8       2     5.000   +0.000 EXACT  (0.0s)
+   40        6        9         9   33       0        --       -- no_path  (5.0s)
+   41        7        6         7   19       0        --       -- no_path  (5.0s)
+   42        7        5         7   19       0        --       -- no_path  (5.0s)
+   43        7        7         4   12       1     5.000   +0.000 EXACT  (0.2s)
+   44        5        7         6   22       0        --       -- no_path  (5.0s)
+   45        4        5        12   28       0        --       -- no_path  (5.0s)
+   46        7        6         8   20       4     7.158   -1.842 SHORTCUT  (5.0s)
+   47        4        8         7   27       0        --       -- no_path  (5.0s)
+   48        7        6        13   33       0        --       -- no_path  (5.0s)
+   49        8        7         7   15       2     5.013   -2.987 SHORTCUT  (0.0s)
+   50        7        7         5   13       1     6.000   +0.000 EXACT  (0.5s)
+   51        4        6         9   21       1    10.000   +0.000 EXACT  (5.0s)
+   52        5        6         8   24       0        --       -- no_path  (5.0s)
+   53        5        8         9   33       0        --       -- no_path  (5.0s)
+   54        5        5         5   17       0        --       -- no_path  (5.0s)
+   55        4        9        11   39       0        --       -- no_path  (5.0s)
+   56        4        5         5   17       3     6.000   +0.000 EXACT  (0.3s)
+   57        7        7        10   26       8    10.552   -0.448 near  (5.0s)
+   58        5        7         7   23       0        --       -- no_path  (5.0s)
+   59        6        9        14   46       0        --       -- no_path  (5.0s)
+   60        6        7         5   17       1     6.000   +0.000 EXACT  (0.3s)
+   61        6        7         9   21       0        --       -- no_path  (5.0s)
+   62        7        5         8   20       0        --       -- no_path  (5.0s)
+   63        7        5        10   30       0        --       -- no_path  (5.0s)
+   64        5        6         7   15    1182     6.816   -1.184 SHORTCUT  (2.5s)
+   65        7        7         9   25       0        --       -- no_path  (5.0s)
+   66        5        4         7   19       0        --       -- no_path  (5.0s)
+   67        4        5         3   11       1     4.000   +0.000 EXACT  (0.0s)
+   68        7        6        11   23       0        --       -- no_path  (5.0s)
+   69        7        6        14   34       1    14.000   -1.000 SHORTCUT  (5.0s)
+   70        9        6        12   24       0        --       -- no_path  (5.0s)
+   71        6        6        11   31       3    11.263   -0.737 SHORTCUT  (5.0s)
+   72        5        6         7   23       0        --       -- no_path  (5.0s)
+   73        6        7        11   35       0        --       -- no_path  (5.0s)
+   74        7        3         8   16       5     9.087   +0.087 near  (5.0s)
+   75        5        8         9   33       0        --       -- no_path  (5.0s)
+   76        6        9         8   24       0        --       -- no_path  (5.0s)
+   77        6        8        10   30       0        --       -- no_path  (5.0s)
+   78        7        8        13   37       0        --       -- no_path  (5.0s)
+   79        7        5         9   25       0        --       -- no_path  (5.0s)
+   80        6        3         7   15      10     6.552   -1.448 SHORTCUT  (0.7s)
+   81        6        5         8   24       0        --       -- no_path  (5.0s)
+   82        6        8        10   30       0        --       -- no_path  (5.0s)
+   83        6        5         9   25       1     8.000   -2.000 SHORTCUT  (5.0s)
+   84        5        4        15   15       1    12.000   -4.000 SHORTCUT  (0.1s)
+   85        8        7         7   19       1     8.000   +0.000 EXACT  (0.5s)
+   86        7        3        10   18     462     9.412   -1.588 SHORTCUT  (5.0s)
+   87        7        4         5   17       0        --       -- no_path  (5.0s)
+   88        6        4         5    9       2     6.000   +0.000 EXACT  (0.0s)
+   89        6        4        10   26       0        --       -- no_path  (5.0s)
+   90        7        7        12   36       0        --       -- no_path  (5.0s)
+   91        7        8         7   23       0        --       -- no_path  (5.0s)
+   92        5        7         8   32       0        --       -- no_path  (5.0s)
+   93        7        6         7   15       3     8.000   +0.000 EXACT  (4.6s)
+   94        7        6        13   29       0        --       -- no_path  (5.0s)
+   95        5        6        11   35       0        --       -- no_path  (5.0s)
+   96        6        5        12   28       0        --       -- no_path  (5.0s)
+   97        7        7         8   24       0        --       -- no_path  (5.0s)
+   98        6        7         8   24       1    10.000   +1.000 stretched  (5.0s)
+   99        5        9        16   44       0        --       -- no_path  (5.0s)
+  100        8        8        10   30       0        --       -- no_path  (5.0s)
+
+  Total time: 412.0s for 100 pairs
+
+[5/5] Summary
+  Total pairs:        100
+  No common ancestor: 0
+  No path found:      61
+  Valid measurements: 39
+
+  EXACT      (|d_wPow − h_carrot − 1| < 0.05):   19 (48.7%)
+  near       (within 0.5):                      3 (7.7%)
+  SHORTCUT   (d_wPow < h_carrot − 0.5+1):      15 (38.5%)
+  stretched  (d_wPow > h_carrot + 0.5+1):       2 (5.1%)
+
+  Overall:
+    mean(d_wPow − (h_carrot+1)) = -0.7879
+    stdev                        = 1.2736
+    min diff                     = -4.0000
+    max diff                     = +1.0000
+
+  Verdict: WEAK: substantial deviation from carrot baseline; shortcuts common

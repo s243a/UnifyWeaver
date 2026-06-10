@@ -4512,4 +4512,367 @@ The Haskell `lmdb` package is no longer in the current Hackage index
 `packages:` entry, then built with `cabal new-build` (v2; bare `cabal build`
 on cabal 2.4 is legacy-v1 and ignores `cabal.project`).
 
+## Phase R appendix #17: Rust seed-level Rayon parallelism — scaling on the enwiki Articles subgraph (2026-06-01)
+
+Appendices #15/#16 established single-thread parity (Rust `cached` ≈ Haskell
+`resident_cursor`). This appendix parallelises the Rust `category_ancestor`
+matrix bench across seeds and measures core-scaling.
+
+### Implementation
+
+The native `category_ancestor` kernel is `&self` — read-only over the eager
+`ffi_facts` adjacency, or over the `Send + Sync` lazy/cached `LookupSource`
+whose LMDB reads use a **per-worker thread-local read txn** (env opened
+`NOTLS`, leaked `'static` handle; the cache is sharded `Mutex<CacheShard>`).
+So each seed query is independent. The serial seed loop in both matrix-bench
+mains (TSV + LMDB) was replaced with a Rayon `par_iter` over **pre-interned**
+seed ids, sharing `&vm` and the once-resolved `EdgeAccessor` across workers.
+The WAM-fallback path (mutates `vm` per seed) stays serial.
+
+- `WAM_THREADS` pins the pool (`build_global`); unset = all cores
+  (`RAYON_NUM_THREADS` also honoured).
+- `parallel(true)` promotes `rayon` from an optional dep to a hard dep in the
+  generated `Cargo.toml`.
+- The whole stack was already parallel-ready from the cursor-reuse work
+  (`WamState: Send + Sync`, NOTLS txns, sharded cache); this was wiring only.
+
+### Setup
+
+Closed Articles-rooted **enwiki** subgraph, rebuilt from the existing
+`enwiki_cats` resident LMDB (9.93M edges) by BFS-ing the subtree of the
+densest root (`id=97688913`, the `Main_topic_classifications`-style hub) down
+`category_child` to depth 10, then using the **subtree categories themselves
+as seeds** so every seed traverses to the root. 796,695 seeds. Builder:
+`data/benchmark/build_articles_subgraph.py` (untracked). Box: 8 cores / 5 GB.
+Mode: `lmdb_materialisation(cached)`. `max_depth=10`.
+
+### Result (warm page-cache; `query_ms` = the parallel seed loop only)
+
+| threads | query_ms | speedup | tuple_count |
+| ---: | ---: | ---: | ---: |
+| 1 | 135,587 | 1.00× | 796,693 |
+| 4 |  37,707 | **3.60×** | 796,693 |
+| 8 |  35,680 | 3.80× | 796,693 |
+
+Byte-stable output (`tuple_count=796,693`) across every thread count —
+correctness holds at scale. ~3.6× at 4 threads (90% efficiency), plateauing
+by 8 (LMDB-cursor + cache-shard contention is memory-bandwidth bound past 4).
+The serial `load_ms` (~9 s: page-cache warm + reachable BFS + int-map build)
+is the Amdahl tail; with load included, total scales ~3.1× at j4.
+
+Smaller fixtures for reference: 100k_cats cached ~1.6× at j4 (72→45 ms — too
+small, thread overhead dominates); simplewiki Articles subgraph (14,680 seeds)
+~1.7× at j4 (19→11 ms — shallow tree-like graph, ~20 ms query). Clean scaling
+needs the enwiki-scale query (seconds), confirming the long-standing finding
+that seed-level parallelism needs enough per-seed work (cf. intra-query
+parallelism docs / Haskell appendix #4).
+
+### Caveats (perf-skepticism)
+
+- Single trial per thread count at enwiki scale (each j1 run is ~145 s). The
+  `-j1` baseline was re-measured **warm** (after the cold sweep) so it is
+  comparable to the warm `-j4`/`-j8` — the cold sweep had shown a misleading
+  2.07× at j2 partly from `load_ms` page-cache warming across sequential runs.
+- Not yet a cross-target parallel comparison: Haskell `resident_cursor` was
+  **not** run on this identical enwiki Articles fixture. Haskell's earlier
+  ~1.73× at `-N4` (appendix #6, GC-bound `parMap`) was on a different
+  closure/scale; a head-to-head on `data/benchmark/enwiki_articles` is the
+  natural next step before claiming Rust parallelises "better".
+
+## Phase X appendix #18: cross-target parallel scaling — Rust `cached` vs Haskell `resident_cursor` on the enwiki Articles subgraph (2026-06-02)
+
+The head-to-head appendix #17 called for: Haskell `resident_cursor` run on the
+**identical** enwiki Articles fixture (same 796,695 seeds, root 97688913,
+demand set, graph) as the Rust seed-parallel sweep.
+
+### Setup
+
+- Fixture: `data/benchmark/enwiki_articles_hs` (builder
+  `data/benchmark/build_haskell_enwiki_fixture.py`). Reuses the same Phase-1
+  LMDB as Rust (`enwiki_cats/lmdb_resident`, 9.93M edges) via symlink;
+  `seed_ids.txt` = the 796,695 subtree ids, `root_ids.txt` = 97688913.
+- The Haskell `int_atom_seeds_lmdb` loader requires an `article_category`
+  sub-db (Rust keeps it as a TSV), so one was added **in-place** to the shared
+  LMDB (additive; Rust ignores it).
+- Generated `seeded functions kernels_on resident_cursor`, GHC 8.6.5,
+  `-O2 -threaded`, `-A64M`. Box: 8 cores / 5 GB.
+- **Required patch to run at all at -N4**: the generated env opener
+  (`openLmdbInternEnvReadonly`) sets `maxreaders 126`; at -N4 the parallel
+  cursor lookups exceed it → `MDB_READERS_FULL`. Bumped to 16384 in the
+  generated source to proceed (the template still ships 126 — see follow-up).
+
+### Result (query_ms; single trial; identical workload both sides)
+
+| target / mode | -N1 / -j1 | -N4 / -j4 | scaling | RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Rust `cached`            | 135,587 | 37,707 | **3.60× faster** | — |
+| Haskell `resident_cursor`| 270,039 | 427,151 | **1.58× SLOWER** | 3.79 GB |
+
+`seed_count=796,695`, `tuple_count=796,694`, `demand_set_size=796,695` on both
+sides — the workloads match.
+
+### Findings
+
+1. **Single-thread**: Rust `cached` (135.6 s) is ~2× faster than Haskell
+   `resident_cursor` (270 s) at enwiki scale. (Appendix #16 found them close at
+   *simplewiki* scale, which fits in RAM; the gap opens at enwiki.)
+2. **Parallelism**: Rust scales 3.60× at 4 threads; Haskell **regresses** —
+   -N4 is 1.58× *slower* than -N1. This is the documented parMap/GC regression
+   (appendix #6), now confirmed at enwiki scale and aggravated by (a) 3.79 GB
+   RSS against a 5 GB ceiling → GHC parallel-GC has no headroom, and (b) LMDB
+   reader-slot contention. Haskell's -N4 run was I/O-bound (wall 7m51s but only
+   1m08s user) — the 9.4 GB LMDB thrashes the page cache under random cursor
+   reads, whereas Rust's bounded sharded L2 keeps the working set resident and
+   CPU-bound.
+3. **Net** at -N4: Rust 37.7 s vs Haskell 427 s (~11×). This is the *combination*
+   of Rust's better single-thread caching AND Haskell's negative scaling — not
+   a pure "Rust's Rayon beats Haskell's parMap" microcomparison.
+
+### Caveats (perf-skepticism)
+
+- Single trial per config (each Haskell run is 5–8 min). Magnitudes, not exact
+  multiples.
+- **CORRECTION (2026-06-02)**: an earlier draft of this caveat claimed the
+  Haskell kernel "hits LMDB per edge (its L2 serves the demand BFS)". That is
+  WRONG. In `resident_cursor` + `lmdb_cache_mode(sharded)`, `openLmdbEdgeLookup`
+  returns `lmdbL2EdgeLookup` — the kernel's `cpEdgeLookup` **does** go through
+  the sharded lock-free L2 (same role as Rust `cached`'s L2). The two targets
+  are NOT in different cache regimes; the gap is elsewhere (below).
+- **Memory pressure is the first-order factor**: Haskell RSS is 3.79 GB / 5 GB,
+  almost entirely the **3.78M-entry intern table** (`loadInternTableFromLmdb`,
+  forced strict) loaded at startup. That starves the OS page cache of the 9.4 GB
+  LMDB → random cursor reads thrash to disk (the -N4 run was I/O-bound: 7m51s
+  wall vs 1m08s user), and at -N4 GHC's parallel GC has no heap headroom → the
+  regression. Rust's compact int maps leave far more page cache. Crucially, in
+  `int_atom_seeds_lmdb` mode the output is **int-keyed** (raw ids, not
+  de-interned names), so the intern table is loaded but barely used — making it
+  the prime fairness/perf lever (see follow-ups).
+- Had to bump `maxreaders` (126→16384) to run -N4 — **now fixed in the template**
+  (commit ac661ea6).
+
+### Follow-ups (Haskell-side, NOT in the Rust parallelism PR)
+
+- ~~Raise `maxreaders`~~ — DONE (ac661ea6): `openLmdbInternEnvReadonly` now sets
+  16384.
+- ~~Give the kernel an L2~~ — already wired (`lmdbL2EdgeLookup`); the original
+  premise was mistaken.
+- **The real lever — DONE (631a7b8d)**: `lmdb_skip_intern_table(true)` skips
+  `loadInternTableFromLmdb` in `int_atom_seeds_lmdb` mode and falls back to
+  `compileTimeAtomTable` (all `extractDouble` needs; the table is int-keyed
+  end-to-end). Wired into matrix-bench `resident_cursor`. Result below.
+- Re-run on a box with RAM headroom to separate the residual parallel-GC
+  regression from page-cache thrash.
+
+### Result with the intern-table lever applied (2026-06-02)
+
+Same enwiki Articles fixture, `lmdb_skip_intern_table(true)`. Byte-stable
+`tuple_count=796,694`.
+
+| metric | before | after | Δ |
+| --- | ---: | ---: | --- |
+| load_ms          |  19,112 |     181 | 105× (no 3.78M-entry table load) |
+| query_ms -N1     | 270,039 | 210,969 | 1.28× faster |
+| query_ms -N4     | 427,151 | 236,480 | 1.81× faster |
+| RSS              | 3.79 GB | 3.20 GB | −0.6 GB |
+
+Cross-target, query_ms:
+
+| | -N1/-j1 | -N4/-j4 | scaling |
+| --- | ---: | ---: | ---: |
+| Rust `cached`                          | 135,587 | 37,707 | **3.60×** |
+| Haskell `resident_cursor` + skip-intern | 210,969 | 236,480 | **0.89× (mild regress)** |
+
+**Verdict**: the lever is a real Haskell win (1.3–1.8× faster, 105× faster
+load) and shrinks the -N4 parallel regression from 1.58× to 1.12× slowdown —
+but Haskell still does **not** positively scale at -N4. The residual cause is
+GHC parallel GC (RSS still 3.2 GB / 5 GB; the intern table was only ~0.6 GB of
+it — the rest is the 796k-node demand-set IntSet, the L2 array, and -A64M×4 HEC
+nurseries). Rust still wins on both absolute single-thread (135 vs 211 ms-k)
+and scaling (3.60× vs 0.89×). The honest conclusion: on this memory-constrained
+box, Rust's compact footprint lets seed-parallelism scale where Haskell's
+parallel GC cannot — the language runtimes, not the algorithm, decide it here.
+
+## Phase F appendix #19: F# LMDB target parity — eager/lazy/cached, plus a Rust cursor correctness fix (2026-06-04)
+
+Goal: give the **F# WAM target** proper LMDB capability — eager, lazy, and
+cached materialisation of the `category_ancestor` effective-distance workload —
+to parity with the Rust and Haskell targets, and measure it head-to-head.
+Fixture throughout: `data/benchmark/simplewiki_articles` (root 2, 14,680
+article-category seeds; the Articles-rooted simplewiki subgraph, keyed by raw
+page ids). All runs serial (single thread), `max_depth = 10`.
+
+### Correctness oracle
+
+An independent Python BFS over the raw LMDB establishes ground truth:
+`category_child` is the exact reverse of `category_parent`; the down-closure of
+root is 14,680 *nodes*, but only **970 of the 14,680 seeds** are descendants of
+root (reach it within depth 10). So the correct solution count is **970**. F#
+reports 970 in every mode; Rust reports 969 (its TSV loader skips one header
+row, dropping `art_0`). This 970/969 agreement is the conformance anchor for
+everything below.
+
+### The F# arc (merged PRs #2757, #2759, #2761, #2762, #2766)
+
+1. **Int-native eager + a latent `/4` bug.** The Phase-1 resident LMDB stores
+   the graph in its own int id space, and the fixture's seeds/root are those
+   same raw ids — so F# consumes them directly as ints, the only "interning"
+   being an identity map over the ids that cross the WAM register boundary. The
+   graph never leaves int space (the parity move over the Haskell target, which
+   string-interned the whole graph). Surfaced a pre-existing bug: the
+   benchmark's `/4` register setup bound A2 to an unbound output and dispatched
+   via `dispatchCall` (which runs the compiled bytecode, never the foreign
+   kernel), so every seed reported 0. The native kernel's layout is
+   `input(2)=root`; fixed to bind A2=root and route `/4` through
+   `callForeign`/`executeForeign`.
+
+2. **Eager is at kernel parity with Rust — the gap was dispatch tax.** First
+   measurement put F# eager query at ~61 ms vs Rust ~3 ms. Profiling showed
+   ~90% was the per-seed WAM dispatch (register-array alloc, `derefVar`, intern
+   `Map.tryFind`, choice-point setup), not the kernel. Calling
+   `nativeKernel_category_ancestor` directly dropped query to ~5 ms; switching
+   the eager map from an immutable `Map` to a mutable `Dictionary` dropped it to
+   ~3 ms — **parity with Rust's 3 ms**. A single-scan loader (read
+   `category_parent` once, build the reverse = `category_child` in-memory, BFS
+   the demand set from it, prune) cut load 488 → ~255 ms.
+
+3. **Cached warm-query parity — three fixes.** Cached query initially sat at
+   ~7 ms (no better than lazy): (a) the auto-resolver floored L2 at 256
+   entries — missing ~98% of the 14,680-node working set; sized L1/L2 to the
+   demand set at runtime instead (the demand set *is* the working set, known at
+   runtime). (b) The demand filter sat *outside* the cache, re-running
+   `List.filter` on every hit; moved it under the cache (a `DemandFilteredSource`
+   decorator) so the cache stores pre-pruned lists. (c) Dropped a redundant
+   O(log n) `Set.Contains` guard per kernel call. Result: cached **warm** query
+   → ~1 ms = eager parity.
+
+### The Rust cursor correctness bug (PR #2772)
+
+The cross-target lazy/cached comparison surfaced a real divergence: Rust's
+cursor (lazy *and* cached) path reported `tuple_count = 14678`, not 970. Root
+cause (oracle-proven): the cursor path resolved seeds through `s2i`
+(page-id-string → dense id) before looking them up in `category_parent`.
+Correct when seeds are category-name strings whose `s2i` maps into the graph's
+key space — but on this **int-native** fixture the graph is keyed by raw page
+ids and `s2i` is a separate dense renumbering (`s2i["4985"]=0`, not identity),
+so every seed got remapped onto a low root-adjacent node and spuriously
+"reached" root. Not a localized logic bug — a missing feature.
+
+Fix: an `int_native_edges` mode (env `WAM_INT_NATIVE=1`). In `state.rs`'s
+`edge_parents_via` Lazy branch, when set, the kernel's node id is used *as* the
+raw LMDB key directly (bypassing the `wam↔lmdb` maps); the matrix-bench cursor
+`main` parses seeds as raw ints and reuses the raw root int — mirroring the
+eager int-seed path and the F# target. Default-off, so the name-keyed path is
+unchanged. With it, both Rust cursor modes report **969**.
+
+### Aligned cross-target table
+
+Cold single-pass, serial, root 2, ~14,680 seeds (F# `reps=1`; the Rust matrix
+bench is single-pass — the only methodology both share, since the Rust bench has
+no warm-rep loop). Representative of 3 trials.
+
+| mode   | F# load | F# query | Rust load | Rust query | answer (F#/Rust) |
+| ---    | ---:    | ---:     | ---:      | ---:       | :---: |
+| eager  | ~255 ms | 3 ms     | ~135 ms   | 3 ms       | 970 / 969 |
+| lazy   | ~150 ms | ~15 ms   | ~35 ms    | ~8 ms      | 970 / 969 |
+| cached | ~145 ms | ~35 ms   | ~34 ms    | ~11 ms     | 970 / 969 |
+
+(F# cached **warm** query is ~1 ms across repeated passes; the ~35 ms above is
+the single-pass cache-fill cost. The Rust bench has no warm loop, so warm
+numbers are F#-only and excluded from the aligned table.)
+
+### Verdict
+
+- **Query is at parity.** Eager is a dead heat (3 ms both); F#'s warm cached
+  query reaches eager parity (~1 ms). The earlier 20× "Rust wins eager" was a
+  pure WAM-dispatch artifact, not a language or kernel gap.
+- **Load is Rust's durable edge (~2–4×).** Rust reads a TSV into a `Vec` /
+  raw-id-keyed structures; F# pays LightningDB's *managed per-entry* read cost
+  plus structure-building on every cursor step. Confirmed inherent to the .NET
+  LMDB binding, not the kernel: removing a redundant `cursor.Next()`/
+  `GetCurrent()` pair gave no measurable change, and liblmdb already mmaps
+  internally — the cost is the P/Invoke crossing per step, closable only by a
+  different access pattern (bulk `MDB_NEXT_MULTIPLE`, needs `DUP_FIXED`
+  re-ingest) not pursued.
+- **Mode crossover reproduces the Rust/Haskell finding.** On cold single-pass
+  *total* time, cached ≈ lazy < eager on both targets — cached/lazy skip the
+  full-map materialisation, and eager's heavier load isn't amortized in one
+  pass. Eager wins only at very high query volume.
+- **A silent cross-target divergence was caught by comparison, not tests.** The
+  Rust cursor `s2i` bug produced wrong answers on int-native fixtures with no
+  test failure — the cross-target conformance harness has no LMDB-mode coverage.
+
+Open follow-ups: warm-rep loop in the Rust matrix bench (for a warm
+cross-target table); F# CSR end-to-end; Rust lazy seed-level demand pre-guard
+(F#'s guard skips the 13,710 non-demand seeds before any cursor open — Rust lazy
+lacks it); LMDB-mode coverage in the cross-target conformance harness.
+
+## Phase F appendix #20: F# CSR fact source — demand-BFS-CSR + forward-kernel-CSR, and the footprint story (2026-06-05)
+
+Follow-on to #19: wire the F# target's `CsrReader` (a binary CSR artifact from
+`build_reverse_csr_artifact.py`) into the int-native `category_ancestor` path,
+in two roles, and characterise where CSR actually pays off. Same fixture
+(`simplewiki_articles`, root 2, 14,680 seeds, serial). All variants answer 970
+(the conformance anchor); the tiny int-native fixture answers 3.
+
+### Stage 3a — CSR-backed demand BFS (PR #2798)
+
+The demand set (descendants of root) is built by walking DOWN `category_child`
+via the compact, binary-searched CSR (sorted `{parent, offset, count}` index)
+instead of an LMDB cursor; the kernel's `category_parent` map is then
+materialised from LMDB, demand-pruned. CSR is keyed by raw page ids (sorted
+index + binary search), so it stays int-native — no dense remap, no `s2i`
+hazard. New `reachableToRootVia` (generic BFS over any `int->int list` closure)
++ `lmdb_eager_csr` generator variant. Also fixed `lookup_source_entry_fs` to
+resolve the CSR dir against `factsDir` at runtime (a relative `csr_path` was
+opened against the process CWD, crashing the eager `WcLookupSources` ctor).
+
+Result: load ~325 ms (≈/slightly slower than single-scan eager's ~255 ms) — it's
+two passes (CSR down-walk + a separate LMDB parent scan) vs the one LMDB scan
+that builds both. So CSR demand-BFS is **not** a load win at simplewiki.
+
+### Stage 3b — forward `category_parent` CSR kernel (PR #2800)
+
+`build_reverse_csr_artifact.py --direction forward` groups `category_parent` BY
+KEY (child) instead of by value, emitting a `category_parent` (child→parents)
+CSR keyed by child — the forward index the upward kernel walk needs. The kernel
+then reads parents from that CSR (`csr_kernel(true)` → `has_csr_kernel`;
+`lmdb_csr_kernel` variant), a **lazy-class** path: per-lookup binary search +
+`.val` file seek via a raw `FileStream`, demand-filtered, with no LMDB in the
+kernel hot path.
+
+Result (warm): load ~155 ms, query ~15 ms — **tied with LMDB-lazy** (~150/~15).
+The hypothesis that a raw-`FileStream` CSR kernel would beat LMDB-lazy by dodging
+LightningDB's managed per-call overhead **did not hold**: the .NET `FileStream`
+seek+read + binary search per lookup costs about the same as the LMDB cursor.
+
+### The footprint story (the real CSR win)
+
+CSR is tied on *time* with lazy and slightly slower than eager — but its value
+is **memory**. `CsrLookupSource` loads only the idx/offsets array into RAM
+(~1.8 MB for 91,514 keys here) and reads edge *values* from disk on demand;
+eager holds the entire demand-pruned edge set in a `Dictionary`. Measured peak
+RSS (`/usr/bin/time -v`, simplewiki, all 970):
+
+| mode | peak RSS | load | query |
+| --- | ---: | ---: | ---: |
+| eager      | ~84.5 MB | ~275 ms | ~3 ms  |
+| lazy       | ~71.5 MB | ~150 ms | ~15 ms |
+| csr_kernel | ~73.0 MB | ~165 ms | ~15 ms |
+
+The ~70 MB floor is the .NET runtime; the meaningful figure is the **gap**:
+eager carries ~13 MB more than lazy/CSR — the in-memory edge `Dictionary`. That
+gap **scales with edge count**: ~13 MB at simplewiki's 297k edges, but GBs at
+enwiki's ~10M edges, where eager cannot fit in RAM while CSR/lazy stay flat
+(idx-only / cursor-only).
+
+### Verdict
+
+CSR is **not faster** than the LMDB modes on this box. Its niche is
+(1) **footprint** — idx-in-RAM + values-on-disk, so it scales to graphs whose
+edge set won't fit in memory (where eager fails), and (2) **portability** — a
+self-contained on-disk file format with no LMDB dependency in the kernel hot
+path. At small/medium scale where the edge map fits RAM, eager's in-memory
+`Dictionary` wins on query and CSR offers no speed advantage; CSR earns its keep
+at the scales and deployments where holding all edges resident is not an option.
+
 

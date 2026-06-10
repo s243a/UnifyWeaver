@@ -29,6 +29,8 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 %% =====================================================================
 %% Parsing
@@ -75,7 +77,28 @@ wam_haskell_lowerable(_PI, WamCode, _Reason) :-
     %   - Detected kernels are excluded from lowering by the partition
     %     logic (they use FFI via CallForeign, lowering would be dead code).
     clause1_instrs(PCInstrs, C1),
-    forall(member(I, C1), supported(I)).
+    forall(member(I, C1), supported(I)),
+    % Verify clause 1 actually folds via the shared structurer. Negation
+    % (!/0 commit) and nested ITEs now structure and lower; a genuinely
+    % ill-formed control block fails here and falls back to the interpreter
+    % instead of failing lower_all (keeps gate <-> emit in lockstep).
+    clause1_pc(PCInstrs, C1PC),
+    parse_wam_text(WamCode, _, LabelMap),
+    struct_stream(C1PC, LabelMap, Stream),
+    structure_ite(Stream, _).
+
+%% clause1_pc(+PCInstrs, -Clause1PCs)
+%  Like clause1_instrs/2 but keeps pc(PC,Instr) form, matching exactly the
+%  clause-1 slice emit_func/4 structures (strip switch prefixes, then the
+%  predicate-level try_me_else, then take to proceed).
+clause1_pc([], []).
+clause1_pc(PCInstrs0, C1) :-
+    strip_switch_prefixes(PCInstrs0, PCInstrs),
+    PCInstrs0 \== PCInstrs, !,
+    clause1_pc(PCInstrs, C1).
+clause1_pc([pc(_, try_me_else(_))|Rest], C1) :- !,
+    take_to_proceed_pc(Rest, C1).
+clause1_pc(PCInstrs, PCInstrs).
 
 clause1_instrs([], []).
 % Skip switch_on_constant* prefixes (multi-clause indexing).
@@ -199,7 +222,9 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
     format("~w :: WamContext -> WamState -> Maybe WamState~n", [FN]),
     % Skip switch_on_constant* prefixes before deciding multi/single-clause.
     strip_switch_prefixes(PCInstrs, PCInstrs1),
-    (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
+    (   emit_func_t5(FN, PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  atom_string(LAtom, LStr),
         (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
         format("~w !ctx s_init =~n", [FN]),
@@ -217,16 +242,126 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("  where~n"),
         format("    clause1 s_c1 = do~n"),
         take_to_proceed_pc(BodyPCs, Clause1PCs),
-        emit_instrs_lm(Clause1PCs, "s_c1", "      ", ForeignPreds, LabelMap)
+        emit_clause_struct(Clause1PCs, LabelMap, "s_c1", "      ", ForeignPreds)
     ;   % Single-clause: simple do-notation
         format("~w !ctx s_init = do~n", [FN]),
-        emit_instrs_lm(PCInstrs1, "s_init", "  ", ForeignPreds, LabelMap)
+        emit_clause_struct(PCInstrs1, LabelMap, "s_init", "  ", ForeignPreds)
     ).
 
 take_to_proceed_pc([], []).
 take_to_proceed_pc([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
 take_to_proceed_pc([pc(PC, fail)|_], [pc(PC, fail)]) :- !.
 take_to_proceed_pc([H|T], [H|R]) :- take_to_proceed_pc(T, R).
+
+%% =====================================================================
+%% T5: multi-clause as a first-argument dispatch (wam_clause_chain)
+%% =====================================================================
+%
+%  When the clauses discriminate on a DISTINCT first-argument constant
+%  (lowering type T5 in docs/proposals/WAM_LOWERING_TAXONOMY_AND_MATRIX.md)
+%  ALL clauses are lowered to native Haskell and selected by a deref-and-match
+%  cascade, instead of lowering only clause 1 and reaching clauses 2+ through
+%  the interpreter on backtrack. When the first argument is BOUND this is
+%  deterministic dispatch with no interpreter hop; when it is UNBOUND (or the
+%  register is unset) we defer to the interpreter via the same choice-point /
+%  backtrack / run fallback the ordinary multi-clause path uses — that path
+%  enumerates every clause, binding the variable in turn.
+%
+%  Each clause body is emitted in FULL (the leading `get_constant V, A1` is
+%  kept): on the bound fast path it harmlessly re-matches the already-bound
+%  first argument, and on the unbound fallback it is exactly what binds the
+%  variable. So the only thing T5 changes is HOW the matching clause is
+%  reached, never what a clause does.
+
+%% emit_func_t5(+FN, +PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T5 dispatch and succeeds, or fails (emitting nothing) when the
+%  predicate is not a distinct-first-argument constant chain. All checks run
+%  before any output so a failure leaves the stream untouched for the caller's
+%  fallback emission.
+emit_func_t5(FN, PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
+    maplist(t5_strip_pc, PCInstrs1, PlainInstrs),
+    clause_chain(PlainInstrs, chain(_Guards)),
+    t5_split_clauses_pc(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(( member(Sl, Slices), member(pc(_, I), Sl) ), supported(I)),
+    maplist(t5_slice_discriminator, Slices, Discrs),
+    % All checks passed — emit.
+    atom_string(L2Atom, L2Str),
+    ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
+    format("~w !ctx s_init =~n", [FN]),
+    format("  case derefVar (wsBindings s_init) <$> IM.lookup 1 (wsRegs s_init) of~n"),
+    format("    Just (Unbound _) -> t5fallback~n"),
+    format("    Just v~n"),
+    t5_emit_dispatch_guards(Discrs, 1),
+    format("      | otherwise -> Nothing~n"),
+    format("    _ -> t5fallback~n"),
+    format("  where~n"),
+    % Interpreter fallback for the unbound/unset first-argument case: push a
+    % choice point at clause 2's label, try clause 1 natively, and on failure
+    % backtrack into the interpreter to enumerate the remaining clauses.
+    format("    t5fallback =~n"),
+    format("      let s_cp = s_init { wsCPs = ChoicePoint~n"),
+    format("            { cpNextPC = ~w, cpRegs = wsRegs s_init, cpStack = wsStack s_init~n", [AltPC]),
+    format("            , cpCP = wsCP s_init, cpTrailLen = wsTrailLen s_init~n"),
+    format("            , cpHeapLen = wsHeapLen s_init, cpBindings = wsBindings s_init~n"),
+    format("            , cpCutBar = wsCutBar s_init, cpAggFrame = Nothing, cpBuiltin = Nothing~n"),
+    format("            } : wsCPs s_init~n"),
+    format("            , wsCPsLen = wsCPsLen s_init + 1 }~n"),
+    format("      in case t5clause_1 s_cp of~n"),
+    format("           Just result -> Just result~n"),
+    format("           Nothing -> backtrack s_cp >>= \\s_bt -> run ctx (s_bt { wsPC = wsPC s_bt + 1 })~n"),
+    t5_emit_clause_defs(Slices, 1, LabelMap, FP).
+
+t5_strip_pc(pc(_, I), I).
+
+%% t5_split_clauses_pc(+PCInstrs1, -Slices)
+%  Split the switch-stripped pc-instruction list (which opens with
+%  try_me_else) at the choice-point separators into per-clause slices, each
+%  trimmed to its terminal proceed/fail. Mirrors wam_clause_chain's
+%  split_clauses but keeps the pc(PC,Instr) wrappers for emission.
+t5_split_clauses_pc([pc(_, try_me_else(_))|Rest], [Slice|More]) :-
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+
+t5_split_more_pc([], []).
+t5_split_more_pc([pc(_, retry_me_else(_))|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+t5_split_more_pc([pc(_, trust_me)|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc(Rest, Clause, After),
+    take_to_proceed_pc(Clause, Slice),
+    t5_split_more_pc(After, More).
+
+t5_collect_clause_pc([], [], []).
+t5_collect_clause_pc([pc(P, retry_me_else(L))|Rest], [], [pc(P, retry_me_else(L))|Rest]) :- !.
+t5_collect_clause_pc([pc(P, trust_me)|Rest], [], [pc(P, trust_me)|Rest]) :- !.
+t5_collect_clause_pc([Item|Rest], [Item|More], After) :-
+    t5_collect_clause_pc(Rest, More, After).
+
+%% t5_slice_discriminator(+Slice, -HaskellValueExpr)
+%  Each lowerable clause opens with `get_constant V, A1`; render V as its
+%  Haskell Value constructor.
+t5_slice_discriminator([pc(_, get_constant(VStr, _A1))|_], HC) :-
+    val_hs(VStr, HC).
+
+%% t5_emit_dispatch_guards(+Discrs, +Index)
+t5_emit_dispatch_guards([], _).
+t5_emit_dispatch_guards([HC|Rest], N) :-
+    format("      | v == (~w) -> t5clause_~w s_init~n", [HC, N]),
+    N1 is N + 1,
+    t5_emit_dispatch_guards(Rest, N1).
+
+%% t5_emit_clause_defs(+Slices, +Index, +LabelMap, +FP)
+t5_emit_clause_defs([], _, _, _).
+t5_emit_clause_defs([Slice|Rest], N, LabelMap, FP) :-
+    format("    t5clause_~w s_c~w = do~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct(Slice, LabelMap, SV, "      ", FP),
+    N1 is N + 1,
+    t5_emit_clause_defs(Rest, N1, LabelMap, FP).
 
 %% =====================================================================
 %% emit_instrs_lm — LabelMap-aware top-level emission
@@ -435,6 +570,125 @@ split_else_cont_([pc(PC, Instr)|Rest], ContLabel, LM, Else, Cont) :-
     ).
 
 %% =====================================================================
+%% Structured ITE emission (shared nesting-aware structurer)
+%% =====================================================================
+%
+%  The flat split_ite_blocks_lm/split_at_jump heuristic is NOT nesting
+%  aware (split_at_jump stops at an inner jump) and only recognises
+%  cut_ite (not the !/0 negation commit), so nested ITEs and \+ failed to
+%  lower. We instead feed clause 1 through the shared wam_ite_structurer:
+%  struct_stream/3 rebuilds a label-marked instruction stream (control
+%  markers stay bare so the structurer can match them; data instructions
+%  keep their pc(PC,_) wrapper so emit_one still has the PC), structure_ite
+%  folds every (C->T;E)/\+/once block into ite(Cond,Then,Else), and
+%  emit_structured/4 walks the result.
+%
+%  emit_structured reuses the EXACT case-(do…)of formats of the previous
+%  emit_instrs_lm + emit_ite_block, so a simple or sequential ITE produces
+%  byte-identical Haskell (no performance change); nested blocks recurse
+%  through the same path and negation is just an ite whose commit was !/0.
+
+%% emit_clause_struct(+ClausePCs, +LabelMap, +SV, +Ind, +FP)
+emit_clause_struct(ClausePCs, LabelMap, SV, Ind, FP) :-
+    struct_stream(ClausePCs, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    emit_structured(Structured, SV, Ind, FP).
+
+%% struct_stream(+ClausePCs, +LabelMap, -Stream)
+%  Re-insert label(L) markers at their PCs and keep ITE control markers
+%  (try_me_else/jump/trust_me/cut_ite and the !/0 commit) bare so the
+%  structurer matches them; every other instruction stays pc(PC,Instr).
+struct_stream([], _LM, []).
+struct_stream([pc(PC, Instr)|Rest], LM, Out) :-
+    % LabelMap keys are atoms, but try_me_else/jump args are strings; emit
+    % label markers as strings so structure_ite unifies them.
+    findall(label(LStr), (member(L-PC, LM), atom_string(L, LStr)), Labels),
+    struct_item(PC, Instr, Item),
+    append(Labels, [Item|More], Out),
+    struct_stream(Rest, LM, More).
+
+struct_item(_PC, try_me_else(L), try_me_else(L)) :- !.
+struct_item(_PC, jump(L),        jump(L))        :- !.
+struct_item(_PC, trust_me,       trust_me)       :- !.
+struct_item(_PC, cut_ite,        cut_ite)        :- !.
+struct_item(_PC, builtin_call(Op, N), builtin_call(Op, N)) :- neg_commit_op(Op), !.
+struct_item(PC, Instr, pc(PC, Instr)).
+
+neg_commit_op("!/0").
+neg_commit_op('!/0').
+
+%% emit_structured(+Structured, +SV, +Ind, +FP)
+%  Structured is a list of pc(PC,Instr) and ite(Cond,Then,Else) terms.
+%  Emits a do-block body yielding (Maybe WamState).
+emit_structured([], SV, Ind, _FP) :-
+    format("~wreturn ~w~n", [Ind, SV]).
+% Terminal: fail
+emit_structured([pc(_PC, fail)|Rest], _SV, Ind, _FP) :- !,
+    (   Rest \= []
+    ->  format("~w-- WARNING: fail is not the last instruction — unreachable code follows~n", [Ind])
+    ;   true
+    ),
+    format("~wNothing~n", [Ind]).
+% Terminal: execute (tail call)
+emit_structured([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :- !,
+    (   Rest \= []
+    ->  format("~w-- WARNING: execute(~w) is not the last instruction — tail-call semantics violated~n",
+               [Ind, PredStr])
+    ;   true
+    ),
+    emit_one(execute(PredStr), PC, SV, _, Ind, FP).
+% If-then-else as the final expression (no continuation)
+emit_structured([ite(Cond, Then, Else)], SV, Ind, FP) :- !,
+    format("~wcase (do~n", [Ind]),
+    atom_concat(Ind, "      ", CondInd),
+    emit_structured(Cond, SV, CondInd, FP),
+    format("~w  ) of~n", [Ind]),
+    fresh_sv(SV, SVthen),
+    format("~w    Just ~w -> do~n", [Ind, SVthen]),
+    atom_concat(Ind, "      ", ThenInd),
+    emit_structured(Then, SVthen, ThenInd, FP),
+    format("~w    Nothing -> do~n", [Ind]),
+    atom_concat(Ind, "      ", ElseInd),
+    emit_structured(Else, SV, ElseInd, FP).
+% If-then-else with a continuation — bind the result, then continue.
+emit_structured([ite(Cond, Then, Else)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    fresh_sv(SV, SVcont),
+    format("~w~w <- case (do~n", [Ind, SVcont]),
+    atom_concat(Ind, "          ", CondInd),
+    emit_structured(Cond, SV, CondInd, FP),
+    format("~w      ) of~n", [Ind]),
+    fresh_sv(SV, SVthen),
+    format("~w        Just ~w -> do~n", [Ind, SVthen]),
+    atom_concat(Ind, "          ", ThenInd),
+    emit_structured(Then, SVthen, ThenInd, FP),
+    format("~w        Nothing -> do~n", [Ind]),
+    atom_concat(Ind, "          ", ElseInd),
+    emit_structured(Else, SV, ElseInd, FP),
+    emit_structured(Rest, SVcont, Ind, FP).
+% Last plain instruction — emit, then return its state unless terminal.
+emit_structured([pc(PC, Instr)], SV, Ind, FP) :- !,
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    (   is_terminal_instr(Instr) -> true
+    ;   format("~wreturn ~w~n", [Ind, SVout])
+    ).
+% Plain instruction with more following.
+emit_structured([pc(PC, Instr)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    emit_structured(Rest, SVout, Ind, FP).
+% A bare !/0 that was NOT an ITE commit (a user cut left by the
+% structurer's pass-through). emit_one ignores the PC for !/0.
+emit_structured([builtin_call(Op, N)|Rest], SV, Ind, FP) :- !,
+    emit_one(builtin_call(Op, N), 0, SV, SVout, Ind, FP),
+    (   Rest == [] -> format("~wreturn ~w~n", [Ind, SVout])
+    ;   emit_structured(Rest, SVout, Ind, FP)
+    ).
+% A bare cut_ite outside any ITE block (defensive; should not occur).
+emit_structured([cut_ite|Rest], SV, Ind, FP) :- !,
+    (   Rest == [] -> format("~wreturn ~w~n", [Ind, SV])
+    ;   emit_structured(Rest, SV, Ind, FP)
+    ).
+
+%% =====================================================================
 %% emit_one — single instruction → Haskell do-notation line
 %% =====================================================================
 
@@ -521,8 +775,13 @@ emit_one(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
 % ---- GetStructure F Ai — delegate to step ----
 emit_one(get_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
-    parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_atom(FuncName, FnId),
+    % Intern the FULL functor string (e.g. "+/2"), matching the interpreter
+    % codegen (wam_haskell_target's get_structure/put_structure rules). The
+    % lowered and interpreted paths share one runtime intern table, so a bare
+    % "+" here would get a different id than the table's "+/2" and evalArith /
+    % unification would look up the wrong name.
+    parse_functor(FnStr, _FuncName, Arity),
+    wam_haskell_target:intern_struct_functor(FnStr, FnId),
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (GetStructure ~w ~w ~w)~n",
            [I, SVout, SV, PC, FnId, Ai, Arity]).
@@ -598,8 +857,10 @@ emit_one(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
 % Directly sets wsBuilder, matching step's PutStructure semantics.
 emit_one(put_structure(FnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
-    parse_functor(FnStr, FuncName, Arity),
-    wam_haskell_target:intern_atom(FuncName, FnId),
+    % Intern the FULL functor string (see get_structure above) so the
+    % builder's functor id matches the shared runtime intern table.
+    parse_functor(FnStr, _FuncName, Arity),
+    wam_haskell_target:intern_struct_functor(FnStr, FnId),
     fresh_sv(SV, SVout),
     format("~wlet ~w = ~w { wsBuilder = BuildStruct ~w ~w ~w [] }~n",
            [I, SVout, SV, FnId, Ai, Arity]).

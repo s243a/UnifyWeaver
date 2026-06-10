@@ -714,7 +714,10 @@ is_pred_label(PredKey, Entry) :-
 %  Generates a def wrapper that calls runPredicate with the right start PC.
 emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     % Build argument list: a1: WamTerm, a2: WamTerm, ...
-    numlist(1, Arity, ArgNums),
+    % numlist/3 fails when Low > High, so guard the 0-arity case (e.g.
+    % `p :- 3 > 2.`): without this the wrapper — and the whole project
+    % write — silently fails for any 0-arity predicate.
+    (   Arity >= 1 -> numlist(1, Arity, ArgNums) ; ArgNums = [] ),
     maplist([N, Arg]>>(format(string(Arg), 'a~w: WamTerm', [N])), ArgNums, ArgDecls),
     atomic_list_concat(ArgDecls, ', ', ArgDeclStr),
     maplist([N, Arg]>>(format(string(Arg), 'a~w', [N])), ArgNums, ArgNames),
@@ -723,8 +726,11 @@ emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     % Route through runEntry so a lowered fast path (when present) is used;
     % runEntry falls back to runPredicate at StartPc otherwise. Behaviour is
     % identical in interpreter mode (loweredEntries is empty).
+    % Array[WamTerm](...) is typed explicitly so the 0-arg case emits a
+    % well-typed empty array (`Array()` alone infers Array[Nothing] and
+    % won't match runEntry's Array[WamTerm] parameter).
     format(string(Code),
-           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array(~w))\n',
+           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array[WamTerm](~w))\n',
            [ScalaName, ArgDeclStr, Pred, Arity, StartPc, ArgNameStr]).
 
 %% scala_pred_name(+PrologName, -ScalaName)
@@ -1330,13 +1336,21 @@ scala_lower_each([], [], []).
 scala_lower_each([P|Rest], [Code|Cs], [Entry|Es]) :-
     scala_predicate_wamcode(P, WamCode),
     lower_predicate_to_scala(P, WamCode, [], lowered(PredKey, FuncName, Code)),
-    % Entry wrapper: try the lowered clause-1 fast path; on failure fall
-    % back to a fresh interpreter run of the same predicate. This keeps
-    % results identical to the pure interpreter (a lowered `false` defers
-    % to the complete step loop) while taking the fast path on success.
-    format(string(Entry),
-        '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
-        [PredKey, PredKey, FuncName]),
+    (   % T4 (multi_clause_n): the lowered function lowers EVERY clause and is
+        % complete (first-solution, deterministic-prefix), so it never needs
+        % the interpreter fallback — emit a direct entry. This is what makes
+        % "the interpreter is never entered for the predicate" hold.
+        catch(wam_scala_lowerable(P, WamCode, multi_clause_n), _, fail)
+    ->  format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => ~w(WamRuntime.newState(prog.dispatch("~w"), args), prog))',
+            [PredKey, FuncName, PredKey])
+    ;   % All other shapes: try the lowered fast path; on failure fall back to
+        % a fresh interpreter run (a lowered `false` defers to the complete
+        % step loop — e.g. T5's unbound-A1 case, or clause-2+ of multi_clause_1).
+        format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
+            [PredKey, PredKey, FuncName])
+    ),
     scala_lower_each(Rest, Cs, Es).
 
 % ============================================================================
@@ -1357,20 +1371,33 @@ make_directory_path_for(FilePath) :-
     make_directory_path(Dir).
 
 write_file(Path, Content) :-
+    % UTF-8 so the runtime/generated sources (which contain non-ASCII
+    % characters) write correctly regardless of the process locale
+    % (POSIX/ASCII in many CI containers); otherwise write/2 raises an
+    % encoding error.
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         write(Stream, Content),
         close(Stream)
     ).
 
 %% find_template(+RelPath, -Template) is det.
-%  Locates a template file relative to the UnifyWeaver project root.
+%  Locates a template file relative to the UnifyWeaver project root,
+%  derived from THIS module's source location so it works regardless of
+%  the current working directory. The previous version called
+%  source_file(wam_scala_target, _) -- a bare module atom, which is a
+%  predicate Head (wam_scala_target/0, undefined), so the lookup failed
+%  and silently fell back to the cwd-relative path. It also walked up
+%  only three directories (to .../src), not four (the repo root). Both
+%  meant templates were found ONLY when the cwd was the repo root (e.g.
+%  the conformance harness, cwd=tests/, could not build Scala at all).
 find_template(RelPath, Template) :-
-    (   source_file(wam_scala_target, SrcFile)
-    ->  file_directory_name(SrcFile, SrcDir),
-        file_directory_name(SrcDir, TargetsDir),
-        file_directory_name(TargetsDir, UnifyWeaverDir),
-        atomic_list_concat([UnifyWeaverDir, '/', RelPath], AbsPath)
+    (   source_file(find_template(_, _), SrcFile)
+    ->  file_directory_name(SrcFile, SrcDir),        % .../src/unifyweaver/targets
+        file_directory_name(SrcDir, UWDir),          % .../src/unifyweaver
+        file_directory_name(UWDir, SrcRoot),         % .../src
+        file_directory_name(SrcRoot, ProjectRoot),   % .../  (repo root)
+        atomic_list_concat([ProjectRoot, '/', RelPath], AbsPath)
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).

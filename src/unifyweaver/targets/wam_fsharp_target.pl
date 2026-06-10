@@ -73,6 +73,10 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/recurrence_evaluation_strategy',
+              [select_evaluation_strategy/3]).
+:- use_module('../core/recurrence_inputs',
+              [build_recurrence_term/3, build_workload_signals/2]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
               kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
@@ -4591,9 +4595,85 @@ wam_fsharp_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
 
 %% maybe_upgrade_bidirectional(+KV0, -KV)
 %  Upgrade a category_ancestor kernel to bidirectional_ancestor.
+%
+%  NOTE: as of the bidirectional-not-default fix, no longer called
+%  from any compile-time path. Kept for backwards-compatibility of
+%  external callers that may use it directly. The decision to swap
+%  kernel kinds in the F# WAM target's emission pipeline now flows
+%  through wam_fsharp_apply_strategy_choice/4 (below), which gates
+%  on the allow_bidirectional_kernel_swap/1 flag.
 maybe_upgrade_bidirectional(Key-recursive_kernel(category_ancestor, PI, Config),
                             Key-recursive_kernel(bidirectional_ancestor, PI, Config)) :- !.
 maybe_upgrade_bidirectional(KV, KV).
+
+%% wam_fsharp_apply_strategy_selector(+ResWorkload, +Options, +KV0, -KV)
+%
+%  Phase 5a: per-kernel strategy-selector decision. Builds a
+%  Recurrence from the detected kernel, calls
+%  recurrence_evaluation_strategy:select_evaluation_strategy/3,
+%  then applies the resulting Strategy as a kernel upgrade IF the
+%  caller has set allow_bidirectional_kernel_swap(true).
+%
+%  ResWorkload is the workload signal list built once per compile
+%  via recurrence_inputs:build_workload_signals/2.
+%
+%  Options carries the raw caller-provided options for the
+%  bidirectional-not-default flag check.
+wam_fsharp_apply_strategy_selector(ResWorkload,
+                                   Options,
+                                   Key-DetectedKernel,
+                                   Key-MaybeUpgraded) :-
+    recurrence_inputs:build_recurrence_term(DetectedKernel, [], Recurrence),
+    recurrence_evaluation_strategy:select_evaluation_strategy(
+        Recurrence, ResWorkload,
+        strategy_choice(Strategy, _Trace)),
+    wam_fsharp_apply_strategy_choice(Strategy, Options, DetectedKernel, MaybeUpgraded).
+
+%% wam_fsharp_apply_strategy_choice(+Strategy, +Options, +DetectedKernel,
+%%                                  -EmittedKernel)
+%
+%  Apply the selector's chosen strategy as a kernel-kind transformation
+%  ONLY when the caller has explicitly opted in via
+%  allow_bidirectional_kernel_swap(true).
+%
+%  Why opt-in by default:
+%
+%  templates/targets/fsharp_wam/program.fs.mustache has a hardcoded
+%  call to nativeKernel_category_ancestor with the unidirectional
+%  6-argument signature. The bidirectional kernel
+%  (nativeKernel_bidirectional_ancestor) takes 7 arguments with a
+%  different signature (parent/child lookup pair + cost/budget
+%  floats). When the kernel-kind swap fires without a corresponding
+%  Program.fs template update, the generated F# fails to compile
+%  with FS0039 ('nativeKernel_category_ancestor' is not defined).
+%
+%  Until program.fs.mustache is parameterised to emit kernel-specific
+%  benchmark loops (the template-system supports conditional
+%  rendering — see docs/design/WAM_TEMPLATE_MATCH_CASE_TESTING.md
+%  and docs/design/TEMPLATE_ENGINE.md), the swap is opt-in. The
+%  cost-model decision is still computed and recorded in the trace;
+%  this gate just suppresses the actual kernel-kind transformation.
+%
+%  Currently the only auto-upgrade wired is category_ancestor →
+%  bidirectional_ancestor when the selector returns per_query(bidirectional).
+%  All other (Strategy, KernelKind) combinations leave the kernel
+%  unchanged regardless of the flag.
+wam_fsharp_apply_strategy_choice(strategy(per_query(bidirectional)),
+                                 Options,
+                                 recursive_kernel(category_ancestor, PI, Config),
+                                 EmittedKernel) :-
+    !,
+    (   option(allow_bidirectional_kernel_swap(true), Options)
+    ->  EmittedKernel = recursive_kernel(bidirectional_ancestor, PI, Config),
+        format(user_error,
+               '[WAM-FSharp] strategy-selector upgraded category_ancestor -> bidirectional_ancestor (~w) [allow_bidirectional_kernel_swap(true)]~n',
+               [PI])
+    ;   EmittedKernel = recursive_kernel(category_ancestor, PI, Config),
+        format(user_error,
+               '[WAM-FSharp] strategy-selector would upgrade ~w to bidirectional_ancestor but the swap is suppressed by default (see allow_bidirectional_kernel_swap/1 in wam_fsharp_target.pl docstring)~n',
+               [PI])
+    ).
+wam_fsharp_apply_strategy_choice(_, _Options, Kernel, Kernel).
 
 %% =====================================================================
 %% Cost-based auto-resolvers for F# WAM target
@@ -4779,14 +4859,18 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     ->  DetectedKernels = [],
         format(user_error, '[WAM-FSharp] kernel detection suppressed~n', [])
     ;   detect_kernels_fs(ProjectPredicates, DetectedKernels0),
-        % Upgrade category_ancestor to bidirectional when CSR child
-        % lookup is available (csr_path provides category_child).
-        (   option(kernel_mode(bidirectional), Options),
-            option(csr_path(_), Options)
-        ->  maplist(maybe_upgrade_bidirectional, DetectedKernels0, DetectedKernels),
-            format(user_error, '[WAM-FSharp] bidirectional kernel upgrade enabled~n', [])
-        ;   DetectedKernels = DetectedKernels0
-        ),
+        % Phase 5a: replace the option-driven upgrade gate with the
+        % recurrence-evaluation-strategy selector. Caller options flow
+        % into the workload; the selector decides per-kernel whether
+        % to upgrade. Backwards-compatible: when caller passes
+        % kernel_mode(bidirectional) + csr_path(_) explicitly, the
+        % selector resolves to per_query(bidirectional) via either
+        % step_third_option (search admissible) or step_caller_wins
+        % (fallback). When the caller passes neither but workload
+        % signals support bidirectional, the selector auto-selects.
+        recurrence_inputs:build_workload_signals(Options, ResWorkload),
+        maplist(wam_fsharp_apply_strategy_selector(ResWorkload, Options),
+                DetectedKernels0, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
@@ -5036,6 +5120,7 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     generate_lookup_sources_expr_fs(Options, LookupSourcesExpr),
     (option(csr_path(_), Options) -> HasCsr = true ; HasCsr = false),
+    (option(csr_kernel(true), Options) -> HasCsrKernel = true ; HasCsrKernel = false),
     (option(lmdb_path(_), Options) -> HasLmdb = true ; HasLmdb = false),
     option(lmdb_materialisation(Materialisation), Options, cached),
     option(lmdb_l2_capacity(L2Cap), Options, 4096),
@@ -5049,12 +5134,24 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         option(graph_dimensionality(Dimensionality), Options, 5.0)
     ;   HasBidir = false, BranchFactor = 15.0, Dimensionality = 5.0
     ),
+    %% Determine the kernel_kind for the benchmark-loop {{match}}
+    %% block in program.fs.mustache. The benchmark loop targets a
+    %% single primary kernel; if multiple kernels are detected,
+    %% the first one wins (matches the prior hardcoded behaviour
+    %% which assumed category_ancestor). Empty list -> unknown,
+    %% which triggers the {{default}} stub case.
+    (   DetectedKernels = [_-recursive_kernel(FirstKernelKind, _, _) | _]
+    ->  KernelKind = FirstKernelKind
+    ;   KernelKind = unknown
+    ),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
         has_csr = HasCsr,
+        has_csr_kernel = HasCsrKernel,
         has_lmdb = HasLmdb,
         has_bidirectional = HasBidir,
+        kernel_kind = KernelKind,
         branch_factor = BranchFactor,
         dimensionality = Dimensionality,
         materialisation = Materialisation,
@@ -5082,15 +5179,22 @@ generate_lookup_sources_expr_fs(Options, Expr) :-
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_path(CsrPath), Options),
+    % csr_kernel mode constructs its CSR source directly in the kernel branch
+    % (forward category_parent CSR), so skip the auto WcLookupSources entry --
+    % its default category_child relation would point at a non-existent file.
+    \+ option(csr_kernel(true), Options),
     option(csr_relation(Rel), Options, category_child),
+    % Resolve the CSR artifact dir against factsDir at runtime (a relative
+    % csr_path like "csr" would otherwise be opened against the process CWD,
+    % not the fixture dir). Path.Combine leaves an absolute csr_path unchanged.
     format(atom(Entry),
-        '("~w", CsrReader.CsrLookupSource("~w", "~w") :> ILookupSource)',
+        '("~w", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "~w") :> ILookupSource)',
         [Rel, CsrPath, Rel]).
 
 lookup_source_entry_fs(Options, Entry) :-
     option(csr_parent_path(CsrParentPath), Options),
     format(atom(Entry),
-        '("category_parent", CsrReader.CsrLookupSource("~w", "category_parent") :> ILookupSource)',
+        '("category_parent", CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "~w"), "category_parent") :> ILookupSource)',
         [CsrParentPath]).
 
 %% generate_fsproj(+ModName, +Options, -Code)

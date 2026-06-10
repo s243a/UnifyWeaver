@@ -118,7 +118,7 @@ wam_elixir_case(get_constant,
 '      {:get_constant, c, ai} ->
         val = Map.get(state.regs, ai)
         cond do
-          val == c ->
+          constant_match?(val, c) ->
             %{state | pc: state.pc + 1}
           match?({:unbound, _}, val) ->
             state
@@ -925,7 +925,8 @@ compile_utility_helpers_to_elixir(Code) :-
       true ->
         # entries is expected to be a list of {key, label} or a map.
         map = if is_map(entries), do: entries, else: Map.new(entries)
-        case Map.get(map, val) do
+        key = constant_lookup_key(val)
+        case Map.get(map, key) do
           "default" -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
           nil -> :fail
           label -> %{state | pc: resolve_label(state, label)}
@@ -933,10 +934,18 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
+  def constant_match?("[]", []), do: true
+  def constant_match?([], "[]"), do: true
+  def constant_match?(a, b), do: a == b
+
+  defp constant_lookup_key([]), do: "[]"
+  defp constant_lookup_key(v), do: v
+
   @doc "Unify two WAM values"
   def unify(state, v1, v2) do
     cond do
       v1 == v2 -> {:ok, state}
+      constant_match?(v1, v2) -> {:ok, state}
       match?({:unbound, {:heap_ref, _addr}}, v1) ->
         {:unbound, {:heap_ref, addr}} = v1
         new_heap = Map.put(state.heap, addr, v2)
@@ -957,10 +966,12 @@ compile_utility_helpers_to_elixir(Code) :-
         {:ok, new_state}
       # Structural unification of two compound terms. Both args are
       # {:ref, addr} pointing to {:str, "name/arity"} heap cells.
-      # If functors + arities match, walk arg lists pairwise. Args
-      # are derefd against the LATEST state inside unify_arg_list so
-      # bindings made by earlier arg unifies are visible to later
-      # ones. Partial-fail leaves bindings in the trail; the callers
+      # If functors + arities match, walk arg lists pairwise. The
+      # list functor aliases "./2" and "[|]/2" also count as a match
+      # here, mirroring step_get_structure_ref/4. Args are derefd
+      # against the LATEST state inside unify_arg_list so bindings
+      # made by earlier arg unifies are visible to later ones.
+      # Partial-fail leaves bindings in the trail; the callers
       # choice-point unwinds them via unwind_trail on backtrack —
       # same contract as every other unify branch.
       #
@@ -973,11 +984,23 @@ compile_utility_helpers_to_elixir(Code) :-
         {:ref, addr1} = v1
         {:ref, addr2} = v2
         case {Map.get(state.heap, addr1), Map.get(state.heap, addr2)} do
-          {{:str, fn_name}, {:str, fn_name}} ->
-            arity = parse_functor_arity(fn_name)
-            args1 = heap_slice(state, addr1 + 1, arity)
-            args2 = heap_slice(state, addr2 + 1, arity)
-            unify_arg_list(state, args1, args2)
+          {{:str, fn1}, {:str, fn2}} ->
+            # Cons-cell functor aliasing: "./2" (put_list) and "[|]/2"
+            # (put_structure) are the SAME ISO cons functor. The
+            # get_structure match path already treats them as
+            # equivalent via step_get_structure_matches?/2; this clause
+            # must too, or a constructed list ("./2") fails to unify
+            # against an already-ground list compound ("[|]/2") in a
+            # clause head — e.g. capp([a],[b],[a,b]) returned false
+            # while capp([a],[b],X), X=[a,b] succeeded.
+            if fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2) do
+              arity = parse_functor_arity(fn1)
+              args1 = heap_slice(state, addr1 + 1, arity)
+              args2 = heap_slice(state, addr2 + 1, arity)
+              unify_arg_list(state, args1, args2)
+            else
+              :fail
+            end
           _ -> :fail
         end
       true -> :fail

@@ -3,6 +3,7 @@ package {{package_name}}
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -15,6 +16,16 @@ type TrailEntry struct {
 	Addr   int
 	Old    Value
 	HadOld bool
+	// Register-restore entry: when RegIdx >= 0, this entry records a
+	// register-alias rewrite done by bindUnbound (Regs[RegIdx] was RegOld,
+	// an Unbound, before being rewritten to the bound value). Backtrack
+	// restores Regs[RegIdx] = RegOld so the register goes back to sharing
+	// the (now-unbound) variable cell -- otherwise a register that aliased
+	// a bound var keeps the stale value across backtracking and a later
+	// rebind of the same var doesn't reach it. RegIdx == -1 for the normal
+	// Bindings-restore entry.
+	RegIdx int
+	RegOld Value
 }
 
 type AtomPair struct {
@@ -101,6 +112,11 @@ type EnvFrame struct {
 	// restore, so reading the restored Y-reg dereferences through the
 	// (still-bound) Unbound to the bound value.
 	SavedYRegs [100]Value
+	// CutB0: the predicate's call-time choicepoint height (copied from
+	// vm.PendingB0 at Allocate). A plain cut truncates choicepoints back
+	// to CutB0. Kept separate from B0 (allocate-time) because B0 drives
+	// Deallocate's physical-pop heuristic and must not change meaning.
+	CutB0 int
 }
 
 type UnifyCtx struct {
@@ -148,6 +164,12 @@ type WamState struct {
 	Ctx          *WamContext
 	PC           int
 	CP           int
+	// PendingB0: choicepoint-stack height captured by Call/Execute just
+	// before transferring to a user predicate (BEFORE its try_me_else
+	// pushes the clause-chain CP). Allocate copies it into EnvFrame.CutB0
+	// so a plain cut (!/0) truncates back to the callee's entry level --
+	// its own clause alternatives, not a caller's choicepoint.
+	PendingB0    int
 	// Regs holds A/X/Y registers in a single flat array.
 	//   * A1..A8: indices 0..7 (argument registers)
 	//   * X-regs: 8..199  (clause-local temporaries)
@@ -330,7 +352,7 @@ func (vm *WamState) setBinding(addr int, val Value) {
 
 func (vm *WamState) trailBinding(addr int) {
 	old := vm.getBinding(addr)
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil, RegIdx: -1})
 	vm.TrailLen++
 }
 
@@ -353,6 +375,14 @@ func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
+			// Trail the rewrite so backtrack restores this register to the
+			// (now-unbound) variable cell. Without this, a register that
+			// aliased u keeps the stale bound value after backtrack and a
+			// later rebind of u (e.g. a generator yielding its next
+			// solution) never reaches it -- which made forall over a
+			// generator see only the first element.
+			vm.Trail = append(vm.Trail, TrailEntry{RegIdx: idx, RegOld: reg})
+			vm.TrailLen++
 			vm.Regs[idx] = val
 		}
 	}
@@ -430,6 +460,50 @@ func (vm *WamState) restoreSavedRegs(saved []Value) {
 	for i := pushMaxY; i < vm.MaxYReg; i++ {
 		vm.Regs[i] = nil
 	}
+}
+
+// ClauseSnapshot is the clause-entry state a T4 (multi_clause_n) lowered
+// method restores between clause attempts. The lowered method enumerates
+// EVERY clause itself (first-solution / deterministic-prefix), so the
+// interpreter is never entered for the predicate. Mirrors the ChoicePoint
+// snapshot, minus the resume PC; NextVarId is monotonic (unique ids) and is
+// intentionally not restored.
+type ClauseSnapshot struct {
+	savedRegs []Value
+	trailMark int
+	heapTop   int
+	stackLen  int
+	cp        int
+	e         int
+}
+
+// LoClauseSnapshot captures the clause-entry state for LoRestoreClause.
+func (vm *WamState) LoClauseSnapshot() ClauseSnapshot {
+	return ClauseSnapshot{
+		savedRegs: vm.snapshotAllRegs(),
+		trailMark: vm.TrailLen,
+		heapTop:   vm.HeapLen,
+		stackLen:  len(vm.Stack),
+		cp:        vm.CP,
+		e:         vm.E,
+	}
+}
+
+// LoRestoreClause restores vm to a clause-entry snapshot before the next
+// clause attempt (mirrors backtrack's WamCP restore, minus the PC).
+func (vm *WamState) LoRestoreClause(snap ClauseSnapshot) {
+	vm.unwindTrailTo(snap.trailMark)
+	vm.restoreSavedRegs(snap.savedRegs)
+	if snap.stackLen <= len(vm.Stack) {
+		vm.Stack = vm.Stack[:snap.stackLen]
+	}
+	vm.E = snap.e
+	if snap.heapTop >= 0 && snap.heapTop <= vm.HeapLen {
+		vm.heapTrimTo(snap.heapTop)
+	}
+	vm.CP = snap.cp
+	vm.CurrentStruct = nil
+	vm.CurrentList = nil
 }
 
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
@@ -589,6 +663,31 @@ func parseFunctorName(f string) string {
 		return strings.Join(parts[:len(parts)-1], "/")
 	}
 	return f
+}
+
+// isConsName reports whether a bare functor name (arity stripped) is one of
+// the interchangeable cons-cell spellings WAM lists use.
+func isConsName(n string) bool {
+	return n == "[|]" || n == "."
+}
+
+// consHeadTail exposes head/tail for the cons-cell spellings that arrive as
+// a Compound/Structure (e.g. "[|]/2", built by put_structure for list tail
+// cells) rather than as a *List. Without this, GetList recognised only the
+// outer *List cell and failed on the inner "[|]/2" tail cells, so recursive
+// list predicates (member/reverse) mis-traversed the tail.
+func consHeadTail(v Value) (Value, Value, bool) {
+	switch t := v.(type) {
+	case *Compound:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	case *Structure:
+		if isConsName(parseFunctorName(t.Functor)) && len(t.Args) == 2 {
+			return t.Args[0], t.Args[1], true
+		}
+	}
+	return nil, nil, false
 }
 
 // compareValues returns <0, 0, or >0 for sort ordering of atoms/integers.
@@ -774,6 +873,38 @@ func (vm *WamState) valueListHeadTail(v Value) (Value, Value, bool) {
 	return nil, nil, false
 }
 
+// termIdentical implements ==/2 (and, negated, \==/2) with list-representation
+// normalization. findall/aggregate build flat *List values while list literals
+// and put_list/put_structure build heap-linked cons cells, so a shallow
+// valueEquals sees the two representations of the same logical list as unequal
+// (e.g. *List{[a,b,c]} vs *List{[a, _heapTail]}). Mirror Unify's
+// valueListHeadTail walk — but without binding anything — so the two
+// representations of one logical list compare equal under ==/2. Atomics,
+// numbers and variables fall back to valueEquals (variable identity by Idx).
+func (vm *WamState) termIdentical(a, b Value) bool {
+	a = vm.deref(a)
+	b = vm.deref(b)
+	if valueEquals(a, b) {
+		return true
+	}
+	ha, ta, oka := vm.valueListHeadTail(a)
+	hb, tb, okb := vm.valueListHeadTail(b)
+	if oka || okb {
+		return oka && okb && vm.termIdentical(ha, hb) && vm.termIdentical(ta, tb)
+	}
+	fa, argsa := decompose(a)
+	fb, argsb := decompose(b)
+	if fa != "" && fa == fb && len(argsa) == len(argsb) {
+		for i := range argsa {
+			if !vm.termIdentical(argsa[i], argsb[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // listToSlice walks a Prolog cons list and collects its elements
 // into a Go slice. Used by `length/2`, `member/2`, `append/3`, etc.
 // Iterative implementation: the previous recursive version did
@@ -815,6 +946,187 @@ func (vm *WamState) selectSolutions(items []Value) []SelectSolution {
 		})
 	}
 	return solutions
+}
+
+func (vm *WamState) formatTemplate(template string, args []Value) (string, bool) {
+	var b strings.Builder
+	argIdx := 0
+	for i := 0; i < len(template); i++ {
+		ch := template[i]
+		if ch != '~' || i+1 >= len(template) {
+			b.WriteByte(ch)
+			continue
+		}
+		i++
+		switch template[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case '~':
+			b.WriteByte('~')
+		case 'w', 'p', 'q':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			b.WriteString(vm.deref(args[argIdx]).String())
+			argIdx++
+		case 'a':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			value := vm.deref(args[argIdx])
+			if atom, ok := value.(*Atom); ok {
+				b.WriteString(atom.Name)
+			} else {
+				b.WriteString(value.String())
+			}
+			argIdx++
+		case 'd':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			value := vm.deref(args[argIdx])
+			if integer, ok := value.(*Integer); ok {
+				b.WriteString(strconv.FormatInt(integer.Val, 10))
+			} else {
+				b.WriteString(value.String())
+			}
+			argIdx++
+		case 's':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			text, ok := vm.formatStringDirective(vm.deref(args[argIdx]))
+			if !ok {
+				return "", false
+			}
+			b.WriteString(text)
+			argIdx++
+		default:
+			b.WriteByte('~')
+			b.WriteByte(template[i])
+		}
+	}
+	return b.String(), true
+}
+
+func (vm *WamState) formatStringDirective(value Value) (string, bool) {
+	if isEmptyListValue(value) {
+		return "", true
+	}
+	if atom, ok := value.(*Atom); ok {
+		return atom.Name, true
+	}
+	items, ok := vm.listToSlice(value)
+	if !ok {
+		return "", false
+	}
+	var b strings.Builder
+	for _, item := range items {
+		code, ok := vm.deref(item).(*Integer)
+		if !ok || code.Val < 0 || code.Val > 0x10ffff {
+			return "", false
+		}
+		b.WriteRune(rune(code.Val))
+	}
+	return b.String(), true
+}
+
+func (vm *WamState) canonicalTermString(value Value) string {
+	value = vm.deref(value)
+	if isEmptyListValue(value) {
+		return "[]"
+	}
+	if items, ok := vm.listToSlice(value); ok {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, vm.canonicalTermString(item))
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	switch t := value.(type) {
+	case *Atom:
+		return canonicalAtomText(t.Name)
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10)
+	case *Float:
+		return strconv.FormatFloat(t.Val, 'g', -1, 64)
+	case *Compound:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Structure:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Unbound:
+		return "_"
+	case *Ref:
+		return fmt.Sprintf("ref(%d)", t.Addr)
+	default:
+		return value.String()
+	}
+}
+
+func (vm *WamState) canonicalCompoundString(name string, args []Value) string {
+	if len(args) == 0 {
+		return canonicalAtomText(name)
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, vm.canonicalTermString(arg))
+	}
+	return canonicalAtomText(name) + "(" + strings.Join(parts, ", ") + ")"
+}
+
+func canonicalAtomText(name string) string {
+	if !canonicalAtomNeedsQuote(name) {
+		return name
+	}
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range name {
+		if r == '\'' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
+func canonicalAtomNeedsQuote(name string) bool {
+	if name == "[]" {
+		return false
+	}
+	if name == "" {
+		return true
+	}
+	if _, err := strconv.ParseInt(name, 10, 64); err == nil {
+		return true
+	}
+	if _, err := strconv.ParseFloat(name, 64); err == nil {
+		return true
+	}
+	first := true
+	for _, r := range name {
+		if first {
+			if !unicode.IsLower(r) {
+				return true
+			}
+			first = false
+		}
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+			return true
+		}
+	}
+	return false
+}
+
+func formatTemplateText(v Value) (string, bool) {
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, true
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10), true
+	default:
+		return "", false
+	}
 }
 
 func (vm *WamState) applySelectSolution(solution SelectSolution) bool {
@@ -1164,6 +1476,32 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 			return float64(int64(a)), true
 		case "float_integer_part":
 			return math.Trunc(a), true
+		case "sqrt":
+			r := math.Sqrt(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "sin":
+			return math.Sin(a), true
+		case "cos":
+			return math.Cos(a), true
+		case "tan":
+			return math.Tan(a), true
+		case "asin":
+			r := math.Asin(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "acos":
+			r := math.Acos(a)
+			if math.IsNaN(r) || math.IsInf(r, 0) { return 0, false }
+			return r, true
+		case "atan":
+			return math.Atan(a), true
+		case "floor":
+			return math.Floor(a), true
+		case "ceiling":
+			return math.Ceil(a), true
+		case "round":
+			return math.Round(a), true
 		}
 	}
 	if len(args) == 2 {
@@ -1228,6 +1566,41 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
 		return true
+	case "write_canonical/1":
+		fmt.Print(vm.canonicalTermString(arg1))
+		return true
+	case "writeln/1":
+		fmt.Println(vm.deref(arg1).String())
+		return true
+	case "print/1":
+		fmt.Print(vm.deref(arg1).String())
+		return true
+	case "format/1":
+		template, ok := formatTemplateText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		out, ok := vm.formatTemplate(template, nil)
+		if !ok {
+			return false
+		}
+		fmt.Print(out)
+		return true
+	case "format/2":
+		template, ok := formatTemplateText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		args, ok := vm.listToSlice(arg2)
+		if !ok {
+			return false
+		}
+		out, ok := vm.formatTemplate(template, args)
+		if !ok {
+			return false
+		}
+		fmt.Print(out)
+		return true
 	case "nl/0":
 		fmt.Println()
 		return true
@@ -1238,6 +1611,23 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		fmt.Print(strings.Repeat(" ", int(count.Val)))
 		return true
+	case "getenv/2":
+		name, ok := vm.deref(arg1).(*Atom)
+		if !ok {
+			return false
+		}
+		value, ok := os.LookupEnv(name.Name)
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, internAtom(value))
+	case "setenv/2":
+		name, okName := vm.deref(arg1).(*Atom)
+		value, okValue := vm.deref(arg2).(*Atom)
+		if !okName || !okValue {
+			return false
+		}
+		return os.Setenv(name.Name, value.Name) == nil
 	case "true/0":
 		return true
 	case "fail/0":
@@ -1245,7 +1635,11 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "!/0":
 		limit := 0
 		if env := vm.peekEnvFrame(); env != nil {
-			limit = env.B0
+			// CutB0 = call-time choicepoint height, so the cut removes this
+			// predicate's own clause alternatives but not a caller's CP.
+			// (B0 is allocate-time and one too high -- it would leave
+			// sibling clauses uncut, making the cut a no-op.)
+			limit = env.CutB0
 		}
 		if limit < 0 {
 			limit = 0
@@ -1257,7 +1651,18 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "is/2":
 		val, ok := vm.evalArithmetic(arg2)
 		if !ok { return false }
-		return vm.Unify(arg1, &Float{Val: val})
+		// Produce an Integer for integral results: Unify is type-strict
+		// (Integer never unifies with Float), so always wrapping in Float
+		// made `R is N + 1` fail whenever R was already bound to a ground
+		// Integer (e.g. cack(0,5,6) / cfib(10,55) / cbi_arith). Mirrors the
+		// Python target's int-vs-float result heuristic.
+		var result Value
+		if !math.IsInf(val, 0) && val == math.Trunc(val) {
+			result = &Integer{Val: int64(val)}
+		} else {
+			result = &Float{Val: val}
+		}
+		return vm.Unify(arg1, result)
 
 	case "=:=/2" :
 		v1, ok1 := vm.evalArithmetic(arg1)
@@ -1598,8 +2003,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "ground/1": return vm.groundTerm(arg1, make(map[Value]bool))
 	case "is_list/1": return isList(vm.deref(arg1))
 
-	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
-	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "==/2": return vm.termIdentical(arg1, arg2)
+	case "\\==/2": return !vm.termIdentical(arg1, arg2)
 	case "@</2":
 		return compareValues(vm.deref(arg1), vm.deref(arg2)) < 0
 	case "@=</2":
@@ -2023,6 +2428,101 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			sorted = deduped
 		}
 		return vm.Unify(arg2, &List{Elements: sorted})
+	case "keysort/2":
+		items, ok := vm.listToSlice(arg1)
+		if !ok {
+			return false
+		}
+		type keyPair struct {
+			key  Value
+			pair Value
+		}
+		pairAfterUnbound := func(u *Unbound) (Value, bool) {
+			found := false
+			for _, cell := range vm.Heap[:vm.HeapLen] {
+				if cell == u {
+					found = true
+					continue
+				}
+				if !found {
+					continue
+				}
+				pair := vm.deref(cell)
+				switch p := pair.(type) {
+				case *Compound:
+					if parseFunctorName(p.Functor) == "-" && len(p.Args) == 2 {
+						return pair, true
+					}
+				case *Structure:
+					if parseFunctorName(p.Functor) == "-" && len(p.Args) == 2 {
+						return pair, true
+					}
+				}
+			}
+			return nil, false
+		}
+		pairs := make([]keyPair, 0, len(items))
+		for _, item := range items {
+			pair := vm.deref(item)
+			if u, ok := pair.(*Unbound); ok {
+				if resolved, ok := pairAfterUnbound(u); ok {
+					pair = resolved
+				}
+			}
+			var key Value
+			switch p := pair.(type) {
+			case *Compound:
+				if parseFunctorName(p.Functor) != "-" || len(p.Args) != 2 {
+					return false
+				}
+				key = vm.deref(p.Args[0])
+			case *Structure:
+				if parseFunctorName(p.Functor) != "-" || len(p.Args) != 2 {
+					return false
+				}
+				key = vm.deref(p.Args[0])
+			default:
+				return false
+			}
+			pairs = append(pairs, keyPair{key: key, pair: pair})
+		}
+		compareKeys := func(a, b Value) int {
+			switch ka := a.(type) {
+			case *Integer:
+				switch kb := b.(type) {
+				case *Integer:
+					if ka.Val < kb.Val { return -1 }
+					if ka.Val > kb.Val { return 1 }
+					return 0
+				case *Float:
+					av := float64(ka.Val)
+					if av < kb.Val { return -1 }
+					if av > kb.Val { return 1 }
+					return 0
+				}
+			case *Float:
+				switch kb := b.(type) {
+				case *Integer:
+					bv := float64(kb.Val)
+					if ka.Val < bv { return -1 }
+					if ka.Val > bv { return 1 }
+					return 0
+				case *Float:
+					if ka.Val < kb.Val { return -1 }
+					if ka.Val > kb.Val { return 1 }
+					return 0
+				}
+			}
+			return compareValues(a, b)
+		}
+		sort.SliceStable(pairs, func(i, j int) bool {
+			return compareKeys(pairs[i].key, pairs[j].key) < 0
+		})
+		sorted := make([]Value, len(pairs))
+		for i, pair := range pairs {
+			sorted[i] = pair.pair
+		}
+		return vm.Unify(arg2, &List{Elements: sorted})
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
@@ -2434,6 +2934,12 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
+        if entry.RegIdx >= 0 {
+            // Register-alias rewrite: restore the register to the variable
+            // cell it shared before bindUnbound rewrote it to a value.
+            vm.Regs[entry.RegIdx] = entry.RegOld
+            continue
+        }
         // setBinding handles the bookkeeping: writing nil reverts an
         // address to its unbound state, exactly matching the previous
         // map-based delete-on-!HadOld for the slice rep.

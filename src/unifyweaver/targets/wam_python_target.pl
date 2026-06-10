@@ -66,7 +66,9 @@
 	emit_lowered_python/4,
 	is_deterministic_pred_py/1,
 	parse_wam_text_py/2,
-	python_func_name/2
+	python_func_name/2,
+	py_structured_clause1/2,
+	emit_structured_python/4
 ]).
 :- use_module('../targets/wam_text_parser',
               [wam_classify_constant_token/2,
@@ -1296,6 +1298,22 @@ clean_comma(S, Clean) :-
 	;   Clean = S
 	).
 
+%% python_functor_arity(+FunctorSlashArity, -Arity)
+%  Arity is the FINAL '/'-separated component of a 'name/arity' functor.
+%  Taking the last part (not requiring exactly two) is essential for
+%  operators whose functor itself contains '/', e.g. '///2' (integer
+%  division //) or '//2' (float division /): splitting those on '/' yields
+%  3-4 parts, so the old [_Name, ArStr] pattern fell through to arity 0.
+%  A 0-arity '//' compound then carried no argument cells and eval_arith
+%  could not apply it, so `X is 17 // 5` failed (the cbi_arith divergence).
+python_functor_arity(CFn, Arity) :-
+	(   split_string(CFn, "/", "", Parts),
+	    last(Parts, ArStr),
+	    number_string(A, ArStr)
+	->  Arity = A
+	;   Arity = 0
+	).
+
 %% escape_python_string(+In, -Out)
 %  Escape a string for Python string literal.
 escape_python_string(In, Out) :-
@@ -1359,10 +1377,7 @@ wam_line_to_python_literal(["get_value", Xn, Ai], Py) :-
 	format(atom(Py), '("get_value", ~w, ~w)', [CXn, CAi]).
 wam_line_to_python_literal(["get_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("get_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["get_list", Ai], Py) :-
@@ -1435,10 +1450,7 @@ wam_line_to_python_literal(["put_float", F, Ai], Py) :-
 	format(atom(Py), '("put_float", ~w, ~w)', [CF, CAi]).
 wam_line_to_python_literal(["put_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
-	(   split_string(CFn, "/", "", [_Name, ArStr])
-	->  number_string(Arity, ArStr)
-	;   Arity = 0
-	),
+	python_functor_arity(CFn, Arity),
 	escape_python_string(CFn, EFn),
 	format(atom(Py), '("put_structure", "~w", ~w, ~w)', [EFn, Arity, CAi]).
 wam_line_to_python_literal(["put_list", Ai], Py) :-
@@ -1608,9 +1620,15 @@ format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode) :-
 %  inserts a call_lowered stub into raw_program. The separate registrar avoids
 %  a name collision with the pred_* lowered function itself.
 compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
-	parse_wam_text_py(WamCode, Instrs),
-	is_deterministic_pred_py(Instrs),
-	emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn),
+	% Soft-cut if-then-else / negation / once lowers via the shared
+	% structurer; everything else takes the straight-line deterministic
+	% path (unchanged).
+	(   py_structured_clause1(WamCode, Structured)
+	->  emit_structured_python(Pred/Arity, Structured, Options, LoweredFn)
+	;   parse_wam_text_py(WamCode, Instrs),
+	    is_deterministic_pred_py(Instrs),
+	    emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn)
+	),
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
 	atom_concat(register_, FuncName, RegistrarName),
@@ -2084,10 +2102,10 @@ plan_python_predicate(Options, Pred/Arity, pred_plan(Pred, Arity, Wam, Kind)) :-
 python_plan_compile_predicate(Options, PredIndicator, Wam) :-
 	python_wam_emit_ir_mode(Options, IrMode),
 	(   IrMode = wam_text
-	->  compile_predicate_to_wam_text(PredIndicator, [], WamText),
+	->  compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamText),
 	    python_wam_text_plan(WamText, Wam)
-	;   IrMode = wam_items_bridge
-	->  compile_predicate_to_wam_items(PredIndicator, [], Items),
+	;   (IrMode = wam_items_bridge ; IrMode = wam_items_native)
+	->  compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], Items),
 	    python_wam_items_plan(Items, Wam)
 	).
 
@@ -2099,9 +2117,6 @@ python_wam_emit_ir_mode(Options, IrMode) :-
 	wam_ir_mode(wam_python, EmitMode, Options, IrMode),
 	(   IrMode == direct_target
 	->  throw(error(domain_error(wam_python_ir_mode, direct_target),
-	                python_plan_compile_predicate/3))
-	;   IrMode == wam_items_native
-	->  throw(error(existence_error(wam_ir_mode, wam_items_native),
 	                python_plan_compile_predicate/3))
 	;   true
 	).
@@ -2133,8 +2148,10 @@ lowered_route_set(Plans, Options, LoweredSet) :-
 
 lowered_candidate_wam(Wam) :-
 	wam_plan_text(Wam, WamText),
-	parse_wam_text_py(WamText, Instrs),
-	is_deterministic_pred_py(Instrs).
+	(   parse_wam_text_py(WamText, Instrs),
+	    is_deterministic_pred_py(Instrs)
+	;   py_structured_clause1(WamText, _)    % soft-cut if-then-else / \+ / once
+	).
 
 fix_lowered_route_set(Current, Plans, Options, Final) :-
 	include(lowered_route_supported(Plans, Options, Current), Current, Next0),
@@ -2505,8 +2522,12 @@ if __name__ == \'__main__\':
 ', [ModuleName]).
 
 %% write_file(+Path, +Content)
-%  Write content to a file.
+%  Write content to a file. The runtime and generated modules embed UTF-8
+%  characters (arrows / dashes in comments and docstrings), so the stream
+%  is opened as UTF-8 regardless of the process locale (POSIX/ASCII in many
+%  CI containers) — otherwise write/2 raises an encoding error.
 write_file(Path, Content) :-
-	open(Path, write, Stream),
-	write(Stream, Content),
-	close(Stream).
+	setup_call_cleanup(
+		open(Path, write, Stream, [encoding(utf8)]),
+		write(Stream, Content),
+		close(Stream)).

@@ -127,6 +127,177 @@ let loadCategoryParent (env: LightningEnvironment) : Map<int, int list> =
 let loadCategoryChild (env: LightningEnvironment) : Map<int, int list> =
     loadDupsortRelation env "category_child"
 
+/// Demand-set BFS.  Returns every node reachable DOWN from `root` via
+/// category_child (the descendants of `root` in the child graph).  These
+/// are exactly the nodes from which `root` is reachable going UP via
+/// category_parent, so the upward category_ancestor walk can be pruned to
+/// this set: a parent outside the demand set can never lie on a path to
+/// `root`.  Mirrors the Rust `reachable_to_root` / Haskell
+/// `computeDemandSetCursorBFS` demand BFS.
+///
+/// Uses a single short-lived read transaction + cursor over category_child
+/// (no full materialisation of the child relation).  Bounded by `maxDepth`
+/// to match the kernel's depth bound; pass Int32.MaxValue for an unbounded
+/// (always-safe, never-over-prunes) demand set.
+/// Generic demand-set BFS over any `childrenOf` closure (int -> int list),
+/// unbounded.  Lets the demand set be built from any reverse-edge source --
+/// the LMDB category_child cursor OR a CSR `category_child` artifact's
+/// ILookupSource -- without this module depending on the CSR module (which is
+/// compiled after it). Used by the F# CSR mode.
+let reachableToRootVia (childrenOf: int -> int list) (root: int) : Set<int> =
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            for c in childrenOf node do
+                if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+    Set.ofSeq visited
+
+let reachableToRoot (env: LightningEnvironment) (root: int) (maxDepth: int) : Set<int> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("category_child", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let childrenOf (node: int) : int list =
+        let struct (rc, _, _) = cursor.SetKey(encodeI32 node)
+        if rc <> MDBResultCode.Success then []
+        else
+            let struct (_, _, v) = cursor.GetCurrent()
+            let mutable result = [decodeI32 (v.AsSpan())]
+            let mutable ok = true
+            while ok do
+                let struct (rc2, _, _) = cursor.NextDuplicate()
+                if rc2 = MDBResultCode.Success then
+                    let struct (_, _, v2) = cursor.GetCurrent()
+                    result <- decodeI32 (v2.AsSpan()) :: result
+                else ok <- false
+            result
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    let mutable depth = 0
+    while not (List.isEmpty frontier) && depth < maxDepth do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            for c in childrenOf node do
+                if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+        depth <- depth + 1
+    Set.ofSeq visited
+
+/// Load category_parent (child->parents) for LMDB-eager mode, pruned to the
+/// demand set: only edges whose endpoints lie on a possible path to `root`
+/// are retained.  Keys are restricted to demand-set nodes and each value
+/// list is filtered to demand-set parents.  The resulting Map is keyed and
+/// valued in raw LMDB int space (no string interning of the graph) and is
+/// directly usable as the kernel's `lookupParents` via WcFfiFacts.
+let loadCategoryParentDemand (env: LightningEnvironment) (demand: Set<int>) : Map<int, int list> =
+    loadCategoryParent env
+    |> Map.fold (fun acc k vs ->
+        if demand.Contains k then
+            Map.add k (vs |> List.filter demand.Contains) acc
+        else acc) Map.empty
+
+/// Mutable-Dictionary variant of loadCategoryParentDemand for LMDB-eager mode.
+/// Single cursor pass over category_parent, keeping only edges whose BOTH
+/// endpoints are in the demand set, accumulated into a Dictionary (O(1)
+/// amortised insert) instead of an immutable Map (O(log n) insert + node
+/// allocation per edge).  Returns int->int list lookup in raw LMDB int space.
+/// Pair with `fun k -> match dict.TryGetValue k with | true, v -> v | _ -> []`
+/// for an O(1) kernel lookup that skips the Map entirely.
+let loadCategoryParentDemandDict (env: LightningEnvironment) (demand: Set<int>)
+    : System.Collections.Generic.Dictionary<int, int list> =
+    use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+    let db = tx.OpenDatabase("category_parent", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+    use cursor = tx.CreateCursor(db)
+    let acc = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let struct (rc, _, _) = cursor.First()
+    if rc = MDBResultCode.Success then
+        let addEntry () =
+            let struct (_, k, v) = cursor.GetCurrent()
+            let key = decodeI32 (k.AsSpan())
+            if demand.Contains key then
+                let value = decodeI32 (v.AsSpan())
+                if demand.Contains value then
+                    let ok, vs = acc.TryGetValue(key)
+                    if ok then vs.Add(value)
+                    else
+                        let vs = System.Collections.Generic.List<int>()
+                        vs.Add(value)
+                        acc.[key] <- vs
+        addEntry ()
+        let mutable ok = true
+        while ok do
+            let struct (rc2, _, _) = cursor.Next()
+            if rc2 = MDBResultCode.Success then addEntry ()
+            else ok <- false
+    let result = System.Collections.Generic.Dictionary<int, int list>(acc.Count)
+    for kv in acc do
+        result.[kv.Key] <- Seq.toList kv.Value
+    result
+
+/// Single-scan LMDB-eager loader.  Reads category_parent ONCE into a mutable
+/// child->parents Dictionary, builds the reverse (parent->children) in memory
+/// -- which IS category_child -- BFSes down from `root` over that reverse to
+/// get the demand set, then prunes the parent Dictionary to demand-set edges.
+/// Returns (demand-pruned child->parents lookup, demand set).
+///
+/// This avoids the separate category_child cursor scan that
+/// `reachableToRoot` + `loadCategoryParentDemandDict` together do: one LMDB
+/// pass instead of two, matching how the Rust matrix bench builds its reverse
+/// index from the single edge list it reads.  Appropriate for eager mode
+/// (small/medium graphs); large graphs use cursor/cached modes instead.
+let loadEagerDemandSingleScan (env: LightningEnvironment) (root: int)
+    : System.Collections.Generic.Dictionary<int, int list> * Set<int> =
+    // 1. One cursor pass: full child->parents into ResizeArray buckets.
+    let childToParents = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let parentToChildren = System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>()
+    let bump (d: System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<int>>) k v =
+        let ok, vs = d.TryGetValue(k)
+        if ok then vs.Add(v)
+        else
+            let vs = System.Collections.Generic.List<int>()
+            vs.Add(v)
+            d.[k] <- vs
+    (   use tx = env.BeginTransaction(TransactionBeginFlags.ReadOnly)
+        let db = tx.OpenDatabase("category_parent", new DatabaseConfiguration(Flags = DatabaseOpenFlags.DuplicatesSort))
+        use cursor = tx.CreateCursor(db)
+        let struct (rc, _, _) = cursor.First()
+        if rc = MDBResultCode.Success then
+            let addEntry () =
+                let struct (_, k, v) = cursor.GetCurrent()
+                let child = decodeI32 (k.AsSpan())
+                let parent = decodeI32 (v.AsSpan())
+                bump childToParents child parent      // child -> parents
+                bump parentToChildren parent child    // 2. reverse = category_child
+            addEntry ()
+            let mutable ok = true
+            while ok do
+                let struct (rc2, _, _) = cursor.Next()
+                if rc2 = MDBResultCode.Success then addEntry ()
+                else ok <- false )
+    // 3. BFS down from root over the in-memory reverse -> demand set.
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(root) |> ignore
+    let mutable frontier = [root]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            let ok, kids = parentToChildren.TryGetValue(node)
+            if ok then
+                for c in kids do
+                    if visited.Add(c) then next.Add(c)
+        frontier <- List.ofSeq next
+    // 4. Prune child->parents to demand-set edges, into the final int-list dict.
+    let result = System.Collections.Generic.Dictionary<int, int list>(visited.Count)
+    for kv in childToParents do
+        if visited.Contains kv.Key then
+            let parents = [ for p in kv.Value do if visited.Contains p then yield p ]
+            result.[kv.Key] <- parents
+    result, Set.ofSeq visited
+
 /// Load a DUPSORT database directly into a Dictionary (skipping the
 /// Map conversion). Returns O(1) lookup via DictLookupSource. Use
 /// this when the caller only needs ILookupSource access (not a Map
@@ -354,3 +525,14 @@ type LmdbCursorLookup(env: LightningEnvironment, dbName: string) =
                     else
                         ok <- false
                 result
+
+/// Decorator that demand-filters an inner source's results.  Used UNDER the
+/// cache (TwoLevelCachedLookupSource(DemandFilteredSource(cursor, demand)))
+/// so the cache stores already-pruned parent lists: a cache hit then returns
+/// the filtered list directly, with no per-lookup List.filter allocation.
+/// Without this the filter sits outside the cache and re-runs (and re-allocs)
+/// on every hit, which keeps "cached" query as slow as "lazy".
+type DemandFilteredSource(inner: WamTypes.ILookupSource, demand: Set<int>) =
+    interface WamTypes.ILookupSource with
+        member _.Lookup(key: int) : int list =
+            inner.Lookup key |> List.filter demand.Contains

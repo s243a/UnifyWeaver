@@ -43,6 +43,27 @@ user:lp_edge(a, b).
 user:lp_edge(b, c).
 user:lp_edge(c, d).
 
+% --- If-then-else / negation lowering fixtures (cut_ite, jump) -----------
+:- dynamic user:lp_ite/2.
+:- dynamic user:lp_neg/1.
+:- dynamic user:lp_seqite/3.
+:- dynamic user:lp_nestite/2.
+:- dynamic user:lp_undoite/2.
+% Arithmetic-guard if-then-else.
+user:lp_ite(X, Y) :- ( X > 0 -> Y = pos ; Y = nonpos ).
+% Negation (compiles to (G -> fail ; true)).
+user:lp_neg(X) :- \+ X > 0.
+% Two sequential if-then-else blocks in one clause.
+user:lp_seqite(X, Y, Z) :- ( X > 0 -> Y = pos ; Y = nonpos ),
+                           ( X > 5 -> Z = big ; Z = small ).
+% Nested if-then-else (then-branch is itself an ITE).
+user:lp_nestite(X, Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = neg ).
+% Binding condition that binds a fresh Y then fails — exercises trail
+% save/undo: (Y=a, Y=b) binds Y=a then fails, so Y must be undone before
+% `X = Y`. If the undo is skipped, Y stays bound to `a` and lp_undoite(c,_)
+% wrongly fails (c = a).
+user:lp_undoite(X, R) :- ( (Y = a, Y = b) -> R = then ; R = els ), X = Y.
+
 % append/3 — list recursion (get_list / unify_* read+write modes).
 user:lp_append([], L, L).
 user:lp_append([H|T], L, [H|R]) :- lp_append(T, L, R).
@@ -221,6 +242,53 @@ test(member_parity,
     assert_same_and(Run, 'lp_member/2', [a, '[a,b,c]'], "true"),
     assert_same_and(Run, 'lp_member/2', [c, '[a,b,c]'], "true"),
     assert_same_and(Run, 'lp_member/2', [z, '[a,b,c]'], "false").
+
+% lp_ite/2 — arithmetic-guard if-then-else. In functions mode the clause is
+% lowered to a native Scala if/else (structure_ite_scala); in interpreter
+% mode it runs the try_me_else/cut_ite block. Results must match and be
+% correct, both branches.
+test(ite_parity,
+     [setup(with_both_modes([user:lp_ite/2], 'gen.ite', Run)),
+      cleanup(cleanup_run(Run))]) :-
+    assert_same_and(Run, 'lp_ite/2', ['5','pos'],     "true"),
+    assert_same_and(Run, 'lp_ite/2', ['5','nonpos'],  "false"),
+    assert_same_and(Run, 'lp_ite/2', ['-1','nonpos'], "true"),
+    assert_same_and(Run, 'lp_ite/2', ['-1','pos'],    "false").
+
+% lp_neg/1 — negation as (G -> fail ; true).
+test(neg_parity,
+     [setup(with_both_modes([user:lp_neg/1], 'gen.neg', Run)),
+      cleanup(cleanup_run(Run))]) :-
+    assert_same_and(Run, 'lp_neg/1', ['5'],  "false"),
+    assert_same_and(Run, 'lp_neg/1', ['-1'], "true"),
+    assert_same_and(Run, 'lp_neg/1', ['0'],  "true").
+
+% lp_seqite/3 — two sequential ITE blocks.
+test(seqite_parity,
+     [setup(with_both_modes([user:lp_seqite/3], 'gen.seqite', Run)),
+      cleanup(cleanup_run(Run))]) :-
+    assert_same_and(Run, 'lp_seqite/3', ['10','pos','big'],     "true"),
+    assert_same_and(Run, 'lp_seqite/3', ['3','pos','small'],    "true"),
+    assert_same_and(Run, 'lp_seqite/3', ['-1','nonpos','small'],"true"),
+    assert_same_and(Run, 'lp_seqite/3', ['10','pos','small'],   "false").
+
+% lp_nestite/2 — nested ITE in the then-branch.
+test(nestite_parity,
+     [setup(with_both_modes([user:lp_nestite/2], 'gen.nestite', Run)),
+      cleanup(cleanup_run(Run))]) :-
+    assert_same_and(Run, 'lp_nestite/2', ['20','big'],   "true"),
+    assert_same_and(Run, 'lp_nestite/2', ['5','small'],  "true"),
+    assert_same_and(Run, 'lp_nestite/2', ['-1','neg'],   "true"),
+    assert_same_and(Run, 'lp_nestite/2', ['20','small'], "false").
+
+% lp_undoite/2 — binding condition that fails; the trail must be undone so
+% the post-ITE `X = c` sees X unbound. If the lowered path skipped the undo,
+% X would still be bound to `a` and the query would wrongly return false.
+test(undoite_parity,
+     [setup(with_both_modes([user:lp_undoite/2], 'gen.undoite', Run)),
+      cleanup(cleanup_run(Run))]) :-
+    assert_same_and(Run, 'lp_undoite/2', ['c','els'],  "true"),
+    assert_same_and(Run, 'lp_undoite/2', ['c','then'], "false").
 
 :- end_tests(wam_scala_lowered_runtime).
 

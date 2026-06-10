@@ -11,9 +11,9 @@ current cross-target builtin/runtime baseline.
 | Choice points and backtracking | `try_me_else`, `retry_me_else`, `trust_me`, indexed alternatives, foreign stream retries, indexed atom fact streams, `member/2` builtin retries | Choice point stack with normal, builtin, and fact-stream resume states | Present for current resume-state baseline |
 | Direct fact dispatch | `call_indexed_atom_fact2`, `AtomFact2Source` registry, TSV-backed and LMDB-artifact atom fact loading, foreign/native kernel registration, indexed atom/weighted fact tables | `call_indexed_atom_fact2`, inline/external fact stream paths | Present for current external atom fact-source baseline |
 | Aggregates | `begin_aggregate`, `end_aggregate`; `collect`, `bag`, `bagof`, `count`, `sum`, `min`, `max`, `set`, `setof` | `findall/3`, `aggregate_all/3` count/sum/min/max/set families | Present for current aggregate baseline |
-| Structural builtins | `member/2`, `memberchk/2`, `select/3`, `delete/3`, `subtract/3`, `intersection/3`, `union/3`, `permutation/2`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sum_list/2`, `min_list/2`, `max_list/2`, `list_to_set/2`, `sort/2`, `msort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++/LLVM also cover richer list builtins including `select/3`, `delete/3`, `subtract/3`, `intersection/3`, `union/3`, `permutation/2`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, numeric list reducers, `list_to_set/2`, `sort/2`, and `msort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
+| Structural builtins | `member/2`, `memberchk/2`, `select/3`, `delete/3`, `subtract/3`, `intersection/3`, `union/3`, `permutation/2`, `length/2`, `append/3`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, `sum_list/2`, `min_list/2`, `max_list/2`, `list_to_set/2`, `sort/2`, `msort/2`, `keysort/2` | `member/2`, `memberchk/2`, `length/2`; Rust `append/3` is explicitly unimplemented. Clojure/R/C++/LLVM also cover richer list builtins including `select/3`, `delete/3`, `subtract/3`, `intersection/3`, `union/3`, `permutation/2`, `reverse/2`, `last/2`, `nth0/3`, `nth1/3`, `numlist/3`, numeric list reducers, `list_to_set/2`, `sort/2`, `msort/2`, and `keysort/2` | Present for current baseline structural checks, with expanded cross-target list builtins |
 | Type builtins | `var/1`, `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `atomic/1`, `is_list/1`, `ground/1` | Includes `is_list/1` and Clojure direct `ground/1` in the current baseline | Present for current baseline type and groundness checks |
-| Arithmetic builtins | `is/2`, `succ/2`, `between/3` | Arithmetic evaluation plus sibling-target `succ/2` coverage in Clojure and Elixir; R/C++ also cover `between/3` | Present for current baseline arithmetic checks, with expanded successor and integer-range coverage |
+| Arithmetic builtins | `is/2`, `succ/2`, `between/3`; expanded arithmetic expression evaluator coverage including unary math functions | Arithmetic evaluation plus sibling-target `succ/2` coverage in Clojure and Elixir; Rust/Haskell cover the common `+`, `-`, `*`, `/`, `//`, `mod`, `**`/`^`, and `abs` evaluator baseline; R/C++ also cover `between/3`; R/LLVM cover richer unary math functions | Present for current baseline arithmetic checks, with expanded expression, unary math, successor, and integer-range coverage |
 | Atom/text conversion | `atom_number/2`, `atom_codes/2`, `atom_chars/2`, `string_codes/2`, `string_chars/2`, `number_codes/2`, `number_chars/2`, `atom_string/2`, `string_to_atom/2`, `upcase_atom/2`, `downcase_atom/2`, `atom_concat/3`, `atom_length/2`, `string_length/2`, `char_code/2`, `sub_atom/5` forward mode, `char_type/2` forward mode, `string_code/3` forward mode, `split_string/4` forward mode | Clojure direct builtin surface includes bidirectional `atom_number/2`, atom/string/number code-list and char-list conversion, atom/string conversion, atom case conversion, deterministic atom concatenation, text length checks, and char-code conversion | Present for current atom-number, atom/string/number code-list, atom/string/number char-list, atom/string, atom-case, atom-concat, text-length, char-code, forward sub-atom, forward char-type, forward string-code, and forward split-string checks |
 | Comparison builtins | `==/2`, `\==/2`, `\=/2`, `=:=/2`, `=\=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `@</2`, `@=</2`, `@>/2`, `@>=/2`, `compare/3` | Includes `=</2`; Haskell mode analysis and Clojure lowering also cover term-order comparisons | Present for current baseline comparisons, with expanded term-order coverage |
 | Unification builtin | `=/2`, `\=/2` | `=/2`, `\=/2` | Present |
@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `nl/0`, `tab/1` | `write/1`, `display/1`, `nl/0`; R/C++ also cover `tab/1` | Present for current baseline plus tab output |
+| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, bounded format output, tab output, and bounded environment access |
 
 ## Immediate Findings
 
@@ -33,6 +33,18 @@ current cross-target builtin/runtime baseline.
   are now deduplicated like Haskell's `nub` behavior.
 - `member/2` now pushes builtin choice points for later list members, so
   `findall/3` can collect every unifiable element.
+- Go WAM arithmetic expressions are now covered by a generated E2E predicate
+  for unary minus, `abs/1`, `sign/1`, `float/1`, `truncate/1`, `integer/1`,
+  `float_integer_part/1`, division, integer division, modulo, `max/2`,
+  `min/2`, exponentiation, bitwise and/or/xor, shifts, divide-by-zero
+  failure, unbound operand failure, and unknown evaluator failure. This keeps
+  the broader Go arithmetic surface anchored to the Rust/Haskell evaluator
+  baseline before adding more target-specific math.
+- Unary Go WAM math functions are now covered by the same generated E2E
+  predicate for `sqrt/1`, `sin/1`, `cos/1`, `tan/1`, `asin/1`, `acos/1`,
+  `atan/1`, `floor/1`, `ceiling/1`, and `round/1`, plus invalid-domain
+  failure for `sqrt/1`, `asin/1`, and `acos/1`, matching the bounded R/LLVM
+  math evaluator surface.
 - Deterministic `memberchk/2` is now covered by the generated Go WAM builtin
   E2E test, committing to the first unifiable list element without adding
   builtin choice points.
@@ -43,6 +55,25 @@ current cross-target builtin/runtime baseline.
 - Deterministic `delete/3` is now covered by the generated Go WAM builtin E2E
   test for removing one, none, or all matching atom elements and malformed-list
   failure, matching the Clojure/C++ structural-list surface for proper lists.
+- Bounded deterministic `append/3` is now covered by the generated Go WAM
+  builtin E2E test for concatenating proper lists, empty-left and empty-right
+  behavior, bound-output success and mismatch failure, malformed-list failure,
+  and unsupported unbound input modes, matching the current Go runtime surface.
+- Simple output aliases `writeln/1` and `print/1` are now direct Go WAM
+  builtins and are covered by the generated builtin E2E test. `print/1` shares
+  `write/1` rendering, while `writeln/1` appends a newline, matching the
+  bounded R/C++ output-polish surface without adding broader `format/N`
+  parsing.
+- Bounded `write_canonical/1` is now a direct Go WAM builtin and is covered by
+  the generated builtin E2E test for quoted atoms, proper lists, and compound
+  terms, matching the Python/C++ canonical-output surface without adding
+  stream capture.
+- Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
+  covered by the generated builtin E2E test for literal `~~`, newline `~n`,
+  `~w`, `~a`, `~d`, `~p`, `~q`, and `~s` argument substitution, and
+  missing-argument failure. Stream capture, destination-aware `format/3`,
+  tab directives, and richer canonical quoting remain separate from this
+  small R/C++/Python output-parity slice.
 - Deterministic `subtract/3` is now covered by the generated Go WAM builtin
   E2E test for filtering all right-list matches from the left list, preserving
   left-list order, empty-list behavior, all-removed results, duplicate removal,
@@ -88,6 +119,11 @@ current cross-target builtin/runtime baseline.
   builtin E2E test for standard ordered sorting, duplicate removal in
   `sort/2`, duplicate preservation in `msort/2`, mixed atom/integer ordering,
   and malformed-list failure, matching the Clojure/R ordered-list surface.
+- Deterministic `keysort/2` is now covered by the generated Go WAM builtin
+  E2E test for stable `Key-Value` sorting by key over integer, float, mixed
+  numeric, and atom keys, empty and singleton lists, duplicate-key stability,
+  and malformed-list/non-pair failure, matching the bounded LLVM key-value
+  sorting surface.
 - Term-order comparisons `@</2`, `@=</2`, `@>/2`, `@>=/2`, and `compare/3`
   are now covered by the generated Go WAM builtin E2E test over the same
   atom/integer ordering used by Go WAM sort and indexed-switch ordering,
@@ -121,6 +157,10 @@ current cross-target builtin/runtime baseline.
   nonnegative space output, zero-width success, negative integer failure,
   unbound argument failure, and non-integer failure, matching the R/C++
   basic I/O polish surface.
+- `getenv/2` and `setenv/2` are now covered by the generated Go WAM builtin
+  E2E test for missing environment lookup failure, set/get, overwrite, empty
+  value handling, and unbound argument failure, matching the bounded LLVM
+  environment surface.
 - Bidirectional `succ/2` is now covered by the generated Go WAM builtin E2E
   test for forward binding, reverse binding, matching integer pairs, mismatch
   failure, negative predecessor failure, non-positive successor failure, and

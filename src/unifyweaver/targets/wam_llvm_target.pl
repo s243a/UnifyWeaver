@@ -28,6 +28,7 @@
     wam_instruction_to_llvm_literal/3,   % +WamInstr, +LabelMap, -LLVMLiteral
     wam_line_to_llvm_literal/2,          % +Parts, -LLVMLit
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
+    wam_llvm_last_compile_counts/2,      % ?InstrCount, ?LabelCount (side channel)
     write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
     build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
     builtin_op_to_id/2,                  % +OpName, -IntId
@@ -90,6 +91,7 @@
 % fact table, and writes the result.
 
 :- dynamic llvm_foreign_kernel_spec/3.
+:- dynamic wam_llvm_last_compile_counts/2.   % M108: per-compile (Instr, Label) counts.
 
 clear_llvm_foreign_kernel_specs :-
     retractall(llvm_foreign_kernel_spec(_, _, _)).
@@ -1191,6 +1193,16 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
+    % M105: also reset the atom-table dynamic predicates per module.
+    % Atom ids are module-scoped (each module emits its own
+    % @wam_atom_strings global) so persistent state across compiles
+    % only serves to accumulate. The 600+ test suite hit Prolog''s
+    % 4GB global-stack cap around test 650 because every compile
+    % re-interns 95 ASCII chars + [] + a handful of named atoms,
+    % and those atom_table_entry asserts piled up monotonically.
+    retractall(atom_table_entry(_, _)),
+    retractall(atom_table_next_id(_)),
+    assertz(atom_table_next_id(1)),
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
     % empty-list atom "[]"). Route through register_functor_string so
@@ -1240,6 +1252,24 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     register_functor_string("ground"),
     register_functor_string("list"),
     register_functor_string("boolean"),
+    % M83: arithmetic atom constants. ``X is pi'' and ``X is e''
+    % resolve to Float(pi) and Float(e) in eval_arith_value via
+    % strcmp against these registered names.
+    register_functor_string("pi"),
+    register_functor_string("e"),
+    % M97: set_random(seed(N)) -- builtin_set_random does strcmp on
+    % the compound''s functor string against "seed". Pre-register so
+    % @.fn_seed is in the module even for programs that never
+    % explicitly construct a `seed/1' compound elsewhere.
+    register_functor_string("seed"),
+    % M98: stamp_date_time/3 builds a `date(...)' compound and uses
+    % a `local' atom for the TZName slot. Pre-register both so their
+    % @.fn_... globals are in every module.
+    register_functor_string("date"),
+    register_functor_string("local"),
+    % M105: numbervars/3 binds free vars to ''$VAR''(N) compounds.
+    % Pre-register so @.fn__24VAR exists in every module.
+    register_functor_string("$VAR"),
     % M9: intern "[]" so the empty-list atom id is known at runtime.
     % @wam_apply_aggregation's collect_case reads this id from a
     % module-level global to terminate the cons-cell chain.
@@ -1281,9 +1311,13 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
 
-    % Assemble full module
+    % M116: stream the module IR straight to the output file rather
+    % than calling render_template/3 to build one multi-MB Prolog
+    % atom and then writing it in one shot. The single big atom was
+    % the dominant per-compile allocation that drove the suite into
+    % SWI''s 4 GB global-stack cap around test 675.
     read_template_file('templates/targets/llvm_wam/module.ll.mustache', ModuleTemplate),
-    render_template(ModuleTemplate, [
+    Substitutions = [
         module_name=ModuleName,
         date=Date,
         target_datalayout=DataLayout,
@@ -1296,12 +1330,14 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         native_predicates=FinalNativeCode,
         wam_predicates=WamCode,
         interop_bridge=""
-    ], FullModule),
-
-    % Write output file
+    ],
+    % Write output file. The generated module embeds UTF-8 characters from
+    % the runtime templates (arrows, dashes in comments), so the stream must
+    % be UTF-8 regardless of the process locale (which is POSIX/ASCII in many
+    % CI containers) -- otherwise format/3 raises an encoding error.
     setup_call_cleanup(
-        open(OutputFile, write, Stream),
-        format(Stream, "~w", [FullModule]),
+        open(OutputFile, write, Stream, [encoding(utf8)]),
+        stream_render_mustache(Stream, ModuleTemplate, Substitutions),
         close(Stream)
     ),
     format('WAM LLVM module created at: ~w~n', [OutputFile]).
@@ -1366,7 +1402,7 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
     ], FullModule),
 
     setup_call_cleanup(
-        open(OutputFile, write, Stream),
+        open(OutputFile, write, Stream, [encoding(utf8)]),
         format(Stream, "~w", [FullModule]),
         close(Stream)
     ),
@@ -1376,6 +1412,46 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
 %  For native targets: declare malloc, free, snprintf, strcmp, printf.
 %  For wasm32: define malloc/free as bump allocator (self-contained),
 %  omit snprintf/strcmp/printf (not available in standalone WASM).
+%% stream_render_mustache(+Stream, +Template, +Substitutions) is det.
+%
+%  M116: streaming counterpart to render_template/3 for the
+%  module.ll.mustache top-level assembly. Walks the template scanning
+%  for {{key}} placeholders, writes each literal segment directly to
+%  Stream, looks up Key in Substitutions, writes the corresponding
+%  value. No full-IR atom is ever materialised in the Prolog atom
+%  table, which is what was driving the per-test SWI-stack pressure.
+%
+%  Only supports the flat {{key}} form -- the module.ll.mustache
+%  template doesn''t use sections or match blocks, so the simpler
+%  implementation is sufficient. Falls back to writing the rest of
+%  the template literally when no more placeholders are found.
+stream_render_mustache(Stream, Template, Subs) :-
+    atom_string(Template, S),
+    stream_render_loop(Stream, S, Subs).
+
+stream_render_loop(Stream, S, Subs) :-
+    ( sub_string(S, Before, 2, _, "{{")
+    -> sub_string(S, 0, Before, _, Prefix),
+       write(Stream, Prefix),
+       AfterOpen is Before + 2,
+       sub_string(S, AfterOpen, _, 0, Rest1),
+       ( sub_string(Rest1, KeyEnd, 2, _, "}}")
+       -> sub_string(Rest1, 0, KeyEnd, _, KeyStr),
+          atom_string(Key, KeyStr),
+          ( member(Key=Value, Subs)
+          -> write(Stream, Value)
+          ;  format(Stream, '{{~w}}', [Key])
+          ),
+          AfterClose is KeyEnd + 2,
+          sub_string(Rest1, AfterClose, _, 0, Rest2),
+          stream_render_loop(Stream, Rest2, Subs)
+       ;  % Unclosed {{ -- write the rest verbatim and stop.
+          write(Stream, '{{'),
+          write(Stream, Rest1)
+       )
+    ;  write(Stream, S)
+    ).
+
 generate_external_declarations(Triple, Decls) :-
     ( sub_atom(Triple, 0, _, _, wasm32)
     -> Decls = '
@@ -1455,7 +1531,71 @@ declare i32 @strcmp(i8*, i8*)
 declare i32 @printf(i8*, ...)
 declare i32 @putchar(i32)
 declare i64 @time(i64*)
-declare i32 @stat(i8*, i8*)'
+declare i32 @clock_gettime(i32, i8*)
+declare i32 @stat(i8*, i8*)
+declare i32 @unlink(i8*)
+declare i32 @mkdir(i8*, i32)
+declare i32 @rename(i8*, i8*)
+declare i32 @rmdir(i8*)
+declare i8* @getenv(i8*)
+declare i32 @setenv(i8*, i8*, i32)
+declare i32 @unsetenv(i8*)
+declare i32 @chmod(i8*, i32)
+declare i32 @access(i8*, i32)
+declare i8* @opendir(i8*)
+declare i8* @readdir(i8*)
+declare i32 @closedir(i8*)
+declare i64 @strlen(i8*)
+declare i32 @system(i8*)
+declare i8* @getcwd(i8*, i64)
+declare i32 @chdir(i8*)
+declare i32 @getpid()
+declare i32 @getuid()
+declare i32 @geteuid()
+declare i32 @getgid()
+declare i32 @getegid()
+declare i32 @getppid()
+declare i32 @getpgrp()
+declare i8* @realpath(i8*, i8*)
+declare i32 @kill(i32, i32)
+declare i32 @truncate(i8*, i64)
+declare i32 @chown(i8*, i32, i32)
+declare i64 @readlink(i8*, i8*, i64)
+declare i32 @symlink(i8*, i8*)
+declare i32 @link(i8*, i8*)
+declare i32 @mkstemp(i8*)
+declare i32 @mkfifo(i8*, i32)
+declare i32 @close(i32)
+declare i32 @umask(i32)
+declare i32 @nice(i32)
+declare i32 @getpriority(i32, i32)
+declare i32 @setpriority(i32, i32, i32)
+declare i32 @getrlimit(i32, i8*)
+declare i32 @setrlimit(i32, i8*)
+declare i8* @getlogin()
+declare i32 @uname(i8*)
+declare i32 @open(i8*, i32, i32)
+declare i64 @read(i32, i8*, i64)
+declare i64 @write(i32, i8*, i64)
+declare i32* @__errno_location()
+declare i8* @strerror(i32)
+declare i32 @getrusage(i32, i8*)
+declare i8* @popen(i8*, i8*)
+declare i32 @pclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @usleep(i32)
+declare i32 @gethostname(i8*, i64)
+declare double @drand48()
+declare i64 @lrand48()
+declare void @srand48(i64)
+declare i8* @localtime_r(i64*, i8*)
+declare i64 @strftime(i8*, i64, i8*, i8*)
+declare i64 @mktime(i8*)
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -1788,13 +1928,21 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                BundledCode),
            Record = native(PredIndicator, Arity, BundledCode),
            NextPC = StartPC
-        ;  LowerShape == multi_clause_c1
-        -> format(user_error,
-            '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
-            [Pred, Arity]),
+        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain )
+        -> ( LowerShape == clause_chain
+           ->  format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid T5 first-arg dispatch + bytecode)~n',
+                 [Pred, Arity])
+           ;   format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
+                 [Pred, Arity])
+           ),
            % Parse the WAM bytecode (all clauses) into the merge so the
            % dispatcher's slow path can run it. The dispatcher entry
            % is emitted in pass2 via emit_hybrid_dispatcher.
+           % clause_chain lowers ALL clauses as the fast path; the bytecode is
+           % still emitted so the unbound-first-arg case (which the lowered fn
+           % declines by returning false) is enumerated by @run_loop.
            %
            % Hybrid records use the bare Pred/Arity form (matching the
            % wam-record convention) so partition / resolve / dispatch
@@ -1958,6 +2106,8 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
                             AllSwitchDefs),
     length(AllLiterals, InstrCount),
     length(NamePCPairs, LabelCount),
+    retractall(wam_llvm_last_compile_counts(_, _)),
+    assertz(wam_llvm_last_compile_counts(InstrCount, LabelCount)),
     (   InstrCount =:= 0
     ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
     ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
@@ -1971,15 +2121,19 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
            atomic_list_concat(LabelRows, ',\n', LabelsStr),
            LabelArraySize = LabelCount
         ),
-        format(atom(CodeGlobal),
-'; === Merged WAM code and labels (project-level) ===
+        emit_meta_call_dispatch(LabelMap, MetaCallDispatch),
+        format(string(CodeGlobal),
+"; === Merged WAM code and labels (project-level) ===
 @module_code = private constant [~w x %Instruction] [
 ~w
 ]
 
 @module_labels = private constant [~w x i32] [
 ~w
-]',         [InstrCount, EntriesStr, LabelArraySize, LabelsStr]),
+]
+
+~w",
+            [InstrCount, EntriesStr, LabelArraySize, LabelsStr, MetaCallDispatch]),
         emit_all_entry_funcs(WamRecords, Options,
                              InstrCount, LabelCount, LabelArraySize,
                              EntryFuncs),
@@ -1989,6 +2143,94 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
         )
     ).
 
+emit_meta_call_dispatch(LabelMap, IR) :-
+    findall(entry(AtomId, Arity, LabelIdx),
+        ( member(Label-LabelIdx, LabelMap),
+          catch(split_functor_arity(Label, NameStr, Arity), _, fail),
+          Arity >= 0,
+          atom_string(NameAtom, NameStr),
+          intern_atom(NameAtom, AtomId)
+        ),
+        Entries0),
+    sort(Entries0, Entries),
+    length(Entries, Count),
+    (   Count =:= 0
+    ->  ArraySize = 1,
+        AtomRows = "  i64 0",
+        ArityRows = "  i32 0",
+        LabelRows = "  i32 0"
+    ;   ArraySize = Count,
+        findall(A, (member(entry(AtomId, _, _), Entries), format(atom(A), '  i64 ~w', [AtomId])), AtomList),
+        findall(R, (member(entry(_, Arity, _), Entries), format(atom(R), '  i32 ~w', [Arity])), ArityList),
+        findall(L, (member(entry(_, _, LabelIdx), Entries), format(atom(L), '  i32 ~w', [LabelIdx])), LabelList),
+        atomic_list_concat(AtomList, ',\n', AtomRows),
+        atomic_list_concat(ArityList, ',\n', ArityRows),
+        atomic_list_concat(LabelList, ',\n', LabelRows)
+    ),
+    format(string(IR),
+"; === Meta-call dispatch table: atom_id + arity -> label index ===
+@wam_meta_call_atom_ids = private constant [~w x i64] [
+~w
+]
+@wam_meta_call_arities = private constant [~w x i32] [
+~w
+]
+@wam_meta_call_label_indexes = private constant [~w x i32] [
+~w
+]
+
+define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
+entry:
+  %arity_ok = icmp sge i32 %total_arity, 1
+  br i1 %arity_ok, label %read_goal, label %fail
+
+read_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tag = extractvalue %Value %goal, 0
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_goal, label %fail
+
+atom_goal:
+  %atom_id = extractvalue %Value %goal, 1
+  %target_arity = sub i32 %total_arity, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %atom_goal ], [ %next_i, %next ]
+  %done = icmp sge i32 %i, ~w
+  br i1 %done, label %fail, label %check
+
+check:
+  %atom_ptr = getelementptr [~w x i64], [~w x i64]* @wam_meta_call_atom_ids, i32 0, i32 %i
+  %cand_atom = load i64, i64* %atom_ptr
+  %atom_match = icmp eq i64 %atom_id, %cand_atom
+  %arity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %i
+  %cand_arity = load i32, i32* %arity_ptr
+  %arity_match = icmp eq i32 %target_arity, %cand_arity
+  %match = and i1 %atom_match, %arity_match
+  br i1 %match, label %dispatch, label %next
+
+next:
+  %next_i = add i32 %i, 1
+  br label %loop
+
+dispatch:
+  %label_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %i
+  %label_idx = load i32, i32* %label_ptr
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  %valid = icmp sge i32 %target_pc, 0
+  br i1 %valid, label %go, label %fail
+
+go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i1 true
+
+fail:
+  ret i1 false
+}",
+        [ArraySize, AtomRows, ArraySize, ArityRows, ArraySize, LabelRows,
+         Count, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize]).
 %% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
 %%                         -AllSwitchDefs)
 %  Resolves each record's raw instructions against GlobalLabels and
@@ -2832,16 +3074,28 @@ dealloc.done:
   ret i1 true').
 
 wam_llvm_case('do_call',
-'  ; op1 = label index, op2 = arity
+'  ; op1 = label index or -1 for meta-call, op2 = arity
   %call.label = trunc i64 %op1 to i32
+  %call.pc = call i32 @wam_get_pc(%WamState* %vm)
+  %call.next = add i32 %call.pc, 1
+  %call.is_meta = icmp slt i32 %call.label, 0
+  br i1 %call.is_meta, label %call.meta, label %call.static
+
+call.meta:
+  %call.meta_arity = trunc i64 %op2 to i32
+  %call.meta_ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %call.meta_arity, i32 %call.next)
+  br i1 %call.meta_ok, label %call.meta_done, label %call.fail
+
+call.meta_done:
+  ret i1 true
+
+call.static:
   %call.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %call.label)
   %call.valid = icmp sge i32 %call.target_pc, 0
   br i1 %call.valid, label %call.go, label %call.fail
 
 call.go:
   ; Save continuation
-  %call.pc = call i32 @wam_get_pc(%WamState* %vm)
-  %call.next = add i32 %call.pc, 1
   call void @wam_set_cp(%WamState* %vm, i32 %call.next)
   ; Save cpn for cut_barrier
   %call.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
@@ -2855,8 +3109,21 @@ call.fail:
   ret i1 false').
 
 wam_llvm_case('do_execute',
-'  ; op1 = label index
+'  ; op1 = label index or -1 for meta-call, op2 = total arity for meta-call
   %exec.label = trunc i64 %op1 to i32
+  %exec.is_meta = icmp slt i32 %exec.label, 0
+  br i1 %exec.is_meta, label %exec.meta, label %exec.static
+
+exec.meta:
+  %exec.meta_arity = trunc i64 %op2 to i32
+  %exec.after = call i32 @wam_get_cp(%WamState* %vm)
+  %exec.meta_ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %exec.meta_arity, i32 %exec.after)
+  br i1 %exec.meta_ok, label %exec.meta_done, label %exec.fail
+
+exec.meta_done:
+  ret i1 true
+
+exec.static:
   %exec.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %exec.label)
   %exec.valid = icmp sge i32 %exec.target_pc, 0
   br i1 %exec.valid, label %exec.go, label %exec.fail
@@ -3247,10 +3514,10 @@ cy.skip:
 
 %% compile_wam_helpers_to_llvm(+Options, -LLVMCode)
 %  Generates LLVM IR for WAM runtime helpers.
-compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
+compile_wam_helpers_to_llvm(Options, LLVMCode) :-
     compile_backtrack_to_llvm(BacktrackCode),
     compile_unwind_trail_to_llvm(UnwindCode),
-    compile_execute_builtin_to_llvm(BuiltinCode),
+    compile_execute_builtin_to_llvm(Options, BuiltinCode),
     compile_eval_arith_to_llvm(ArithCode),
     compile_copy_term_to_llvm(CopyTermCode),
     compile_term_cmp_to_llvm(TermCmpCode),
@@ -3388,8 +3655,13 @@ done:
   ret void
 }'.
 
-compile_execute_builtin_to_llvm(Code) :-
-    Code = '; Execute builtin operations
+compile_execute_builtin_to_llvm(Options, Code) :-
+    % M113: resolve target OS for struct dirent / struct tm offsets.
+    % Default mode is auto (derive from target_triple); callers can
+    % override with target_os(linux|darwin|freebsd|...).
+    target_os_resolved(Options, OS),
+    target_dirent_d_name_offset(OS, DirentNameOff),
+    Template = '; Execute builtin operations
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
@@ -3491,6 +3763,79 @@ entry:
     i32 90, label %builtin_get_time
     i32 91, label %builtin_exists_file
     i32 92, label %builtin_exists_directory
+    i32 93, label %builtin_delete_file
+    i32 94, label %builtin_make_directory
+    i32 95, label %builtin_rename_file
+    i32 96, label %builtin_delete_directory
+    i32 97, label %builtin_size_file
+    i32 98, label %builtin_time_file
+    i32 99, label %builtin_getenv
+    i32 100, label %builtin_setenv
+    i32 101, label %builtin_shell1
+    i32 102, label %builtin_shell2
+    i32 103, label %builtin_working_directory
+    i32 104, label %builtin_getpid
+    i32 105, label %builtin_sleep
+    i32 106, label %builtin_gethostname
+    i32 107, label %builtin_cpu_time
+    i32 108, label %builtin_random
+    i32 109, label %builtin_random_between
+    i32 110, label %builtin_format_time
+    i32 111, label %builtin_halt0
+    i32 112, label %builtin_halt1
+    i32 113, label %builtin_unsetenv
+    i32 114, label %builtin_getuid
+    i32 115, label %builtin_geteuid
+    i32 116, label %builtin_getgid
+    i32 117, label %builtin_getegid
+    i32 118, label %builtin_getppid
+    i32 119, label %builtin_set_random
+    i32 120, label %builtin_stamp_date_time
+    i32 121, label %builtin_date_time_stamp
+    i32 122, label %builtin_chmod
+    i32 123, label %builtin_term_variables
+    i32 124, label %builtin_numbervars
+    i32 125, label %builtin_access
+    i32 126, label %builtin_directory_files
+    i32 127, label %builtin_getpgrp
+    i32 128, label %builtin_realpath
+    i32 129, label %builtin_kill
+    i32 130, label %builtin_truncate
+    i32 131, label %builtin_chown
+    i32 132, label %builtin_ground
+    i32 133, label %builtin_file_base_name
+    i32 134, label %builtin_file_directory_name
+    i32 135, label %builtin_file_name_extension
+    i32 136, label %builtin_read_link
+    i32 137, label %builtin_symlink
+    i32 138, label %builtin_link
+    i32 139, label %builtin_is_absolute_file_name
+    i32 140, label %builtin_same_file
+    i32 141, label %builtin_tmp_file
+    i32 142, label %builtin_mkfifo
+    i32 143, label %builtin_umask
+    i32 144, label %builtin_monotonic_time
+    i32 145, label %builtin_nice
+    i32 146, label %builtin_getpriority
+    i32 147, label %builtin_setpriority
+    i32 148, label %builtin_getrlimit
+    i32 149, label %builtin_setrlimit
+    i32 150, label %builtin_getlogin
+    i32 151, label %builtin_uname_sysname
+    i32 152, label %builtin_uname_machine
+    i32 153, label %builtin_copy_file
+    i32 154, label %builtin_read_file_to_atom
+    i32 155, label %builtin_write_atom_to_file
+    i32 156, label %builtin_append_atom_to_file
+    i32 157, label %builtin_errno
+    i32 158, label %builtin_strerror
+    i32 159, label %builtin_process_max_rss
+    i32 160, label %builtin_process_user_time
+    i32 161, label %builtin_process_system_time
+    i32 162, label %builtin_path_join
+    i32 163, label %builtin_system_to_atom
+    i32 164, label %builtin_atom_to_system
+    i32 165, label %builtin_atom_split
   ]
 
 builtin_is:
@@ -4341,12 +4686,24 @@ builtin_at_ge:
   ret i1 %atge.ok
 
 builtin_get_time:
-  ; M72: get_time(?Time) -- wall-clock seconds since the epoch, as
-  ; Float. Calls libc time(NULL) so resolution is whole-second;
-  ; gettimeofday / clock_gettime can replace this for sub-second
-  ; precision in a follow-up. Unifies A1 with the resulting Float.
-  %gt.t_i64 = call i64 @time(i64* null)
-  %gt.t_d = sitofp i64 %gt.t_i64 to double
+  ; M72/M87: get_time(?Time) -- wall-clock seconds since the epoch
+  ; as Float. M87 upgrades the resolution from whole-second (libc
+  ; time()) to nanosecond via clock_gettime(CLOCK_REALTIME, &ts).
+  ; struct timespec on x86-64 Linux glibc is { i64 tv_sec; i64
+  ; tv_nsec } -- 16 bytes -- so a stack alloca of [16 x i8] is
+  ; enough. CLOCK_REALTIME has numeric value 0.
+  %gt.ts_buf = alloca [16 x i8]
+  %gt.ts_ptr = getelementptr [16 x i8], [16 x i8]* %gt.ts_buf, i32 0, i32 0
+  %gt.cg_ret = call i32 @clock_gettime(i32 0, i8* %gt.ts_ptr)
+  %gt.sec_ptr = bitcast i8* %gt.ts_ptr to i64*
+  %gt.sec = load i64, i64* %gt.sec_ptr
+  %gt.nsec_ptr_i8 = getelementptr i8, i8* %gt.ts_ptr, i64 8
+  %gt.nsec_ptr = bitcast i8* %gt.nsec_ptr_i8 to i64*
+  %gt.nsec = load i64, i64* %gt.nsec_ptr
+  %gt.sec_d = sitofp i64 %gt.sec to double
+  %gt.nsec_d = sitofp i64 %gt.nsec to double
+  %gt.frac = fdiv double %gt.nsec_d, 1.000000e+09
+  %gt.t_d = fadd double %gt.sec_d, %gt.frac
   %gt.t_bits = bitcast double %gt.t_d to i64
   %gt.v0 = insertvalue %Value undef, i32 2, 0
   %gt.v = insertvalue %Value %gt.v0, i64 %gt.t_bits, 1
@@ -4412,6 +4769,2939 @@ xd.check_mode:
   %xd.type_bits = and i32 %xd.mode, 61440  ; S_IFMT
   %xd.is_dir = icmp eq i32 %xd.type_bits, 16384  ; S_IFDIR = 0o040000
   ret i1 %xd.is_dir
+
+builtin_delete_file:
+  ; M74: delete_file(+Path) -- atom Path. Calls libc unlink(path);
+  ; succeeds iff unlink returns 0.
+  %df.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %df.t1 = extractvalue %Value %df.a1, 0
+  %df.is_atom = icmp eq i32 %df.t1, 0
+  br i1 %df.is_atom, label %df.go, label %df.fail
+df.fail:
+  ret i1 false
+df.go:
+  %df.aid = extractvalue %Value %df.a1, 1
+  %df.path = call i8* @wam_atom_to_string(i64 %df.aid)
+  %df.path_null = icmp eq i8* %df.path, null
+  br i1 %df.path_null, label %df.fail, label %df.unlink
+df.unlink:
+  %df.ret = call i32 @unlink(i8* %df.path)
+  %df.ok = icmp eq i32 %df.ret, 0
+  ret i1 %df.ok
+
+builtin_make_directory:
+  ; M74: make_directory(+Path) -- atom Path. Calls libc mkdir(path,
+  ; 0o755); succeeds iff mkdir returns 0. (0o755 = 493 decimal --
+  ; rwxr-xr-x, the conventional ``mkdir'' default; subject to umask.)
+  %mkd.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mkd.t1 = extractvalue %Value %mkd.a1, 0
+  %mkd.is_atom = icmp eq i32 %mkd.t1, 0
+  br i1 %mkd.is_atom, label %mkd.go, label %mkd.fail
+mkd.fail:
+  ret i1 false
+mkd.go:
+  %mkd.aid = extractvalue %Value %mkd.a1, 1
+  %mkd.path = call i8* @wam_atom_to_string(i64 %mkd.aid)
+  %mkd.path_null = icmp eq i8* %mkd.path, null
+  br i1 %mkd.path_null, label %mkd.fail, label %mkd.mkdir
+mkd.mkdir:
+  %mkd.ret = call i32 @mkdir(i8* %mkd.path, i32 493)
+  %mkd.ok = icmp eq i32 %mkd.ret, 0
+  ret i1 %mkd.ok
+
+builtin_rename_file:
+  ; M75: rename_file(+Old, +New) -- both atoms. Calls libc
+  ; rename(old, new); succeeds iff rename returns 0.
+  %rnf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rnf.t1 = extractvalue %Value %rnf.a1, 0
+  %rnf.a1_atom = icmp eq i32 %rnf.t1, 0
+  br i1 %rnf.a1_atom, label %rnf.chk2, label %rnf.fail
+rnf.fail:
+  ret i1 false
+rnf.chk2:
+  %rnf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rnf.t2 = extractvalue %Value %rnf.a2, 0
+  %rnf.a2_atom = icmp eq i32 %rnf.t2, 0
+  br i1 %rnf.a2_atom, label %rnf.go, label %rnf.fail
+rnf.go:
+  %rnf.aid1 = extractvalue %Value %rnf.a1, 1
+  %rnf.old = call i8* @wam_atom_to_string(i64 %rnf.aid1)
+  %rnf.old_null = icmp eq i8* %rnf.old, null
+  br i1 %rnf.old_null, label %rnf.fail, label %rnf.go2
+rnf.go2:
+  %rnf.aid2 = extractvalue %Value %rnf.a2, 1
+  %rnf.new = call i8* @wam_atom_to_string(i64 %rnf.aid2)
+  %rnf.new_null = icmp eq i8* %rnf.new, null
+  br i1 %rnf.new_null, label %rnf.fail, label %rnf.do
+rnf.do:
+  %rnf.ret = call i32 @rename(i8* %rnf.old, i8* %rnf.new)
+  %rnf.ok = icmp eq i32 %rnf.ret, 0
+  ret i1 %rnf.ok
+
+builtin_delete_directory:
+  ; M75: delete_directory(+Path) -- atom Path. Calls libc rmdir(path);
+  ; succeeds iff rmdir returns 0 (target was an empty directory).
+  %ddr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ddr.t1 = extractvalue %Value %ddr.a1, 0
+  %ddr.is_atom = icmp eq i32 %ddr.t1, 0
+  br i1 %ddr.is_atom, label %ddr.go, label %ddr.fail
+ddr.fail:
+  ret i1 false
+ddr.go:
+  %ddr.aid = extractvalue %Value %ddr.a1, 1
+  %ddr.path = call i8* @wam_atom_to_string(i64 %ddr.aid)
+  %ddr.path_null = icmp eq i8* %ddr.path, null
+  br i1 %ddr.path_null, label %ddr.fail, label %ddr.rmdir
+ddr.rmdir:
+  %ddr.ret = call i32 @rmdir(i8* %ddr.path)
+  %ddr.ok = icmp eq i32 %ddr.ret, 0
+  ret i1 %ddr.ok
+
+builtin_size_file:
+  ; M76: size_file(+Path, ?Size) -- atom Path; unifies A2 with stat
+  ; result st_size (i64, offset 48 on Linux glibc). Fails if stat
+  ; fails (missing path, permission denied, etc).
+  %sf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sf.t1 = extractvalue %Value %sf.a1, 0
+  %sf.is_atom = icmp eq i32 %sf.t1, 0
+  br i1 %sf.is_atom, label %sf.go, label %sf.fail
+sf.fail:
+  ret i1 false
+sf.go:
+  %sf.aid = extractvalue %Value %sf.a1, 1
+  %sf.path = call i8* @wam_atom_to_string(i64 %sf.aid)
+  %sf.path_null = icmp eq i8* %sf.path, null
+  br i1 %sf.path_null, label %sf.fail, label %sf.stat
+sf.stat:
+  %sf.buf = alloca [256 x i8]
+  %sf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %sf.buf, i32 0, i32 0
+  %sf.ret = call i32 @stat(i8* %sf.path, i8* %sf.buf_ptr)
+  %sf.stat_ok = icmp eq i32 %sf.ret, 0
+  br i1 %sf.stat_ok, label %sf.read, label %sf.fail
+sf.read:
+  %sf.size_ptr_i8 = getelementptr i8, i8* %sf.buf_ptr, i64 48
+  %sf.size_ptr = bitcast i8* %sf.size_ptr_i8 to i64*
+  %sf.size = load i64, i64* %sf.size_ptr
+  %sf.v = call %Value @value_integer(i64 %sf.size)
+  %sf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sf.raw2, %Value %sf.v)
+  ret i1 %sf.ok
+
+builtin_time_file:
+  ; M76: time_file(+Path, ?Time) -- atom Path; unifies A2 with the
+  ; modification time as Float seconds since the epoch
+  ; (st_mtim.tv_sec at offset 88 + tv_nsec at offset 96 / 1e9).
+  ; Fails if stat fails.
+  %tf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tf.t1 = extractvalue %Value %tf.a1, 0
+  %tf.is_atom = icmp eq i32 %tf.t1, 0
+  br i1 %tf.is_atom, label %tf.go, label %tf.fail
+tf.fail:
+  ret i1 false
+tf.go:
+  %tf.aid = extractvalue %Value %tf.a1, 1
+  %tf.path = call i8* @wam_atom_to_string(i64 %tf.aid)
+  %tf.path_null = icmp eq i8* %tf.path, null
+  br i1 %tf.path_null, label %tf.fail, label %tf.stat
+tf.stat:
+  %tf.buf = alloca [256 x i8]
+  %tf.buf_ptr = getelementptr [256 x i8], [256 x i8]* %tf.buf, i32 0, i32 0
+  %tf.ret = call i32 @stat(i8* %tf.path, i8* %tf.buf_ptr)
+  %tf.stat_ok = icmp eq i32 %tf.ret, 0
+  br i1 %tf.stat_ok, label %tf.read, label %tf.fail
+tf.read:
+  %tf.sec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 88
+  %tf.sec_ptr = bitcast i8* %tf.sec_ptr_i8 to i64*
+  %tf.sec = load i64, i64* %tf.sec_ptr
+  %tf.nsec_ptr_i8 = getelementptr i8, i8* %tf.buf_ptr, i64 96
+  %tf.nsec_ptr = bitcast i8* %tf.nsec_ptr_i8 to i64*
+  %tf.nsec = load i64, i64* %tf.nsec_ptr
+  %tf.sec_d = sitofp i64 %tf.sec to double
+  %tf.nsec_d = sitofp i64 %tf.nsec to double
+  %tf.frac = fdiv double %tf.nsec_d, 1.000000e+09
+  %tf.total = fadd double %tf.sec_d, %tf.frac
+  %tf.bits = bitcast double %tf.total to i64
+  %tf.v0 = insertvalue %Value undef, i32 2, 0
+  %tf.v = insertvalue %Value %tf.v0, i64 %tf.bits, 1
+  %tf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tf.raw2, %Value %tf.v)
+  ret i1 %tf.ok
+
+builtin_getenv:
+  ; M77: getenv(+Name, ?Value) -- atom Name; if env var exists,
+  ; copies its value into the arena, interns as an atom, and
+  ; unifies with A2. Fails if the var is unset.
+  %gev.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gev.t1 = extractvalue %Value %gev.a1, 0
+  %gev.is_atom = icmp eq i32 %gev.t1, 0
+  br i1 %gev.is_atom, label %gev.go, label %gev.fail
+gev.fail:
+  ret i1 false
+gev.go:
+  %gev.aid = extractvalue %Value %gev.a1, 1
+  %gev.name = call i8* @wam_atom_to_string(i64 %gev.aid)
+  %gev.name_null = icmp eq i8* %gev.name, null
+  br i1 %gev.name_null, label %gev.fail, label %gev.call
+gev.call:
+  %gev.val = call i8* @getenv(i8* %gev.name)
+  %gev.val_null = icmp eq i8* %gev.val, null
+  br i1 %gev.val_null, label %gev.fail, label %gev.copy
+gev.copy:
+  ; getenv returns a pointer into the libc env block. Copy into
+  ; the arena (so the atom table owns the bytes) before interning.
+  %gev.len = call i64 @strlen(i8* %gev.val)
+  call void @wam_arena_ensure()
+  %gev.bufsize = add i64 %gev.len, 1
+  %gev.buf = call i8* @wam_arena_alloc(i64 %gev.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gev.buf, i8* %gev.val, i64 %gev.len, i1 false)
+  %gev.term = getelementptr i8, i8* %gev.buf, i64 %gev.len
+  store i8 0, i8* %gev.term
+  %gev.new_id = call i64 @wam_intern_atom(i8* %gev.buf, i64 %gev.len)
+  %gev.v0 = insertvalue %Value undef, i32 0, 0
+  %gev.v = insertvalue %Value %gev.v0, i64 %gev.new_id, 1
+  %gev.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %gev.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gev.raw2, %Value %gev.v)
+  ret i1 %gev.ok
+
+builtin_setenv:
+  ; M77: setenv(+Name, +Value) -- both atoms. Calls libc
+  ; setenv(name, value, 1) -- the trailing 1 is the "overwrite"
+  ; flag, matching SWI-Prolog''s set-without-checking semantics.
+  ; Succeeds iff setenv returns 0.
+  %se.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %se.t1 = extractvalue %Value %se.a1, 0
+  %se.a1_atom = icmp eq i32 %se.t1, 0
+  br i1 %se.a1_atom, label %se.chk2, label %se.fail
+se.fail:
+  ret i1 false
+se.chk2:
+  %se.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %se.t2 = extractvalue %Value %se.a2, 0
+  %se.a2_atom = icmp eq i32 %se.t2, 0
+  br i1 %se.a2_atom, label %se.go, label %se.fail
+se.go:
+  %se.aid1 = extractvalue %Value %se.a1, 1
+  %se.name = call i8* @wam_atom_to_string(i64 %se.aid1)
+  %se.name_null = icmp eq i8* %se.name, null
+  br i1 %se.name_null, label %se.fail, label %se.go2
+se.go2:
+  %se.aid2 = extractvalue %Value %se.a2, 1
+  %se.val = call i8* @wam_atom_to_string(i64 %se.aid2)
+  %se.val_null = icmp eq i8* %se.val, null
+  br i1 %se.val_null, label %se.fail, label %se.do
+se.do:
+  %se.ret = call i32 @setenv(i8* %se.name, i8* %se.val, i32 1)
+  %se.ok = icmp eq i32 %se.ret, 0
+  ret i1 %se.ok
+
+builtin_shell1:
+  ; M78: shell(+Command) -- atom Command; runs ``/bin/sh -c Command``
+  ; via libc system(); succeeds iff the raw wait status is 0
+  ; (i.e. exit 0, no signal). Note that on Linux system() returns
+  ; the wait status, which is 0 only when the child exited
+  ; normally with code 0 -- exactly the desired semantics for
+  ; shell/1.
+  %sh1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh1.t1 = extractvalue %Value %sh1.a1, 0
+  %sh1.is_atom = icmp eq i32 %sh1.t1, 0
+  br i1 %sh1.is_atom, label %sh1.go, label %sh1.fail
+sh1.fail:
+  ret i1 false
+sh1.go:
+  %sh1.aid = extractvalue %Value %sh1.a1, 1
+  %sh1.cmd = call i8* @wam_atom_to_string(i64 %sh1.aid)
+  %sh1.cmd_null = icmp eq i8* %sh1.cmd, null
+  br i1 %sh1.cmd_null, label %sh1.fail, label %sh1.run
+sh1.run:
+  %sh1.raw = call i32 @system(i8* %sh1.cmd)
+  %sh1.ok = icmp eq i32 %sh1.raw, 0
+  ret i1 %sh1.ok
+
+builtin_shell2:
+  ; M78: shell(+Command, ?Status) -- atom Command; unifies Status
+  ; with WEXITSTATUS(raw) (decoded exit code 0..255), matching
+  ; SWI-Prolog''s convention. For abnormal termination (signal,
+  ; system() == -1) Status reflects the high bits as encoded
+  ; by the kernel; callers can compare against 0 for ``ran and
+  ; exited cleanly''.
+  %sh2.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sh2.t1 = extractvalue %Value %sh2.a1, 0
+  %sh2.is_atom = icmp eq i32 %sh2.t1, 0
+  br i1 %sh2.is_atom, label %sh2.go, label %sh2.fail
+sh2.fail:
+  ret i1 false
+sh2.go:
+  %sh2.aid = extractvalue %Value %sh2.a1, 1
+  %sh2.cmd = call i8* @wam_atom_to_string(i64 %sh2.aid)
+  %sh2.cmd_null = icmp eq i8* %sh2.cmd, null
+  br i1 %sh2.cmd_null, label %sh2.fail, label %sh2.run
+sh2.run:
+  %sh2.raw = call i32 @system(i8* %sh2.cmd)
+  %sh2.shifted = ashr i32 %sh2.raw, 8
+  %sh2.exit = and i32 %sh2.shifted, 255
+  %sh2.exit64 = sext i32 %sh2.exit to i64
+  %sh2.v = call %Value @value_integer(i64 %sh2.exit64)
+  %sh2.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sh2.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sh2.raw2, %Value %sh2.v)
+  ret i1 %sh2.ok
+
+builtin_working_directory:
+  ; M79: working_directory(?Old, ?New) -- unifies Old with the
+  ; current CWD read via getcwd. If New is an atom, chdir to
+  ; that path; if New is unbound, it gets unified with Old as
+  ; well (the canonical ``query mode'' for working_directory(D,D)).
+  ; 4096-byte stack buffer covers PATH_MAX on Linux.
+  %wd.buf = alloca [4096 x i8]
+  %wd.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %wd.buf, i32 0, i32 0
+  %wd.got = call i8* @getcwd(i8* %wd.buf_ptr, i64 4096)
+  %wd.got_null = icmp eq i8* %wd.got, null
+  br i1 %wd.got_null, label %wd.fail, label %wd.intern
+wd.fail:
+  ret i1 false
+wd.intern:
+  ; Copy the cwd string into the arena, intern, build atom Value.
+  %wd.len = call i64 @strlen(i8* %wd.buf_ptr)
+  call void @wam_arena_ensure()
+  %wd.bufsize = add i64 %wd.len, 1
+  %wd.arena = call i8* @wam_arena_alloc(i64 %wd.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %wd.arena, i8* %wd.buf_ptr, i64 %wd.len, i1 false)
+  %wd.term = getelementptr i8, i8* %wd.arena, i64 %wd.len
+  store i8 0, i8* %wd.term
+  %wd.aid = call i64 @wam_intern_atom(i8* %wd.arena, i64 %wd.len)
+  %wd.v0 = insertvalue %Value undef, i32 0, 0
+  %wd.cwd_v = insertvalue %Value %wd.v0, i64 %wd.aid, 1
+  %wd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wd.u1 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw1, %Value %wd.cwd_v)
+  br i1 %wd.u1, label %wd.chk_new, label %wd.fail
+wd.chk_new:
+  ; Inspect New (reg 1, deref). Atom -> chdir; anything else
+  ; (typically an unbound var) -> unify it with CWD, no chdir.
+  %wd.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wd.t2 = extractvalue %Value %wd.a2, 0
+  %wd.is_atom = icmp eq i32 %wd.t2, 0
+  br i1 %wd.is_atom, label %wd.chdir, label %wd.unify_new
+wd.unify_new:
+  %wd.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %wd.u2 = call i1 @wam_unify_value(%WamState* %vm, %Value %wd.raw2, %Value %wd.cwd_v)
+  ret i1 %wd.u2
+wd.chdir:
+  %wd.aid2 = extractvalue %Value %wd.a2, 1
+  %wd.path = call i8* @wam_atom_to_string(i64 %wd.aid2)
+  %wd.path_null = icmp eq i8* %wd.path, null
+  br i1 %wd.path_null, label %wd.fail, label %wd.dochdir
+wd.dochdir:
+  %wd.ret = call i32 @chdir(i8* %wd.path)
+  %wd.ok = icmp eq i32 %wd.ret, 0
+  ret i1 %wd.ok
+
+builtin_getpid:
+  ; M79: getpid(?Pid) -- unifies Pid with the process id from
+  ; libc getpid() as Integer. Always succeeds (getpid cannot fail).
+  %gp.pid = call i32 @getpid()
+  %gp.pid64 = sext i32 %gp.pid to i64
+  %gp.v = call %Value @value_integer(i64 %gp.pid64)
+  %gp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gp.raw1, %Value %gp.v)
+  ret i1 %gp.ok
+
+builtin_sleep:
+  ; M86: sleep(+Seconds) -- accepts Integer or Float seconds and
+  ; calls libc usleep(microseconds). usleep takes i32, so very
+  ; long sleeps (more than ~71 minutes) silently truncate; for
+  ; typical usage this is fine. Returns success unconditionally
+  ; once the call returns (any signal that woke usleep early
+  ; still counts as a successful sleep). Prefix ``slp.'' to avoid
+  ; the ``sl.'' collision with builtin_sum_list (M42).
+  %slp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %slp.t1 = extractvalue %Value %slp.a1, 0
+  %slp.is_int = icmp eq i32 %slp.t1, 1
+  %slp.is_float = icmp eq i32 %slp.t1, 2
+  %slp.is_num = or i1 %slp.is_int, %slp.is_float
+  br i1 %slp.is_num, label %slp.dispatch, label %slp.fail
+slp.fail:
+  ret i1 false
+slp.dispatch:
+  br i1 %slp.is_float, label %slp.from_float, label %slp.from_int
+slp.from_int:
+  %slp.sec_i = extractvalue %Value %slp.a1, 1
+  %slp.us_int = mul i64 %slp.sec_i, 1000000
+  br label %slp.do_sleep
+slp.from_float:
+  %slp.sec_bits = extractvalue %Value %slp.a1, 1
+  %slp.sec_d = bitcast i64 %slp.sec_bits to double
+  %slp.us_d = fmul double %slp.sec_d, 1.000000e+06
+  %slp.us_flt = fptosi double %slp.us_d to i64
+  br label %slp.do_sleep
+slp.do_sleep:
+  %slp.us = phi i64 [ %slp.us_int, %slp.from_int ], [ %slp.us_flt, %slp.from_float ]
+  %slp.us32 = trunc i64 %slp.us to i32
+  call i32 @usleep(i32 %slp.us32)
+  ret i1 true
+
+builtin_gethostname:
+  ; M88: gethostname(?Name) -- unifies Name with the host name from
+  ; libc gethostname() as an atom. 256-byte stack buffer is more
+  ; than enough for HOST_NAME_MAX (typically 64 on Linux). Fails
+  ; if gethostname returns non-zero (truncation, errno set).
+  %ghn.buf = alloca [256 x i8]
+  %ghn.buf_ptr = getelementptr [256 x i8], [256 x i8]* %ghn.buf, i32 0, i32 0
+  %ghn.ret = call i32 @gethostname(i8* %ghn.buf_ptr, i64 256)
+  %ghn.ok_call = icmp eq i32 %ghn.ret, 0
+  br i1 %ghn.ok_call, label %ghn.intern, label %ghn.fail
+ghn.fail:
+  ret i1 false
+ghn.intern:
+  ; Copy the buffer into the arena, intern, build atom Value.
+  %ghn.len = call i64 @strlen(i8* %ghn.buf_ptr)
+  call void @wam_arena_ensure()
+  %ghn.bufsize = add i64 %ghn.len, 1
+  %ghn.arena = call i8* @wam_arena_alloc(i64 %ghn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ghn.arena, i8* %ghn.buf_ptr, i64 %ghn.len, i1 false)
+  %ghn.term = getelementptr i8, i8* %ghn.arena, i64 %ghn.len
+  store i8 0, i8* %ghn.term
+  %ghn.aid = call i64 @wam_intern_atom(i8* %ghn.arena, i64 %ghn.len)
+  %ghn.v0 = insertvalue %Value undef, i32 0, 0
+  %ghn.v = insertvalue %Value %ghn.v0, i64 %ghn.aid, 1
+  %ghn.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ghn.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ghn.raw1, %Value %ghn.v)
+  ret i1 %ghn.uok
+
+builtin_cpu_time:
+  ; M89: cpu_time(?Time) -- process CPU time in seconds as Float, via
+  ; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts). Same struct timespec
+  ; layout as M87 get_time; only the clock id differs (CLOCK_REALTIME=0
+  ; vs CLOCK_PROCESS_CPUTIME_ID=2 on Linux glibc).
+  %cpu.ts_buf = alloca [16 x i8]
+  %cpu.ts_ptr = getelementptr [16 x i8], [16 x i8]* %cpu.ts_buf, i32 0, i32 0
+  %cpu.cg_ret = call i32 @clock_gettime(i32 2, i8* %cpu.ts_ptr)
+  %cpu.sec_ptr = bitcast i8* %cpu.ts_ptr to i64*
+  %cpu.sec = load i64, i64* %cpu.sec_ptr
+  %cpu.nsec_ptr_i8 = getelementptr i8, i8* %cpu.ts_ptr, i64 8
+  %cpu.nsec_ptr = bitcast i8* %cpu.nsec_ptr_i8 to i64*
+  %cpu.nsec = load i64, i64* %cpu.nsec_ptr
+  %cpu.sec_d = sitofp i64 %cpu.sec to double
+  %cpu.nsec_d = sitofp i64 %cpu.nsec to double
+  %cpu.frac = fdiv double %cpu.nsec_d, 1.000000e+09
+  %cpu.t_d = fadd double %cpu.sec_d, %cpu.frac
+  %cpu.t_bits = bitcast double %cpu.t_d to i64
+  %cpu.v0 = insertvalue %Value undef, i32 2, 0
+  %cpu.v = insertvalue %Value %cpu.v0, i64 %cpu.t_bits, 1
+  %cpu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cpu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %cpu.raw1, %Value %cpu.v)
+  ret i1 %cpu.ok
+
+builtin_random:
+  ; M90: random(?X) -- libc drand48() returns double in [0, 1). Pack as
+  ; Float (tag 2). Default seed is 0, so values are deterministic across
+  ; runs unless srand48 is called (not yet exposed).
+  %rnd.d = call double @drand48()
+  %rnd.bits = bitcast double %rnd.d to i64
+  %rnd.v0 = insertvalue %Value undef, i32 2, 0
+  %rnd.v = insertvalue %Value %rnd.v0, i64 %rnd.bits, 1
+  %rnd.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %rnd.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rnd.raw1, %Value %rnd.v)
+  ret i1 %rnd.ok
+
+builtin_random_between:
+  ; M90: random_between(+L, +H, ?X) -- Integer X in [L, H] inclusive.
+  ; Both bounds must be Integer (tag 1); fails if either is not, or if
+  ; H < L. Implementation: lrand48() % (H - L + 1) + L. The modulo bias
+  ; is acceptable for typical small ranges (Prolog idiom).
+  %rb.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rb.t1 = extractvalue %Value %rb.a1, 0
+  %rb.is_int1 = icmp eq i32 %rb.t1, 1
+  br i1 %rb.is_int1, label %rb.check2, label %rb.fail
+rb.fail:
+  ret i1 false
+rb.check2:
+  %rb.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rb.t2 = extractvalue %Value %rb.a2, 0
+  %rb.is_int2 = icmp eq i32 %rb.t2, 1
+  br i1 %rb.is_int2, label %rb.go, label %rb.fail
+rb.go:
+  %rb.lo = extractvalue %Value %rb.a1, 1
+  %rb.hi = extractvalue %Value %rb.a2, 1
+  %rb.le = icmp sle i64 %rb.lo, %rb.hi
+  br i1 %rb.le, label %rb.draw, label %rb.fail
+rb.draw:
+  %rb.range_m1 = sub i64 %rb.hi, %rb.lo
+  %rb.range = add i64 %rb.range_m1, 1
+  %rb.raw = call i64 @lrand48()
+  %rb.mod = srem i64 %rb.raw, %rb.range
+  %rb.x = add i64 %rb.mod, %rb.lo
+  %rb.v0 = insertvalue %Value undef, i32 1, 0
+  %rb.v = insertvalue %Value %rb.v0, i64 %rb.x, 1
+  %rb.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %rb.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rb.raw3, %Value %rb.v)
+  ret i1 %rb.ok
+
+builtin_format_time:
+  ; M91: format_time(?Atom, +Format, +Stamp) -- Stamp is the get_time-
+  ; style epoch seconds (Integer or Float), Format is a strftime atom
+  ; (e.g. ``%Y-%m-%d %H:%M:%S''), result Atom is the rendered string.
+  ; Pipeline: time_t = (i64)Stamp -> localtime_r(&t, &tm) ->
+  ; strftime(buf, 256, fmt, &tm) -> intern buf as atom -> unify.
+  ; struct tm on x86-64 glibc is 56 bytes; alloca 64 for headroom.
+  %ft.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ft.t2 = extractvalue %Value %ft.a2, 0
+  %ft.fmt_is_atom = icmp eq i32 %ft.t2, 0
+  br i1 %ft.fmt_is_atom, label %ft.have_fmt, label %ft.fail
+ft.fail:
+  ret i1 false
+ft.have_fmt:
+  %ft.fmt_aid = extractvalue %Value %ft.a2, 1
+  %ft.fmt_str = call i8* @wam_atom_to_string(i64 %ft.fmt_aid)
+  %ft.fmt_null = icmp eq i8* %ft.fmt_str, null
+  br i1 %ft.fmt_null, label %ft.fail, label %ft.read_stamp
+ft.read_stamp:
+  %ft.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %ft.t3 = extractvalue %Value %ft.a3, 0
+  %ft.is_int = icmp eq i32 %ft.t3, 1
+  br i1 %ft.is_int, label %ft.from_int, label %ft.maybe_float
+ft.from_int:
+  %ft.t_int = extractvalue %Value %ft.a3, 1
+  br label %ft.have_time
+ft.maybe_float:
+  %ft.is_float = icmp eq i32 %ft.t3, 2
+  br i1 %ft.is_float, label %ft.from_float, label %ft.fail
+ft.from_float:
+  %ft.bits = extractvalue %Value %ft.a3, 1
+  %ft.d = bitcast i64 %ft.bits to double
+  %ft.t_flt = fptosi double %ft.d to i64
+  br label %ft.have_time
+ft.have_time:
+  %ft.time_t = phi i64 [ %ft.t_int, %ft.from_int ],
+                       [ %ft.t_flt, %ft.from_float ]
+  ; Stack-alloc time_t cell + struct tm cell.
+  %ft.tp = alloca i64
+  store i64 %ft.time_t, i64* %ft.tp
+  %ft.tp_i8 = bitcast i64* %ft.tp to i8*
+  %ft.tm_buf = alloca [64 x i8]
+  %ft.tm_ptr = getelementptr [64 x i8], [64 x i8]* %ft.tm_buf, i32 0, i32 0
+  %ft.lt = call i8* @localtime_r(i64* %ft.tp, i8* %ft.tm_ptr)
+  %ft.lt_null = icmp eq i8* %ft.lt, null
+  br i1 %ft.lt_null, label %ft.fail, label %ft.do_strftime
+ft.do_strftime:
+  ; Render into a 256-byte arena buffer. Most strftime patterns fit
+  ; comfortably; truncation just means a shorter atom.
+  call void @wam_arena_ensure()
+  %ft.out = call i8* @wam_arena_alloc(i64 256)
+  %ft.len = call i64 @strftime(i8* %ft.out, i64 256, i8* %ft.fmt_str, i8* %ft.tm_ptr)
+  %ft.aid = call i64 @wam_intern_atom(i8* %ft.out, i64 %ft.len)
+  %ft.v0 = insertvalue %Value undef, i32 0, 0
+  %ft.v = insertvalue %Value %ft.v0, i64 %ft.aid, 1
+  %ft.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ft.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ft.raw1, %Value %ft.v)
+  ret i1 %ft.uok
+
+builtin_halt0:
+  ; M92: halt/0 -- exit(0). Never returns; `unreachable` keeps llc
+  ; happy after the noreturn call.
+  call void @exit(i32 0)
+  unreachable
+
+builtin_halt1:
+  ; M92: halt(+Code) -- exit(Code). Code must be Integer; non-integer
+  ; falls through to a plain failure (no exit) so the run_loop returns
+  ; i1 false and the caller sees a Prolog miss instead of an undefined
+  ; status.
+  %h1.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %h1.t1 = extractvalue %Value %h1.a1, 0
+  %h1.is_int = icmp eq i32 %h1.t1, 1
+  br i1 %h1.is_int, label %h1.do_exit, label %h1.fail
+h1.fail:
+  ret i1 false
+h1.do_exit:
+  %h1.code64 = extractvalue %Value %h1.a1, 1
+  %h1.code32 = trunc i64 %h1.code64 to i32
+  call void @exit(i32 %h1.code32)
+  unreachable
+
+builtin_unsetenv:
+  ; M93: unsetenv(+Name) -- complements M77 setenv/2. Name must be an
+  ; atom; non-atom fails. libc unsetenv returns 0 on success and -1
+  ; only on EINVAL (invalid name like one containing ``=''). Treats
+  ; an unset-when-not-set as success, matching SWI-Prolog semantics.
+  %us.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %us.t1 = extractvalue %Value %us.a1, 0
+  %us.is_atom = icmp eq i32 %us.t1, 0
+  br i1 %us.is_atom, label %us.go, label %us.fail
+us.fail:
+  ret i1 false
+us.go:
+  %us.aid = extractvalue %Value %us.a1, 1
+  %us.name = call i8* @wam_atom_to_string(i64 %us.aid)
+  %us.name_null = icmp eq i8* %us.name, null
+  br i1 %us.name_null, label %us.fail, label %us.do
+us.do:
+  %us.ret = call i32 @unsetenv(i8* %us.name)
+  %us.ok = icmp eq i32 %us.ret, 0
+  ret i1 %us.ok
+
+builtin_getuid:
+  ; M95: getuid(?Uid) -- unifies Uid with the real user id from
+  ; libc getuid() as Integer. uid_t is unsigned 32 bits on Linux;
+  ; zext to i64 so reserved bits stay clear under the Integer tag.
+  ; Always succeeds (getuid cannot fail).
+  %gu.uid = call i32 @getuid()
+  %gu.uid64 = zext i32 %gu.uid to i64
+  %gu.v = call %Value @value_integer(i64 %gu.uid64)
+  %gu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gu.raw1, %Value %gu.v)
+  ret i1 %gu.ok
+
+builtin_geteuid:
+  ; M95: geteuid(?EUid) -- effective uid via libc geteuid(). Same
+  ; shape as builtin_getuid; differs only when the process has a
+  ; setuid bit set or has called seteuid.
+  %geu.uid = call i32 @geteuid()
+  %geu.uid64 = zext i32 %geu.uid to i64
+  %geu.v = call %Value @value_integer(i64 %geu.uid64)
+  %geu.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %geu.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %geu.raw1, %Value %geu.v)
+  ret i1 %geu.ok
+
+builtin_getgid:
+  ; M96: getgid(?Gid) -- real group id via libc getgid(). gid_t is
+  ; unsigned 32 bits on Linux; zext to i64. Always succeeds.
+  %gg.gid = call i32 @getgid()
+  %gg.gid64 = zext i32 %gg.gid to i64
+  %gg.v = call %Value @value_integer(i64 %gg.gid64)
+  %gg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gg.raw1, %Value %gg.v)
+  ret i1 %gg.ok
+
+builtin_getegid:
+  ; M96: getegid(?EGid) -- effective gid via libc getegid().
+  %gegg.gid = call i32 @getegid()
+  %gegg.gid64 = zext i32 %gegg.gid to i64
+  %gegg.v = call %Value @value_integer(i64 %gegg.gid64)
+  %gegg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gegg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gegg.raw1, %Value %gegg.v)
+  ret i1 %gegg.ok
+
+builtin_getppid:
+  ; M96: getppid(?PPid) -- parent process id via libc getppid().
+  ; pid_t is signed 32 bits; sext to i64 to keep the sign correct
+  ; even though a real ppid is always positive.
+  %gpp.pid = call i32 @getppid()
+  %gpp.pid64 = sext i32 %gpp.pid to i64
+  %gpp.v = call %Value @value_integer(i64 %gpp.pid64)
+  %gpp.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpp.raw1, %Value %gpp.v)
+  ret i1 %gpp.ok
+
+builtin_set_random:
+  ; M97: set_random(+Option) -- seeds libc srand48. Option must be
+  ; the compound seed/1 with an Integer arg (matches SWI''s
+  ; set_random/1 calling convention). Other Option shapes fail
+  ; rather than erroring -- this isn''t the place to validate every
+  ; SWI-side option since the only one with a libc-mappable
+  ; semantic is the seed/1 compound.
+  %sr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sr.tag = call i32 @value_tag(%Value %sr.a1)
+  %sr.is_cp = icmp eq i32 %sr.tag, 3
+  br i1 %sr.is_cp, label %sr.check_arity, label %sr.fail
+sr.fail:
+  ret i1 false
+sr.check_arity:
+  %sr.cp_bits = call i64 @value_payload(%Value %sr.a1)
+  %sr.cp_ptr = inttoptr i64 %sr.cp_bits to %Compound*
+  %sr.ar_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 1
+  %sr.ar = load i32, i32* %sr.ar_slot
+  %sr.ar_ok = icmp eq i32 %sr.ar, 1
+  br i1 %sr.ar_ok, label %sr.check_name, label %sr.fail
+sr.check_name:
+  %sr.fn_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 0
+  %sr.fn_i8 = load i8*, i8** %sr.fn_slot
+  %sr.want = getelementptr [5 x i8], [5 x i8]* @.fn_seed, i32 0, i32 0
+  %sr.cmp = call i32 @strcmp(i8* %sr.fn_i8, i8* %sr.want)
+  %sr.name_ok = icmp eq i32 %sr.cmp, 0
+  br i1 %sr.name_ok, label %sr.read_arg, label %sr.fail
+sr.read_arg:
+  %sr.args_slot = getelementptr %Compound, %Compound* %sr.cp_ptr, i32 0, i32 2
+  %sr.args = load %Value*, %Value** %sr.args_slot
+  %sr.arg0_ptr = getelementptr %Value, %Value* %sr.args, i32 0
+  %sr.arg0_raw = load %Value, %Value* %sr.arg0_ptr
+  %sr.arg0 = call %Value @wam_deref_value(%WamState* %vm, %Value %sr.arg0_raw)
+  %sr.arg0_tag = call i32 @value_tag(%Value %sr.arg0)
+  %sr.is_int = icmp eq i32 %sr.arg0_tag, 1
+  br i1 %sr.is_int, label %sr.do_seed, label %sr.fail
+sr.do_seed:
+  %sr.seed = call i64 @value_payload(%Value %sr.arg0)
+  call void @srand48(i64 %sr.seed)
+  ret i1 true
+
+builtin_stamp_date_time:
+  ; M98: stamp_date_time(+Stamp, -DateTime, +TZ) -- decompose a Unix
+  ; epoch Stamp (Integer or Float) into the 9-arity SWI date/9
+  ; compound: date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst).
+  ; TZ is required to be an Atom (`local'' is the only accepted
+  ; value for now -- gmt/UTC and integer offsets fall back to the
+  ; same localtime_r path; the slot just records the requested
+  ; name as the TZName component).
+  ;
+  ; struct tm layout on x86-64 glibc:
+  ;   off  0 i32 tm_sec
+  ;   off  4 i32 tm_min
+  ;   off  8 i32 tm_hour
+  ;   off 12 i32 tm_mday
+  ;   off 16 i32 tm_mon       (0-based; add 1 for Prolog)
+  ;   off 20 i32 tm_year      (years since 1900; add 1900)
+  ;   off 24 i32 tm_wday      (unused)
+  ;   off 28 i32 tm_yday      (unused)
+  ;   off 32 i32 tm_isdst
+  ;   off 36   (4 byte pad)
+  ;   off 40 i64 tm_gmtoff
+  ;   off 48 i8* tm_zone      (unused -- we store the requested
+  ;                            TZName atom instead)
+  ;   total: 56 bytes (alloca 64 for headroom).
+  %sdt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sdt.a1_tag = call i32 @value_tag(%Value %sdt.a1)
+  %sdt.is_int = icmp eq i32 %sdt.a1_tag, 1
+  br i1 %sdt.is_int, label %sdt.from_int, label %sdt.maybe_float
+sdt.fail:
+  ret i1 false
+sdt.from_int:
+  %sdt.t_int = call i64 @value_payload(%Value %sdt.a1)
+  br label %sdt.have_time
+sdt.maybe_float:
+  %sdt.is_float = icmp eq i32 %sdt.a1_tag, 2
+  br i1 %sdt.is_float, label %sdt.from_float, label %sdt.fail
+sdt.from_float:
+  %sdt.bits = call i64 @value_payload(%Value %sdt.a1)
+  %sdt.d = bitcast i64 %sdt.bits to double
+  %sdt.t_flt = fptosi double %sdt.d to i64
+  br label %sdt.have_time
+sdt.have_time:
+  %sdt.time_t = phi i64 [ %sdt.t_int, %sdt.from_int ],
+                        [ %sdt.t_flt, %sdt.from_float ]
+  ; Validate TZ arg (just require Atom -- value ignored beyond
+  ; the requirement, since libc localtime_r reads TZ env at libc
+  ; init time, not per-call).
+  %sdt.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %sdt.a3_tag = call i32 @value_tag(%Value %sdt.a3)
+  %sdt.a3_atom = icmp eq i32 %sdt.a3_tag, 0
+  br i1 %sdt.a3_atom, label %sdt.do_localtime, label %sdt.fail
+sdt.do_localtime:
+  %sdt.tp = alloca i64
+  store i64 %sdt.time_t, i64* %sdt.tp
+  %sdt.tm_buf = alloca [64 x i8]
+  %sdt.tm_ptr = getelementptr [64 x i8], [64 x i8]* %sdt.tm_buf, i32 0, i32 0
+  %sdt.lt = call i8* @localtime_r(i64* %sdt.tp, i8* %sdt.tm_ptr)
+  %sdt.lt_null = icmp eq i8* %sdt.lt, null
+  br i1 %sdt.lt_null, label %sdt.fail, label %sdt.read_fields
+sdt.read_fields:
+  ; Pull i32 fields from struct tm by byte offset. Each field is
+  ; sign-extended to i64 (tm_year offset is needed and can be
+  ; negative for years < 1900, which matters for date arithmetic
+  ; even though the test suite uses 21st-century stamps).
+  %sdt.sec_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 0
+  %sdt.sec_p = bitcast i8* %sdt.sec_p_i8 to i32*
+  %sdt.sec_i32 = load i32, i32* %sdt.sec_p
+  %sdt.sec = sext i32 %sdt.sec_i32 to i64
+  %sdt.min_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 4
+  %sdt.min_p = bitcast i8* %sdt.min_p_i8 to i32*
+  %sdt.min_i32 = load i32, i32* %sdt.min_p
+  %sdt.min = sext i32 %sdt.min_i32 to i64
+  %sdt.hour_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 8
+  %sdt.hour_p = bitcast i8* %sdt.hour_p_i8 to i32*
+  %sdt.hour_i32 = load i32, i32* %sdt.hour_p
+  %sdt.hour = sext i32 %sdt.hour_i32 to i64
+  %sdt.mday_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 12
+  %sdt.mday_p = bitcast i8* %sdt.mday_p_i8 to i32*
+  %sdt.mday_i32 = load i32, i32* %sdt.mday_p
+  %sdt.mday = sext i32 %sdt.mday_i32 to i64
+  %sdt.mon_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 16
+  %sdt.mon_p = bitcast i8* %sdt.mon_p_i8 to i32*
+  %sdt.mon_i32 = load i32, i32* %sdt.mon_p
+  %sdt.mon_raw = sext i32 %sdt.mon_i32 to i64
+  %sdt.mon = add i64 %sdt.mon_raw, 1
+  %sdt.year_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 20
+  %sdt.year_p = bitcast i8* %sdt.year_p_i8 to i32*
+  %sdt.year_i32 = load i32, i32* %sdt.year_p
+  %sdt.year_raw = sext i32 %sdt.year_i32 to i64
+  %sdt.year = add i64 %sdt.year_raw, 1900
+  %sdt.isdst_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 32
+  %sdt.isdst_p = bitcast i8* %sdt.isdst_p_i8 to i32*
+  %sdt.isdst_i32 = load i32, i32* %sdt.isdst_p
+  %sdt.isdst = sext i32 %sdt.isdst_i32 to i64
+  %sdt.gmtoff_p_i8 = getelementptr i8, i8* %sdt.tm_ptr, i64 40
+  %sdt.gmtoff_p = bitcast i8* %sdt.gmtoff_p_i8 to i64*
+  %sdt.gmtoff = load i64, i64* %sdt.gmtoff_p
+  ; Intern the TZ atom "local" so the date/9 compound carries an
+  ; atom-tagged TZName.
+  %sdt.tzn_str = getelementptr [6 x i8], [6 x i8]* @.fn_local, i32 0, i32 0
+  %sdt.tzn_id = call i64 @wam_intern_atom(i8* %sdt.tzn_str, i64 5)
+  ; Build the 9 arg Values: 8 Integers + 1 Atom.
+  %sdt.v_year = call %Value @value_integer(i64 %sdt.year)
+  %sdt.v_mon  = call %Value @value_integer(i64 %sdt.mon)
+  %sdt.v_mday = call %Value @value_integer(i64 %sdt.mday)
+  %sdt.v_hour = call %Value @value_integer(i64 %sdt.hour)
+  %sdt.v_min  = call %Value @value_integer(i64 %sdt.min)
+  %sdt.v_sec  = call %Value @value_integer(i64 %sdt.sec)
+  %sdt.v_off  = call %Value @value_integer(i64 %sdt.gmtoff)
+  %sdt.v_tzn0 = insertvalue %Value undef, i32 0, 0
+  %sdt.v_tzn  = insertvalue %Value %sdt.v_tzn0, i64 %sdt.tzn_id, 1
+  %sdt.v_dst  = call %Value @value_integer(i64 %sdt.isdst)
+  ; Allocate a fresh %Compound on the arena: header + 9-slot args.
+  call void @wam_arena_ensure()
+  %sdt.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %sdt.cp_mem = call i8* @wam_arena_alloc(i64 %sdt.cp_size)
+  %sdt.cp = bitcast i8* %sdt.cp_mem to %Compound*
+  %sdt.fn_str = getelementptr [5 x i8], [5 x i8]* @.fn_date, i32 0, i32 0
+  %sdt.fn_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 0
+  store i8* %sdt.fn_str, i8** %sdt.fn_slot
+  %sdt.ar_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 1
+  store i32 9, i32* %sdt.ar_slot
+  ; 9 args * sizeof(%Value)==16 bytes = 144 bytes.
+  %sdt.args_mem = call i8* @wam_arena_alloc(i64 144)
+  %sdt.args = bitcast i8* %sdt.args_mem to %Value*
+  %sdt.args_slot = getelementptr %Compound, %Compound* %sdt.cp, i32 0, i32 2
+  store %Value* %sdt.args, %Value** %sdt.args_slot
+  %sdt.s0 = getelementptr %Value, %Value* %sdt.args, i32 0
+  store %Value %sdt.v_year, %Value* %sdt.s0
+  %sdt.s1 = getelementptr %Value, %Value* %sdt.args, i32 1
+  store %Value %sdt.v_mon,  %Value* %sdt.s1
+  %sdt.s2 = getelementptr %Value, %Value* %sdt.args, i32 2
+  store %Value %sdt.v_mday, %Value* %sdt.s2
+  %sdt.s3 = getelementptr %Value, %Value* %sdt.args, i32 3
+  store %Value %sdt.v_hour, %Value* %sdt.s3
+  %sdt.s4 = getelementptr %Value, %Value* %sdt.args, i32 4
+  store %Value %sdt.v_min,  %Value* %sdt.s4
+  %sdt.s5 = getelementptr %Value, %Value* %sdt.args, i32 5
+  store %Value %sdt.v_sec,  %Value* %sdt.s5
+  %sdt.s6 = getelementptr %Value, %Value* %sdt.args, i32 6
+  store %Value %sdt.v_off,  %Value* %sdt.s6
+  %sdt.s7 = getelementptr %Value, %Value* %sdt.args, i32 7
+  store %Value %sdt.v_tzn,  %Value* %sdt.s7
+  %sdt.s8 = getelementptr %Value, %Value* %sdt.args, i32 8
+  store %Value %sdt.v_dst,  %Value* %sdt.s8
+  ; Compound Value: tag=3, payload=ptr-as-i64.
+  %sdt.cp_i64 = ptrtoint %Compound* %sdt.cp to i64
+  %sdt.dt_v0 = insertvalue %Value undef, i32 3, 0
+  %sdt.dt_v = insertvalue %Value %sdt.dt_v0, i64 %sdt.cp_i64, 1
+  %sdt.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sdt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sdt.raw2, %Value %sdt.dt_v)
+  ret i1 %sdt.ok
+
+builtin_date_time_stamp:
+  ; M99: date_time_stamp(+DateTime, -Stamp) -- inverse of M98. Takes
+  ; a date(Y, M, D, H, Min, S, UtcOff, TZName, IsDst) compound,
+  ; populates a struct tm, calls mktime, returns Stamp as Float
+  ; (matching SWI''s convention so that round-tripping through
+  ; stamp_date_time / date_time_stamp preserves the Float type from
+  ; get_time). Compound shape check borrows the M97 pattern:
+  ; tag check + arity 9 + functor strcmp against "date".
+  %dts.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dts.tag = call i32 @value_tag(%Value %dts.a1)
+  %dts.is_cp = icmp eq i32 %dts.tag, 3
+  br i1 %dts.is_cp, label %dts.check_arity, label %dts.fail
+dts.fail:
+  ret i1 false
+dts.check_arity:
+  %dts.cp_bits = call i64 @value_payload(%Value %dts.a1)
+  %dts.cp_ptr = inttoptr i64 %dts.cp_bits to %Compound*
+  %dts.ar_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 1
+  %dts.ar = load i32, i32* %dts.ar_slot
+  %dts.ar_ok = icmp eq i32 %dts.ar, 9
+  br i1 %dts.ar_ok, label %dts.check_name, label %dts.fail
+dts.check_name:
+  %dts.fn_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 0
+  %dts.fn_i8 = load i8*, i8** %dts.fn_slot
+  %dts.want = getelementptr [5 x i8], [5 x i8]* @.fn_date, i32 0, i32 0
+  %dts.cmp = call i32 @strcmp(i8* %dts.fn_i8, i8* %dts.want)
+  %dts.name_ok = icmp eq i32 %dts.cmp, 0
+  br i1 %dts.name_ok, label %dts.read_args, label %dts.fail
+dts.read_args:
+  %dts.args_slot = getelementptr %Compound, %Compound* %dts.cp_ptr, i32 0, i32 2
+  %dts.args = load %Value*, %Value** %dts.args_slot
+  ; Args 1..7 + 9 must be Integer; arg 8 (TZName) must be Atom.
+  ; year (arg 1)
+  %dts.y_ptr = getelementptr %Value, %Value* %dts.args, i32 0
+  %dts.y_raw = load %Value, %Value* %dts.y_ptr
+  %dts.y = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.y_raw)
+  %dts.y_tag = call i32 @value_tag(%Value %dts.y)
+  %dts.y_int = icmp eq i32 %dts.y_tag, 1
+  br i1 %dts.y_int, label %dts.read_mon, label %dts.fail
+dts.read_mon:
+  %dts.m_ptr = getelementptr %Value, %Value* %dts.args, i32 1
+  %dts.m_raw = load %Value, %Value* %dts.m_ptr
+  %dts.m = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.m_raw)
+  %dts.m_tag = call i32 @value_tag(%Value %dts.m)
+  %dts.m_int = icmp eq i32 %dts.m_tag, 1
+  br i1 %dts.m_int, label %dts.read_day, label %dts.fail
+dts.read_day:
+  %dts.d_ptr = getelementptr %Value, %Value* %dts.args, i32 2
+  %dts.d_raw = load %Value, %Value* %dts.d_ptr
+  %dts.d = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.d_raw)
+  %dts.d_tag = call i32 @value_tag(%Value %dts.d)
+  %dts.d_int = icmp eq i32 %dts.d_tag, 1
+  br i1 %dts.d_int, label %dts.read_hour, label %dts.fail
+dts.read_hour:
+  %dts.h_ptr = getelementptr %Value, %Value* %dts.args, i32 3
+  %dts.h_raw = load %Value, %Value* %dts.h_ptr
+  %dts.h = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.h_raw)
+  %dts.h_tag = call i32 @value_tag(%Value %dts.h)
+  %dts.h_int = icmp eq i32 %dts.h_tag, 1
+  br i1 %dts.h_int, label %dts.read_min, label %dts.fail
+dts.read_min:
+  %dts.mn_ptr = getelementptr %Value, %Value* %dts.args, i32 4
+  %dts.mn_raw = load %Value, %Value* %dts.mn_ptr
+  %dts.mn = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.mn_raw)
+  %dts.mn_tag = call i32 @value_tag(%Value %dts.mn)
+  %dts.mn_int = icmp eq i32 %dts.mn_tag, 1
+  br i1 %dts.mn_int, label %dts.read_sec, label %dts.fail
+dts.read_sec:
+  %dts.s_ptr = getelementptr %Value, %Value* %dts.args, i32 5
+  %dts.s_raw = load %Value, %Value* %dts.s_ptr
+  %dts.s = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.s_raw)
+  %dts.s_tag = call i32 @value_tag(%Value %dts.s)
+  %dts.s_int = icmp eq i32 %dts.s_tag, 1
+  br i1 %dts.s_int, label %dts.read_off, label %dts.fail
+dts.read_off:
+  %dts.o_ptr = getelementptr %Value, %Value* %dts.args, i32 6
+  %dts.o_raw = load %Value, %Value* %dts.o_ptr
+  %dts.o = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.o_raw)
+  %dts.o_tag = call i32 @value_tag(%Value %dts.o)
+  %dts.o_int = icmp eq i32 %dts.o_tag, 1
+  br i1 %dts.o_int, label %dts.read_tzn, label %dts.fail
+dts.read_tzn:
+  %dts.tzn_ptr = getelementptr %Value, %Value* %dts.args, i32 7
+  %dts.tzn_raw = load %Value, %Value* %dts.tzn_ptr
+  %dts.tzn = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.tzn_raw)
+  %dts.tzn_tag = call i32 @value_tag(%Value %dts.tzn)
+  %dts.tzn_atom = icmp eq i32 %dts.tzn_tag, 0
+  br i1 %dts.tzn_atom, label %dts.read_dst, label %dts.fail
+dts.read_dst:
+  %dts.dst_ptr = getelementptr %Value, %Value* %dts.args, i32 8
+  %dts.dst_raw = load %Value, %Value* %dts.dst_ptr
+  %dts.dst = call %Value @wam_deref_value(%WamState* %vm, %Value %dts.dst_raw)
+  %dts.dst_tag = call i32 @value_tag(%Value %dts.dst)
+  %dts.dst_int = icmp eq i32 %dts.dst_tag, 1
+  br i1 %dts.dst_int, label %dts.fill_tm, label %dts.fail
+dts.fill_tm:
+  ; Stack-alloc struct tm (zero-init) and populate the fields mktime
+  ; cares about. mktime ignores tm_wday and tm_yday on entry and will
+  ; recompute them; tm_isdst tells mktime whether DST is in effect
+  ; (1), not (0), or to figure it out (-1).
+  %dts.tm_buf = alloca [64 x i8]
+  %dts.tm_ptr = getelementptr [64 x i8], [64 x i8]* %dts.tm_buf, i32 0, i32 0
+  ; Zero the buffer so the unused padding bytes (and tm_gmtoff/tm_zone
+  ; if present) don''t hand mktime random stack contents.
+  call void @llvm.memset.p0i8.i64(i8* %dts.tm_ptr, i8 0, i64 64, i1 false)
+  %dts.y_val = call i64 @value_payload(%Value %dts.y)
+  %dts.y_adj = sub i64 %dts.y_val, 1900
+  %dts.y_i32 = trunc i64 %dts.y_adj to i32
+  %dts.m_val = call i64 @value_payload(%Value %dts.m)
+  %dts.m_adj = sub i64 %dts.m_val, 1
+  %dts.m_i32 = trunc i64 %dts.m_adj to i32
+  %dts.d_val = call i64 @value_payload(%Value %dts.d)
+  %dts.d_i32 = trunc i64 %dts.d_val to i32
+  %dts.h_val = call i64 @value_payload(%Value %dts.h)
+  %dts.h_i32 = trunc i64 %dts.h_val to i32
+  %dts.mn_val = call i64 @value_payload(%Value %dts.mn)
+  %dts.mn_i32 = trunc i64 %dts.mn_val to i32
+  %dts.s_val = call i64 @value_payload(%Value %dts.s)
+  %dts.s_i32 = trunc i64 %dts.s_val to i32
+  %dts.dst_val = call i64 @value_payload(%Value %dts.dst)
+  %dts.dst_i32 = trunc i64 %dts.dst_val to i32
+  ; Write fields at the struct tm byte offsets (same layout as M98).
+  %dts.sec_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 0
+  %dts.sec_p = bitcast i8* %dts.sec_p_i8 to i32*
+  store i32 %dts.s_i32, i32* %dts.sec_p
+  %dts.min_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 4
+  %dts.min_p = bitcast i8* %dts.min_p_i8 to i32*
+  store i32 %dts.mn_i32, i32* %dts.min_p
+  %dts.hour_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 8
+  %dts.hour_p = bitcast i8* %dts.hour_p_i8 to i32*
+  store i32 %dts.h_i32, i32* %dts.hour_p
+  %dts.mday_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 12
+  %dts.mday_p = bitcast i8* %dts.mday_p_i8 to i32*
+  store i32 %dts.d_i32, i32* %dts.mday_p
+  %dts.mon_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 16
+  %dts.mon_p = bitcast i8* %dts.mon_p_i8 to i32*
+  store i32 %dts.m_i32, i32* %dts.mon_p
+  %dts.year_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 20
+  %dts.year_p = bitcast i8* %dts.year_p_i8 to i32*
+  store i32 %dts.y_i32, i32* %dts.year_p
+  %dts.isdst_p_i8 = getelementptr i8, i8* %dts.tm_ptr, i64 32
+  %dts.isdst_p = bitcast i8* %dts.isdst_p_i8 to i32*
+  store i32 %dts.dst_i32, i32* %dts.isdst_p
+  ; mktime returns time_t == i64 on x86-64 Linux. -1 signals an
+  ; invalid struct tm (mktime couldn''t represent it as time_t).
+  %dts.t = call i64 @mktime(i8* %dts.tm_ptr)
+  %dts.bad = icmp eq i64 %dts.t, -1
+  br i1 %dts.bad, label %dts.fail, label %dts.do_unify
+dts.do_unify:
+  ; Pack as Float to match SWI''s get_time-style stamp convention.
+  %dts.t_d = sitofp i64 %dts.t to double
+  %dts.t_bits = bitcast double %dts.t_d to i64
+  %dts.v0 = insertvalue %Value undef, i32 2, 0
+  %dts.v = insertvalue %Value %dts.v0, i64 %dts.t_bits, 1
+  %dts.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dts.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %dts.raw2, %Value %dts.v)
+  ret i1 %dts.uok
+
+builtin_chmod:
+  ; M102: chmod(+Path, +Mode) -- Path is atom, Mode is Integer
+  ; (interpreted as octal in source via the user''s 0o... or 0''o...
+  ; literal; the WAM just receives the i64 payload). Succeeds iff
+  ; libc chmod returns 0.
+  %ch.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ch.t1 = call i32 @value_tag(%Value %ch.a1)
+  %ch.is_atom = icmp eq i32 %ch.t1, 0
+  br i1 %ch.is_atom, label %ch.check2, label %ch.fail
+ch.fail:
+  ret i1 false
+ch.check2:
+  %ch.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ch.t2 = call i32 @value_tag(%Value %ch.a2)
+  %ch.is_int = icmp eq i32 %ch.t2, 1
+  br i1 %ch.is_int, label %ch.go, label %ch.fail
+ch.go:
+  %ch.aid = call i64 @value_payload(%Value %ch.a1)
+  %ch.path = call i8* @wam_atom_to_string(i64 %ch.aid)
+  %ch.path_null = icmp eq i8* %ch.path, null
+  br i1 %ch.path_null, label %ch.fail, label %ch.do
+ch.do:
+  %ch.mode64 = call i64 @value_payload(%Value %ch.a2)
+  %ch.mode = trunc i64 %ch.mode64 to i32
+  %ch.ret = call i32 @chmod(i8* %ch.path, i32 %ch.mode)
+  %ch.ok = icmp eq i32 %ch.ret, 0
+  ret i1 %ch.ok
+
+builtin_term_variables:
+  ; M103: term_variables(+Term, -Vars) -- depth-first left-to-right
+  ; walk over Term, prepending each Unbound variable onto an
+  ; accumulator that starts as the empty list. wam_collect_vars
+  ; does the recursion; this driver just sets up the empty seed
+  ; list and unifies the result with reg 1.
+  %tva.t = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tva.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %tva.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %tva.empty = insertvalue %Value %tva.empty_v0, i64 %tva.empty_aid, 1
+  %tva.vars = call %Value @wam_collect_vars(%WamState* %vm, %Value %tva.t, %Value %tva.empty)
+  %tva.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tva.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tva.raw2, %Value %tva.vars)
+  ret i1 %tva.ok
+
+builtin_numbervars:
+  ; M105: numbervars(+Term, +Start, -End) -- walks Term depth-first
+  ; left-to-right and binds each free variable to a fresh
+  ; ''$VAR''(N) compound, where N starts at Start and increments by 1
+  ; per binding. End is unified with the final counter (Start +
+  ; number_of_vars_bound). Start must be Integer; non-Integer fails.
+  ; Same Ref-aliasing guarantees as M104: a single var with multiple
+  ; occurrences gets a single $VAR(N) compound visible at every
+  ; occurrence via heap-cell aliasing.
+  %nv.start_raw = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %nv.start_tag = call i32 @value_tag(%Value %nv.start_raw)
+  %nv.start_int = icmp eq i32 %nv.start_tag, 1
+  br i1 %nv.start_int, label %nv.go, label %nv.fail
+nv.fail:
+  ret i1 false
+nv.go:
+  %nv.start = call i64 @value_payload(%Value %nv.start_raw)
+  %nv.term = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nv.end = call i64 @wam_numbervars_walk(%WamState* %vm, %Value %nv.term, i64 %nv.start)
+  %nv.end_v = call %Value @value_integer(i64 %nv.end)
+  %nv.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %nv.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %nv.raw3, %Value %nv.end_v)
+  ret i1 %nv.ok
+
+builtin_access:
+  ; M106: access(+Path, +ModeBits) -- Path Atom, ModeBits Integer.
+  ; libc access(path, mode) returns 0 iff the calling process has
+  ; the requested permission. Mode is the standard libc bitmask:
+  ; F_OK=0 (exists), R_OK=4, W_OK=2, X_OK=1, or any OR of those.
+  ; Non-atom Path or non-Integer ModeBits fail the type guards.
+  %ax.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ax.t1 = call i32 @value_tag(%Value %ax.a1)
+  %ax.is_atom = icmp eq i32 %ax.t1, 0
+  br i1 %ax.is_atom, label %ax.check2, label %ax.fail
+ax.fail:
+  ret i1 false
+ax.check2:
+  %ax.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ax.t2 = call i32 @value_tag(%Value %ax.a2)
+  %ax.is_int = icmp eq i32 %ax.t2, 1
+  br i1 %ax.is_int, label %ax.go, label %ax.fail
+ax.go:
+  %ax.aid = call i64 @value_payload(%Value %ax.a1)
+  %ax.path = call i8* @wam_atom_to_string(i64 %ax.aid)
+  %ax.path_null = icmp eq i8* %ax.path, null
+  br i1 %ax.path_null, label %ax.fail, label %ax.do
+ax.do:
+  %ax.mode64 = call i64 @value_payload(%Value %ax.a2)
+  %ax.mode = trunc i64 %ax.mode64 to i32
+  %ax.ret = call i32 @access(i8* %ax.path, i32 %ax.mode)
+  %ax.ok = icmp eq i32 %ax.ret, 0
+  ret i1 %ax.ok
+
+builtin_directory_files:
+  ; M107: directory_files(+Dir, -Files) -- list every entry name
+  ; in Dir (including . and ..) as a list of atoms. Opens via libc
+  ; opendir, loops readdir until NULL, pulls d_name from each
+  ; struct dirent (offset 19 on x86-64 Linux glibc), copies to the
+  ; arena, interns as atom, prepends onto an accumulator. Resulting
+  ; list is in REVERSE readdir order (most-recent entry first);
+  ; SWI does not promise a particular order so this is fine.
+  ; Fails on non-atom Dir, opendir failure (ENOENT/EACCES etc.),
+  ; or unifying the result against a non-list shape.
+  %dirf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %dirf.t1 = call i32 @value_tag(%Value %dirf.a1)
+  %dirf.is_atom = icmp eq i32 %dirf.t1, 0
+  br i1 %dirf.is_atom, label %dirf.go, label %dirf.fail
+dirf.fail:
+  ret i1 false
+dirf.go:
+  %dirf.aid = call i64 @value_payload(%Value %dirf.a1)
+  %dirf.path = call i8* @wam_atom_to_string(i64 %dirf.aid)
+  %dirf.path_null = icmp eq i8* %dirf.path, null
+  br i1 %dirf.path_null, label %dirf.fail, label %dirf.open
+dirf.open:
+  %dirf.dir = call i8* @opendir(i8* %dirf.path)
+  %dirf.open_null = icmp eq i8* %dirf.dir, null
+  br i1 %dirf.open_null, label %dirf.fail, label %dirf.init
+dirf.init:
+  ; Seed accumulator with id-based [] atom (matches M100 atom rep).
+  %dirf.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %dirf.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %dirf.empty = insertvalue %Value %dirf.empty_v0, i64 %dirf.empty_aid, 1
+  call void @wam_arena_ensure()
+  br label %dirf.loop
+dirf.loop:
+  %dirf.acc = phi %Value [ %dirf.empty, %dirf.init ], [ %dirf.acc_next, %dirf.append ]
+  %dirf.entry = call i8* @readdir(i8* %dirf.dir)
+  %dirf.entry_null = icmp eq i8* %dirf.entry, null
+  br i1 %dirf.entry_null, label %dirf.close, label %dirf.append
+dirf.append:
+  ; Build a new cons cell [|](Atom, acc) on the arena.
+__M113_DIRENT_NAME_PTR__
+  %dirf.name_len = call i64 @strlen(i8* %dirf.name_ptr)
+  %dirf.bufsize = add i64 %dirf.name_len, 1
+  %dirf.buf = call i8* @wam_arena_alloc(i64 %dirf.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dirf.buf, i8* %dirf.name_ptr, i64 %dirf.name_len, i1 false)
+  %dirf.term = getelementptr i8, i8* %dirf.buf, i64 %dirf.name_len
+  store i8 0, i8* %dirf.term
+  %dirf.atom_id = call i64 @wam_intern_atom(i8* %dirf.buf, i64 %dirf.name_len)
+  %dirf.atom_v0 = insertvalue %Value undef, i32 0, 0
+  %dirf.atom_v = insertvalue %Value %dirf.atom_v0, i64 %dirf.atom_id, 1
+  ; Compound cell.
+  %dirf.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %dirf.cp_mem = call i8* @wam_arena_alloc(i64 %dirf.cp_size)
+  %dirf.cp = bitcast i8* %dirf.cp_mem to %Compound*
+  %dirf.fn_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %dirf.fn_slot
+  %dirf.ar_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 1
+  store i32 2, i32* %dirf.ar_slot
+  %dirf.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %dirf.args = bitcast i8* %dirf.args_mem to %Value*
+  %dirf.args_slot = getelementptr %Compound, %Compound* %dirf.cp, i32 0, i32 2
+  store %Value* %dirf.args, %Value** %dirf.args_slot
+  %dirf.head_ptr = getelementptr %Value, %Value* %dirf.args, i32 0
+  store %Value %dirf.atom_v, %Value* %dirf.head_ptr
+  %dirf.tail_ptr = getelementptr %Value, %Value* %dirf.args, i32 1
+  store %Value %dirf.acc, %Value* %dirf.tail_ptr
+  %dirf.cp_i64 = ptrtoint %Compound* %dirf.cp to i64
+  %dirf.cell_v0 = insertvalue %Value undef, i32 3, 0
+  %dirf.acc_next = insertvalue %Value %dirf.cell_v0, i64 %dirf.cp_i64, 1
+  br label %dirf.loop
+dirf.close:
+  call i32 @closedir(i8* %dirf.dir)
+  %dirf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %dirf.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %dirf.raw2, %Value %dirf.acc)
+  ret i1 %dirf.ok
+
+builtin_getpgrp:
+  ; M109: getpgrp(?PGid) -- process group id via libc getpgrp().
+  ; pid_t is signed 32 bits on Linux; sext to i64 for the Integer
+  ; payload. Always succeeds (getpgrp cannot fail).
+  %gpg.pid = call i32 @getpgrp()
+  %gpg.pid64 = sext i32 %gpg.pid to i64
+  %gpg.v = call %Value @value_integer(i64 %gpg.pid64)
+  %gpg.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpg.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpg.raw1, %Value %gpg.v)
+  ret i1 %gpg.ok
+
+builtin_realpath:
+  ; M110: realpath(+Path, -Abs) -- libc realpath wrapper.
+  ; Stack-alloc a PATH_MAX-sized (4096) buffer for the result.
+  ; realpath returns NULL on failure (ENOENT for missing path,
+  ; EACCES for unreadable parent dir, etc.); we map that to a
+  ; Prolog fail. Non-atom Path also fails the type guard. On
+  ; success, the resolved path is copied into the arena, interned,
+  ; and the resulting atom is unified with reg 1.
+  %rp.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rp.t1 = call i32 @value_tag(%Value %rp.a1)
+  %rp.is_atom = icmp eq i32 %rp.t1, 0
+  br i1 %rp.is_atom, label %rp.go, label %rp.fail
+rp.fail:
+  ret i1 false
+rp.go:
+  %rp.aid = call i64 @value_payload(%Value %rp.a1)
+  %rp.path = call i8* @wam_atom_to_string(i64 %rp.aid)
+  %rp.path_null = icmp eq i8* %rp.path, null
+  br i1 %rp.path_null, label %rp.fail, label %rp.do
+rp.do:
+  %rp.buf = alloca [4096 x i8]
+  %rp.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %rp.buf, i32 0, i32 0
+  %rp.res = call i8* @realpath(i8* %rp.path, i8* %rp.buf_ptr)
+  %rp.res_null = icmp eq i8* %rp.res, null
+  br i1 %rp.res_null, label %rp.fail, label %rp.intern
+rp.intern:
+  %rp.len = call i64 @strlen(i8* %rp.buf_ptr)
+  call void @wam_arena_ensure()
+  %rp.bufsize = add i64 %rp.len, 1
+  %rp.arena = call i8* @wam_arena_alloc(i64 %rp.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rp.arena, i8* %rp.buf_ptr, i64 %rp.len, i1 false)
+  %rp.term = getelementptr i8, i8* %rp.arena, i64 %rp.len
+  store i8 0, i8* %rp.term
+  %rp.atom_id = call i64 @wam_intern_atom(i8* %rp.arena, i64 %rp.len)
+  %rp.v0 = insertvalue %Value undef, i32 0, 0
+  %rp.v = insertvalue %Value %rp.v0, i64 %rp.atom_id, 1
+  %rp.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rp.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rp.raw2, %Value %rp.v)
+  ret i1 %rp.ok
+
+builtin_kill:
+  ; M111: kill(+Pid, +Sig) -- libc kill wrapper. Both args must be
+  ; Integer. Most common usage is Sig=0 which sends no signal but
+  ; returns 0 iff the process exists and the caller has permission
+  ; to signal it -- a cheap existence/permission probe. Succeeds
+  ; iff libc kill returns 0; failure modes (ESRCH for missing pid,
+  ; EPERM for forbidden) all map to a Prolog fail.
+  %kl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %kl.t1 = call i32 @value_tag(%Value %kl.a1)
+  %kl.is_int1 = icmp eq i32 %kl.t1, 1
+  br i1 %kl.is_int1, label %kl.check2, label %kl.fail
+kl.fail:
+  ret i1 false
+kl.check2:
+  %kl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %kl.t2 = call i32 @value_tag(%Value %kl.a2)
+  %kl.is_int2 = icmp eq i32 %kl.t2, 1
+  br i1 %kl.is_int2, label %kl.go, label %kl.fail
+kl.go:
+  %kl.pid64 = call i64 @value_payload(%Value %kl.a1)
+  %kl.pid = trunc i64 %kl.pid64 to i32
+  %kl.sig64 = call i64 @value_payload(%Value %kl.a2)
+  %kl.sig = trunc i64 %kl.sig64 to i32
+  %kl.ret = call i32 @kill(i32 %kl.pid, i32 %kl.sig)
+  %kl.ok = icmp eq i32 %kl.ret, 0
+  ret i1 %kl.ok
+
+builtin_truncate:
+  ; M112: truncate(+Path, +Length) -- libc truncate wrapper. Sets
+  ; the file to exactly Length bytes; grows it (with zero-fill)
+  ; if smaller, shrinks it if larger. Path must be Atom, Length
+  ; Integer (off_t is i64 on x86-64 Linux). Succeeds iff truncate
+  ; returns 0; ENOENT, EACCES, EISDIR etc. all map to a Prolog
+  ; fail. Non-atom Path or non-Integer Length fall through to
+  ; fail.
+  %tr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tr.t1 = call i32 @value_tag(%Value %tr.a1)
+  %tr.is_atom = icmp eq i32 %tr.t1, 0
+  br i1 %tr.is_atom, label %tr.check2, label %tr.fail
+tr.fail:
+  ret i1 false
+tr.check2:
+  %tr.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %tr.t2 = call i32 @value_tag(%Value %tr.a2)
+  %tr.is_int = icmp eq i32 %tr.t2, 1
+  br i1 %tr.is_int, label %tr.go, label %tr.fail
+tr.go:
+  %tr.aid = call i64 @value_payload(%Value %tr.a1)
+  %tr.path = call i8* @wam_atom_to_string(i64 %tr.aid)
+  %tr.path_null = icmp eq i8* %tr.path, null
+  br i1 %tr.path_null, label %tr.fail, label %tr.do
+tr.do:
+  %tr.len = call i64 @value_payload(%Value %tr.a2)
+  %tr.ret = call i32 @truncate(i8* %tr.path, i64 %tr.len)
+  %tr.ok = icmp eq i32 %tr.ret, 0
+  ret i1 %tr.ok
+
+builtin_chown:
+  ; M115: chown(+Path, +Uid, +Gid) -- libc chown wrapper.
+  ; Path must be Atom, Uid and Gid Integer. uid_t / gid_t are i32
+  ; on Linux glibc and the major BSDs / macOS / WASI -- truncate
+  ; the i64 payloads. Succeeds iff chown returns 0; EPERM (not
+  ; root), ENOENT, EACCES etc. map to a Prolog fail. Special
+  ; convention: -1 (or 0xFFFFFFFF) for either Uid or Gid leaves
+  ; that side unchanged (libc semantic, preserved as-is).
+  %co.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %co.t1 = call i32 @value_tag(%Value %co.a1)
+  %co.is_atom = icmp eq i32 %co.t1, 0
+  br i1 %co.is_atom, label %co.check2, label %co.fail
+co.fail:
+  ret i1 false
+co.check2:
+  %co.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %co.t2 = call i32 @value_tag(%Value %co.a2)
+  %co.is_int2 = icmp eq i32 %co.t2, 1
+  br i1 %co.is_int2, label %co.check3, label %co.fail
+co.check3:
+  %co.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %co.t3 = call i32 @value_tag(%Value %co.a3)
+  %co.is_int3 = icmp eq i32 %co.t3, 1
+  br i1 %co.is_int3, label %co.go, label %co.fail
+co.go:
+  %co.aid = call i64 @value_payload(%Value %co.a1)
+  %co.path = call i8* @wam_atom_to_string(i64 %co.aid)
+  %co.path_null = icmp eq i8* %co.path, null
+  br i1 %co.path_null, label %co.fail, label %co.do
+co.do:
+  %co.uid64 = call i64 @value_payload(%Value %co.a2)
+  %co.uid = trunc i64 %co.uid64 to i32
+  %co.gid64 = call i64 @value_payload(%Value %co.a3)
+  %co.gid = trunc i64 %co.gid64 to i32
+  %co.ret = call i32 @chown(i8* %co.path, i32 %co.uid, i32 %co.gid)
+  %co.ok = icmp eq i32 %co.ret, 0
+  ret i1 %co.ok
+
+builtin_ground:
+  ; M117: ground(+Term) -- succeeds iff Term has no unbound
+  ; variables. Walks Term depth-first; atoms, ints, floats and
+  ; bound refs are ground; any unbound ref fails. Compounds
+  ; recurse over their args. wam_is_ground does the work.
+  %gr.t = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gr.r = call i1 @wam_is_ground(%WamState* %vm, %Value %gr.t)
+  ret i1 %gr.r
+
+builtin_file_base_name:
+  ; M118: file_base_name(+Path, -Base) -- basename(1) semantics.
+  ; Scan Path backwards for the last ''/''; return everything
+  ; after it (or the whole string if no ''/''). Special cases:
+  ; ''/'' or any path ending in ''/'' returns ''''. Path must be
+  ; Atom; non-atom fails the type guard.
+  %fbn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fbn.t1 = call i32 @value_tag(%Value %fbn.a1)
+  %fbn.is_atom = icmp eq i32 %fbn.t1, 0
+  br i1 %fbn.is_atom, label %fbn.go, label %fbn.fail
+fbn.fail:
+  ret i1 false
+fbn.go:
+  %fbn.aid = call i64 @value_payload(%Value %fbn.a1)
+  %fbn.path = call i8* @wam_atom_to_string(i64 %fbn.aid)
+  %fbn.path_null = icmp eq i8* %fbn.path, null
+  br i1 %fbn.path_null, label %fbn.fail, label %fbn.scan_init
+fbn.scan_init:
+  %fbn.len = call i64 @strlen(i8* %fbn.path)
+  %fbn.has = icmp sgt i64 %fbn.len, 0
+  %fbn.i_init = sub i64 %fbn.len, 1
+  br i1 %fbn.has, label %fbn.loop, label %fbn.empty
+fbn.empty:
+  ; Empty path -> empty atom.
+  br label %fbn.intern_with_zero
+fbn.loop:
+  ; i counts down from len-1 looking for ''/''. No-slash exit through %step.
+  %fbn.i = phi i64 [ %fbn.i_init, %fbn.scan_init ], [ %fbn.i_dec, %fbn.step ]
+  %fbn.cp = getelementptr i8, i8* %fbn.path, i64 %fbn.i
+  %fbn.c = load i8, i8* %fbn.cp
+  %fbn.is_slash = icmp eq i8 %fbn.c, 47
+  br i1 %fbn.is_slash, label %fbn.found, label %fbn.step
+fbn.step:
+  %fbn.done = icmp eq i64 %fbn.i, 0
+  %fbn.i_dec = sub i64 %fbn.i, 1
+  br i1 %fbn.done, label %fbn.no_slash, label %fbn.loop
+fbn.no_slash:
+  ; No ''/'' anywhere -> base = whole string.
+  %fbn.start_a = phi i8* [ %fbn.path, %fbn.step ]
+  %fbn.baselen_a = phi i64 [ %fbn.len, %fbn.step ]
+  br label %fbn.intern
+fbn.found:
+  ; slash is at index i; base starts at i+1, length = len-(i+1).
+  %fbn.start_off = add i64 %fbn.i, 1
+  %fbn.start_b = getelementptr i8, i8* %fbn.path, i64 %fbn.start_off
+  %fbn.baselen_b = sub i64 %fbn.len, %fbn.start_off
+  br label %fbn.intern
+fbn.intern:
+  %fbn.start = phi i8* [ %fbn.start_a, %fbn.no_slash ], [ %fbn.start_b, %fbn.found ]
+  %fbn.baselen = phi i64 [ %fbn.baselen_a, %fbn.no_slash ], [ %fbn.baselen_b, %fbn.found ]
+  call void @wam_arena_ensure()
+  %fbn.bufsize = add i64 %fbn.baselen, 1
+  %fbn.arena = call i8* @wam_arena_alloc(i64 %fbn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fbn.arena, i8* %fbn.start, i64 %fbn.baselen, i1 false)
+  %fbn.term = getelementptr i8, i8* %fbn.arena, i64 %fbn.baselen
+  store i8 0, i8* %fbn.term
+  %fbn.atom_id = call i64 @wam_intern_atom(i8* %fbn.arena, i64 %fbn.baselen)
+  br label %fbn.unify
+fbn.intern_with_zero:
+  ; Empty-string fast path: intern "" (len 0).
+  call void @wam_arena_ensure()
+  %fbn.arena_e = call i8* @wam_arena_alloc(i64 1)
+  store i8 0, i8* %fbn.arena_e
+  %fbn.atom_id_e = call i64 @wam_intern_atom(i8* %fbn.arena_e, i64 0)
+  br label %fbn.unify
+fbn.unify:
+  %fbn.final_aid = phi i64 [ %fbn.atom_id, %fbn.intern ], [ %fbn.atom_id_e, %fbn.intern_with_zero ]
+  %fbn.v0 = insertvalue %Value undef, i32 0, 0
+  %fbn.v = insertvalue %Value %fbn.v0, i64 %fbn.final_aid, 1
+  %fbn.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fbn.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fbn.raw2, %Value %fbn.v)
+  ret i1 %fbn.ok
+
+builtin_file_directory_name:
+  ; M118: file_directory_name(+Path, -Dir) -- dirname(1)-style.
+  ; Scan Path backwards for last ''/''. If found at index 0 the
+  ; result is ''/'' (root). If found at index >0 the result is the
+  ; prefix [0..i). If no ''/'' (or empty path), the result is ''.''.
+  ; Path must be Atom.
+  %fdn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fdn.t1 = call i32 @value_tag(%Value %fdn.a1)
+  %fdn.is_atom = icmp eq i32 %fdn.t1, 0
+  br i1 %fdn.is_atom, label %fdn.go, label %fdn.fail
+fdn.fail:
+  ret i1 false
+fdn.go:
+  %fdn.aid = call i64 @value_payload(%Value %fdn.a1)
+  %fdn.path = call i8* @wam_atom_to_string(i64 %fdn.aid)
+  %fdn.path_null = icmp eq i8* %fdn.path, null
+  br i1 %fdn.path_null, label %fdn.fail, label %fdn.scan_init
+fdn.scan_init:
+  %fdn.len = call i64 @strlen(i8* %fdn.path)
+  %fdn.has = icmp sgt i64 %fdn.len, 0
+  %fdn.i_init = sub i64 %fdn.len, 1
+  br i1 %fdn.has, label %fdn.loop, label %fdn.dot
+fdn.loop:
+  %fdn.i = phi i64 [ %fdn.i_init, %fdn.scan_init ], [ %fdn.i_dec, %fdn.step ]
+  %fdn.cp = getelementptr i8, i8* %fdn.path, i64 %fdn.i
+  %fdn.c = load i8, i8* %fdn.cp
+  %fdn.is_slash = icmp eq i8 %fdn.c, 47
+  br i1 %fdn.is_slash, label %fdn.found, label %fdn.step
+fdn.step:
+  %fdn.done = icmp eq i64 %fdn.i, 0
+  %fdn.i_dec = sub i64 %fdn.i, 1
+  br i1 %fdn.done, label %fdn.dot, label %fdn.loop
+fdn.dot:
+  ; No ''/'' or empty -> result is ''.''. Intern "." (1 byte + null).
+  call void @wam_arena_ensure()
+  %fdn.dot_buf = call i8* @wam_arena_alloc(i64 2)
+  store i8 46, i8* %fdn.dot_buf
+  %fdn.dot_term = getelementptr i8, i8* %fdn.dot_buf, i64 1
+  store i8 0, i8* %fdn.dot_term
+  %fdn.dot_aid = call i64 @wam_intern_atom(i8* %fdn.dot_buf, i64 1)
+  br label %fdn.unify
+fdn.found:
+  ; Slash at index i. If i == 0 -> root ''/''. Else dir = [0..i).
+  %fdn.is_root = icmp eq i64 %fdn.i, 0
+  br i1 %fdn.is_root, label %fdn.root, label %fdn.prefix
+fdn.root:
+  call void @wam_arena_ensure()
+  %fdn.root_buf = call i8* @wam_arena_alloc(i64 2)
+  store i8 47, i8* %fdn.root_buf
+  %fdn.root_term = getelementptr i8, i8* %fdn.root_buf, i64 1
+  store i8 0, i8* %fdn.root_term
+  %fdn.root_aid = call i64 @wam_intern_atom(i8* %fdn.root_buf, i64 1)
+  br label %fdn.unify
+fdn.prefix:
+  call void @wam_arena_ensure()
+  %fdn.bufsize = add i64 %fdn.i, 1
+  %fdn.arena = call i8* @wam_arena_alloc(i64 %fdn.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fdn.arena, i8* %fdn.path, i64 %fdn.i, i1 false)
+  %fdn.term = getelementptr i8, i8* %fdn.arena, i64 %fdn.i
+  store i8 0, i8* %fdn.term
+  %fdn.pref_aid = call i64 @wam_intern_atom(i8* %fdn.arena, i64 %fdn.i)
+  br label %fdn.unify
+fdn.unify:
+  %fdn.final_aid = phi i64 [ %fdn.dot_aid, %fdn.dot ], [ %fdn.root_aid, %fdn.root ], [ %fdn.pref_aid, %fdn.prefix ]
+  %fdn.v0 = insertvalue %Value undef, i32 0, 0
+  %fdn.v = insertvalue %Value %fdn.v0, i64 %fdn.final_aid, 1
+  %fdn.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fdn.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fdn.raw2, %Value %fdn.v)
+  ret i1 %fdn.ok
+
+builtin_file_name_extension:
+  ; M119: file_name_extension(?Base, ?Ext, ?File)
+  ; Two modes:
+  ;  - Reverse (split): File is Atom -> scan basename for last ''.''
+  ;    (skipping leading dots and not crossing ''/'' boundary). If
+  ;    found, unify Base with prefix and Ext with suffix. Otherwise
+  ;    Base = File, Ext = '''' (empty atom).
+  ;  - Forward (join): Base and Ext are both Atom -> File = Base
+  ;    ++ ''.'' ++ Ext, or just Base if Ext is empty.
+  ; Insufficient instantiation (e.g. File var with Base or Ext var)
+  ; fails. SWI semantics: dot at position 0 of the path or
+  ; immediately after a ''/'' (leading-dot / hidden-file convention)
+  ; is NOT an extension separator.
+  %fne.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %fne.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %fne.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %fne.t3 = call i32 @value_tag(%Value %fne.a3)
+  %fne.is_atom3 = icmp eq i32 %fne.t3, 0
+  br i1 %fne.is_atom3, label %fne.split, label %fne.try_join
+fne.try_join:
+  %fne.t1 = call i32 @value_tag(%Value %fne.a1)
+  %fne.is_atom1 = icmp eq i32 %fne.t1, 0
+  %fne.t2 = call i32 @value_tag(%Value %fne.a2)
+  %fne.is_atom2 = icmp eq i32 %fne.t2, 0
+  %fne.both = and i1 %fne.is_atom1, %fne.is_atom2
+  br i1 %fne.both, label %fne.join, label %fne.fail
+fne.fail:
+  ret i1 false
+
+fne.split:
+  %fne.f_aid = call i64 @value_payload(%Value %fne.a3)
+  %fne.f_str = call i8* @wam_atom_to_string(i64 %fne.f_aid)
+  %fne.f_null = icmp eq i8* %fne.f_str, null
+  br i1 %fne.f_null, label %fne.fail, label %fne.scan_init
+fne.scan_init:
+  %fne.f_len = call i64 @strlen(i8* %fne.f_str)
+  %fne.i_init = sub i64 %fne.f_len, 1
+  %fne.has_loop = icmp sgt i64 %fne.f_len, 1
+  br i1 %fne.has_loop, label %fne.scan, label %fne.no_ext
+
+fne.scan:
+  %fne.i = phi i64 [ %fne.i_init, %fne.scan_init ], [ %fne.i_dec, %fne.step ]
+  %fne.cp = getelementptr i8, i8* %fne.f_str, i64 %fne.i
+  %fne.c = load i8, i8* %fne.cp
+  %fne.is_slash = icmp eq i8 %fne.c, 47
+  br i1 %fne.is_slash, label %fne.no_ext, label %fne.maybe_dot
+fne.maybe_dot:
+  %fne.is_dot = icmp eq i8 %fne.c, 46
+  br i1 %fne.is_dot, label %fne.check_prev, label %fne.step
+fne.check_prev:
+  ; Reject leading dots (path[i-1] == ''/'' or i == 0). Loop bounds
+  ; ensure i >= 1, so prev is in range.
+  %fne.prev_idx = sub i64 %fne.i, 1
+  %fne.prev_cp = getelementptr i8, i8* %fne.f_str, i64 %fne.prev_idx
+  %fne.prev_c = load i8, i8* %fne.prev_cp
+  %fne.prev_is_slash = icmp eq i8 %fne.prev_c, 47
+  br i1 %fne.prev_is_slash, label %fne.step, label %fne.found
+fne.step:
+  %fne.done = icmp eq i64 %fne.i, 1
+  %fne.i_dec = sub i64 %fne.i, 1
+  br i1 %fne.done, label %fne.no_ext, label %fne.scan
+
+fne.found:
+  ; Dot at i. Base = [0..i), Ext = [i+1..f_len).
+  call void @wam_arena_ensure()
+  %fne.base_buflen = add i64 %fne.i, 1
+  %fne.base_buf = call i8* @wam_arena_alloc(i64 %fne.base_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.base_buf, i8* %fne.f_str, i64 %fne.i, i1 false)
+  %fne.base_term = getelementptr i8, i8* %fne.base_buf, i64 %fne.i
+  store i8 0, i8* %fne.base_term
+  %fne.base_aid = call i64 @wam_intern_atom(i8* %fne.base_buf, i64 %fne.i)
+  %fne.ext_off = add i64 %fne.i, 1
+  %fne.ext_start = getelementptr i8, i8* %fne.f_str, i64 %fne.ext_off
+  %fne.ext_len = sub i64 %fne.f_len, %fne.ext_off
+  %fne.ext_buflen = add i64 %fne.ext_len, 1
+  %fne.ext_buf = call i8* @wam_arena_alloc(i64 %fne.ext_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.ext_buf, i8* %fne.ext_start, i64 %fne.ext_len, i1 false)
+  %fne.ext_term = getelementptr i8, i8* %fne.ext_buf, i64 %fne.ext_len
+  store i8 0, i8* %fne.ext_term
+  %fne.ext_aid = call i64 @wam_intern_atom(i8* %fne.ext_buf, i64 %fne.ext_len)
+  br label %fne.split_unify
+
+fne.no_ext:
+  ; Base = whole File, Ext = ''.
+  call void @wam_arena_ensure()
+  %fne.f_buflen = add i64 %fne.f_len, 1
+  %fne.f_buf = call i8* @wam_arena_alloc(i64 %fne.f_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.f_buf, i8* %fne.f_str, i64 %fne.f_len, i1 false)
+  %fne.f_term = getelementptr i8, i8* %fne.f_buf, i64 %fne.f_len
+  store i8 0, i8* %fne.f_term
+  %fne.f_aid_new = call i64 @wam_intern_atom(i8* %fne.f_buf, i64 %fne.f_len)
+  %fne.e_buf = call i8* @wam_arena_alloc(i64 1)
+  store i8 0, i8* %fne.e_buf
+  %fne.e_aid = call i64 @wam_intern_atom(i8* %fne.e_buf, i64 0)
+  br label %fne.split_unify
+
+fne.split_unify:
+  %fne.s_base_aid = phi i64 [ %fne.base_aid, %fne.found ], [ %fne.f_aid_new, %fne.no_ext ]
+  %fne.s_ext_aid = phi i64 [ %fne.ext_aid, %fne.found ], [ %fne.e_aid, %fne.no_ext ]
+  %fne.s_base_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.s_base_v = insertvalue %Value %fne.s_base_v0, i64 %fne.s_base_aid, 1
+  %fne.s_ext_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.s_ext_v = insertvalue %Value %fne.s_ext_v0, i64 %fne.s_ext_aid, 1
+  %fne.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fne.base_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.raw1, %Value %fne.s_base_v)
+  br i1 %fne.base_ok, label %fne.split_unify_ext, label %fne.fail
+fne.split_unify_ext:
+  %fne.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fne.ext_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.raw2, %Value %fne.s_ext_v)
+  ret i1 %fne.ext_ok
+
+fne.join:
+  %fne.j_base_aid = call i64 @value_payload(%Value %fne.a1)
+  %fne.j_base_str = call i8* @wam_atom_to_string(i64 %fne.j_base_aid)
+  %fne.j_b_null = icmp eq i8* %fne.j_base_str, null
+  br i1 %fne.j_b_null, label %fne.fail, label %fne.join_have_base
+fne.join_have_base:
+  %fne.j_ext_aid = call i64 @value_payload(%Value %fne.a2)
+  %fne.j_ext_str = call i8* @wam_atom_to_string(i64 %fne.j_ext_aid)
+  %fne.j_e_null = icmp eq i8* %fne.j_ext_str, null
+  br i1 %fne.j_e_null, label %fne.fail, label %fne.join_lens
+fne.join_lens:
+  %fne.j_base_len = call i64 @strlen(i8* %fne.j_base_str)
+  %fne.j_ext_len = call i64 @strlen(i8* %fne.j_ext_str)
+  %fne.j_ext_empty = icmp eq i64 %fne.j_ext_len, 0
+  br i1 %fne.j_ext_empty, label %fne.join_only_base, label %fne.join_full
+
+fne.join_only_base:
+  call void @wam_arena_ensure()
+  %fne.j_only_buflen = add i64 %fne.j_base_len, 1
+  %fne.j_only_buf = call i8* @wam_arena_alloc(i64 %fne.j_only_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_only_buf, i8* %fne.j_base_str, i64 %fne.j_base_len, i1 false)
+  %fne.j_only_term = getelementptr i8, i8* %fne.j_only_buf, i64 %fne.j_base_len
+  store i8 0, i8* %fne.j_only_term
+  %fne.j_only_aid = call i64 @wam_intern_atom(i8* %fne.j_only_buf, i64 %fne.j_base_len)
+  br label %fne.join_unify
+
+fne.join_full:
+  call void @wam_arena_ensure()
+  %fne.j_full_len_pre = add i64 %fne.j_base_len, 1
+  %fne.j_full_len = add i64 %fne.j_full_len_pre, %fne.j_ext_len
+  %fne.j_full_buflen = add i64 %fne.j_full_len, 1
+  %fne.j_full_buf = call i8* @wam_arena_alloc(i64 %fne.j_full_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_full_buf, i8* %fne.j_base_str, i64 %fne.j_base_len, i1 false)
+  %fne.j_dot_off = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_base_len
+  store i8 46, i8* %fne.j_dot_off
+  %fne.j_ext_off = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_full_len_pre
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fne.j_ext_off, i8* %fne.j_ext_str, i64 %fne.j_ext_len, i1 false)
+  %fne.j_full_term = getelementptr i8, i8* %fne.j_full_buf, i64 %fne.j_full_len
+  store i8 0, i8* %fne.j_full_term
+  %fne.j_full_aid = call i64 @wam_intern_atom(i8* %fne.j_full_buf, i64 %fne.j_full_len)
+  br label %fne.join_unify
+
+fne.join_unify:
+  %fne.j_final_aid = phi i64 [ %fne.j_only_aid, %fne.join_only_base ], [ %fne.j_full_aid, %fne.join_full ]
+  %fne.j_v0 = insertvalue %Value undef, i32 0, 0
+  %fne.j_v = insertvalue %Value %fne.j_v0, i64 %fne.j_final_aid, 1
+  %fne.j_raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fne.j_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %fne.j_raw3, %Value %fne.j_v)
+  ret i1 %fne.j_ok
+
+builtin_read_link:
+  ; M120: read_link(+Path, -Target) -- libc readlink wrapper.
+  ; Reads the target of a symbolic link. Path must be Atom. Fails
+  ; if Path is not a symlink (EINVAL), doesn''t exist (ENOENT),
+  ; or any other libc error. Returns the link target as an atom
+  ; (not null-terminated by libc, so we null-terminate ourselves).
+  ; PATH_MAX-sized stack buffer (4096) covers any portable path.
+  %rl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rl.t1 = call i32 @value_tag(%Value %rl.a1)
+  %rl.is_atom = icmp eq i32 %rl.t1, 0
+  br i1 %rl.is_atom, label %rl.go, label %rl.fail
+rl.fail:
+  ret i1 false
+rl.go:
+  %rl.aid = call i64 @value_payload(%Value %rl.a1)
+  %rl.path = call i8* @wam_atom_to_string(i64 %rl.aid)
+  %rl.path_null = icmp eq i8* %rl.path, null
+  br i1 %rl.path_null, label %rl.fail, label %rl.do
+rl.do:
+  %rl.buf = alloca [4096 x i8]
+  %rl.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %rl.buf, i32 0, i32 0
+  %rl.n = call i64 @readlink(i8* %rl.path, i8* %rl.buf_ptr, i64 4096)
+  %rl.ok = icmp sgt i64 %rl.n, -1
+  br i1 %rl.ok, label %rl.intern, label %rl.fail
+rl.intern:
+  ; readlink does NOT null-terminate. n is the byte count actually
+  ; written (clamped at bufsiz). Copy into the arena and add a
+  ; null. n may legitimately be 0 (empty target -- rare but legal).
+  call void @wam_arena_ensure()
+  %rl.bufsize = add i64 %rl.n, 1
+  %rl.arena = call i8* @wam_arena_alloc(i64 %rl.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rl.arena, i8* %rl.buf_ptr, i64 %rl.n, i1 false)
+  %rl.term = getelementptr i8, i8* %rl.arena, i64 %rl.n
+  store i8 0, i8* %rl.term
+  %rl.atom_id = call i64 @wam_intern_atom(i8* %rl.arena, i64 %rl.n)
+  %rl.v0 = insertvalue %Value undef, i32 0, 0
+  %rl.v = insertvalue %Value %rl.v0, i64 %rl.atom_id, 1
+  %rl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rl.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %rl.raw2, %Value %rl.v)
+  ret i1 %rl.uok
+
+builtin_symlink:
+  ; M120: symlink(+Target, +LinkPath) -- libc symlink wrapper.
+  ; Creates LinkPath as a symbolic link pointing to Target.
+  ; Both args must be Atom; any non-atom fails the type guard.
+  ; Succeeds iff libc returns 0; EEXIST (LinkPath already exists),
+  ; EACCES, ENOENT (parent dir missing) etc. all map to Prolog fail.
+  ; Target is stored verbatim -- libc does not resolve it; a
+  ; dangling symlink is permitted.
+  %sym.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sym.t1 = call i32 @value_tag(%Value %sym.a1)
+  %sym.is_atom1 = icmp eq i32 %sym.t1, 0
+  br i1 %sym.is_atom1, label %sym.check2, label %sym.fail
+sym.fail:
+  ret i1 false
+sym.check2:
+  %sym.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %sym.t2 = call i32 @value_tag(%Value %sym.a2)
+  %sym.is_atom2 = icmp eq i32 %sym.t2, 0
+  br i1 %sym.is_atom2, label %sym.go, label %sym.fail
+sym.go:
+  %sym.tgt_aid = call i64 @value_payload(%Value %sym.a1)
+  %sym.tgt = call i8* @wam_atom_to_string(i64 %sym.tgt_aid)
+  %sym.tgt_null = icmp eq i8* %sym.tgt, null
+  br i1 %sym.tgt_null, label %sym.fail, label %sym.have_tgt
+sym.have_tgt:
+  %sym.lnk_aid = call i64 @value_payload(%Value %sym.a2)
+  %sym.lnk = call i8* @wam_atom_to_string(i64 %sym.lnk_aid)
+  %sym.lnk_null = icmp eq i8* %sym.lnk, null
+  br i1 %sym.lnk_null, label %sym.fail, label %sym.do
+sym.do:
+  %sym.ret = call i32 @symlink(i8* %sym.tgt, i8* %sym.lnk)
+  %sym.ok = icmp eq i32 %sym.ret, 0
+  ret i1 %sym.ok
+
+builtin_link:
+  ; M121: link(+OldPath, +NewPath) -- libc link wrapper, creates a
+  ; hard link at NewPath that refers to the same inode as OldPath.
+  ; Both args must be Atom. Succeeds iff libc returns 0; EXDEV
+  ; (cross-device), EEXIST (NewPath already exists), ENOENT
+  ; (OldPath missing or NewPath''s parent missing), EPERM (not
+  ; allowed on this fs) etc. all map to Prolog fail. Unlike
+  ; symlink, OldPath must exist (no dangling-hardlink concept --
+  ; the kernel bumps the inode''s link count immediately).
+  %lnk.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %lnk.t1 = call i32 @value_tag(%Value %lnk.a1)
+  %lnk.is_atom1 = icmp eq i32 %lnk.t1, 0
+  br i1 %lnk.is_atom1, label %lnk.check2, label %lnk.fail
+lnk.fail:
+  ret i1 false
+lnk.check2:
+  %lnk.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %lnk.t2 = call i32 @value_tag(%Value %lnk.a2)
+  %lnk.is_atom2 = icmp eq i32 %lnk.t2, 0
+  br i1 %lnk.is_atom2, label %lnk.go, label %lnk.fail
+lnk.go:
+  %lnk.old_aid = call i64 @value_payload(%Value %lnk.a1)
+  %lnk.old = call i8* @wam_atom_to_string(i64 %lnk.old_aid)
+  %lnk.old_null = icmp eq i8* %lnk.old, null
+  br i1 %lnk.old_null, label %lnk.fail, label %lnk.have_old
+lnk.have_old:
+  %lnk.new_aid = call i64 @value_payload(%Value %lnk.a2)
+  %lnk.new = call i8* @wam_atom_to_string(i64 %lnk.new_aid)
+  %lnk.new_null = icmp eq i8* %lnk.new, null
+  br i1 %lnk.new_null, label %lnk.fail, label %lnk.do
+lnk.do:
+  %lnk.ret = call i32 @link(i8* %lnk.old, i8* %lnk.new)
+  %lnk.ok = icmp eq i32 %lnk.ret, 0
+  ret i1 %lnk.ok
+
+builtin_is_absolute_file_name:
+  ; M122: is_absolute_file_name(+Path) -- true iff Path is an
+  ; absolute path (starts with ''/'' on POSIX). Empty atom is NOT
+  ; absolute. Path must be Atom; non-atom fails the type guard.
+  %iaf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %iaf.t1 = call i32 @value_tag(%Value %iaf.a1)
+  %iaf.is_atom = icmp eq i32 %iaf.t1, 0
+  br i1 %iaf.is_atom, label %iaf.go, label %iaf.fail
+iaf.fail:
+  ret i1 false
+iaf.go:
+  %iaf.aid = call i64 @value_payload(%Value %iaf.a1)
+  %iaf.path = call i8* @wam_atom_to_string(i64 %iaf.aid)
+  %iaf.path_null = icmp eq i8* %iaf.path, null
+  br i1 %iaf.path_null, label %iaf.fail, label %iaf.read
+iaf.read:
+  %iaf.c0 = load i8, i8* %iaf.path
+  %iaf.eq = icmp eq i8 %iaf.c0, 47
+  ret i1 %iaf.eq
+
+builtin_same_file:
+  ; M122: same_file(+Path1, +Path2) -- true iff both paths refer
+  ; to the same underlying file (same st_dev + st_ino). Hard links
+  ; and following-symlink (libc stat() resolves symlinks) both
+  ; produce same_file = true. Both args must be Atom; either stat
+  ; failing maps to Prolog fail. Linux glibc struct stat: st_dev
+  ; at offset 0, st_ino at offset 8 (both i64), matches what
+  ; M76 size_file/2 + M76 time_file/2 already assume.
+  %samf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %samf.t1 = call i32 @value_tag(%Value %samf.a1)
+  %samf.is_atom1 = icmp eq i32 %samf.t1, 0
+  br i1 %samf.is_atom1, label %samf.check2, label %samf.fail
+samf.fail:
+  ret i1 false
+samf.check2:
+  %samf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %samf.t2 = call i32 @value_tag(%Value %samf.a2)
+  %samf.is_atom2 = icmp eq i32 %samf.t2, 0
+  br i1 %samf.is_atom2, label %samf.go, label %samf.fail
+samf.go:
+  %samf.aid1 = call i64 @value_payload(%Value %samf.a1)
+  %samf.path1 = call i8* @wam_atom_to_string(i64 %samf.aid1)
+  %samf.p1_null = icmp eq i8* %samf.path1, null
+  br i1 %samf.p1_null, label %samf.fail, label %samf.have1
+samf.have1:
+  %samf.aid2 = call i64 @value_payload(%Value %samf.a2)
+  %samf.path2 = call i8* @wam_atom_to_string(i64 %samf.aid2)
+  %samf.p2_null = icmp eq i8* %samf.path2, null
+  br i1 %samf.p2_null, label %samf.fail, label %samf.stat1
+samf.stat1:
+  %samf.buf1 = alloca [256 x i8]
+  %samf.buf1_ptr = getelementptr [256 x i8], [256 x i8]* %samf.buf1, i32 0, i32 0
+  %samf.ret1 = call i32 @stat(i8* %samf.path1, i8* %samf.buf1_ptr)
+  %samf.stat1_ok = icmp eq i32 %samf.ret1, 0
+  br i1 %samf.stat1_ok, label %samf.stat2, label %samf.fail
+samf.stat2:
+  %samf.buf2 = alloca [256 x i8]
+  %samf.buf2_ptr = getelementptr [256 x i8], [256 x i8]* %samf.buf2, i32 0, i32 0
+  %samf.ret2 = call i32 @stat(i8* %samf.path2, i8* %samf.buf2_ptr)
+  %samf.stat2_ok = icmp eq i32 %samf.ret2, 0
+  br i1 %samf.stat2_ok, label %samf.read, label %samf.fail
+samf.read:
+  ; st_dev at offset 0, st_ino at offset 8.
+  %samf.dev1_ptr = bitcast i8* %samf.buf1_ptr to i64*
+  %samf.dev1 = load i64, i64* %samf.dev1_ptr
+  %samf.dev2_ptr = bitcast i8* %samf.buf2_ptr to i64*
+  %samf.dev2 = load i64, i64* %samf.dev2_ptr
+  %samf.dev_eq = icmp eq i64 %samf.dev1, %samf.dev2
+  %samf.ino1_pi8 = getelementptr i8, i8* %samf.buf1_ptr, i64 8
+  %samf.ino1_ptr = bitcast i8* %samf.ino1_pi8 to i64*
+  %samf.ino1 = load i64, i64* %samf.ino1_ptr
+  %samf.ino2_pi8 = getelementptr i8, i8* %samf.buf2_ptr, i64 8
+  %samf.ino2_ptr = bitcast i8* %samf.ino2_pi8 to i64*
+  %samf.ino2 = load i64, i64* %samf.ino2_ptr
+  %samf.ino_eq = icmp eq i64 %samf.ino1, %samf.ino2
+  %samf.both = and i1 %samf.dev_eq, %samf.ino_eq
+  ret i1 %samf.both
+
+builtin_tmp_file:
+  ; M123: tmp_file(+Base, -Path) -- race-free temp file creation via
+  ; libc mkstemp. Builds the template ``/tmp/<Base>_XXXXXX'' in a
+  ; PATH_MAX-sized stack buffer, calls mkstemp (which mutates the
+  ; ``XXXXXX'' in-place with a unique suffix AND creates the file
+  ; atomically), then closes the fd we don''t need and returns
+  ; the resolved Path as an atom.
+  ;
+  ; Diverges from SWI semantics: SWI''s tmp_file/2 returns a name
+  ; only without creating the file (racy); we always create an
+  ; empty file. Callers can delete and re-create if they really
+  ; need an unused name.
+  %tmpf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tmpf.t1 = call i32 @value_tag(%Value %tmpf.a1)
+  %tmpf.is_atom = icmp eq i32 %tmpf.t1, 0
+  br i1 %tmpf.is_atom, label %tmpf.go, label %tmpf.fail
+tmpf.fail:
+  ret i1 false
+tmpf.go:
+  %tmpf.aid = call i64 @value_payload(%Value %tmpf.a1)
+  %tmpf.base = call i8* @wam_atom_to_string(i64 %tmpf.aid)
+  %tmpf.base_null = icmp eq i8* %tmpf.base, null
+  br i1 %tmpf.base_null, label %tmpf.fail, label %tmpf.build
+tmpf.build:
+  %tmpf.base_len = call i64 @strlen(i8* %tmpf.base)
+  ; PATH_MAX = 4096 -- ``/tmp/'' (5) + base + ``_XXXXXX'' (7) + ``\0'' (1).
+  %tmpf.buf = alloca [4096 x i8]
+  %tmpf.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %tmpf.buf, i32 0, i32 0
+  ; Write ``/tmp/'' (5 bytes).
+  %tmpf.b0 = getelementptr i8, i8* %tmpf.buf_ptr, i64 0
+  store i8 47, i8* %tmpf.b0
+  %tmpf.b1 = getelementptr i8, i8* %tmpf.buf_ptr, i64 1
+  store i8 116, i8* %tmpf.b1
+  %tmpf.b2 = getelementptr i8, i8* %tmpf.buf_ptr, i64 2
+  store i8 109, i8* %tmpf.b2
+  %tmpf.b3 = getelementptr i8, i8* %tmpf.buf_ptr, i64 3
+  store i8 112, i8* %tmpf.b3
+  %tmpf.b4 = getelementptr i8, i8* %tmpf.buf_ptr, i64 4
+  store i8 47, i8* %tmpf.b4
+  ; Copy Base after ``/tmp/''.
+  %tmpf.after_prefix = getelementptr i8, i8* %tmpf.buf_ptr, i64 5
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tmpf.after_prefix, i8* %tmpf.base, i64 %tmpf.base_len, i1 false)
+  %tmpf.after_base_off = add i64 5, %tmpf.base_len
+  %tmpf.after_base = getelementptr i8, i8* %tmpf.buf_ptr, i64 %tmpf.after_base_off
+  ; Write ``_XXXXXX'' (7 bytes) + null terminator (1 byte).
+  store i8 95, i8* %tmpf.after_base
+  %tmpf.x1 = getelementptr i8, i8* %tmpf.after_base, i64 1
+  store i8 88, i8* %tmpf.x1
+  %tmpf.x2 = getelementptr i8, i8* %tmpf.after_base, i64 2
+  store i8 88, i8* %tmpf.x2
+  %tmpf.x3 = getelementptr i8, i8* %tmpf.after_base, i64 3
+  store i8 88, i8* %tmpf.x3
+  %tmpf.x4 = getelementptr i8, i8* %tmpf.after_base, i64 4
+  store i8 88, i8* %tmpf.x4
+  %tmpf.x5 = getelementptr i8, i8* %tmpf.after_base, i64 5
+  store i8 88, i8* %tmpf.x5
+  %tmpf.x6 = getelementptr i8, i8* %tmpf.after_base, i64 6
+  store i8 88, i8* %tmpf.x6
+  %tmpf.term = getelementptr i8, i8* %tmpf.after_base, i64 7
+  store i8 0, i8* %tmpf.term
+  ; mkstemp mutates the buffer (resolves XXXXXX) and creates the file.
+  %tmpf.fd = call i32 @mkstemp(i8* %tmpf.buf_ptr)
+  %tmpf.mk_ok = icmp sge i32 %tmpf.fd, 0
+  br i1 %tmpf.mk_ok, label %tmpf.intern, label %tmpf.fail
+tmpf.intern:
+  call i32 @close(i32 %tmpf.fd)
+  %tmpf.final_len = call i64 @strlen(i8* %tmpf.buf_ptr)
+  call void @wam_arena_ensure()
+  %tmpf.bufsize = add i64 %tmpf.final_len, 1
+  %tmpf.arena = call i8* @wam_arena_alloc(i64 %tmpf.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tmpf.arena, i8* %tmpf.buf_ptr, i64 %tmpf.final_len, i1 false)
+  %tmpf.arena_term = getelementptr i8, i8* %tmpf.arena, i64 %tmpf.final_len
+  store i8 0, i8* %tmpf.arena_term
+  %tmpf.atom_id = call i64 @wam_intern_atom(i8* %tmpf.arena, i64 %tmpf.final_len)
+  %tmpf.v0 = insertvalue %Value undef, i32 0, 0
+  %tmpf.v = insertvalue %Value %tmpf.v0, i64 %tmpf.atom_id, 1
+  %tmpf.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tmpf.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %tmpf.raw2, %Value %tmpf.v)
+  ret i1 %tmpf.uok
+
+builtin_mkfifo:
+  ; M123: mkfifo(+Path, +Mode) -- libc mkfifo wrapper, creates a
+  ; named pipe (FIFO) on the filesystem. Path must be Atom, Mode
+  ; must be Integer. Mode is the permission mask (octal in user
+  ; code: 0o644 etc.). Succeeds iff libc returns 0. EEXIST
+  ; (Path already exists), ENOENT (parent missing), etc. fail.
+  %mkf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %mkf.t1 = call i32 @value_tag(%Value %mkf.a1)
+  %mkf.is_atom = icmp eq i32 %mkf.t1, 0
+  br i1 %mkf.is_atom, label %mkf.check2, label %mkf.fail
+mkf.fail:
+  ret i1 false
+mkf.check2:
+  %mkf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %mkf.t2 = call i32 @value_tag(%Value %mkf.a2)
+  %mkf.is_int = icmp eq i32 %mkf.t2, 1
+  br i1 %mkf.is_int, label %mkf.go, label %mkf.fail
+mkf.go:
+  %mkf.aid = call i64 @value_payload(%Value %mkf.a1)
+  %mkf.path = call i8* @wam_atom_to_string(i64 %mkf.aid)
+  %mkf.path_null = icmp eq i8* %mkf.path, null
+  br i1 %mkf.path_null, label %mkf.fail, label %mkf.do
+mkf.do:
+  %mkf.mode64 = call i64 @value_payload(%Value %mkf.a2)
+  %mkf.mode = trunc i64 %mkf.mode64 to i32
+  %mkf.ret = call i32 @mkfifo(i8* %mkf.path, i32 %mkf.mode)
+  %mkf.ok = icmp eq i32 %mkf.ret, 0
+  ret i1 %mkf.ok
+
+builtin_umask:
+  ; M124: umask(?Old, +New) -- libc umask wrapper. Sets the
+  ; process file-creation mask to New and unifies Old with the
+  ; previous mask. New must be Integer (the permission bits to
+  ; mask out, e.g. 0o022 means group/other writes are masked).
+  ; To READ the umask without changing it: umask(Old, Old) --
+  ; libc has no read-only call so we set-and-restore would be
+  ; needed, but unifying Old with itself after the libc call
+  ; gives the same effect when New equals the previous value.
+  ; Non-int New fails the type guard.
+  %um.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %um.t2 = call i32 @value_tag(%Value %um.a2)
+  %um.is_int = icmp eq i32 %um.t2, 1
+  br i1 %um.is_int, label %um.go, label %um.fail
+um.fail:
+  ret i1 false
+um.go:
+  %um.new64 = call i64 @value_payload(%Value %um.a2)
+  %um.new = trunc i64 %um.new64 to i32
+  %um.prev = call i32 @umask(i32 %um.new)
+  %um.prev64 = zext i32 %um.prev to i64
+  %um.v = call %Value @value_integer(i64 %um.prev64)
+  %um.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %um.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %um.raw1, %Value %um.v)
+  ret i1 %um.ok
+
+builtin_monotonic_time:
+  ; M124: monotonic_time(?Time) -- monotonically increasing seconds
+  ; since an unspecified epoch (typically boot) as Float, via
+  ; clock_gettime(CLOCK_MONOTONIC, &ts). Unlike get_time/1
+  ; (CLOCK_REALTIME), this is immune to wall-clock adjustments
+  ; (NTP slew, daylight saving, manual settimeofday) -- ideal
+  ; for measuring elapsed time. CLOCK_MONOTONIC numeric value 1
+  ; on Linux. Same struct timespec layout as get_time.
+  %mt.ts_buf = alloca [16 x i8]
+  %mt.ts_ptr = getelementptr [16 x i8], [16 x i8]* %mt.ts_buf, i32 0, i32 0
+  %mt.cg_ret = call i32 @clock_gettime(i32 1, i8* %mt.ts_ptr)
+  %mt.sec_ptr = bitcast i8* %mt.ts_ptr to i64*
+  %mt.sec = load i64, i64* %mt.sec_ptr
+  %mt.nsec_ptr_i8 = getelementptr i8, i8* %mt.ts_ptr, i64 8
+  %mt.nsec_ptr = bitcast i8* %mt.nsec_ptr_i8 to i64*
+  %mt.nsec = load i64, i64* %mt.nsec_ptr
+  %mt.sec_d = sitofp i64 %mt.sec to double
+  %mt.nsec_d = sitofp i64 %mt.nsec to double
+  %mt.frac = fdiv double %mt.nsec_d, 1.000000e+09
+  %mt.t_d = fadd double %mt.sec_d, %mt.frac
+  %mt.t_bits = bitcast double %mt.t_d to i64
+  %mt.v0 = insertvalue %Value undef, i32 2, 0
+  %mt.v = insertvalue %Value %mt.v0, i64 %mt.t_bits, 1
+  %mt.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %mt.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %mt.raw1, %Value %mt.v)
+  ret i1 %mt.ok
+
+builtin_nice:
+  ; M125: nice(+Inc) -- libc nice wrapper; adjust process priority
+  ; by Inc (positive = lower priority, negative = higher; requires
+  ; privilege for negative). Always succeeds in Prolog regardless
+  ; of libc''s -1-on-error since we can''t distinguish -1-as-prio
+  ; from -1-as-error without errno. Inc must be Integer.
+  %nic.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nic.t1 = call i32 @value_tag(%Value %nic.a1)
+  %nic.is_int = icmp eq i32 %nic.t1, 1
+  br i1 %nic.is_int, label %nic.go, label %nic.fail
+nic.fail:
+  ret i1 false
+nic.go:
+  %nic.inc64 = call i64 @value_payload(%Value %nic.a1)
+  %nic.inc = trunc i64 %nic.inc64 to i32
+  call i32 @nice(i32 %nic.inc)
+  ret i1 true
+
+builtin_getpriority:
+  ; M125: getpriority(-Prio) -- libc getpriority(PRIO_PROCESS, 0)
+  ; reads the current process'' niceness. PRIO_PROCESS = 0, who = 0
+  ; (self) on Linux. Returns a signed value in [-20, 19]. We
+  ; always succeed; the libc -1-vs-error ambiguity is benign for
+  ; self-read on a live process.
+  %gpr.p = call i32 @getpriority(i32 0, i32 0)
+  %gpr.p64 = sext i32 %gpr.p to i64
+  %gpr.v = call %Value @value_integer(i64 %gpr.p64)
+  %gpr.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gpr.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gpr.raw1, %Value %gpr.v)
+  ret i1 %gpr.ok
+
+builtin_setpriority:
+  ; M125: setpriority(+Prio) -- libc setpriority(PRIO_PROCESS, 0,
+  ; Prio) sets the current process'' niceness. Prio must be
+  ; Integer (typically [-20, 19]; clamped by the kernel).
+  ; Succeeds iff libc returns 0; EPERM (raising priority beyond
+  ; RLIMIT_NICE), EACCES, etc. fail.
+  %spr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %spr.t1 = call i32 @value_tag(%Value %spr.a1)
+  %spr.is_int = icmp eq i32 %spr.t1, 1
+  br i1 %spr.is_int, label %spr.go, label %spr.fail
+spr.fail:
+  ret i1 false
+spr.go:
+  %spr.p64 = call i64 @value_payload(%Value %spr.a1)
+  %spr.p = trunc i64 %spr.p64 to i32
+  %spr.ret = call i32 @setpriority(i32 0, i32 0, i32 %spr.p)
+  %spr.ok = icmp eq i32 %spr.ret, 0
+  ret i1 %spr.ok
+
+builtin_getrlimit:
+  ; M126: getrlimit(+Resource, -SoftLimit) -- libc getrlimit wrapper.
+  ; Reads the current soft limit for Resource (an Integer naming
+  ; the POSIX rlimit constant: RLIMIT_CPU=0, RLIMIT_FSIZE=1,
+  ; RLIMIT_DATA=2, RLIMIT_STACK=3, RLIMIT_CORE=4). Higher-numbered
+  ; resources (RLIMIT_RSS, RLIMIT_NOFILE, RLIMIT_AS) vary across
+  ; OSes, but 0--4 are POSIX-portable. SoftLimit is the rlim_cur
+  ; field (offset 0, i64). RLIM_INFINITY (typically u64 max)
+  ; passes through unchanged. Fails if Resource is not an Integer
+  ; or libc returns -1 (EINVAL for unknown resource).
+  %grl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %grl.t1 = call i32 @value_tag(%Value %grl.a1)
+  %grl.is_int = icmp eq i32 %grl.t1, 1
+  br i1 %grl.is_int, label %grl.go, label %grl.fail
+grl.fail:
+  ret i1 false
+grl.go:
+  %grl.res64 = call i64 @value_payload(%Value %grl.a1)
+  %grl.res = trunc i64 %grl.res64 to i32
+  ; struct rlimit on Linux/macOS: { rlim_t rlim_cur; rlim_t rlim_max; }
+  ; with rlim_t = u64. Total 16 bytes.
+  %grl.buf = alloca [16 x i8]
+  %grl.buf_ptr = getelementptr [16 x i8], [16 x i8]* %grl.buf, i32 0, i32 0
+  %grl.ret = call i32 @getrlimit(i32 %grl.res, i8* %grl.buf_ptr)
+  %grl.call_ok = icmp eq i32 %grl.ret, 0
+  br i1 %grl.call_ok, label %grl.read, label %grl.fail
+grl.read:
+  %grl.cur_ptr = bitcast i8* %grl.buf_ptr to i64*
+  %grl.cur = load i64, i64* %grl.cur_ptr
+  %grl.v = call %Value @value_integer(i64 %grl.cur)
+  %grl.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %grl.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %grl.raw2, %Value %grl.v)
+  ret i1 %grl.ok
+
+builtin_setrlimit:
+  ; M126: setrlimit(+Resource, +SoftLimit) -- libc setrlimit wrapper.
+  ; Sets the soft limit for Resource to SoftLimit, leaving the
+  ; hard limit unchanged. Implementation: getrlimit first to
+  ; capture the current hard limit, overwrite rlim_cur with
+  ; SoftLimit, then setrlimit. Both args must be Integer; either
+  ; libc call returning -1 (typically EPERM when raising soft
+  ; above hard for unprivileged callers, or EINVAL for an unknown
+  ; resource) maps to Prolog fail.
+  %srl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %srl.t1 = call i32 @value_tag(%Value %srl.a1)
+  %srl.is_int1 = icmp eq i32 %srl.t1, 1
+  br i1 %srl.is_int1, label %srl.check2, label %srl.fail
+srl.fail:
+  ret i1 false
+srl.check2:
+  %srl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %srl.t2 = call i32 @value_tag(%Value %srl.a2)
+  %srl.is_int2 = icmp eq i32 %srl.t2, 1
+  br i1 %srl.is_int2, label %srl.go, label %srl.fail
+srl.go:
+  %srl.res64 = call i64 @value_payload(%Value %srl.a1)
+  %srl.res = trunc i64 %srl.res64 to i32
+  %srl.new = call i64 @value_payload(%Value %srl.a2)
+  %srl.buf = alloca [16 x i8]
+  %srl.buf_ptr = getelementptr [16 x i8], [16 x i8]* %srl.buf, i32 0, i32 0
+  ; Read current to preserve rlim_max.
+  %srl.get = call i32 @getrlimit(i32 %srl.res, i8* %srl.buf_ptr)
+  %srl.get_ok = icmp eq i32 %srl.get, 0
+  br i1 %srl.get_ok, label %srl.write, label %srl.fail
+srl.write:
+  %srl.cur_ptr = bitcast i8* %srl.buf_ptr to i64*
+  store i64 %srl.new, i64* %srl.cur_ptr
+  %srl.set = call i32 @setrlimit(i32 %srl.res, i8* %srl.buf_ptr)
+  %srl.ok = icmp eq i32 %srl.set, 0
+  ret i1 %srl.ok
+
+builtin_getlogin:
+  ; M127: getlogin(-Name) -- libc getlogin wrapper. Returns the
+  ; login name associated with the controlling terminal as an
+  ; atom. Fails if not running under a terminal (e.g. cron, CI
+  ; containers without a tty) -- libc returns NULL in that case.
+  %gln.s = call i8* @getlogin()
+  %gln.null = icmp eq i8* %gln.s, null
+  br i1 %gln.null, label %gln.fail, label %gln.intern
+gln.fail:
+  ret i1 false
+gln.intern:
+  %gln.len = call i64 @strlen(i8* %gln.s)
+  call void @wam_arena_ensure()
+  %gln.bufsize = add i64 %gln.len, 1
+  %gln.arena = call i8* @wam_arena_alloc(i64 %gln.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gln.arena, i8* %gln.s, i64 %gln.len, i1 false)
+  %gln.term = getelementptr i8, i8* %gln.arena, i64 %gln.len
+  store i8 0, i8* %gln.term
+  %gln.aid = call i64 @wam_intern_atom(i8* %gln.arena, i64 %gln.len)
+  %gln.v0 = insertvalue %Value undef, i32 0, 0
+  %gln.v = insertvalue %Value %gln.v0, i64 %gln.aid, 1
+  %gln.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %gln.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %gln.raw1, %Value %gln.v)
+  ret i1 %gln.ok
+
+builtin_uname_sysname:
+  ; M127: uname_sysname(-Sysname) -- returns the kernel name
+  ; (typically ''Linux'', ''Darwin'', ''FreeBSD'') from libc uname.
+  ; struct utsname on Linux glibc: 6 fields of 65 bytes each
+  ; (sysname/nodename/release/version/machine/domainname). Offsets
+  ; on other POSIX OSes differ (macOS uses 256-byte fields) -- a
+  ; 512-byte buffer covers Linux/glibc; portable handling would
+  ; need target_os routing (see M113).
+  %uns.buf = alloca [512 x i8]
+  %uns.buf_ptr = getelementptr [512 x i8], [512 x i8]* %uns.buf, i32 0, i32 0
+  %uns.ret = call i32 @uname(i8* %uns.buf_ptr)
+  %uns.ok_call = icmp eq i32 %uns.ret, 0
+  br i1 %uns.ok_call, label %uns.intern, label %uns.fail
+uns.fail:
+  ret i1 false
+uns.intern:
+  ; sysname at offset 0.
+  %uns.len = call i64 @strlen(i8* %uns.buf_ptr)
+  call void @wam_arena_ensure()
+  %uns.bufsize = add i64 %uns.len, 1
+  %uns.arena = call i8* @wam_arena_alloc(i64 %uns.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %uns.arena, i8* %uns.buf_ptr, i64 %uns.len, i1 false)
+  %uns.term = getelementptr i8, i8* %uns.arena, i64 %uns.len
+  store i8 0, i8* %uns.term
+  %uns.aid = call i64 @wam_intern_atom(i8* %uns.arena, i64 %uns.len)
+  %uns.v0 = insertvalue %Value undef, i32 0, 0
+  %uns.v = insertvalue %Value %uns.v0, i64 %uns.aid, 1
+  %uns.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uns.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %uns.raw1, %Value %uns.v)
+  ret i1 %uns.uok
+
+builtin_uname_machine:
+  ; M127: uname_machine(-Machine) -- returns the hardware arch
+  ; (typically ''x86_64'', ''aarch64'', ''arm64'') from libc uname.
+  ; machine field is at offset 4*65 = 260 on Linux glibc.
+  %unm.buf = alloca [512 x i8]
+  %unm.buf_ptr = getelementptr [512 x i8], [512 x i8]* %unm.buf, i32 0, i32 0
+  %unm.ret = call i32 @uname(i8* %unm.buf_ptr)
+  %unm.ok_call = icmp eq i32 %unm.ret, 0
+  br i1 %unm.ok_call, label %unm.intern, label %unm.fail
+unm.fail:
+  ret i1 false
+unm.intern:
+  %unm.field = getelementptr i8, i8* %unm.buf_ptr, i64 260
+  %unm.len = call i64 @strlen(i8* %unm.field)
+  call void @wam_arena_ensure()
+  %unm.bufsize = add i64 %unm.len, 1
+  %unm.arena = call i8* @wam_arena_alloc(i64 %unm.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %unm.arena, i8* %unm.field, i64 %unm.len, i1 false)
+  %unm.term = getelementptr i8, i8* %unm.arena, i64 %unm.len
+  store i8 0, i8* %unm.term
+  %unm.aid = call i64 @wam_intern_atom(i8* %unm.arena, i64 %unm.len)
+  %unm.v0 = insertvalue %Value undef, i32 0, 0
+  %unm.v = insertvalue %Value %unm.v0, i64 %unm.aid, 1
+  %unm.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %unm.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %unm.raw1, %Value %unm.v)
+  ret i1 %unm.uok
+
+builtin_copy_file:
+  ; M128: copy_file(+Src, +Dst) -- file copy via libc open / read /
+  ; write / close. Both args must be Atom. Source is opened O_RDONLY;
+  ; destination is opened O_WRONLY|O_CREAT|O_TRUNC (flags = 577 on
+  ; Linux) with mode 0644 (= 420 decimal). Loop reads 4 KB at a
+  ; time and writes them through; succeeds when read returns 0,
+  ; fails (after closing both fds) on read error, short write, or
+  ; either open returning -1. Open flags are Linux glibc constants;
+  ; macOS and BSDs use different O_CREAT (= 512) and O_TRUNC
+  ; (= 1024) values, so a portable version would need to dispatch
+  ; through the M113 target_os framework -- documented limitation.
+  %cpf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %cpf.t1 = call i32 @value_tag(%Value %cpf.a1)
+  %cpf.is_atom1 = icmp eq i32 %cpf.t1, 0
+  br i1 %cpf.is_atom1, label %cpf.check2, label %cpf.fail
+cpf.fail:
+  ret i1 false
+cpf.check2:
+  %cpf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %cpf.t2 = call i32 @value_tag(%Value %cpf.a2)
+  %cpf.is_atom2 = icmp eq i32 %cpf.t2, 0
+  br i1 %cpf.is_atom2, label %cpf.have_args, label %cpf.fail
+cpf.have_args:
+  %cpf.src_aid = call i64 @value_payload(%Value %cpf.a1)
+  %cpf.src_path = call i8* @wam_atom_to_string(i64 %cpf.src_aid)
+  %cpf.src_path_null = icmp eq i8* %cpf.src_path, null
+  br i1 %cpf.src_path_null, label %cpf.fail, label %cpf.have_src_path
+cpf.have_src_path:
+  %cpf.dst_aid = call i64 @value_payload(%Value %cpf.a2)
+  %cpf.dst_path = call i8* @wam_atom_to_string(i64 %cpf.dst_aid)
+  %cpf.dst_path_null = icmp eq i8* %cpf.dst_path, null
+  br i1 %cpf.dst_path_null, label %cpf.fail, label %cpf.open_src
+cpf.open_src:
+  ; O_RDONLY = 0; mode arg is ignored when not creating.
+  %cpf.src_fd = call i32 @open(i8* %cpf.src_path, i32 0, i32 0)
+  %cpf.src_ok = icmp sge i32 %cpf.src_fd, 0
+  br i1 %cpf.src_ok, label %cpf.open_dst, label %cpf.fail
+cpf.open_dst:
+  ; O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577 (Linux glibc).
+  ; mode 0o644 = 420 decimal -- typical rw-r--r-- for new files.
+  %cpf.dst_fd = call i32 @open(i8* %cpf.dst_path, i32 577, i32 420)
+  %cpf.dst_ok = icmp sge i32 %cpf.dst_fd, 0
+  br i1 %cpf.dst_ok, label %cpf.loop_init, label %cpf.close_src_then_fail
+cpf.close_src_then_fail:
+  call i32 @close(i32 %cpf.src_fd)
+  ret i1 false
+cpf.loop_init:
+  %cpf.buf = alloca [4096 x i8]
+  %cpf.buf_ptr = getelementptr [4096 x i8], [4096 x i8]* %cpf.buf, i32 0, i32 0
+  br label %cpf.loop
+cpf.loop:
+  %cpf.n = call i64 @read(i32 %cpf.src_fd, i8* %cpf.buf_ptr, i64 4096)
+  %cpf.n_zero = icmp eq i64 %cpf.n, 0
+  br i1 %cpf.n_zero, label %cpf.success, label %cpf.check_neg
+cpf.check_neg:
+  %cpf.n_neg = icmp slt i64 %cpf.n, 0
+  br i1 %cpf.n_neg, label %cpf.close_both_fail, label %cpf.do_write
+cpf.do_write:
+  %cpf.wn = call i64 @write(i32 %cpf.dst_fd, i8* %cpf.buf_ptr, i64 %cpf.n)
+  %cpf.wn_ok = icmp eq i64 %cpf.wn, %cpf.n
+  br i1 %cpf.wn_ok, label %cpf.loop, label %cpf.close_both_fail
+cpf.success:
+  call i32 @close(i32 %cpf.src_fd)
+  call i32 @close(i32 %cpf.dst_fd)
+  ret i1 true
+cpf.close_both_fail:
+  call i32 @close(i32 %cpf.src_fd)
+  call i32 @close(i32 %cpf.dst_fd)
+  ret i1 false
+
+builtin_read_file_to_atom:
+  ; M129: read_file_to_atom(+Path, -Atom) -- reads the entire file
+  ; at Path into an atom. Uses stat() to size the destination
+  ; buffer up front (st_size at offset 48, same as M76 size_file)
+  ; then arena_alloc(size+1) and a read-loop that handles short
+  ; reads (signal interruption etc) by tracking the offset and
+  ; reading remain bytes each iteration. Fails on stat error,
+  ; open error, premature EOF (read returns 0 with bytes still
+  ; outstanding -- e.g. file shrunk underneath us), or read error.
+  ; Bytes are interned verbatim including any embedded nulls;
+  ; the trailing null is added so the arena-backed atom remains
+  ; valid as a C string for downstream consumers.
+  %rfta.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rfta.t1 = call i32 @value_tag(%Value %rfta.a1)
+  %rfta.is_atom = icmp eq i32 %rfta.t1, 0
+  br i1 %rfta.is_atom, label %rfta.go, label %rfta.fail
+rfta.fail:
+  ret i1 false
+rfta.go:
+  %rfta.aid = call i64 @value_payload(%Value %rfta.a1)
+  %rfta.path = call i8* @wam_atom_to_string(i64 %rfta.aid)
+  %rfta.path_null = icmp eq i8* %rfta.path, null
+  br i1 %rfta.path_null, label %rfta.fail, label %rfta.stat
+rfta.stat:
+  %rfta.statbuf = alloca [256 x i8]
+  %rfta.statbuf_ptr = getelementptr [256 x i8], [256 x i8]* %rfta.statbuf, i32 0, i32 0
+  %rfta.stat_ret = call i32 @stat(i8* %rfta.path, i8* %rfta.statbuf_ptr)
+  %rfta.stat_ok = icmp eq i32 %rfta.stat_ret, 0
+  br i1 %rfta.stat_ok, label %rfta.read_size, label %rfta.fail
+rfta.read_size:
+  %rfta.size_ptr_i8 = getelementptr i8, i8* %rfta.statbuf_ptr, i64 48
+  %rfta.size_ptr = bitcast i8* %rfta.size_ptr_i8 to i64*
+  %rfta.size = load i64, i64* %rfta.size_ptr
+  %rfta.fd = call i32 @open(i8* %rfta.path, i32 0, i32 0)
+  %rfta.open_ok = icmp sge i32 %rfta.fd, 0
+  br i1 %rfta.open_ok, label %rfta.alloc, label %rfta.fail
+rfta.alloc:
+  call void @wam_arena_ensure()
+  %rfta.bufsize = add i64 %rfta.size, 1
+  %rfta.arena = call i8* @wam_arena_alloc(i64 %rfta.bufsize)
+  %rfta.empty = icmp eq i64 %rfta.size, 0
+  br i1 %rfta.empty, label %rfta.finalize, label %rfta.loop
+rfta.loop:
+  %rfta.off = phi i64 [ 0, %rfta.alloc ], [ %rfta.off_next, %rfta.advance ]
+  %rfta.remain = sub i64 %rfta.size, %rfta.off
+  %rfta.read_at = getelementptr i8, i8* %rfta.arena, i64 %rfta.off
+  %rfta.n = call i64 @read(i32 %rfta.fd, i8* %rfta.read_at, i64 %rfta.remain)
+  %rfta.n_le_zero = icmp sle i64 %rfta.n, 0
+  br i1 %rfta.n_le_zero, label %rfta.close_fail, label %rfta.advance
+rfta.advance:
+  %rfta.off_next = add i64 %rfta.off, %rfta.n
+  %rfta.done = icmp eq i64 %rfta.off_next, %rfta.size
+  br i1 %rfta.done, label %rfta.finalize, label %rfta.loop
+rfta.close_fail:
+  call i32 @close(i32 %rfta.fd)
+  ret i1 false
+rfta.finalize:
+  call i32 @close(i32 %rfta.fd)
+  %rfta.term = getelementptr i8, i8* %rfta.arena, i64 %rfta.size
+  store i8 0, i8* %rfta.term
+  %rfta.atom_id = call i64 @wam_intern_atom(i8* %rfta.arena, i64 %rfta.size)
+  %rfta.v0 = insertvalue %Value undef, i32 0, 0
+  %rfta.v = insertvalue %Value %rfta.v0, i64 %rfta.atom_id, 1
+  %rfta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rfta.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %rfta.raw2, %Value %rfta.v)
+  ret i1 %rfta.uok
+
+builtin_write_atom_to_file:
+  ; M130: write_atom_to_file(+Path, +Content) -- writes Content
+  ; (atom) to Path (atom), truncating any existing file. Uses
+  ; O_WRONLY|O_CREAT|O_TRUNC (= 577 on Linux glibc) with mode 0644
+  ; (= 420 decimal). Write-loop handles short writes by tracking
+  ; how many bytes are still outstanding. Closes the fd in both
+  ; success and failure paths.
+  %wfa.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %wfa.t1 = call i32 @value_tag(%Value %wfa.a1)
+  %wfa.is_atom1 = icmp eq i32 %wfa.t1, 0
+  br i1 %wfa.is_atom1, label %wfa.check2, label %wfa.fail
+wfa.fail:
+  ret i1 false
+wfa.check2:
+  %wfa.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %wfa.t2 = call i32 @value_tag(%Value %wfa.a2)
+  %wfa.is_atom2 = icmp eq i32 %wfa.t2, 0
+  br i1 %wfa.is_atom2, label %wfa.have_args, label %wfa.fail
+wfa.have_args:
+  %wfa.path_aid = call i64 @value_payload(%Value %wfa.a1)
+  %wfa.path = call i8* @wam_atom_to_string(i64 %wfa.path_aid)
+  %wfa.path_null = icmp eq i8* %wfa.path, null
+  br i1 %wfa.path_null, label %wfa.fail, label %wfa.have_path
+wfa.have_path:
+  %wfa.content_aid = call i64 @value_payload(%Value %wfa.a2)
+  %wfa.content = call i8* @wam_atom_to_string(i64 %wfa.content_aid)
+  %wfa.content_null = icmp eq i8* %wfa.content, null
+  br i1 %wfa.content_null, label %wfa.fail, label %wfa.open
+wfa.open:
+  ; O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577 on Linux glibc.
+  %wfa.fd = call i32 @open(i8* %wfa.path, i32 577, i32 420)
+  %wfa.open_ok = icmp sge i32 %wfa.fd, 0
+  br i1 %wfa.open_ok, label %wfa.size, label %wfa.fail
+wfa.size:
+  %wfa.len = call i64 @strlen(i8* %wfa.content)
+  %wfa.empty = icmp eq i64 %wfa.len, 0
+  br i1 %wfa.empty, label %wfa.success, label %wfa.loop
+wfa.loop:
+  %wfa.off = phi i64 [ 0, %wfa.size ], [ %wfa.off_next, %wfa.advance ]
+  %wfa.remain = sub i64 %wfa.len, %wfa.off
+  %wfa.write_at = getelementptr i8, i8* %wfa.content, i64 %wfa.off
+  %wfa.n = call i64 @write(i32 %wfa.fd, i8* %wfa.write_at, i64 %wfa.remain)
+  %wfa.n_le_zero = icmp sle i64 %wfa.n, 0
+  br i1 %wfa.n_le_zero, label %wfa.close_fail, label %wfa.advance
+wfa.advance:
+  %wfa.off_next = add i64 %wfa.off, %wfa.n
+  %wfa.done = icmp eq i64 %wfa.off_next, %wfa.len
+  br i1 %wfa.done, label %wfa.success, label %wfa.loop
+wfa.close_fail:
+  call i32 @close(i32 %wfa.fd)
+  ret i1 false
+wfa.success:
+  call i32 @close(i32 %wfa.fd)
+  ret i1 true
+
+builtin_append_atom_to_file:
+  ; M130: append_atom_to_file(+Path, +Content) -- writes Content
+  ; to Path, creating it if it doesn''t exist and appending to
+  ; any existing contents. Uses O_WRONLY|O_CREAT|O_APPEND
+  ; (= 1089 on Linux glibc: 1|64|1024) with mode 0644. Same
+  ; short-write loop as write_atom_to_file -- only the open
+  ; flags differ.
+  %afa.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %afa.t1 = call i32 @value_tag(%Value %afa.a1)
+  %afa.is_atom1 = icmp eq i32 %afa.t1, 0
+  br i1 %afa.is_atom1, label %afa.check2, label %afa.fail
+afa.fail:
+  ret i1 false
+afa.check2:
+  %afa.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %afa.t2 = call i32 @value_tag(%Value %afa.a2)
+  %afa.is_atom2 = icmp eq i32 %afa.t2, 0
+  br i1 %afa.is_atom2, label %afa.have_args, label %afa.fail
+afa.have_args:
+  %afa.path_aid = call i64 @value_payload(%Value %afa.a1)
+  %afa.path = call i8* @wam_atom_to_string(i64 %afa.path_aid)
+  %afa.path_null = icmp eq i8* %afa.path, null
+  br i1 %afa.path_null, label %afa.fail, label %afa.have_path
+afa.have_path:
+  %afa.content_aid = call i64 @value_payload(%Value %afa.a2)
+  %afa.content = call i8* @wam_atom_to_string(i64 %afa.content_aid)
+  %afa.content_null = icmp eq i8* %afa.content, null
+  br i1 %afa.content_null, label %afa.fail, label %afa.open
+afa.open:
+  ; O_WRONLY (1) | O_CREAT (64) | O_APPEND (1024) = 1089 on Linux glibc.
+  %afa.fd = call i32 @open(i8* %afa.path, i32 1089, i32 420)
+  %afa.open_ok = icmp sge i32 %afa.fd, 0
+  br i1 %afa.open_ok, label %afa.size, label %afa.fail
+afa.size:
+  %afa.len = call i64 @strlen(i8* %afa.content)
+  %afa.empty = icmp eq i64 %afa.len, 0
+  br i1 %afa.empty, label %afa.success, label %afa.loop
+afa.loop:
+  %afa.off = phi i64 [ 0, %afa.size ], [ %afa.off_next, %afa.advance ]
+  %afa.remain = sub i64 %afa.len, %afa.off
+  %afa.write_at = getelementptr i8, i8* %afa.content, i64 %afa.off
+  %afa.n = call i64 @write(i32 %afa.fd, i8* %afa.write_at, i64 %afa.remain)
+  %afa.n_le_zero = icmp sle i64 %afa.n, 0
+  br i1 %afa.n_le_zero, label %afa.close_fail, label %afa.advance
+afa.advance:
+  %afa.off_next = add i64 %afa.off, %afa.n
+  %afa.done = icmp eq i64 %afa.off_next, %afa.len
+  br i1 %afa.done, label %afa.success, label %afa.loop
+afa.close_fail:
+  call i32 @close(i32 %afa.fd)
+  ret i1 false
+afa.success:
+  call i32 @close(i32 %afa.fd)
+  ret i1 true
+
+builtin_errno:
+  ; M131: errno(-N) -- reads the thread-local errno value via
+  ; __errno_location(). Useful right after a failing libc-wrapper
+  ; predicate to find out WHY: a typical pattern is
+  ;     ( delete_file(P) ; errno(E), strerror(E, M), format(...) )
+  ; Note that any libc call between the failure and errno/1 will
+  ; clobber the value -- so call errno BEFORE any other diagnostic
+  ; predicate. Always succeeds (returns 0 when no error pending).
+  %ern.loc = call i32* @__errno_location()
+  %ern.val32 = load i32, i32* %ern.loc
+  %ern.val64 = sext i32 %ern.val32 to i64
+  %ern.v = call %Value @value_integer(i64 %ern.val64)
+  %ern.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ern.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ern.raw1, %Value %ern.v)
+  ret i1 %ern.ok
+
+builtin_strerror:
+  ; M131: strerror(+Errno, -Message) -- libc strerror wrapper.
+  ; Returns the human-readable description of Errno as an atom
+  ; ("No such file or directory", "Permission denied", etc.).
+  ; Errno must be Integer; non-int fails type guard. libc returns
+  ; a pointer into static thread-local storage that''s safe to
+  ; intern immediately.
+  %ser.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ser.t1 = call i32 @value_tag(%Value %ser.a1)
+  %ser.is_int = icmp eq i32 %ser.t1, 1
+  br i1 %ser.is_int, label %ser.go, label %ser.fail
+ser.fail:
+  ret i1 false
+ser.go:
+  %ser.e64 = call i64 @value_payload(%Value %ser.a1)
+  %ser.e = trunc i64 %ser.e64 to i32
+  %ser.s = call i8* @strerror(i32 %ser.e)
+  %ser.s_null = icmp eq i8* %ser.s, null
+  br i1 %ser.s_null, label %ser.fail, label %ser.intern
+ser.intern:
+  %ser.len = call i64 @strlen(i8* %ser.s)
+  call void @wam_arena_ensure()
+  %ser.bufsize = add i64 %ser.len, 1
+  %ser.arena = call i8* @wam_arena_alloc(i64 %ser.bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ser.arena, i8* %ser.s, i64 %ser.len, i1 false)
+  %ser.term = getelementptr i8, i8* %ser.arena, i64 %ser.len
+  store i8 0, i8* %ser.term
+  %ser.aid = call i64 @wam_intern_atom(i8* %ser.arena, i64 %ser.len)
+  %ser.v0 = insertvalue %Value undef, i32 0, 0
+  %ser.v = insertvalue %Value %ser.v0, i64 %ser.aid, 1
+  %ser.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ser.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %ser.raw2, %Value %ser.v)
+  ret i1 %ser.uok
+
+builtin_process_max_rss:
+  ; M132: process_max_rss(-KB) -- peak resident set size of the
+  ; current process in kilobytes, via getrusage(RUSAGE_SELF=0,
+  ; &ru). ru_maxrss is at offset 32 in struct rusage on Linux
+  ; glibc x86_64 (after ru_utime[16] + ru_stime[16]). Linux
+  ; reports KB; macOS reports BYTES at the same offset -- callers
+  ; on macOS need to divide by 1024 themselves (would need
+  ; target_os routing for full portability).
+  %prss.buf = alloca [256 x i8]
+  %prss.buf_ptr = getelementptr [256 x i8], [256 x i8]* %prss.buf, i32 0, i32 0
+  %prss.ret = call i32 @getrusage(i32 0, i8* %prss.buf_ptr)
+  %prss.ok = icmp eq i32 %prss.ret, 0
+  br i1 %prss.ok, label %prss.read, label %prss.fail
+prss.fail:
+  ret i1 false
+prss.read:
+  %prss.rss_pi8 = getelementptr i8, i8* %prss.buf_ptr, i64 32
+  %prss.rss_ptr = bitcast i8* %prss.rss_pi8 to i64*
+  %prss.rss = load i64, i64* %prss.rss_ptr
+  %prss.v = call %Value @value_integer(i64 %prss.rss)
+  %prss.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %prss.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %prss.raw1, %Value %prss.v)
+  ret i1 %prss.uok
+
+builtin_process_user_time:
+  ; M132: process_user_time(-Seconds) -- accumulated user-mode
+  ; CPU time of the current process as Float seconds, via
+  ; getrusage(RUSAGE_SELF=0, &ru). struct rusage starts with
+  ; ru_utime (struct timeval { i64 tv_sec; i64 tv_usec }), so
+  ; tv_sec at offset 0, tv_usec at offset 8. Result is
+  ; sec + usec / 1e6. Complementary to M107 cpu_time/1 which
+  ; gives total (user+sys) via clock_gettime.
+  %put.buf = alloca [256 x i8]
+  %put.buf_ptr = getelementptr [256 x i8], [256 x i8]* %put.buf, i32 0, i32 0
+  %put.ret = call i32 @getrusage(i32 0, i8* %put.buf_ptr)
+  %put.ok = icmp eq i32 %put.ret, 0
+  br i1 %put.ok, label %put.read, label %put.fail
+put.fail:
+  ret i1 false
+put.read:
+  %put.sec_ptr = bitcast i8* %put.buf_ptr to i64*
+  %put.sec = load i64, i64* %put.sec_ptr
+  %put.usec_pi8 = getelementptr i8, i8* %put.buf_ptr, i64 8
+  %put.usec_ptr = bitcast i8* %put.usec_pi8 to i64*
+  %put.usec = load i64, i64* %put.usec_ptr
+  %put.sec_d = sitofp i64 %put.sec to double
+  %put.usec_d = sitofp i64 %put.usec to double
+  %put.frac = fdiv double %put.usec_d, 1.000000e+06
+  %put.t_d = fadd double %put.sec_d, %put.frac
+  %put.t_bits = bitcast double %put.t_d to i64
+  %put.v0 = insertvalue %Value undef, i32 2, 0
+  %put.v = insertvalue %Value %put.v0, i64 %put.t_bits, 1
+  %put.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %put.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %put.raw1, %Value %put.v)
+  ret i1 %put.uok
+
+builtin_process_system_time:
+  ; M132: process_system_time(-Seconds) -- accumulated kernel-mode
+  ; CPU time of the current process. ru_stime starts at offset 16
+  ; (after ru_utime), tv_sec at offset 16, tv_usec at offset 24.
+  %pst.buf = alloca [256 x i8]
+  %pst.buf_ptr = getelementptr [256 x i8], [256 x i8]* %pst.buf, i32 0, i32 0
+  %pst.ret = call i32 @getrusage(i32 0, i8* %pst.buf_ptr)
+  %pst.ok = icmp eq i32 %pst.ret, 0
+  br i1 %pst.ok, label %pst.read, label %pst.fail
+pst.fail:
+  ret i1 false
+pst.read:
+  %pst.sec_pi8 = getelementptr i8, i8* %pst.buf_ptr, i64 16
+  %pst.sec_ptr = bitcast i8* %pst.sec_pi8 to i64*
+  %pst.sec = load i64, i64* %pst.sec_ptr
+  %pst.usec_pi8 = getelementptr i8, i8* %pst.buf_ptr, i64 24
+  %pst.usec_ptr = bitcast i8* %pst.usec_pi8 to i64*
+  %pst.usec = load i64, i64* %pst.usec_ptr
+  %pst.sec_d = sitofp i64 %pst.sec to double
+  %pst.usec_d = sitofp i64 %pst.usec to double
+  %pst.frac = fdiv double %pst.usec_d, 1.000000e+06
+  %pst.t_d = fadd double %pst.sec_d, %pst.frac
+  %pst.t_bits = bitcast double %pst.t_d to i64
+  %pst.v0 = insertvalue %Value undef, i32 2, 0
+  %pst.v = insertvalue %Value %pst.v0, i64 %pst.t_bits, 1
+  %pst.raw1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %pst.uok = call i1 @wam_unify_value(%WamState* %vm, %Value %pst.raw1, %Value %pst.v)
+  ret i1 %pst.uok
+
+builtin_path_join:
+  ; M133: path_join(+Base, +Rel, -Full) -- joins Base and Rel into
+  ; Full, inserting exactly one ''/'' between them (skipping the
+  ; insertion if Base already ends with one). If Rel is absolute
+  ; (first char is ''/''), Full = Rel and Base is ignored -- matches
+  ; the standard ''absolute path overrides'' semantics of os.path.join,
+  ; Path/, and pathjoin in major languages. Empty-Base / empty-Rel
+  ; fast paths skip the slash logic.
+  %pj.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %pj.t1 = call i32 @value_tag(%Value %pj.a1)
+  %pj.is_atom1 = icmp eq i32 %pj.t1, 0
+  br i1 %pj.is_atom1, label %pj.check2, label %pj.fail
+pj.fail:
+  ret i1 false
+pj.check2:
+  %pj.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %pj.t2 = call i32 @value_tag(%Value %pj.a2)
+  %pj.is_atom2 = icmp eq i32 %pj.t2, 0
+  br i1 %pj.is_atom2, label %pj.have_args, label %pj.fail
+pj.have_args:
+  %pj.b_aid = call i64 @value_payload(%Value %pj.a1)
+  %pj.b = call i8* @wam_atom_to_string(i64 %pj.b_aid)
+  %pj.b_null = icmp eq i8* %pj.b, null
+  br i1 %pj.b_null, label %pj.fail, label %pj.have_b
+pj.have_b:
+  %pj.r_aid = call i64 @value_payload(%Value %pj.a2)
+  %pj.r = call i8* @wam_atom_to_string(i64 %pj.r_aid)
+  %pj.r_null = icmp eq i8* %pj.r, null
+  br i1 %pj.r_null, label %pj.fail, label %pj.measure
+pj.measure:
+  %pj.blen = call i64 @strlen(i8* %pj.b)
+  %pj.rlen = call i64 @strlen(i8* %pj.r)
+  ; If Rel starts with ''/'', it''s absolute -- return Rel verbatim.
+  %pj.r_has = icmp sgt i64 %pj.rlen, 0
+  br i1 %pj.r_has, label %pj.check_abs, label %pj.use_base
+pj.check_abs:
+  %pj.r0 = load i8, i8* %pj.r
+  %pj.is_abs = icmp eq i8 %pj.r0, 47
+  br i1 %pj.is_abs, label %pj.use_rel, label %pj.check_base
+pj.use_rel:
+  ; Full = Rel.
+  call void @wam_arena_ensure()
+  %pj.rel_buflen = add i64 %pj.rlen, 1
+  %pj.rel_buf = call i8* @wam_arena_alloc(i64 %pj.rel_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.rel_buf, i8* %pj.r, i64 %pj.rlen, i1 false)
+  %pj.rel_term = getelementptr i8, i8* %pj.rel_buf, i64 %pj.rlen
+  store i8 0, i8* %pj.rel_term
+  %pj.rel_aid = call i64 @wam_intern_atom(i8* %pj.rel_buf, i64 %pj.rlen)
+  br label %pj.unify
+pj.use_base:
+  ; Rel is empty -> Full = Base.
+  call void @wam_arena_ensure()
+  %pj.base_buflen = add i64 %pj.blen, 1
+  %pj.base_buf = call i8* @wam_arena_alloc(i64 %pj.base_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.base_buf, i8* %pj.b, i64 %pj.blen, i1 false)
+  %pj.base_term = getelementptr i8, i8* %pj.base_buf, i64 %pj.blen
+  store i8 0, i8* %pj.base_term
+  %pj.base_aid = call i64 @wam_intern_atom(i8* %pj.base_buf, i64 %pj.blen)
+  br label %pj.unify
+pj.check_base:
+  ; Both non-empty; decide whether to insert ''/'' based on whether
+  ; Base already ends with one. Base of length 0 -> just use Rel.
+  %pj.b_has = icmp sgt i64 %pj.blen, 0
+  br i1 %pj.b_has, label %pj.measure_slash, label %pj.use_rel
+pj.measure_slash:
+  %pj.last_idx = sub i64 %pj.blen, 1
+  %pj.last_ptr = getelementptr i8, i8* %pj.b, i64 %pj.last_idx
+  %pj.last_c = load i8, i8* %pj.last_ptr
+  %pj.has_slash = icmp eq i8 %pj.last_c, 47
+  %pj.sep_len = select i1 %pj.has_slash, i64 0, i64 1
+  ; total = blen + sep_len + rlen
+  %pj.t1_tmp = add i64 %pj.blen, %pj.sep_len
+  %pj.total = add i64 %pj.t1_tmp, %pj.rlen
+  call void @wam_arena_ensure()
+  %pj.full_buflen = add i64 %pj.total, 1
+  %pj.full_buf = call i8* @wam_arena_alloc(i64 %pj.full_buflen)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.full_buf, i8* %pj.b, i64 %pj.blen, i1 false)
+  ; Insert ''/'' if needed.
+  br i1 %pj.has_slash, label %pj.copy_rel, label %pj.insert_slash
+pj.insert_slash:
+  %pj.slash_pos = getelementptr i8, i8* %pj.full_buf, i64 %pj.blen
+  store i8 47, i8* %pj.slash_pos
+  br label %pj.copy_rel
+pj.copy_rel:
+  %pj.rel_off = add i64 %pj.blen, %pj.sep_len
+  %pj.rel_dst = getelementptr i8, i8* %pj.full_buf, i64 %pj.rel_off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pj.rel_dst, i8* %pj.r, i64 %pj.rlen, i1 false)
+  %pj.full_term = getelementptr i8, i8* %pj.full_buf, i64 %pj.total
+  store i8 0, i8* %pj.full_term
+  %pj.full_aid = call i64 @wam_intern_atom(i8* %pj.full_buf, i64 %pj.total)
+  br label %pj.unify
+pj.unify:
+  %pj.final_aid = phi i64 [ %pj.rel_aid, %pj.use_rel ], [ %pj.base_aid, %pj.use_base ], [ %pj.full_aid, %pj.copy_rel ]
+  %pj.v0 = insertvalue %Value undef, i32 0, 0
+  %pj.v = insertvalue %Value %pj.v0, i64 %pj.final_aid, 1
+  %pj.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pj.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %pj.raw3, %Value %pj.v)
+  ret i1 %pj.ok
+
+builtin_system_to_atom:
+  ; M134: system_to_atom(+Cmd, -Output) -- runs Cmd through a
+  ; shell via libc popen(cmd, "r"), captures stdout into an atom,
+  ; then closes the pipe with pclose. Output trailing newline is
+  ; preserved verbatim (callers can sub_atom-trim if they want
+  ; chomped output).
+  ;
+  ; Buffer: 64 KB single arena allocation, read with the buffer''s
+  ; remaining length as the per-call fread limit. Output > 64 KB
+  ; causes failure (no growable buffer in the current arena).
+  ; Cmd must be Atom; non-atom or popen failure (fork/exec out
+  ; of resources) maps to Prolog fail.
+  %sta.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sta.t1 = call i32 @value_tag(%Value %sta.a1)
+  %sta.is_atom = icmp eq i32 %sta.t1, 0
+  br i1 %sta.is_atom, label %sta.go, label %sta.fail
+sta.fail:
+  ret i1 false
+sta.go:
+  %sta.aid = call i64 @value_payload(%Value %sta.a1)
+  %sta.cmd = call i8* @wam_atom_to_string(i64 %sta.aid)
+  %sta.cmd_null = icmp eq i8* %sta.cmd, null
+  br i1 %sta.cmd_null, label %sta.fail, label %sta.open
+sta.open:
+  ; Build the "r\0" mode string on the stack.
+  %sta.mode = alloca [2 x i8]
+  %sta.mode_ptr = getelementptr [2 x i8], [2 x i8]* %sta.mode, i32 0, i32 0
+  store i8 114, i8* %sta.mode_ptr
+  %sta.mode_t = getelementptr i8, i8* %sta.mode_ptr, i64 1
+  store i8 0, i8* %sta.mode_t
+  %sta.fp = call i8* @popen(i8* %sta.cmd, i8* %sta.mode_ptr)
+  %sta.fp_null = icmp eq i8* %sta.fp, null
+  br i1 %sta.fp_null, label %sta.fail, label %sta.alloc
+sta.alloc:
+  call void @wam_arena_ensure()
+  %sta.buf = call i8* @wam_arena_alloc(i64 65537)
+  br label %sta.loop
+sta.loop:
+  %sta.off = phi i64 [ 0, %sta.alloc ], [ %sta.off_next, %sta.advance ]
+  %sta.remain = sub i64 65536, %sta.off
+  ; If buffer is full, stop reading -- 1 MB cap.
+  %sta.has_room = icmp sgt i64 %sta.remain, 0
+  br i1 %sta.has_room, label %sta.read, label %sta.overflow
+sta.read:
+  %sta.dst = getelementptr i8, i8* %sta.buf, i64 %sta.off
+  %sta.n = call i64 @fread(i8* %sta.dst, i64 1, i64 %sta.remain, i8* %sta.fp)
+  %sta.eof = icmp eq i64 %sta.n, 0
+  br i1 %sta.eof, label %sta.close, label %sta.advance
+sta.advance:
+  %sta.off_next = add i64 %sta.off, %sta.n
+  br label %sta.loop
+sta.overflow:
+  ; Output exceeded 64 KB -- pclose and fail rather than truncate
+  ; silently.
+  call i32 @pclose(i8* %sta.fp)
+  ret i1 false
+sta.close:
+  call i32 @pclose(i8* %sta.fp)
+  %sta.term = getelementptr i8, i8* %sta.buf, i64 %sta.off
+  store i8 0, i8* %sta.term
+  %sta.atom_id = call i64 @wam_intern_atom(i8* %sta.buf, i64 %sta.off)
+  %sta.v0 = insertvalue %Value undef, i32 0, 0
+  %sta.v = insertvalue %Value %sta.v0, i64 %sta.atom_id, 1
+  %sta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %sta.raw2, %Value %sta.v)
+  ret i1 %sta.ok
+
+builtin_atom_to_system:
+  ; M135: atom_to_system(+Cmd, +Content) -- input-side companion
+  ; to M134 system_to_atom/2. Opens a pipe to Cmd via popen(cmd,
+  ; "w") and writes Content''s bytes as the command''s stdin, then
+  ; pclose to flush + wait. Succeeds iff pclose returns 0 (subprocess
+  ; exited cleanly with status 0). Both args must be Atom.
+  ;
+  ; Useful for piping data through filters. Short writes are
+  ; retried (fwrite normally handles this internally but we
+  ; double-check by tracking offset).
+  %ats.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ats.t1 = call i32 @value_tag(%Value %ats.a1)
+  %ats.is_atom1 = icmp eq i32 %ats.t1, 0
+  br i1 %ats.is_atom1, label %ats.check2, label %ats.fail
+ats.fail:
+  ret i1 false
+ats.check2:
+  %ats.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %ats.t2 = call i32 @value_tag(%Value %ats.a2)
+  %ats.is_atom2 = icmp eq i32 %ats.t2, 0
+  br i1 %ats.is_atom2, label %ats.have_args, label %ats.fail
+ats.have_args:
+  %ats.cmd_aid = call i64 @value_payload(%Value %ats.a1)
+  %ats.cmd = call i8* @wam_atom_to_string(i64 %ats.cmd_aid)
+  %ats.cmd_null = icmp eq i8* %ats.cmd, null
+  br i1 %ats.cmd_null, label %ats.fail, label %ats.have_cmd
+ats.have_cmd:
+  %ats.body_aid = call i64 @value_payload(%Value %ats.a2)
+  %ats.body = call i8* @wam_atom_to_string(i64 %ats.body_aid)
+  %ats.body_null = icmp eq i8* %ats.body, null
+  br i1 %ats.body_null, label %ats.fail, label %ats.open
+ats.open:
+  ; "w\0" mode string on stack.
+  %ats.mode = alloca [2 x i8]
+  %ats.mode_ptr = getelementptr [2 x i8], [2 x i8]* %ats.mode, i32 0, i32 0
+  store i8 119, i8* %ats.mode_ptr
+  %ats.mode_t = getelementptr i8, i8* %ats.mode_ptr, i64 1
+  store i8 0, i8* %ats.mode_t
+  %ats.fp = call i8* @popen(i8* %ats.cmd, i8* %ats.mode_ptr)
+  %ats.fp_null = icmp eq i8* %ats.fp, null
+  br i1 %ats.fp_null, label %ats.fail, label %ats.size
+ats.size:
+  %ats.len = call i64 @strlen(i8* %ats.body)
+  %ats.empty = icmp eq i64 %ats.len, 0
+  br i1 %ats.empty, label %ats.close, label %ats.loop
+ats.loop:
+  %ats.off = phi i64 [ 0, %ats.size ], [ %ats.off_next, %ats.advance ]
+  %ats.remain = sub i64 %ats.len, %ats.off
+  %ats.src = getelementptr i8, i8* %ats.body, i64 %ats.off
+  %ats.n = call i64 @fwrite(i8* %ats.src, i64 1, i64 %ats.remain, i8* %ats.fp)
+  %ats.n_zero = icmp eq i64 %ats.n, 0
+  br i1 %ats.n_zero, label %ats.close_fail, label %ats.advance
+ats.advance:
+  %ats.off_next = add i64 %ats.off, %ats.n
+  %ats.done = icmp eq i64 %ats.off_next, %ats.len
+  br i1 %ats.done, label %ats.close, label %ats.loop
+ats.close_fail:
+  call i32 @pclose(i8* %ats.fp)
+  ret i1 false
+ats.close:
+  %ats.ret = call i32 @pclose(i8* %ats.fp)
+  %ats.ok = icmp eq i32 %ats.ret, 0
+  ret i1 %ats.ok
+
+builtin_atom_split:
+  ; M136: atom_split(+Atom, +Sep, -Parts) -- splits Atom on a single
+  ; character Sep into a list of substring atoms. The inverse of
+  ; atomic_list_concat/3 (forward mode). Sep MUST be a one-character
+  ; atom; multi-char separators fail the length guard.
+  ;
+  ; Examples:
+  ;   atom_split(''a,b,c'', '','', P) -> P = [a, b, c].
+  ;   atom_split('''', '','', P)      -> P = [''''].
+  ;   atom_split('','', '','', P)      -> P = ['''', ''''].
+  ;   atom_split(abc, '','', P)       -> P = [abc].
+  ;
+  ; Algorithm: walk Atom right-to-left so each sep encounter can
+  ; prepend the just-discovered substring directly (no reversal
+  ; step at the end). After the loop, the leftmost substring is
+  ; prepended one final time.
+  %as.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %as.t1 = call i32 @value_tag(%Value %as.a1)
+  %as.is_atom1 = icmp eq i32 %as.t1, 0
+  br i1 %as.is_atom1, label %as.check2, label %as.fail
+as.fail:
+  ret i1 false
+as.check2:
+  %as.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %as.t2 = call i32 @value_tag(%Value %as.a2)
+  %as.is_atom2 = icmp eq i32 %as.t2, 0
+  br i1 %as.is_atom2, label %as.have_args, label %as.fail
+as.have_args:
+  %as.atom_aid = call i64 @value_payload(%Value %as.a1)
+  %as.str = call i8* @wam_atom_to_string(i64 %as.atom_aid)
+  %as.str_null = icmp eq i8* %as.str, null
+  br i1 %as.str_null, label %as.fail, label %as.have_str
+as.have_str:
+  %as.sep_aid = call i64 @value_payload(%Value %as.a2)
+  %as.sep_str = call i8* @wam_atom_to_string(i64 %as.sep_aid)
+  %as.sep_null = icmp eq i8* %as.sep_str, null
+  br i1 %as.sep_null, label %as.fail, label %as.measure
+as.measure:
+  %as.len = call i64 @strlen(i8* %as.str)
+  %as.sep_len = call i64 @strlen(i8* %as.sep_str)
+  %as.sep_ok = icmp eq i64 %as.sep_len, 1
+  br i1 %as.sep_ok, label %as.init, label %as.fail
+as.init:
+  %as.sep_c = load i8, i8* %as.sep_str
+  %as.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %as.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %as.empty_v = insertvalue %Value %as.empty_v0, i64 %as.empty_aid, 1
+  %as.i_init = sub i64 %as.len, 1
+  %as.has_chars = icmp sge i64 %as.i_init, 0
+  br i1 %as.has_chars, label %as.loop, label %as.finalize_empty
+as.loop:
+  %as.i = phi i64 [ %as.i_init, %as.init ], [ %as.i_dec, %as.step ]
+  %as.end = phi i64 [ %as.len, %as.init ], [ %as.step_end, %as.step ]
+  %as.result = phi %Value [ %as.empty_v, %as.init ], [ %as.step_result, %as.step ]
+  %as.cp = getelementptr i8, i8* %as.str, i64 %as.i
+  %as.c = load i8, i8* %as.cp
+  %as.is_sep = icmp eq i8 %as.c, %as.sep_c
+  br i1 %as.is_sep, label %as.found, label %as.continue
+as.found:
+  %as.sub_start_off = add i64 %as.i, 1
+  %as.sub_start = getelementptr i8, i8* %as.str, i64 %as.sub_start_off
+  %as.sub_len = sub i64 %as.end, %as.sub_start_off
+  call void @wam_arena_ensure()
+  %as.sub_bufsize = add i64 %as.sub_len, 1
+  %as.sub_buf = call i8* @wam_arena_alloc(i64 %as.sub_bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %as.sub_buf, i8* %as.sub_start, i64 %as.sub_len, i1 false)
+  %as.sub_term = getelementptr i8, i8* %as.sub_buf, i64 %as.sub_len
+  store i8 0, i8* %as.sub_term
+  %as.head_aid = call i64 @wam_intern_atom(i8* %as.sub_buf, i64 %as.sub_len)
+  %as.head_v0 = insertvalue %Value undef, i32 0, 0
+  %as.head_v = insertvalue %Value %as.head_v0, i64 %as.head_aid, 1
+  %as.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %as.cp_mem = call i8* @wam_arena_alloc(i64 %as.cp_size)
+  %as.cp_ptr = bitcast i8* %as.cp_mem to %Compound*
+  %as.fn_slot = getelementptr %Compound, %Compound* %as.cp_ptr, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %as.fn_slot
+  %as.ar_slot = getelementptr %Compound, %Compound* %as.cp_ptr, i32 0, i32 1
+  store i32 2, i32* %as.ar_slot
+  %as.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %as.args = bitcast i8* %as.args_mem to %Value*
+  %as.args_slot = getelementptr %Compound, %Compound* %as.cp_ptr, i32 0, i32 2
+  store %Value* %as.args, %Value** %as.args_slot
+  %as.head_ptr = getelementptr %Value, %Value* %as.args, i32 0
+  store %Value %as.head_v, %Value* %as.head_ptr
+  %as.tail_ptr = getelementptr %Value, %Value* %as.args, i32 1
+  store %Value %as.result, %Value* %as.tail_ptr
+  %as.cp_i64 = ptrtoint %Compound* %as.cp_ptr to i64
+  %as.new_cons_v0 = insertvalue %Value undef, i32 3, 0
+  %as.new_cons = insertvalue %Value %as.new_cons_v0, i64 %as.cp_i64, 1
+  br label %as.step
+as.continue:
+  br label %as.step
+as.step:
+  %as.step_end = phi i64 [ %as.i, %as.found ], [ %as.end, %as.continue ]
+  %as.step_result = phi %Value [ %as.new_cons, %as.found ], [ %as.result, %as.continue ]
+  %as.i_dec = sub i64 %as.i, 1
+  %as.done = icmp slt i64 %as.i_dec, 0
+  br i1 %as.done, label %as.finalize_loop, label %as.loop
+as.finalize_loop:
+  ; Prepend leftmost substring [0..%as.step_end) to %as.step_result.
+  call void @wam_arena_ensure()
+  %as.fin_bufsize = add i64 %as.step_end, 1
+  %as.fin_buf = call i8* @wam_arena_alloc(i64 %as.fin_bufsize)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %as.fin_buf, i8* %as.str, i64 %as.step_end, i1 false)
+  %as.fin_term = getelementptr i8, i8* %as.fin_buf, i64 %as.step_end
+  store i8 0, i8* %as.fin_term
+  %as.fin_aid = call i64 @wam_intern_atom(i8* %as.fin_buf, i64 %as.step_end)
+  %as.fin_head_v0 = insertvalue %Value undef, i32 0, 0
+  %as.fin_head_v = insertvalue %Value %as.fin_head_v0, i64 %as.fin_aid, 1
+  %as.fin_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %as.fin_cp_mem = call i8* @wam_arena_alloc(i64 %as.fin_cp_size)
+  %as.fin_cp_ptr = bitcast i8* %as.fin_cp_mem to %Compound*
+  %as.fin_fn_slot = getelementptr %Compound, %Compound* %as.fin_cp_ptr, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %as.fin_fn_slot
+  %as.fin_ar_slot = getelementptr %Compound, %Compound* %as.fin_cp_ptr, i32 0, i32 1
+  store i32 2, i32* %as.fin_ar_slot
+  %as.fin_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %as.fin_args = bitcast i8* %as.fin_args_mem to %Value*
+  %as.fin_args_slot = getelementptr %Compound, %Compound* %as.fin_cp_ptr, i32 0, i32 2
+  store %Value* %as.fin_args, %Value** %as.fin_args_slot
+  %as.fin_head_ptr = getelementptr %Value, %Value* %as.fin_args, i32 0
+  store %Value %as.fin_head_v, %Value* %as.fin_head_ptr
+  %as.fin_tail_ptr = getelementptr %Value, %Value* %as.fin_args, i32 1
+  store %Value %as.step_result, %Value* %as.fin_tail_ptr
+  %as.fin_cp_i64 = ptrtoint %Compound* %as.fin_cp_ptr to i64
+  %as.fin_v0 = insertvalue %Value undef, i32 3, 0
+  %as.fin_v = insertvalue %Value %as.fin_v0, i64 %as.fin_cp_i64, 1
+  br label %as.unify_loop
+as.finalize_empty:
+  ; len == 0: result is [''].
+  call void @wam_arena_ensure()
+  %as.es_buf = call i8* @wam_arena_alloc(i64 1)
+  store i8 0, i8* %as.es_buf
+  %as.es_aid = call i64 @wam_intern_atom(i8* %as.es_buf, i64 0)
+  %as.es_v0 = insertvalue %Value undef, i32 0, 0
+  %as.es_v = insertvalue %Value %as.es_v0, i64 %as.es_aid, 1
+  %as.efin_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %as.efin_cp_mem = call i8* @wam_arena_alloc(i64 %as.efin_cp_size)
+  %as.efin_cp_ptr = bitcast i8* %as.efin_cp_mem to %Compound*
+  %as.efin_fn_slot = getelementptr %Compound, %Compound* %as.efin_cp_ptr, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %as.efin_fn_slot
+  %as.efin_ar_slot = getelementptr %Compound, %Compound* %as.efin_cp_ptr, i32 0, i32 1
+  store i32 2, i32* %as.efin_ar_slot
+  %as.efin_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %as.efin_args = bitcast i8* %as.efin_args_mem to %Value*
+  %as.efin_args_slot = getelementptr %Compound, %Compound* %as.efin_cp_ptr, i32 0, i32 2
+  store %Value* %as.efin_args, %Value** %as.efin_args_slot
+  %as.efin_head_ptr = getelementptr %Value, %Value* %as.efin_args, i32 0
+  store %Value %as.es_v, %Value* %as.efin_head_ptr
+  %as.efin_tail_ptr = getelementptr %Value, %Value* %as.efin_args, i32 1
+  store %Value %as.empty_v, %Value* %as.efin_tail_ptr
+  %as.efin_cp_i64 = ptrtoint %Compound* %as.efin_cp_ptr to i64
+  %as.efin_v0 = insertvalue %Value undef, i32 3, 0
+  %as.efin_v = insertvalue %Value %as.efin_v0, i64 %as.efin_cp_i64, 1
+  br label %as.unify_empty
+as.unify_loop:
+  %as.raw3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %as.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %as.raw3, %Value %as.fin_v)
+  ret i1 %as.ok
+as.unify_empty:
+  %as.raw3_e = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %as.ok_e = call i1 @wam_unify_value(%WamState* %vm, %Value %as.raw3_e, %Value %as.efin_v)
+  ret i1 %as.ok_e
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -4484,8 +7774,19 @@ builtin_unify:
   br i1 %uf.a1_unb, label %uf.bind_a1, label %uf.check_a2
 
 uf.bind_a1:
+  ; M104: if a2 is also unbound after deref, the underlying register
+  ; holds a Ref to a heap cell with Unbound. Bind a1 to that raw Ref
+  ; (so the two vars alias) rather than to the Unbound sentinel.
+  ; When a2 is bound (not Unbound), uf.a2 IS the bound value and we
+  ; bind a1 to it directly.
+  %uf.a2_raw = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uf.a2_raw_tag = extractvalue %Value %uf.a2_raw, 0
+  %uf.a2_raw_isref = icmp eq i32 %uf.a2_raw_tag, 5
+  %uf.a2_d_unb = call i1 @value_is_unbound(%Value %uf.a2)
+  %uf.bind1_alias = and i1 %uf.a2_raw_isref, %uf.a2_d_unb
+  %uf.bind1_val = select i1 %uf.bind1_alias, %Value %uf.a2_raw, %Value %uf.a2
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %uf.a2)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %uf.bind1_val)
   ret i1 true
 
 uf.check_a2:
@@ -4493,8 +7794,15 @@ uf.check_a2:
   br i1 %uf.a2_unb, label %uf.bind_a2, label %uf.both_bound
 
 uf.bind_a2:
+  ; M104: symmetric to bind_a1.
+  %uf.a1_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uf.a1_raw_tag = extractvalue %Value %uf.a1_raw, 0
+  %uf.a1_raw_isref = icmp eq i32 %uf.a1_raw_tag, 5
+  %uf.a1_d_unb = call i1 @value_is_unbound(%Value %uf.a1)
+  %uf.bind2_alias = and i1 %uf.a1_raw_isref, %uf.a1_d_unb
+  %uf.bind2_val = select i1 %uf.bind2_alias, %Value %uf.a1_raw, %Value %uf.a1
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %uf.a1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %uf.bind2_val)
   ret i1 true
 
 uf.both_bound:
@@ -4574,7 +7882,16 @@ fn.compound:
   %fn.ar_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 1
   %fn.ar = load i32, i32* %fn.ar_slot
   %fn.ar_i64 = sext i32 %fn.ar to i64
-  %fn.name_val = call %Value @value_atom(i8* %fn.fn_i8)
+  ; M100: intern the functor string into the runtime atom table so
+  ; the resulting Atom Value carries an atom_id payload that matches
+  ; user-level atom literals (which compile to id-based put_constant
+  ; via the static atom table). The legacy value_atom(i8*) form
+  ; packed the pointer as payload, so functor(C, Name, _) followed
+  ; by Name == foo spuriously failed (pointer-based vs id-based).
+  %fn.fn_len = call i64 @strlen(i8* %fn.fn_i8)
+  %fn.fn_aid = call i64 @wam_intern_atom(i8* %fn.fn_i8, i64 %fn.fn_len)
+  %fn.name_val0 = insertvalue %Value undef, i32 0, 0
+  %fn.name_val = insertvalue %Value %fn.name_val0, i64 %fn.fn_aid, 1
   %fn.ar_val = call %Value @value_integer(i64 %fn.ar_i64)
   br label %fn.bind_both
 
@@ -4738,7 +8055,12 @@ u.setup_compound:
   %u.args_c = load %Value*, %Value** %u.args_slot
   %u.fn_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 0
   %u.fn_ptr = load i8*, i8** %u.fn_slot
-  %u.fn_val_c = call %Value @value_atom(i8* %u.fn_ptr)
+  ; M100: same fix as builtin_functor -- intern the functor string
+  ; so the head of the =.. list is an id-based Atom Value.
+  %u.fn_len = call i64 @strlen(i8* %u.fn_ptr)
+  %u.fn_aid = call i64 @wam_intern_atom(i8* %u.fn_ptr, i64 %u.fn_len)
+  %u.fn_val_c0 = insertvalue %Value undef, i32 0, 0
+  %u.fn_val_c = insertvalue %Value %u.fn_val_c0, i64 %u.fn_aid, 1
   br label %u.loop_init
 
 u.loop_init:
@@ -4753,7 +8075,14 @@ u.loop_init:
   %u.args = phi %Value* [ null, %u.setup_atomic ], [ %u.args_c, %u.setup_compound ]
   %u.fn_val = phi %Value [ zeroinitializer, %u.setup_atomic ], [ %u.fn_val_c, %u.setup_compound ]
   call void @wam_arena_ensure()
-  %u.empty = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  ; M100: build the empty-list tail sentinel via the pre-computed
+  ; @wam_empty_list_atom_id so it matches put_constant of [] in user
+  ; code (both id-based). The old value_atom(@.fn__5B_5D) packed the
+  ; functor-string pointer, which did not compare equal to a literal
+  ; [] in T == [] type tests.
+  %u.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %u.empty_v0 = insertvalue %Value undef, i32 0, 0
+  %u.empty = insertvalue %Value %u.empty_v0, i64 %u.empty_aid, 1
   br label %u.loop_body
 
 u.loop_body:
@@ -4790,7 +8119,12 @@ u.build_cons:
   %u.cons_mem = call i8* @wam_arena_alloc(i64 %u.cp_size)
   %u.cons = bitcast i8* %u.cons_mem to %Compound*
   %u.cons_fn = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 0
-  store i8* getelementptr ([2 x i8], [2 x i8]* @.fn__2E, i32 0, i32 0), i8** %u.cons_fn
+  ; M100: use the SWI [|] cons functor (matches put_list, put_structure
+  ; for list-syntax, findall output, and every other cons-cell producer
+  ; in the codebase). The previous . (period) functor used here made
+  ; univ-built lists fail to unify with source-level list patterns
+  ; like [H|T], because put_list emits [|](H,T) compounds.
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %u.cons_fn
   %u.cons_ar = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 1
   store i32 2, i32* %u.cons_ar
   %u.cargs_mem = call i8* @wam_arena_alloc(i64 32)
@@ -4823,8 +8157,16 @@ u.a2_bind:
   ret i1 true
 
 u.a2_check:
-  ; A2 already bound — limited support: accept iff structural-equal.
-  %u.a2_eq = call i1 @value_equals(%Value %u.a2, %Value %u.cons_val)
+  ; M101: A2 already bound -- unify (not just structurally compare)
+  ; with the freshly-built result list. value_equals only tests
+  ; equality of fully-bound terms and would silently fail for a
+  ; partial-list arg like [H|_] (unbound H plus unbound tail), so
+  ; the canonical pattern Term =.. [H|_] never matched. Routing
+  ; through wam_unify_value binds H to the functor atom and the
+  ; tail to the rest of the list -- exactly what the source-level
+  ; partial pattern asks for.
+  %u.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.a2_eq = call i1 @wam_unify_value(%WamState* %vm, %Value %u.raw2, %Value %u.cons_val)
   ret i1 %u.a2_eq
 
 u.fail:
@@ -4852,7 +8194,13 @@ u.c.walk_init:
   ; Each cons is a %Compound { ".", 2, [head, tail] }. Empty list is
   ; Atom("[]") with payload = ptrtoint(@.fn__5B_5D).
   call void @wam_arena_ensure()
-  %u.c.empty_val = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  ; M100: match the empty-list representation produced by put_constant
+  ; of [] (id-based via @wam_empty_list_atom_id), so the list-walk
+  ; comparison correctly terminates on both univ-built and source-
+  ; literal lists.
+  %u.c.empty_aid = load i64, i64* @wam_empty_list_atom_id
+  %u.c.empty_val0 = insertvalue %Value undef, i32 0, 0
+  %u.c.empty_val = insertvalue %Value %u.c.empty_val0, i64 %u.c.empty_aid, 1
   %u.c.empty_payload = call i64 @value_payload(%Value %u.c.empty_val)
   br label %u.c.count_loop
 
@@ -9318,7 +12666,20 @@ mb.bool_no:
 
 unknown:
   ret i1 false
-}'.
+}',
+    % M113/M114: substitute the dirent-d_name lookup IR. For static
+    % OS modes this is a single getelementptr with a literal offset.
+    % For target_os(adapt), it is a call to the runtime probe helper
+    % plus a getelementptr that uses the returned offset.
+    target_dirent_name_ptr_ir(OS, DirentNameOff, NamePtrIR),
+    atomic_list_concat(Parts, '__M113_DIRENT_NAME_PTR__', Template),
+    atomic_list_concat(Parts, NamePtrIR, ExecuteIR),
+    % Append the M114 runtime probe helper. Always emitted -- it is
+    % dead code when no caller is in adapt mode, which llc / clang
+    % link-time DCE strips. Keeping it unconditional means the IR
+    % template stays the same shape regardless of mode.
+    target_dirent_probe_helper_ir(HelperIR),
+    atomic_list_concat([ExecuteIR, HelperIR], '\n\n', Code).
 
 compile_eval_arith_to_llvm(Code) :-
     Code = '; Evaluate arithmetic expression
@@ -9516,6 +12877,7 @@ entry:
   %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
   %tag = extractvalue %Value %expr, 0
   switch i32 %tag, label %ev_zero [
+    i32 0, label %ev_atom_const
     i32 1, label %ev_atomic_in
     i32 2, label %ev_atomic_in
     i32 3, label %ev_compound
@@ -9523,6 +12885,33 @@ entry:
 
 ev_atomic_in:
   ret %Value %expr
+
+ev_atom_const:
+  ; M83: arithmetic atom constants. Currently pi and e; failable
+  ; otherwise. Resolve the atom''s name to a C string, then strcmp
+  ; against the registered functor strings.
+  %atc.aid = extractvalue %Value %expr, 1
+  %atc.str = call i8* @wam_atom_to_string(i64 %atc.aid)
+  %atc.null = icmp eq i8* %atc.str, null
+  br i1 %atc.null, label %ev_zero, label %atc.try_pi
+atc.try_pi:
+  %atc.fn_pi = getelementptr [3 x i8], [3 x i8]* @.fn_pi, i32 0, i32 0
+  %atc.cmp_pi = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_pi)
+  %atc.is_pi = icmp eq i32 %atc.cmp_pi, 0
+  br i1 %atc.is_pi, label %atc.ret_pi, label %atc.try_e
+atc.ret_pi:
+  ; pi as IEEE 754 double = 0x400921FB54442D18 (3.141592653589793).
+  %atc.pi_v = call %Value @value_float(double 0x400921FB54442D18)
+  ret %Value %atc.pi_v
+atc.try_e:
+  %atc.fn_e = getelementptr [2 x i8], [2 x i8]* @.fn_e, i32 0, i32 0
+  %atc.cmp_e = call i32 @strcmp(i8* %atc.str, i8* %atc.fn_e)
+  %atc.is_e = icmp eq i32 %atc.cmp_e, 0
+  br i1 %atc.is_e, label %atc.ret_e, label %ev_zero
+atc.ret_e:
+  ; e as IEEE 754 double = 0x4005BF0A8B145769 (2.718281828459045).
+  %atc.e_v = call %Value @value_float(double 0x4005BF0A8B145769)
+  ret %Value %atc.e_v
 
 ev_compound:
   %cp_bits = extractvalue %Value %expr, 1
@@ -9554,6 +12943,9 @@ ev_eval_binary:
     i8 45, label %ev_sub
     i8 42, label %ev_mul_or_pow
     i8 47, label %ev_div
+    i8 60, label %ev_shl_check    ; ''<'' -> << (M84)
+    i8 62, label %ev_shr_check    ; ''>'' -> >> (M84)
+    i8 92, label %ev_bor_check    ; ''\\'' -> \\/ (M85)
   ]
 
 ev_add:
@@ -9672,6 +13064,20 @@ ev_pow_pos_finish:
   ret %Value %pow_pos_v
 
 ev_div:
+  ; M85: second-byte check disambiguates ``/'' (division) from
+  ; ``/\\'' (bitwise AND). ``/\\'' has fn_ptr[1] = ''\\'' (92).
+  %div.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %div.fn1 = load i8, i8* %div.fn1_ptr
+  %div.is_band = icmp eq i8 %div.fn1, 92
+  br i1 %div.is_band, label %ev_band, label %ev_div_normal
+ev_band:
+  ; M85: /\\ -- integer bitwise AND.
+  %band.a_i = extractvalue %Value %a, 1
+  %band.b_i = extractvalue %Value %b, 1
+  %band.r = and i64 %band.a_i, %band.b_i
+  %band.v = call %Value @value_integer(i64 %band.r)
+  ret %Value %band.v
+ev_div_normal:
   ; Prolog ``/``: int/int that divides exactly stays int; otherwise
   ; the result is float.
   br i1 %either_float, label %ev_div_f, label %ev_div_i_check
@@ -9698,10 +13104,129 @@ ev_div_f_go:
   %div_v_f = call %Value @value_float(double %div_r_d)
   ret %Value %div_v_f
 
+ev_shl_check:
+  ; M84: << is the only ``<''-prefix binary arith op. Verify the
+  ; second byte is also ``<'' (60) so a stray ``<=''/``<+''/etc.
+  ; doesn''t fall through to ev_shl.
+  %shl.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shl.fn1 = load i8, i8* %shl.fn1_ptr
+  %shl.is_lt = icmp eq i8 %shl.fn1, 60
+  br i1 %shl.is_lt, label %ev_shl, label %ev_zero
+ev_shl:
+  ; Integer-only logical left shift on i64 payloads.
+  %shl.a_i = extractvalue %Value %a, 1
+  %shl.b_i = extractvalue %Value %b, 1
+  %shl.r = shl i64 %shl.a_i, %shl.b_i
+  %shl.v = call %Value @value_integer(i64 %shl.r)
+  ret %Value %shl.v
+
+ev_shr_check:
+  ; M84: >> via second-byte verify, mirroring ev_shl_check.
+  %shr.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %shr.fn1 = load i8, i8* %shr.fn1_ptr
+  %shr.is_gt = icmp eq i8 %shr.fn1, 62
+  br i1 %shr.is_gt, label %ev_shr, label %ev_zero
+ev_shr:
+  ; Integer arithmetic right shift (sign-preserving). Prolog
+  ; integers are signed, so ashr matches the host semantics.
+  %shr.a_i = extractvalue %Value %a, 1
+  %shr.b_i = extractvalue %Value %b, 1
+  %shr.r = ashr i64 %shr.a_i, %shr.b_i
+  %shr.v = call %Value @value_integer(i64 %shr.r)
+  ret %Value %shr.v
+
+ev_bor_check:
+  ; M85: ``\\'' (92) is the first byte of binary ``\\/'' (bitwise OR).
+  ; Verify the second byte is ``/'' (47); fail otherwise (the only
+  ; other ``\\''-prefix binary in standard Prolog arithmetic would
+  ; be ``\\='' or ``\\=='' which are unification/equality, not
+  ; arith).
+  %bor.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %bor.fn1 = load i8, i8* %bor.fn1_ptr
+  %bor.is_slash = icmp eq i8 %bor.fn1, 47
+  br i1 %bor.is_slash, label %ev_bor, label %ev_zero
+ev_bor:
+  %bor.a_i = extractvalue %Value %a, 1
+  %bor.b_i = extractvalue %Value %b, 1
+  %bor.r = or i64 %bor.a_i, %bor.b_i
+  %bor.v = call %Value @value_integer(i64 %bor.r)
+  ret %Value %bor.v
+
 ev_check_named_binary:
   ; mod / max / min -- functor name starts with ``m``.
-  %nb_is_m = icmp eq i8 %fn0, 109
-  br i1 %nb_is_m, label %ev_nb_second, label %ev_zero
+  ; atan2 -- functor name starts with ``a`` (M81).
+  ; gcd -- functor name starts with ``g`` (M82).
+  ; log/2 -- functor name starts with ``l`` (M82).
+  ; xor -- functor name starts with ``x`` (M83, integer bitwise).
+  switch i8 %fn0, label %ev_zero [
+    i8 109, label %ev_nb_second   ; ''m'' -> mod | max | min
+    i8 97,  label %ev_nb_a_second ; ''a'' -> atan2
+    i8 103, label %ev_gcd         ; ''g'' -> gcd
+    i8 108, label %ev_log2        ; ''l'' -> log/2
+    i8 120, label %ev_xor         ; ''x'' -> xor
+  ]
+ev_nb_a_second:
+  ; M81: only atan2 starts with ``a'' in the binary path. Verify the
+  ; second byte is ``t'' so a stray ``a''-prefixed binary name
+  ; doesn''t pretend to be atan2.
+  %nba.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nba.fn1 = load i8, i8* %nba.fn1_ptr
+  %nba.is_t = icmp eq i8 %nba.fn1, 116
+  br i1 %nba.is_t, label %ev_atan2, label %ev_zero
+ev_atan2:
+  %a2.a_d = call double @value_to_double(%Value %a)
+  %a2.b_d = call double @value_to_double(%Value %b)
+  %a2.r = call double @atan2(double %a2.a_d, double %a2.b_d)
+  %a2.v = call %Value @value_float(double %a2.r)
+  ret %Value %a2.v
+
+ev_gcd:
+  ; M82: gcd(A, B) -- integer-only. Iterative Euclid on i64 with
+  ; abs() of both args so negative inputs still produce a positive
+  ; gcd (matching SWI semantics). gcd(0, 0) is defined as 0.
+  %gcd.a_i = extractvalue %Value %a, 1
+  %gcd.b_i = extractvalue %Value %b, 1
+  %gcd.a_neg = icmp slt i64 %gcd.a_i, 0
+  %gcd.a_op = sub i64 0, %gcd.a_i
+  %gcd.a_abs = select i1 %gcd.a_neg, i64 %gcd.a_op, i64 %gcd.a_i
+  %gcd.b_neg = icmp slt i64 %gcd.b_i, 0
+  %gcd.b_op = sub i64 0, %gcd.b_i
+  %gcd.b_abs = select i1 %gcd.b_neg, i64 %gcd.b_op, i64 %gcd.b_i
+  br label %gcd.loop
+gcd.loop:
+  %gcd.x = phi i64 [ %gcd.a_abs, %ev_gcd ], [ %gcd.y, %gcd.step ]
+  %gcd.y = phi i64 [ %gcd.b_abs, %ev_gcd ], [ %gcd.r, %gcd.step ]
+  %gcd.y_zero = icmp eq i64 %gcd.y, 0
+  br i1 %gcd.y_zero, label %gcd.done, label %gcd.step
+gcd.step:
+  %gcd.r = srem i64 %gcd.x, %gcd.y
+  br label %gcd.loop
+gcd.done:
+  %gcd.v = call %Value @value_integer(i64 %gcd.x)
+  ret %Value %gcd.v
+
+ev_log2:
+  ; M82: log(Base, X) -- change-of-base via log(X)/log(Base).
+  ; Always Float; matches the existing log/1 (natural log) when
+  ; Base == e.
+  %lg2.base_d = call double @value_to_double(%Value %a)
+  %lg2.x_d = call double @value_to_double(%Value %b)
+  %lg2.lnb = call double @llvm.log.f64(double %lg2.base_d)
+  %lg2.lnx = call double @llvm.log.f64(double %lg2.x_d)
+  %lg2.r = fdiv double %lg2.lnx, %lg2.lnb
+  %lg2.v = call %Value @value_float(double %lg2.r)
+  ret %Value %lg2.v
+
+ev_xor:
+  ; M83: xor(A, B) -- integer-only bitwise XOR. Reads payloads as
+  ; i64 directly; passing a Float silently XORs its bit pattern,
+  ; consistent with the gcd treatment.
+  %xor.a_i = extractvalue %Value %a, 1
+  %xor.b_i = extractvalue %Value %b, 1
+  %xor.r = xor i64 %xor.a_i, %xor.b_i
+  %xor.v = call %Value @value_integer(i64 %xor.r)
+  ret %Value %xor.v
+
 ev_nb_second:
   %nb_fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %nb_fn1 = load i8, i8* %nb_fn1_ptr
@@ -9768,7 +13293,7 @@ ev_eval_unary:
   ; *_disambig labels.
   switch i8 %fn0, label %ev_zero [
     i8 45,  label %ev_neg       ; ''-''
-    i8 97,  label %ev_abs       ; ''a''
+    i8 97,  label %ev_a_disambig ; ''a'' -> abs | asin | acos | atan
     i8 114, label %ev_round     ; ''r''
     i8 102, label %ev_floor     ; ''f''
     i8 99,  label %ev_ceil_cos  ; ''c'' -> ceiling | cos
@@ -9776,6 +13301,7 @@ ev_eval_unary:
     i8 116, label %ev_trunc_tan ; ''t'' -> truncate | tan
     i8 108, label %ev_log       ; ''l''
     i8 101, label %ev_exp       ; ''e''
+    i8 92,  label %ev_bnot      ; ''\\'' -> unary bitwise NOT (M85)
   ]
 ev_neg:
   br i1 %u_is_float, label %ev_neg_f, label %ev_neg_i
@@ -9803,6 +13329,45 @@ ev_abs_f:
   %abs_r_d = call double @llvm.fabs.f64(double %abs_u_d)
   %abs_v_f = call %Value @value_float(double %abs_r_d)
   ret %Value %abs_v_f
+
+; M80: second-byte dispatch for ''a''-prefix unary functions.
+; ``abs'' alone keeps the original ev_abs path; asin / acos / atan
+; route to libm and always return Float.
+ev_a_disambig:
+  %ad.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %ad.fn1 = load i8, i8* %ad.fn1_ptr
+  switch i8 %ad.fn1, label %ev_zero [
+    i8 98,  label %ev_abs   ; ''b'' -> abs
+    i8 115, label %ev_asin  ; ''s'' -> asin
+    i8 99,  label %ev_acos  ; ''c'' -> acos
+    i8 116, label %ev_atan  ; ''t'' -> atan
+  ]
+
+ev_asin:
+  %asin_d = call double @value_to_double(%Value %u)
+  %asin_r = call double @asin(double %asin_d)
+  %asin_v = call %Value @value_float(double %asin_r)
+  ret %Value %asin_v
+
+ev_acos:
+  %acos_d = call double @value_to_double(%Value %u)
+  %acos_r = call double @acos(double %acos_d)
+  %acos_v = call %Value @value_float(double %acos_r)
+  ret %Value %acos_v
+
+ev_atan:
+  %atan_d = call double @value_to_double(%Value %u)
+  %atan_r = call double @atan(double %atan_d)
+  %atan_v = call %Value @value_float(double %atan_r)
+  ret %Value %atan_v
+
+ev_bnot:
+  ; M85: unary ``\\'' -- integer bitwise NOT. xor with all-ones is
+  ; the LLVM idiom (no dedicated ``not'' instruction).
+  %bnot.u_i = extractvalue %Value %u, 1
+  %bnot.r = xor i64 %bnot.u_i, -1
+  %bnot.v = call %Value @value_integer(i64 %bnot.r)
+  ret %Value %bnot.v
 
 ; M18 truncate/round/floor/ceiling: take a numeric Value, convert to
 ; double, apply the LLVM intrinsic, return Integer (Prolog''s
@@ -10036,6 +13601,215 @@ ct_done:
   %new_val0 = insertvalue %Value undef, i32 3, 0
   %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
   ret %Value %new_val
+}
+
+; M103: recursive depth-first left-to-right walk over a term,
+; prepending each Unbound variable onto an accumulator list. The
+; outer driver passes the empty [] atom-id list as initial acc;
+; walking args right-to-left + prepending keeps the leftmost var
+; at the front of the result. Does NOT deduplicate -- repeated
+; occurrences of the same variable appear once per occurrence.
+; SWI semantics technically dedupes -- known limitation for M103.
+define %Value @wam_collect_vars(%WamState* %vm, %Value %term, %Value %acc) {
+entry:
+  %tv.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %tv.tag = call i32 @value_tag(%Value %tv.t)
+  switch i32 %tv.tag, label %tv.atomic [
+    i32 6, label %tv.unbound
+    i32 3, label %tv.compound
+  ]
+
+tv.atomic:
+  ret %Value %acc
+
+tv.unbound:
+  call void @wam_arena_ensure()
+  %tv.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %tv.cp_mem = call i8* @wam_arena_alloc(i64 %tv.cp_size)
+  %tv.cp = bitcast i8* %tv.cp_mem to %Compound*
+  %tv.fn_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %tv.fn_slot
+  %tv.ar_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 1
+  store i32 2, i32* %tv.ar_slot
+  %tv.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %tv.args = bitcast i8* %tv.args_mem to %Value*
+  %tv.args_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 2
+  store %Value* %tv.args, %Value** %tv.args_slot
+  %tv.head_ptr = getelementptr %Value, %Value* %tv.args, i32 0
+  ; Store the ORIGINAL %term (a Ref into the heap cell), not the
+  ; deref''d Unbound payload. Var identity matters: callers do
+  ; term_variables(foo(X, _), [V|_]) followed by V == X, which
+  ; needs V and X to share the same Ref address. Storing the
+  ; deref''d Unbound would give a tag-6 sentinel that compares
+  ; unequal to the original Ref.
+  store %Value %term, %Value* %tv.head_ptr
+  %tv.tail_ptr = getelementptr %Value, %Value* %tv.args, i32 1
+  store %Value %acc, %Value* %tv.tail_ptr
+  %tv.cp_i64 = ptrtoint %Compound* %tv.cp to i64
+  %tv.v0 = insertvalue %Value undef, i32 3, 0
+  %tv.v = insertvalue %Value %tv.v0, i64 %tv.cp_i64, 1
+  ret %Value %tv.v
+
+tv.compound:
+  %tv.cp_bits = call i64 @value_payload(%Value %tv.t)
+  %tv.src_cp = inttoptr i64 %tv.cp_bits to %Compound*
+  %tv.src_ar_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 1
+  %tv.arity = load i32, i32* %tv.src_ar_slot
+  %tv.src_args_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 2
+  %tv.src_args = load %Value*, %Value** %tv.src_args_slot
+  %tv.i0 = sub i32 %tv.arity, 1
+  %tv.has_args = icmp sge i32 %tv.i0, 0
+  br i1 %tv.has_args, label %tv.loop, label %tv.ret_acc
+
+tv.loop:
+  %tv.i = phi i32 [ %tv.i0, %tv.compound ], [ %tv.i_next, %tv.step ]
+  %tv.acc_cur = phi %Value [ %acc, %tv.compound ], [ %tv.acc_next, %tv.step ]
+  %tv.arg_ptr = getelementptr %Value, %Value* %tv.src_args, i32 %tv.i
+  %tv.arg = load %Value, %Value* %tv.arg_ptr
+  %tv.acc_next = call %Value @wam_collect_vars(%WamState* %vm, %Value %tv.arg, %Value %tv.acc_cur)
+  %tv.done = icmp eq i32 %tv.i, 0
+  br i1 %tv.done, label %tv.ret_loop, label %tv.step
+
+tv.step:
+  %tv.i_next = sub i32 %tv.i, 1
+  br label %tv.loop
+
+tv.ret_loop:
+  ret %Value %tv.acc_next
+
+tv.ret_acc:
+  ret %Value %acc
+}
+
+; M117: recursive ground check. Returns true iff %term contains no
+; unbound variables. Atomic (atom/int/float) -> true; unbound -> false;
+; compound -> recurse over each arg, false if any arg is non-ground.
+define i1 @wam_is_ground(%WamState* %vm, %Value %term) {
+entry:
+  %ig.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %ig.tag = call i32 @value_tag(%Value %ig.t)
+  switch i32 %ig.tag, label %ig.atomic [
+    i32 6, label %ig.unbound
+    i32 3, label %ig.compound
+  ]
+
+ig.atomic:
+  ret i1 true
+
+ig.unbound:
+  ret i1 false
+
+ig.compound:
+  %ig.cp_bits = call i64 @value_payload(%Value %ig.t)
+  %ig.src_cp = inttoptr i64 %ig.cp_bits to %Compound*
+  %ig.ar_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 1
+  %ig.arity = load i32, i32* %ig.ar_slot
+  %ig.args_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 2
+  %ig.src_args = load %Value*, %Value** %ig.args_slot
+  %ig.has = icmp sgt i32 %ig.arity, 0
+  br i1 %ig.has, label %ig.loop, label %ig.true
+
+ig.loop:
+  %ig.i = phi i32 [ 0, %ig.compound ], [ %ig.i_next, %ig.step ]
+  %ig.arg_ptr = getelementptr %Value, %Value* %ig.src_args, i32 %ig.i
+  %ig.arg = load %Value, %Value* %ig.arg_ptr
+  %ig.sub = call i1 @wam_is_ground(%WamState* %vm, %Value %ig.arg)
+  br i1 %ig.sub, label %ig.step, label %ig.false
+
+ig.step:
+  %ig.i_next = add i32 %ig.i, 1
+  %ig.more = icmp slt i32 %ig.i_next, %ig.arity
+  br i1 %ig.more, label %ig.loop, label %ig.true
+
+ig.true:
+  ret i1 true
+
+ig.false:
+  ret i1 false
+}
+
+; M105: recursive depth-first left-to-right walk that binds each
+; Unbound variable encountered to a fresh ''$VAR''(N) compound on
+; the arena. Counter n is threaded through and returned -- caller
+; gets the next-available N to unify with End.
+define i64 @wam_numbervars_walk(%WamState* %vm, %Value %term, i64 %n) {
+entry:
+  %nw.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %nw.tag = call i32 @value_tag(%Value %nw.t)
+  switch i32 %nw.tag, label %nw.atomic [
+    i32 6, label %nw.unbound
+    i32 3, label %nw.compound
+  ]
+
+nw.atomic:
+  ret i64 %n
+
+nw.unbound:
+  ; Build the ''$VAR''(n) compound on the arena. Then bind the
+  ; variable''s heap cell to it via wam_trail_heap_binding + heap_set
+  ; so backtrack restores. Use the ORIGINAL term (a Ref) to locate
+  ; the heap cell; deref''d nw.t is just an Unbound sentinel.
+  call void @wam_arena_ensure()
+  %nw.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nw.cp_mem = call i8* @wam_arena_alloc(i64 %nw.cp_size)
+  %nw.cp = bitcast i8* %nw.cp_mem to %Compound*
+  %nw.fn_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 0
+  store i8* getelementptr ([5 x i8], [5 x i8]* @.fn__24VAR, i32 0, i32 0), i8** %nw.fn_slot
+  %nw.ar_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 1
+  store i32 1, i32* %nw.ar_slot
+  %nw.args_mem = call i8* @wam_arena_alloc(i64 16)
+  %nw.args = bitcast i8* %nw.args_mem to %Value*
+  %nw.args_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 2
+  store %Value* %nw.args, %Value** %nw.args_slot
+  %nw.n_v = call %Value @value_integer(i64 %n)
+  %nw.arg0_ptr = getelementptr %Value, %Value* %nw.args, i32 0
+  store %Value %nw.n_v, %Value* %nw.arg0_ptr
+  %nw.cp_i64 = ptrtoint %Compound* %nw.cp to i64
+  %nw.varN_v0 = insertvalue %Value undef, i32 3, 0
+  %nw.varN_v = insertvalue %Value %nw.varN_v0, i64 %nw.cp_i64, 1
+  ; Bind the var. The original %term is the Ref into the heap cell.
+  %nw.t_tag = extractvalue %Value %term, 0
+  %nw.t_isref = icmp eq i32 %nw.t_tag, 5
+  br i1 %nw.t_isref, label %nw.bind, label %nw.skip
+nw.bind:
+  %nw.addr_i64 = extractvalue %Value %term, 1
+  %nw.addr = trunc i64 %nw.addr_i64 to i32
+  %nw.old = call %Value @wam_heap_get(%WamState* %vm, i32 %nw.addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %nw.addr, %Value %nw.old)
+  call void @wam_heap_set(%WamState* %vm, i32 %nw.addr, %Value %nw.varN_v)
+  br label %nw.skip
+nw.skip:
+  %nw.n1 = add i64 %n, 1
+  ret i64 %nw.n1
+
+nw.compound:
+  %nw.cp_bits = call i64 @value_payload(%Value %nw.t)
+  %nw.src_cp = inttoptr i64 %nw.cp_bits to %Compound*
+  %nw.src_ar_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 1
+  %nw.arity = load i32, i32* %nw.src_ar_slot
+  %nw.src_args_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 2
+  %nw.src_args = load %Value*, %Value** %nw.src_args_slot
+  %nw.has_args = icmp sgt i32 %nw.arity, 0
+  br i1 %nw.has_args, label %nw.loop, label %nw.ret_n
+
+nw.loop:
+  %nw.i = phi i32 [ 0, %nw.compound ], [ %nw.i_next, %nw.step ]
+  %nw.n_cur = phi i64 [ %n, %nw.compound ], [ %nw.n_next, %nw.step ]
+  %nw.arg_ptr = getelementptr %Value, %Value* %nw.src_args, i32 %nw.i
+  %nw.arg = load %Value, %Value* %nw.arg_ptr
+  %nw.n_next = call i64 @wam_numbervars_walk(%WamState* %vm, %Value %nw.arg, i64 %nw.n_cur)
+  %nw.i_next = add i32 %nw.i, 1
+  %nw.done = icmp sge i32 %nw.i_next, %nw.arity
+  br i1 %nw.done, label %nw.ret_loop, label %nw.step
+
+nw.step:
+  br label %nw.loop
+
+nw.ret_loop:
+  ret i64 %nw.n_next
+
+nw.ret_n:
+  ret i64 %n
 }
 
 ; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
@@ -10417,17 +14191,39 @@ wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
     throw(error(label_resolution_required(retry_me_else, L),
           'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
 
+wam_meta_call_label(Label) :-
+    wam_meta_call_total_arity(Label, _).
+
+wam_meta_call_total_arity(Label, Arity) :-
+    (   atom(Label)
+    ->  atom_string(Label, LabelString)
+    ;   string(Label)
+    ->  LabelString = Label
+    ),
+    sub_string(LabelString, 0, 5, _, "call/"),
+    sub_string(LabelString, 5, _, 0, ArityString),
+    number_string(Arity, ArityString),
+    Arity >= 1.
+
 %% wam_instruction_to_llvm_literal(+WamInstr, +LabelMap, -LLVMLiteral)
 %  Label-aware variant. LabelMap is a list of LabelName-Index pairs.
 %  NOTE: trailing `; comment` was removed because LLVM treats `;` as a
 %  line comment to end-of-line, which eats the comma separator in array
 %  constants and produces a parser error.
 wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
-    lookup_label_index(P, LabelMap, LabelIdx),
+    (   wam_meta_call_label(P)
+    ->  LabelIdx = -1
+    ;   lookup_label_index(P, LabelMap, LabelIdx)
+    ),
     format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
 wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
-    lookup_label_index(P, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 19, i64 ~w, i64 0 }', [LabelIdx]).
+    (   wam_meta_call_label(P)
+    ->  LabelIdx = -1,
+        wam_meta_call_total_arity(P, Arity)
+    ;   lookup_label_index(P, LabelMap, LabelIdx),
+        Arity = 0
+    ),
+    format(atom(Lit), '{ i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_instruction_to_llvm_literal(try_me_else(Label), LabelMap, Lit) :- !,
     lookup_label_index(Label, LabelMap, LabelIdx),
     format(atom(Lit), '{ i32 22, i64 ~w, i64 0 }', [LabelIdx]).
@@ -10463,20 +14259,60 @@ wam_instruction_to_llvm_literal(Instr, Lit) :-
 
 %% emit_functor_string_globals(-IR)
 %  Emits LLVM global constants for functor names collected during WAM
-%  compilation (by put_structure instructions). Each functor "name" becomes
+%  compilation (by put_structure instructions). Each functor ``name'' becomes
 %  @.fn_name = private constant [N x i8] c"name\00".
+%
+%  M85: bytes that interact with the trailing ``\00'' null terminator
+%  in LLVM IR string syntax (``\'' and ``"'') are escaped to ``\NN''
+%  per-byte hex. Other bytes are left raw, since string_codes /
+%  maplist / append over every character of every functor string adds
+%  up to a lot of intermediate-list allocation when the same emit
+%  runs hundreds of times in one swipl session (M88 OOM tripped over
+%  this at ~580 modules in).
 emit_functor_string_globals(IR) :-
     findall(GlobalDef,
         ( functor_string_global(NameStr, Len),
           sanitize_functor_for_llvm(NameStr, SaneName),
+          llvm_ir_string_content(NameStr, SafeContent),
           format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
-              [SaneName, Len, NameStr])
+              [SaneName, Len, SafeContent])
         ),
         Defs),
     ( Defs == []
     -> IR = ''
     ;  atomic_list_concat(Defs, '\n', IR)
     ).
+
+%% llvm_ir_string_content(+Str, -Safe)
+%  Wrap Str so it can be dropped between c"..." quotes in LLVM IR.
+%  Fast path: if the input is pure printable ASCII with no ``\'' or
+%  ``"'', it''s already safe -- return as-is. Slow path: escape
+%  problem bytes (and any non-printable ones) to ``\NN'' hex.
+llvm_ir_string_content(Str, Safe) :-
+    ( name_needs_llvm_escape(Str)
+    -> string_codes(Str, Codes),
+       phrase(escape_ir_bytes(Codes), SafeCodes),
+       string_codes(Safe, SafeCodes)
+    ;  Safe = Str
+    ).
+
+name_needs_llvm_escape(Str) :-
+    string_codes(Str, Codes),
+    member(C, Codes),
+    ( C < 32 ; C > 126 ; C =:= 0'\\ ; C =:= 0'" ),
+    !.
+
+escape_ir_bytes([]) --> [].
+escape_ir_bytes([C|Cs]) -->
+    ( { C >= 32, C =< 126, C =\= 0'\\, C =\= 0'" }
+    -> [C]
+    ;  { Hi is (C >> 4) /\ 0xF,
+         Lo is C /\ 0xF,
+         hex_digit(Hi, H),
+         hex_digit(Lo, L) },
+       [0'\\, H, L]
+    ),
+    escape_ir_bytes(Cs).
 
 %% emit_atom_string_globals(-IR)
 %
@@ -10882,6 +14718,154 @@ intern_atom(AtomName, Id) :-
         assertz(atom_table_entry(AtomName, Id))
     ).
 
+% ----------------------------------------------------------------------
+% M113: target-platform abstraction for libc struct layouts.
+% Most libc *functions* are POSIX-portable, but the *struct field
+% offsets* we read at IR-emit time (struct dirent for M107, struct tm
+% for M91/M98/M99, struct stat for M73-M76) are libc-specific. To keep
+% IR generation cross-target, callers pick a strategy via
+%   target_os(auto)    -- (default) derive OS from target_triple option
+%   target_os(linux)   -- explicit; linux | darwin | freebsd | netbsd
+%                          | openbsd | wasi | ... (atom)
+% adapt-at-runtime (a third mode that emits a probe to discover offsets
+% at program startup) is a follow-up milestone -- see todo at end of
+% this block.
+
+%% target_os_from_triple(+Triple, -OS) is det.
+%  Maps an LLVM target triple ("x86_64-pc-linux-gnu", "x86_64-apple-darwin",
+%  "x86_64-unknown-freebsd13.0", "wasm32-unknown-wasi", ...) to a short
+%  atom we can pattern-match against in layout predicates.
+target_os_from_triple(Triple, OS) :-
+    atom_string(Triple, S),
+    (   sub_string(S, _, _, _, "linux")   -> OS = linux
+    ;   sub_string(S, _, _, _, "darwin")  -> OS = darwin
+    ;   sub_string(S, _, _, _, "freebsd") -> OS = freebsd
+    ;   sub_string(S, _, _, _, "openbsd") -> OS = openbsd
+    ;   sub_string(S, _, _, _, "netbsd")  -> OS = netbsd
+    ;   sub_string(S, _, _, _, "wasi")    -> OS = wasi
+    ;   sub_string(S, _, _, _, "windows") -> OS = windows
+    ;   sub_string(S, _, _, _, "mingw")   -> OS = windows
+    ;   OS = linux   % default to linux on unknown triples (warns elsewhere)
+    ).
+
+%% resolve_target_os(+Options, -OS) is det.
+%  Consults the Options list for target_os(Mode):
+%   - target_os(auto)  (default if absent) -> derive from target_triple
+%   - target_os(<atom>) (linux/darwin/etc.) -> use that OS directly
+target_os_resolved(Options, OS) :-
+    ( option(target_os(Mode), Options) -> true ; Mode = auto ),
+    ( Mode == auto
+    -> ( option(target_triple(T), Options)
+       -> target_os_from_triple(T, OS)
+       ;  OS = linux
+       )
+    ;  OS = Mode
+    ).
+
+%% target_dirent_d_name_offset(+OS, -Offset) is det.
+%  Byte offset of d_name within struct dirent on the named OS.
+%  Linux glibc: ino(8) + off(8) + reclen(2) + type(1) = 19.
+%  Darwin (BSD libc): ino(8) + seekoff(8) + reclen(2) + namlen(2) + type(1) = 21.
+%  FreeBSD/NetBSD/OpenBSD vary -- 11/12 historically, modern is 21.
+%  WASI uses dirent compatible with Linux (the wasi-libc preview).
+target_dirent_d_name_offset(linux,   19).
+target_dirent_d_name_offset(darwin,  21).
+target_dirent_d_name_offset(freebsd, 21).
+target_dirent_d_name_offset(netbsd,  21).
+target_dirent_d_name_offset(openbsd, 21).
+target_dirent_d_name_offset(wasi,    19).
+target_dirent_d_name_offset(adapt,   0).   % unused -- adapt uses helper.
+target_dirent_d_name_offset(_, 19).        % fall-back
+
+%% target_dirent_name_ptr_ir(+OS, +StaticOff, -IR) is det.
+%  Produce the IR snippet that defines %dirf.name_ptr from
+%  %dirf.entry. For static OS modes this is one getelementptr with a
+%  literal byte offset. For target_os(adapt) it calls the runtime
+%  probe helper @wam_dirent_d_name_offset (always emitted in the
+%  module) and uses the i64 it returns.
+target_dirent_name_ptr_ir(adapt, _Off, IR) :- !,
+    atomic_list_concat([
+        '  %dirf.dno = call i64 @wam_dirent_d_name_offset()',
+        '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 %dirf.dno'
+    ], '\n', IR).
+target_dirent_name_ptr_ir(_OS, Off, IR) :-
+    format(atom(IR), '  %dirf.name_ptr = getelementptr i8, i8* %dirf.entry, i64 ~w', [Off]).
+
+%% target_dirent_probe_helper_ir(-IR) is det.
+%  M114: emit the runtime probe helper that discovers struct dirent''s
+%  d_name byte offset for the current process. Strategy: opendir("."),
+%  readdir once (always returns the "." entry first), scan the buffer
+%  for the first ''.'' byte (256 bytes max -- d_name is bounded by
+%  NAME_MAX on every supported platform), closedir. Cache the result
+%  in a private i64 global so subsequent calls reuse the probe. On
+%  failure (opendir/readdir error), fall back to 19 (Linux default)
+%  so callers continue with sane semantics even in chroots without /.
+target_dirent_probe_helper_ir(IR) :-
+    IR = '; === M114 runtime dirent::d_name offset probe ===
+@.uw_dot_dir = private constant [2 x i8] c".\\00"
+@uw_dirent_d_name_offset_cache = private global i64 -1
+
+define i64 @wam_dirent_d_name_offset() {
+entry:
+  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
+  %unset = icmp slt i64 %cached, 0
+  br i1 %unset, label %probe, label %done
+done:
+  ret i64 %cached
+probe:
+  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
+  %dir = call i8* @opendir(i8* %dot_ptr)
+  %dir_null = icmp eq i8* %dir, null
+  br i1 %dir_null, label %fallback, label %read
+read:
+  %entry_ptr = call i8* @readdir(i8* %dir)
+  %entry_null = icmp eq i8* %entry_ptr, null
+  br i1 %entry_null, label %fallback_close, label %scan_init
+scan_init:
+  br label %scan_loop
+scan_loop:
+  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
+  %too_far = icmp uge i64 %i, 256
+  br i1 %too_far, label %fallback_close, label %scan_check
+scan_check:
+  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
+  %b = load i8, i8* %byte_ptr
+  %is_dot = icmp eq i8 %b, 46
+  br i1 %is_dot, label %scan_found, label %scan_step
+scan_step:
+  %i_next = add i64 %i, 1
+  br label %scan_loop
+scan_found:
+  %close_ret = call i32 @closedir(i8* %dir)
+  store i64 %i, i64* @uw_dirent_d_name_offset_cache
+  ret i64 %i
+fallback_close:
+  %close_ret2 = call i32 @closedir(i8* %dir)
+  br label %fallback
+fallback:
+  store i64 19, i64* @uw_dirent_d_name_offset_cache
+  ret i64 19
+}'.
+
+%% target_struct_tm_size(+OS, -SizeBytes) is det.
+%  Glibc struct tm is 56 bytes; Darwin/BSD also 56 with same field
+%  order (the GNU tm_gmtoff/tm_zone extension is also present on
+%  Darwin and modern BSDs).
+target_struct_tm_size(_, 56).
+
+%% target_struct_tm_gmtoff_offset(+OS, -Offset) is det.
+target_struct_tm_gmtoff_offset(linux,   40).
+target_struct_tm_gmtoff_offset(darwin,  40).
+target_struct_tm_gmtoff_offset(freebsd, 40).
+target_struct_tm_gmtoff_offset(_, 40).
+
+% TODO: target_os(adapt) -- emit a small startup probe that opens
+% "." via opendir, calls readdir once (which always returns "." as
+% the first entry), and computes the d_name offset from where the
+% '.' byte lands in the buffer. Result stored in a runtime global so
+% builtin_directory_files reads the resolved offset instead of a
+% compile-time constant. Defer to a future milestone.
+
 % --- Value packing helpers ---
 
 llvm_pack_value(atom(A), Packed) :- !,
@@ -10986,7 +14970,89 @@ builtin_op_to_id('@>=/2', 89).                % standard order: greater or equal
 builtin_op_to_id('get_time/1', 90).           % wall-clock time as Float seconds since epoch.
 builtin_op_to_id('exists_file/1', 91).        % path exists AND is a regular file.
 builtin_op_to_id('exists_directory/1', 92).   % path exists AND is a directory.
-builtin_op_to_id(_, 99).  % Unknown
+builtin_op_to_id('delete_file/1', 93).        % libc unlink(path).
+builtin_op_to_id('make_directory/1', 94).     % libc mkdir(path, 0o755).
+builtin_op_to_id('rename_file/2', 95).        % libc rename(old, new).
+builtin_op_to_id('delete_directory/1', 96).   % libc rmdir(path) (empty dirs only).
+builtin_op_to_id('size_file/2', 97).          % stat -> st_size as Integer.
+builtin_op_to_id('time_file/2', 98).          % stat -> st_mtime as Float seconds.
+builtin_op_to_id('getenv/2', 99).             % libc getenv(name) -> atom value or fail.
+builtin_op_to_id('setenv/2', 100).            % libc setenv(name, value, 1).
+builtin_op_to_id('shell/1', 101).             % libc system(cmd) succeeds iff exit 0.
+builtin_op_to_id('shell/2', 102).             % libc system(cmd), Status = WEXITSTATUS.
+builtin_op_to_id('working_directory/2', 103). % getcwd -> Old; chdir(New) if New atom.
+builtin_op_to_id('getpid/1', 104).            % libc getpid() as Integer.
+builtin_op_to_id('sleep/1', 105).             % libc usleep(seconds * 1e6).
+builtin_op_to_id('gethostname/1', 106).       % libc gethostname() as atom.
+builtin_op_to_id('cpu_time/1', 107).          % clock_gettime(CLOCK_PROCESS_CPUTIME_ID).
+builtin_op_to_id('random/1', 108).            % libc drand48() in [0, 1) as Float.
+builtin_op_to_id('random_between/3', 109).    % L + lrand48() % (H-L+1).
+builtin_op_to_id('format_time/3', 110).       % strftime(Fmt, localtime(Stamp)).
+builtin_op_to_id('halt/0', 111).              % libc exit(0).
+builtin_op_to_id('halt/1', 112).              % libc exit(Code).
+builtin_op_to_id('unsetenv/1', 113).          % libc unsetenv(Name).
+builtin_op_to_id('getuid/1', 114).            % libc getuid() as Integer.
+builtin_op_to_id('geteuid/1', 115).           % libc geteuid() as Integer.
+builtin_op_to_id('getgid/1', 116).            % libc getgid() as Integer.
+builtin_op_to_id('getegid/1', 117).           % libc getegid() as Integer.
+builtin_op_to_id('getppid/1', 118).           % libc getppid() as Integer.
+builtin_op_to_id('set_random/1', 119).        % srand48 via seed(N) compound.
+builtin_op_to_id('stamp_date_time/3', 120).   % localtime_r + build 9-arity date/9.
+builtin_op_to_id('date_time_stamp/2', 121).   % mktime via date/9 compound.
+builtin_op_to_id('chmod/2', 122).             % libc chmod(Path, Mode).
+builtin_op_to_id('term_variables/2', 123).    % depth-first var collection.
+builtin_op_to_id('numbervars/3', 124).        % bind free vars to $VAR(N).
+builtin_op_to_id('access/2', 125).            % libc access(path, mode_bits).
+builtin_op_to_id('directory_files/2', 126).   % opendir/readdir loop -> list of atoms.
+builtin_op_to_id('getpgrp/1', 127).           % libc getpgrp() as Integer.
+builtin_op_to_id('realpath/2', 128).          % libc realpath(rel) -> Abs atom.
+builtin_op_to_id('kill/2', 129).              % libc kill(pid, sig).
+builtin_op_to_id('truncate/2', 130).          % libc truncate(path, length).
+builtin_op_to_id('chown/3', 131).             % libc chown(path, uid, gid).
+builtin_op_to_id('ground/1', 132).            % succeeds iff term has no unbound vars.
+builtin_op_to_id('file_base_name/2', 133).    % basename(1): part after last ''/''.
+builtin_op_to_id('file_directory_name/2', 134). % dirname(1): prefix before last ''/'' (or ''.'').
+builtin_op_to_id('file_name_extension/3', 135). % split/join basename at last ''.'' (basename-scoped).
+builtin_op_to_id('read_link/2', 136).         % libc readlink -- symlink target as atom.
+builtin_op_to_id('symlink/2', 137).           % libc symlink(target, linkpath).
+builtin_op_to_id('link/2', 138).              % libc link(old, new) -- hard link.
+builtin_op_to_id('is_absolute_file_name/1', 139). % true iff first char is ''/''.
+builtin_op_to_id('same_file/2', 140).         % stat both, compare st_dev + st_ino.
+builtin_op_to_id('tmp_file/2', 141).          % mkstemp-based race-free temp file.
+builtin_op_to_id('mkfifo/2', 142).            % libc mkfifo(path, mode).
+builtin_op_to_id('umask/2', 143).             % libc umask(?Old, +New).
+builtin_op_to_id('monotonic_time/1', 144).    % clock_gettime(CLOCK_MONOTONIC) as Float.
+builtin_op_to_id('nice/1', 145).              % libc nice(inc) -- adjust priority.
+builtin_op_to_id('getpriority/1', 146).       % libc getpriority(PRIO_PROCESS, 0).
+builtin_op_to_id('setpriority/1', 147).       % libc setpriority(PRIO_PROCESS, 0, prio).
+builtin_op_to_id('getrlimit/2', 148).         % libc getrlimit(Res, &rlim) -- soft limit.
+builtin_op_to_id('setrlimit/2', 149).         % libc setrlimit(Res, &rlim) -- soft limit only.
+builtin_op_to_id('getlogin/1', 150).          % libc getlogin() as atom.
+builtin_op_to_id('uname_sysname/1', 151).     % libc uname() sysname field as atom.
+builtin_op_to_id('uname_machine/1', 152).     % libc uname() machine field as atom.
+builtin_op_to_id('copy_file/2', 153).         % open + read/write loop + close.
+builtin_op_to_id('read_file_to_atom/2', 154). % stat + open + read loop -> intern as atom.
+builtin_op_to_id('write_atom_to_file/2', 155). % open(O_TRUNC) + write loop + close.
+builtin_op_to_id('append_atom_to_file/2', 156). % open(O_APPEND) + write loop + close.
+builtin_op_to_id('errno/1', 157).             % thread-local errno via __errno_location.
+builtin_op_to_id('strerror/2', 158).          % libc strerror(errno) as atom.
+builtin_op_to_id('process_max_rss/1', 159).   % getrusage ru_maxrss (KB on Linux).
+builtin_op_to_id('process_user_time/1', 160). % getrusage ru_utime as Float seconds.
+builtin_op_to_id('process_system_time/1', 161). % getrusage ru_stime as Float seconds.
+builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (absolute Rel wins).
+builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
+builtin_op_to_id('atom_to_system/2', 164).    % popen(cmd, "w") + fwrite + pclose, succeed iff status 0.
+builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep -> list of substring atoms.
+% Catch-all for builtin names with no dedicated dispatch entry. Must
+% be a value that no real builtin uses AND that the switch in
+% @execute_builtin has no case for, so dispatch falls through to the
+% %unknown label (ret i1 false). 99 was previously used here, but
+% 99 is also the dispatch case for getenv/2 -- so `\+ G' where G is
+% any non-builtin or a non-dispatched builtin would route to
+% builtin_getenv, read whatever junk reg 0 held, and return false
+% instead of running the metacall semantics. 200 is well above the
+% currently-defined range and not in the switch.
+builtin_op_to_id(_, 200).  % Unknown
 
 % ============================================================================
 % WAM line parser → LLVM struct literals (from WAM assembly text)
@@ -11303,7 +15369,6 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 %  - With wam_strict_labels(true) in Options: throw an error
 lookup_label_index(LabelName, LabelMap, Index) :-
     lookup_label_index(LabelName, LabelMap, [], Index).
-
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
@@ -11324,12 +15389,20 @@ lookup_label_index(LabelName, LabelMap, Options, Index) :-
 wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    lookup_label_index(CP, LabelMap, LabelIdx),
+    (   wam_meta_call_label(CP)
+    ->  LabelIdx = -1
+    ;   lookup_label_index(CP, LabelMap, LabelIdx)
+    ),
     format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
     clean_comma(P, CP),
-    lookup_label_index(CP, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 0 }', [LabelIdx]).
+    (   wam_meta_call_label(CP)
+    ->  LabelIdx = -1,
+        wam_meta_call_total_arity(CP, Arity)
+    ;   lookup_label_index(CP, LabelMap, LabelIdx),
+        Arity = 0
+    ),
+    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["try_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
@@ -11342,6 +15415,8 @@ wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
     format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
+wam_line_to_llvm_literal_resolved(["switch_on_constant_fallthrough" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 % switch_on_constant: defer until compile_wam_predicate_to_llvm can
 % allocate a switch table global. Returns a switch_deferred(_) term.
 wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
@@ -11691,6 +15766,9 @@ wam_line_to_llvm_literal(["cut", Yn], Lit) :-
 wam_line_to_llvm_literal(["jump", _], _) :-
     throw(error(label_resolution_required(jump, "provide a LabelMap"),
                 _)).
+
+wam_line_to_llvm_literal(["switch_on_constant_fallthrough" | _],
+    '%Instruction { i32 26, i64 0, i64 0 }') :- !.
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),

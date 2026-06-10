@@ -679,17 +679,46 @@ homogeneity precondition of Definition 0.6 holds to a degree
 sufficient for low TLI in practice (within tolerance for $\psi$
 of Conjecture 3.1).
 
-**Partial support.** Design note §4.5 measures
-$b_{\text{eff}}$ on `Category:Articles` (9.59) and on
-`Category:Physics` (9.51), finding ~1% agreement. This is
-evidence that the topical core is *statistically self-similar*
-across different sub-trees — a necessary condition for
-homogeneity (H3 of Definition 0.6).
+**Support.**
 
-**Caveat.** The conjecture has been tested on simplewiki only.
-The enwiki topical-root verification (page_id 7345184 confirmed
-via Wikipedia API, LMDB construction pending) is task #14 in the
-design note.
+*Simplewiki (within-wiki self-similarity).* Design note §4.5
+measures $b_{\text{eff}}$ on `Category:Articles` (9.59) and on
+`Category:Physics` (9.51), finding ~1% agreement — direct
+evidence the topical core is *statistically self-similar* across
+different sub-trees (H3 of Definition 0.6).
+
+*Enwiki (cross-wiki extension, 2026-06-06).* The post-fix
+enwiki LMDB rooted at `Category:Main_topic_classifications`
+(page_id 7345184) was built (2.26M reachable nodes, 6.7M edges,
+30× the size of simplewiki Articles). The F# probe ran V1
+(B = depth) on 240 sampled seeds at depths 1-12 — `d_wPow =
+depth + 1` exactly at depths 1-11 (0/220 nodes show shortcuts),
+20% at depth 12. This is *stronger* tree-likeness than simplewiki
+at the same depth range (where simplewiki saturated at 100%
+shortcuts at depth ≥ 10).
+
+The geometric-series analysis in
+`docs/reports/depth_likeness_budget_variants.md` gives the
+quantitative cross-wiki comparison: estimated convergence ratio
+$r \approx 0.16$ on simplewiki vs $r \approx 0.04$ on enwiki —
+a ~4× larger safety margin on enwiki, despite 30× scale.
+
+**Status: confirmed at both simplewiki and enwiki scale, with
+enwiki showing stronger tree-likeness than simplewiki.** The
+multi-wiki, multi-scale agreement supports promoting
+Conjecture 3.4 from "topical scoping is sufficient for
+homogeneity in practice" to "topical scoping yields verified
+tree-like calibration across two Wikipedia language editions
+spanning 30× scale difference."
+
+**Open questions still standing.** Whether the pattern extends
+to non-Wikipedia DAGs with topical scoping (e.g. dewiki,
+non-Wikipedia hierarchies like DMOZ or schema.org subtrees)
+remains untested. The Wikipedia-specific result alone doesn't
+distinguish "topical scoping works on any well-curated
+hierarchical DAG" from "topical scoping works specifically on
+Wikipedia-style category structures." See §5.3 for follow-up
+suggestions.
 
 ### 3.5 Symmetric DAGs have high TLI under any directional metric
 
@@ -972,6 +1001,22 @@ evaluation at varying $r$ to fit $\alpha$ empirically.
 - Agreement: ~1% (design note §4.5).
 - Global (not topical) $b_{\text{eff}} = 589$, a 60× discrepancy
   — direct evidence that homogeneity fails globally.
+- **Task #15 (2026-06-02)**: Random-pair BFS on the Articles
+  topical subgraph (79,375 nodes, restricted to in-subgraph
+  paths) yields mean undirected distance $\approx 7.30 \approx
+  \log(N)/\log(D) \approx 7.09$ within 3%. Standard small-world
+  regime confirmed. Indirectly supports homogeneity: the topical
+  subgraph behaves uniformly enough for the Chung-Lu distance
+  formula to fit. See `docs/reports/topical_geometric_regime_simplewiki.md`.
+- **Task #17 enwiki extension (2026-06-06)**: F# probe at enwiki
+  scale (2.26M reachable nodes from `Main_topic_classifications`,
+  30× simplewiki). V1 result: $d_\text{wPow} = \text{depth} + 1$
+  exactly at depths 1-11 (220 nodes, zero stdev), 20% shortcut
+  rate only at depth 12. *Stronger* tree-likeness than simplewiki
+  at the same depth range. Conjecture 3.4 promoted from
+  "simplewiki only" to "confirmed at two wikis spanning 30×
+  scale." See `docs/reports/depth_likeness_budget_variants.md`
+  addendum.
 
 ### 4.5 Conjecture 3.5 (symmetric DAG falsification)
 
@@ -1064,6 +1109,34 @@ varying $r$ to fit the exponent empirically. Conjecture 3.3 as
 stated is *consistent with* the empirical gap but not yet
 derived from theory.
 
+**Cross-wiki empirical anchor for $r$ (2026-06-06).** Beyond the
+simplewiki-only $r \approx 0.157$ used above, the F# V3 enwiki
+measurement gives a second data point. Treating the per-zig-zag
+empirical shortcut probability $p_\text{child} \approx 0.04$ as
+a proxy for $r$ on enwiki (the geometric series
+$\sum_n p^n = 1/(1-p)$ matches the theoretical
+$r/(1-r)$ contribution-sum form), we get:
+
+| Wiki | Estimated $r$ | Safety margin vs $r = 1$ |
+|---|---|---|
+| simplewiki Articles | $\approx 0.16$ | $\approx 6\times$ |
+| enwiki MTC | $\approx 0.04$ | $\approx 25\times$ |
+
+The 4× larger safety margin on enwiki despite 30× scale is
+counter-intuitive but explainable: more multi-parent topology
+produces more *long* alternate paths (parent-direction shortcuts,
+which the weighting crushes — boosting $b_\text{eff} \cdot D$)
+but *fewer short* child shortcuts (which would inflate $b'$).
+Conjecture 3.1's convergence ratio shrinks even as graph size
+grows, provided topical scoping is enforced.
+
+See `docs/reports/depth_likeness_budget_variants.md` § "Zig-zag
+shortcuts and the geometric series" for the derivation. Both
+empirical $r$ values fall in the comfortable-convergence regime
+($r \ll 1$), supporting the per-step partial-cancellation
+analysis above as the right asymptotic story even if its
+quantitative bound is loose.
+
 ### 5.2 Quantitative homogeneity ↔ calibration error
 
 Conjecture 3.4 asserts that topical scoping is "sufficient for
@@ -1082,19 +1155,33 @@ A quantitative answer here would convert Conjecture 3.4 from
 Cohen–Havlin (§1.3) implies that scale-free graphs with
 $2 < \gamma < 3$ have ultra-small-world geometry. Wikipedia's
 *global* degree distribution fits $\gamma \approx 2.41$, which is
-in this range. The conjecture is that *topical* sub-graphs do
+in this range. The conjecture was that *topical* sub-graphs do
 not satisfy the precondition of Cohen-Havlin (because they are
 not homogeneously scale-free), so they remain in the small-world
 or tree-like geometric regime.
 
-**Open question.** Empirically measure the topical sub-graph's
-degree distribution and compute its power-law exponent (if it
-fits one). Test whether $\gamma_{\text{topical}} > 3$, which
-would put the topical sub-graph in the *small-world* but not
-ultra-small-world regime, consistent with the observed TLI.
+**Status: confirmed (task #15, 2026-06-02).** Random-pair BFS on
+the simplewiki Articles topical subgraph (79,375 nodes) gives
+mean undirected pair distance $7.30 \approx \log(N)/\log(D)$
+within 3% — the standard small-world prediction. Not ultra-small.
+The empirical $\gamma_\text{topical}$ has not been fit directly,
+but the distance scaling places the topical core above the
+$\gamma = 3$ Cohen-Havlin phase boundary. Topical scoping
+genuinely moves the effective regime from ultra-small (global,
+$\gamma \approx 2.41$) to standard small-world. See
+`docs/reports/topical_geometric_regime_simplewiki.md`.
 
-(Task #15 in the design note will partly answer this by
-measuring average pair distance on the topical sub-graph.)
+**Bonus result: admin shortcut factor.** Allowing BFS to leak
+through admin-parent edges drops the apparent mean pair distance
+from 7.30 (in-topical) to 3.92 (admin-allowed) — a factor-2
+shortcut effect. This is the geometric-side analogue of design
+note §4.5's calibration-side inhomogeneity finding.
+
+**Remaining open question.** Direct fit of $\gamma_\text{topical}$
+via the Clauset-Shalizi-Newman methodology of §1.4. Would
+quantify *how far above 3* the topical exponent sits. Useful for
+characterising when the small-world fit will be tight (close to
+$\gamma = 3$) vs loose (closer to tree-like regime).
 
 ### 5.4 Extension to undirected graphs
 
@@ -1199,17 +1286,40 @@ and §1.3); at and below it, second moments diverge with $n$,
 distances drop to $\log \log n$, and the size-biased degree
 $\tilde{d}$ explodes.
 
-| Regime | $\gamma$ | $b'$ scaling | $b_{\text{eff}}$ scaling | $r$ behaviour | Buffer for $\rho$ |
-|---|---|---|---|---|---|
-| Tree-like / tame | $> 3$ | $\approx D$ | $\approx D / K_p$ (regular-graph approx) | $\approx K_p / D$ | wide |
-| Wikipedia topical | $\sim 3$ (TBD, task #15) | $b' \approx 1.5 \cdot D$ (empirical) | $\approx 1.3 \cdot D$ (empirical) | $\approx 0.15$ | moderate ($\rho = 0.384$ is ~2.5× buffer) |
-| Wikipedia global (not homogeneous) | $\approx 2.4$ globally | hub-mediated, unstable | inflated by hubs | n/a — Definition 0.6 violated | n/a |
-| Ultra-small-world (homogeneous, $2 < \gamma < 3$) | $2 < \gamma < 3$ | diverges with $N$ (hub-mediated) | diverges with $N$ (size-biased) | race; can $\to 1$ (especially as $\gamma \to 2^+$) | shrinks with $N$ |
-| Degenerate | $\le 2$ | diverges fastest (mean degree diverges) | diverges | $\to 1$ | none |
+| Regime | $\gamma$ | $b'$ scaling | $b_{\text{eff}}$ scaling | $r$ behaviour | Buffer for $\rho$ | Mean pair distance |
+|---|---|---|---|---|---|---|
+| Tree-like / tame | $> 3$ | $\approx D$ | $\approx D / K_p$ (regular-graph approx) | $\approx K_p / D$ | wide | $\approx 2 \log_D(N)$ |
+| **Wikipedia topical (Articles, simplewiki)** | $> 3$ (inferred from below) | $b' \approx 1.5 \cdot D$ (empirical) | $\approx 1.3 \cdot D$ (empirical) | $\approx 0.15$ | moderate ($\rho = 0.384$ is ~2.5× buffer) | **7.30 measured; small-world prediction $\log(N)/\log(D) \approx 7.09$ (3% gap, task #15)** |
+| Wikipedia global (not homogeneous) | $\approx 2.4$ globally | hub-mediated, unstable | inflated by hubs | n/a — Definition 0.6 violated | n/a | n/a (mixed regimes) |
+| Ultra-small-world (homogeneous, $2 < \gamma < 3$) | $2 < \gamma < 3$ | diverges with $N$ (hub-mediated) | diverges with $N$ (size-biased) | race; can $\to 1$ (especially as $\gamma \to 2^+$) | shrinks with $N$ | $\approx \log \log N$ |
+| Degenerate | $\le 2$ | diverges fastest (mean degree diverges) | diverges | $\to 1$ | none | $O(1)$ |
 
 (Simplewiki numerics: $b' \approx 11$, $D \approx 7.34$, so
 $b'/D \approx 1.5$, not the rough "~10" I had in an earlier
 draft.)
+
+**Empirical regime measurement (task #15, 2026-06-02).** Random-pair
+BFS on the Articles topical subgraph (79,375 nodes, restricted to
+in-subgraph paths) gives mean undirected distance $\approx 7.30$,
+which matches the small-world prediction
+$\log(N)/\log(D) \approx 7.09$ within 3%. Tree prediction
+(14.17) is 1.94× off; ultra-small ($\log \log N \approx 2.42$)
+is 3× off. The topical core is **cleanly small-world**, not
+ultra-small or at a phase boundary. (Allowing BFS to leak
+through admin parents drops the apparent mean to 3.92 — a
+factor-2 shortcut effect that quantifies inhomogeneity from the
+geometry side, complementing §4.5's calibration-side
+measurement.) See `docs/reports/topical_geometric_regime_simplewiki.md`
+for full numbers, methodology, and caveats about D-definition
+ambiguity.
+
+**Key consequence: the topical core sits above the $\gamma = 3$
+Cohen-Havlin phase boundary.** Globally simplewiki has
+$\gamma \approx 2.41$ (ultra-small-world zone, design note
+§4.4), but topical scoping moves the effective regime across the
+boundary into standard small-world territory. The buffer-for-$\rho$
+analysis in this table assumed this; the empirical measurement
+confirms it.
 
 **Hand-waving heuristic.** In the ultra-small-world regime, hubs
 dominate path counts on both sides of the convergence
@@ -1380,6 +1490,21 @@ of $Q$; for inhomogeneous graphs see §0.6 and §5.6.
 This is the actual practical promise: the convergence condition
 isn't about mathematical infinity. It's about graphs large enough
 you'll never see the bottom but still need a stable answer.
+
+**Empirical confirmation of geometric-vs-metric decoupling
+(task #15, 2026-06-02).** The simplewiki Articles topical
+subgraph is *geometrically small-world* — mean pair distance
+7.30, matching $\log(N)/\log(D) \approx 7.09$ within 3%. Yet it
+is *metrically tree-like* — TLI ≈ 0.02% per design note §4.1.
+These two regime classifications coexist on the same graph,
+empirically confirming §5.6.2's "decoupling geometry from metric"
+prediction. The metric weighting `(1/(b_\text{eff} \cdot D))^M`
+crushes the multi-path contributions from the small-world
+structure to negligibility; the graph's *geometric* abundance of
+shortcuts doesn't translate into *metric* drift because the
+weighting accounts for it. See
+`docs/reports/topical_geometric_regime_simplewiki.md` for the
+full measurement.
 
 **Algorithmically-generated graphs as a test case and as an
 application domain.** Boolean-equivalent expression graphs are a

@@ -75,6 +75,30 @@ user:wam_lua_fa_basic :-
     findall(X, user:wam_lua_fa_fact(X), L),
     L = [a, b].
 user:wam_lua_greet(X, hello) :- X = world.
+
+% Cut / negation / forall coverage (M17 get_level/cut path). Mirrors the
+% C++ and Go cut suites: a cut inside a called predicate under \+, a cut
+% inlined in a negated conjunction, and forall over a multi-solution
+% generator (positive and negative).
+:- dynamic user:lcut_acc/3.
+:- dynamic user:lcut_plen/2.
+:- dynamic user:lcut_gen/1.
+:- dynamic user:lcut_partial/0.
+:- dynamic user:lcut_inline/0.
+:- dynamic user:lcut_forall_neg/0.
+:- dynamic user:lcut_forall_pass/0.
+
+user:lcut_acc(L, _, _) :- var(L), !, fail.
+user:lcut_acc([], N, N) :- !.
+user:lcut_acc([_|T], A, N) :- A1 is A + 1, lcut_acc(T, A1, N).
+user:lcut_plen(L, N) :- lcut_acc(L, 0, N).
+user:lcut_gen(1).
+user:lcut_gen(2).
+user:lcut_gen(3).
+user:lcut_partial :- \+ lcut_plen([a,b|_], _).          % partial list rejected -> true
+user:lcut_inline :- \+ (lcut_gen(_), !, fail).          % inline cut in negation -> true
+user:lcut_forall_neg :- \+ forall(lcut_gen(X), X =:= 1). % not all satisfy -> \+ true
+user:lcut_forall_pass :- forall(lcut_gen(X), X >= 1).    % all satisfy -> true
 user:wam_lua_greet(X, goodbye) :- X = moon.
 user:wam_lua_fa_greet :-
     findall(X, user:wam_lua_greet(X, hello), L),
@@ -214,8 +238,8 @@ test(lua_interpreter_uses_items_ir_policy) :-
     read_file_to_string(Path, Content, []),
     sub_string(Content, _, _, _, "wam_lua_emit_ir_mode(Options, EmitMode, IrMode)"),
     sub_string(Content, _, _, _, "wam_ir_mode(wam_lua, EmitMode, Options, IrMode)"),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [], WamCode)"),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamCode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], WamCode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamCode)"),
     !.
 
 test(lua_generated_predicate_allows_text_ir_override) :-
@@ -543,6 +567,22 @@ test(lua_choice_e2e, [condition(lua_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+test(lua_cut_negation_forall_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_cut_e2e', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project([user:lcut_acc/3, user:lcut_plen/2,
+                               user:lcut_gen/1, user:lcut_partial/0,
+                               user:lcut_inline/0, user:lcut_forall_neg/0,
+                               user:lcut_forall_pass/0], [], TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_query(LuaDir, 'lcut_partial/0', [], true),
+          run_lua_query(LuaDir, 'lcut_inline/0', [], true),
+          run_lua_query(LuaDir, 'lcut_forall_neg/0', [], true),
+          run_lua_query(LuaDir, 'lcut_forall_pass/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(lua_findall_e2e, [condition(lua_available)]) :-
     unique_lua_tmp_dir('tmp_lua_findall_e2e', TmpDir),
     setup_call_cleanup(
@@ -771,13 +811,25 @@ unique_lua_tmp_dir(Prefix, TmpDir) :-
     get_time(T),
     format(atom(TmpDir), 'output/~w_~0f', [Prefix, T]).
 
-lua_available :-
-    catch(process_create(path(lua), ['-v'], [stdout(null), stderr(null)]), _, fail).
+% Find an available Lua interpreter. Prefers a plain `lua` CLI, then the
+% versioned apt packages, then `texlua` (the standalone Lua 5.x interpreter
+% bundled with LuaTeX) so the e2e tests run wherever any Lua is installed
+% rather than only when a bare `lua` happens to be on PATH.
+lua_interpreter(Exe) :-
+    member(Exe, [lua, 'lua5.4', 'lua5.3', texlua]),
+    catch(( process_create(path(Exe), ['-v'],
+                           [stdout(null), stderr(null), process(P)]),
+            process_wait(P, exit(0)) ),
+          _, fail),
+    !.
+
+lua_available :- lua_interpreter(_).
 
 run_lua_query(LuaDir, PredArity, Args, Expected) :-
+    lua_interpreter(Exe),
     maplist(atom_string, Args, ArgStrings),
     append(['generated_program.lua', PredArity], ArgStrings, LuaArgs),
-    process_create(path(lua), LuaArgs,
+    process_create(path(Exe), LuaArgs,
                    [cwd(LuaDir), stdout(pipe(Out)), stderr(null), process(PID)]),
     read_string(Out, _, Output),
     close(Out),
@@ -785,12 +837,19 @@ run_lua_query(LuaDir, PredArity, Args, Expected) :-
     normalize_space(string(Trimmed), Output),
     (Expected == true -> assertion(Trimmed == "true") ; assertion(Trimmed == "false")).
 
+% Run a one-off Lua snippet. Written to a temp file rather than passed via
+% -e so it works with interpreters that lack -e (e.g. texlua).
 run_lua_script(LuaDir, Script, Output) :-
-    process_create(path(lua), ['-e', Script],
-                   [cwd(LuaDir), stdout(pipe(Out)), stderr(null), process(PID)]),
-    read_string(Out, _, Output),
-    close(Out),
-    process_wait(PID, exit(0)).
+    lua_interpreter(Exe),
+    directory_file_path(LuaDir, '__script.lua', ScriptPath),
+    setup_call_cleanup(
+        ( open(ScriptPath, write, SS), write(SS, Script), close(SS) ),
+        ( process_create(path(Exe), ['__script.lua'],
+                         [cwd(LuaDir), stdout(pipe(Out)), stderr(null), process(PID)]),
+          read_string(Out, _, Output),
+          close(Out),
+          process_wait(PID, exit(0)) ),
+        catch(delete_file(ScriptPath), _, true)).
 
 assert_contains_all(Haystack, Needles) :-
     forall(member(Needle, Needles),

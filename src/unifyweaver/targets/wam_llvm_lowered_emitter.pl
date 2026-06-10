@@ -70,6 +70,8 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module('../bindings/llvm_wam_bindings', [reg_name_to_index/2]).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 % NB: we DO NOT `:- use_module(wam_llvm_target, ...)` here, because
 % wam_llvm_target.pl `:- use_module`s this file in turn. The two
@@ -132,6 +134,49 @@ instr_from_parts(["retry_me_else", L], retry_me_else(L)).
 instr_from_parts(["trust_me"], trust_me).
 instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
+% ite_use_y_level(true) soft-cut form (the LLVM pipeline's default): a
+% get_level Yn snapshots the choice-point level into a permanent register
+% in the clause prefix; cut Yn commits to it. In the lowered (single
+% basic-block-graph) form there are no tracked choice points, so cut Yn is
+% the structural ITE commit (dropped by wam_ite_structurer's is_commit/1)
+% and get_level Yn is dead — emitted as a no-op (see emit_instr/4 below).
+instr_from_parts(["get_level", Yn], get_level(Yn)).
+instr_from_parts(["cut", Yn], cut(Yn)).
+
+% ----------------------------------------------------------------------------
+% Label-preserving parse (for if-then-else / negation / once lowering)
+%
+% The base parse_wam_text/2 above drops label lines (and the structural
+% try_me_else / trust_me / jump / cut_ite become no-ops once labels are
+% gone), which erases the LElse/LCont boundaries of an ITE block. The
+% lowered ITE path needs them, so it parses through parse_wam_text_labeled/2
+% which keeps label(Name) markers (as strings, so they unify with the
+% string arguments of try_me_else/jump) and then folds the stream with the
+% shared wam_ite_structurer. Mirrors the Rust/Clojure labeled parsers.
+% ----------------------------------------------------------------------------
+
+parse_wam_text_labeled(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled(Lines, Instrs).
+
+parse_lines_labeled([], []).
+parse_lines_labeled([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  parse_lines_labeled(Rest, Instrs)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelStr),   % strip trailing ':'
+            Instrs = [label(LabelStr)|More],
+            parse_lines_labeled(Rest, More)
+        ;   instr_from_parts(CleanParts, Instr)
+        ->  Instrs = [Instr|More],
+            parse_lines_labeled(Rest, More)
+        ;   parse_lines_labeled(Rest, Instrs)
+        )
+    ).
 
 % ============================================================================
 % Lowerability gate
@@ -157,6 +202,21 @@ instr_from_parts(["cut_ite"], cut_ite).
 %                       bytecode (all clauses) through @run_loop.
 %                       Mirrors the F# emitter's multi-clause
 %                       approach (see wam_fsharp_lowered_emitter.pl).
+%
+%    clause_chain    — the clauses discriminate on a DISTINCT
+%                      first-argument constant (lowering type T5). ALL
+%                      clauses are lowered into one function as a
+%                      first-argument dispatch; an unbound first argument
+%                      defers to the full bytecode (which enumerates), so
+%                      this is wired up exactly like multi_clause_c1
+%                      (hybrid: native fast path + bytecode fallback).
+%                      Takes precedence over multi_clause_c1.
+wam_llvm_lowerable(_PI, WamCode, clause_chain) :-
+    (   is_list(WamCode) -> Instrs = WamCode
+    ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
+    ;   parse_wam_text(WamCode, Instrs)
+    ),
+    llvm_clause_chain_lowerable(Instrs).
 wam_llvm_lowerable(_PI, WamCode, Shape) :-
     (   is_list(WamCode) -> Instrs = WamCode
     ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
@@ -169,6 +229,54 @@ wam_llvm_lowerable(_PI, WamCode, Shape) :-
     -> Shape = multi_clause_c1
     ;  Shape = single_clause
     ).
+
+% ITE / negation / once: clause 1 contains an internal choice point
+% (try_me_else) that is NOT a multi-clause separator but a soft-cut block
+% emitted for ( Cond -> Then ; Else ) / \+ Goal / once/1. The base path
+% above rejects it (is_deterministic_pred_llvm fails on the try_me_else);
+% here we accept it iff the labeled stream folds cleanly into structured
+% ite(...) blocks whose every leaf instruction is supported. Such a
+% predicate lowers as a single self-contained function (no bytecode
+% fallback needed), so Shape = single_clause.
+wam_llvm_lowerable(_PI, WamCode, single_clause) :-
+    llvm_structured_clause1(WamCode, Structured),
+    forall(member(I, Structured), llvm_supported_structured(I)).
+
+%% llvm_clause_chain_lowerable(+Instrs) is semidet.
+%  True when the predicate is a distinct-first-argument-constant clause chain
+%  (T5) and every clause's remainder is a deterministic, supported body.
+llvm_clause_chain_lowerable(Instrs) :-
+    clause_chain(Instrs, chain(Guards)),
+    forall(member(guard(_, Rem), Guards),
+           ( is_deterministic_pred_llvm(Rem),
+             forall(member(I, Rem), supported(I)) )).
+
+%% llvm_structured_clause1(+WamCode, -Structured) is semidet.
+%
+%  Parse the label-preserving stream, take clause 1's body, and fold its
+%  if-then-else blocks into ite(Cond,Then,Else) terms via the shared
+%  structurer. Fails (so the caller declines) for genuine multi-clause
+%  predicates — their try_me_else is the first instruction and/or the
+%  structurer cannot match a clean jump-terminated then-path.
+llvm_structured_clause1(WamCode, Structured) :-
+    ( is_list(WamCode) -> LInstrs = WamCode
+    ; parse_wam_text_labeled(WamCode, LInstrs)
+    ),
+    \+ ( LInstrs = [try_me_else(_)|_] ),    % not a predicate-level multi-clause
+    take_to_proceed(LInstrs, C1L),
+    structure_ite(C1L, Structured),
+    member(ite(_,_,_), Structured),         % there is at least one ITE to lower
+    \+ member(try_me_else(_), Structured),  % no choice point survived structuring
+    \+ member(retry_me_else(_), Structured),
+    \+ member(trust_me, Structured).
+
+%% llvm_supported_structured(+StructuredInstr) is semidet.
+%  Recurse through ite(Cond,Then,Else); plain instrs must be supported.
+llvm_supported_structured(ite(C, T, E)) :- !,
+    forall(member(I, C), llvm_supported_structured(I)),
+    forall(member(I, T), llvm_supported_structured(I)),
+    forall(member(I, E), llvm_supported_structured(I)).
+llvm_supported_structured(I) :- supported(I).
 
 is_deterministic_pred_llvm(Instrs) :-
     \+ member(try_me_else(_), Instrs),
@@ -240,14 +348,15 @@ take_to_proceed([I|Rest], [I|Out]) :- take_to_proceed(Rest, Out).
 %  wam_llvm_lowerable/3.
 wam_llvm_lowerable_with_closure(PI, WamCode, ClosureSet, Shape) :-
     wam_llvm_lowerable(PI, WamCode, Shape),
-    % Extract the clause-1 body's call/execute targets and verify all
-    % are in the closure set.
+    % Extract the lowered body's call/execute targets and verify all are in
+    % the closure set. clause_chain lowers ALL clauses, so its closure must
+    % cover every clause's targets; the other shapes lower only clause 1.
     (   is_list(WamCode) -> Instrs = WamCode
     ;   atom(WamCode) -> parse_wam_text(WamCode, Instrs)
     ;   parse_wam_text(WamCode, Instrs)
     ),
-    clause1_instrs(Instrs, C1),
-    call_execute_targets(C1, Targets),
+    ( Shape == clause_chain -> Body = Instrs ; clause1_instrs(Instrs, Body) ),
+    call_execute_targets(Body, Targets),
     forall(member(T, Targets), memberchk(T, ClosureSet)).
 
 %% call_execute_targets(+Instrs, -Targets) is det.
@@ -287,6 +396,7 @@ supported(set_variable(_)).
 supported(set_value(_)).
 supported(allocate).
 supported(deallocate).
+supported(get_level(_)).   % no-op in lowered form (soft-cut is structural)
 supported(builtin_call(_, _)).
 supported(call(_, _)).         % M4 — direct call into another lowered kernel
 supported(execute(_)).         % M4 — tail call into another lowered kernel
@@ -342,6 +452,19 @@ llvm_safe_code(_, 0'_).
 %  through the trail naturally. Without this change, every nested
 %  call would need to package args as `%Value` and allocate a fresh
 %  state, defeating the perf benefit and breaking binding propagation.
+% ITE / negation / once predicates take the structured-emit path (basic
+% blocks with a soft-cut commit and trail-rollback else branch); everything
+% else takes the straight-line clause-1 path below, which is byte-for-byte
+% unchanged.
+lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
+    (   is_list(WamCode) -> CCInstrs = WamCode
+    ;   parse_wam_text(WamCode, CCInstrs)
+    ),
+    llvm_clause_chain_lowerable(CCInstrs), !,
+    lower_clause_chain_to_llvm(PI, CCInstrs, LLVMCode).
+lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
+    llvm_structured_clause1(WamCode, Structured), !,
+    lower_ite_predicate_to_llvm(PI, Structured, LLVMCode).
 lower_predicate_to_llvm(PI, WamCode, _Options, LLVMCode) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     llvm_lowered_func_name(Pred/Arity, FuncName),
@@ -378,6 +501,244 @@ lowered_fail:
   ret i1 false
 }',
         [Pred, Arity, Arity, FuncName, BodyStr]).
+
+% ============================================================================
+% T5: multi-clause as a first-argument dispatch (wam_clause_chain)
+%
+%  The clauses discriminate on a DISTINCT first-argument constant, so at most
+%  one matches a *bound* first argument. We deref A1 once: if it is unbound we
+%  branch to %lowered_fail (the hybrid wrapper then re-runs the full bytecode,
+%  which enumerates every clause, binding A1 in turn). If it is bound, control
+%  flows through each clause's head get_constant — a mismatch branches to the
+%  NEXT clause's first block, a match runs that clause's body. A leaf failure
+%  or a fall-through past the last clause returns false (sound: distinct
+%  discriminators mean no other clause could have matched anyway, and the
+%  bytecode fallback then also fails).
+%
+%  Each clause is emitted in FULL (its leading get_constant is kept): on the
+%  matching fast path it re-confirms the already-bound value, and its mismatch
+%  edge is exactly what chains to the next clause. Block numbering is shared
+%  and monotonic across clauses (pc_<N>), so no labels collide.
+% ============================================================================
+
+%% lower_clause_chain_to_llvm(+PI, +Instrs, -LLVMCode) is det.
+lower_clause_chain_to_llvm(PI, Instrs, LLVMCode) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
+    llvm_lowered_func_name(Pred/Arity, FuncName),
+    parse_reg('A1', A1Idx),
+    llvm_split_clauses(Instrs, Clauses),
+    emit_clause_chain_blocks(Clauses, 0, ClauseBlocksList),
+    atomic_list_concat(ClauseBlocksList, '\n\n', BodyStr),
+    format(atom(LLVMCode),
+'; === lowered kernel (T5 first-argument dispatch): ~w/~w ===
+; All clauses are lowered into one function. The dispatcher derefs A1 once;
+; an unbound first argument branches to %lowered_fail so the hybrid wrapper
+; re-runs the full bytecode (which enumerates every clause). A bound A1 flows
+; through a chain of get_constant heads: a non-matching head branches to the
+; next clause, the matching head runs its body.
+define i1 @~w(%WamState* %vm) {
+entry:
+  br label %t5_dispatch
+
+t5_dispatch:
+  %t5.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 ~w)
+  %t5.unb = call i1 @value_is_unbound(%Value %t5.a1)
+  br i1 %t5.unb, label %lowered_fail, label %pc_0
+
+~w
+
+lowered_succeed:
+  ret i1 true
+
+lowered_fail:
+  ret i1 false
+}',
+        [Pred, Arity, FuncName, A1Idx, BodyStr]).
+
+%% emit_clause_chain_blocks(+Clauses, +StartN, -BlocksList) is det.
+%  Emit each clause's basic blocks. The clause's leading instruction (its head
+%  get_constant) is emitted via emit_instr_f so its failure edge points at the
+%  next clause's first block (pc_<NextStartN>) instead of %lowered_fail; the
+%  rest of the clause body emits normally (failures → %lowered_fail). Block
+%  numbers run monotonically across clauses so nothing collides.
+emit_clause_chain_blocks([], _, []).
+emit_clause_chain_blocks([Clause|Rest], StartN, [ClauseStr|More]) :-
+    Clause = [First|RestInstrs],
+    length(Clause, Len),
+    NextStartN is StartN + Len,
+    ( Rest == []
+    ->  FailLabel = lowered_fail
+    ;   format(atom(FailLabel), 'pc_~w', [NextStartN])
+    ),
+    ( RestInstrs == []
+    ->  NextWithin = lowered_succeed
+    ;   N1 is StartN + 1, format(atom(NextWithin), 'pc_~w', [N1])
+    ),
+    emit_instr_f(First, StartN, NextWithin, FailLabel, FirstBlock),
+    N2 is StartN + 1,
+    emit_all_instrs(RestInstrs, N2, RestBlocks),
+    atomic_list_concat([FirstBlock|RestBlocks], '\n', ClauseStr),
+    emit_clause_chain_blocks(Rest, NextStartN, More).
+
+%% llvm_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split the parsed instruction list (which opens with try_me_else) at the
+%  choice-point separators into per-clause instruction lists, each trimmed to
+%  its terminal proceed/fail. Mirrors wam_clause_chain's split_clauses.
+llvm_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    llvm_collect_clause(Rest, C, After),
+    take_to_proceed(C, Clause),
+    llvm_split_more(After, More).
+
+llvm_split_more([], []).
+llvm_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    llvm_collect_clause(Rest, C, After),
+    take_to_proceed(C, Clause),
+    llvm_split_more(After, More).
+llvm_split_more([trust_me|Rest], [Clause|More]) :- !,
+    llvm_collect_clause(Rest, C, After),
+    take_to_proceed(C, Clause),
+    llvm_split_more(After, More).
+
+llvm_collect_clause([], [], []).
+llvm_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+llvm_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+llvm_collect_clause([I|Rest], [I|More], After) :-
+    llvm_collect_clause(Rest, More, After).
+
+% ============================================================================
+% Structured (if-then-else / negation / once) emission
+%
+% Where the straight-line path chains one basic block per instruction with
+% every failure branching to %lowered_fail, the structured path emits an
+% ite(Cond,Then,Else) block as:
+%
+%   ite_<K>:                              ; capture pre-condition trail mark
+%     %ite_<K>.tmv = load <trail size>
+%     br label %<first cond block>
+%   <cond blocks: failure → ite_<K>_else, success → first then block>
+%   <then blocks: failure → outer fail, success → continuation>
+%   ite_<K>_else:                         ; condition failed: roll back, run else
+%     call void @unwind_trail(%vm, i32 %ite_<K>.tmv)
+%     br label %<first else block>
+%   <else blocks: failure → outer fail, success → continuation>
+%
+% Because the WAM state is a single mutable %WamState* (registers, heap and
+% trail are all mutated in place and every binding is trailed), unwinding
+% the trail to the pre-condition mark fully restores any partial bindings a
+% failed condition made — no phi nodes or register snapshots are needed
+% (mirrors the Rust emitter's vm.unwind_trail_to and the Go register copy).
+%
+% The per-instruction emitters are reused verbatim through emit_instr_f/5,
+% which simply redirects their hard-coded `%lowered_fail` branch to the
+% supplied failure label. Non-ITE output is therefore byte-identical.
+% ============================================================================
+
+%% lower_ite_predicate_to_llvm(+PI, +Structured, -LLVMCode) is det.
+lower_ite_predicate_to_llvm(PI, Structured, LLVMCode) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
+    llvm_lowered_func_name(Pred/Arity, FuncName),
+    nb_setval(wam_llvm_lowered_uid, 0),
+    emit_seq(Structured, 'lowered_fail', 'lowered_succeed', BodyStr, FirstLabel),
+    format(atom(LLVMCode),
+'; === lowered kernel (if-then-else / negation / once): ~w/~w ===
+; M4: takes a caller-supplied %WamState*. Each plain instruction lives in
+; its own basic block (pc_<N>); each ( Cond -> Then ; Else ) / \\+ / once
+; block lives in ite_<K>* blocks with a trail-rollback else branch. The
+; condition\'s commit (cut_ite / !/0) is structural and not emitted.
+define i1 @~w(%WamState* %vm) {
+entry:
+  br label %~w
+
+~w
+
+lowered_succeed:
+  ret i1 true
+
+lowered_fail:
+  ret i1 false
+}',
+        [Pred, Arity, FuncName, FirstLabel, BodyStr]).
+
+%% fresh_uid(-Uid) — monotonic counter for unique block / SSA names.
+fresh_uid(Uid) :-
+    nb_getval(wam_llvm_lowered_uid, Uid),
+    Uid1 is Uid + 1,
+    nb_setval(wam_llvm_lowered_uid, Uid1).
+
+%% item_entry_label(+Item, +Uid, -Label) — block a predecessor branches to.
+item_entry_label(ite(_,_,_), Uid, Label) :- !,
+    format(atom(Label), 'ite_~w', [Uid]).
+item_entry_label(_Plain, Uid, Label) :-
+    format(atom(Label), 'pc_~w', [Uid]).
+
+%% emit_seq(+Items, +FailLabel, +ContLabel, -Code, -FirstLabel) is det.
+%
+%  Chain a list of structured items (plain instrs and ite(...) blocks) into
+%  basic blocks. Each item's success flows to the next item's entry block,
+%  the last to ContLabel; each item's failure flows to FailLabel. FirstLabel
+%  is the entry block of the whole chain (ContLabel when the list is empty),
+%  so the caller can branch into it.
+emit_seq([], _Fail, ContLabel, '', ContLabel) :- !.
+emit_seq([Item|Rest], Fail, ContLabel, Code, FirstLabel) :-
+    fresh_uid(Uid),
+    item_entry_label(Item, Uid, FirstLabel),
+    emit_seq(Rest, Fail, ContLabel, RestCode, NextLabel),
+    emit_item(Item, Uid, Fail, NextLabel, ItemCode),
+    ( RestCode == ''
+    -> Code = ItemCode
+    ;  atomic_list_concat([ItemCode, RestCode], '\n', Code)
+    ).
+
+%% emit_item(+Item, +Uid, +FailLabel, +NextLabel, -Code) is det.
+%
+%  Plain instruction → one basic block (pc_<Uid>) via emit_instr_f/5.
+%  ite(Cond,Then,Else) → the entry/cond/then/else block group described
+%  in the section header above.
+emit_item(ite(Cond, Then, Else), Uid, Fail, Cont, Code) :- !,
+    format(atom(EntryLabel), 'ite_~w', [Uid]),
+    format(atom(ElseLabel),  'ite_~w_else', [Uid]),
+    % then/else flow to the shared continuation; their failures escape to
+    % the enclosing failure label.
+    emit_seq(Then, Fail, Cont, ThenCode, ThenFirst),
+    emit_seq(Else, Fail, Cont, ElseCode, ElseFirst),
+    % the condition's failure goes to the else block; success falls into
+    % the first then block.
+    emit_seq(Cond, ElseLabel, ThenFirst, CondCode, CondFirst),
+    % entry block: snapshot the trail length (struct field 9) before the
+    % condition runs, then enter the condition.
+    format(atom(EntryBlock),
+'~w:
+  ; ( Cond -> Then ; Else ) / negation / once  [block ~w]
+  %ite_~w.tm = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ite_~w.tmv = load i32, i32* %ite_~w.tm
+  br label %~w',
+        [EntryLabel, Uid, Uid, Uid, Uid, CondFirst]),
+    % else preamble: roll back any bindings the failed condition made, then
+    % enter the else branch.
+    format(atom(ElseBlock),
+'~w:
+  ; condition failed -- unwind to pre-condition trail mark, run else
+  call void @unwind_trail(%WamState* %vm, i32 %ite_~w.tmv)
+  br label %~w',
+        [ElseLabel, Uid, ElseFirst]),
+    atomic_list_concat(
+        [EntryBlock, CondCode, ThenCode, ElseBlock, ElseCode], '\n', Code).
+emit_item(Instr, Uid, Fail, Next, Code) :-
+    emit_instr_f(Instr, Uid, Next, Fail, Code).
+
+%% emit_instr_f(+Instr, +N, +Next, +FailLabel, -Code) is det.
+%
+%  Emit a single instruction's basic block, redirecting its failure branch
+%  to FailLabel. Reuses the straight-line emit_instr/4 verbatim and rewrites
+%  its hard-coded `%lowered_fail` target. When FailLabel is the default
+%  'lowered_fail' this is byte-identical to emit_instr/4 (no rewrite).
+emit_instr_f(Instr, N, Next, lowered_fail, Code) :- !,
+    emit_instr(Instr, N, Next, Code).
+emit_instr_f(Instr, N, Next, FailLabel, Code) :-
+    emit_instr(Instr, N, Next, Code0),
+    atom_concat('%', FailLabel, FailRef),
+    atomic_list_concat(Parts, '%lowered_fail', Code0),
+    atomic_list_concat(Parts, FailRef, Code).
 
 build_param_list(0, "") :- !.
 build_param_list(Arity, ParamList) :-
@@ -444,6 +805,17 @@ emit_instr(fail, N, _Next, Block) :- !,
 'pc_~w:
   ; fail
   br label %lowered_fail', [N]).
+
+% --- get_level Yn: snapshot CP level (no-op in lowered form) ---
+% The soft cut is realised structurally by the basic-block layout (a failed
+% condition branches to the else block), so there is no choice-point level
+% to capture. Emit an empty block that falls through to the next instr.
+emit_instr(get_level(YnStr), N, Next, Block) :- !,
+    format(atom(Block),
+'pc_~w:
+  ; get_level ~w (no-op: soft cut is structural in the lowered form)
+  br label %~w',
+        [N, YnStr, Next]).
 
 % --- get_variable Xn, Ai: copy reg Ai → reg Xn ---
 emit_instr(get_variable(XnStr, AiStr), N, Next, Block) :- !,
