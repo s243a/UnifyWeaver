@@ -16007,6 +16007,8 @@ wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
     format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
 wam_line_to_llvm_literal_resolved(["switch_on_constant_fallthrough" | _], _, Lit) :- !,
     Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["switch_on_constant_a2_fallthrough" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 27, i64 0, i64 0 }'.
 % switch_on_constant: defer until compile_wam_predicate_to_llvm can
 % allocate a switch table global. Returns a switch_deferred(_) term.
 wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
@@ -16359,6 +16361,8 @@ wam_line_to_llvm_literal(["jump", _], _) :-
 
 wam_line_to_llvm_literal(["switch_on_constant_fallthrough" | _],
     '%Instruction { i32 26, i64 0, i64 0 }') :- !.
+wam_line_to_llvm_literal(["switch_on_constant_a2_fallthrough" | _],
+    '%Instruction { i32 27, i64 0, i64 0 }') :- !.
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),
