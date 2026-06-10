@@ -245,6 +245,8 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
     strip_switch_prefixes_fs(PCInstrs, PCInstrs1),
     (   emit_func_t5_fs(PCInstrs1, LabelMap, ForeignPreds)
     ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    ;   emit_func_t4_fs(PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T4 all-clauses inline (every clause native, no interpreter hop)
     ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  % Multi-clause: push CP for clause-2+ backtrack, try clause 1
         atom_string(LAtom, LStr),
@@ -343,6 +345,64 @@ emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
     format("    | None -> t5fallback ()~n").
 
 t5_strip_pc_fs(pc(_, I), I).
+
+% ============================================================================
+% T4: multi-clause, all clauses inline (multi_clause_n)
+%
+%  When the clauses do NOT discriminate on a distinct first-argument constant
+%  (so T5 declines) but every clause is a fully-supported deterministic body,
+%  lower them ALL: each clause becomes a `WamState -> WamState option`, and the
+%  function tries them in order on the SAME input state, taking the first Some.
+%  F#'s immutability gives a free per-clause restore (each clause runs against
+%  the unchanged s_init), so — unlike the imperative targets — no snapshot/
+%  restore is needed and no choice point is pushed: the interpreter is never
+%  entered for the predicate. Mirrors the Haskell emitter's emit_func_t4.
+% ============================================================================
+
+%% emit_func_t4_fs(+PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T4 all-clauses body and succeeds, or fails (emitting nothing)
+%  when the predicate is not a multi-clause predicate whose every clause is a
+%  supported deterministic body. All checks run before any output.
+emit_func_t4_fs(PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(_))|_],
+    t5_split_clauses_pc_fs(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(member(Sl, Slices),
+           ( % Reject an if-then-else soft-cut block masquerading as a
+             % multi-clause head: it also opens with try_me_else and uses
+             % trust_me as its else-separator, but its slices carry cut_ite /
+             % jump markers a clean multi-clause body never has. ITE blocks
+             % fall through to the multi_clause_1 path.
+             \+ member(pc(_, try_me_else(_)), Sl),
+             \+ member(pc(_, cut_ite), Sl),
+             \+ member(pc(_, jump(_)), Sl),
+             forall(member(pc(_, In), Sl), supported_fs(In)) )),
+    % All checks passed — emit.
+    format("    // T4 all-clauses inline (generated): try each clause on the input~n"),
+    format("    // state; first Some wins. Immutability gives a free per-clause~n"),
+    format("    // restore, so the interpreter is never entered for the predicate.~n"),
+    t4_emit_clause_defs_fs(Slices, 1, LabelMap, FP),
+    format("    t4clause_1 s_init~n"),
+    t4_emit_chain_tail_fs(Slices, 2).
+
+%% t4_emit_clause_defs_fs(+Slices, +Index, +LabelMap, +FP)
+t4_emit_clause_defs_fs([], _, _, _).
+t4_emit_clause_defs_fs([Slice|Rest], N, LabelMap, FP) :-
+    format("    let t4clause_~w (s_c~w: WamState) : WamState option =~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct_fs(Slice, LabelMap, SV, "        ", FP),
+    N1 is N + 1,
+    t4_emit_clause_defs_fs(Rest, N1, LabelMap, FP).
+
+%% t4_emit_chain_tail_fs(+Slices, +Index) — emit `|> Option.orElseWith` for
+%  clauses 2..N (lazy; clause 1 already emitted as the chain head).
+t4_emit_chain_tail_fs(Slices, N) :-
+    (   nth1(N, Slices, _)
+    ->  format("    |> Option.orElseWith (fun () -> t4clause_~w s_init)~n", [N]),
+        N1 is N + 1,
+        t4_emit_chain_tail_fs(Slices, N1)
+    ;   true
+    ).
 
 %% t5_split_clauses_pc_fs(+PCInstrs1, -Slices)
 %  Split the switch-stripped pc-instruction list (opens with try_me_else) at
