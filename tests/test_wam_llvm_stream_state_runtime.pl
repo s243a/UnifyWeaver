@@ -13,9 +13,9 @@
 
 user:llvm_stream_state_two_lines(Path, First, Second) :-
     llvm_stream_state_next(Path, First, state([], [], 0, none), State1),
-    % Closing a handle recovered from state/4 is a separate target boundary;
-    % this smoke proves the carried handle can be reused for the next read.
-    llvm_stream_state_next(Path, Second, State1, _State2).
+    llvm_stream_state_next(Path, Second, State1, State2),
+    State2 = state(Handle, _OutputStreams, _Counter, _UserFields),
+    stream_close(Handle).
 
 user:llvm_stream_state_next(Path, Line,
                             state([], OutputStreams, Counter, UserFields),
