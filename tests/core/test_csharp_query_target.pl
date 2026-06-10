@@ -354,6 +354,10 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_forward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_memoized_by_source_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_memoized_by_target_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_backward_configured_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_mixed_direction_with_pair_probe_cache_configured_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_reuse_runtime,
@@ -4396,6 +4400,100 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
         Params,
         HarnessSource).
 
+%% Strategy-coverage tests for the four `ClosurePairPlanStrategy`
+%% variants that the original `verify_parameterized_*_strategy_runtime`
+%% set didn't exercise: `MemoizedBySource`, `MemoizedByTarget`, `Backward`,
+%% and `MixedDirectionWithPairProbeCache`.  The first two fire from the
+%% auto-selector when `UseSeededClosureCachesForPairBatches: true` plus a
+%% 1-many / many-1 parameter shape; the last two are forced via
+%% `ClosurePairStrategy` configured-override because the auto-selector
+%% prefers other variants for the available fixtures (verified by
+%% probing `trace.SnapshotStrategies()` across many param shapes).
+
+verify_parameterized_grouped_transitive_closure_pairs_memoized_by_source_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    %% One source 'a' paired with multiple targets b/c/d -> the
+    %% selector's `sourceRequestCount == 1 && targetRequestCount > 1`
+    %% branch under `preferSeededClosureCachesForPairBatches` returns
+    %% `MemoizedBySource`.
+    Params = [[a, b, red, cat1], [a, c, red, cat1], [a, d, red, cat1]],
+    harness_source_with_strategy_flag_options(
+        ModuleClass,
+        Params,
+        'GroupedTransitiveClosurePairsMemoizedBySource',
+        'ReuseCaches: true, UseSeededClosureCachesForPairBatches: true',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsMemoizedBySource=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_memoized_by_target_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    %% Two sources a/b paired with one target c -> the selector's
+    %% `targetRequestCount == 1 && sourceRequestCount > 1` branch under
+    %% `preferSeededClosureCachesForPairBatches` returns `MemoizedByTarget`.
+    Params = [[a, c, red, cat1], [b, c, red, cat1]],
+    harness_source_with_strategy_flag_options(
+        ModuleClass,
+        Params,
+        'GroupedTransitiveClosurePairsMemoizedByTarget',
+        'ReuseCaches: true, UseSeededClosureCachesForPairBatches: true',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'b,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsMemoizedByTarget=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_backward_configured_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, b, red, cat1], [a, c, red, cat1]],
+    %% Auto-selector keeps picking `Forward` / `MixedDirection` for
+    %% every fixture+param combination we probed.  Force `Backward`
+    %% via configured-override and verify the runtime honors it.
+    harness_source_with_strategy_flag_options(
+        ModuleClass,
+        Params,
+        'GroupedTransitiveClosurePairsBackward',
+        'ReuseCaches: false, ClosurePairStrategy: ClosurePairStrategy.Backward',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsBackward=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_mixed_direction_with_pair_probe_cache_configured_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z, red, cat1], [p, q, red, cat1]],
+    %% Even with the mixed-direction fixture + admission threshold, the
+    %% measured-probe selector keeps preferring `MixedDirection` over
+    %% `MixedDirectionWithPairProbeCache` for the small request counts
+    %% available here.  Force the cached variant via configured-override.
+    %% `PairProbeCacheAdmissionMinCostPerProbe > 0` is still needed
+    %% because `canReuseBatchedPairProbeCache` gates on it elsewhere.
+    harness_source_with_strategy_flag_options(
+        ModuleClass,
+        Params,
+        'GroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache',
+        'ReuseCaches: false, ClosurePairStrategy: ClosurePairStrategy.MixedDirectionWithPairProbeCache, PairProbeCacheAdmissionMinCostPerProbe: 0.001',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache=true'],
+        Params,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime :-
     csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -7804,6 +7902,62 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+%% harness_source_with_strategy_flag_options(+ModuleClass, +Params, +Strategy, +OptionsLiteral, -Source)
+%
+% Variant of harness_source_with_strategy_flag_no_reuse that lets the
+% caller pass an arbitrary QueryExecutorOptions constructor argument
+% literal (e.g. "ReuseCaches: true, UseSeededClosureCachesForPairBatches: true"
+% or "ClosurePairStrategy: ClosurePairStrategy.Backward").  Used by the
+% strategy-coverage tests that need to exercise selector branches
+% (`MemoizedBySource`, `MemoizedByTarget`, configured-override
+% `Backward` / `MixedDirectionWithPairProbeCache`) that the default
+% executor options don't naturally pick.
+harness_source_with_strategy_flag_options(ModuleClass, Params, Strategy, OptionsLiteral, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   ', [ModuleClass, OptionsLiteral, ParamDecl, ExecCall, Strategy, Strategy]).
 
 harness_source_with_strategy_and_metric_flags_no_reuse(ModuleClass, Params, Strategy, MetricNames, PositiveMetricNames, Source) :-
     csharp_string_array_literal(MetricNames, MetricNamesLiteral),

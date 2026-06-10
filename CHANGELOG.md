@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **WAM Scala target: LMDB cursor-scan (`streamAll`) reflection.**
+  `LmdbFactSource.scanCursorAll`/`cursorSeekAndCollectDupSort` looked up
+  the lmdbjava cursor method via `getMethod("`val`")` — the Scala
+  keyword-escaping backticks were embedded in the *reflective name
+  string*, so the lookup (for a method actually named `val`) threw
+  `NoSuchMethodException` at runtime. The earlier LMDB tests only used
+  ground-key lookups (`Dbi.get`), never the cursor scan, so this never
+  fired. Surfaced by running a graph kernel over an LMDB edge relation
+  (which enumerates the whole relation via `streamAll`); fixed to
+  `getMethod("val")`.
+
 ### Added
+- **WAM Scala target: LMDB-backed graph kernels** verified end-to-end —
+  `kernel_dispatch(true)` composes with an `lmdb(...)` edge fact source so
+  a native kernel reads its adjacency directly from LMDB. New gated
+  `lmdb_backed_kernel` test in `tests/test_wam_scala_lmdb_runtime_smoke.pl`
+  (transitive closure over an LMDB-stored chain), which also covers the
+  `streamAll` cursor-scan path the key-lookup tests miss.
 - **Cross-target audit: WAM first-argument-indexing instruction handlers**
   (`docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`). After fixing the Scala
   `switch_on_*_a2` / `_fallthrough` gap, audited all WAM targets for the

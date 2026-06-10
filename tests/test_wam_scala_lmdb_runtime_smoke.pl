@@ -45,6 +45,16 @@
 user:wam_pair_lmdb(_, _).
 user:wam_triple_lmdb(_, _, _).
 
+% LMDB-backed graph kernel: transitive closure whose edge relation is an
+% LMDB fact source. With kernel_dispatch(true) the kernel enumerates the
+% edges through collectBinarySolutions -> the LMDB streamAll cursor scan
+% (the path the key-lookup tests above never exercise).
+:- dynamic user:wam_edge_lmdb/2.
+:- dynamic user:wam_tc_lmdb/2.
+user:wam_edge_lmdb(_, _).
+user:wam_tc_lmdb(X, Y) :- wam_edge_lmdb(X, Y).
+user:wam_tc_lmdb(X, Y) :- wam_edge_lmdb(X, Z), wam_tc_lmdb(Z, Y).
+
 % ============================================================
 % Gating
 % ============================================================
@@ -146,6 +156,41 @@ test(lmdb_arity3_fact_source) :-
         verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['k1', 'a', 'x'], "false"),
         verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['k2', 'c', 'd'], "true"),
         verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['nope', 'a', 'b'], "false"),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% LMDB-backed graph kernel: tc/2 (transitive_closure2) over an edge
+% relation stored in LMDB. The native BFS kernel reads its adjacency by
+% enumerating the edges via streamAll (cursor scan) — exercising the
+% full-scan path that the ground-key tests above do not. Chain
+% a -> b -> c -> d -> e seeded into LMDB; verify reachability.
+test(lmdb_backed_kernel) :-
+    once((
+        unique_lmdb_tmp_dir('tmp_scala_lmdb_kn', TmpDir),
+        directory_file_path(TmpDir, 'lmdb_env', LmdbEnv),
+        make_directory_path(LmdbEnv),
+        absolute_file_name(LmdbEnv, AbsLmdbEnv),
+        write_wam_scala_project(
+            [user:wam_tc_lmdb/2, user:wam_edge_lmdb/2],
+            [package('generated.wam_scala_lmdb_smoke.core'),
+             runtime_package('generated.wam_scala_lmdb_smoke.runtime'),
+             kernel_dispatch(true),
+             scala_fact_sources([
+                source(wam_edge_lmdb/2,
+                       lmdb([env_path(AbsLmdbEnv),
+                             dbi(''),
+                             dupsort(false)]))
+             ])],
+            TmpDir),
+        write_lmdb_seeder_source(TmpDir,
+            "    put(\"a\", \"b\")\n    put(\"b\", \"c\")\n    put(\"c\", \"d\")\n    put(\"d\", \"e\")\n"),
+        compile_lmdb_project(TmpDir),
+        seed_lmdb_env(TmpDir, AbsLmdbEnv),
+        verify_lmdb(TmpDir, 'wam_tc_lmdb/2', ['a', 'b'], "true"),
+        verify_lmdb(TmpDir, 'wam_tc_lmdb/2', ['a', 'e'], "true"),
+        verify_lmdb(TmpDir, 'wam_tc_lmdb/2', ['c', 'e'], "true"),
+        verify_lmdb(TmpDir, 'wam_tc_lmdb/2', ['e', 'a'], "false"),
+        verify_lmdb(TmpDir, 'wam_tc_lmdb/2', ['a', 'x'], "false"),
         delete_directory_and_contents(TmpDir)
     )).
 
