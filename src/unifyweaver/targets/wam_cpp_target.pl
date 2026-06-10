@@ -3362,7 +3362,7 @@ struct ChoicePoint {
     std::size_t saved_cp;
     std::size_t trail_mark;
     std::size_t cut_barrier;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<BodyFrame> saved_body_frames;
@@ -3390,7 +3390,7 @@ struct AggregateFrame {
     std::size_t trail_mark = 0;
     std::size_t saved_cp = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<Value> acc;
@@ -3427,7 +3427,7 @@ struct CatcherFrame {
     std::size_t base_cp_count = 0;
     std::size_t base_agg_count = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
 };
@@ -3444,7 +3444,7 @@ struct NegationFrame {
     std::size_t base_agg_count = 0;
     std::size_t base_catcher_count = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
 };
@@ -3519,7 +3519,7 @@ struct AggregateGroupIterator {
 // restore; var_counter is monotonic (unique unbound names) and intentionally
 // not restored.
 struct ClauseSnapshot {
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::size_t trail_mark = 0;
     std::size_t cut_barrier = 0;
     std::vector<EnvFrame> saved_env_stack;
@@ -3527,7 +3527,14 @@ struct ClauseSnapshot {
 };
 
 struct WamState {
-    std::unordered_map<std::string, CellPtr> regs;
+    // A/X register file as a flat array indexed by reg_index() (A1..A100 ->
+    // 0..99, X1..X220 -> 100..319). Y registers live in env_stack frames. This
+    // replaces an unordered_map<string,CellPtr>, removing a string hash lookup
+    // from every register access (the lowered fast path is dominated by it).
+    // Slots are lazily-filled CellPtrs (null until first written).
+    static constexpr int REG_MAX = 320;
+    static int reg_index(const std::string& name);
+    std::vector<CellPtr> regs = std::vector<CellPtr>(REG_MAX);
     std::unordered_map<std::string, std::size_t> labels;
     std::vector<Instruction> instrs;
     std::vector<TrailEntry> trail;
@@ -3636,7 +3643,7 @@ struct WamState {
         std::size_t base_catcher_count = 0;
         std::size_t trail_mark = 0;
         std::size_t saved_cut_barrier = 0;
-        std::unordered_map<std::string, CellPtr> saved_regs;
+        std::vector<CellPtr> saved_regs;
         std::vector<ModeFrame> saved_mode_stack;
         std::vector<EnvFrame> saved_env_stack;
     };
@@ -4124,9 +4131,25 @@ static CellPtr make_cell(Value v = Value{}) {
     return std::make_shared<Cell>(std::move(v));
 }
 
-// Y-regs are scoped to the top env frame; A/X-regs use the flat map.
+// Y-regs are scoped to the top env frame; A/X-regs use the flat regs array.
 static bool is_y_reg(const std::string& name) {
     return !name.empty() && name[0] == \'Y\';
+}
+
+// Map an A/X register name to its flat-array index: A1->0 .. A100->99,
+// X1->100 .. X220->319. Returns -1 for non-A/X names (Y is handled by
+// is_y_reg before this is ever called for the array path).
+int WamState::reg_index(const std::string& name) {
+    if (name.size() < 2) return -1;
+    int n = 0;
+    for (std::size_t k = 1; k < name.size(); ++k) {
+        char ch = name[k];
+        if (ch < \'0\' || ch > \'9\') return -1;
+        n = n * 10 + (ch - \'0\');
+    }
+    if (name[0] == \'A\') return n - 1;
+    if (name[0] == \'X\') return 100 + (n - 1);
+    return -1;
 }
 
 CellPtr WamState::get_cell(const std::string& name) {
@@ -4139,11 +4162,11 @@ CellPtr WamState::get_cell(const std::string& name) {
         y[name] = c;
         return c;
     }
-    auto it = regs.find(name);
-    if (it != regs.end()) return it->second;
-    CellPtr c = make_cell(Value::Unbound("_U_" + name));
-    regs[name] = c;
-    return c;
+    int i = reg_index(name);
+    if (i < 0) return make_cell(Value::Unbound("_U_" + name));
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(Value::Unbound("_U_" + name));
+    return regs[i];
 }
 
 void WamState::set_cell(const std::string& name, CellPtr c) {
@@ -4152,7 +4175,10 @@ void WamState::set_cell(const std::string& name, CellPtr c) {
         env_stack.back().y_regs[name] = std::move(c);
         return;
     }
-    regs[name] = std::move(c);
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    regs[i] = std::move(c);
 }
 
 void WamState::put_variable_reg(const std::string& a, const std::string& b) {
@@ -4173,9 +4199,9 @@ Value WamState::get_reg(const std::string& name) const {
         if (it == y.end()) return Value{};
         return *it->second;
     }
-    auto it = regs.find(name);
-    if (it == regs.end()) return Value{};
-    return *it->second;
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return Value{};
+    return *regs[i];
 }
 
 int WamState::match_reg_atom(const std::string& name, const char* atom) const {
@@ -4187,9 +4213,9 @@ int WamState::match_reg_atom(const std::string& name, const char* atom) const {
         if (it == y.end()) return -1;
         v = it->second.get();
     } else {
-        auto it = regs.find(name);
-        if (it == regs.end()) return -1;
-        v = it->second.get();
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return -1;
+        v = regs[i].get();
     }
     // deref() is a no-op in this cell-mutates-in-place model, so the cell
     // value is already the dereferenced value.
@@ -4210,17 +4236,19 @@ void WamState::put_reg(const std::string& name, Value v) {
         else               *it->second = std::move(v);
         return;
     }
-    auto it = regs.find(name);
-    if (it == regs.end()) regs[name] = make_cell(std::move(v));
-    else                  *it->second = std::move(v);
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(std::move(v));
+    else          *regs[i] = std::move(v);
 }
 
 void WamState::trail_binding(const std::string& name) {
-    auto it = regs.find(name);
-    if (it == regs.end()) return;
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return;
     TrailEntry e;
-    e.cell = it->second;
-    e.prev = *it->second;
+    e.cell = regs[i];
+    e.prev = *regs[i];
     trail.push_back(std::move(e));
 }
 
@@ -9747,7 +9775,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // builtins all read them.
         for (std::size_t i = 0; i < arity; ++i) {
             std::string an = "A" + std::to_string(i + 1);
-            regs[an] = g.args[i];
+            set_cell(an, g.args[i]);
         }
         // Meta-builtins handled directly by step() arms — go through
         // the same code path so nested catch / re-throw works.
@@ -10219,7 +10247,7 @@ bool WamState::throw_iso_error(Value err_term) {
     Value wrapper = Value::Compound("error/2", std::move(args));
     // Set A1 = the wrapped error term, then dispatch through the
     // existing throw machinery so catch/3 frames see a normal throw.
-    regs["A1"] = std::make_shared<Cell>(std::move(wrapper));
+    set_cell("A1", std::make_shared<Cell>(std::move(wrapper)));
     return execute_throw();
 }
 
@@ -10569,9 +10597,9 @@ bool WamState::run() {
 bool WamState::query(const std::string& pred_key, const std::vector<Value>& args) {
     auto it = labels.find(pred_key);
     if (it == labels.end()) return false;
-    regs.clear();
+    for (auto& _c : regs) _c.reset();
     for (std::size_t k = 0; k < args.size(); ++k) {
-        regs["A" + std::to_string(k + 1)] = make_cell(args[k]);
+        set_cell("A" + std::to_string(k + 1), make_cell(args[k]));
     }
     trail.clear();
     choice_points.clear();
