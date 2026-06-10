@@ -122,6 +122,7 @@
 :- dynamic user:wam_between_guard/3.
 :- dynamic user:wam_between_high_before_low/0.
 :- dynamic user:wam_between_generate_first/0.
+:- dynamic user:wam_between_backtrack/1.
 :- dynamic user:wam_between_singleton/0.
 :- dynamic user:wam_between_unbound_low/1.
 :- dynamic user:wam_between_unbound_high/1.
@@ -509,6 +510,7 @@ user:wam_select_unbound_list(Rest) :- select(a, L, Rest), is_list(L).
 user:wam_between_guard(Low, High, Value) :- between(Low, High, Value).
 user:wam_between_high_before_low :- between(5, 3, _).
 user:wam_between_generate_first :- between(2, 5, X), X =:= 2.
+user:wam_between_backtrack(Value) :- between(1, 3, X), X =:= Value.
 user:wam_between_singleton :- between(7, 7, X), X =:= 7.
 user:wam_between_unbound_low(_) :- user:wam_unbound_arg(Low), between(Low, 3, _).
 user:wam_between_unbound_high(_) :- user:wam_unbound_arg(High), between(1, High, _).
@@ -901,6 +903,7 @@ run_smoke :-
           user:wam_between_guard/3,
           user:wam_between_high_before_low/0,
           user:wam_between_generate_first/0,
+          user:wam_between_backtrack/1,
           user:wam_between_singleton/0,
           user:wam_between_unbound_low/1,
           user:wam_between_unbound_high/1,
@@ -1441,6 +1444,8 @@ smoke_cases([
     case('wam_between_guard/3', args(1, 3, 0), "false"),
     case('wam_between_high_before_low/0', no_args, "false"),
     case('wam_between_generate_first/0', no_args, "true"),
+    case('wam_between_backtrack/1', 2, "true"),
+    case('wam_between_backtrack/1', 4, "false"),
     case('wam_between_singleton/0', no_args, "true"),
     case('wam_between_unbound_low/1', a, "false"),
     case('wam_between_unbound_high/1', a, "false"),
@@ -2024,8 +2029,10 @@ assert_lowered_between_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-between-guard-3"),
+    has(CoreCode, "defn lowered-wam-between-backtrack-1"),
     has(CoreCode, "defn lowered-wam-between-unbound-low-1"),
     has(CoreCode, "defn lowered-wam-between-unbound-high-1"),
+    has(CoreCode, "runtime/lowered-step-advanced?"),
     has(CoreCode, "runtime/apply-between-solution").
 
 assert_lowered_numlist_builtin_emitted(ProjectDir) :-

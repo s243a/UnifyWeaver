@@ -135,6 +135,14 @@ test(parse_line_proceed) :-
     wam_line_to_llvm_literal(["proceed"], Lit),
     assertion(Lit == '%Instruction { i32 20, i64 0, i64 0 }').
 
+test(parse_line_switch_on_constant_a2_fallthrough) :-
+    wam_line_to_llvm_literal(["switch_on_constant_a2_fallthrough", "end_of_file:default"], Lit),
+    assertion(Lit == '%Instruction { i32 27, i64 0, i64 0 }').
+
+test(resolve_line_switch_on_constant_a2_fallthrough) :-
+    wam_llvm_target:wam_line_to_llvm_literal_resolved(["switch_on_constant_a2_fallthrough", "end_of_file:default"], [], Lit),
+    assertion(Lit == '%Instruction { i32 27, i64 0, i64 0 }').
+
 test(parse_label_and_instr) :-
     WamCode = "parent/2:\n    get_constant john, A1\n    proceed",
     compile_wam_predicate_to_llvm(parent/2, WamCode, [], LLVMCode),
