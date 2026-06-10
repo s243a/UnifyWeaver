@@ -17,6 +17,7 @@ Additional probe:
 
 ```bash
 swipl -q -s examples/plawk/probes/generate_loop_probe.pl -t halt
+swipl -q -s examples/plawk/probes/generate_meta_call_probe.pl -t halt
 ```
 
 ## Current results
@@ -44,9 +45,22 @@ Command:
 swipl -q -s examples/plawk/probes/generate_loop_probe.pl -t halt
 ```
 
-Result: emits `examples/plawk/generated/plawk_loop_probe.ll` without unresolved-label warnings. WAM/LLVM now recognizes `call/N` bytecode targets and routes them through a generated numeric meta-call dispatch table keyed by `(atom_id, effective_arity) -> label_index`. The generated loop probe verifies with `llvm-as`.
+Result: emits `examples/plawk/generated/plawk_loop_probe.ll` without unresolved-label warnings. WAM/LLVM now recognizes `call/N` bytecode targets and routes them through a generated numeric meta-call dispatch table. The generated loop probe verifies with `llvm-as`.
 
-Remaining scope: the dispatch table currently handles atom goals such as `call(foo, A, B)`. Compound closures such as `call(foo(X), A)` still need the same table extended to compiled functor identity plus base arguments.
+### Meta-call probe
+
+Command:
+
+```bash
+swipl -q -s examples/plawk/probes/generate_meta_call_probe.pl -t halt
+```
+
+Result: emits `examples/plawk/generated/plawk_meta_call_probe.ll` and verifies
+with `llvm-as`. The probe includes both atom-goal meta-calls such as
+`call(meta_target, A, B, C)` and compound closure calls such as
+`call(meta_target(A), B, C)`. Atom goals dispatch by `(atom_id, arity)`;
+compound closures dispatch by `(compiled_functor_pointer, arity)` and copy the
+closure's base arguments before the extra `call/N` arguments.
 
 ### Reader probe
 

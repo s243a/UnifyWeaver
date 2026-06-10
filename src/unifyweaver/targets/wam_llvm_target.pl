@@ -2221,12 +2221,19 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
     ).
 
 emit_meta_call_dispatch(LabelMap, IR) :-
-    findall(entry(AtomId, Arity, LabelIdx),
+    findall(entry(AtomId, FunctorRow, Arity, LabelIdx),
         ( member(Label-LabelIdx, LabelMap),
           catch(split_functor_arity(Label, NameStr, Arity), _, fail),
           Arity >= 0,
           atom_string(NameAtom, NameStr),
-          intern_atom(NameAtom, AtomId)
+          intern_atom(NameAtom, AtomId),
+          register_functor_string(NameStr),
+          string_length(NameStr, NameLen),
+          NameLenPlus1 is NameLen + 1,
+          sanitize_functor_for_llvm(NameStr, SaneName),
+          format(atom(FunctorRow),
+              '  i8* bitcast ([~w x i8]* @.fn_~w to i8*)',
+              [NameLenPlus1, SaneName])
         ),
         Entries0),
     sort(Entries0, Entries),
@@ -2234,19 +2241,25 @@ emit_meta_call_dispatch(LabelMap, IR) :-
     (   Count =:= 0
     ->  ArraySize = 1,
         AtomRows = "  i64 0",
+        FunctorRows = "  i8* null",
         ArityRows = "  i32 0",
         LabelRows = "  i32 0"
     ;   ArraySize = Count,
-        findall(A, (member(entry(AtomId, _, _), Entries), format(atom(A), '  i64 ~w', [AtomId])), AtomList),
-        findall(R, (member(entry(_, Arity, _), Entries), format(atom(R), '  i32 ~w', [Arity])), ArityList),
-        findall(L, (member(entry(_, _, LabelIdx), Entries), format(atom(L), '  i32 ~w', [LabelIdx])), LabelList),
+        findall(A, (member(entry(AtomId, _, _, _), Entries), format(atom(A), '  i64 ~w', [AtomId])), AtomList),
+        findall(F, member(entry(_, F, _, _), Entries), FunctorList),
+        findall(R, (member(entry(_, _, Arity, _), Entries), format(atom(R), '  i32 ~w', [Arity])), ArityList),
+        findall(L, (member(entry(_, _, _, LabelIdx), Entries), format(atom(L), '  i32 ~w', [LabelIdx])), LabelList),
         atomic_list_concat(AtomList, ',\n', AtomRows),
+        atomic_list_concat(FunctorList, ',\n', FunctorRows),
         atomic_list_concat(ArityList, ',\n', ArityRows),
         atomic_list_concat(LabelList, ',\n', LabelRows)
     ),
     format(string(IR),
-"; === Meta-call dispatch table: atom_id + arity -> label index ===
+"; === Meta-call dispatch table: atom/functor + arity -> label index ===
 @wam_meta_call_atom_ids = private constant [~w x i64] [
+~w
+]
+@wam_meta_call_functors = private constant [~w x i8*] [
 ~w
 ]
 @wam_meta_call_arities = private constant [~w x i32] [
@@ -2265,7 +2278,11 @@ read_goal:
   %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %tag = extractvalue %Value %goal, 0
   %is_atom = icmp eq i32 %tag, 0
-  br i1 %is_atom, label %atom_goal, label %fail
+  br i1 %is_atom, label %atom_goal, label %maybe_compound
+
+maybe_compound:
+  %is_compound = icmp eq i32 %tag, 3
+  br i1 %is_compound, label %compound_goal, label %fail
 
 atom_goal:
   %atom_id = extractvalue %Value %goal, 1
@@ -2311,6 +2328,81 @@ shift_atom_args:
   %arg_done = icmp sge i32 %arg_next, %target_arity
   br i1 %arg_done, label %go, label %shift_atom_args
 
+compound_goal:
+  %compound_payload = extractvalue %Value %goal, 1
+  %compound_ptr = inttoptr i64 %compound_payload to %Compound*
+  %compound_fn_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 0
+  %compound_functor = load i8*, i8** %compound_fn_slot
+  %compound_arity_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 1
+  %compound_base_arity = load i32, i32* %compound_arity_slot
+  %compound_args_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 2
+  %compound_args = load %Value*, %Value** %compound_args_slot
+  %compound_extra_arity = sub i32 %total_arity, 1
+  %compound_target_arity = add i32 %compound_base_arity, %compound_extra_arity
+  br label %compound_loop
+
+compound_loop:
+  %ci = phi i32 [ 0, %compound_goal ], [ %cnext_i, %compound_next ]
+  %cdone = icmp sge i32 %ci, ~w
+  br i1 %cdone, label %fail, label %compound_check
+
+compound_check:
+  %functor_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_meta_call_functors, i32 0, i32 %ci
+  %cand_functor = load i8*, i8** %functor_ptr
+  %functor_match = icmp eq i8* %compound_functor, %cand_functor
+  %carity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %ci
+  %cand_carity = load i32, i32* %carity_ptr
+  %carity_match = icmp eq i32 %compound_target_arity, %cand_carity
+  %cmatch = and i1 %functor_match, %carity_match
+  br i1 %cmatch, label %dispatch_compound, label %compound_next
+
+compound_next:
+  %cnext_i = add i32 %ci, 1
+  br label %compound_loop
+
+dispatch_compound:
+  %clabel_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %ci
+  %clabel_idx = load i32, i32* %clabel_ptr
+  %ctarget_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %clabel_idx)
+  %cvalid = icmp sge i32 %ctarget_pc, 0
+  br i1 %cvalid, label %prepare_compound_extra, label %fail
+
+prepare_compound_extra:
+  %has_compound_extra = icmp sgt i32 %compound_extra_arity, 0
+  br i1 %has_compound_extra, label %copy_compound_extra_init, label %prepare_closure_args
+
+copy_compound_extra_init:
+  %extra_last = sub i32 %compound_extra_arity, 1
+  br label %copy_compound_extra
+
+copy_compound_extra:
+  %extra_i = phi i32 [ %extra_last, %copy_compound_extra_init ], [ %extra_prev, %copy_compound_extra ]
+  %extra_src = add i32 %extra_i, 1
+  %extra_dst = add i32 %compound_base_arity, %extra_i
+  %extra_val = call %Value @wam_get_reg(%WamState* %vm, i32 %extra_src)
+  call void @wam_set_reg(%WamState* %vm, i32 %extra_dst, %Value %extra_val)
+  %extra_is_first = icmp eq i32 %extra_i, 0
+  %extra_prev = sub i32 %extra_i, 1
+  br i1 %extra_is_first, label %prepare_closure_args, label %copy_compound_extra
+
+prepare_closure_args:
+  %has_closure_args = icmp sgt i32 %compound_base_arity, 0
+  br i1 %has_closure_args, label %copy_closure_args, label %compound_go
+
+copy_closure_args:
+  %base_i = phi i32 [ 0, %prepare_closure_args ], [ %base_next, %copy_closure_args ]
+  %base_arg_ptr = getelementptr %Value, %Value* %compound_args, i32 %base_i
+  %base_arg = load %Value, %Value* %base_arg_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 %base_i, %Value %base_arg)
+  %base_next = add i32 %base_i, 1
+  %base_done = icmp sge i32 %base_next, %compound_base_arity
+  br i1 %base_done, label %compound_go, label %copy_closure_args
+
+compound_go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %ctarget_pc)
+  ret i1 true
+
 go:
   call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
   call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
@@ -2319,7 +2411,9 @@ go:
 fail:
   ret i1 false
 }",
-        [ArraySize, AtomRows, ArraySize, ArityRows, ArraySize, LabelRows,
+        [ArraySize, AtomRows, ArraySize, FunctorRows, ArraySize, ArityRows,
+         ArraySize, LabelRows,
+         Count, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize,
          Count, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize]).
 %% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
 %%                         -AllSwitchDefs)

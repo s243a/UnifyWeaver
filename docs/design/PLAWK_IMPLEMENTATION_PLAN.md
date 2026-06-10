@@ -141,12 +141,14 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
   instead of a `; TODO` comment inside `@module_code`.
 - **Loop probe:** `process_all/4` now emits IR without unresolved-label warnings,
   and the generated loop probe verifies with `llvm-as`. WAM/LLVM recognizes
-  `call/N` bytecode targets and routes atom-goal meta-calls through a generated
-  numeric dispatch table keyed by `(atom_id, effective_arity)` to a label index,
-  preserving the existing numeric label-to-PC jump path. This keeps the hot path
-  numeric rather than doing string lookup at runtime. Compound closure calls
-  still need a follow-up extension to dispatch on compiled functor identity plus
-  base arguments.
+  `call/N` bytecode targets and routes meta-calls through a generated numeric
+  dispatch table, preserving the existing numeric label-to-PC jump path. Atom
+  goals dispatch by `(atom_id, effective_arity)`. Compound closures dispatch by
+  `(compiled_functor_pointer, effective_arity)` and lay out captured closure
+  arguments before the extra `call/N` arguments. This keeps the hot path numeric
+  rather than doing string lookup at runtime.
+- **Meta-call probe:** atom and compound closure meta-calls now emit IR and
+  verify with `llvm-as` in `examples/plawk/generated/plawk_meta_call_probe.ll`.
 - **Reader probe:** intentionally deferred. The Phase-0 reader uses
   `read_file_to_string/3` as a SWI-only slurp shortcut; Phase 1 still needs the
   buffered streaming input builtin described in Finding 3.
