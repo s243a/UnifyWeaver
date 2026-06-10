@@ -325,8 +325,10 @@ emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
 '// ~w — lowered from ~w/~w (T5 first-argument dispatch)
 bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
     with_output_to(string(Body),
-        ( format("    Value t5a1 = vm->get_reg(\"A1\");~n"),
-          format("    if (t5a1.is_unbound()) return false;  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+        ( % Per-guard dispatch compares the first argument in place (no
+          % `Value t5a1 = get_reg(...)` copy, no temporary Value::Atom per
+          % guard). An unbound / non-matching first arg matches no guard and
+          % returns false, deferring to the interpreter fallback as before.
           emit_cpp_guards(Guards, ForeignPreds),
           format("    return false;~n") )),
     format(string(Footer), '}', []),
@@ -334,8 +336,13 @@ bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
 
 emit_cpp_guards([], _).
 emit_cpp_guards([guard(V, Rem) | Rest], ForeignPreds) :-
-    cpp_val_literal(V, CppVal),
-    format("    if (t5a1 == ~w) {~n", [CppVal]),
+    wam_classify_constant_token(V, Class),
+    ( Class = atom(Name)
+    ->  local_escape_cpp_string(Name, Esc),
+        format("    if (vm->match_reg_atom(\"A1\", \"~w\") == 1) {~n", [Esc])
+    ;   cpp_val_literal(V, CppVal),
+        format("    if (vm->get_reg(\"A1\") == ~w) {~n", [CppVal])
+    ),
     emit_instrs(Rem, "        ", ForeignPreds),
     format("    }~n"),
     emit_cpp_guards(Rest, ForeignPreds).
@@ -428,19 +435,38 @@ emit_one(fail, I) :-
 
 % --- Head unification (get_*) ---
 
+% get_constant — the hot head-match. An ATOM constant is compared against the
+% register in place (vm->match_reg_atom), avoiding the per-comparison std::string
+% allocations the old `get_reg() == Value::Atom("...")` form paid (the get_reg
+% Value copy and the temporary Value::Atom). Integer/float keep the Value
+% comparison (no allocation).
 emit_one(get_constant(CStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
-    cpp_val_literal(CStr, CppVal),
-    format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-    format("~w    if (_a.is_unbound()) {~n", [I]),
-    format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]),
-    format("~w    } else if (!(_a == ~w)) {~n", [I, CppVal]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    wam_classify_constant_token(CStr, Class),
+    ( Class = atom(Name)
+    ->  local_escape_cpp_string(Name, Esc),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    int _m = vm->match_reg_atom(\"~w\", \"~w\");~n", [I, Ai, Esc]),
+        format("~w    if (_m < 0) {~n", [I]),
+        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w        vm->put_reg(\"~w\", Value::Atom(\"~w\"));~n", [I, Ai, Esc]),
+        format("~w    } else if (_m == 0) {~n", [I]),
+        format("~w        return false;~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ;   cpp_val_literal(CStr, CppVal),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
+        format("~w    if (_a.is_unbound()) {~n", [I]),
+        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w        vm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]),
+        format("~w    } else if (!(_a == ~w)) {~n", [I, CppVal]),
+        format("~w        return false;~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
@@ -459,11 +485,11 @@ emit_one(get_nil(AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
     format("~w// get_nil ~w~n", [I, AiStr]),
     format("~w{~n", [I]),
-    format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-    format("~w    if (_a.is_unbound()) {~n", [I]),
+    format("~w    int _m = vm->match_reg_atom(\"~w\", \"[]\");~n", [I, Ai]),
+    format("~w    if (_m < 0) {~n", [I]),
     format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
     format("~w        vm->put_reg(\"~w\", Value::Atom(\"[]\"));~n", [I, Ai]),
-    format("~w    } else if (!(_a == Value::Atom(\"[]\"))) {~n", [I]),
+    format("~w    } else if (_m == 0) {~n", [I]),
     format("~w        return false;~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).

@@ -3740,6 +3740,11 @@ struct WamState {
     // so existing lowered code keeps compiling; get_cell exposes the cell
     // for instructions that need sharing semantics.
     Value   get_reg(const std::string& name) const;
+    // Allocation-free get_constant head match: 1 = bound atom equal to the
+    // argument, 0 = bound but not an equal atom (clause fails), -1 = unbound
+    // (caller binds). Reads the register cell in place: no Value copy, and no
+    // temporary Value::Atom on the right-hand side.
+    int     match_reg_atom(const std::string& name, const char* atom) const;
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
@@ -4171,6 +4176,29 @@ Value WamState::get_reg(const std::string& name) const {
     auto it = regs.find(name);
     if (it == regs.end()) return Value{};
     return *it->second;
+}
+
+int WamState::match_reg_atom(const std::string& name, const char* atom) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return -1;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return -1;
+        v = it->second.get();
+    } else {
+        auto it = regs.find(name);
+        if (it == regs.end()) return -1;
+        v = it->second.get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already the dereferenced value.
+    switch (v->tag) {
+        case Value::Tag::Atom:    return v->s == atom ? 1 : 0;
+        case Value::Tag::Unbound:
+        case Value::Tag::Uninit:  return -1;
+        default:                  return 0;
+    }
 }
 
 void WamState::put_reg(const std::string& name, Value v) {
