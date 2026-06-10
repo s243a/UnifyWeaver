@@ -29,7 +29,9 @@ skip_to_first_real_instr([Line|Rest], Out) :-
 skippable_prefix_line([]).
 skippable_prefix_line([First|_]) :- sub_string(First, _, 1, 0, ":").
 skippable_prefix_line(["switch_on_constant"|_]).
+skippable_prefix_line(["switch_on_constant_a2"|_]).
 skippable_prefix_line(["switch_on_structure"|_]).
+skippable_prefix_line(["switch_on_term"|_]).
 
 % T5: the clauses discriminate on a DISTINCT first-argument constant
 % (lowering type T5). ALL clauses become a bound-checked first-arg dispatch;
@@ -45,6 +47,20 @@ classify_clause_shape([FirstLine|Rest], plan(clause_chain, AltAtom, chain_payloa
     !,
     atom_string(AltAtom, AltStr),
     take_clause1_lines(Rest, ClauseLines).
+% T4: a multi-clause predicate whose clauses are all supported deterministic
+% bodies, but which does NOT discriminate on a distinct first-argument constant
+% (so T5/clause_chain declined). Lower EVERY clause inline (tried in order with
+% a trail/register restore between attempts), so the predicate never falls back
+% to the bytecode interpreter. Takes precedence over multi_clause_1. Payload is
+% the list of per-clause line lists.
+classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
+    wam_lua_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
+    lua_split_clause_lines([FirstLine|Rest], Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( forall(member(Line, Cl), lua_t4_clause_line_supported(Line)),
+             last(Cl, LastLine), lua_t4_terminal_line(LastLine) )),
+    !.
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLines)) :-
     wam_lua_target:tokenize_wam_line(FirstLine, ["try_me_else", AltStr]), !,
     atom_string(AltAtom, AltStr),
@@ -127,6 +143,47 @@ take_clause1_lines([Line|Rest], Out) :-
         take_clause1_lines(Rest, More)
     ).
 
+% --- T4 multi-clause line splitting --------------------------------------
+% Drop label / choice-point-separator / switch lines, then split the remaining
+% instruction lines at each proceed/fail terminal into per-clause line lists.
+
+lua_split_clause_lines(AllLines, Clauses) :-
+    include(lua_t4_instr_line, AllLines, InstrLines),
+    lua_split_at_terminal(InstrLines, Clauses).
+
+lua_t4_instr_line(Line) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    Parts \== [],
+    Parts = [F|_],
+    \+ sub_string(F, _, 1, 0, ":"),     % label line
+    \+ member(F, ["try_me_else", "retry_me_else", "trust_me",
+                  "switch_on_constant", "switch_on_constant_a2",
+                  "switch_on_structure", "switch_on_term"]).
+
+lua_split_at_terminal([], []).
+lua_split_at_terminal([L|Ls], [Clause|Rest]) :-
+    lua_take_to_terminal([L|Ls], Clause, After),
+    ( After == [] -> Rest = [] ; lua_split_at_terminal(After, Rest) ).
+
+lua_take_to_terminal([Line|Rest], [Line], Rest) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    ( Parts == ["proceed"] ; Parts == ["fail"] ), !.
+lua_take_to_terminal([Line|Rest], [Line|More], After) :-
+    lua_take_to_terminal(Rest, More, After).
+lua_take_to_terminal([], [], []).
+
+%% lua_t4_clause_line_supported(+Line) — a clause line must render directly
+%  (parts_supported rejects cut_ite / jump, so inner-ITE clauses decline T4).
+lua_t4_clause_line_supported(Line) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    ( Parts == [] -> true ; parts_supported(Parts) ),
+    Parts \= ["cut_ite"|_],
+    Parts \= ["jump"|_].
+
+lua_t4_terminal_line(Line) :-
+    wam_lua_target:tokenize_wam_line(Line, Parts),
+    ( Parts == ["proceed"] ; Parts == ["fail"] ).
+
 wam_lua_lowerable(_PI, WamCode, Reason) :-
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
     (   Reason == ite
@@ -135,6 +192,9 @@ wam_lua_lowerable(_PI, WamCode, Reason) :-
     ->  Payload = chain_payload(Guards, ClauseLines),
         forall(member(guard(_, Rem), Guards), lua_chain_rem_supported(Rem)),
         forall(member(Line, ClauseLines), line_supported(Line))
+    ;   Reason == multi_clause_n
+    ->  forall(member(Cl, Payload),
+               forall(member(Line, Cl), line_supported(Line)))
     ;   forall(member(Line, Payload), line_supported(Line))
     ).
 
@@ -204,8 +264,39 @@ lower_predicate_to_lua(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     ;   Mode == clause_chain
     ->  Payload = chain_payload(Guards, Clause1Lines),
         emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Code)
+    ;   Mode == multi_clause_n
+    ->  emit_multi_clause_n_function(PredName, FuncName, Payload, Code)
     ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code)
     ).
+
+%% emit_multi_clause_n_function(+PredName, +FuncName, +Clauses, -Code)
+%  T4: capture the clause-entry trail/register state, then try every clause
+%  inline as an immediately-invoked closure (its `proceed` returns true, a
+%  failed instruction returns false), restoring the entry state between
+%  attempts. The first clause that succeeds wins (first-solution /
+%  deterministic-prefix); the interpreter is never entered for the predicate.
+emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
+    with_output_to(string(ClausesBody), emit_lua_t4_clauses(Clauses)),
+    format(string(Code),
+'-- Lowered: ~w (T4 all-clauses inline)
+local function ~w(program, state)
+  local _t4_trail = #state.trail
+  local _t4_regs = Runtime.copy_table(state.regs)
+  local _t4_vc = state.var_counter
+~w  return false
+end
+', [PredName, FuncName, ClausesBody]).
+
+emit_lua_t4_clauses([]).
+emit_lua_t4_clauses([Clause|Rest]) :-
+    format("  if (function()~n"),
+    emit_lines(Clause, "    "),
+    format("    return false~n"),
+    format("  end)() then return true end~n"),
+    format("  while #state.trail > _t4_trail do state.bindings[table.remove(state.trail)] = nil end~n"),
+    format("  state.regs = Runtime.copy_table(_t4_regs)~n"),
+    format("  state.var_counter = _t4_vc~n"),
+    emit_lua_t4_clauses(Rest).
 
 % If-then-else / negation / once. Same wrapper as the deterministic case,
 % but the body is the structured term list rendered by emit_struct_lua/2.
