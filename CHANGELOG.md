@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM ILasm target (M149): full repair campaign — the target now
+  assembles, runs, and executes correctly end-to-end.** All 13
+  structural defects documented by the sweep are fixed in the
+  generators: `tail.` directive, valid + lazily-invoked per-predicate
+  initializers, real IL `Instruction` construction (was C# pseudo-code
+  spliced into bodies), indexed label-table stores, top-level type
+  emission (Value/WamState were nested inside Program while referenced
+  top-level), default ctors for StackEntry/TrailEntry/ChoicePoint,
+  receiver-before-argument IL operand order across the step cases,
+  `!0` generic memberrefs, real `call`/`deallocate` bodies, run_loop
+  merge-point stack balance, List.Add receiver order, `cut_ite`/`jump`
+  lowerings (ITE-commit class), and the `var/nonvar/atom/=` builtins —
+  with `=/2` doing full unification whose var-var case ALIASES cells
+  via a forwarding pointer (the M143 lesson), trailed and dissolved on
+  backtrack. Integer constants now pack `(tag<<16)|reg` so
+  `put_constant 1` stops decoding as the atom "1". Builtin ids
+  harmonized with LLVM's numbering. New gated exec smoke test
+  (`tests/test_wam_ilasm_exec_smoke.pl`): all 14 probe legs pass under
+  ilasm + mono. Suites: structural 45/45, integration e2e 12/12,
+  cross-target consistency 22/22, pipeline script 7/7 (its test 6 was
+  failing before this work). Project writers now open output streams
+  with `encoding(utf8)` (POSIX-locale safety).
 - **WAM Kotlin target (M148): builtin table and ITE commit.** The
   final sweep target (kotlinc 2.1.0). The runtime's `builtin_call`
   case implemented ONLY `=/2` — `var/1`, `nonvar/1`, `atom/1`,
@@ -77,17 +99,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`) is confirmed. No engine
   exists to host correctness probes — needs a ground-up
   implementation campaign, not fixes.
-- **WAM ILasm target: 13 further structural defects** beyond the
-  fixed builtin-table bug (mis-spelled `tail.` directive, uncallable
-  `.cctor_probeN` initializers, C# pseudo-code spliced into IL,
-  label-table indexing, nested-vs-top-level type references, missing
-  ctors, swapped IL operand order in 7+ sites, concrete generic
-  memberrefs, placeholder `deallocate`/`call` bodies, swapped
-  List.Add receiver, run_loop stack imbalance, `cut_ite`/`jump`
-  dropped to null slots, `var/nonvar/atom/=` unmapped). The shipped
-  default emit has never been assemblable; the sweep agent's
-  defect ladder is preserved in its report for a future repair
-  campaign.
 - **WAM Rust target (M144): if-then-else never committed.** The
   sweep-found known issue: `cut_ite` was translated to
   `Instruction::NoOp`, so a then-branch failure backtracked into the

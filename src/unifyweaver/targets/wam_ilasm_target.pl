@@ -52,11 +52,16 @@ write_wam_ilasm_project(Predicates, Options, OutputFile) :-
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
 
-    read_template_file('templates/targets/ilasm_wam/types.il.mustache', TypesTemplate),
-    render_template(TypesTemplate, [module_name=ModuleName, date=Date], TypesDef),
-
+    % State-management methods are rendered first and embedded INSIDE the
+    % WamState class in the types template: they are emitted as
+    % `instance ... WamState::...` members, so placing them in Program
+    % (the old layout) made every WamState:: call site unresolvable.
     read_template_file('templates/targets/ilasm_wam/state.il.mustache', StateTemplate),
     render_template(StateTemplate, [], StateMethods),
+
+    read_template_file('templates/targets/ilasm_wam/types.il.mustache', TypesTemplate),
+    render_template(TypesTemplate, [module_name=ModuleName, date=Date,
+                                    state_methods=StateMethods], TypesDef),
 
     compile_step_wam_to_cil(Options, StepMethod),
     compile_wam_helpers_to_cil(Options, HelperMethods),
@@ -75,14 +80,13 @@ write_wam_ilasm_project(Predicates, Options, OutputFile) :-
         date=Date,
         class_name=ClassName,
         type_definitions=TypesDef,
-        state_methods=StateMethods,
         runtime_methods=RuntimeMethods,
         native_predicates=NativeCode,
         wam_predicates=WamCode
     ], FullModule),
 
     setup_call_cleanup(
-        open(OutputFile, write, Stream),
+        open(OutputFile, write, Stream, [encoding(utf8)]),
         format(Stream, "~w", [FullModule]),
         close(Stream)
     ),
@@ -817,12 +821,13 @@ L_dealloc_done:
 
 wam_cil_case('L_call',
 '    // call: save continuation, jump to label
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance int32 WamState::LabelPC(int32)
-    dup
+    stloc.0
+    ldloc.0
     ldc.i4.m1
     beq L_call_fail
     // Save continuation
@@ -832,32 +837,33 @@ wam_cil_case('L_call',
     ldc.i4.1
     add
     stfld int32 WamState::CP
-    // Jump
+    // Jump: PC := LabelPC(op1)
     ldarg.0
-    callvirt instance void WamState::SetReg(int32, class Value)  // placeholder
+    ldloc.0
+    stfld int32 WamState::PC
     ldc.i4.1
     ret
 L_call_fail:
-    pop
     ldc.i4.0
     ret').
 
 wam_cil_case('L_execute',
 '    // execute: jump to label (no continuation save)
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance int32 WamState::LabelPC(int32)
-    dup
+    stloc.0
+    ldloc.0
     ldc.i4.m1
     beq L_exec_fail
     ldarg.0
+    ldloc.0
     stfld int32 WamState::PC
     ldc.i4.1
     ret
 L_exec_fail:
-    pop
     ldc.i4.0
     ret').
 
@@ -865,11 +871,12 @@ wam_cil_case('L_proceed',
 '    // proceed: return to continuation or halt
     ldarg.0
     ldfld int32 WamState::CP
-    dup
     ldc.i4.0
     beq L_proc_halt
     // Return to continuation
     ldarg.0
+    ldarg.0
+    ldfld int32 WamState::CP
     stfld int32 WamState::PC
     ldarg.0
     ldc.i4.0
@@ -877,7 +884,6 @@ wam_cil_case('L_proceed',
     ldc.i4.1
     ret
 L_proc_halt:
-    pop
     ldarg.0
     ldc.i4.1
     stfld bool WamState::Halted
@@ -905,13 +911,15 @@ L_bi_fail:
 
 wam_cil_case('L_try_me_else',
 '    // try_me_else: push choice point
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance int32 WamState::LabelPC(int32)
     stloc.0                          // nextPC
-    // Create choice point
+    // Create choice point (list receiver pushed first for the Add below)
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint> WamState::ChoicePoints
     newobj instance void ChoicePoint::.ctor()
     dup
     ldloc.0
@@ -931,10 +939,8 @@ wam_cil_case('L_try_me_else',
     ldarg.0
     ldfld int32 WamState::CP
     stfld int32 ChoicePoint::SavedCP
-    // Push onto choice point stack
-    ldarg.0
-    ldfld class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint> WamState::ChoicePoints
-    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::Add(class ChoicePoint)
+    // Push onto choice point stack (receiver already below)
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::Add(!0)
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
@@ -942,10 +948,10 @@ wam_cil_case('L_try_me_else',
 
 wam_cil_case('L_retry_me_else',
 '    // retry_me_else: update top choice point next_pc
+    ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
-    ldarg.0
     callvirt instance int32 WamState::LabelPC(int32)
     stloc.0
     ldarg.0
@@ -954,7 +960,7 @@ wam_cil_case('L_retry_me_else',
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class ChoicePoint class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Item(int32)
     ldloc.0
     stfld int32 ChoicePoint::NextPC
     ldarg.0
@@ -976,6 +982,49 @@ wam_cil_case('L_trust_me',
     ldc.i4.1
     ret').
 
+wam_cil_case('L_cut_ite',
+'    // cut_ite: commit to the then-branch of an if-then-else by popping
+    // the guard choice point pushed by the corresponding try_me_else
+    // (M144 bug class: without this, a failing then-branch backtracks
+    // into the else-branch).
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint> WamState::ChoicePoints
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Count()
+    ldc.i4.0
+    ble L_cut_ite_done
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint> WamState::ChoicePoints
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Count()
+    ldc.i4.1
+    sub
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::RemoveAt(int32)
+L_cut_ite_done:
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_jump',
+'    // jump: unconditional branch to label (op1 = label index)
+    ldarg.0
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    callvirt instance int32 WamState::LabelPC(int32)
+    stloc.0
+    ldloc.0
+    ldc.i4.m1
+    beq L_jump_fail
+    ldarg.0
+    ldloc.0
+    stfld int32 WamState::PC
+    ldc.i4.1
+    ret
+L_jump_fail:
+    ldc.i4.0
+    ret').
+
 % ============================================================================
 % PHASE 3: Helper predicates → CIL methods
 % ============================================================================
@@ -985,11 +1034,13 @@ compile_wam_helpers_to_cil(_Options, CILCode) :-
     compile_unwind_trail_to_cil(UnwindCode),
     compile_execute_builtin_to_cil(BuiltinCode),
     compile_eval_arith_to_cil(ArithCode),
+    compile_make_constant_to_cil(MakeConstCode),
     atomic_list_concat([
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
-        ArithCode
+        ArithCode, '\n\n',
+        MakeConstCode
     ], CILCode).
 
 compile_backtrack_to_cil(Code) :-
@@ -1009,7 +1060,7 @@ compile_backtrack_to_cil(Code) :-
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class ChoicePoint class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::get_Item(int32)
     stloc.0
     // Unwind trail
     ldarg.0
@@ -1062,15 +1113,28 @@ L_unwind_loop:
     sub
     dup
     stloc.0
-    callvirt instance class TrailEntry class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::get_Item(int32)
     stloc.1
-    // Restore old value
+    // Cell binding (BindVar, RegIndex = -1): dissolve the alias/binding
+    // by resetting the forwarding pointer instead of touching registers.
+    ldloc.1
+    ldfld class Value TrailEntry::BoundVar
+    brfalse L_unwind_reg
+    ldloc.1
+    ldfld class Value TrailEntry::BoundVar
+    castclass UnboundValue
+    ldnull
+    stfld class Value UnboundValue::Ref
+    br L_unwind_pop
+L_unwind_reg:
+    // Restore old register value
     ldarg.0
     ldloc.1
     ldfld int32 TrailEntry::RegIndex
     ldloc.1
     ldfld class Value TrailEntry::OldValue
     callvirt instance void WamState::SetReg(int32, class Value)
+L_unwind_pop:
     // Remove trail entry
     ldarg.0
     ldfld class [mscorlib]System.Collections.Generic.List`1<class TrailEntry> WamState::Trail
@@ -1083,139 +1147,155 @@ L_unwind_done:
 
 compile_execute_builtin_to_cil(Code) :-
     Code = '// Execute builtin operations via switch dispatch
+// Op ids follow the LLVM target numbering (harmonization invariant):
+//   0=is 1=> 2=< 3=>= 4==< 5==:= 6==\\= 7=== 8=true 9=fail 10=!
+//   13=atom 18=var 19=nonvar 24== (full unification)
+// Slots 11/12/14-17/20-23 are LLVM builtins not implemented here and
+// fall through to the unknown-op default (fail).
+// Arithmetic comparisons evaluate both sides via eval_arith (which
+// derefs alias chains); type-check builtins deref before isinst.
 .method public static bool execute_builtin(class WamState vm, int32 op, int32 arity) cil managed {
     .maxstack 4
     .locals init (class Value a1, class Value a2, int64 v1, int64 v2)
     ldarg.1
     switch (L_bi_is, L_bi_gt, L_bi_lt, L_bi_ge, L_bi_le,
             L_bi_arith_eq, L_bi_arith_ne, L_bi_eq,
-            L_bi_true, L_bi_fail, L_bi_cut)
+            L_bi_true, L_bi_fail, L_bi_cut,
+            L_bi_unknown, L_bi_unknown, L_bi_atom, L_bi_unknown,
+            L_bi_unknown, L_bi_unknown, L_bi_unknown, L_bi_var,
+            L_bi_nonvar, L_bi_unknown, L_bi_unknown, L_bi_unknown,
+            L_bi_unknown, L_bi_unify)
+L_bi_unknown:
     ldc.i4.0
     ret
 
 L_bi_is:
-    // is/2: evaluate A2 via eval_arith, bind to A1
+    // is/2: evaluate A1 expr, bind/check against A0 (alias-aware)
     ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
     call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     newobj instance void IntegerValue::.ctor(int64)
-    stloc.0
+    stloc.0                          // result
+    ldarg.0
     ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    callvirt instance bool Value::IsUnbound()
+    callvirt instance class Value WamState::Deref(class Value)
+    stloc.1                          // a0 (dereferenced)
+    ldloc.1
+    isinst UnboundValue
     brfalse L_bi_is_check
-    // Bind
+    // Bind the cell (trailed, alias-preserving)
     ldarg.0
-    ldc.i4.0
-    callvirt instance void WamState::TrailBinding(int32)
-    ldarg.0
-    ldc.i4.0
+    ldloc.1
     ldloc.0
-    callvirt instance void WamState::SetReg(int32, class Value)
+    callvirt instance void WamState::BindVar(class Value, class Value)
     ldc.i4.1
     ret
 L_bi_is_check:
-    ldarg.0
-    ldc.i4.0
-    callvirt instance class Value WamState::GetReg(int32)
+    ldloc.1
     ldloc.0
     callvirt instance bool Value::ValueEquals(class Value)
     ret
 
 L_bi_gt:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     cgt
     ret
 L_bi_lt:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     clt
     ret
 L_bi_ge:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     clt
     ldc.i4.0
     ceq
     ret
 L_bi_le:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     cgt
     ldc.i4.0
     ceq
     ret
 L_bi_arith_eq:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     ceq
     ret
 L_bi_arith_ne:
     ldarg.0
+    ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
-    castclass IntegerValue
-    ldfld int64 IntegerValue::Val
+    call int64 PrologGenerated.Program::eval_arith(class WamState, class Value)
     ceq
     ldc.i4.0
     ceq
     ret
 L_bi_eq:
+    // ==/2: structural equality on dereferenced values
+    ldarg.0
     ldarg.0
     ldc.i4.0
     callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    ldarg.0
     ldarg.0
     ldc.i4.1
     callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
     callvirt instance bool Value::ValueEquals(class Value)
     ret
 L_bi_true:
@@ -1230,6 +1310,84 @@ L_bi_cut:
     callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::Clear()
     ldc.i4.1
     ret
+L_bi_var:
+    // var/1: dereferenced A0 is an unbound cell
+    ldarg.0
+    ldarg.0
+    ldc.i4.0
+    callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    isinst UnboundValue
+    ldnull
+    cgt.un
+    ret
+L_bi_nonvar:
+    ldarg.0
+    ldarg.0
+    ldc.i4.0
+    callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    isinst UnboundValue
+    ldnull
+    ceq
+    ret
+L_bi_atom:
+    ldarg.0
+    ldarg.0
+    ldc.i4.0
+    callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    isinst AtomValue
+    ldnull
+    cgt.un
+    ret
+L_bi_unify:
+    // =/2: FULL unification. Var-var must ALIAS the two cells via
+    // BindVar (forwarding pointer), not copy one unbound marker over
+    // the other (M143 bug class).
+    ldarg.0
+    ldarg.0
+    ldc.i4.0
+    callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    stloc.0
+    ldarg.0
+    ldarg.0
+    ldc.i4.1
+    callvirt instance class Value WamState::GetReg(int32)
+    callvirt instance class Value WamState::Deref(class Value)
+    stloc.1
+    // Same cell/value object: trivially unified
+    ldloc.0
+    ldloc.1
+    beq L_bi_true
+    // a unbound: alias a -> b
+    ldloc.0
+    isinst UnboundValue
+    brfalse L_bu_checkb
+    ldarg.0
+    ldloc.0
+    ldloc.1
+    callvirt instance void WamState::BindVar(class Value, class Value)
+    ldc.i4.1
+    ret
+L_bu_checkb:
+    // b unbound: bind b -> a
+    ldloc.1
+    isinst UnboundValue
+    brfalse L_bu_cmp
+    ldarg.0
+    ldloc.1
+    ldloc.0
+    callvirt instance void WamState::BindVar(class Value, class Value)
+    ldc.i4.1
+    ret
+L_bu_cmp:
+    // Both bound: structural equality
+    ldloc.0
+    ldloc.1
+    callvirt instance bool Value::ValueEquals(class Value)
+    ret
 }'.
 
 compile_eval_arith_to_cil(Code) :-
@@ -1237,6 +1395,11 @@ compile_eval_arith_to_cil(Code) :-
 .method public static int64 eval_arith(class WamState vm, class Value expr) cil managed {
     .maxstack 4
     .locals init (class CompoundValue cv, int64 a, int64 b)
+    // Deref alias chains first (X = Y, X = 42, Y =:= 42 must see 42)
+    ldarg.0
+    ldarg.1
+    callvirt instance class Value WamState::Deref(class Value)
+    starg.s 1
     // Integer: return value directly
     ldarg.1
     isinst IntegerValue
@@ -1358,6 +1521,28 @@ L_ea_zero:
     ret
 }'.
 
+%% make_constant: build a Value from a (tag, packed) pair.
+%  Tag 1 = integer (packed is the value itself); tag 0 = atom (packed is
+%  the interned atom id — the IL runtime has no atom-name table, so the
+%  decimal id string is the canonical atom name; equality is preserved
+%  because both occurrences intern to the same id).
+compile_make_constant_to_cil(Code) :-
+    Code = '// Construct a constant Value from (tag, packed) — tag 1=Integer, 0=Atom
+.method public static class Value make_constant(int32 tag, int64 packed) cil managed {
+    .maxstack 2
+    ldarg.0
+    ldc.i4.1
+    beq L_mc_int
+    ldarg.1
+    call string [mscorlib]System.Convert::ToString(int64)
+    newobj instance void AtomValue::.ctor(string)
+    ret
+L_mc_int:
+    ldarg.1
+    newobj instance void IntegerValue::.ctor(int64)
+    ret
+}'.
+
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3
 % ============================================================================
@@ -1371,10 +1556,16 @@ compile_wam_runtime_to_cil(Options, CILCode) :-
 % PHASE 4: WAM instructions → CIL Instruction constructor calls
 % ============================================================================
 
+% get_constant/put_constant op2 packs (tag<<16)|reg_idx — tag 0=Atom,
+% 1=Integer — matching the step-case decode (op2>>16 selects the tag for
+% make_constant; op2&0xFFFF is the register). Emitting the bare register
+% index made every integer constant decode as an atom.
 wam_instruction_to_cil_literal(get_constant(C, Ai), Lit) :-
     cil_pack_value(C, PackedVal),
+    cil_const_tag(C, Tag),
     cil_reg_name_to_index(Ai, RegIdx),
-    format(atom(Lit), 'new Instruction(0, ~wL, ~wL)', [PackedVal, RegIdx]).
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), 'new Instruction(0, ~wL, ~wL)', [PackedVal, Op2]).
 wam_instruction_to_cil_literal(get_variable(Xn, Ai), Lit) :-
     cil_reg_name_to_index(Xn, XnIdx),
     cil_reg_name_to_index(Ai, AiIdx),
@@ -1385,8 +1576,10 @@ wam_instruction_to_cil_literal(get_value(Xn, Ai), Lit) :-
     format(atom(Lit), 'new Instruction(2, ~wL, ~wL)', [XnIdx, AiIdx]).
 wam_instruction_to_cil_literal(put_constant(C, Ai), Lit) :-
     cil_pack_value(C, PackedVal),
+    cil_const_tag(C, Tag),
     cil_reg_name_to_index(Ai, RegIdx),
-    format(atom(Lit), 'new Instruction(8, ~wL, ~wL)', [PackedVal, RegIdx]).
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), 'new Instruction(8, ~wL, ~wL)', [PackedVal, Op2]).
 wam_instruction_to_cil_literal(put_variable(Xn, Ai), Lit) :-
     cil_reg_name_to_index(Xn, XnIdx),
     cil_reg_name_to_index(Ai, AiIdx),
@@ -1449,6 +1642,11 @@ cil_pack_value(N, Packed) :- float(N), !, Packed is truncate(N).
 cil_pack_value(A, Packed) :- atom(A), !, cil_intern_atom(A, Packed).
 cil_pack_value(_, 0).
 
+%% cil_const_tag(+Const, -Tag): 1 = numeric (IntegerValue), 0 = atom.
+cil_const_tag(integer(_), 1) :- !.
+cil_const_tag(N, 1) :- number(N), !.
+cil_const_tag(_, 0).
+
 % --- Builtin op name → integer ID mapping (shared with LLVM) ---
 
 builtin_op_to_cil_id('is/2', 0).
@@ -1462,6 +1660,15 @@ builtin_op_to_cil_id('==/2', 7).
 builtin_op_to_cil_id('true/0', 8).
 builtin_op_to_cil_id('fail/0', 9).
 builtin_op_to_cil_id('!/0', 10).
+% Harmonization invariant (test_wam_cross_target_consistency): ids of
+% builtins implemented by BOTH the LLVM and CIL targets must agree, so
+% these use LLVM's numbering (11/12/14-17/20-23 are LLVM builtins the
+% CIL runtime does not implement; its switch routes them to the
+% unknown-op default).
+builtin_op_to_cil_id('atom/1', 13).
+builtin_op_to_cil_id('var/1', 18).
+builtin_op_to_cil_id('nonvar/1', 19).
+builtin_op_to_cil_id('=/2', 24).
 builtin_op_to_cil_id(_, 99).
 
 % ============================================================================
@@ -1478,20 +1685,22 @@ compile_wam_predicate_to_cil(Pred/Arity, WamCode, Options, CILCode) :-
     maplist(resolve_cil_literal(LabelMap), RawInstrs, CILLiterals),
     length(CILLiterals, InstrCount),
     length(LabelEntries, LabelCount),
-    % Build CIL static constructor to initialize code array
+    % Build CIL initializer to populate the code array.
+    % NOTE: `.cctor_NAME` was both an invalid IL identifier (leading dot)
+    % and never invoked; the initializer is now a valid `init_NAME` method
+    % lazily called by the wrapper before first use.
     format(atom(ClassName_PredStr), '~w::~w_code', [ClassName, PredStr]),
     number_cil_instrs(CILLiterals, 0, ClassName_PredStr, NumberedInstrs),
     atomic_list_concat(NumberedInstrs, '\n', InstrStoreCode),
-    maplist([_-Idx, Entry]>>(format(atom(Entry),
-        '    ldsfld int32[] ~w::~w_labels\n    ldc.i4 ~w\n    ldc.i4 ~w\n    stelem.i4',
-        [ClassName, PredStr, Idx, Idx])), LabelEntries, LabelStoreEntries),
-    % Map label entries to PC values for storage
-    maplist([Name-PC, Entry]>>(
-        LabelIdx is PC,  % Use position as both index and value for now
-        format(atom(Entry),
-            '    ldsfld int32[] ~w::~w_labels\n    ldc.i4 ~w\n    ldc.i4 ~w\n    stelem.i4',
-            [ClassName, PredStr, LabelIdx, PC])
-    ), LabelEntries, LabelStoreCode),
+    % labels[LabelIdx] = PC, where LabelIdx is the sequential label index
+    % used by lookup_label_cil (NOT labels[PC] = PC, which both overran
+    % the array and made every LabelPC lookup wrong).
+    findall(Entry,
+        (   nth0(LabelIdx, LabelEntries, _Name-PC),
+            format(atom(Entry),
+                '    ldsfld int32[] ~w::~w_labels\n    ldc.i4 ~w\n    ldc.i4 ~w\n    stelem.i4',
+                [ClassName, PredStr, LabelIdx, PC])
+        ), LabelStoreCode),
     atomic_list_concat(LabelStoreCode, '\n', LabelStoreStr),
     build_cil_arg_setup(PredStr, Arity, ClassName, ArgSetup),
     build_cil_param_list(Arity, ParamList),
@@ -1500,8 +1709,8 @@ compile_wam_predicate_to_cil(Pred/Arity, WamCode, Options, CILCode) :-
 .field public static class Instruction[] ~w_code
 .field public static int32[] ~w_labels
 
-// Static initializer for ~w
-.method private static void .cctor_~w() cil managed {
+// Initializer for ~w (invoked lazily by the wrapper)
+.method public static void init_~w() cil managed {
     .maxstack 8
     // Create instruction array
     ldc.i4 ~w
@@ -1520,6 +1729,11 @@ compile_wam_predicate_to_cil(Pred/Arity, WamCode, Options, CILCode) :-
 .method public static bool ~w(~w) cil managed {
     .maxstack 4
     .locals init (class WamState vm)
+    // Lazy one-time initialization of the code/label arrays
+    ldsfld class Instruction[] ~w::~w_code
+    brtrue L_inited
+    call void ~w::init_~w()
+L_inited:
     ldsfld class Instruction[] ~w::~w_code
     ldsfld int32[] ~w::~w_labels
     newobj instance void WamState::.ctor(class Instruction[], int32[])
@@ -1535,6 +1749,8 @@ compile_wam_predicate_to_cil(Pred/Arity, WamCode, Options, CILCode) :-
     InstrCount, ClassName, PredStr, InstrStoreCode,
     LabelCount, ClassName, PredStr, LabelStoreStr,
     PredStr, ParamList,
+    ClassName, PredStr,
+    ClassName, PredStr,
     ClassName, PredStr, ClassName, PredStr,
     ArgSetup, ClassName]).
 
@@ -1588,6 +1804,13 @@ wam_line_to_cil_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
     atom_string(CL, CLAtom),
     lookup_label_cil(CLAtom, LabelMap, LabelIdx),
     format(atom(Lit), 'new Instruction(23, ~wL, 0L)', [LabelIdx]).
+% jump is label-referencing too: the if-then-else lowering ends the
+% then-branch with `jump L_ite_cont_N` (tag 26 = L_jump in step).
+wam_line_to_cil_literal_resolved(["jump", L], LabelMap, Lit) :- !,
+    clean_comma_cil(L, CL),
+    atom_string(CL, CLAtom),
+    lookup_label_cil(CLAtom, LabelMap, LabelIdx),
+    format(atom(Lit), 'new Instruction(26, ~wL, 0L)', [LabelIdx]).
 wam_line_to_cil_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_cil_literal(Parts, Lit).
 
@@ -1603,10 +1826,11 @@ lookup_label_cil(LabelName, LabelMap, Index) :-
 % Non-label instructions
 wam_line_to_cil_literal(["get_constant", C, Ai], Lit) :-
     clean_comma_cil(C, CC), clean_comma_cil(Ai, CAi),
-    cil_pack_value_str(CC, PackedVal),
+    cil_pack_value_str_tagged(CC, PackedVal, Tag),
     atom_string(CAi, CAiAtom),
     cil_reg_name_to_index(CAiAtom, RegIdx),
-    format(atom(Lit), 'new Instruction(0, ~wL, ~wL)', [PackedVal, RegIdx]).
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), 'new Instruction(0, ~wL, ~wL)', [PackedVal, Op2]).
 wam_line_to_cil_literal(["get_variable", Xn, Ai], Lit) :-
     clean_comma_cil(Xn, CXn), clean_comma_cil(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
@@ -1621,10 +1845,11 @@ wam_line_to_cil_literal(["get_value", Xn, Ai], Lit) :-
     format(atom(Lit), 'new Instruction(2, ~wL, ~wL)', [XnIdx, AiIdx]).
 wam_line_to_cil_literal(["put_constant", C, Ai], Lit) :-
     clean_comma_cil(C, CC), clean_comma_cil(Ai, CAi),
-    cil_pack_value_str(CC, PackedVal),
+    cil_pack_value_str_tagged(CC, PackedVal, Tag),
     atom_string(CAi, CAiAtom),
     cil_reg_name_to_index(CAiAtom, RegIdx),
-    format(atom(Lit), 'new Instruction(8, ~wL, ~wL)', [PackedVal, RegIdx]).
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), 'new Instruction(8, ~wL, ~wL)', [PackedVal, Op2]).
 wam_line_to_cil_literal(["put_variable", Xn, Ai], Lit) :-
     clean_comma_cil(Xn, CXn), clean_comma_cil(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
@@ -1641,6 +1866,10 @@ wam_line_to_cil_literal(["allocate"], 'new Instruction(16, 0L, 0L)').
 wam_line_to_cil_literal(["deallocate"], 'new Instruction(17, 0L, 0L)').
 wam_line_to_cil_literal(["proceed"], 'new Instruction(20, 0L, 0L)').
 wam_line_to_cil_literal(["trust_me"], 'new Instruction(24, 0L, 0L)').
+% cut_ite commits an if-then-else by popping the guard choice point
+% (tag 25 = L_cut_ite in step). Previously it fell to the '// TODO'
+% comment path, leaving a null instruction slot that aborted the query.
+wam_line_to_cil_literal(["cut_ite"], 'new Instruction(25, 0L, 0L)').
 wam_line_to_cil_literal(["builtin_call", Op, N], Lit) :-
     clean_comma_cil(Op, COp), clean_comma_cil(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
@@ -1664,27 +1893,45 @@ clean_comma_cil(S, Clean) :-
     ).
 
 cil_pack_value_str(Str, Packed) :-
+    cil_pack_value_str_tagged(Str, Packed, _Tag).
+
+%% cil_pack_value_str_tagged(+Str, -Packed, -Tag)
+%  Tag 1 = numeric constant, 0 = atom (interned id).
+cil_pack_value_str_tagged(Str, Packed, Tag) :-
     (   number_string(N, Str)
-    ->  Packed = N
+    ->  Packed = N, Tag = 1
     ;   atom_string(A, Str),
-        cil_pack_value(atom(A), Packed)
+        cil_pack_value(atom(A), Packed),
+        Tag = 0
     ).
 
 number_cil_instrs([], _, _, []).
 number_cil_instrs([Lit|Rest], Idx, ClassName_PredStr, [StoreCode|RestCodes]) :-
-    % Parse "new Instruction(Tag, Op1L, Op2L)" to extract tag, op1, op2
-    % The Lit is in format: new Instruction(T, XL, YL) or a comment
-    (   sub_atom(Lit, _, _, _, 'new Instruction(')
-    ->  % Extract the three integer arguments from the constructor call
-        % by regenerating the store IL from the literal
-        format(atom(StoreCode),
-            '    ldsfld class Instruction[] ~w\n    ldc.i4 ~w\n    ~w\n    stelem.ref',
-            [ClassName_PredStr, Idx, Lit])
-    ;   % Comment or TODO — skip
+    % The literal is the intermediate form "new Instruction(T, XL, YL)"
+    % (kept for the structural tests); lower it here to the real IL
+    % construction sequence — splicing the C#-style pseudo-code into the
+    % method body was a syntax error that broke every generated module.
+    (   parse_cil_instr_literal(Lit, Tag, Op1, Op2)
+    ->  format(atom(StoreCode),
+            '    ldsfld class Instruction[] ~w\n    ldc.i4 ~w\n    ldc.i4 ~w\n    ldc.i8 ~w\n    ldc.i8 ~w\n    newobj instance void Instruction::.ctor(int32, int64, int64)\n    stelem.ref',
+            [ClassName_PredStr, Idx, Tag, Op1, Op2])
+    ;   % Comment or TODO — skip (leaves a null slot; should not happen
+        % for any instruction the WAM compiler currently emits)
         format(atom(StoreCode), '    // [~w] ~w', [Idx, Lit])
     ),
     NextIdx is Idx + 1,
     number_cil_instrs(Rest, NextIdx, ClassName_PredStr, RestCodes).
+
+%% parse_cil_instr_literal(+Lit, -Tag, -Op1, -Op2)
+%  Decompose 'new Instruction(T, XL, YL)' into its integer components.
+parse_cil_instr_literal(Lit, Tag, Op1, Op2) :-
+    atom(Lit),
+    atom_concat('new Instruction(', Rest, Lit),
+    atom_concat(ArgsAtom, ')', Rest),
+    atomic_list_concat([TagA, Op1A, Op2A], ', ', ArgsAtom),
+    atom_number(TagA, Tag),
+    atom_concat(Op1Num, 'L', Op1A), atom_number(Op1Num, Op1),
+    atom_concat(Op2Num, 'L', Op2A), atom_number(Op2Num, Op2).
 
 build_cil_param_list(0, "class WamState vm") :- !.
 build_cil_param_list(Arity, ParamList) :-
