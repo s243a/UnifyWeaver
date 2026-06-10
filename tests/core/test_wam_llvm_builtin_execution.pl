@@ -3805,6 +3805,36 @@ test_m140_deep_chain_propagates(_, R) :-
     X = Y, Y = Z, X = 42,
     ( Z =:= 42 -> R is 1 ; R is 0 ).   % 1
 
+% M141: is_list/1 never succeeded. The check accepted only the legacy
+% tag-4 List value, but the engine builds lists as [|]/2 compounds and
+% [] as an atom -- so even is_list([]) failed. Now a proper ISO
+% cons-chain walk.
+
+:- dynamic test_m141_is_list_nonempty/2.
+test_m141_is_list_nonempty(_, R) :-
+    is_list([a, b, c]), R is 1.   % 1 (failed before: exit 255)
+
+:- dynamic test_m141_is_list_singleton/2.
+test_m141_is_list_singleton(_, R) :-
+    is_list([a]), R is 1.   % 1
+
+:- dynamic test_m141_is_list_nil/2.
+test_m141_is_list_nil(_, R) :-
+    is_list([]), R is 1.   % 1 (even [] failed before)
+
+:- dynamic test_m141_is_list_atom_rejects/2.
+test_m141_is_list_atom_rejects(_, R) :-
+    ( is_list(foo) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m141_is_list_partial_rejects/2.
+test_m141_is_list_partial_rejects(_, R) :-
+    % Partial list (unbound tail) is NOT a list per ISO.
+    ( is_list([a|_]) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m141_is_list_var_rejects/2.
+test_m141_is_list_var_rejects(_, R) :-
+    ( is_list(_) -> R is 0 ; R is 1 ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -7069,6 +7099,19 @@ test_all :-
                    test_m140_get_list_write + [m140_mklist/1], 0, 1),
        run_test_r0('X=Y, Y=Z, X=42, Z=:=42 (deep chain) -> 1',
                    test_m140_deep_chain_propagates, 0, 1),
+       format('--- M141 is_list/1 cons-chain walk ---~n'),
+       run_test_r0('is_list([a,b,c]) -> 1',
+                   test_m141_is_list_nonempty, 0, 1),
+       run_test_r0('is_list([a]) -> 1',
+                   test_m141_is_list_singleton, 0, 1),
+       run_test_r0('is_list([]) -> 1',
+                   test_m141_is_list_nil, 0, 1),
+       run_test_r0('is_list(foo) rejects -> 1',
+                   test_m141_is_list_atom_rejects, 0, 1),
+       run_test_r0('is_list([a|_]) partial rejects -> 1',
+                   test_m141_is_list_partial_rejects, 0, 1),
+       run_test_r0('is_list(_) var rejects -> 1',
+                   test_m141_is_list_var_rejects, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),

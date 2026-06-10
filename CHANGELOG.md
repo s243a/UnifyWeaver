@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM LLVM target (M141): `is_list/1` never succeeded.** The
+  follow-up flagged in M140: `builtin_is_list_check` accepted only
+  the legacy tag-4 List value, but the engine builds lists as
+  `[|]/2` compounds and `[]` as an atom — so `is_list/1` failed on
+  every list the engine actually produces, including `is_list([])`.
+  Replaced with a proper ISO cons-chain walk: true at the `[]` atom
+  (or a legacy tag-4 List), steps through `[|]/2` tails with full
+  deref, false for atoms, partial lists (`[a|_]`), and unbound
+  variables. Six tests in the new
+  `--- M141 is_list/1 cons-chain walk ---` section.
 - **WAM LLVM target (M140): remaining put-instruction bind-throughs**
   — completes the M139 audit. `put_constant`, `put_structure`, and
   `put_list` called `@wam_bind_through_if_unbound_ref(old, val)`

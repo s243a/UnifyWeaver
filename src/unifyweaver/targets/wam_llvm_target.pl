@@ -4309,11 +4309,62 @@ builtin_compound_check:
   ret i1 %cc.r
 
 builtin_is_list_check:
-  ; is_list/1: true if list (tag=4) or the empty list atom []
+  ; M141: proper ISO is_list/1. The engine builds lists as tag-3
+  ; Compounds with the [|]/2 functor and the empty list as the []
+  ; atom, but this check only accepted the legacy tag-4 List value,
+  ; so is_list/1 NEVER succeeded -- not even for [] -- on every
+  ; list the engine actually produces. Walk the cons chain: true at
+  ; the [] atom (or a legacy tag-4 List), step through [|]/2 tails,
+  ; false at anything else (unbound tail = partial list = false).
   %ilc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %ilc.tag = call i32 @value_tag(%Value %ilc.a1)
-  %ilc.r = icmp eq i32 %ilc.tag, 4
-  ret i1 %ilc.r
+  br label %ilc.loop
+
+ilc.loop:
+  %ilc.cur = phi %Value [ %ilc.a1, %builtin_is_list_check ], [ %ilc.next_d, %ilc.step ]
+  %ilc.tag = call i32 @value_tag(%Value %ilc.cur)
+  %ilc.is_listv = icmp eq i32 %ilc.tag, 4
+  br i1 %ilc.is_listv, label %ilc.true, label %ilc.chk_nil
+
+ilc.chk_nil:
+  %ilc.is_atom = icmp eq i32 %ilc.tag, 0
+  br i1 %ilc.is_atom, label %ilc.nil_test, label %ilc.chk_cons
+
+ilc.nil_test:
+  %ilc.pay = extractvalue %Value %ilc.cur, 1
+  %ilc.nil_id = load i64, i64* @wam_empty_list_atom_id
+  %ilc.is_nil = icmp eq i64 %ilc.pay, %ilc.nil_id
+  ret i1 %ilc.is_nil
+
+ilc.chk_cons:
+  %ilc.is_comp = icmp eq i32 %ilc.tag, 3
+  br i1 %ilc.is_comp, label %ilc.cons_test, label %ilc.false
+
+ilc.cons_test:
+  %ilc.pay2 = extractvalue %Value %ilc.cur, 1
+  %ilc.cp = inttoptr i64 %ilc.pay2 to %Compound*
+  %ilc.fn_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 0
+  %ilc.fn = load i8*, i8** %ilc.fn_slot
+  %ilc.cons_fn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %ilc.fn_eq = icmp eq i8* %ilc.fn, %ilc.cons_fn
+  %ilc.ar_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 1
+  %ilc.ar = load i32, i32* %ilc.ar_slot
+  %ilc.ar2 = icmp eq i32 %ilc.ar, 2
+  %ilc.is_cons = and i1 %ilc.fn_eq, %ilc.ar2
+  br i1 %ilc.is_cons, label %ilc.step, label %ilc.false
+
+ilc.step:
+  %ilc.args_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 2
+  %ilc.args = load %Value*, %Value** %ilc.args_slot
+  %ilc.tail_ptr = getelementptr %Value, %Value* %ilc.args, i32 1
+  %ilc.tail = load %Value, %Value* %ilc.tail_ptr
+  %ilc.next_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ilc.tail)
+  br label %ilc.loop
+
+ilc.true:
+  ret i1 true
+
+ilc.false:
+  ret i1 false
 
 builtin_neq:
   ; Structurally not equal (op id 21). M137: route through
