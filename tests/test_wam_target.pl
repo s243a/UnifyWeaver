@@ -3,15 +3,19 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('../src/unifyweaver/targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
-:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2.
+:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2, test_alias/2.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
 
 %% Grandparent rule
 test_grandparent(X, Z) :- test_parent(X, Y), test_parent(Y, Z).
+
+%% Simple forwarding rule — exercises native items for a one-goal tail call.
+test_alias(X, Y) :- test_parent(X, Y).
 
 %% Recursive ancestor rule
 test_ancestor(X, Y) :- test_parent(X, Y).
@@ -311,8 +315,49 @@ test_wam_mixed_mode_a1_indexing :-
                   'Mixed-mode A1 indexing did not emit the expected pseudo-instruction')
     ).
 
-test_wam_items_api_bridge :-
-    Test = 'WAM: items API bridge',
+test_wam_items_native_single_fact :-
+    Test = 'WAM: native items API for single fact',
+    ExpectedItems = [
+        label("test_color/2"),
+        get_structure("rgb/3", "A1"),
+        unify_constant("255"),
+        unify_constant("0"),
+        unify_constant("0"),
+        get_constant("red", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_color/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_color/2, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native fact items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_simple_tail_call :-
+    Test = 'WAM: native items API for simple tail call',
+    ExpectedItems = [
+        label("test_alias/2"),
+        allocate,
+        get_variable("X1", "A1"),
+        get_variable("X2", "A2"),
+        put_value("X1", "A1"),
+        put_value("X2", "A2"),
+        deallocate,
+        execute("test_parent/2")
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_alias/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_alias/2, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native simple-tail-call items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_api_rule_fallback :-
+    Test = 'WAM: items API rule fallback',
     (   wam_target:compile_predicate_to_wam(user:test_grandparent/2, [], LegacyCode),
         wam_target:compile_predicate_to_wam_text(user:test_grandparent/2, [], TextCode),
         wam_target:compile_predicate_to_wam_items(user:test_grandparent/2, [], Items),
@@ -338,7 +383,9 @@ run_tests :-
     test_wam_nested_put_structure,
     test_wam_compound_head,
     test_wam_module,
-    test_wam_items_api_bridge,
+    test_wam_items_native_single_fact,
+    test_wam_items_native_simple_tail_call,
+    test_wam_items_api_rule_fallback,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
