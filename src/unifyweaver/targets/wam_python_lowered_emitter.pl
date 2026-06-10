@@ -31,6 +31,9 @@
 	emit_ite_block_py/5,             % +FuncName, +Blocks, +Indent, +Opts, -Lines
 	py_structured_clause1/2,         % +WamCode, -StructuredInstrs (soft-cut ITE)
 	py_multi_clause_1/2,             % +WamCode, -Clause1Instrs (T3 clause-1 slice)
+	py_multi_clause_n/2,             % +WamCode, -Clauses (T4 per-clause slices)
+	py_clause_func_name/3,           % +Functor/Arity, +K, -Name (T4 clause fn name)
+	emit_multi_clause_n_python/4,    % +Functor/Arity, +Clauses, +Opts, -Lines (T4)
 	emit_structured_python/4         % +FunctorArity, +Structured, +Opts, -Lines
 ]).
 
@@ -241,6 +244,91 @@ take_to_proceed_py([], []).
 take_to_proceed_py([proceed|_], [proceed]) :- !.
 take_to_proceed_py([fail|_], [fail]) :- !.
 take_to_proceed_py([I|Rest], [I|Out]) :- take_to_proceed_py(Rest, Out).
+
+%% py_multi_clause_n(+WamCode, -Clauses) is semidet.
+%  T4 — multi-clause, ALL clauses lowered. True when the predicate is genuinely
+%  multi-clause (parsed stream opens with the predicate-level try_me_else after
+%  any dropped switch_on_* prefix) and EVERY clause is a clean deterministic,
+%  fully-supported body ending in proceed/fail. Clauses is the ordered list of
+%  per-clause instruction slices (each choice-point marker stripped, up to and
+%  including its terminator), one lowered pred_*_cK function per clause.
+%
+%  Python's runtime is a genuine backtracking WAM (choice points + fail()), so
+%  unlike the imperative first-solution T4 targets (lua/rust/…) we must NOT
+%  collapse the clauses into a commit-to-first-match function — that would lose
+%  intra-query backtracking into later clauses and diverge from the bytecode
+%  interpreter. The registrar in wam_python_target.pl therefore keeps the
+%  try_me_else / retry_me_else / trust_me dispatch scaffold (which drives the
+%  runtime's proven choice-point machinery) and replaces only each clause BODY
+%  with a call_lowered to that clause's native function. So every clause body is
+%  native, the per-predicate clause dispatch stays in the (tiny) bytecode
+%  scaffold, and backtracking is preserved by construction — a hybrid of native
+%  bodies over the interpreter's CP dispatch. (A future full-native dispatch
+%  path could be slotted in front of this hybrid for shapes that admit it.)
+py_multi_clause_n(WamCode, Clauses) :-
+	( is_list(WamCode) -> Instrs0 = WamCode ; parse_wam_text_py(WamCode, Instrs0) ),
+	once(append(_Prefix, [try_me_else(M)|Rest], Instrs0)),
+	py_split_clauses_n([try_me_else(M)|Rest], Clauses),
+	Clauses = [_, _ | _],                       % at least two clauses
+	forall(member(Cl, Clauses),
+	       ( \+ has_choice_point_instr(Cl),     % each clause body is deterministic
+	         \+ member(cut_ite, Cl),            % not an ITE clause (defensive)
+	         \+ member(jump(_), Cl),
+	         last(Cl, Last), ( Last == proceed ; Last == fail ),
+	         forall(member(I, Cl), py_supported_structured(I)) )).
+
+%% py_split_clauses_n(+Instrs, -Clauses)
+%  Split a predicate-level try/retry/trust chain into per-clause bodies: drop
+%  each leading choice-point marker, take the following instructions up to and
+%  including the terminator (proceed/fail) as one clause, and recurse. A leading
+%  non-marker prefix (e.g. a switch the parser did not drop) is skipped.
+py_split_clauses_n([], []).
+py_split_clauses_n([M|Rest], [Clause|More]) :-
+	clause_start_marker_py(M), !,
+	py_take_clause(Rest, Clause, After),
+	py_split_clauses_n(After, More).
+py_split_clauses_n([_|Rest], Clauses) :-
+	py_split_clauses_n(Rest, Clauses).
+
+clause_start_marker_py(try_me_else(_)).
+clause_start_marker_py(retry_me_else(_)).
+clause_start_marker_py(trust_me).
+
+%% py_take_clause(+Instrs, -Clause, -After) — take up to and including the first
+%  proceed/fail; After is what follows (the next clause's marker onward).
+py_take_clause([proceed|Rest], [proceed], Rest) :- !.
+py_take_clause([fail|Rest], [fail], Rest) :- !.
+py_take_clause([I|Rest], [I|Cs], After) :- py_take_clause(Rest, Cs, After).
+
+%% py_clause_func_name(+Functor/Arity, +K, -Name)
+%  Per-clause lowered function name: pred_<sanitised>_<arity>_c<K>.
+py_clause_func_name(FunctorArity, K, Name) :-
+	python_func_name(FunctorArity, Base),
+	format(atom(Name), '~w_c~w', [Base, K]).
+
+%% emit_multi_clause_n_python(+Functor/Arity, +Clauses, +Options, -Lines)
+%  Emit one lowered `def pred_*_cK(state)` per clause, concatenated. Each clause
+%  body is rendered exactly like a deterministic single-clause lowering
+%  (proceed -> return True, a failed head match -> return False), so the
+%  call_lowered scaffold can try it and fall through / backtrack accordingly.
+emit_multi_clause_n_python(FunctorArity, Clauses, _Options, Lines) :-
+	FunctorArity = Functor/Arity,
+	atom_string(Functor, FStr),
+	emit_clause_defs_py(Clauses, FunctorArity, FStr, Arity, 1, DefList),
+	atomic_list_concat(DefList, '\n\n', Lines).
+
+emit_clause_defs_py([], _, _, _, _, []).
+emit_clause_defs_py([Cl|Rest], FunctorArity, FStr, Arity, K, [Def|More]) :-
+	py_clause_func_name(FunctorArity, K, FuncName),
+	maplist(emit_instr_py, Cl, InstrLines),
+	atomic_list_concat(InstrLines, '\n', Body),
+	format(string(Def),
+'def ~w(state):
+    """Lowered clause ~w of ~w/~w (T4)"""
+~w', [FuncName, K, FStr, Arity, Body]),
+	K1 is K + 1,
+	emit_clause_defs_py(Rest, FunctorArity, FStr, Arity, K1, More).
+
 
 %% py_supported_structured(+StructuredInstr) — recurse through ite/3; each
 %  leaf must be an instruction emit_instr_py/2 can render.
