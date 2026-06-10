@@ -689,7 +689,13 @@ test(builtins_execution) :-
                 write_canonical([a, 'two words', 42]),
                 nl,
                 write_canonical(pair('two words', 7)),
-                nl
+                nl,
+                put_char(g),
+                put_code(111),
+                nl,
+                \+ put_char(go),
+                \+ put_code(-1),
+                \+ put_code(1114112)
             )),
           assertz(user:test_format_builtin :-
             (   format('fmt_one ~~ ok~n'),
@@ -840,6 +846,8 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "writeln/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "print/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "write_canonical/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "put_char/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "put_code/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
@@ -1308,6 +1316,7 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "'Hello World'")),
         assertion(sub_string(FullOutput, _, _, _, "[a, 'two words', 42]")),
         assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)")),
+        assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)\ngo\n")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_one ~ ok")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_two go 42~")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair/2/2 quoted_atom")),
