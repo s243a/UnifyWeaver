@@ -192,13 +192,23 @@ test(compile_lowered_mode_direct_predicate) :-
 	assertion(sub_string(S, _, _, _, "def register_pred_foo_1(raw_program)")),
 	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
 
-test(compile_lowered_mode_falls_back_for_nondet) :-
+test(compile_lowered_mode_multi_clause_t3) :-
+	% T3: a multi-clause predicate lowers clause 1 to a fast-path function and
+	% keeps clauses 2+ in the bytecode, with clause 1's body replaced by a
+	% call_lowered. The leading try_me_else (which pushes the choice point onto
+	% clause 2) is retained, so a failed clause-1 fast path backtracks into the
+	% clause-2 bytecode through the runtime's call_lowered fallback.
 	WamCode = 'choice/1:\n  try_me_else choice_2\n  get_constant a, 1\n  proceed\nchoice_2:\n  trust_me\n  get_constant b, 1\n  proceed',
 	wam_python_target:compile_one_predicate([emit_mode(lowered)], choice/1-WamCode, PythonCode),
 	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def pred_choice_1(state)")),
 	assertion(sub_string(S, _, _, _, "def register_pred_choice_1(raw_program)")),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_choice_1, 1)')),
 	assertion(sub_string(S, _, _, _, '("try_me_else", "choice_2")')),
-	assertion(\+ sub_string(S, _, _, _, "def pred_choice_1(state)")).
+	% clause 2 bytecode retained (matched by the interpreter on fallback)
+	assertion(sub_string(S, _, _, _, '("get_constant", Atom("b"), 1)')),
+	% clause-1 body collapsed: 'a' is matched by the lowered fn, not the bytecode
+	assertion(\+ sub_string(S, _, _, _, '("get_constant", Atom("a"), 1)')).
 
 test(compile_all_lowered_mode_build_program_uses_registrars, [nondet]) :-
 	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',
