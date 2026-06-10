@@ -183,6 +183,35 @@ def min_parent_distance(node, parents, root=ROOT, memo=None, visiting=None):
     return memo[node]
 
 
+def max_parent_distance(node, parents, root=ROOT, memo=None, visiting=None):
+    if memo is None:
+        memo = {}
+    if visiting is None:
+        visiting = set()
+    if node in memo:
+        return memo[node]
+    if node == root:
+        memo[node] = 0
+        return 0
+    if node in visiting:
+        raise ValueError(f"cycle detected at {node}")
+    visiting.add(node)
+    distances = [max_parent_distance(p, parents, root, memo, visiting) for p in parents.get(node, [])]
+    visiting.remove(node)
+    reachable = [distance for distance in distances if distance != -math.inf]
+    best = max(reachable, default=-math.inf)
+    memo[node] = -math.inf if best == -math.inf else best + 1
+    return memo[node]
+
+
+def support_bounds(node, parents, root=ROOT, min_memo=None, max_memo=None):
+    min_distance = min_parent_distance(node, parents, root, min_memo)
+    max_distance = max_parent_distance(node, parents, root, max_memo)
+    if min_distance == math.inf or max_distance == -math.inf:
+        return None, None
+    return int(min_distance), int(max_distance)
+
+
 def all_nodes(parents, root=ROOT):
     nodes = {root}
     for child, ps in parents.items():
