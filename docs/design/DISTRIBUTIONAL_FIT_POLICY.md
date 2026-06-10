@@ -29,6 +29,27 @@ distribution_state(parametric(
 
 `Bins` and `ExactPrefix` are finite maps from statistic value to mass. The statistic may be a hop count, weighted length, or a tuple such as `(parent_hops, child_hops)`.
 
+Every stored distribution also has an anchoring key. A node's distribution is
+not just "the distribution for node `V`"; it is the distribution for `V`
+relative to a root, boundary node, direction, statistic, and admissibility
+policy:
+
+```prolog
+distribution_anchor(
+    RootOrBoundary,
+    Direction,
+    PathStatistic,
+    CyclePolicy,
+    Horizon,
+    ScopeKey).
+```
+
+For a global root table, `ScopeKey` can be `global(Root)`. For a per-query
+calculation, `ScopeKey` may identify the ancestor cone of the target node. This
+matters because a deeper query may only need the distribution induced by the
+ancestors of the node of interest, not the distribution obtained by
+materialising the whole graph.
+
 For parent-only paths to a fixed root, the support is finite. Tail fits should therefore be finite-support fits, not infinite asymptotic tails:
 
 ```prolog
@@ -236,9 +257,20 @@ The cache hit is valid only when the cached state was built under compatible sem
 - same root or an explicitly compatible boundary;
 - same edge direction and path statistic;
 - compatible cycle policy and path admissibility rules;
+- compatible horizon or a horizon at least as wide as the remaining budget;
+- compatible target scope, unless the cached entry is a global table that
+  dominates the query's scoped ancestor cone;
 - compatible representation policy, or a representation with known error bounds for the requested functional.
 
 This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact and the requested functional can be evaluated exactly from the stored state. It becomes a controlled approximation when the cached distribution is a fitted representation, or when the requested functional is evaluated through an approximate basis.
+
+For target-scoped evaluation, the boundary condition is ancestor-relative. If a
+query asks for node `V`, a cached state for ancestor `A` is reusable only for the
+portion of `V`'s parent-path search that reaches `A` under the same constraints.
+The contribution is then the aggregate from `A` to the root, sliced by the
+remaining budget. This is exact for exact states when `A`'s stored distribution
+was computed over the same admissible ancestor cone, or over a broader global
+cone whose extra paths cannot be reached from `V` through `A`.
 
 ## 8. Cache admission and eviction
 
@@ -320,6 +352,43 @@ Three execution modes fall out:
 | `global_materialized` | Fixed root and high query volume justify whole-graph precomputation |
 
 This scoped mode is the bridge between graph search and global fixed-point evaluation. It preserves the recurrence form, but its worklist is cut down by the query's ancestor cone and by cached boundary distributions encountered during evaluation.
+
+At deeper layers, full distribution materialisation is not always the right
+first state. The planner should be allowed to compute scalar support bounds
+before deciding whether to construct an exact histogram, fit a tail, or stop at
+a cached boundary:
+
+```prolog
+support_bounds(
+    min_path_stat(Min),
+    max_path_stat(Max),
+    exact_under_policy(Boolean),
+    horizon(Horizon)).
+```
+
+For min-only or max-only functionals, these scalar recurrences are sufficient:
+
+```prolog
+Min_v = 1 + min(Min_parent)
+Max_v = 1 + max(Max_parent)
+```
+
+with the obvious weighted-step variant for non-unit parent costs and the same
+cycle/admissibility policy as the search oracle. For bounded aggregate
+functionals, the bounds are not a replacement for the distribution, but they are
+valuable pruning signals:
+
+- if `Min_v > remaining_budget`, the whole suffix contributes zero;
+- if `Max_v <= remaining_budget`, the whole suffix is within budget and can use
+  a total-mass or total-functional summary when available;
+- if `[Min_v, Max_v]` is narrow, exact histogram materialisation may be cheap;
+- if the interval is wide, the policy can prefer a fitted representation or a
+  deeper cached boundary.
+
+This gives the planner a cheap intermediate representation for deep nodes. It
+can carry min/max bounds through large parts of the graph, then materialise full
+distributions only where the query workload, error budget, or cache score makes
+the extra state worthwhile.
 
 ## 10. Open validation work
 
