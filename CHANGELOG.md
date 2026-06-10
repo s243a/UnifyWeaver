@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Elixir target (M147): interpreter mode entirely broken; type
+  checks missing in all modes.** Round 2 of the cross-target sweep
+  (Lua, R, Clojure, WAT: clean) found four layered defects:
+  (1) interpreter-mode predicate modules were emitted with raw
+  lowercase names (`defmodule WamPred.probe1`) — an Elixir
+  `CompileError`, so such projects never loaded (now camelized);
+  (2) the WAM compiler emits bare `allocate`, but the converter only
+  knew `allocate N`, so it fell to the `{:raw, ...}` fallback and the
+  runtime step catch-all turned it into `:fail` — every predicate
+  with an environment frame wrong-failed (now `{:allocate, 0}`);
+  (3) `cut_ite` and `jump` had no converter clauses or step arms, so
+  if-then-else could never commit and a failing then-branch
+  backtracked into the else (the M144 bug class; both now
+  implemented); (4) the type-check builtins (`var/1`, `nonvar/1`,
+  `atom/1`, `integer/1`, `number/1`, `atomic/1`) were absent from
+  `execute_builtin` and crashed with `{:unknown_builtin, ...}` in
+  every emit mode (all six added). All 12 probe queries now pass in
+  both interpreter and lowered modes.
 - **WAM Haskell target (M145): ST-mode crash on every if-then-else
   predicate.** The sweep-found known issue: `stepST`'s
   `GetLevel`/`Cut` handlers used raw `writeArray`/`readArray` on the
@@ -27,6 +45,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed to compile. Now emitted as `locally { ... }`, forcing
   statement position. Lowered projects compile and the sweep probes
   pass with R=1/R=0 discriminators.
+- **WAM ILasm target: builtin opcode table never matched.**
+  Sweep round 2 finding: `atom_string/2` arguments were reversed in
+  `wam_line_to_cil_literal` for `builtin_call`, so the lookup key
+  stayed a string and never matched the atom-keyed
+  `builtin_op_to_cil_id/2` table — every builtin compiled to the
+  unknown-op fallback and unconditionally failed. Fixed (with an
+  explicit op-99 fallback instead of falling through to the `// TODO`
+  comment, which produced null instruction slots). NOTE: this is one
+  of 14 defects the sweep documented in this target — see Known
+  issues; the target does not yet assemble end-to-end.
+
+### Known issues (sweep round 2, 2026-06-11)
+- **WAM JVM target: structurally non-executable.** The generated
+  assembly is rejected by a real Krakatau v2 assembler: runtime
+  emitted as method-less code fragments at class level, predicate
+  files lack class headers, instruction operands are lost into `;`
+  comments, and the harmful `ldc` catch-all (flagged in
+  `docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`) is confirmed. No engine
+  exists to host correctness probes — needs a ground-up
+  implementation campaign, not fixes.
+- **WAM ILasm target: 13 further structural defects** beyond the
+  fixed builtin-table bug (mis-spelled `tail.` directive, uncallable
+  `.cctor_probeN` initializers, C# pseudo-code spliced into IL,
+  label-table indexing, nested-vs-top-level type references, missing
+  ctors, swapped IL operand order in 7+ sites, concrete generic
+  memberrefs, placeholder `deallocate`/`call` bodies, swapped
+  List.Add receiver, run_loop stack imbalance, `cut_ite`/`jump`
+  dropped to null slots, `var/nonvar/atom/=` unmapped). The shipped
+  default emit has never been assemblable; the sweep agent's
+  defect ladder is preserved in its report for a future repair
+  campaign.
 - **WAM Rust target (M144): if-then-else never committed.** The
   sweep-found known issue: `cut_ite` was translated to
   `Instruction::NoOp`, so a then-branch failure backtracked into the
