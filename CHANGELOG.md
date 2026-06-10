@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM LLVM target (M138): `@value_equals` call-site audit** — the
+  follow-up flagged in the M137 (#2929) review. Three bound-bound
+  compare sites used shallow equality where WAM semantics require
+  unification, and one equality site inherited the M137 nested-Ref bug:
+  - `get_value` now routes its bound-bound case through
+    `@wam_unify_value` — `p(X, X)` heads called with unifiable
+    compounds like `p(f(A), f(B))` previously failed instead of
+    binding `A = B`.
+  - `unify_value` (read mode) both-bound case likewise unifies; it
+    also never dereffed either side, so Ref-wrapped values compared
+    by heap address.
+  - `arg/3` with bound A3 now unifies with the extracted argument
+    (ISO behavior); the argument slot may hold a Ref the old compare
+    saw as an address. `arg(1, h(f(a)), f(a))` previously failed.
+  - `sort/2` dedup now uses `@wam_strict_eq` (dedup is `==/2`
+    equality — it must not bind, so unification would be wrong):
+    duplicate compounds with Ref-stored args survived dedup
+    (`sort([f(g(a)), f(g(a))], L)` kept both).
+  - `@wam_strict_eq` now derefs via a new `@wam_deref_keep_var`
+    helper that stops at the last Ref when the target cell is
+    unbound, so variable identity is the cell address: `X == X` is
+    true, `X == Y` (distinct fresh vars) is false, and sort/2 keeps
+    `f(X)` / `f(Y)` distinct without binding them. Previously every
+    unbound var collapsed to the shared `{tag 6, payload 0}`
+    sentinel and compared equal.
 - **WAM LLVM target: undefined `@wam_dispatch_meta_call` when every
   predicate is fully lowered.** With `emit_mode(functions)` and all
   predicates natively lowered, no bytecode records exist, so the merged

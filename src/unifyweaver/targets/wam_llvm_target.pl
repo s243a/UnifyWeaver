@@ -2566,7 +2566,13 @@ gval.bind_x:
   ret i1 true
 
 gval.check_eq:
-  %gval.eq = call i1 @value_equals(%Value %gval.va, %Value %gval.vx)
+  ; M138: get_value is a unify instruction, not an equality test.
+  ; Both sides are bound here, so @wam_unify_value runs its both_bound
+  ; path: identical payload compare for atomics, deep unification for
+  ; compounds (binding any unbound args, with trailing). The previous
+  ; @value_equals wrongly failed p(X, X) heads called with unifiable
+  ; compounds like p(f(A), f(B)).
+  %gval.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %gval.va, %Value %gval.vx)
   br i1 %gval.eq, label %gval.match, label %gval.fail
 
 gval.match:
@@ -2722,16 +2728,22 @@ wam_llvm_case('unify_value',
   br i1 %uvl.is_read, label %uvl.read, label %uvl.write
 
 uvl.read:
-  ; Read mode: get expected arg, compare with register
+  ; Read mode: get expected arg, unify with register
   %uvl.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
   %uvl.actual = call %Value @wam_get_reg(%WamState* %vm, i32 %uvl.xn)
-  ; Succeed if equal, or if either is unbound (bind the unbound one)
-  %uvl.eq = call i1 @value_equals(%Value %uvl.expected, %Value %uvl.actual)
   %uvl.exp_unb = call i1 @value_is_unbound(%Value %uvl.expected)
   %uvl.act_unb = call i1 @value_is_unbound(%Value %uvl.actual)
-  %uvl.ok1 = or i1 %uvl.eq, %uvl.exp_unb
-  %uvl.ok = or i1 %uvl.ok1, %uvl.act_unb
-  br i1 %uvl.ok, label %uvl.read_ok, label %uvl.fail
+  ; If either side is directly unbound, keep the original bind-the-
+  ; unbound-one logic below. M138: when BOTH are bound, this is a
+  ; unification (the old @value_equals wrongly failed bound-bound
+  ; compounds with unifiable args, and compared Ref-wrapped values
+  ; by address since neither side is dereffed here).
+  %uvl.any_unb = or i1 %uvl.exp_unb, %uvl.act_unb
+  br i1 %uvl.any_unb, label %uvl.read_ok, label %uvl.both_bound
+
+uvl.both_bound:
+  %uvl.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %uvl.expected, %Value %uvl.actual)
+  br i1 %uvl.eq, label %uvl.read_done, label %uvl.fail
 
 uvl.read_ok:
   ; If actual is unbound, bind it to expected
@@ -4387,7 +4399,11 @@ srt.d_step:
   %srt.d_out_prev_idx = sub i32 %srt.d_out, 1
   %srt.d_out_prev_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out_prev_idx
   %srt.d_out_prev = load %Value, %Value* %srt.d_out_prev_slot
-  %srt.d_eq = call i1 @value_equals(%Value %srt.d_in_val, %Value %srt.d_out_prev)
+  ; M138: dedup is ==/2 equality (NOT unification — sort/2 must keep
+  ; f(X) and f(Y) distinct and never bind), and adjacent elements can
+  ; be compounds whose args are heap Refs that @value_equals compared
+  ; by address — sort([f(g(a)), f(g(a))], L) kept both duplicates.
+  %srt.d_eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %srt.d_in_val, %Value %srt.d_out_prev)
   br i1 %srt.d_eq, label %srt.d_after, label %srt.d_keep
 srt.d_keep:
   %srt.d_out_slot = getelementptr %Value, %Value* %srt.arr, i32 %srt.d_out
@@ -8033,7 +8049,10 @@ ag.a3_bind:
   ret i1 true
 
 ag.a3_check:
-  %ag.a3_eq = call i1 @value_equals(%Value %ag.a3, %Value %ag.arg_val)
+  ; M138: bound A3 must UNIFY with the extracted arg (ISO arg/3), and
+  ; the arg slot may hold a Ref that @value_equals compared by address.
+  ; @wam_unify_value derefs both sides and deep-unifies compounds.
+  %ag.a3_eq = call i1 @wam_unify_value(%WamState* %vm, %Value %ag.a3, %Value %ag.arg_val)
   ret i1 %ag.a3_eq
 
 ag.fail:
@@ -13765,10 +13784,46 @@ ig.false:
 ;
 ; This helper derefs on entry AND inside the recursive arg loop so
 ; structural equality holds regardless of how nested args are stored.
+;
+; M138: deref via @wam_deref_keep_var, NOT @wam_deref_value. The full
+; deref collapses a Ref-to-unbound-cell into the shared Unbound
+; sentinel { tag 6, payload 0 }, which erases variable identity --
+; X == Y would be true for two DISTINCT fresh vars (and sort/2 dedup
+; would merge f(X) with f(Y)). Stopping at the last Ref keeps the
+; variable represented as Ref{cell}, so the tag-5 shallow payload
+; compare becomes cell-address identity: X == X true, X == Y false.
+
+; Chase Ref chains but stop at the final Ref when the referenced cell
+; is unbound -- the Ref IS the variable''s identity. Bound cells chase
+; through as usual. Hop-limited like @wam_deref_value.
+define %Value @wam_deref_keep_var(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %dkv.loop
+dkv.loop:
+  %dkv.cur = phi %Value [ %v, %entry ], [ %dkv.cell, %dkv.follow ]
+  %dkv.i = phi i32 [ 0, %entry ], [ %dkv.i_next, %dkv.follow ]
+  %dkv.tag = extractvalue %Value %dkv.cur, 0
+  %dkv.is_ref = icmp eq i32 %dkv.tag, 5
+  %dkv.hop_ok = icmp slt i32 %dkv.i, 64
+  %dkv.cont = and i1 %dkv.is_ref, %dkv.hop_ok
+  br i1 %dkv.cont, label %dkv.peek, label %dkv.done
+dkv.peek:
+  %dkv.addr_i64 = extractvalue %Value %dkv.cur, 1
+  %dkv.addr = trunc i64 %dkv.addr_i64 to i32
+  %dkv.cell = call %Value @wam_heap_get(%WamState* %vm, i32 %dkv.addr)
+  %dkv.cell_unb = call i1 @value_is_unbound(%Value %dkv.cell)
+  br i1 %dkv.cell_unb, label %dkv.done, label %dkv.follow
+dkv.follow:
+  %dkv.i_next = add i32 %dkv.i, 1
+  br label %dkv.loop
+dkv.done:
+  ret %Value %dkv.cur
+}
+
 define i1 @wam_strict_eq(%WamState* %vm, %Value %a, %Value %b) {
 entry:
-  %seq.da = call %Value @wam_deref_value(%WamState* %vm, %Value %a)
-  %seq.db = call %Value @wam_deref_value(%WamState* %vm, %Value %b)
+  %seq.da = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %seq.db = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
   %seq.tag_a = extractvalue %Value %seq.da, 0
   %seq.tag_b = extractvalue %Value %seq.db, 0
   %seq.tags_eq = icmp eq i32 %seq.tag_a, %seq.tag_b
