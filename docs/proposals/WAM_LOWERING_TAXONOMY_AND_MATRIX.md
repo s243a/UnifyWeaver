@@ -104,7 +104,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ✓ | ✗ | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
 | wat     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -166,6 +166,25 @@ Verification notes:
   exec test using a non-distinct-first-arg predicate that exercises the
   non-first clauses natively. T4 is gated below T5 (clause_chain) and above
   multi_clause_1/c1.
+- **python T4 = `~` (hybrid).** Python's runtime is a genuine backtracking WAM
+  (choice points + `fail()`), and `run_wam` backtracks *intra-query*, so the
+  imperative first-solution shape above would diverge from the interpreter on a
+  conjunction like `p(X), q(X)` (it would commit to clause 1) — failing the
+  lowered-vs-interpreter parity standard. Python therefore lowers every clause
+  *body* to a native `pred_*_cK` function but RETAINS the try/retry/trust
+  dispatch scaffold in the bytecode (`py_multi_clause_n` + `multi_clause_n_registrar`),
+  replacing only each clause body with a `call_lowered`. The runtime's proven
+  choice-point machinery drives clause dispatch and backtracking unchanged, so
+  every clause body is native while parity is preserved by construction. It is
+  marked `~` rather than ✓ because the T4 headline ("interpreter never entered
+  for clause dispatch") is not met — the O(n) dispatch stays in the (tiny)
+  bytecode scaffold. T4 is tried before T3 and falls back to it when a later
+  clause cannot be lowered (e.g. ends in a tail-call `execute`). A future
+  full-native dispatch (R's genuine-CP closure model over the runtime's
+  callable choice points) could slot in *front* of this hybrid for shapes that
+  admit it. Gated exec test `test_wam_python_lowered_t4` covers clause hits,
+  the backtracking-critical conjunctions (`color(X), want_green(X)` must redo
+  into a non-first clause), and a lowered-vs-interpreter parity battery.
 
 ---
 
@@ -176,8 +195,10 @@ Reading down the columns (after the T5 and T4 sweeps landed):
 - **T5 (multi-clause → first-arg dispatch)** and **T4 (multi-clause all
   clauses)** are now ✓ across the hybrid targets (see the verification notes
   above). Remaining T4/T5 holes are intentional: clojure has no distinct
-  first-arg dispatch (T4 only); python's multi-clause story is its T5
-  `if/elif/else`; wat has neither yet.
+  first-arg dispatch (T4 only); python now has T3, T4 (`~` hybrid: native
+  clause bodies over a retained bytecode dispatch scaffold, to preserve its
+  backtracking-runtime parity) and T5 `if/elif/else`; wat has neither T4 nor
+  T5 yet — the last all-✗ multi-clause column besides its own.
 - **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
   both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
   are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the
@@ -257,7 +278,11 @@ Score each candidate gap on four axes, then sequence:
 3. **T4 (multi-clause all-clauses)** for the structurer targets, reusing R's
    iter-CP shape as the reference. Removes the interpreter hop for fully
    supported predicates that aren't first-arg-discriminable (so don't get
-   T5).
+   T5). **python DONE** (`~` hybrid — native clause bodies over a retained
+   bytecode dispatch scaffold, since python's backtracking runtime makes the
+   first-solution imperative shape unsound; a full-native R-style dispatch
+   could layer in front later). Remaining structurer-column hole: none — only
+   **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
    `switch` back-end instead of an `->` cascade.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
