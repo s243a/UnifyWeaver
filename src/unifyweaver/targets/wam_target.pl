@@ -2257,6 +2257,9 @@ is_builtin_pred(copy_file, 2).          % copy_file(+Src, +Dst) -- open/read/wri
 is_builtin_pred(read_file_to_atom, 2).  % read_file_to_atom(+Path, -Atom).
 is_builtin_pred(write_atom_to_file, 2). % write_atom_to_file(+Path, +Content) -- O_TRUNC.
 is_builtin_pred(append_atom_to_file, 2). % append_atom_to_file(+Path, +Content) -- O_APPEND.
+is_builtin_pred(stream_open, 2).        % stream_open(+Path, -Handle) -- buffered line reader.
+is_builtin_pred(read_line, 2).          % read_line(+Handle, -LineOrEOF).
+is_builtin_pred(stream_close, 1).       % stream_close(+Handle).
 is_builtin_pred(errno, 1).              % errno(-N) -- thread-local errno.
 is_builtin_pred(strerror, 2).           % strerror(+Errno, -Message).
 is_builtin_pred(process_max_rss, 1).    % process_max_rss(-KB) -- getrusage ru_maxrss.

@@ -149,9 +149,15 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
   rather than doing string lookup at runtime.
 - **Meta-call probe:** atom and compound closure meta-calls now emit IR and
   verify with `llvm-as` in `examples/plawk/generated/plawk_meta_call_probe.ll`.
-- **Reader probe:** intentionally deferred. The Phase-0 reader uses
-  `read_file_to_string/3` as a SWI-only slurp shortcut; Phase 1 still needs the
-  buffered streaming input builtin described in Finding 3.
+- **Reader probe:** the WAM/LLVM target now has general buffered stream builtins
+  `stream_open/2`, `read_line/2`, and `stream_close/1`. Handles are
+  malloc-backed `%WamLineReader` values carrying fd, buffer, length, and
+  position state; `read_line/2` reads through a 4 KB buffer, returns line atoms
+  without the trailing newline, and unifies `end_of_file` at EOF rather than
+  failing. The reader probe emits
+  `examples/plawk/generated/plawk_reader_probe.ll` and verifies with `llvm-as`.
+  Current limitation: line atoms are capped at 64 KiB until the output buffer is
+  made growable.
 
 ---
 

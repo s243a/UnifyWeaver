@@ -10,6 +10,9 @@
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args
 %List = type { i32, %Value* }             ; length, elements
 
+; === Buffered line reader handle ===
+%WamLineReader = type { i32, i8*, i64, i64, i64 } ; fd, buffer, cap, len, pos
+
 ; === Instruction Tagged Union ===
 ; Tag: 0-7 head unification, 8-15 body construction, 16-21 control, 22-24 choice, 25-27 indexing
 %Instruction = type { i32, i64, i64 }     ; tag, operand1, operand2

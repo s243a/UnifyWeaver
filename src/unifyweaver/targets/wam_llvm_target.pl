@@ -1328,7 +1328,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         runtime_functions=RuntimeFuncs,
         native_predicates=FinalNativeCode,
         wam_predicates=WamCode,
-        interop_bridge=""
+        interop_bridge="; none"
     ],
     % Write output file. The generated module embeds UTF-8 characters from
     % the runtime templates (arrows, dashes in comments), so the stream must
@@ -3199,7 +3199,7 @@ wam_llvm_case('allocate',
   %alloc.old_cb = load i32, i32* %alloc.cb_ptr
   %alloc.scb_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 4
   store i32 %alloc.old_cb, i32* %alloc.scb_ptr
-  
+
   %alloc.le_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
   %alloc.le_cpn = load i32, i32* %alloc.le_ptr
   store i32 %alloc.le_cpn, i32* %alloc.cb_ptr
@@ -4041,6 +4041,9 @@ entry:
     i32 163, label %builtin_system_to_atom
     i32 164, label %builtin_atom_to_system
     i32 165, label %builtin_atom_split
+    i32 166, label %builtin_stream_open
+    i32 167, label %builtin_read_line
+    i32 168, label %builtin_stream_close
   ]
 
 builtin_is:
@@ -7753,6 +7756,214 @@ ats.close:
   %ats.ret = call i32 @pclose(i8* %ats.fp)
   %ats.ok = icmp eq i32 %ats.ret, 0
   ret i1 %ats.ok
+
+builtin_stream_open:
+  ; stream_open(+Path, -Handle) -- native buffered line-reader open.
+  ; The handle is an Integer payload containing a malloc-backed
+  ; %WamLineReader pointer. This keeps stream state outside the WAM
+  ; heap so deterministic loops can carry it across calls without
+  ; depending on heap lifetime or atom table internals.
+  %so.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %so.t1 = call i32 @value_tag(%Value %so.a1)
+  %so.is_atom = icmp eq i32 %so.t1, 0
+  br i1 %so.is_atom, label %so.have_path, label %so.fail
+so.fail:
+  ret i1 false
+so.have_path:
+  %so.aid = call i64 @value_payload(%Value %so.a1)
+  %so.path = call i8* @wam_atom_to_string(i64 %so.aid)
+  %so.path_null = icmp eq i8* %so.path, null
+  br i1 %so.path_null, label %so.fail, label %so.open
+so.open:
+  ; O_RDONLY = 0; mode arg ignored when not creating.
+  %so.fd = call i32 @open(i8* %so.path, i32 0, i32 0)
+  %so.open_ok = icmp sge i32 %so.fd, 0
+  br i1 %so.open_ok, label %so.alloc_reader, label %so.fail
+so.alloc_reader:
+  %so.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %so.reader_mem = call i8* @malloc(i64 %so.reader_size)
+  %so.reader_null = icmp eq i8* %so.reader_mem, null
+  br i1 %so.reader_null, label %so.close_fd_fail, label %so.alloc_buf
+so.close_fd_fail:
+  call i32 @close(i32 %so.fd)
+  ret i1 false
+so.alloc_buf:
+  %so.buf = call i8* @malloc(i64 4096)
+  %so.buf_null = icmp eq i8* %so.buf, null
+  br i1 %so.buf_null, label %so.free_reader_fail, label %so.init
+so.free_reader_fail:
+  call void @free(i8* %so.reader_mem)
+  call i32 @close(i32 %so.fd)
+  ret i1 false
+so.init:
+  %so.reader = bitcast i8* %so.reader_mem to %WamLineReader*
+  %so.fd_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 0
+  store i32 %so.fd, i32* %so.fd_slot
+  %so.buf_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 1
+  store i8* %so.buf, i8** %so.buf_slot
+  %so.cap_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 2
+  store i64 4096, i64* %so.cap_slot
+  %so.len_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 3
+  store i64 0, i64* %so.len_slot
+  %so.pos_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 4
+  store i64 0, i64* %so.pos_slot
+  %so.handle = ptrtoint %WamLineReader* %so.reader to i64
+  %so.v = call %Value @value_integer(i64 %so.handle)
+  %so.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %so.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %so.raw2, %Value %so.v)
+  br i1 %so.ok, label %so.success, label %so.close_all_fail
+so.success:
+  ret i1 true
+so.close_all_fail:
+  call i32 @close(i32 %so.fd)
+  call void @free(i8* %so.buf)
+  call void @free(i8* %so.reader_mem)
+  ret i1 false
+
+builtin_read_line:
+  ; read_line(+Handle, -LineOrEOF) -- reads one buffered text line.
+  ; Newline is not included. A CR immediately before LF/EOF is also
+  ; stripped so CRLF files produce the same logical line atoms as LF.
+  ; EOF is reported by unifying the second argument with atom
+  ; end_of_file; the predicate does not fail at EOF.
+  %rln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rln.t1 = call i32 @value_tag(%Value %rln.a1)
+  %rln.is_int = icmp eq i32 %rln.t1, 1
+  br i1 %rln.is_int, label %rln.have_handle, label %rln.fail
+rln.fail:
+  ret i1 false
+rln.have_handle:
+  %rln.handle = call i64 @value_payload(%Value %rln.a1)
+  %rln.reader = inttoptr i64 %rln.handle to %WamLineReader*
+  %rln.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 0
+  %rln.fd = load i32, i32* %rln.fd_slot
+  %rln.fd_ok = icmp sge i32 %rln.fd, 0
+  br i1 %rln.fd_ok, label %rln.alloc_out, label %rln.fail
+rln.alloc_out:
+  call void @wam_arena_ensure()
+  %rln.out = call i8* @wam_arena_alloc(i64 65537)
+  br label %rln.loop
+rln.loop:
+  %rln.out_len = phi i64 [ 0, %rln.alloc_out ], [ %rln.out_len, %rln.after_read ], [ %rln.next_out_len, %rln.append_store ]
+  %rln.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 1
+  %rln.buf = load i8*, i8** %rln.buf_slot
+  %rln.len_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 3
+  %rln.len = load i64, i64* %rln.len_slot
+  %rln.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 4
+  %rln.pos = load i64, i64* %rln.pos_slot
+  %rln.have_byte = icmp slt i64 %rln.pos, %rln.len
+  br i1 %rln.have_byte, label %rln.consume, label %rln.fill
+rln.fill:
+  %rln.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 2
+  %rln.cap = load i64, i64* %rln.cap_slot
+  %rln.n = call i64 @read(i32 %rln.fd, i8* %rln.buf, i64 %rln.cap)
+  %rln.n_neg = icmp slt i64 %rln.n, 0
+  br i1 %rln.n_neg, label %rln.fail, label %rln.check_eof
+rln.check_eof:
+  %rln.n_zero = icmp eq i64 %rln.n, 0
+  br i1 %rln.n_zero, label %rln.eof_or_partial, label %rln.after_read
+rln.after_read:
+  store i64 %rln.n, i64* %rln.len_slot
+  store i64 0, i64* %rln.pos_slot
+  br label %rln.loop
+rln.eof_or_partial:
+  %rln.empty_line = icmp eq i64 %rln.out_len, 0
+  br i1 %rln.empty_line, label %rln.eof, label %rln.finalize
+rln.consume:
+  %rln.char_ptr = getelementptr i8, i8* %rln.buf, i64 %rln.pos
+  %rln.ch = load i8, i8* %rln.char_ptr
+  %rln.pos_next = add i64 %rln.pos, 1
+  store i64 %rln.pos_next, i64* %rln.pos_slot
+  %rln.is_lf = icmp eq i8 %rln.ch, 10
+  br i1 %rln.is_lf, label %rln.finalize, label %rln.append
+rln.append:
+  %rln.has_room = icmp ult i64 %rln.out_len, 65536
+  br i1 %rln.has_room, label %rln.append_store, label %rln.fail
+rln.append_store:
+  %rln.out_ptr = getelementptr i8, i8* %rln.out, i64 %rln.out_len
+  store i8 %rln.ch, i8* %rln.out_ptr
+  %rln.next_out_len = add i64 %rln.out_len, 1
+  br label %rln.loop
+rln.finalize:
+  %rln.has_chars = icmp sgt i64 %rln.out_len, 0
+  br i1 %rln.has_chars, label %rln.check_cr, label %rln.intern_empty
+rln.check_cr:
+  %rln.last_idx = sub i64 %rln.out_len, 1
+  %rln.last_ptr = getelementptr i8, i8* %rln.out, i64 %rln.last_idx
+  %rln.last = load i8, i8* %rln.last_ptr
+  %rln.last_is_cr = icmp eq i8 %rln.last, 13
+  %rln.trim_len = select i1 %rln.last_is_cr, i64 %rln.last_idx, i64 %rln.out_len
+  br label %rln.intern
+rln.intern_empty:
+  br label %rln.intern
+rln.intern:
+  %rln.final_len = phi i64 [ %rln.trim_len, %rln.check_cr ], [ 0, %rln.intern_empty ]
+  %rln.term = getelementptr i8, i8* %rln.out, i64 %rln.final_len
+  store i8 0, i8* %rln.term
+  %rln.aid = call i64 @wam_intern_atom(i8* %rln.out, i64 %rln.final_len)
+  %rln.v0 = insertvalue %Value undef, i32 0, 0
+  %rln.v = insertvalue %Value %rln.v0, i64 %rln.aid, 1
+  %rln.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rln.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rln.raw2, %Value %rln.v)
+  ret i1 %rln.ok
+rln.eof:
+  %rln.eof_buf = alloca [12 x i8]
+  %rln.eof_ptr = getelementptr [12 x i8], [12 x i8]* %rln.eof_buf, i32 0, i32 0
+  store i8 101, i8* %rln.eof_ptr
+  %rln.eof_1 = getelementptr i8, i8* %rln.eof_ptr, i64 1
+  store i8 110, i8* %rln.eof_1
+  %rln.eof_2 = getelementptr i8, i8* %rln.eof_ptr, i64 2
+  store i8 100, i8* %rln.eof_2
+  %rln.eof_3 = getelementptr i8, i8* %rln.eof_ptr, i64 3
+  store i8 95, i8* %rln.eof_3
+  %rln.eof_4 = getelementptr i8, i8* %rln.eof_ptr, i64 4
+  store i8 111, i8* %rln.eof_4
+  %rln.eof_5 = getelementptr i8, i8* %rln.eof_ptr, i64 5
+  store i8 102, i8* %rln.eof_5
+  %rln.eof_6 = getelementptr i8, i8* %rln.eof_ptr, i64 6
+  store i8 95, i8* %rln.eof_6
+  %rln.eof_7 = getelementptr i8, i8* %rln.eof_ptr, i64 7
+  store i8 102, i8* %rln.eof_7
+  %rln.eof_8 = getelementptr i8, i8* %rln.eof_ptr, i64 8
+  store i8 105, i8* %rln.eof_8
+  %rln.eof_9 = getelementptr i8, i8* %rln.eof_ptr, i64 9
+  store i8 108, i8* %rln.eof_9
+  %rln.eof_10 = getelementptr i8, i8* %rln.eof_ptr, i64 10
+  store i8 101, i8* %rln.eof_10
+  %rln.eof_11 = getelementptr i8, i8* %rln.eof_ptr, i64 11
+  store i8 0, i8* %rln.eof_11
+  %rln.eof_aid = call i64 @wam_intern_atom(i8* %rln.eof_ptr, i64 11)
+  %rln.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rln.eof_v = insertvalue %Value %rln.eof_v0, i64 %rln.eof_aid, 1
+  %rln.eof_raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rln.eof_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rln.eof_raw2, %Value %rln.eof_v)
+  ret i1 %rln.eof_ok
+
+builtin_stream_close:
+  ; stream_close(+Handle) -- closes and frees a stream_open/2 handle.
+  %scl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %scl.t1 = call i32 @value_tag(%Value %scl.a1)
+  %scl.is_int = icmp eq i32 %scl.t1, 1
+  br i1 %scl.is_int, label %scl.have_handle, label %scl.fail
+scl.fail:
+  ret i1 false
+scl.have_handle:
+  %scl.handle = call i64 @value_payload(%Value %scl.a1)
+  %scl.reader = inttoptr i64 %scl.handle to %WamLineReader*
+  %scl.fd_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 0
+  %scl.fd = load i32, i32* %scl.fd_slot
+  %scl.fd_ok = icmp sge i32 %scl.fd, 0
+  br i1 %scl.fd_ok, label %scl.close, label %scl.fail
+scl.close:
+  %scl.buf_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 1
+  %scl.buf = load i8*, i8** %scl.buf_slot
+  %scl.close_ret = call i32 @close(i32 %scl.fd)
+  store i32 -1, i32* %scl.fd_slot
+  call void @free(i8* %scl.buf)
+  %scl.reader_i8 = bitcast %WamLineReader* %scl.reader to i8*
+  call void @free(i8* %scl.reader_i8)
+  %scl.ok = icmp eq i32 %scl.close_ret, 0
+  ret i1 %scl.ok
 
 builtin_atom_split:
   ; M136: atom_split(+Atom, +Sep, -Parts) -- splits Atom on a single
@@ -15382,6 +15593,9 @@ builtin_op_to_id('path_join/3', 162).         % join paths with '/' separator (a
 builtin_op_to_id('system_to_atom/2', 163).    % popen(cmd, "r") + fread + pclose -> atom.
 builtin_op_to_id('atom_to_system/2', 164).    % popen(cmd, "w") + fwrite + pclose, succeed iff status 0.
 builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep -> list of substring atoms.
+builtin_op_to_id('stream_open/2', 166).       % open + malloc-backed buffered line-reader handle.
+builtin_op_to_id('read_line/2', 167).         % buffered line read; EOF unifies end_of_file.
+builtin_op_to_id('stream_close/1', 168).      % close + free line-reader handle.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

@@ -13,6 +13,9 @@
 %Compound = type { i32, i32, i32 }        ; functor offset, arity, args offset
 %List = type { i32, i32 }                 ; length, elements offset
 
+; === Buffered line reader handle ===
+%WamLineReader = type { i32, i8*, i64, i64, i64 } ; fd, buffer, cap, len, pos
+
 ; === Instruction Tagged Union ===
 %Instruction = type { i32, i64, i64 }     ; tag, operand1, operand2
 
