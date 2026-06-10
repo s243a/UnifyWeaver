@@ -462,6 +462,50 @@ func (vm *WamState) restoreSavedRegs(saved []Value) {
 	}
 }
 
+// ClauseSnapshot is the clause-entry state a T4 (multi_clause_n) lowered
+// method restores between clause attempts. The lowered method enumerates
+// EVERY clause itself (first-solution / deterministic-prefix), so the
+// interpreter is never entered for the predicate. Mirrors the ChoicePoint
+// snapshot, minus the resume PC; NextVarId is monotonic (unique ids) and is
+// intentionally not restored.
+type ClauseSnapshot struct {
+	savedRegs []Value
+	trailMark int
+	heapTop   int
+	stackLen  int
+	cp        int
+	e         int
+}
+
+// LoClauseSnapshot captures the clause-entry state for LoRestoreClause.
+func (vm *WamState) LoClauseSnapshot() ClauseSnapshot {
+	return ClauseSnapshot{
+		savedRegs: vm.snapshotAllRegs(),
+		trailMark: vm.TrailLen,
+		heapTop:   vm.HeapLen,
+		stackLen:  len(vm.Stack),
+		cp:        vm.CP,
+		e:         vm.E,
+	}
+}
+
+// LoRestoreClause restores vm to a clause-entry snapshot before the next
+// clause attempt (mirrors backtrack's WamCP restore, minus the PC).
+func (vm *WamState) LoRestoreClause(snap ClauseSnapshot) {
+	vm.unwindTrailTo(snap.trailMark)
+	vm.restoreSavedRegs(snap.savedRegs)
+	if snap.stackLen <= len(vm.Stack) {
+		vm.Stack = vm.Stack[:snap.stackLen]
+	}
+	vm.E = snap.e
+	if snap.heapTop >= 0 && snap.heapTop <= vm.HeapLen {
+		vm.heapTrimTo(snap.heapTop)
+	}
+	vm.CP = snap.cp
+	vm.CurrentStruct = nil
+	vm.CurrentList = nil
+}
+
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{

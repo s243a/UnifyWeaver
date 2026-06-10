@@ -172,8 +172,16 @@ wam_go_lowerable(PI, WamCode, Reason) :-
     ;   % No internal ITE: existing deterministic / multi-clause path.
         \+ member(try_me_else(_), C1),
         forall(member(I, C1), go_supported(I))
-    ->  ( is_deterministic_pred_go(Instrs) -> Reason = deterministic
-        ; Reason = multi_clause_1 )
+    ->  ( is_deterministic_pred_go(Instrs)
+        ->  Reason = deterministic
+        ;   % T4: every clause is a clean supported deterministic body — lower
+            % them ALL inline (tried in order with restore-between), so the
+            % method never returns to the interpreter for clauses 2+. Takes
+            % precedence over multi_clause_1 (clause-1 only).
+            go_all_clauses_lowerable(Instrs)
+        ->  Reason = multi_clause_n
+        ;   Reason = multi_clause_1
+        )
     ;   % Clause-1 has an inner choice point: lower only if it is a pure
         % (C -> T ; E) / \+ / once block whose pieces are all supported.
         \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
@@ -187,6 +195,42 @@ clause1_instrs([], []).
 clause1_instrs([try_me_else(_)|Rest], C1) :- !,
     take_to_proceed(Rest, C1).
 clause1_instrs(Instrs, Instrs).
+
+%% go_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split a multi-clause predicate (opens with try_me_else) at the choice-point
+%  separators into per-clause instruction lists (T4 / multi_clause_n).
+go_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    go_collect_clause(Rest, Clause, After),
+    go_split_more(After, More).
+
+go_split_more([], []).
+go_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    go_collect_clause(Rest, Clause, After),
+    go_split_more(After, More).
+go_split_more([trust_me|Rest], [Clause|More]) :- !,
+    go_collect_clause(Rest, Clause, After),
+    go_split_more(After, More).
+
+go_collect_clause([], [], []).
+go_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+go_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+go_collect_clause([I|Rest], [I|More], After) :-
+    go_collect_clause(Rest, More, After).
+
+%% go_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause is a clean supported deterministic body (no inner
+%  choice point, ends in a terminal) — the T4 (multi_clause_n) condition.
+go_all_clauses_lowerable(Instrs) :-
+    go_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),
+             forall(member(I, Cl), go_supported(I)),
+             last(Cl, Last), go_clause_terminal(Last) )).
+
+go_clause_terminal(proceed).
+go_clause_terminal(fail).
+go_clause_terminal(execute(_)).
 
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
@@ -288,6 +332,12 @@ lower_predicate_to_go(PI, WamCode, _Options, GoLines) :-
     (   % T5 first-argument-constant dispatch takes precedence.
         go_clause_chain_lowerable(Instrs, Guards)
     ->  emit_clause_chain_go(FuncName, Pred, Arity, Guards, GoLines)
+    ;   % T4: a multi-clause predicate whose clauses are all supported
+        % deterministic bodies (but not a distinct-first-arg chain) — lower
+        % every clause inline, tried in order with a restore between attempts.
+        \+ is_deterministic_pred_go(Instrs),
+        go_all_clauses_lowerable(Instrs)
+    ->  emit_multi_clause_n_go(FuncName, Pred, Arity, Instrs, GoLines)
     ;   % Emit the plain clause-1 when it has no inner choice point;
         % otherwise fold its ITE block(s) into structured form (ite/3).
         (   \+ member(try_me_else(_), C1Instrs)
@@ -301,6 +351,32 @@ func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
         format(string(Footer), '}', []),
         GoLines = [Header, Body, Footer]
     ).
+
+%% emit_multi_clause_n_go(+FuncName, +Pred, +Arity, +Instrs, -GoLines)
+%  Emit T4: capture the clause-entry state, then try every clause inline as an
+%  immediately-invoked func() bool (its `proceed` returns true, failures return
+%  false), restoring the entry state between attempts. The first clause that
+%  succeeds wins (first-solution / deterministic-prefix); the method never
+%  returns to the interpreter for clauses 2+, unlike multi_clause_1.
+emit_multi_clause_n_go(FuncName, Pred, Arity, Instrs, GoLines) :-
+    go_split_clauses(Instrs, Clauses),
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T4 all-clauses inline)
+func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    _t4 := vm.LoClauseSnapshot()~n"),
+          emit_go_clauses(Clauses),
+          format("    return false~n") )),
+    format(string(Footer), '}', []),
+    GoLines = [Header, Body, Footer].
+
+emit_go_clauses([]).
+emit_go_clauses([Cl | Rest]) :-
+    format("    if func() bool {~n"),
+    emit_instrs(Cl, "        "),
+    format("    }() { return true }~n"),
+    format("    vm.LoRestoreClause(_t4)~n"),
+    emit_go_clauses(Rest).
 
 %% emit_clause_chain_go(+FuncName, +Pred, +Arity, +Guards, -GoLines)
 %  Emit T5: deref the first argument once; if it is still unbound, defer to
