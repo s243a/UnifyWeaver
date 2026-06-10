@@ -287,6 +287,22 @@ pub struct BuiltinState {
     pub data: Vec<Value>,
 }
 
+/// T4 (multi_clause_n): a clause-entry snapshot captured by a lowered
+/// function so it can restore between clause attempts. The lowered function
+/// enumerates EVERY clause itself (first-solution / deterministic-prefix, like
+/// the interpreter's first-solution call path), so the interpreter is never
+/// entered for the predicate. Mirrors the ChoicePoint reg/trail/heap/stack/cut
+/// snapshot, minus the resume pc (the lowered function controls its own flow).
+#[derive(Clone, Debug)]
+pub struct ClauseSnapshot {
+    saved_args:  Vec<(usize, Value)>,
+    trail_len:   usize,
+    heap_len:    usize,
+    stack:       Arc<Vec<StackEntry>>,
+    cut_barrier: usize,
+    var_counter: usize,
+}
+
 
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
@@ -971,6 +987,29 @@ impl WamState {
                 self.regs[*i] = v.clone();
             }
         }
+    }
+
+    /// T4 (multi_clause_n): capture the clause-entry state a lowered function
+    /// restores between clause attempts (see ClauseSnapshot).
+    pub fn lo_clause_snapshot(&self) -> ClauseSnapshot {
+        ClauseSnapshot {
+            saved_args:  self.save_regs(),
+            trail_len:   self.trail.len(),
+            heap_len:    self.heap.len(),
+            stack:       Arc::clone(&self.stack),
+            cut_barrier: self.cut_barrier,
+            var_counter: self.var_counter,
+        }
+    }
+
+    /// Restore `self` to a clause-entry snapshot before trying the next clause.
+    pub fn lo_restore_clause(&mut self, snap: &ClauseSnapshot) {
+        self.unwind_trail_to(snap.trail_len);
+        self.restore_regs(&snap.saved_args);
+        self.heap.truncate(snap.heap_len);
+        self.stack = Arc::clone(&snap.stack);
+        self.cut_barrier = snap.cut_barrier;
+        self.var_counter = snap.var_counter;
     }
 
 
