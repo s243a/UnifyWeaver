@@ -1632,8 +1632,12 @@ wam_line_to_cil_literal(["trust_me"], 'new Instruction(24, 0L, 0L)').
 wam_line_to_cil_literal(["builtin_call", Op, N], Lit) :-
     clean_comma_cil(Op, COp), clean_comma_cil(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    atom_string(COp, COpAtom),
-    builtin_op_to_cil_id(COpAtom, OpId),
+    % M147 sweep finding: atom_string/2 args were reversed, so COpAtom
+    % stayed a string and never matched the atom-keyed
+    % builtin_op_to_cil_id/2 table - every builtin compiled to the
+    % unknown-op fallback id and unconditionally failed at runtime.
+    atom_string(COpAtom, COp),
+    ( builtin_op_to_cil_id(COpAtom, OpId) -> true ; OpId = 99 ),
     format(atom(Lit), 'new Instruction(21, ~wL, ~wL)', [OpId, Num]).
 wam_line_to_cil_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),
