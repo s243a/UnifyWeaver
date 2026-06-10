@@ -3931,6 +3931,9 @@ compile_execute_builtin_to_llvm(Options, Code) :-
     target_os_resolved(Options, OS),
     target_dirent_d_name_offset(OS, DirentNameOff),
     Template = '; Execute builtin operations
+@wam_stream_handle_table = internal global [4096 x %WamLineReader*] zeroinitializer
+@wam_stream_handle_count = internal global i32 0
+
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
@@ -7874,10 +7877,10 @@ ats.close:
 
 builtin_stream_open:
   ; stream_open(+Path, -Handle) -- native buffered line-reader open.
-  ; The handle is an Integer payload containing a malloc-backed
-  ; %WamLineReader pointer. This keeps stream state outside the WAM
-  ; heap so deterministic loops can carry it across calls without
-  ; depending on heap lifetime or atom table internals.
+  ; The handle is a numeric ID into a target-owned reader table. This
+  ; keeps stream state outside the WAM heap without exposing raw malloc
+  ; pointers as duplicable WAM terms; close clears the table slot before
+  ; freeing the reader so copied handles cannot dereference freed memory.
   %so.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %so.t1 = call i32 @value_tag(%Value %so.a1)
   %so.is_atom = icmp eq i32 %so.t1, 0
@@ -7922,13 +7925,24 @@ so.init:
   store i64 0, i64* %so.len_slot
   %so.pos_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 4
   store i64 0, i64* %so.pos_slot
-  %so.handle = ptrtoint %WamLineReader* %so.reader to i64
+  %so.count = load i32, i32* @wam_stream_handle_count
+  %so.next = add i32 %so.count, 1
+  %so.cap_ok = icmp ult i32 %so.next, 4096
+  br i1 %so.cap_ok, label %so.store_handle, label %so.close_all_fail
+so.store_handle:
+  %so.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %so.next
+  store %WamLineReader* %so.reader, %WamLineReader** %so.slot
+  store i32 %so.next, i32* @wam_stream_handle_count
+  %so.handle = zext i32 %so.next to i64
   %so.v = call %Value @value_integer(i64 %so.handle)
   %so.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %so.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %so.raw2, %Value %so.v)
-  br i1 %so.ok, label %so.success, label %so.close_all_fail
+  br i1 %so.ok, label %so.success, label %so.close_stored_fail
 so.success:
   ret i1 true
+so.close_stored_fail:
+  store %WamLineReader* null, %WamLineReader** %so.slot
+  br label %so.close_all_fail
 so.close_all_fail:
   call i32 @close(i32 %so.fd)
   call void @free(i8* %so.buf)
@@ -7944,12 +7958,22 @@ builtin_read_line:
   %rln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %rln.t1 = call i32 @value_tag(%Value %rln.a1)
   %rln.is_int = icmp eq i32 %rln.t1, 1
-  br i1 %rln.is_int, label %rln.have_handle, label %rln.fail
+  br i1 %rln.is_int, label %rln.lookup_handle, label %rln.fail
 rln.fail:
   ret i1 false
+rln.lookup_handle:
+  %rln.handle64 = call i64 @value_payload(%Value %rln.a1)
+  %rln.handle = trunc i64 %rln.handle64 to i32
+  %rln.handle_min = icmp sgt i32 %rln.handle, 0
+  %rln.handle_max = icmp ult i32 %rln.handle, 4096
+  %rln.handle_ok = and i1 %rln.handle_min, %rln.handle_max
+  br i1 %rln.handle_ok, label %rln.load_handle, label %rln.fail
+rln.load_handle:
+  %rln.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rln.handle
+  %rln.reader = load %WamLineReader*, %WamLineReader** %rln.slot
+  %rln.reader_null = icmp eq %WamLineReader* %rln.reader, null
+  br i1 %rln.reader_null, label %rln.fail, label %rln.have_handle
 rln.have_handle:
-  %rln.handle = call i64 @value_payload(%Value %rln.a1)
-  %rln.reader = inttoptr i64 %rln.handle to %WamLineReader*
   %rln.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 0
   %rln.fd = load i32, i32* %rln.fd_slot
   %rln.fd_ok = icmp sge i32 %rln.fd, 0
@@ -8056,19 +8080,33 @@ rln.eof:
 
 builtin_stream_close:
   ; stream_close(+Handle) -- closes and frees a stream_open/2 handle.
+  ; Already-closed table slots succeed so copied handles and backtracking
+  ; cleanup paths cannot turn a cleared slot into a hard failure or use-after-free.
   %scl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %scl.t1 = call i32 @value_tag(%Value %scl.a1)
   %scl.is_int = icmp eq i32 %scl.t1, 1
-  br i1 %scl.is_int, label %scl.have_handle, label %scl.fail
+  br i1 %scl.is_int, label %scl.lookup_handle, label %scl.fail
 scl.fail:
   ret i1 false
+scl.lookup_handle:
+  %scl.handle64 = call i64 @value_payload(%Value %scl.a1)
+  %scl.handle = trunc i64 %scl.handle64 to i32
+  %scl.handle_min = icmp sgt i32 %scl.handle, 0
+  %scl.handle_max = icmp ult i32 %scl.handle, 4096
+  %scl.handle_ok = and i1 %scl.handle_min, %scl.handle_max
+  br i1 %scl.handle_ok, label %scl.load_handle, label %scl.fail
+scl.load_handle:
+  %scl.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %scl.handle
+  %scl.reader = load %WamLineReader*, %WamLineReader** %scl.slot
+  %scl.reader_null = icmp eq %WamLineReader* %scl.reader, null
+  br i1 %scl.reader_null, label %scl.already_closed, label %scl.have_handle
+scl.already_closed:
+  ret i1 true
 scl.have_handle:
-  %scl.handle = call i64 @value_payload(%Value %scl.a1)
-  %scl.reader = inttoptr i64 %scl.handle to %WamLineReader*
   %scl.fd_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 0
   %scl.fd = load i32, i32* %scl.fd_slot
   %scl.fd_ok = icmp sge i32 %scl.fd, 0
-  br i1 %scl.fd_ok, label %scl.close, label %scl.fail
+  br i1 %scl.fd_ok, label %scl.close, label %scl.already_closed
 scl.close:
   %scl.buf_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 1
   %scl.buf = load i8*, i8** %scl.buf_slot
@@ -8077,6 +8115,7 @@ scl.close:
   call void @free(i8* %scl.buf)
   %scl.reader_i8 = bitcast %WamLineReader* %scl.reader to i8*
   call void @free(i8* %scl.reader_i8)
+  store %WamLineReader* null, %WamLineReader** %scl.slot
   %scl.ok = icmp eq i32 %scl.close_ret, 0
   ret i1 %scl.ok
 
