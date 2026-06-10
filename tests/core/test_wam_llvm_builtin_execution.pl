@@ -5727,9 +5727,21 @@ entry:
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %r = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  ; M142: deref the result register and require an Integer. The old
+  ; raw-payload read returned atom ids / heap addresses for non-int
+  ; results, producing confusing "got 90"-style failures (exit code =
+  ; whatever the payload truncated to). Non-Integer results now exit
+  ; 254, matching the float driver''s wrong_tag convention.
+  %rv = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rtag = extractvalue %Value %rv, 0
+  %is_int = icmp eq i32 %rtag, 1
+  br i1 %is_int, label %int_ok, label %wrong_tag
+int_ok:
+  %r = extractvalue %Value %rv, 1
   %r32 = trunc i64 %r to i32
   ret i32 %r32
+wrong_tag:
+  ret i32 254
 miss:
   ret i32 255
 }
@@ -5756,6 +5768,10 @@ miss:
     ),
     ( ExitCode =:= Expected
     -> format('PASS (~w)~n', [ExitCode])
+    ; ExitCode =:= 254
+    -> format('FAIL (result had wrong tag -- ensure the final goal binds R numerically, e.g. via is/2)~n')
+    ; ExitCode =:= 255
+    -> format('FAIL (predicate failed at runtime; expected ~w)~n', [Expected])
     ;  format('FAIL (got ~w, expected ~w)~n', [ExitCode, Expected])
     ),
     catch(delete_file(LLPath), _, true),
@@ -5823,11 +5839,22 @@ hit:
   ; can bind through it; once is/2 binds, reg 0 is a Ref whose
   ; payload is the heap address, NOT the result value. Deref-then-
   ; payload gets the actual integer the test expects.
+  ; M142: require an Integer tag. The raw payload of a non-int
+  ; result (atom id, heap address) used to leak out as a mystery
+  ; exit code -- e.g. a test ending in ``X = x'' exited 90 (the
+  ; atom id of x). Non-Integer results now exit 254; tests must
+  ; stage their result into A1 via a final numeric goal (R is ...).
   %r_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %r_d = call %Value @wam_deref_value(%WamState* %vm, %Value %r_raw)
+  %r_tag = extractvalue %Value %r_d, 0
+  %r_is_int = icmp eq i32 %r_tag, 1
+  br i1 %r_is_int, label %int_ok, label %wrong_tag
+int_ok:
   %r_pay = extractvalue %Value %r_d, 1
   %r32 = trunc i64 %r_pay to i32
   ret i32 %r32
+wrong_tag:
+  ret i32 254
 miss:
   ret i32 255
 }
@@ -5854,6 +5881,10 @@ miss:
     ),
     ( ExitCode =:= Expected
     -> format('PASS (~w)~n', [ExitCode])
+    ; ExitCode =:= 254
+    -> format('FAIL (result had wrong tag -- ensure the final goal binds R numerically, e.g. via is/2)~n')
+    ; ExitCode =:= 255
+    -> format('FAIL (predicate failed at runtime; expected ~w)~n', [Expected])
     ;  format('FAIL (got ~w, expected ~w)~n', [ExitCode, Expected])
     ),
     catch(delete_file(LLPath), _, true),
