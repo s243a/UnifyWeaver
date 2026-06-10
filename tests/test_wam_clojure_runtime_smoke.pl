@@ -1228,7 +1228,7 @@ run_smoke :-
     assert_lowered_univ_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
-    assert_multiclause_wrappers_runtime_mediated(TmpDir),
+    assert_multiclause_lowering_contracts(TmpDir),
     smoke_cases(Cases),
     verify_outputs(TmpDir, Cases),
     delete_directory_and_contents(TmpDir),
@@ -2273,12 +2273,21 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/arithmetic-less-or-equal?"),
     has(CoreCode, "runtime/arithmetic-greater-or-equal?").
 
-assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
+assert_multiclause_lowering_contracts(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
-    assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-fact-1"),
+    assert_t4_multiclause_wrapper(CoreCode, "lowered-wam-choice-fact-1"),
     assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-or-z-1"),
     assert_empty_lowered_wrapper(CoreCode, "lowered-wam-trail-choice-1").
+
+assert_t4_multiclause_wrapper(CoreCode, FuncName) :-
+    format(string(Header), "(defn ~w [state]", [FuncName]),
+    has(CoreCode, Header),
+    has(CoreCode, "T4 all-clauses inline"),
+    has(CoreCode, ":succeeded (:status"),
+    !.
+assert_t4_multiclause_wrapper(_CoreCode, FuncName) :-
+    throw(error(multiclause_wrapper_not_t4_lowered(FuncName), _)).
 
 assert_empty_lowered_wrapper(CoreCode, FuncName) :-
     (   lowered_wrapper_absent_or_empty(CoreCode, FuncName)
