@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM LLVM target (M141): `is_list/1` never succeeded.** The
+  follow-up flagged in M140: `builtin_is_list_check` accepted only
+  the legacy tag-4 List value, but the engine builds lists as
+  `[|]/2` compounds and `[]` as an atom — so `is_list/1` failed on
+  every list the engine actually produces, including `is_list([])`.
+  Replaced with a proper ISO cons-chain walk: true at the `[]` atom
+  (or a legacy tag-4 List), steps through `[|]/2` tails with full
+  deref, false for atoms, partial lists (`[a|_]`), and unbound
+  variables. Six tests in the new
+  `--- M141 is_list/1 cons-chain walk ---` section.
+- **WAM LLVM target (M141): duplicate predicate compilation with
+  unqualified root specs.** `expand_wam_llvm_project_predicates`
+  discovers call targets in qualified form (`user:node/1`), but the
+  seen-set dedup compared them against the raw root list — an
+  unqualified root (`node/1`) never matched, so the predicate was
+  compiled into the merged module twice and `llc` rejected the
+  duplicate `@<pred>_switch_N` globals (`redefinition of global`).
+  Roots are now normalized to `Module:Pred/Arity` before seeding the
+  expansion. Surfaced by `test_sum_float` failing in isolation;
+  previously masked by in-suite test ordering.
 - **WAM LLVM target (M140): remaining put-instruction bind-throughs**
   — completes the M139 audit. `put_constant`, `put_structure`, and
   `put_list` called `@wam_bind_through_if_unbound_ref(old, val)`
