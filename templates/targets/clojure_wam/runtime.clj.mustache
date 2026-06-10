@@ -210,6 +210,11 @@
 (defn advance [state]
   (update state :pc inc))
 
+(defn lowered-step-advanced? [continue? before after]
+  (and continue?
+       (= :running (:status after))
+       (= (:pc after) (inc (:pc before)))))
+
 (defn fetch-instr [state]
   (get (:code state) (:pc state)))
 
