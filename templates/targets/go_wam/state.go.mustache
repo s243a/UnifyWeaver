@@ -1,7 +1,9 @@
 package {{package_name}}
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"runtime"
@@ -230,6 +232,9 @@ type WamState struct {
 	// stack down past it. peekEnvFrame is now O(1) via this index
 	// instead of an O(stack) reverse scan.
 	E int
+	// Input is the default input stream used by get_char/1, peek_char/1,
+	// and get_code/1. Stream-aware variants remain outside this runtime slice.
+	Input *bufio.Reader
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -265,11 +270,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin)}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin)}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -602,6 +607,7 @@ func (vm *WamState) Clone() *WamState {
 		// every solution.
 		NextVarId:    vm.NextVarId,
 		E:            vm.E,
+		Input:        vm.Input,
 		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
 		// same Y-reg high-water mark as the parent (sub.Regs is a
 		// value-copy of parent.Regs and therefore *contains* those
@@ -1048,6 +1054,53 @@ func outputCodeText(value Value) (string, bool) {
 		return "", false
 	}
 	return string(rune(integer.Val)), true
+}
+
+func (vm *WamState) inputReader() *bufio.Reader {
+	if vm.Input == nil {
+		vm.Input = bufio.NewReader(os.Stdin)
+	}
+	return vm.Input
+}
+
+func (vm *WamState) readDefaultInputRune() (rune, bool, bool) {
+	r, _, err := vm.inputReader().ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func (vm *WamState) peekDefaultInputRune() (rune, bool, bool) {
+	reader := vm.inputReader()
+	r, _, err := reader.ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	if err := reader.UnreadRune(); err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func inputCharValue(r rune, eof bool) Value {
+	if eof {
+		return internAtom("end_of_file")
+	}
+	return internAtom(string(r))
+}
+
+func inputCodeValue(r rune, eof bool) Value {
+	if eof {
+		return &Integer{Val: -1}
+	}
+	return &Integer{Val: int64(r)}
 }
 
 func (vm *WamState) canonicalTermString(value Value) string {
@@ -1602,6 +1655,24 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		fmt.Print(text)
 		return true
+	case "get_char/1":
+		r, eof, ok := vm.readDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCharValue(r, eof))
+	case "peek_char/1":
+		r, eof, ok := vm.peekDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCharValue(r, eof))
+	case "get_code/1":
+		r, eof, ok := vm.readDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCodeValue(r, eof))
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
 		return true
