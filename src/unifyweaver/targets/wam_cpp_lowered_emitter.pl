@@ -28,6 +28,7 @@
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
@@ -91,15 +92,30 @@ cpp_supported_structured(I) :- cpp_supported(I).
 
 %% wam_cpp_lowerable(+Pred/Arity, +WamCode, -Reason)
 %  True if the predicate can be lowered to a direct C++ function.
-%  Reason is `deterministic` or `multi_clause_1`.
+%  Reason is `clause_chain`, `deterministic`, `multi_clause_1` or
+%  `ite_lowered`.
 wam_cpp_lowerable(PI, WamCode, Reason) :-
     cpp_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
-    (   % No internal ITE: existing deterministic / multi-clause path.
+    (   % T5: multi-clause predicate discriminating on a distinct
+        % first-argument constant lowers to a bound-checked if-cascade over
+        % ALL clauses (no interpreter hop for clauses 2+ when A1 is bound).
+        % Takes precedence over multi_clause_1.
+        cpp_clause_chain_lowerable(Instrs, _Guards)
+    ->  Reason = clause_chain
+    ;   % No internal ITE: existing deterministic / multi-clause path.
         \+ member(try_me_else(_), C1),
         forall(member(I, C1), cpp_supported(I))
-    ->  ( is_deterministic_pred_cpp(Instrs) -> Reason = deterministic
-        ; Reason = multi_clause_1 )
+    ->  ( is_deterministic_pred_cpp(Instrs)
+        ->  Reason = deterministic
+        ;   % T4: every clause is a clean supported deterministic body — lower
+            % them ALL inline (tried in order with restore-between), so the
+            % function never returns to the interpreter for clauses 2+. Takes
+            % precedence over multi_clause_1 (clause-1 only).
+            cpp_all_clauses_lowerable(Instrs)
+        ->  Reason = multi_clause_n
+        ;   Reason = multi_clause_1
+        )
     ;   % Clause-1 has an inner choice point: lower only if it is a pure
         % (C -> T ; E) / \+ / once block whose pieces are all supported.
         \+ ( Instrs = [try_me_else(_)|_] ),   % single-clause predicate
@@ -108,6 +124,25 @@ wam_cpp_lowerable(PI, WamCode, Reason) :-
         Reason = ite_lowered
     ),
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
+
+%% cpp_clause_chain_lowerable(+Instrs, -Guards) is semidet.
+%  True when the predicate is a distinct-first-argument-constant clause chain
+%  (T5) and every clause's remainder is a supported deterministic body. The
+%  C++ parser keeps a leading switch_on_* indexing prefix, so strip it before
+%  handing the try_me_else/retry_me_else/trust_me chain to the shared
+%  front-end. Guards is the front-end's guard(Const, Remainder) list.
+cpp_clause_chain_lowerable(Instrs, Guards) :-
+    cpp_strip_switch_prefix(Instrs, Stripped),
+    clause_chain(Stripped, chain(Guards)),
+    forall(member(guard(_, Rem), Guards),
+           ( is_deterministic_pred_cpp(Rem),
+             forall(member(I, Rem), cpp_supported(I)) )).
+
+cpp_strip_switch_prefix([switch_on_constant(_)|Rest], S) :- !, cpp_strip_switch_prefix(Rest, S).
+cpp_strip_switch_prefix([switch_on_constant_a2(_)|Rest], S) :- !, cpp_strip_switch_prefix(Rest, S).
+cpp_strip_switch_prefix([switch_on_structure(_)|Rest], S) :- !, cpp_strip_switch_prefix(Rest, S).
+cpp_strip_switch_prefix([switch_on_term(_)|Rest], S) :- !, cpp_strip_switch_prefix(Rest, S).
+cpp_strip_switch_prefix(L, L).
 
 clause1_instrs([], []).
 % Strip leading indexing instructions (switch_on_*) — they are dispatch
@@ -123,6 +158,44 @@ clause1_instrs(Instrs, Instrs).
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
 take_to_proceed([I|Rest], [I|More]) :- take_to_proceed(Rest, More).
+
+%% cpp_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split a multi-clause predicate (opens with try_me_else) at the choice-point
+%  separators into per-clause instruction lists (T4 / multi_clause_n).
+cpp_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    cpp_collect_clause(Rest, Clause, After),
+    cpp_split_more(After, More).
+
+cpp_split_more([], []).
+cpp_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    cpp_collect_clause(Rest, Clause, After),
+    cpp_split_more(After, More).
+cpp_split_more([trust_me|Rest], [Clause|More]) :- !,
+    cpp_collect_clause(Rest, Clause, After),
+    cpp_split_more(After, More).
+
+cpp_collect_clause([], [], []).
+cpp_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+cpp_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+cpp_collect_clause([I|Rest], [I|More], After) :-
+    cpp_collect_clause(Rest, More, After).
+
+%% cpp_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause is a clean supported deterministic body (no inner
+%  choice point, ends in a terminal) — the T4 (multi_clause_n) condition. The
+%  C++ parser keeps a leading switch_on_* indexing prefix, so strip it first.
+cpp_all_clauses_lowerable(Instrs0) :-
+    cpp_strip_switch_prefix(Instrs0, Instrs),
+    cpp_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),
+             forall(member(I, Cl), cpp_supported(I)),
+             last(Cl, Last), cpp_clause_terminal(Last) )).
+
+cpp_clause_terminal(proceed).
+cpp_clause_terminal(fail).
+cpp_clause_terminal(execute(_)).
 
 %% is_deterministic_pred_cpp(+Instrs)
 %  True if the instruction list has no choice point instructions.
@@ -214,19 +287,85 @@ lower_predicate_to_cpp(PI, WamCode, Options, CppLines) :-
     ->  maplist(foreign_key_string, ForeignPreds0, ForeignPreds)
     ;   ForeignPreds = []
     ),
-    % Emit the plain clause-1 when it has no inner choice point; otherwise
-    % fold its ITE block(s) into structured form (ite/3) first.
-    (   \+ member(try_me_else(_), C1Instrs)
-    ->  EmitInstrs = C1Instrs
-    ;   cpp_structured_clause1(WamCode, EmitInstrs)
-    ),
     nb_setval(cpp_ite_ctr, 0),
-    with_output_to(string(Body), emit_instrs(EmitInstrs, "    ", ForeignPreds)),
-    format(string(Header),
+    (   % T5 first-argument-constant dispatch takes precedence.
+        cpp_clause_chain_lowerable(Instrs, Guards)
+    ->  emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines)
+    ;   % T4: a multi-clause predicate whose clauses are all supported
+        % deterministic bodies (but not a distinct-first-arg chain) — lower
+        % every clause inline, tried in order with a restore between attempts.
+        \+ is_deterministic_pred_cpp(Instrs),
+        cpp_all_clauses_lowerable(Instrs)
+    ->  emit_multi_clause_n_cpp(FuncName, Pred, Arity, Instrs, ForeignPreds, CppLines)
+    ;   % Emit the plain clause-1 when it has no inner choice point; otherwise
+        % fold its ITE block(s) into structured form (ite/3) first.
+        (   \+ member(try_me_else(_), C1Instrs)
+        ->  EmitInstrs = C1Instrs
+        ;   cpp_structured_clause1(WamCode, EmitInstrs)
+        ),
+        with_output_to(string(Body), emit_instrs(EmitInstrs, "    ", ForeignPreds)),
+        format(string(Header),
 '// ~w — lowered from ~w/~w
 bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+        format(string(Footer), '}', []),
+        CppLines = [Header, Body, Footer]
+    ).
+
+%% emit_clause_chain_cpp(+FuncName, +Pred, +Arity, +Guards, +FK, -CppLines)
+%  Emit T5: read+deref the first argument once; if it is still unbound, defer
+%  to the entry wrapper's interpreter fallback (the unbound case is genuinely
+%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
+%  bound value against each clause's distinct discriminator and running that
+%  clause's remainder (which self-terminates: its `proceed` emits
+%  `return true`). A bound value matching no clause returns false (the
+%  predicate fails; the wrapper's fresh re-run also fails — sound, since the
+%  discriminators are distinct).
+emit_clause_chain_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T5 first-argument dispatch)
+bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    Value t5a1 = vm->get_reg(\"A1\");~n"),
+          format("    if (t5a1.is_unbound()) return false;  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+          emit_cpp_guards(Guards, ForeignPreds),
+          format("    return false;~n") )),
     format(string(Footer), '}', []),
     CppLines = [Header, Body, Footer].
+
+emit_cpp_guards([], _).
+emit_cpp_guards([guard(V, Rem) | Rest], ForeignPreds) :-
+    cpp_val_literal(V, CppVal),
+    format("    if (t5a1 == ~w) {~n", [CppVal]),
+    emit_instrs(Rem, "        ", ForeignPreds),
+    format("    }~n"),
+    emit_cpp_guards(Rest, ForeignPreds).
+
+%% emit_multi_clause_n_cpp(+FuncName, +Pred, +Arity, +Instrs, +FK, -CppLines)
+%  Emit T4: capture the clause-entry state, then try every clause inline as an
+%  immediately-invoked lambda (its `proceed` returns true, failures return
+%  false), restoring the entry state between attempts. The first clause that
+%  succeeds wins (first-solution / deterministic-prefix); the function never
+%  returns to the interpreter for clauses 2+, unlike multi_clause_1.
+emit_multi_clause_n_cpp(FuncName, Pred, Arity, Instrs0, ForeignPreds, CppLines) :-
+    cpp_strip_switch_prefix(Instrs0, Instrs),
+    cpp_split_clauses(Instrs, Clauses),
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T4 all-clauses inline)
+bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    auto _t4 = vm->lo_clause_snapshot();~n"),
+          emit_cpp_clauses(Clauses, ForeignPreds),
+          format("    return false;~n") )),
+    format(string(Footer), '}', []),
+    CppLines = [Header, Body, Footer].
+
+emit_cpp_clauses([], _).
+emit_cpp_clauses([Cl | Rest], ForeignPreds) :-
+    format("    if ([&]() -> bool {~n"),
+    emit_instrs(Cl, "        ", ForeignPreds),
+    format("    }()) return true;~n"),
+    format("    vm->lo_restore_clause(_t4);~n"),
+    emit_cpp_clauses(Rest, ForeignPreds).
 
 %% emit_instrs(+Instrs, +Indent, +ForeignPreds)
 emit_instrs([], _, _).

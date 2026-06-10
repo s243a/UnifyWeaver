@@ -119,9 +119,27 @@
 :- dynamic user:wam_select_backtrack/2.
 :- dynamic user:wam_select_bad_list/1.
 :- dynamic user:wam_select_unbound_list/1.
+:- dynamic user:wam_between_guard/3.
+:- dynamic user:wam_between_high_before_low/0.
+:- dynamic user:wam_between_generate_first/0.
+:- dynamic user:wam_between_singleton/0.
+:- dynamic user:wam_between_unbound_low/1.
+:- dynamic user:wam_between_unbound_high/1.
 :- dynamic user:wam_numlist_guard/3.
 :- dynamic user:wam_numlist_high_before_low/1.
 :- dynamic user:wam_numlist_unbound_low/1.
+:- dynamic user:wam_sum_list_guard/2.
+:- dynamic user:wam_sum_list_empty/0.
+:- dynamic user:wam_sum_list_bad_list/1.
+:- dynamic user:wam_sum_list_non_numeric/1.
+:- dynamic user:wam_min_list_guard/2.
+:- dynamic user:wam_min_list_empty/1.
+:- dynamic user:wam_min_list_bad_list/1.
+:- dynamic user:wam_min_list_non_numeric/1.
+:- dynamic user:wam_max_list_guard/2.
+:- dynamic user:wam_max_list_empty/1.
+:- dynamic user:wam_max_list_bad_list/1.
+:- dynamic user:wam_max_list_non_numeric/1.
 :- dynamic user:wam_delete_guard/3.
 :- dynamic user:wam_delete_bad_list/1.
 :- dynamic user:wam_delete_unbound_list/1.
@@ -130,6 +148,21 @@
 :- dynamic user:wam_subtract_duplicates/0.
 :- dynamic user:wam_subtract_bad_left/1.
 :- dynamic user:wam_subtract_bad_right/1.
+:- dynamic user:wam_intersection_guard/3.
+:- dynamic user:wam_intersection_empty_left/0.
+:- dynamic user:wam_intersection_duplicates/0.
+:- dynamic user:wam_intersection_bad_left/1.
+:- dynamic user:wam_intersection_bad_right/1.
+:- dynamic user:wam_union_guard/3.
+:- dynamic user:wam_union_empty_left/0.
+:- dynamic user:wam_union_duplicates/0.
+:- dynamic user:wam_union_bad_left/1.
+:- dynamic user:wam_union_bad_right/1.
+:- dynamic user:wam_permutation_guard/2.
+:- dynamic user:wam_permutation_identity/0.
+:- dynamic user:wam_permutation_duplicates/0.
+:- dynamic user:wam_permutation_bad_left/1.
+:- dynamic user:wam_permutation_bad_right/1.
 :- dynamic user:wam_list_to_set_guard/2.
 :- dynamic user:wam_list_to_set_empty/0.
 :- dynamic user:wam_list_to_set_singleton/0.
@@ -258,6 +291,24 @@
 :- dynamic user:wam_char_code_forward_unify_mismatch/0.
 :- dynamic user:wam_char_code_bad_char/0.
 :- dynamic user:wam_char_code_unbound_pair/1.
+:- dynamic user:wam_string_code_guard/3.
+:- dynamic user:wam_string_code_first/0.
+:- dynamic user:wam_string_code_last/0.
+:- dynamic user:wam_string_code_unify/0.
+:- dynamic user:wam_string_code_mismatch/0.
+:- dynamic user:wam_string_code_oob/0.
+:- dynamic user:wam_string_code_zero/0.
+:- dynamic user:wam_string_code_unbound_index/1.
+:- dynamic user:wam_string_code_unbound_string/1.
+:- dynamic user:wam_split_string_guard/4.
+:- dynamic user:wam_split_string_basic/0.
+:- dynamic user:wam_split_string_padding/0.
+:- dynamic user:wam_split_string_empty_separator/0.
+:- dynamic user:wam_split_string_consecutive/0.
+:- dynamic user:wam_split_string_mismatch/0.
+:- dynamic user:wam_split_string_bad_source/1.
+:- dynamic user:wam_split_string_bad_separator/1.
+:- dynamic user:wam_split_string_bad_pad/1.
 :- dynamic user:wam_char_type_alpha/0.
 :- dynamic user:wam_char_type_digit/0.
 :- dynamic user:wam_char_type_space/0.
@@ -455,9 +506,27 @@ user:wam_select_guard(Elem, List, Rest) :- select(Elem, List, Rest).
 user:wam_select_backtrack(Elem, Rest) :- select(Elem, [a,b,c], Rest), Elem = b.
 user:wam_select_bad_list(Rest) :- select(a, [a|b], Rest).
 user:wam_select_unbound_list(Rest) :- select(a, L, Rest), is_list(L).
+user:wam_between_guard(Low, High, Value) :- between(Low, High, Value).
+user:wam_between_high_before_low :- between(5, 3, _).
+user:wam_between_generate_first :- between(2, 5, X), X =:= 2.
+user:wam_between_singleton :- between(7, 7, X), X =:= 7.
+user:wam_between_unbound_low(_) :- user:wam_unbound_arg(Low), between(Low, 3, _).
+user:wam_between_unbound_high(_) :- user:wam_unbound_arg(High), between(1, High, _).
 user:wam_numlist_guard(Low, High, List) :- numlist(Low, High, List).
 user:wam_numlist_high_before_low(List) :- numlist(3, 1, List).
 user:wam_numlist_unbound_low(List) :- numlist(Low, 3, List), integer(Low).
+user:wam_sum_list_guard(List, Sum) :- sum_list(List, Sum).
+user:wam_sum_list_empty :- sum_list([], Sum), Sum =:= 0.
+user:wam_sum_list_bad_list(_) :- sum_list([1|2], _).
+user:wam_sum_list_non_numeric(_) :- sum_list([a], _).
+user:wam_min_list_guard(List, Min) :- min_list(List, Min).
+user:wam_min_list_empty(_) :- min_list([], _).
+user:wam_min_list_bad_list(_) :- min_list([1|2], _).
+user:wam_min_list_non_numeric(_) :- min_list([a], _).
+user:wam_max_list_guard(List, Max) :- max_list(List, Max).
+user:wam_max_list_empty(_) :- max_list([], _).
+user:wam_max_list_bad_list(_) :- max_list([1|2], _).
+user:wam_max_list_non_numeric(_) :- max_list([a], _).
 user:wam_delete_guard(L, Elem, Rest) :- delete(L, Elem, Rest).
 user:wam_delete_bad_list(Rest) :- delete([a|b], a, Rest).
 user:wam_delete_unbound_list(Rest) :- delete(L, a, Rest), is_list(L).
@@ -466,6 +535,21 @@ user:wam_subtract_empty_left :- subtract([], [a], Diff), Diff = [].
 user:wam_subtract_duplicates :- subtract([a,a,b,c], [b], Diff), Diff = [a,a,c].
 user:wam_subtract_bad_left(_) :- subtract([a|b], [a], _).
 user:wam_subtract_bad_right(_) :- subtract([a], [a|b], _).
+user:wam_intersection_guard(Left, Right, Common) :- intersection(Left, Right, Common).
+user:wam_intersection_empty_left :- intersection([], [a], Common), Common = [].
+user:wam_intersection_duplicates :- intersection([a,a,b,c], [a,c], Common), Common = [a,a,c].
+user:wam_intersection_bad_left(_) :- intersection([a|b], [a], _).
+user:wam_intersection_bad_right(_) :- intersection([a], [a|b], _).
+user:wam_union_guard(Left, Right, Union) :- union(Left, Right, Union).
+user:wam_union_empty_left :- union([], [a,b], Union), Union = [a,b].
+user:wam_union_duplicates :- union([a,a], [a,b], Union), Union = [a,a,b].
+user:wam_union_bad_left(_) :- union([a|b], [a], _).
+user:wam_union_bad_right(_) :- union([a], [a|b], _).
+user:wam_permutation_guard(Left, Right) :- permutation(Left, Right).
+user:wam_permutation_identity :- permutation([a,b,c], P), P = [a,b,c].
+user:wam_permutation_duplicates :- permutation([a,a,b], [a,b,a]).
+user:wam_permutation_bad_left(_) :- permutation([a|b], _).
+user:wam_permutation_bad_right(_) :- permutation([a], [a|b]).
 user:wam_list_to_set_guard(List, Set) :- list_to_set(List, Set).
 user:wam_list_to_set_empty :- list_to_set([], Set), Set = [].
 user:wam_list_to_set_singleton :- list_to_set([x], Set), Set = [x].
@@ -594,6 +678,24 @@ user:wam_char_code_forward_unify :- char_code(a, N), N = 97.
 user:wam_char_code_forward_unify_mismatch :- char_code(a, N), N = 98.
 user:wam_char_code_bad_char :- char_code(ab, _).
 user:wam_char_code_unbound_pair(_) :- user:wam_unbound_arg(C), user:wam_unbound_arg(N), char_code(C, N).
+user:wam_string_code_guard(I, S, C) :- string_code(I, S, C).
+user:wam_string_code_first :- string_code(1, hello, C), C =:= 104.
+user:wam_string_code_last :- string_code(5, hello, C), C =:= 111.
+user:wam_string_code_unify :- string_code(2, hello, C), C = 101.
+user:wam_string_code_mismatch :- string_code(2, hello, 111).
+user:wam_string_code_oob :- string_code(6, hello, _).
+user:wam_string_code_zero :- string_code(0, hello, _).
+user:wam_string_code_unbound_index(_) :- user:wam_unbound_arg(I), string_code(I, hello, _).
+user:wam_string_code_unbound_string(_) :- user:wam_unbound_arg(S), string_code(1, S, _).
+user:wam_split_string_guard(S, Sep, Pad, Parts) :- split_string(S, Sep, Pad, Parts).
+user:wam_split_string_basic :- split_string(abcbd, b, '', Parts), Parts = [a,c,d].
+user:wam_split_string_padding :- split_string(xaxbxcx, b, x, Parts), Parts = [a,c].
+user:wam_split_string_empty_separator :- split_string(abc, '', '', Parts), Parts = [abc].
+user:wam_split_string_consecutive :- split_string(abbc, b, '', Parts), Parts = [a,'',c].
+user:wam_split_string_mismatch :- split_string(abcbd, b, '', Parts), Parts = [a,c].
+user:wam_split_string_bad_source(_) :- user:wam_unbound_arg(S), split_string(S, ',', '', _).
+user:wam_split_string_bad_separator(_) :- user:wam_unbound_arg(Sep), split_string(abc, Sep, '', _).
+user:wam_split_string_bad_pad(_) :- user:wam_unbound_arg(Pad), split_string(abc, '', Pad, _).
 user:wam_char_type_alpha :- char_type(a, alpha).
 user:wam_char_type_digit :- char_code(C, 0'5), char_type(C, digit), char_type(C, alnum).
 user:wam_char_type_space :- char_code(C, 32), char_type(C, space), char_type(C, whitespace).
@@ -796,9 +898,27 @@ run_smoke :-
           user:wam_select_backtrack/2,
           user:wam_select_bad_list/1,
           user:wam_select_unbound_list/1,
+          user:wam_between_guard/3,
+          user:wam_between_high_before_low/0,
+          user:wam_between_generate_first/0,
+          user:wam_between_singleton/0,
+          user:wam_between_unbound_low/1,
+          user:wam_between_unbound_high/1,
           user:wam_numlist_guard/3,
           user:wam_numlist_high_before_low/1,
           user:wam_numlist_unbound_low/1,
+          user:wam_sum_list_guard/2,
+          user:wam_sum_list_empty/0,
+          user:wam_sum_list_bad_list/1,
+          user:wam_sum_list_non_numeric/1,
+          user:wam_min_list_guard/2,
+          user:wam_min_list_empty/1,
+          user:wam_min_list_bad_list/1,
+          user:wam_min_list_non_numeric/1,
+          user:wam_max_list_guard/2,
+          user:wam_max_list_empty/1,
+          user:wam_max_list_bad_list/1,
+          user:wam_max_list_non_numeric/1,
           user:wam_delete_guard/3,
           user:wam_delete_bad_list/1,
           user:wam_delete_unbound_list/1,
@@ -807,6 +927,21 @@ run_smoke :-
           user:wam_subtract_duplicates/0,
           user:wam_subtract_bad_left/1,
           user:wam_subtract_bad_right/1,
+          user:wam_intersection_guard/3,
+          user:wam_intersection_empty_left/0,
+          user:wam_intersection_duplicates/0,
+          user:wam_intersection_bad_left/1,
+          user:wam_intersection_bad_right/1,
+          user:wam_union_guard/3,
+          user:wam_union_empty_left/0,
+          user:wam_union_duplicates/0,
+          user:wam_union_bad_left/1,
+          user:wam_union_bad_right/1,
+          user:wam_permutation_guard/2,
+          user:wam_permutation_identity/0,
+          user:wam_permutation_duplicates/0,
+          user:wam_permutation_bad_left/1,
+          user:wam_permutation_bad_right/1,
           user:wam_list_to_set_guard/2,
           user:wam_list_to_set_empty/0,
           user:wam_list_to_set_singleton/0,
@@ -935,6 +1070,24 @@ run_smoke :-
           user:wam_char_code_forward_unify_mismatch/0,
           user:wam_char_code_bad_char/0,
           user:wam_char_code_unbound_pair/1,
+          user:wam_string_code_guard/3,
+          user:wam_string_code_first/0,
+          user:wam_string_code_last/0,
+          user:wam_string_code_unify/0,
+          user:wam_string_code_mismatch/0,
+          user:wam_string_code_oob/0,
+          user:wam_string_code_zero/0,
+          user:wam_string_code_unbound_index/1,
+          user:wam_string_code_unbound_string/1,
+          user:wam_split_string_guard/4,
+          user:wam_split_string_basic/0,
+          user:wam_split_string_padding/0,
+          user:wam_split_string_empty_separator/0,
+          user:wam_split_string_consecutive/0,
+          user:wam_split_string_mismatch/0,
+          user:wam_split_string_bad_source/1,
+          user:wam_split_string_bad_separator/1,
+          user:wam_split_string_bad_pad/1,
           user:wam_char_type_alpha/0,
           user:wam_char_type_digit/0,
           user:wam_char_type_space/0,
@@ -1051,9 +1204,14 @@ run_smoke :-
     assert_lowered_nth0_builtin_emitted(TmpDir),
     assert_lowered_nth1_builtin_emitted(TmpDir),
     assert_lowered_select_builtin_emitted(TmpDir),
+    assert_lowered_between_builtin_emitted(TmpDir),
     assert_lowered_numlist_builtin_emitted(TmpDir),
+    assert_lowered_numeric_list_reducers_emitted(TmpDir),
     assert_lowered_delete_builtin_emitted(TmpDir),
     assert_lowered_subtract_builtin_emitted(TmpDir),
+    assert_lowered_intersection_builtin_emitted(TmpDir),
+    assert_lowered_union_builtin_emitted(TmpDir),
+    assert_lowered_permutation_builtin_emitted(TmpDir),
     assert_lowered_list_to_set_builtin_emitted(TmpDir),
     assert_lowered_sort_builtin_emitted(TmpDir),
     assert_lowered_msort_builtin_emitted(TmpDir),
@@ -1277,6 +1435,15 @@ smoke_cases([
     case('wam_select_backtrack/2', args(b, '[a,c]'), "true"),
     case('wam_select_bad_list/1', '[b,c]', "false"),
     case('wam_select_unbound_list/1', '[b,c]', "true"),
+    case('wam_between_guard/3', args(1, 3, 1), "true"),
+    case('wam_between_guard/3', args(1, 3, 3), "true"),
+    case('wam_between_guard/3', args(1, 3, 4), "false"),
+    case('wam_between_guard/3', args(1, 3, 0), "false"),
+    case('wam_between_high_before_low/0', no_args, "false"),
+    case('wam_between_generate_first/0', no_args, "true"),
+    case('wam_between_singleton/0', no_args, "true"),
+    case('wam_between_unbound_low/1', a, "false"),
+    case('wam_between_unbound_high/1', a, "false"),
     case('wam_numlist_guard/3', args(1, 3, '[1,2,3]'), "true"),
     case('wam_numlist_guard/3', args(2, 2, '[2]'), "true"),
     case('wam_numlist_guard/3', args(1, 3, '[1,3]'), "false"),
@@ -1285,6 +1452,21 @@ smoke_cases([
     case('wam_numlist_unbound_low/1', '[2,3]', "true"),
     case('wam_numlist_unbound_low/1', '[1,3]', "false"),
     case('wam_numlist_unbound_low/1', '[]', "false"),
+    case('wam_sum_list_guard/2', args('[1,2,3]', 6), "true"),
+    case('wam_sum_list_guard/2', args('[1,2,3]', 5), "false"),
+    case('wam_sum_list_empty/0', no_args, "true"),
+    case('wam_sum_list_bad_list/1', a, "false"),
+    case('wam_sum_list_non_numeric/1', a, "false"),
+    case('wam_min_list_guard/2', args('[1,2,3]', 1), "true"),
+    case('wam_min_list_guard/2', args('[1,2,3]', 2), "false"),
+    case('wam_min_list_empty/1', a, "false"),
+    case('wam_min_list_bad_list/1', a, "false"),
+    case('wam_min_list_non_numeric/1', a, "false"),
+    case('wam_max_list_guard/2', args('[1,2,3]', 3), "true"),
+    case('wam_max_list_guard/2', args('[1,2,3]', 2), "false"),
+    case('wam_max_list_empty/1', a, "false"),
+    case('wam_max_list_bad_list/1', a, "false"),
+    case('wam_max_list_non_numeric/1', a, "false"),
     case('wam_delete_guard/3', args('[a,b,a,c]', a, '[b,c]'), "true"),
     case('wam_delete_guard/3', args('[a,b,a,c]', z, '[a,b,a,c]'), "true"),
     case('wam_delete_guard/3', args('[f(a),f(b),f(a)]', 'f(a)', '[f(b)]'), "true"),
@@ -1299,6 +1481,24 @@ smoke_cases([
     case('wam_subtract_duplicates/0', no_args, "true"),
     case('wam_subtract_bad_left/1', a, "false"),
     case('wam_subtract_bad_right/1', a, "false"),
+    case('wam_intersection_guard/3', args('[a,b,c]', '[a,c]', '[a,c]'), "true"),
+    case('wam_intersection_guard/3', args('[a,b,c]', '[a,c]', '[a,b]'), "false"),
+    case('wam_intersection_empty_left/0', no_args, "true"),
+    case('wam_intersection_duplicates/0', no_args, "true"),
+    case('wam_intersection_bad_left/1', a, "false"),
+    case('wam_intersection_bad_right/1', a, "false"),
+    case('wam_union_guard/3', args('[a,b]', '[b,c]', '[a,b,c]'), "true"),
+    case('wam_union_guard/3', args('[a,b]', '[b,c]', '[b,c]'), "false"),
+    case('wam_union_empty_left/0', no_args, "true"),
+    case('wam_union_duplicates/0', no_args, "true"),
+    case('wam_union_bad_left/1', a, "false"),
+    case('wam_union_bad_right/1', a, "false"),
+    case('wam_permutation_guard/2', args('[a,b,c]', '[c,b,a]'), "true"),
+    case('wam_permutation_guard/2', args('[a,b,c]', '[a,b]'), "false"),
+    case('wam_permutation_identity/0', no_args, "true"),
+    case('wam_permutation_duplicates/0', no_args, "true"),
+    case('wam_permutation_bad_left/1', a, "false"),
+    case('wam_permutation_bad_right/1', a, "false"),
     case('wam_list_to_set_guard/2', args('[a,b,c,a,b,d,a]', '[a,b,c,d]'), "true"),
     case('wam_list_to_set_guard/2', args('[a,b,c,a,b,d,a]', '[a,b,c,a]'), "false"),
     case('wam_list_to_set_empty/0', no_args, "true"),
@@ -1464,6 +1664,28 @@ smoke_cases([
     case('wam_char_code_forward_unify_mismatch/0', no_args, "false"),
     case('wam_char_code_bad_char/0', no_args, "false"),
     case('wam_char_code_unbound_pair/1', a, "false"),
+    case('wam_string_code_guard/3', args(1, hello, 104), "true"),
+    case('wam_string_code_guard/3', args(2, hello, 101), "true"),
+    case('wam_string_code_guard/3', args(2, hello, 111), "false"),
+    case('wam_string_code_first/0', no_args, "true"),
+    case('wam_string_code_last/0', no_args, "true"),
+    case('wam_string_code_unify/0', no_args, "true"),
+    case('wam_string_code_mismatch/0', no_args, "false"),
+    case('wam_string_code_oob/0', no_args, "false"),
+    case('wam_string_code_zero/0', no_args, "false"),
+    case('wam_string_code_unbound_index/1', a, "false"),
+    case('wam_string_code_unbound_string/1', a, "false"),
+    case('wam_split_string_guard/4', args(abcbd, b, z, '[a,c,d]'), "true"),
+    case('wam_split_string_guard/4', args(xaxbxcx, b, x, '[a,c]'), "true"),
+    case('wam_split_string_guard/4', args(abbc, b, z, '[a,'''',c]'), "true"),
+    case('wam_split_string_basic/0', no_args, "true"),
+    case('wam_split_string_padding/0', no_args, "true"),
+    case('wam_split_string_empty_separator/0', no_args, "true"),
+    case('wam_split_string_consecutive/0', no_args, "true"),
+    case('wam_split_string_mismatch/0', no_args, "false"),
+    case('wam_split_string_bad_source/1', a, "false"),
+    case('wam_split_string_bad_separator/1', a, "false"),
+    case('wam_split_string_bad_pad/1', a, "false"),
     case('wam_char_type_alpha/0', no_args, "true"),
     case('wam_char_type_digit/0', no_args, "true"),
     case('wam_char_type_space/0', no_args, "true"),
@@ -1798,6 +2020,14 @@ assert_lowered_select_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-select-unbound-list-1"),
     has(CoreCode, "runtime/apply-select-solution").
 
+assert_lowered_between_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-between-guard-3"),
+    has(CoreCode, "defn lowered-wam-between-unbound-low-1"),
+    has(CoreCode, "defn lowered-wam-between-unbound-high-1"),
+    has(CoreCode, "runtime/apply-between-solution").
+
 assert_lowered_numlist_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
@@ -1805,6 +2035,15 @@ assert_lowered_numlist_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-numlist-high-before-low-1"),
     has(CoreCode, "defn lowered-wam-numlist-unbound-low-1"),
     has(CoreCode, "runtime/apply-numlist-solution").
+
+assert_lowered_numeric_list_reducers_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-sum-list-guard-2"),
+    has(CoreCode, "defn lowered-wam-sum-list-empty-0"),
+    has(CoreCode, "defn lowered-wam-min-list-guard-2"),
+    has(CoreCode, "defn lowered-wam-max-list-guard-2"),
+    has(CoreCode, "runtime/apply-numeric-list-reducer-solution").
 
 assert_lowered_delete_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1822,6 +2061,32 @@ assert_lowered_subtract_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-subtract-bad-left-1"),
     has(CoreCode, "defn lowered-wam-subtract-bad-right-1"),
     has(CoreCode, "runtime/apply-subtract-solution").
+
+assert_lowered_intersection_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-intersection-guard-3"),
+    has(CoreCode, "defn lowered-wam-intersection-duplicates-0"),
+    has(CoreCode, "defn lowered-wam-intersection-bad-left-1"),
+    has(CoreCode, "defn lowered-wam-intersection-bad-right-1"),
+    has(CoreCode, "runtime/apply-intersection-solution").
+
+assert_lowered_union_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-union-guard-3"),
+    has(CoreCode, "defn lowered-wam-union-duplicates-0"),
+    has(CoreCode, "defn lowered-wam-union-bad-left-1"),
+    has(CoreCode, "defn lowered-wam-union-bad-right-1"),
+    has(CoreCode, "runtime/apply-union-solution").
+
+assert_lowered_permutation_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-permutation-guard-2"),
+    has(CoreCode, "defn lowered-wam-permutation-identity-0"),
+    has(CoreCode, "defn lowered-wam-permutation-duplicates-0"),
+    has(CoreCode, "runtime/apply-permutation-solution").
 
 assert_lowered_list_to_set_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
@@ -1938,6 +2203,10 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-string-chars-guard-2"),
     has(CoreCode, "defn lowered-wam-string-chars-reverse-mismatch-0"),
     has(CoreCode, "defn lowered-wam-char-code-guard-2"),
+    has(CoreCode, "defn lowered-wam-string-code-guard-3"),
+    has(CoreCode, "defn lowered-wam-string-code-unbound-string-1"),
+    has(CoreCode, "defn lowered-wam-split-string-guard-4"),
+    has(CoreCode, "defn lowered-wam-split-string-consecutive-0"),
     has(CoreCode, "defn lowered-wam-char-type-alpha-0"),
     has(CoreCode, "defn lowered-wam-char-type-code-forward-0"),
     has(CoreCode, "defn lowered-wam-number-codes-guard-2"),
@@ -1959,6 +2228,8 @@ assert_lowered_ground_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/apply-atom-case-solution"),
     has(CoreCode, "runtime/apply-atomic-list-concat-solution"),
     has(CoreCode, "runtime/apply-char-code-solution"),
+    has(CoreCode, "runtime/apply-string-code-solution"),
+    has(CoreCode, "runtime/apply-split-string-solution"),
     has(CoreCode, "runtime/apply-char-type-solution"),
     has(CoreCode, "runtime/apply-atom-concat-solution"),
     has(CoreCode, "runtime/apply-atom-length-solution"),
@@ -2073,6 +2344,13 @@ arg_to_edn_vector(args(Arg1, Arg2, Arg3), ArgsEdn) :-
     prolog_term_string_to_edn(Arg2, EdnArg2),
     prolog_term_string_to_edn(Arg3, EdnArg3),
     format(string(ArgsEdn), "[~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3]).
+arg_to_edn_vector(args(Arg1, Arg2, Arg3, Arg4), ArgsEdn) :-
+    !,
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    prolog_term_string_to_edn(Arg4, EdnArg4),
+    format(string(ArgsEdn), "[~w ~w ~w ~w]", [EdnArg1, EdnArg2, EdnArg3, EdnArg4]).
 arg_to_edn_vector(Arg, ArgsEdn) :-
     prolog_term_string_to_edn(Arg, EdnArg),
     format(string(ArgsEdn), "[~w]", [EdnArg]).
@@ -2102,6 +2380,26 @@ run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2), Output) :-
     (   ErrStr == ""
     ->  true
     ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2), ErrStr), _))
+    ).
+
+run_clojure_predicate(ProjectDir, PredKey, args(Arg1, Arg2, Arg3, Arg4), Output) :-
+    find_clojure_classpath(ClassPath),
+    prolog_term_string_to_edn(Arg1, EdnArg1),
+    prolog_term_string_to_edn(Arg2, EdnArg2),
+    prolog_term_string_to_edn(Arg3, EdnArg3),
+    prolog_term_string_to_edn(Arg4, EdnArg4),
+    process_create(path(java),
+                   ['-cp', ClassPath, 'clojure.main', '-m',
+                    'generated.wam_exec_test.core', PredKey, EdnArg1, EdnArg2, EdnArg3, EdnArg4],
+                   [cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err))]),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr),
+    close(Out),
+    close(Err),
+    normalize_space(string(Output), OutStr0),
+    (   ErrStr == ""
+    ->  true
+    ;   throw(error(java_stderr(PredKey, args(Arg1, Arg2, Arg3, Arg4), ErrStr), _))
     ).
 
 run_clojure_predicate(ProjectDir, PredKey, no_args, Output) :-
@@ -2141,6 +2439,7 @@ prolog_term_string_to_edn(a, "\"a\"") :- !.
 prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
+prolog_term_string_to_edn(x, "\"x\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
 prolog_term_string_to_edn('<', "\"<\"") :- !.
 prolog_term_string_to_edn('=', "\"=\"") :- !.
@@ -2151,6 +2450,9 @@ prolog_term_string_to_edn(0, "0") :- !.
 prolog_term_string_to_edn(1, "1") :- !.
 prolog_term_string_to_edn(2, "2") :- !.
 prolog_term_string_to_edn(3, "3") :- !.
+prolog_term_string_to_edn(4, "4") :- !.
+prolog_term_string_to_edn(5, "5") :- !.
+prolog_term_string_to_edn(7, "7") :- !.
 prolog_term_string_to_edn(2.5, "2.5") :- !.
 prolog_term_string_to_edn(3.5, "3.5") :- !.
 prolog_term_string_to_edn(11, "11") :- !.
@@ -2170,6 +2472,9 @@ prolog_term_string_to_edn(o, "\"o\"") :- !.
 prolog_term_string_to_edn("o", "\"o\"") :- !.
 prolog_term_string_to_edn(bar, "\"bar\"") :- !.
 prolog_term_string_to_edn("bar", "\"bar\"") :- !.
+prolog_term_string_to_edn(abcbd, "\"abcbd\"") :- !.
+prolog_term_string_to_edn(abbc, "\"abbc\"") :- !.
+prolog_term_string_to_edn(xaxbxcx, "\"xaxbxcx\"") :- !.
 prolog_term_string_to_edn("z", "\"z\"") :- !.
 prolog_term_string_to_edn('f(a)', "{:tag :struct :functor \"f/1\" :args [\"a\"]}") :- !.
 prolog_term_string_to_edn('f(a,b)', "{:tag :struct :functor \"f/2\" :args [\"a\" \"b\"]}") :- !.
@@ -2197,6 +2502,8 @@ prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[a,c,d]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"d\" \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[a,'''',c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,c,d]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" {:tag :struct :functor \"[|]/2\" :args [\"d\" \"[]\"]}]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b,a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}]}]}") :- !.

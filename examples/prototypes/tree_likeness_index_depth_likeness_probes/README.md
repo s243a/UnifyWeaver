@@ -25,6 +25,43 @@ The fourth row (B = 15 fixed) was an earlier intermediate result captured
 in the same script `v1_v3_root_targeted_depth_probe.py` (commented config
 toggle); the corresponding results file is preserved separately.
 
+### V3 budget from the materialised `max_dist_to_root` metric
+
+V3's budget `B` (max acyclic parent distance to root) *is* the
+`max_dist_to_root` root-anchored metric (docs/design/ROOT_ANCHORED_METRICS_*).
+`scripts/max_dist_budget.py` holds that quantity as two cross-checked
+implementations, and V3 can now read the **ingest-materialised** lookup instead
+of recomputing it:
+
+```bash
+# 1. build a Phase-1 scoped LMDB rooted at the V3 root, then materialise the
+#    metric UNBOUNDED (max_depth >= graph diameter so it isn't truncated):
+python3 examples/benchmark/build_scoped_subtree_lmdb.py --src <phase1_lmdb> \
+    --root 137597 --out /tmp/sw_scoped --max-depth 100
+python3 benchmarks/root-metrics/prototype/build_max_distance.py \
+    --lmdb /tmp/sw_scoped --max-depth 100
+# 2. point V3 at it:
+python3 scripts/v3_max_parent_distance_probe.py --max-dist-metric /tmp/sw_scoped
+```
+
+**Budget DP corrected.** The probe's original in-line DP assumed "every parent
+has a smaller BFS depth" and only followed shortest-depth-decreasing parents, so
+it **undercounted** any node with a near-root shortcut parent *and* a longer
+ancestor chain through a deeper parent — on a diamond (`4->{1,3}`, `3->2`,
+`2->1`) it returned `max_dist[4]=1` instead of the true longest acyclic path
+`4->3->2->1 = 3`. `dp_max_dist` now computes the true longest path via a
+topological-order (Kahn) longest-path DP, and `max_dist_budget.py`'s self-check
+asserts it **equals** the materialised `max_dist_to_root` metric. With the DP
+fixed, `--max-dist-metric` is an equivalent **precompute** (read the table vs
+recompute), not a correction.
+
+⚠️ **This changes V3 results.** Any V3 numbers in
+`docs/reports/depth_likeness_budget_variants.md` / `results/` produced before
+this fix used the undercounted budget `B`; the corrected DP grows `B` for
+shortcut-parent nodes, so the MIN/AVG/SHORTCUT split will shift. Those committed
+results should be regenerated. Run `python3 scripts/max_dist_budget.py` to see
+the DP/metric agreement.
+
 ## Headline empirical findings
 
 See `docs/reports/depth_likeness_budget_variants.md` for the full

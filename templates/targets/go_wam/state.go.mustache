@@ -462,6 +462,50 @@ func (vm *WamState) restoreSavedRegs(saved []Value) {
 	}
 }
 
+// ClauseSnapshot is the clause-entry state a T4 (multi_clause_n) lowered
+// method restores between clause attempts. The lowered method enumerates
+// EVERY clause itself (first-solution / deterministic-prefix), so the
+// interpreter is never entered for the predicate. Mirrors the ChoicePoint
+// snapshot, minus the resume PC; NextVarId is monotonic (unique ids) and is
+// intentionally not restored.
+type ClauseSnapshot struct {
+	savedRegs []Value
+	trailMark int
+	heapTop   int
+	stackLen  int
+	cp        int
+	e         int
+}
+
+// LoClauseSnapshot captures the clause-entry state for LoRestoreClause.
+func (vm *WamState) LoClauseSnapshot() ClauseSnapshot {
+	return ClauseSnapshot{
+		savedRegs: vm.snapshotAllRegs(),
+		trailMark: vm.TrailLen,
+		heapTop:   vm.HeapLen,
+		stackLen:  len(vm.Stack),
+		cp:        vm.CP,
+		e:         vm.E,
+	}
+}
+
+// LoRestoreClause restores vm to a clause-entry snapshot before the next
+// clause attempt (mirrors backtrack's WamCP restore, minus the PC).
+func (vm *WamState) LoRestoreClause(snap ClauseSnapshot) {
+	vm.unwindTrailTo(snap.trailMark)
+	vm.restoreSavedRegs(snap.savedRegs)
+	if snap.stackLen <= len(vm.Stack) {
+		vm.Stack = vm.Stack[:snap.stackLen]
+	}
+	vm.E = snap.e
+	if snap.heapTop >= 0 && snap.heapTop <= vm.HeapLen {
+		vm.heapTrimTo(snap.heapTop)
+	}
+	vm.CP = snap.cp
+	vm.CurrentStruct = nil
+	vm.CurrentList = nil
+}
+
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
@@ -947,12 +991,131 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 				b.WriteString(value.String())
 			}
 			argIdx++
+		case 's':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			text, ok := vm.formatStringDirective(vm.deref(args[argIdx]))
+			if !ok {
+				return "", false
+			}
+			b.WriteString(text)
+			argIdx++
 		default:
 			b.WriteByte('~')
 			b.WriteByte(template[i])
 		}
 	}
 	return b.String(), true
+}
+
+func (vm *WamState) formatStringDirective(value Value) (string, bool) {
+	if isEmptyListValue(value) {
+		return "", true
+	}
+	if atom, ok := value.(*Atom); ok {
+		return atom.Name, true
+	}
+	items, ok := vm.listToSlice(value)
+	if !ok {
+		return "", false
+	}
+	var b strings.Builder
+	for _, item := range items {
+		code, ok := vm.deref(item).(*Integer)
+		if !ok || code.Val < 0 || code.Val > 0x10ffff {
+			return "", false
+		}
+		b.WriteRune(rune(code.Val))
+	}
+	return b.String(), true
+}
+
+func (vm *WamState) canonicalTermString(value Value) string {
+	value = vm.deref(value)
+	if isEmptyListValue(value) {
+		return "[]"
+	}
+	if items, ok := vm.listToSlice(value); ok {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, vm.canonicalTermString(item))
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	switch t := value.(type) {
+	case *Atom:
+		return canonicalAtomText(t.Name)
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10)
+	case *Float:
+		return strconv.FormatFloat(t.Val, 'g', -1, 64)
+	case *Compound:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Structure:
+		return vm.canonicalCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Unbound:
+		return "_"
+	case *Ref:
+		return fmt.Sprintf("ref(%d)", t.Addr)
+	default:
+		return value.String()
+	}
+}
+
+func (vm *WamState) canonicalCompoundString(name string, args []Value) string {
+	if len(args) == 0 {
+		return canonicalAtomText(name)
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, vm.canonicalTermString(arg))
+	}
+	return canonicalAtomText(name) + "(" + strings.Join(parts, ", ") + ")"
+}
+
+func canonicalAtomText(name string) string {
+	if !canonicalAtomNeedsQuote(name) {
+		return name
+	}
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range name {
+		if r == '\'' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
+func canonicalAtomNeedsQuote(name string) bool {
+	if name == "[]" {
+		return false
+	}
+	if name == "" {
+		return true
+	}
+	if _, err := strconv.ParseInt(name, 10, 64); err == nil {
+		return true
+	}
+	if _, err := strconv.ParseFloat(name, 64); err == nil {
+		return true
+	}
+	first := true
+	for _, r := range name {
+		if first {
+			if !unicode.IsLower(r) {
+				return true
+			}
+			first = false
+		}
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+			return true
+		}
+	}
+	return false
 }
 
 func formatTemplateText(v Value) (string, bool) {
@@ -1402,6 +1565,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return true
 	case "write/1":
 		fmt.Print(vm.deref(arg1).String())
+		return true
+	case "write_canonical/1":
+		fmt.Print(vm.canonicalTermString(arg1))
 		return true
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())

@@ -6199,6 +6199,21 @@ go_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
 go_render_classified_last(_, _, [], []).
 
 %% go_output_goal_last(+Goal, +VarMap, -Lines)
+go_output_goal_last(_Module:Goal, VarMap, Lines) :-
+    !, go_output_goal_last(Goal, VarMap, Lines).
+% A final goal that computes the output variable directly (R is Expr / R =
+% Expr) must `return Expr`, not `argN = Expr; return argN`: when the output
+% head var is pre-registered in the VarMap (build_head_varmap names it after
+% its head position, e.g. arg2), go_output_goal would emit an `=` assignment
+% to a name that was never declared as a Go local. Mirror the /4 variant.
+go_output_goal_last(is(Var, Expr), VarMap, [Line]) :-
+    var(Var), !,
+    go_expr(Expr, VarMap, GoExpr),
+    format(string(Line), '\t\treturn ~w', [GoExpr]).
+go_output_goal_last(=(Var, Expr), VarMap, [Line]) :-
+    var(Var), !,
+    go_expr(Expr, VarMap, GoExpr),
+    format(string(Line), '\t\treturn ~w', [GoExpr]).
 go_output_goal_last(Goal, VarMap, [Line]) :-
     go_output_goal(Goal, VarMap, AssignLine, VarMapOut),
     (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
@@ -21332,10 +21347,33 @@ go_expr_wrapper(VarMap, Arg, GoExpr) :- go_expr(Arg, VarMap, GoExpr).
 % ============================================================================
 
 %% compile_clause_parallel_to_go(+PredSpec, +Clauses, -Code)
-%  Compile an order-independent multi-clause predicate into concurrent
-%  clause exploration via goroutines and a results channel.
-%  Each clause runs in its own goroutine; results are collected on a
-%  buffered channel. The caller receives all solutions.
+%  Compile an order-independent multi-clause predicate.
+%
+%  T5 fast path (first): when the clauses discriminate on a DISTINCT
+%  first-argument constant, at most one clause can ever match, so the
+%  clause-parallel goroutine fan-out is pure overhead — emit a deterministic
+%  first-argument `switch` instead. This is the native-path analogue of the
+%  WAM-lowered T5 dispatch (wam_clause_chain) and also avoids the unused-`ctx`
+%  / undeclared-output-variable codegen the goroutine path produced for these
+%  shapes.
+%
+%  Decline (second): if NO clause compiles natively (e.g. arity-1 boolean
+%  facts, which the value-returning native model — zero input params,
+%  last-arg-as-output — cannot represent), fail so the caller routes the
+%  predicate to WAM lowering instead of emitting an all-empty goroutine body
+%  with an unused `ctx`.
+%
+%  Default (third): concurrent clause exploration via goroutines and a
+%  results channel. Each clause runs in its own goroutine; results are
+%  collected on a buffered channel; the caller receives the first solution.
+compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
+    go_native_t5_dispatch(PredSpec, Clauses, Code),
+    !.
+compile_clause_parallel_to_go(PredSpec, Clauses, _Code) :-
+    \+ ( member(Head-Body, Clauses),
+         native_go_clause(PredSpec, Head, Body, _, _) ),
+    !,
+    fail.
 compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
     PredSpec = Pred/Arity,
     atom_string(Pred, PredStr),
@@ -21373,6 +21411,52 @@ compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
 \t\treturn r
 \t}
 \tpanic("No matching clause for ~w")', [NumClauses, CaptureComment, NumClauses, NumClauses, BranchesBlock, PredStr]).
+
+%% go_native_t5_dispatch(+PredSpec, +Clauses, -Code) is semidet.
+%  Emit a deterministic first-argument `switch` when every clause
+%  discriminates on a distinct first-argument constant and on nothing else
+%  (the only guard native_go_clause produces is `arg1 == <const>`). At most
+%  one case can match, so this is sound for an order-independent predicate and
+%  needs no goroutines. Requires arity >= 2 so arg1 is an input parameter (an
+%  arity-1 predicate has zero input params under the native last-arg-as-output
+%  model, so its first argument is not available to switch on — those decline
+%  and route to WAM lowering).
+go_native_t5_dispatch(Pred/Arity, Clauses, Code) :-
+    Arity >= 2,
+    Clauses = [_,_|_],
+    go_native_t5_cases(Pred/Arity, Clauses, Cases),
+    findall(Lit, member(case(Lit, _), Cases), Lits),
+    sort(Lits, Distinct),
+    length(Lits, N), length(Distinct, N),   % all first-arg constants distinct
+    atom_string(Pred, PredStr),
+    maplist(go_native_t5_case_block, Cases, CaseBlocks),
+    atomic_list_concat(CaseBlocks, '\n', CasesBlock),
+    format(string(Code),
+'\t// T5 first-argument dispatch: clauses discriminate on a distinct
+\t// first-argument constant, so at most one matches — emitted as a
+\t// deterministic switch (no clause-parallel goroutines required).
+\tswitch arg1 {
+~w
+\t}
+\tpanic("No matching clause for ~w")', [CasesBlock, PredStr]).
+
+%% go_native_t5_cases(+PredSpec, +Clauses, -Cases)
+%  Each clause must compile via native_go_clause with a guard that is exactly
+%  the first-argument constant test (no further conditions), and its first
+%  head argument must be that atomic constant.
+go_native_t5_cases(_, [], []).
+go_native_t5_cases(PredSpec, [Head-Body|Rest], [case(Lit, ClauseCode)|RestCases]) :-
+    Head =.. [_Pred, FirstArg|_],
+    atomic(FirstArg),
+    go_literal(FirstArg, Lit),
+    native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    format(string(FirstArgCond), 'arg1 == ~w', [Lit]),
+    Condition == FirstArgCond,
+    go_native_t5_cases(PredSpec, Rest, RestCases).
+
+%% go_native_t5_case_block(+Case, -Block)
+go_native_t5_case_block(case(Lit, ClauseCode), Block) :-
+    format(string(Block), '\tcase ~w:\n~w', [Lit, ClauseCode]).
 
 %% compile_clause_parallel_branches(+PredSpec, +Clauses, +Idx, -BranchCodes)
 compile_clause_parallel_branches(_, [], _, []).

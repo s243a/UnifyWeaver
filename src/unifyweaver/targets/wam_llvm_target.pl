@@ -1928,13 +1928,26 @@ pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
                BundledCode),
            Record = native(PredIndicator, Arity, BundledCode),
            NextPC = StartPC
-        ;  LowerShape == multi_clause_c1
-        -> format(user_error,
-            '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
-            [Pred, Arity]),
+        ;  ( LowerShape == multi_clause_c1 ; LowerShape == clause_chain
+           ; LowerShape == multi_clause_n )
+        -> ( LowerShape == clause_chain
+           ->  format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid T5 first-arg dispatch + bytecode)~n',
+                 [Pred, Arity])
+           ;   LowerShape == multi_clause_n
+           ->  format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid T4 all-clauses inline + bytecode)~n',
+                 [Pred, Arity])
+           ;   format(user_error,
+                 '  ~w/~w: lowered LLVM emission (hybrid clause-1 + bytecode)~n',
+                 [Pred, Arity])
+           ),
            % Parse the WAM bytecode (all clauses) into the merge so the
            % dispatcher's slow path can run it. The dispatcher entry
            % is emitted in pass2 via emit_hybrid_dispatcher.
+           % clause_chain lowers ALL clauses as the fast path; the bytecode is
+           % still emitted so the unbound-first-arg case (which the lowered fn
+           % declines by returning false) is enumerated by @run_loop.
            %
            % Hybrid records use the bare Pred/Arity form (matching the
            % wam-record convention) so partition / resolve / dispatch
@@ -2060,7 +2073,12 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
     % emit_one_record_entry_func/5 inside emit_all_entry_funcs.
     append(WamRecords, HybridRecords, WamLikeRecords),
     (   WamLikeRecords == []
-    ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
+        % Even with no bytecode predicates (everything fully lowered),
+        % the interpreter runtime's do_call/do_execute cases reference
+        % @wam_dispatch_meta_call unconditionally, so its definition
+        % (with empty dispatch tables) must still be emitted.
+    ->  emit_meta_call_dispatch([], MergedCode),
+        EntryFuncs = '', SwitchDefs = ''
     ;   emit_merged_wam_section(WamLikeRecords, LabelMap, NamePCPairs, Options,
                                 MergedCode, EntryFuncs, SwitchDefs)
     ),
@@ -2098,15 +2116,18 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
                             AllSwitchDefs),
     length(AllLiterals, InstrCount),
     length(NamePCPairs, LabelCount),
-    % M108: side-channel the module-level instruction/label counts
-    % so the test harness (and any other caller) can fetch them
-    % without re-reading and regex-grepping the multi-MB IR file --
-    % a per-test ~7MB allocation that was the dominant source of
-    % SWI-stack pressure on long suites.
     retractall(wam_llvm_last_compile_counts(_, _)),
     assertz(wam_llvm_last_compile_counts(InstrCount, LabelCount)),
     (   InstrCount =:= 0
-    ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
+        % Even with no bytecode (every predicate fully lowered), the
+        % interpreter runtime's do_call/do_execute cases reference
+        % @wam_dispatch_meta_call unconditionally, so its definition
+        % (with empty dispatch tables) must still be emitted.
+    ->  emit_meta_call_dispatch([], MetaCallDispatch),
+        format(string(CodeGlobal),
+"; === Merged WAM code: none (all predicates fully lowered) ===
+~w", [MetaCallDispatch]),
+        EntryFuncs = '', SwitchDefs = ''
     ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
                 AllLiterals, Entries),
         atomic_list_concat(Entries, ',\n', EntriesStr),
@@ -2118,15 +2139,19 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
            atomic_list_concat(LabelRows, ',\n', LabelsStr),
            LabelArraySize = LabelCount
         ),
-        format(atom(CodeGlobal),
-'; === Merged WAM code and labels (project-level) ===
+        emit_meta_call_dispatch(LabelMap, MetaCallDispatch),
+        format(string(CodeGlobal),
+"; === Merged WAM code and labels (project-level) ===
 @module_code = private constant [~w x %Instruction] [
 ~w
 ]
 
 @module_labels = private constant [~w x i32] [
 ~w
-]',         [InstrCount, EntriesStr, LabelArraySize, LabelsStr]),
+]
+
+~w",
+            [InstrCount, EntriesStr, LabelArraySize, LabelsStr, MetaCallDispatch]),
         emit_all_entry_funcs(WamRecords, Options,
                              InstrCount, LabelCount, LabelArraySize,
                              EntryFuncs),
@@ -2136,6 +2161,94 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
         )
     ).
 
+emit_meta_call_dispatch(LabelMap, IR) :-
+    findall(entry(AtomId, Arity, LabelIdx),
+        ( member(Label-LabelIdx, LabelMap),
+          catch(split_functor_arity(Label, NameStr, Arity), _, fail),
+          Arity >= 0,
+          atom_string(NameAtom, NameStr),
+          intern_atom(NameAtom, AtomId)
+        ),
+        Entries0),
+    sort(Entries0, Entries),
+    length(Entries, Count),
+    (   Count =:= 0
+    ->  ArraySize = 1,
+        AtomRows = "  i64 0",
+        ArityRows = "  i32 0",
+        LabelRows = "  i32 0"
+    ;   ArraySize = Count,
+        findall(A, (member(entry(AtomId, _, _), Entries), format(atom(A), '  i64 ~w', [AtomId])), AtomList),
+        findall(R, (member(entry(_, Arity, _), Entries), format(atom(R), '  i32 ~w', [Arity])), ArityList),
+        findall(L, (member(entry(_, _, LabelIdx), Entries), format(atom(L), '  i32 ~w', [LabelIdx])), LabelList),
+        atomic_list_concat(AtomList, ',\n', AtomRows),
+        atomic_list_concat(ArityList, ',\n', ArityRows),
+        atomic_list_concat(LabelList, ',\n', LabelRows)
+    ),
+    format(string(IR),
+"; === Meta-call dispatch table: atom_id + arity -> label index ===
+@wam_meta_call_atom_ids = private constant [~w x i64] [
+~w
+]
+@wam_meta_call_arities = private constant [~w x i32] [
+~w
+]
+@wam_meta_call_label_indexes = private constant [~w x i32] [
+~w
+]
+
+define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
+entry:
+  %arity_ok = icmp sge i32 %total_arity, 1
+  br i1 %arity_ok, label %read_goal, label %fail
+
+read_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tag = extractvalue %Value %goal, 0
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_goal, label %fail
+
+atom_goal:
+  %atom_id = extractvalue %Value %goal, 1
+  %target_arity = sub i32 %total_arity, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %atom_goal ], [ %next_i, %next ]
+  %done = icmp sge i32 %i, ~w
+  br i1 %done, label %fail, label %check
+
+check:
+  %atom_ptr = getelementptr [~w x i64], [~w x i64]* @wam_meta_call_atom_ids, i32 0, i32 %i
+  %cand_atom = load i64, i64* %atom_ptr
+  %atom_match = icmp eq i64 %atom_id, %cand_atom
+  %arity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %i
+  %cand_arity = load i32, i32* %arity_ptr
+  %arity_match = icmp eq i32 %target_arity, %cand_arity
+  %match = and i1 %atom_match, %arity_match
+  br i1 %match, label %dispatch, label %next
+
+next:
+  %next_i = add i32 %i, 1
+  br label %loop
+
+dispatch:
+  %label_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %i
+  %label_idx = load i32, i32* %label_ptr
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  %valid = icmp sge i32 %target_pc, 0
+  br i1 %valid, label %go, label %fail
+
+go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i1 true
+
+fail:
+  ret i1 false
+}",
+        [ArraySize, AtomRows, ArraySize, ArityRows, ArraySize, LabelRows,
+         Count, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize, ArraySize]).
 %% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
 %%                         -AllSwitchDefs)
 %  Resolves each record's raw instructions against GlobalLabels and
@@ -2979,16 +3092,28 @@ dealloc.done:
   ret i1 true').
 
 wam_llvm_case('do_call',
-'  ; op1 = label index, op2 = arity
+'  ; op1 = label index or -1 for meta-call, op2 = arity
   %call.label = trunc i64 %op1 to i32
+  %call.pc = call i32 @wam_get_pc(%WamState* %vm)
+  %call.next = add i32 %call.pc, 1
+  %call.is_meta = icmp slt i32 %call.label, 0
+  br i1 %call.is_meta, label %call.meta, label %call.static
+
+call.meta:
+  %call.meta_arity = trunc i64 %op2 to i32
+  %call.meta_ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %call.meta_arity, i32 %call.next)
+  br i1 %call.meta_ok, label %call.meta_done, label %call.fail
+
+call.meta_done:
+  ret i1 true
+
+call.static:
   %call.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %call.label)
   %call.valid = icmp sge i32 %call.target_pc, 0
   br i1 %call.valid, label %call.go, label %call.fail
 
 call.go:
   ; Save continuation
-  %call.pc = call i32 @wam_get_pc(%WamState* %vm)
-  %call.next = add i32 %call.pc, 1
   call void @wam_set_cp(%WamState* %vm, i32 %call.next)
   ; Save cpn for cut_barrier
   %call.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
@@ -3002,8 +3127,21 @@ call.fail:
   ret i1 false').
 
 wam_llvm_case('do_execute',
-'  ; op1 = label index
+'  ; op1 = label index or -1 for meta-call, op2 = total arity for meta-call
   %exec.label = trunc i64 %op1 to i32
+  %exec.is_meta = icmp slt i32 %exec.label, 0
+  br i1 %exec.is_meta, label %exec.meta, label %exec.static
+
+exec.meta:
+  %exec.meta_arity = trunc i64 %op2 to i32
+  %exec.after = call i32 @wam_get_cp(%WamState* %vm)
+  %exec.meta_ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %exec.meta_arity, i32 %exec.after)
+  br i1 %exec.meta_ok, label %exec.meta_done, label %exec.fail
+
+exec.meta_done:
+  ret i1 true
+
+exec.static:
   %exec.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %exec.label)
   %exec.valid = icmp sge i32 %exec.target_pc, 0
   br i1 %exec.valid, label %exec.go, label %exec.fail
@@ -14162,17 +14300,39 @@ wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
     throw(error(label_resolution_required(retry_me_else, L),
           'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
 
+wam_meta_call_label(Label) :-
+    wam_meta_call_total_arity(Label, _).
+
+wam_meta_call_total_arity(Label, Arity) :-
+    (   atom(Label)
+    ->  atom_string(Label, LabelString)
+    ;   string(Label)
+    ->  LabelString = Label
+    ),
+    sub_string(LabelString, 0, 5, _, "call/"),
+    sub_string(LabelString, 5, _, 0, ArityString),
+    number_string(Arity, ArityString),
+    Arity >= 1.
+
 %% wam_instruction_to_llvm_literal(+WamInstr, +LabelMap, -LLVMLiteral)
 %  Label-aware variant. LabelMap is a list of LabelName-Index pairs.
 %  NOTE: trailing `; comment` was removed because LLVM treats `;` as a
 %  line comment to end-of-line, which eats the comma separator in array
 %  constants and produces a parser error.
 wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
-    lookup_label_index(P, LabelMap, LabelIdx),
+    (   wam_meta_call_label(P)
+    ->  LabelIdx = -1
+    ;   lookup_label_index(P, LabelMap, LabelIdx)
+    ),
     format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
 wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
-    lookup_label_index(P, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 19, i64 ~w, i64 0 }', [LabelIdx]).
+    (   wam_meta_call_label(P)
+    ->  LabelIdx = -1,
+        wam_meta_call_total_arity(P, Arity)
+    ;   lookup_label_index(P, LabelMap, LabelIdx),
+        Arity = 0
+    ),
+    format(atom(Lit), '{ i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_instruction_to_llvm_literal(try_me_else(Label), LabelMap, Lit) :- !,
     lookup_label_index(Label, LabelMap, LabelIdx),
     format(atom(Lit), '{ i32 22, i64 ~w, i64 0 }', [LabelIdx]).
@@ -15318,7 +15478,6 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 %  - With wam_strict_labels(true) in Options: throw an error
 lookup_label_index(LabelName, LabelMap, Index) :-
     lookup_label_index(LabelName, LabelMap, [], Index).
-
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
@@ -15339,12 +15498,20 @@ lookup_label_index(LabelName, LabelMap, Options, Index) :-
 wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    lookup_label_index(CP, LabelMap, LabelIdx),
+    (   wam_meta_call_label(CP)
+    ->  LabelIdx = -1
+    ;   lookup_label_index(CP, LabelMap, LabelIdx)
+    ),
     format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
     clean_comma(P, CP),
-    lookup_label_index(CP, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 0 }', [LabelIdx]).
+    (   wam_meta_call_label(CP)
+    ->  LabelIdx = -1,
+        wam_meta_call_total_arity(CP, Arity)
+    ;   lookup_label_index(CP, LabelMap, LabelIdx),
+        Arity = 0
+    ),
+    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["try_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
@@ -15357,6 +15524,8 @@ wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
     format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
+wam_line_to_llvm_literal_resolved(["switch_on_constant_fallthrough" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
 % switch_on_constant: defer until compile_wam_predicate_to_llvm can
 % allocate a switch table global. Returns a switch_deferred(_) term.
 wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
@@ -15706,6 +15875,9 @@ wam_line_to_llvm_literal(["cut", Yn], Lit) :-
 wam_line_to_llvm_literal(["jump", _], _) :-
     throw(error(label_resolution_required(jump, "provide a LabelMap"),
                 _)).
+
+wam_line_to_llvm_literal(["switch_on_constant_fallthrough" | _],
+    '%Instruction { i32 26, i64 0, i64 0 }') :- !.
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),

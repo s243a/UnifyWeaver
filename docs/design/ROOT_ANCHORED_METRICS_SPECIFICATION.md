@@ -202,6 +202,12 @@ This is the formal statement that the node-DP is **not an approximation** — it
 the same quantity, reorganised from "sum over paths" to "sum over path-lengths
 weighted by path-count," which collapses the exponential to `O(edges·max_depth)`.
 
+For large supports, the exact path-length buckets may later be represented by a
+hybrid exact-prefix plus finite-support tail fit. That representation choice is
+specified separately in `DISTRIBUTIONAL_FIT_POLICY.md`; it does not change the
+semantics of this section, only how the finite distribution is stored and
+propagated.
+
 ## 6. Materialised output layout (`materialize(ingest)`)
 
 When materialised at ingest, the metric is stored in the Phase-1 LMDB next to the
@@ -223,6 +229,11 @@ Query semantics against a materialised table:
   improve the best?" consults `metric_min_dist_to_root[N]`; if
   `stored_min + remaining_budget` cannot beat the incumbent, the branch is cut.
   This is the branch-prune the philosophy doc motivates.
+- **Distribution-cache cutoffs** are the distributional analogue: when a path
+  aggregate reaches a node with a compatible cached path-statistic distribution,
+  the traversal can integrate that distribution over the remaining budget instead
+  of enumerating the suffix. See `DISTRIBUTIONAL_FIT_POLICY.md` for the
+  compatibility and error-bound rules.
 
 A materialised table is only valid for the root it was built against; a different
 root needs either its own table or the `kernel` mode.

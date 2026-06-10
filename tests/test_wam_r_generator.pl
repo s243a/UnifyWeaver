@@ -599,11 +599,14 @@ test(lowered_emitter_phase3) :-
     assertion(current_predicate(wam_r_lowered_emitter:wam_r_lowerable/3)),
     assertion(current_predicate(wam_r_lowered_emitter:lower_predicate_to_r/4)),
     assertion(current_predicate(wam_r_lowered_emitter:r_lowered_func_name/2)),
-    % Multi-clause predicates are now lowerable as multi_clause_n
-    % (all supported clauses inline).
+    % Multi-clause predicates are lowerable with all supported clauses
+    % inline. wam_r_choice_fact/1 discriminates on a distinct first-argument
+    % constant (a/b/c), so it lowers as the T5 clause_chain (all clauses
+    % inline plus an O(1) bound-first-arg dispatch); predicates whose clauses
+    % do not form a distinct-first-arg chain lower as multi_clause_n.
     compile_predicate_to_wam_string(user:wam_r_choice_fact/1, ChoiceWam),
     once(wam_r_lowered_emitter:wam_r_lowerable(user:wam_r_choice_fact/1,
-                                               ChoiceWam, multi_clause_n)),
+                                               ChoiceWam, clause_chain)),
     % Single-clause deterministic rule is lowered with reason
     % `deterministic`.
     compile_predicate_to_wam_string(user:wam_r_caller/1, CallerWam),

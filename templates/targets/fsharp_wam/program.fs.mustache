@@ -338,12 +338,62 @@ let main argv =
     // depth=1) so the result matches the dispatched path exactly.
     let maxDepthCfg = Map.tryFind "max_depth" ctx.WcForeignConfig |> Option.defaultValue 10
     let lookupFn = lmdbLookupFn
+{{match kernel_kind}}
+{{case bidirectional_ancestor}}
+    // Bidirectional kernel setup (hoisted out of the rep loop):
+    //   lookupParents = lmdbLookupFn (the LMDB category_parent fast path
+    //     already configured for the selected materialisation mode above)
+    //   lookupChildren = CSR cursor over category_child (the bidir kernel
+    //     walks DOWN as well as up; without it the descent direction is
+    //     dead and bidirectional degenerates to upward-only)
+    //   parentStepCost / childStepCost / costBudget = mirror the hardcoded
+    //     dispatch defaults in WamRuntime.fs's executeForeign
+    //     "category_ancestor/4" branch (parent=1.0, child=3.0, budget=10.0)
+    //     so the native benchmark loop's timing is directly comparable to
+    //     the WAM-dispatched path.
+{{#has_csr}}
+    let csrChildBidir =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_child")
+        :> ILookupSource
+    let lookupChildrenBidir (k: int) : int list = csrChildBidir.Lookup k
+{{/has_csr}}
+{{^has_csr}}
+    // No CSR artifact present: downward direction is dead.  The kernel
+    // will still run but will only explore upward edges — i.e. degenerates
+    // to category_ancestor-shaped traversal.  Documented degradation,
+    // not a build failure.
+    let lookupChildrenBidir (_: int) : int list = []
+{{/has_csr}}
+    let lookupParentsBidir : int -> int list = lmdbLookupFn
+    let parentStepCost = 1.0
+    let childStepCost = 3.0
+    let costBudget = 10.0
+{{/match}}
     for rep = 1 to numReps do
         let querySw = Stopwatch.StartNew()
         let mutable repSolutions = 0
+{{match kernel_kind}}
+{{case category_ancestor}}
+        // category_ancestor native benchmark loop (LMDB fast path)
         for cat in seedInts do
             let hits = nativeKernel_category_ancestor lookupFn cat rootInt maxDepthCfg 1 [ cat ]
             if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+{{case bidirectional_ancestor}}
+        // bidirectional_ancestor native benchmark loop (LMDB parents + CSR children).
+        // Mirrors WamRuntime.fs executeForeign's "category_ancestor/4"
+        // bidirectional dispatch; setup is hoisted above the rep loop.
+        for cat in seedInts do
+            let hits =
+                nativeKernel_bidirectional_ancestor
+                    lookupParentsBidir lookupChildrenBidir
+                    cat rootInt
+                    parentStepCost childStepCost costBudget
+            if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+{{default}}
+        // Unknown kernel kind: skip the native benchmark loop.
+        for _cat in seedInts do
+            ()
+{{/match}}
         querySw.Stop()
         lastQueryMs <- querySw.ElapsedMilliseconds
         totalSolutions <- totalSolutions + repSolutions

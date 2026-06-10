@@ -3164,6 +3164,23 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
     assertz((user:wam_c_meta_disj_set_left(a) :- true)),
     assertz((user:wam_c_meta_disj_set_right(b) :- true)),
     assertz((user:wam_c_meta_disj_set_right(c) :- true)),
+    assertz((user:wam_c_meta_ite_cond(a) :- true)),
+    assertz((user:wam_c_meta_ite_cond(b) :- true)),
+    assertz((user:wam_c_meta_ite_then(a) :- true)),
+    assertz((user:wam_c_meta_ite_then(a) :- true)),
+    assertz((user:wam_c_meta_ite_fail_cond(_) :- fail)),
+    assertz((user:wam_c_meta_ite_else(c) :- true)),
+    assertz((user:wam_c_meta_ite_else(d) :- true)),
+    assertz((user:wam_c_meta_ite_set_then(b) :- true)),
+    assertz((user:wam_c_meta_ite_set_then(a) :- true)),
+    assertz((user:wam_c_meta_ite_set_then(b) :- true)),
+    assertz((user:wam_c_meta_call_item(a) :- true)),
+    assertz((user:wam_c_meta_call_item(b) :- true)),
+    assertz((user:wam_c_meta_call_pair(a, k) :- true)),
+    assertz((user:wam_c_meta_call_pair(b, k) :- true)),
+    assertz((user:wam_c_meta_call_dup(b) :- true)),
+    assertz((user:wam_c_meta_call_dup(a) :- true)),
+    assertz((user:wam_c_meta_call_dup(b) :- true)),
     assertz((user:wam_c_meta_bag(L) :-
         bagof(X, wam_c_meta_item(X), L))),
     assertz((user:wam_c_meta_set(L) :-
@@ -3186,6 +3203,32 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         setof(X,
               (wam_c_meta_disj_set_left(X); wam_c_meta_disj_set_right(X)),
               L))),
+    assertz((user:wam_c_meta_ite_bag(L) :-
+        bagof(X,
+              (wam_c_meta_ite_cond(X)
+               -> wam_c_meta_ite_then(X)
+               ;  wam_c_meta_ite_else(X)),
+              L))),
+    assertz((user:wam_c_meta_ite_else_bag(L) :-
+        bagof(X,
+              (wam_c_meta_ite_fail_cond(X)
+               -> wam_c_meta_ite_then(X)
+               ;  wam_c_meta_ite_else(X)),
+              L))),
+    assertz((user:wam_c_meta_ite_set(L) :-
+        setof(X,
+              (true
+               -> wam_c_meta_ite_set_then(X)
+               ;  wam_c_meta_ite_else(X)),
+              L))),
+    assertz((user:wam_c_meta_call_bag(L) :-
+        bagof(X, call(wam_c_meta_call_item, X), L))),
+    assertz((user:wam_c_meta_call_pair_bag(L) :-
+        bagof(X, call(wam_c_meta_call_pair, X, k), L))),
+    assertz((user:wam_c_meta_call_partial_bag(L) :-
+        bagof(X, call(wam_c_meta_call_pair(X), k), L))),
+    assertz((user:wam_c_meta_call_set(L) :-
+        setof(X, call(wam_c_meta_call_dup, X), L))),
     (   compile_predicate_to_wam(user:wam_c_meta_item/1, [], WamItem),
         compile_predicate_to_wam(user:wam_c_meta_dup/1, [], WamDup),
         compile_predicate_to_wam(user:wam_c_meta_none/1, [], WamNone),
@@ -3197,6 +3240,14 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         compile_predicate_to_wam(user:wam_c_meta_disj_right/1, [], WamDisjRight),
         compile_predicate_to_wam(user:wam_c_meta_disj_set_left/1, [], WamDisjSetLeft),
         compile_predicate_to_wam(user:wam_c_meta_disj_set_right/1, [], WamDisjSetRight),
+        compile_predicate_to_wam(user:wam_c_meta_ite_cond/1, [], WamIteCond),
+        compile_predicate_to_wam(user:wam_c_meta_ite_then/1, [], WamIteThen),
+        compile_predicate_to_wam(user:wam_c_meta_ite_fail_cond/1, [], WamIteFailCond),
+        compile_predicate_to_wam(user:wam_c_meta_ite_else/1, [], WamIteElse),
+        compile_predicate_to_wam(user:wam_c_meta_ite_set_then/1, [], WamIteSetThen),
+        compile_predicate_to_wam(user:wam_c_meta_call_item/1, [], WamCallItem),
+        compile_predicate_to_wam(user:wam_c_meta_call_pair/2, [], WamCallPair),
+        compile_predicate_to_wam(user:wam_c_meta_call_dup/1, [], WamCallDup),
         compile_predicate_to_wam(user:wam_c_meta_bag/1, [], WamBag),
         compile_predicate_to_wam(user:wam_c_meta_set/1, [], WamSet),
         compile_predicate_to_wam(user:wam_c_meta_empty_bag/1, [], WamEmptyBag),
@@ -3204,6 +3255,13 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         compile_predicate_to_wam(user:wam_c_meta_conj_set/1, [], WamConjSet),
         compile_predicate_to_wam(user:wam_c_meta_disj_bag/1, [], WamDisjBag),
         compile_predicate_to_wam(user:wam_c_meta_disj_set/1, [], WamDisjSet),
+        compile_predicate_to_wam(user:wam_c_meta_ite_bag/1, [], WamIteBag),
+        compile_predicate_to_wam(user:wam_c_meta_ite_else_bag/1, [], WamIteElseBag),
+        compile_predicate_to_wam(user:wam_c_meta_ite_set/1, [], WamIteSet),
+        compile_predicate_to_wam(user:wam_c_meta_call_bag/1, [], WamCallBag),
+        compile_predicate_to_wam(user:wam_c_meta_call_pair_bag/1, [], WamCallPairBag),
+        compile_predicate_to_wam(user:wam_c_meta_call_partial_bag/1, [], WamCallPartialBag),
+        compile_predicate_to_wam(user:wam_c_meta_call_set/1, [], WamCallSet),
         sub_string(WamBag, _, _, _, 'execute bagof/3'),
         \+ sub_string(WamBag, _, _, _, 'begin_aggregate bagof'),
         sub_string(WamSet, _, _, _, 'execute setof/3'),
@@ -3220,6 +3278,29 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         sub_string(WamDisjSet, _, _, _, 'put_structure ;/2'),
         sub_string(WamDisjSet, _, _, _, 'execute setof/3'),
         \+ sub_string(WamDisjSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamIteBag, _, _, _, 'put_structure ;/2'),
+        sub_string(WamIteBag, _, _, _, 'put_structure ->/2'),
+        sub_string(WamIteBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamIteBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamIteElseBag, _, _, _, 'put_structure ->/2'),
+        sub_string(WamIteElseBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamIteElseBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamIteSet, _, _, _, 'put_structure ->/2'),
+        sub_string(WamIteSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamIteSet, _, _, _, 'begin_aggregate setof'),
+        sub_string(WamCallBag, _, _, _, 'put_structure call/2'),
+        sub_string(WamCallBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamCallBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamCallPairBag, _, _, _, 'put_structure call/3'),
+        sub_string(WamCallPairBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamCallPairBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamCallPartialBag, _, _, _, 'put_structure call/2'),
+        sub_string(WamCallPartialBag, _, _, _, 'put_structure wam_c_meta_call_pair/1'),
+        sub_string(WamCallPartialBag, _, _, _, 'execute bagof/3'),
+        \+ sub_string(WamCallPartialBag, _, _, _, 'begin_aggregate bagof'),
+        sub_string(WamCallSet, _, _, _, 'put_structure call/2'),
+        sub_string(WamCallSet, _, _, _, 'execute setof/3'),
+        \+ sub_string(WamCallSet, _, _, _, 'begin_aggregate setof'),
         compile_wam_predicate_to_c(user:wam_c_meta_item/1, WamItem, [], ItemCode),
         compile_wam_predicate_to_c(user:wam_c_meta_dup/1, WamDup, [], DupCode),
         compile_wam_predicate_to_c(user:wam_c_meta_none/1, WamNone, [], NoneCode),
@@ -3231,6 +3312,14 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         compile_wam_predicate_to_c(user:wam_c_meta_disj_right/1, WamDisjRight, [], DisjRightCode),
         compile_wam_predicate_to_c(user:wam_c_meta_disj_set_left/1, WamDisjSetLeft, [], DisjSetLeftCode),
         compile_wam_predicate_to_c(user:wam_c_meta_disj_set_right/1, WamDisjSetRight, [], DisjSetRightCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_cond/1, WamIteCond, [], IteCondCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_then/1, WamIteThen, [], IteThenCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_fail_cond/1, WamIteFailCond, [], IteFailCondCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_else/1, WamIteElse, [], IteElseCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_set_then/1, WamIteSetThen, [], IteSetThenCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_item/1, WamCallItem, [], CallItemCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_pair/2, WamCallPair, [], CallPairCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_dup/1, WamCallDup, [], CallDupCode),
         compile_wam_predicate_to_c(user:wam_c_meta_bag/1, WamBag, [], BagCode),
         compile_wam_predicate_to_c(user:wam_c_meta_set/1, WamSet, [], SetCode),
         compile_wam_predicate_to_c(user:wam_c_meta_empty_bag/1, WamEmptyBag, [], EmptyBagCode),
@@ -3238,14 +3327,27 @@ run_real_prolog_bagof_setof_meta_call_smoke :-
         compile_wam_predicate_to_c(user:wam_c_meta_conj_set/1, WamConjSet, [], ConjSetCode),
         compile_wam_predicate_to_c(user:wam_c_meta_disj_bag/1, WamDisjBag, [], DisjBagCode),
         compile_wam_predicate_to_c(user:wam_c_meta_disj_set/1, WamDisjSet, [], DisjSetCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_bag/1, WamIteBag, [], IteBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_else_bag/1, WamIteElseBag, [], IteElseBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_ite_set/1, WamIteSet, [], IteSetCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_bag/1, WamCallBag, [], CallBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_pair_bag/1, WamCallPairBag, [], CallPairBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_partial_bag/1, WamCallPartialBag, [], CallPartialBagCode),
+        compile_wam_predicate_to_c(user:wam_c_meta_call_set/1, WamCallSet, [], CallSetCode),
         atomic_list_concat([ItemCode, DupCode, NoneCode,
                             ConjItemCode, ConjKeepCode, ConjDupCode,
                             ConjSetKeepCode,
                             DisjLeftCode, DisjRightCode,
                             DisjSetLeftCode, DisjSetRightCode,
+                            IteCondCode, IteThenCode, IteFailCondCode,
+                            IteElseCode, IteSetThenCode,
+                            CallItemCode, CallPairCode, CallDupCode,
                             BagCode, SetCode, EmptyBagCode,
                             ConjBagCode, ConjSetCode,
-                            DisjBagCode, DisjSetCode],
+                            DisjBagCode, DisjSetCode,
+                            IteBagCode, IteElseBagCode, IteSetCode,
+                            CallBagCode, CallPairBagCode,
+                            CallPartialBagCode, CallSetCode],
                            '\n\n',
                            PredCode),
         compile_wam_runtime_to_c([], RuntimeCode),
@@ -3280,13 +3382,28 @@ cleanup_wam_c_bagof_setof_meta_call_smoke :-
     retractall(user:wam_c_meta_disj_right(_)),
     retractall(user:wam_c_meta_disj_set_left(_)),
     retractall(user:wam_c_meta_disj_set_right(_)),
+    retractall(user:wam_c_meta_ite_cond(_)),
+    retractall(user:wam_c_meta_ite_then(_)),
+    retractall(user:wam_c_meta_ite_fail_cond(_)),
+    retractall(user:wam_c_meta_ite_else(_)),
+    retractall(user:wam_c_meta_ite_set_then(_)),
+    retractall(user:wam_c_meta_call_item(_)),
+    retractall(user:wam_c_meta_call_pair(_, _)),
+    retractall(user:wam_c_meta_call_dup(_)),
     retractall(user:wam_c_meta_bag(_)),
     retractall(user:wam_c_meta_set(_)),
     retractall(user:wam_c_meta_empty_bag(_)),
     retractall(user:wam_c_meta_conj_bag(_)),
     retractall(user:wam_c_meta_conj_set(_)),
     retractall(user:wam_c_meta_disj_bag(_)),
-    retractall(user:wam_c_meta_disj_set(_)).
+    retractall(user:wam_c_meta_disj_set(_)),
+    retractall(user:wam_c_meta_ite_bag(_)),
+    retractall(user:wam_c_meta_ite_else_bag(_)),
+    retractall(user:wam_c_meta_ite_set(_)),
+    retractall(user:wam_c_meta_call_bag(_)),
+    retractall(user:wam_c_meta_call_pair_bag(_)),
+    retractall(user:wam_c_meta_call_partial_bag(_)),
+    retractall(user:wam_c_meta_call_set(_)).
 
 run_real_prolog_classic_recursive_executable_smoke :-
     assertz((user:wam_c_classic_fib(0, 0) :- true)),
@@ -6826,6 +6943,14 @@ void setup_wam_c_meta_disj_left_1(WamState* state);
 void setup_wam_c_meta_disj_right_1(WamState* state);
 void setup_wam_c_meta_disj_set_left_1(WamState* state);
 void setup_wam_c_meta_disj_set_right_1(WamState* state);
+void setup_wam_c_meta_ite_cond_1(WamState* state);
+void setup_wam_c_meta_ite_then_1(WamState* state);
+void setup_wam_c_meta_ite_fail_cond_1(WamState* state);
+void setup_wam_c_meta_ite_else_1(WamState* state);
+void setup_wam_c_meta_ite_set_then_1(WamState* state);
+void setup_wam_c_meta_call_item_1(WamState* state);
+void setup_wam_c_meta_call_pair_2(WamState* state);
+void setup_wam_c_meta_call_dup_1(WamState* state);
 void setup_wam_c_meta_bag_1(WamState* state);
 void setup_wam_c_meta_set_1(WamState* state);
 void setup_wam_c_meta_empty_bag_1(WamState* state);
@@ -6833,6 +6958,13 @@ void setup_wam_c_meta_conj_bag_1(WamState* state);
 void setup_wam_c_meta_conj_set_1(WamState* state);
 void setup_wam_c_meta_disj_bag_1(WamState* state);
 void setup_wam_c_meta_disj_set_1(WamState* state);
+void setup_wam_c_meta_ite_bag_1(WamState* state);
+void setup_wam_c_meta_ite_else_bag_1(WamState* state);
+void setup_wam_c_meta_ite_set_1(WamState* state);
+void setup_wam_c_meta_call_bag_1(WamState* state);
+void setup_wam_c_meta_call_pair_bag_1(WamState* state);
+void setup_wam_c_meta_call_partial_bag_1(WamState* state);
+void setup_wam_c_meta_call_set_1(WamState* state);
 
 static bool wam_c_meta_expect_atom_list2(WamState *state, WamValue value,
                                          const char *first,
@@ -6892,6 +7024,14 @@ int main(void) {
     setup_wam_c_meta_disj_right_1(&state);
     setup_wam_c_meta_disj_set_left_1(&state);
     setup_wam_c_meta_disj_set_right_1(&state);
+    setup_wam_c_meta_ite_cond_1(&state);
+    setup_wam_c_meta_ite_then_1(&state);
+    setup_wam_c_meta_ite_fail_cond_1(&state);
+    setup_wam_c_meta_ite_else_1(&state);
+    setup_wam_c_meta_ite_set_then_1(&state);
+    setup_wam_c_meta_call_item_1(&state);
+    setup_wam_c_meta_call_pair_2(&state);
+    setup_wam_c_meta_call_dup_1(&state);
     setup_wam_c_meta_bag_1(&state);
     setup_wam_c_meta_set_1(&state);
     setup_wam_c_meta_empty_bag_1(&state);
@@ -6899,6 +7039,13 @@ int main(void) {
     setup_wam_c_meta_conj_set_1(&state);
     setup_wam_c_meta_disj_bag_1(&state);
     setup_wam_c_meta_disj_set_1(&state);
+    setup_wam_c_meta_ite_bag_1(&state);
+    setup_wam_c_meta_ite_else_bag_1(&state);
+    setup_wam_c_meta_ite_set_1(&state);
+    setup_wam_c_meta_call_bag_1(&state);
+    setup_wam_c_meta_call_pair_bag_1(&state);
+    setup_wam_c_meta_call_partial_bag_1(&state);
+    setup_wam_c_meta_call_set_1(&state);
 
     WamValue bag_args[1] = { val_unbound("Bag") };
     int bag_rc = wam_run_predicate(&state, "wam_c_meta_bag/1", bag_args, 1);
@@ -6906,7 +7053,8 @@ int main(void) {
         !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 10;
     }
@@ -6917,7 +7065,8 @@ int main(void) {
         !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 20;
     }
@@ -6928,7 +7077,8 @@ int main(void) {
     if (empty_rc != WAM_HALT ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 30;
     }
@@ -6940,7 +7090,8 @@ int main(void) {
         !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "c") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 40;
     }
@@ -6952,7 +7103,8 @@ int main(void) {
         !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 50;
     }
@@ -6964,7 +7116,8 @@ int main(void) {
         !wam_c_meta_expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 60;
     }
@@ -6976,9 +7129,104 @@ int main(void) {
         !wam_c_meta_expect_atom_list3(&state, state.A[0], "a", "b", "c") ||
         state.B != 0 || state.call_base_top != 0 ||
         state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
-        state.conj_top != 0 || state.disj_top != 0) {
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
         wam_free_state(&state);
         return 70;
+    }
+
+    WamValue ite_bag_args[1] = { val_unbound("IteBag") };
+    int ite_bag_rc = wam_run_predicate(&state, "wam_c_meta_ite_bag/1",
+                                       ite_bag_args, 1);
+    if (ite_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "a") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 80;
+    }
+
+    WamValue ite_else_bag_args[1] = { val_unbound("IteElseBag") };
+    int ite_else_bag_rc = wam_run_predicate(&state,
+                                            "wam_c_meta_ite_else_bag/1",
+                                            ite_else_bag_args, 1);
+    if (ite_else_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "c", "d") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 90;
+    }
+
+    WamValue ite_set_args[1] = { val_unbound("IteSet") };
+    int ite_set_rc = wam_run_predicate(&state, "wam_c_meta_ite_set/1",
+                                       ite_set_args, 1);
+    if (ite_set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 100;
+    }
+
+    WamValue call_bag_args[1] = { val_unbound("CallBag") };
+    int call_bag_rc = wam_run_predicate(&state, "wam_c_meta_call_bag/1",
+                                        call_bag_args, 1);
+    if (call_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 110;
+    }
+
+    WamValue call_pair_bag_args[1] = { val_unbound("CallPairBag") };
+    int call_pair_bag_rc = wam_run_predicate(&state,
+                                             "wam_c_meta_call_pair_bag/1",
+                                             call_pair_bag_args, 1);
+    if (call_pair_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 120;
+    }
+
+    WamValue call_partial_bag_args[1] = { val_unbound("CallPartialBag") };
+    int call_partial_bag_rc =
+        wam_run_predicate(&state, "wam_c_meta_call_partial_bag/1",
+                          call_partial_bag_args, 1);
+    if (call_partial_bag_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 130;
+    }
+
+    WamValue call_set_args[1] = { val_unbound("CallSet") };
+    int call_set_rc = wam_run_predicate(&state, "wam_c_meta_call_set/1",
+                                        call_set_args, 1);
+    if (call_set_rc != 0 || state.P != WAM_HALT ||
+        !wam_c_meta_expect_atom_list2(&state, state.A[0], "a", "b") ||
+        state.B != 0 || state.call_base_top != 0 ||
+        state.aggregate_top != 0 || state.aggregate_group_top != 0 ||
+        state.conj_top != 0 || state.disj_top != 0 ||
+        state.ite_top != 0) {
+        wam_free_state(&state);
+        return 140;
     }
 
     wam_free_state(&state);

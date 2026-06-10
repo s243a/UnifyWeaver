@@ -397,7 +397,7 @@ final class LmdbFactSource(
     val firstM = cursorClass.getMethod("first")
     val nextM  = cursorClass.getMethod("next")
     val keyM   = cursorClass.getMethod("key")
-    val valM   = cursorClass.getMethod("`val`")
+    val valM   = cursorClass.getMethod("val")
     val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
     var hasMore = firstM.invoke(cursor).asInstanceOf[java.lang.Boolean].booleanValue()
     while (hasMore) {
@@ -415,7 +415,7 @@ final class LmdbFactSource(
     val mdbSet     = seekOpClass.getField("MDB_SET").get(null)
     val mdbNextDup = seekOpClass.getField("MDB_NEXT_DUP").get(null)
     val keyM = cursorClass.getMethod("key")
-    val valM = cursorClass.getMethod("`val`")
+    val valM = cursorClass.getMethod("val")
     val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
     val first = getM.invoke(cursor, keyBuf, mdbSet).asInstanceOf[java.lang.Boolean].booleanValue()
     if (first) {
@@ -724,6 +724,23 @@ object WamRuntime {
   // ----------------------------------------------------------
 
   def snapshotRegs(s: WamState): Array[WamTerm] = s.regs.clone()
+
+  /** T4 (multi_clause_n): restore `s` to a clause-entry snapshot the lowered
+   *  function captured before trying the next clause. The lowered function
+   *  enumerates ALL its clauses itself (first-solution / deterministic-prefix
+   *  semantics, like loCall), so the interpreter is never entered for the
+   *  predicate. Mirrors backtrack's WamCP restore, minus the pc (the lowered
+   *  function controls its own control flow). */
+  def loRestoreClause(s: WamState, regs: Array[WamTerm], trailLen: Int,
+                       env: List[EnvFrame], cutBar: Int, varId: Int): Unit = {
+    unwindTrail(s, trailLen)
+    System.arraycopy(regs, 0, s.regs, 0, REG_ARRAY_SIZE)
+    s.envStack   = env
+    s.cutBar     = cutBar
+    s.nextVarId  = varId
+    s.unifyQueue = Nil
+    s.buildStack = Nil
+  }
 
   def pushChoicePoint(s: WamState, targetPc: Int): Unit = {
     val cp = ChoicePoint(

@@ -30,6 +30,7 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 % ============================================================================
 % Parsing — identical to Haskell emitter (WAM text format is target-agnostic)
@@ -242,7 +243,11 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
     % Skip all switch_on_constant* prefixes before deciding whether this is
     % a multi-clause or single-clause lowered body.
     strip_switch_prefixes_fs(PCInstrs, PCInstrs1),
-    (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
+    (   emit_func_t5_fs(PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    ;   emit_func_t4_fs(PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T4 all-clauses inline (every clause native, no interpreter hop)
+    ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  % Multi-clause: push CP for clause-2+ backtrack, try clause 1
         atom_string(LAtom, LStr),
         (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
@@ -276,6 +281,179 @@ take_to_proceed_pc_fs([], []).
 take_to_proceed_pc_fs([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
 take_to_proceed_pc_fs([pc(PC, fail)|_], [pc(PC, fail)]) :- !.
 take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
+
+% ============================================================================
+% T5: multi-clause as a first-argument dispatch (wam_clause_chain)
+%
+%  When the clauses discriminate on a DISTINCT first-argument constant
+%  (lowering type T5 in docs/proposals/WAM_LOWERING_TAXONOMY_AND_MATRIX.md)
+%  ALL clauses are lowered to native F# and selected by a deref-and-match
+%  cascade, instead of lowering only clause 1 and reaching clauses 2+ through
+%  the interpreter on backtrack. When the first argument is BOUND this is
+%  deterministic dispatch with no interpreter hop; when it is UNBOUND (or the
+%  register is unset) we defer to the interpreter via the same choice-point /
+%  backtrack / run fallback the ordinary multi-clause path uses.
+%
+%  Each clause body is emitted in FULL (the leading `get_constant V, A1` is
+%  kept): on the bound fast path it harmlessly re-matches the already-bound
+%  first argument, and on the unbound fallback it is exactly what binds the
+%  variable. Mirrors the Haskell emitter's emit_func_t5/4.
+% ============================================================================
+
+%% emit_func_t5_fs(+PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T5 dispatch body and succeeds, or fails (emitting nothing) when
+%  the predicate is not a distinct-first-argument constant chain. All checks
+%  run before any output, so a failure leaves the stream untouched for the
+%  caller's ordinary multi/single-clause emission.
+emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
+    maplist(t5_strip_pc_fs, PCInstrs1, PlainInstrs),
+    clause_chain(PlainInstrs, chain(_Guards)),
+    t5_split_clauses_pc_fs(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(( member(Sl, Slices), member(pc(_, In), Sl) ), supported_fs(In)),
+    maplist(t5_slice_discriminator_fs, Slices, Discrs),
+    % All checks passed — emit.
+    atom_string(L2Atom, L2Str),
+    ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
+    t5_emit_clause_defs_fs(Slices, 1, LabelMap, FP),
+    % Interpreter fallback for the unbound/unset first-argument case.
+    format("    let t5fallback () : WamState option =~n"),
+    format("        let s_cp =~n"),
+    format("            { s_init with~n"),
+    format("                WsCPs    = { CpNextPC   = ~w~n", [AltPC]),
+    format("                             CpRegs     = s_init.WsRegs~n"),
+    format("                             CpStack    = s_init.WsStack~n"),
+    format("                             CpCP       = s_init.WsCP~n"),
+    format("                             CpTrailLen = s_init.WsTrailLen~n"),
+    format("                             CpHeapLen  = s_init.WsHeapLen~n"),
+    format("                             CpBindings = s_init.WsBindings~n"),
+    format("                             CpCutBar   = s_init.WsCutBar~n"),
+    format("                             CpB0StackLen = List.length s_init.WsB0Stack~n"),
+    format("                             CpAggFrame = None~n"),
+    format("                             CpBuiltin  = None } :: s_init.WsCPs~n"),
+    format("                WsCPsLen = s_init.WsCPsLen + 1 }~n"),
+    format("        match t5clause_1 s_cp with~n"),
+    format("        | Some result -> Some result~n"),
+    format("        | None ->~n"),
+    format("            backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n"),
+    % Dispatch: deref the first argument once, then select.
+    format("    match (getReg 1 s_init |> Option.map (derefVar s_init.WsBindings)) with~n"),
+    format("    | Some (Unbound _) -> t5fallback ()~n"),
+    format("    | Some v ->~n"),
+    t5_emit_dispatch_arms_fs(Discrs, 1),
+    format("    | None -> t5fallback ()~n").
+
+t5_strip_pc_fs(pc(_, I), I).
+
+% ============================================================================
+% T4: multi-clause, all clauses inline (multi_clause_n)
+%
+%  When the clauses do NOT discriminate on a distinct first-argument constant
+%  (so T5 declines) but every clause is a fully-supported deterministic body,
+%  lower them ALL: each clause becomes a `WamState -> WamState option`, and the
+%  function tries them in order on the SAME input state, taking the first Some.
+%  F#'s immutability gives a free per-clause restore (each clause runs against
+%  the unchanged s_init), so — unlike the imperative targets — no snapshot/
+%  restore is needed and no choice point is pushed: the interpreter is never
+%  entered for the predicate. Mirrors the Haskell emitter's emit_func_t4.
+% ============================================================================
+
+%% emit_func_t4_fs(+PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T4 all-clauses body and succeeds, or fails (emitting nothing)
+%  when the predicate is not a multi-clause predicate whose every clause is a
+%  supported deterministic body. All checks run before any output.
+emit_func_t4_fs(PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(_))|_],
+    t5_split_clauses_pc_fs(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(member(Sl, Slices),
+           ( % Reject an if-then-else soft-cut block masquerading as a
+             % multi-clause head: it also opens with try_me_else and uses
+             % trust_me as its else-separator, but its slices carry cut_ite /
+             % jump markers a clean multi-clause body never has. ITE blocks
+             % fall through to the multi_clause_1 path.
+             \+ member(pc(_, try_me_else(_)), Sl),
+             \+ member(pc(_, cut_ite), Sl),
+             \+ member(pc(_, jump(_)), Sl),
+             forall(member(pc(_, In), Sl), supported_fs(In)) )),
+    % All checks passed — emit.
+    format("    // T4 all-clauses inline (generated): try each clause on the input~n"),
+    format("    // state; first Some wins. Immutability gives a free per-clause~n"),
+    format("    // restore, so the interpreter is never entered for the predicate.~n"),
+    t4_emit_clause_defs_fs(Slices, 1, LabelMap, FP),
+    format("    t4clause_1 s_init~n"),
+    t4_emit_chain_tail_fs(Slices, 2).
+
+%% t4_emit_clause_defs_fs(+Slices, +Index, +LabelMap, +FP)
+t4_emit_clause_defs_fs([], _, _, _).
+t4_emit_clause_defs_fs([Slice|Rest], N, LabelMap, FP) :-
+    format("    let t4clause_~w (s_c~w: WamState) : WamState option =~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct_fs(Slice, LabelMap, SV, "        ", FP),
+    N1 is N + 1,
+    t4_emit_clause_defs_fs(Rest, N1, LabelMap, FP).
+
+%% t4_emit_chain_tail_fs(+Slices, +Index) — emit `|> Option.orElseWith` for
+%  clauses 2..N (lazy; clause 1 already emitted as the chain head).
+t4_emit_chain_tail_fs(Slices, N) :-
+    (   nth1(N, Slices, _)
+    ->  format("    |> Option.orElseWith (fun () -> t4clause_~w s_init)~n", [N]),
+        N1 is N + 1,
+        t4_emit_chain_tail_fs(Slices, N1)
+    ;   true
+    ).
+
+%% t5_split_clauses_pc_fs(+PCInstrs1, -Slices)
+%  Split the switch-stripped pc-instruction list (opens with try_me_else) at
+%  the choice-point separators into per-clause slices, each trimmed to its
+%  terminal proceed/fail. Mirrors wam_clause_chain's split_clauses but keeps
+%  the pc(PC,Instr) wrappers for emission.
+t5_split_clauses_pc_fs([pc(_, try_me_else(_))|Rest], [Slice|More]) :-
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+
+t5_split_more_pc_fs([], []).
+t5_split_more_pc_fs([pc(_, retry_me_else(_))|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+t5_split_more_pc_fs([pc(_, trust_me)|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+
+t5_collect_clause_pc_fs([], [], []).
+t5_collect_clause_pc_fs([pc(P, retry_me_else(L))|Rest], [], [pc(P, retry_me_else(L))|Rest]) :- !.
+t5_collect_clause_pc_fs([pc(P, trust_me)|Rest], [], [pc(P, trust_me)|Rest]) :- !.
+t5_collect_clause_pc_fs([Item|Rest], [Item|More], After) :-
+    t5_collect_clause_pc_fs(Rest, More, After).
+
+%% t5_slice_discriminator_fs(+Slice, -FSharpValueExpr)
+t5_slice_discriminator_fs([pc(_, get_constant(VStr, _A1))|_], FC) :-
+    val_fs(VStr, FC).
+
+%% t5_emit_clause_defs_fs(+Slices, +Index, +LabelMap, +FP)
+t5_emit_clause_defs_fs([], _, _, _).
+t5_emit_clause_defs_fs([Slice|Rest], N, LabelMap, FP) :-
+    format("    let t5clause_~w (s_c~w: WamState) : WamState option =~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct_fs(Slice, LabelMap, SV, "        ", FP),
+    N1 is N + 1,
+    t5_emit_clause_defs_fs(Rest, N1, LabelMap, FP).
+
+%% t5_emit_dispatch_arms_fs(+Discrs, +Index)
+%  Emit the bound-value if/elif cascade inside the `| Some v ->` arm.
+t5_emit_dispatch_arms_fs([FC|Rest], 1) :- !,
+    format("        if v = (~w) then t5clause_1 s_init~n", [FC]),
+    t5_emit_dispatch_arms_fs(Rest, 2).
+t5_emit_dispatch_arms_fs([], _) :- !,
+    format("        else None~n").
+t5_emit_dispatch_arms_fs([FC|Rest], N) :-
+    format("        elif v = (~w) then t5clause_~w s_init~n", [FC, N]),
+    N1 is N + 1,
+    t5_emit_dispatch_arms_fs(Rest, N1).
 
 % ============================================================================
 % Instruction emission — F# binding chain style

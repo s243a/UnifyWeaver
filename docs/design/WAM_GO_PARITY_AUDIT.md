@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded format output, tab output, and bounded environment access |
+| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, bounded format output, tab output, and bounded environment access |
 
 ## Immediate Findings
 
@@ -64,12 +64,16 @@ current cross-target builtin/runtime baseline.
   `write/1` rendering, while `writeln/1` appends a newline, matching the
   bounded R/C++ output-polish surface without adding broader `format/N`
   parsing.
+- Bounded `write_canonical/1` is now a direct Go WAM builtin and is covered by
+  the generated builtin E2E test for quoted atoms, proper lists, and compound
+  terms, matching the Python/C++ canonical-output surface without adding
+  stream capture.
 - Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
   covered by the generated builtin E2E test for literal `~~`, newline `~n`,
-  `~w`, `~a`, `~d`, `~p`, and `~q` argument substitution, and
+  `~w`, `~a`, `~d`, `~p`, `~q`, and `~s` argument substitution, and
   missing-argument failure. Stream capture, destination-aware `format/3`,
-  `~s`, tab directives, and richer canonical quoting remain separate from
-  this small R/C++/Python output-parity slice.
+  tab directives, and richer canonical quoting remain separate from this
+  small R/C++/Python output-parity slice.
 - Deterministic `subtract/3` is now covered by the generated Go WAM builtin
   E2E test for filtering all right-list matches from the left list, preserving
   left-list order, empty-list behavior, all-removed results, duplicate removal,

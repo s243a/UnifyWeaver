@@ -2142,6 +2142,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (continuation == WAM_META_CONJ_RETURN) {
                     return wam_continue_conjunction(state);
                 }
+                if (continuation == WAM_META_ITE_THEN) {
+                    return wam_continue_if_then_else(state);
+                }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
                     int barrier_index = --state->call_base_top;
                     int target_b = state->call_bases[barrier_index];
@@ -2564,6 +2567,8 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_finalize_meta_aggregate(state);
                     } else if (next_pc == WAM_META_DISJ_RIGHT) {
                         recovered = wam_resume_disjunction(state);
+                    } else if (next_pc == WAM_META_ITE_ELSE) {
+                        recovered = wam_resume_if_then_else(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
@@ -2596,6 +2601,8 @@ static bool wam_collect_meta_aggregate_success(WamState *state);
 static bool wam_finalize_meta_aggregate(WamState *state);
 static bool wam_continue_conjunction(WamState *state);
 static bool wam_resume_disjunction(WamState *state);
+static bool wam_continue_if_then_else(WamState *state);
+static bool wam_resume_if_then_else(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -2834,16 +2841,116 @@ static bool wam_goal_structure(WamState *state, WamValue goal,
     return false;
 }
 
+static bool wam_complete_goal_success(WamState *state, int return_pc) {
+    if (return_pc == WAM_AGGREGATE_META_COLLECT) {
+        return wam_collect_meta_aggregate_success(state);
+    }
+    if (return_pc == WAM_META_CONJ_RETURN) {
+        return wam_continue_conjunction(state);
+    }
+    if (return_pc == WAM_META_ITE_THEN) {
+        return wam_continue_if_then_else(state);
+    }
+    state->P = return_pc;
+    return true;
+}
+
+static bool wam_dispatch_if_then_else(WamState *state,
+                                      WamValue if_goal,
+                                      WamValue then_goal,
+                                      WamValue else_goal,
+                                      int return_pc) {
+    if (state->ite_top >= WAM_META_GOAL_STACK_SIZE) return false;
+    int base_b = state->B;
+    WamIteFrame *frame = &state->ite_frames[state->ite_top++];
+    frame->then_goal = then_goal;
+    frame->else_goal = else_goal;
+    frame->return_pc = return_pc;
+    frame->base_b = base_b;
+    push_choice_point(state, WAM_META_ITE_ELSE, 32);
+    return wam_invoke_goal_as_call(state, if_goal, WAM_META_ITE_THEN);
+}
+
+static bool wam_functor_with_arity(WamState *state,
+                                   const char *functor,
+                                   int arity,
+                                   char *out,
+                                   size_t out_size) {
+    const char *slash = strrchr(functor, 47);
+    if (!slash) return false;
+    size_t name_len = (size_t)(slash - functor);
+    if (name_len == 0 || name_len >= out_size) return false;
+    int written = snprintf(out, out_size, "%.*s/%d",
+                           (int)name_len, functor, arity);
+    if (written <= 0 || written >= (int)out_size) return false;
+    (void)state;
+    return true;
+}
+
+static bool wam_dispatch_call_n(WamState *state,
+                                int base,
+                                int arity,
+                                int return_pc) {
+    if (arity < 1) return false;
+    WamValue callable = state->H_array[base + 1];
+    if (arity == 1) {
+        return wam_invoke_goal_as_call(state, callable, return_pc);
+    }
+
+    int extra_count = arity - 1;
+    WamValue args[WAM_MAX_REGS];
+    int goal_arity = 0;
+    char functor_buf[256];
+
+    WamValue *callable_cell = wam_deref_ptr(state, &callable);
+    if (callable_cell->tag == VAL_ATOM) {
+        goal_arity = extra_count;
+        int written = snprintf(functor_buf, sizeof(functor_buf), "%s/%d",
+                               callable_cell->data.atom, goal_arity);
+        if (written <= 0 || written >= (int)sizeof(functor_buf)) return false;
+    } else {
+        const char *callable_functor = NULL;
+        int callable_base = -1;
+        if (!wam_goal_structure(state, callable, &callable_functor,
+                                &callable_base)) return false;
+        int callable_arity = 0;
+        if (!wam_parse_functor_arity(callable_functor,
+                                     &callable_arity)) return false;
+        if (callable_arity > WAM_MAX_REGS - extra_count) return false;
+        goal_arity = callable_arity + extra_count;
+        if (!wam_functor_with_arity(state, callable_functor, goal_arity,
+                                    functor_buf, sizeof(functor_buf))) {
+            return false;
+        }
+        for (int i = 0; i < callable_arity; i++) {
+            args[i] = state->H_array[callable_base + 1 + i];
+        }
+    }
+
+    if (goal_arity > WAM_MAX_REGS) return false;
+    int existing_args = goal_arity - extra_count;
+    for (int i = 0; i < extra_count; i++) {
+        args[existing_args + i] = state->H_array[base + 2 + i];
+    }
+
+    if (!wam_ensure_heap_slots(state, goal_arity + 1)) return false;
+    int goal_base = state->H;
+    state->H_array[state->H++] = val_atom(wam_intern_atom(state, functor_buf));
+    for (int i = 0; i < goal_arity; i++) {
+        state->H_array[state->H++] = args[i];
+    }
+    WamValue expanded_goal;
+    expanded_goal.tag = VAL_STR;
+    expanded_goal.data.ref_addr = goal_base;
+    return wam_invoke_goal_as_call(state, expanded_goal, return_pc);
+}
+
 static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
                                     int return_pc) {
     WamValue *cell = wam_deref_ptr(state, &goal);
     if (cell->tag == VAL_ATOM) {
         if (strcmp(cell->data.atom, "true") == 0) {
-            if (return_pc == WAM_AGGREGATE_META_COLLECT) {
-                return wam_collect_meta_aggregate_success(state);
-            }
-            state->P = return_pc;
-            return true;
+            return wam_complete_goal_success(state, return_pc);
         }
         if (strcmp(cell->data.atom, "fail") == 0 ||
             strcmp(cell->data.atom, "false") == 0) {
@@ -2864,6 +2971,9 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
     int arity = 0;
     if (!wam_parse_functor_arity(functor, &arity)) return false;
     if (arity > WAM_MAX_REGS) return false;
+    if (strncmp(functor, "call/", 5) == 0 && arity >= 1) {
+        return wam_dispatch_call_n(state, base, arity, return_pc);
+    }
     if (strcmp(functor, ",/2") == 0 && arity == 2) {
         if (state->conj_top >= WAM_META_GOAL_STACK_SIZE) return false;
         WamConjFrame *frame = &state->conj_frames[state->conj_top++];
@@ -2873,6 +2983,17 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
                                        WAM_META_CONJ_RETURN);
     }
     if (strcmp(functor, ";/2") == 0 && arity == 2) {
+        const char *left_functor = NULL;
+        int left_base = -1;
+        if (wam_goal_structure(state, state->H_array[base + 1],
+                               &left_functor, &left_base) &&
+            strcmp(left_functor, "->/2") == 0) {
+            return wam_dispatch_if_then_else(state,
+                                             state->H_array[left_base + 1],
+                                             state->H_array[left_base + 2],
+                                             state->H_array[base + 2],
+                                             return_pc);
+        }
         if (state->disj_top >= WAM_META_GOAL_STACK_SIZE) return false;
         WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
         frame->right_goal = state->H_array[base + 2];
@@ -2880,6 +3001,13 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
         return wam_invoke_goal_as_call(state, state->H_array[base + 1],
                                        return_pc);
+    }
+    if (strcmp(functor, "->/2") == 0 && arity == 2) {
+        return wam_dispatch_if_then_else(state,
+                                         state->H_array[base + 1],
+                                         state->H_array[base + 2],
+                                         val_atom("fail"),
+                                         return_pc);
     }
     if (strcmp(functor, "^/2") == 0 && arity == 2) {
         return wam_invoke_goal_as_call(state, state->H_array[base + 2],
@@ -2904,11 +3032,7 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         return true;
     }
     if (wam_execute_builtin(state, functor, arity)) {
-        if (return_pc == WAM_AGGREGATE_META_COLLECT) {
-            return wam_collect_meta_aggregate_success(state);
-        }
-        state->P = return_pc;
-        return true;
+        return wam_complete_goal_success(state, return_pc);
     }
     return false;
 }
@@ -2928,6 +3052,27 @@ static bool wam_resume_disjunction(WamState *state) {
     state->disj_top--;
     pop_choice_point(state);
     return wam_invoke_goal_as_call(state, right_goal, return_pc);
+}
+
+static bool wam_continue_if_then_else(WamState *state) {
+    if (state->ite_top <= 0) return false;
+    WamIteFrame *frame = &state->ite_frames[state->ite_top - 1];
+    WamValue then_goal = frame->then_goal;
+    int return_pc = frame->return_pc;
+    int base_b = frame->base_b;
+    state->ite_top--;
+    wam_prune_choice_points(state, base_b);
+    return wam_invoke_goal_as_call(state, then_goal, return_pc);
+}
+
+static bool wam_resume_if_then_else(WamState *state) {
+    if (state->ite_top <= 0 || state->B <= 0) return false;
+    WamIteFrame *frame = &state->ite_frames[state->ite_top - 1];
+    WamValue else_goal = frame->else_goal;
+    int return_pc = frame->return_pc;
+    state->ite_top--;
+    pop_choice_point(state);
+    return wam_invoke_goal_as_call(state, else_goal, return_pc);
 }
 
 static bool wam_copy_term_to_stored(WamState *state,

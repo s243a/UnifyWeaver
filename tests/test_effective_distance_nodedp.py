@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2025 John William Creighton (s243a)
-"""Equivalence test for examples/benchmark/build_effective_distance.py.
+"""Equivalence test for benchmarks/root-metrics/prototype/build_effective_distance.py.
 
 On a DAG the length-bucketed node-DP must equal the brute-force sum over simple
 paths that the per-path category_ancestor kernel computes (ROOT_ANCHORED_METRICS
@@ -25,7 +25,7 @@ except ImportError:
     HAVE_LMDB = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TOOL = REPO_ROOT / "examples" / "benchmark" / "build_effective_distance.py"
+TOOL = REPO_ROOT / "benchmarks" / "root-metrics" / "prototype" / "build_effective_distance.py"
 I32 = struct.Struct("<i")
 F64 = struct.Struct("<d")
 

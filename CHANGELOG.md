@@ -7,7 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **WAM LLVM target: undefined `@wam_dispatch_meta_call` when every
+  predicate is fully lowered.** With `emit_mode(functions)` and all
+  predicates natively lowered, no bytecode records exist, so the merged
+  WAM section — which carries the `@wam_dispatch_meta_call` definition —
+  was skipped entirely. The interpreter runtime's `do_call`/`do_execute`
+  cases reference it unconditionally, so clang rejected the module
+  (`use of undefined value`). Both empty-bytecode short-circuits now
+  still emit the dispatch function with empty tables. Fixes the
+  previously-failing `test_wam_llvm_lowered_ite_exec`.
+- **WAM Haskell target: ITE bodies declined by the lowered emitter
+  under `ite_use_y_level` bytecode.** The WAM compiler emits if-then-else
+  as `get_level Yn` + `cut Yn`, but the Haskell lowered emitter's
+  `supported/1` whitelist and `struct_item/3` only knew the legacy
+  `cut_ite` marker, so every ITE predicate fell back to the interpreter
+  (`lowered=0`) and the gated exec test's harness referenced lowered
+  functions that were never generated. The whitelist now accepts
+  `cut(_)`/`get_level(_)`, `struct_item` keeps `cut(Yn)` bare so the
+  shared structurer folds it as the commit (its `is_commit/1` already
+  accepted that form), and `get_level` is a no-op in the lowered
+  if/else. Fixes the previously-failing
+  `test_wam_haskell_lowered_ite_exec`.
+- **WAM Haskell target: generated-file writes crash under POSIX/ASCII
+  locales.** `write_hs_file/2` (and the T4/T5/ITE exec tests' harness
+  writers) opened output streams without `encoding(utf8)`; the
+  generated modules embed UTF-8 from the runtime templates, so
+  `format/3` raised `Encoding cannot represent character` in CI-style
+  containers. All writers now open with `encoding(utf8)`, matching the
+  LLVM target's writer.
+- **WAM Scala target: LMDB cursor-scan (`streamAll`) reflection.**
+  `LmdbFactSource.scanCursorAll`/`cursorSeekAndCollectDupSort` looked up
+  the lmdbjava cursor method via `getMethod("`val`")` — the Scala
+  keyword-escaping backticks were embedded in the *reflective name
+  string*, so the lookup (for a method actually named `val`) threw
+  `NoSuchMethodException` at runtime. The earlier LMDB tests only used
+  ground-key lookups (`Dbi.get`), never the cursor scan, so this never
+  fired. Surfaced by running a graph kernel over an LMDB edge relation
+  (which enumerates the whole relation via `streamAll`); fixed to
+  `getMethod("val")`.
+
 ### Added
+- **WAM Scala target: LMDB-backed graph kernels** verified end-to-end —
+  `kernel_dispatch(true)` composes with an `lmdb(...)` edge fact source so
+  a native kernel reads its adjacency directly from LMDB. New gated
+  `lmdb_backed_kernel` test in `tests/test_wam_scala_lmdb_runtime_smoke.pl`
+  (transitive closure over an LMDB-stored chain), which also covers the
+  `streamAll` cursor-scan path the key-lookup tests miss.
 - **Cross-target audit: WAM first-argument-indexing instruction handlers**
   (`docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`). After fixing the Scala
   `switch_on_*_a2` / `_fallthrough` gap, audited all WAM targets for the

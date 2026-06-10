@@ -316,7 +316,7 @@ user:py_items_api_demo.
 test(python_planning_uses_common_items_api) :-
     once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
     read_file_to_string(Path, Content, []),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [], Items)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], Items)"),
     sub_string(Content, _, _, _, "python_wam_items_plan(Items, Wam)"),
     sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)"),
     !.
@@ -326,7 +326,7 @@ test(python_lowered_mode_keeps_text_plan) :-
     read_file_to_string(Path, Content, []),
     sub_string(Content, _, _, _, "python_wam_emit_ir_mode(Options, IrMode)"),
     sub_string(Content, _, _, _, "wam_ir_mode(wam_python, EmitMode, Options, IrMode)"),
-    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [], WamText)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamText)"),
     sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
     !.
 
@@ -402,10 +402,20 @@ test(compile_all_generated_predicate_rejects_direct_target_ir,
     wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
         [wam_ir(direct_target)], _).
 
-test(compile_all_generated_predicate_rejects_native_items_until_available,
-     [throws(error(existence_error(wam_ir_mode, wam_items_native), _))]) :-
+test(compile_all_generated_predicate_accepts_native_items_ir) :-
     wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
-        [wam_ir(wam_items_native)], _).
+        [wam_ir(wam_items_native)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_native_items_matches_bridge) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_bridge)], BridgeCode),
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], NativeCode),
+    assertion(NativeCode == BridgeCode).
 :- end_tests(wam_python_items_mode_audit).
 
 % ============================================================================
@@ -2181,7 +2191,49 @@ test(static_runtime_io_emits_output, [nondet]) :-
 % Generated-project E2E coverage for packaged static runtime builtins
 % ============================================================================
 
+% Cut / negation / forall predicates (M17 get_level/cut path, enabled via
+% ite_use_y_level). pcut_inline (a cut inside a negated conjunction) and
+% pcut_forall_neg (forall over a multi-solution generator) were wrong under
+% the legacy cut_ite and are fixed by the M17 path.
+:- dynamic user:pcut_acc/3.
+:- dynamic user:pcut_plen/2.
+:- dynamic user:pcut_gen/1.
+:- dynamic user:pcut_partial/0.
+:- dynamic user:pcut_inline/0.
+:- dynamic user:pcut_forall_neg/0.
+:- dynamic user:pcut_forall_pass/0.
+user:pcut_acc(L, _, _) :- var(L), !, fail.
+user:pcut_acc([], N, N) :- !.
+user:pcut_acc([_|T], A, N) :- A1 is A + 1, pcut_acc(T, A1, N).
+user:pcut_plen(L, N) :- pcut_acc(L, 0, N).
+user:pcut_gen(1).
+user:pcut_gen(2).
+user:pcut_gen(3).
+user:pcut_partial :- \+ pcut_plen([a,b|_], _).          % partial list rejected -> true
+user:pcut_inline :- \+ (pcut_gen(_), !, fail).          % inline cut in negation -> true
+user:pcut_forall_neg :- \+ forall(pcut_gen(X), X =:= 1). % not all -> \+ true
+user:pcut_forall_pass :- forall(pcut_gen(X), X >= 1).    % all -> true
+
 :- begin_tests(wam_python_builtin_e2e).
+
+test(generated_project_cut_negation_forall) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_cut_e2e', ProjectDir),
+		(   wam_python_target:write_wam_python_project(
+				[user:pcut_acc/3, user:pcut_plen/2, user:pcut_gen/1,
+				 user:pcut_partial/0, user:pcut_inline/0,
+				 user:pcut_forall_neg/0, user:pcut_forall_pass/0],
+				[], ProjectDir),
+			run_generated_query(ProjectDir, 'pcut_partial/0', O1),
+			\+ sub_string(O1, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_inline/0', O2),
+			\+ sub_string(O2, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_forall_neg/0', O3),
+			\+ sub_string(O3, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_forall_pass/0', O4),
+			\+ sub_string(O4, _, _, _, "false.")
+		),
+		cleanup_tmp_dir(ProjectDir)).
 
 test(generated_project_runs_term_builtins) :-
 	setup_call_cleanup(

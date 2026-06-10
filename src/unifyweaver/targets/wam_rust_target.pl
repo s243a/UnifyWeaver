@@ -28,6 +28,10 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_text_parser', [
+    wam_classify_constant_token/2,
+    wam_tokenize_line/2
+]).
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
@@ -47,6 +51,10 @@
     kernel_native_call/2
 ]).
 
+rust_safe_function_name(Pred/Arity, FuncName) :-
+    !,
+    rust_safe_function_name(Pred, BaseName),
+    format(atom(FuncName), '~w_~w', [BaseName, Arity]).
 rust_safe_function_name(Pred, FuncName) :-
     atom_string(Pred, PredStr),
     string_codes(PredStr, Codes),
@@ -144,17 +152,23 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
-                        self.trail_binding(ai);
-                        self.set_reg_str(ai, Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.smut().push(StackEntry::WriteCtx(arity));
+                        self.heap.push(Value::Str(fn_str.clone(), vec![]));
+                        for _ in 0..arity {
+                            self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        }
+                        self.trail_binding(ai);
+                        if let Value::Unbound(ref name) = val {
+                            self.bind_var(name, Value::Ref(addr));
+                        }
+                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == &format!("str({})", fn_str) {
+                            if s == fn_str || s == &format!("str({})", fn_str) {
                                 let arity = fn_str.split(\'/\').nth(1)
                                     .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                                 let args = self.heap_subargs(addr + 1, arity);
@@ -180,13 +194,15 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                     let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
+                        self.heap.push(Value::Str("./2".to_string(), vec![]));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
                         self.trail_binding(ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
                         }
                         self.set_reg_str(ai, Value::Ref(addr));
-                        self.smut().push(StackEntry::WriteCtx(2));
+                        self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
                         if let Some((head, tail)) = items.split_first() {
@@ -223,16 +239,12 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         self.put_reg(xn, arg);
                         self.pc += 1; true
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        let addr = self.heap.len();
-                        let var = Value::Unbound(format!("_H{}", addr));
-                        self.heap.push(var.clone());
-                        self.smut().pop();
-                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                        self.put_reg(xn, var);
-                        self.pc += 1; true
-                    } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    let var = Value::Unbound(format!("_H{}", self.var_counter));
+                    self.var_counter += 1;
+                    self.set_heap_or_list(var.clone());
+                    self.put_reg(xn, var);
+                    self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
@@ -258,14 +270,10 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                             self.pc += 1; true
                         } else { false }
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        if let Some(val) = self.get_reg(xn) {
-                            self.heap.push(val);
-                            self.smut().pop();
-                            if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                            self.pc += 1; true
-                        } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    if let Some(val) = self.get_reg(xn) {
+                        self.set_heap_or_list(val);
+                        self.pc += 1; true
                     } else { false }
                 } else { false }'.
 
@@ -281,13 +289,9 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                             self.pc += 1; true
                         } else { false }
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        self.heap.push(c.clone());
-                        self.smut().pop();
-                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                        self.pc += 1; true
-                    } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    self.set_heap_or_list(c.clone());
+                    self.pc += 1; true
                 } else { false }'.
 
 % --- Body Construction Instructions ---
@@ -352,8 +356,8 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let var = Value::Unbound(format!("_H{}", addr));
+    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter));
+                self.var_counter += 1;
                 self.put_reg(xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
                 // slot, exactly as set_value/set_constant do. Without this the
@@ -629,7 +633,9 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
-                self.cut_barrier = self.choice_points.len();
+                self.cut_barrier = self.pending_cut_barrier
+                    .take()
+                    .unwrap_or(self.choice_points.len());
                 let saved_cp = self.cp;
                 self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
@@ -715,6 +721,12 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
                 self.pc = ret;
                 true'.
 
+wam_instruction_arm('Instruction::Jump(label)', Body) :-
+    Body = '                if let Some(&target_pc) = self.labels.get(label) {
+                    self.pc = target_pc;
+                    true
+                } else { false }'.
+
 wam_instruction_arm('Instruction::NoOp', Body) :-
     Body = '                self.pc += 1; true'.
 
@@ -754,6 +766,7 @@ wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
 
 wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
+                    let clause_barrier = self.choice_points.len();
                     self.choice_points.push(ChoicePoint {
                         next_pc,
                         saved_args: self.save_regs(),
@@ -764,11 +777,17 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
                     });
+                    if label.starts_with("L_ite_else_") {
+                        self.pending_cut_barrier = None;
+                    } else {
+                        self.pending_cut_barrier = Some(clause_barrier);
+                    }
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
-    Body = '                self.choice_points.push(ChoicePoint {
+    Body = '                let clause_barrier = self.choice_points.len();
+                self.choice_points.push(ChoicePoint {
                     next_pc: *next_pc,
                     saved_args: self.save_regs(),
                     cp: self.cp,
@@ -778,6 +797,7 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                     builtin_state: None,
                     cut_barrier: self.cut_barrier,
                 });
+                self.pending_cut_barrier = Some(clause_barrier);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::TrustMe', Body) :-
@@ -789,6 +809,7 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
                     }
+                    self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
                     self.pc += 1; true
                 } else { false }'.
 
@@ -796,6 +817,7 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
     Body = '                if let Some(cp) = self.choice_points.last_mut() {
                     cp.next_pc = *next_pc;
                 }
+                self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
                 self.pc += 1; true'.
 
 % --- Indexing Instructions ---
@@ -1029,6 +1051,7 @@ compile_backtrack_to_rust(Code0) :-
             self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
             self.cut_barrier = cp.cut_barrier;
+            self.pending_cut_barrier = None;
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
@@ -1130,8 +1153,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             "==/2" => {
-                let v1 = self.get_reg_raw("A1");
-                let v2 = self.get_reg_raw("A2");
+                let v1 = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                let v2 = self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
                 if v1 == v2 { self.pc += 1; true } else { false }
             }
             _ => false,
@@ -1229,8 +1254,17 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "append/3" => {
-                eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
-                false
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                match (self.value_as_list(&a1), self.value_as_list(&a2)) {
+                    (Some(mut left), Some(right)) => {
+                        left.extend(right);
+                        if self.unify(&a3, &Value::List(left)) { self.pc += 1; true }
+                        else { false }
+                    }
+                    _ => false,
+                }
             }
             "functor/3" => {
                 let t = self.get_reg_raw("A1")
@@ -1387,6 +1421,12 @@ compile_execute_term_builtin_to_rust(Code) :-
                     } else { false }
                 } else { false }
             }
+            "reverse/2" => { self.execute_reverse_builtin() }
+            "atom_codes/2" => { self.execute_atom_codes_builtin() }
+            "number_codes/2" => { self.execute_number_codes_builtin() }
+            "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
+            "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
+            "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
             _ => false,
         }
     }
@@ -1425,6 +1465,268 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             _ => v.clone(),
         }
+    }
+
+    fn execute_reverse_builtin(&mut self) -> bool {
+        let src = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let dst = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        match self.value_as_list(&src) {
+            Some(mut items) => {
+                items.reverse();
+                if self.unify(&dst, &Value::List(items)) { self.pc += 1; true }
+                else { false }
+            }
+            None => false,
+        }
+    }
+
+    fn execute_atom_codes_builtin(&mut self) -> bool {
+        let atom_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let codes_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let atom = self.deref_heap(&self.deref_var(&atom_raw));
+        let codes = self.deref_heap(&self.deref_var(&codes_raw));
+        match (atom, codes) {
+            (Value::Atom(text), _) => {
+                let list = Self::string_to_codes_value(&text);
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                match self.code_list_to_string(&items) {
+                    Some(text) => {
+                        if self.unify(&atom_raw, &Value::Atom(text)) { self.pc += 1; true }
+                        else { false }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_number_codes_builtin(&mut self) -> bool {
+        let num_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let codes_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let num = self.deref_heap(&self.deref_var(&num_raw));
+        let codes = self.deref_heap(&self.deref_var(&codes_raw));
+        match (num, codes) {
+            (Value::Integer(n), _) => {
+                let list = Self::string_to_codes_value(&n.to_string());
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Float(f), _) => {
+                let list = Self::string_to_codes_value(&f.to_string());
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                match self.code_list_to_string(&items) {
+                    Some(text) => {
+                        let parsed = if let Ok(n) = text.parse::<i64>() {
+                            Some(Value::Integer(n))
+                        } else if let Ok(f) = text.parse::<f64>() {
+                            Some(Value::Float(f))
+                        } else {
+                            None
+                        };
+                        match parsed {
+                            Some(v) => {
+                                if self.unify(&num_raw, &v) { self.pc += 1; true }
+                                else { false }
+                            }
+                            None => false,
+                        }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_term_to_atom_builtin(&mut self) -> bool {
+        let term_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let atom_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let term = self.deref_heap(&self.deref_var(&term_raw));
+        if matches!(term, Value::Unbound(_)) {
+            let atom = self.deref_heap(&self.deref_var(&atom_raw));
+            match atom {
+                Value::Atom(text) => {
+                    if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
+                    else { false }
+                }
+                _ => false,
+            }
+        } else {
+            let rendered = self.term_to_atom_text(&term);
+            if self.unify(&atom_raw, &Value::Atom(rendered)) { self.pc += 1; true }
+            else { false }
+        }
+    }
+
+    fn execute_read_term_from_atom_builtin(&mut self, _arity: usize) -> bool {
+        let atom = self.get_reg_raw("A1")
+            .map(|v| self.deref_heap(&self.deref_var(&v)));
+        match atom {
+            Some(Value::Atom(text)) => {
+                if self.bind_compiled_parse_atom(&text, "A2") { self.pc += 1; true }
+                else { false }
+            }
+            _ => false,
+        }
+    }
+
+    fn bind_compiled_parse_atom(&mut self, atom_text: &str, target_reg: &str) -> bool {
+        if !self.labels.contains_key("canonical_op_table/1") ||
+           !self.labels.contains_key("parse_term_from_atom/3") {
+            return false;
+        }
+        let mut parser = WamState::new(self.code.clone(), self.labels.clone());
+
+        let ops_var = Value::Unbound("_RP_ops".to_string());
+        parser.set_reg_str("A1", ops_var.clone());
+        if !parser.run_named_label("canonical_op_table/1") {
+            return false;
+        }
+        let ops = parser.deref_heap(&parser.deref_var(&ops_var));
+
+        parser.reset_query();
+        let parsed_var = Value::Unbound("_RP_term".to_string());
+        parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
+        parser.set_reg_str("A2", ops);
+        parser.set_reg_str("A3", parsed_var.clone());
+        if !parser.run_named_label("parse_term_from_atom/3") {
+            return false;
+        }
+
+        let parsed = parser.deref_heap(&parser.deref_var(&parsed_var));
+        let mut var_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let copied = self.copy_external_term_from(&parser, &parsed, &mut var_map);
+        match self.get_reg_raw(target_reg) {
+            Some(target) => self.unify(&target, &copied),
+            None => false,
+        }
+    }
+
+    fn run_named_label(&mut self, label: &str) -> bool {
+        match self.labels.get(label).copied() {
+            Some(pc) => {
+                self.pc = pc;
+                self.cp = 0;
+                self.step_count = 0;
+                self.run()
+            }
+            None => false,
+        }
+    }
+
+    fn copy_external_term_from(
+        &mut self,
+        source: &WamState,
+        value: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        let derefed_var = source.deref_var(value);
+        let derefed = source.deref_heap(&derefed_var);
+        match derefed {
+            Value::Unbound(name) => {
+                if let Some(new_name) = var_map.get(&name) {
+                    Value::Unbound(new_name.clone())
+                } else {
+                    self.var_counter += 1;
+                    let new_name = format!("_RP{}", self.var_counter);
+                    var_map.insert(name, new_name.clone());
+                    Value::Unbound(new_name)
+                }
+            }
+            Value::Str(f, args) => {
+                let copied_args: Vec<Value> = args.iter()
+                    .map(|a| self.copy_external_term_from(source, a, var_map))
+                    .collect();
+                Value::Str(Self::display_functor_name(&f, copied_args.len()), copied_args)
+            }
+            Value::List(items) => {
+                let copied_items: Vec<Value> = items.iter()
+                    .map(|i| self.copy_external_term_from(source, i, var_map))
+                    .collect();
+                Value::List(copied_items)
+            }
+            other => other,
+        }
+    }
+
+    fn value_as_list(&self, value: &Value) -> Option<Vec<Value>> {
+        let derefed = self.deref_heap(&self.deref_var(value));
+        match derefed {
+            Value::List(items) => Some(items),
+            Value::Atom(s) if s == "[]" => Some(Vec::new()),
+            Value::Str(f, args) if self.is_cons_functor(&f) && args.len() == 2 => {
+                let mut tail = self.value_as_list(&args[1])?;
+                tail.insert(0, args[0].clone());
+                Some(tail)
+            }
+            _ => None,
+        }
+    }
+
+    fn string_to_codes_value(text: &str) -> Value {
+        Value::List(text.chars()
+            .map(|c| Value::Integer(c as i64))
+            .collect())
+    }
+
+    fn code_list_to_string(&self, items: &[Value]) -> Option<String> {
+        let mut out = String::new();
+        for item in items {
+            let derefed = self.deref_heap(&self.deref_var(item));
+            match derefed {
+                Value::Integer(code) if code >= 0 => {
+                    out.push(char::from_u32(code as u32)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    fn term_to_atom_text(&self, value: &Value) -> String {
+        let derefed = self.deref_heap(&self.deref_var(value));
+        match derefed {
+            Value::Atom(s) => s,
+            Value::Integer(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Unbound(name) => name,
+            Value::List(items) => {
+                let rendered: Vec<String> = items.iter()
+                    .map(|i| self.term_to_atom_text(i))
+                    .collect();
+                format!("[{}]", rendered.join(", "))
+            }
+            Value::Str(f, args) => {
+                let name = Self::display_functor_name(&f, args.len());
+                let rendered: Vec<String> = args.iter()
+                    .map(|a| self.term_to_atom_text(a))
+                    .collect();
+                format!("{}({})", name, rendered.join(", "))
+            }
+            Value::Ref(_) => format!("{}", derefed),
+            Value::Uninit => "_".to_string(),
+        }
+    }
+
+    fn display_functor_name(functor: &str, arity: usize) -> String {
+        let mut name = functor
+            .strip_prefix("str(")
+            .and_then(|s| s.strip_suffix(")"))
+            .unwrap_or(functor);
+        if let Some((base, ar)) = name.rsplit_once(''/'') {
+            if ar.parse::<usize>().ok() == Some(arity) {
+                name = base;
+            }
+        }
+        name.to_string()
     }'.
 
 compile_execute_foreign_predicate_to_rust(Code) :-
@@ -2653,7 +2955,7 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
-    rust_safe_function_name(Pred, FuncName),
+    rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -2770,8 +3072,7 @@ wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, La
 
 wam_lines_to_rust([], _, _, _, [], []).
 wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, Labels)
     ;   CleanParts = [First|_],
@@ -2828,12 +3129,8 @@ wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyValue("~w".to_string())', [Xn]).
 wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
-    (   number_string(N, C)
-    ->  format(string(Rust),
-            'Instruction::UnifyConstant(Value::Integer(~w))', [N])
-    ;   format(string(Rust),
-            'Instruction::UnifyConstant(Value::Atom("~w".to_string()))', [C])
-    ).
+    rust_const_value(C, VExpr),
+    format(string(Rust), 'Instruction::UnifyConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     rust_const_value(CC, VExpr),
@@ -2866,12 +3163,8 @@ wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetValue("~w".to_string())', [Xn]).
 wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
-    (   number_string(N, C)
-    ->  format(string(Rust),
-            'Instruction::SetConstant(Value::Integer(~w))', [N])
-    ;   format(string(Rust),
-            'Instruction::SetConstant(Value::Atom("~w".to_string()))', [C])
-    ).
+    rust_const_value(C, VExpr),
+    format(string(Rust), 'Instruction::SetConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
 wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
@@ -2913,10 +3206,21 @@ wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["try", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::TryMeElse("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
+wam_line_to_rust_instr(["trust", _Label], _, _, "Instruction::TrustMe").
 wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::Jump("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["cut_ite"], _, _, "Instruction::NoOp").
 % Indexing instructions
 wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
@@ -2961,11 +3265,14 @@ wam_line_to_rust_instr(Parts, _, _, Rust) :-
 %  unify_constant already did this; this routes the remaining two through
 %  the same rule.
 rust_const_value(C, Expr) :-
-    (   number_string(N, C), integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Expr), 'Value::Integer(~w)', [N])
-    ;   number_string(N, C), float(N)
+    ;   Class = float(N)
     ->  format(string(Expr), 'Value::Float(~w)', [N])
-    ;   format(string(Expr), 'Value::Atom("~w".to_string())', [C])
+    ;   Class = atom(A)
+    ->  escape_rust_string(A, Escaped),
+        format(string(Expr), 'Value::Atom("~w".to_string())', [Escaped])
     ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
@@ -3392,6 +3699,31 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
         format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
     ).
 
+%% rust_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses a backtracking-driven control construct
+%  (\+, ->, ;, once, forall, or a cut). The native Rust emitter
+%  (rust_target.pl) targets deterministic shapes (tail-recursion kernels,
+%  fact lookups) and does NOT model these: it mis-lowers them into a whole
+%  stdin-driven program whose body, under include_main(false), dangles at
+%  module level (syntax error). Mirrors go_pred_has_control_constructs/1;
+%  used to decline native and route such predicates to the lowered/WAM path.
+rust_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    rust_body_has_control(Body),
+    !.
+
+rust_body_has_control(G) :- var(G), !, fail.
+rust_body_has_control((_ -> _)) :- !.
+rust_body_has_control((_ ; _)) :- !.
+rust_body_has_control(\+ _) :- !.
+rust_body_has_control(not(_)) :- !.
+rust_body_has_control(once(_)) :- !.
+rust_body_has_control(forall(_, _)) :- !.
+rust_body_has_control(!) :- !.
+rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
+rust_body_has_control(_) :- fail.
+
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
 classify_predicates([], _, []).
@@ -3409,7 +3741,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
     ;   % Try native Rust lowering (disable WAM fallback inside rust_target
-        % so we can distinguish truly-native from WAM-needing predicates)
+        % so we can distinguish truly-native from WAM-needing predicates).
+        % Decline native for backtracking control constructs (\+, ->, ;,
+        % once, forall, cut): the native emitter mis-lowers them (see
+        % rust_pred_has_control_constructs/1), so route them to the
+        % lowered/WAM path which models choicepoints correctly.
+        \+ rust_pred_has_control_constructs(Module:Pred/Arity),
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
                 [include_main(false), wam_fallback(false)|Options], PredCode),
@@ -3513,7 +3850,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
 %  Generates a thin WAM predicate wrapper that references the shared code table.
 compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
     atom_string(Pred, PredStr),
-    rust_safe_function_name(Pred, FuncName),
+    rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     format(string(RustCode),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2025 John William Creighton (s243a)
-"""Unit test for examples/benchmark/query_root_metric.py.
+"""Unit test for benchmarks/root-metrics/prototype/query_root_metric.py.
 
 Builds a tiny scoped LMDB (with the metric_min_dist_to_root sub-db) via
 build_scoped_subtree_lmdb.py, then checks that query_root_metric.py answers
@@ -24,8 +24,13 @@ except ImportError:
     HAVE_LMDB = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PROTO = REPO_ROOT / "benchmarks" / "root-metrics" / "prototype"
+# build_scoped_subtree_lmdb.py stays under examples/benchmark/ (it is the
+# demand-set scoping tool, used by the matrix-bench generator + ingest path).
 BUILDER = REPO_ROOT / "examples" / "benchmark" / "build_scoped_subtree_lmdb.py"
-QUERY = REPO_ROOT / "examples" / "benchmark" / "query_root_metric.py"
+EFFDIST = PROTO / "build_effective_distance.py"
+MAXDIST = PROTO / "build_max_distance.py"
+QUERY = PROTO / "query_root_metric.py"
 I32 = struct.Struct("<i")
 
 
@@ -97,6 +102,68 @@ class TestQueryRootMetric(unittest.TestCase):
         self.assertEqual(hist.get("0"), "1")
         self.assertEqual(hist.get("1"), "2")
         self.assertEqual(hist.get("2"), "1")
+
+    def _build_effective_distance(self, exponent="5"):
+        env_os = dict(os.environ)
+        env_os.setdefault("LANG", "C.UTF-8")
+        proc = subprocess.run(
+            [sys.executable, str(EFFDIST), "--lmdb", str(self.out),
+             "--exponent", exponent],
+            capture_output=True, text=True, env=env_os)
+        self.assertEqual(proc.returncode, 0, f"build_effective_distance failed:\n{proc.stderr}")
+
+    def test_effective_distance_lookup(self):
+        # Scoped category_parent: 3->2, 4->2, 5->3. With root 2 and exponent 5:
+        #   S(3) = S(4) = 2^-5 = 0.03125 ; S(5) = 3^-5 = 1/243.
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "3", "4", "5", "2")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertAlmostEqual(float(rows["3"]), 2 ** -5, places=12)
+        self.assertAlmostEqual(float(rows["4"]), 2 ** -5, places=12)
+        self.assertAlmostEqual(float(rows["5"]), 3 ** -5, places=12)
+        # root has no path to itself in this DAG -> absent
+        self.assertEqual(rows["2"], "unreachable")
+
+    def test_effective_distance_verify(self):
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "--verify")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verify: OK", proc.stderr)
+
+    def test_effective_distance_histogram_is_summary(self):
+        # f64 metric -> summary stats, not a value/count histogram.
+        self._build_effective_distance("5")
+        proc = self._query("--metric", "effective_distance", "--histogram")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertEqual(rows.get("count"), "3")  # nodes 3,4,5
+
+    def _build_max_distance(self):
+        env_os = dict(os.environ)
+        env_os.setdefault("LANG", "C.UTF-8")
+        proc = subprocess.run(
+            [sys.executable, str(MAXDIST), "--lmdb", str(self.out)],
+            capture_output=True, text=True, env=env_os)
+        self.assertEqual(proc.returncode, 0, f"build_max_distance failed:\n{proc.stderr}")
+
+    def test_max_distance_lookup(self):
+        # Scoped graph is a tree (3->2, 4->2, 5->3) so longest walk == shortest:
+        #   root 2 -> 0, 3 -> 1, 4 -> 1, 5 -> 2.
+        self._build_max_distance()
+        proc = self._query("--metric", "max_dist_to_root", "2", "3", "4", "5")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = dict(line.split("\t") for line in proc.stdout.splitlines() if "\t" in line)
+        self.assertEqual(rows["2"], "0")
+        self.assertEqual(rows["3"], "1")
+        self.assertEqual(rows["4"], "1")
+        self.assertEqual(rows["5"], "2")
+
+    def test_max_distance_verify(self):
+        self._build_max_distance()
+        proc = self._query("--metric", "max_dist_to_root", "--verify")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verify: OK", proc.stderr)
 
 
 if __name__ == "__main__":

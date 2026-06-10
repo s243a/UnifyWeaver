@@ -18,10 +18,13 @@ test(deterministic_predicate_is_lowerable) :-
     wam_clojure_lowerable(test_fact/1, WamCode, Reason),
     assertion(Reason == deterministic).
 
-test(multi_clause_clause1_is_lowerable) :-
+test(multi_clause_all_clauses_lowerable) :-
+    % A multi-clause predicate whose every clause is a clean supported
+    % deterministic body now lowers as T4 (multi_clause_n) — all clauses
+    % inline — instead of the old multi_clause_1 run-wam stub.
     multi_clause_wam(WamCode),
     wam_clojure_lowerable(test_choice/1, WamCode, Reason),
-    assertion(Reason == multi_clause_1).
+    assertion(Reason == multi_clause_n).
 
 test(multi_clause_emits_empty_lowered_prefix) :-
     once((
@@ -35,9 +38,14 @@ test(multi_clause_emits_empty_lowered_prefix) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
-test(switch_on_constant_not_yet_lowerable, [fail]) :-
+test(switch_on_constant_prefix_is_stripped) :-
+    % A leading switch_on_constant indexing prefix is now stripped before
+    % lowerability is decided (so multi-clause predicates with first-argument
+    % indexing reach the T4 path). Here only `proceed` remains after the
+    % prefix, so the degenerate body lowers as deterministic.
     unsupported_wam(WamCode),
-    wam_clojure_lowerable(test_switch/1, WamCode, _).
+    wam_clojure_lowerable(test_switch/1, WamCode, Reason),
+    assertion(Reason == deterministic).
 
 test(determinism_detection) :-
     simple_fact_wam(Simple),
@@ -63,13 +71,17 @@ test(lower_predicate_to_clojure_emits_function) :-
         has(Code, "runtime/interned-equal?")
     )).
 
-test(lowered_multi_clause_stays_runtime_mediated) :-
+test(lowered_multi_clause_emits_t4_all_clauses) :-
+    % T4: a multi-clause predicate whose clauses are all clean deterministic
+    % bodies now emits EVERY clause inline (not the old no-op run-wam stub).
     once((
         multi_clause_wam(WamCode),
         lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
         has(Code, "defn lowered-test-choice-1 [state]"),
-        assertion(\+ has(Code, "get-constant a, A1")),
-        assertion(\+ has(Code, "get-constant b, A1")),
+        has(Code, "T4 all-clauses inline"),
+        has(Code, "get-constant a, A1"),     % clause 1 inline
+        has(Code, "get-constant b, A1"),     % clause 2 inline
+        has(Code, ":succeeded (:status"),     % first-succeeded cascade
         assertion(\+ has(Code, "runtime/step"))
     )).
 

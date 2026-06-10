@@ -15,6 +15,9 @@
 :- dynamic kt_color/1.
 :- dynamic kt_parent/2.
 :- dynamic kt_grandparent/2.
+:- dynamic kt_edge/2.
+:- dynamic kt_two_step/2.
+:- dynamic kt_chain/2.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -72,6 +75,8 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, 'sealed class WamContext')),
     assertion(has_substring(Code, 'data class PredicateCode')),
     assertion(has_substring(Code, 'data class CallFrame')),
+    assertion(has_substring(Code, 'data class EnvironmentFrame')),
+    assertion(has_substring(Code, 'val environmentStack: MutableList<EnvironmentFrame>')),
     assertion(has_substring(Code, 'fun restoreChoicePoint(): Boolean')),
     assertion(has_substring(Code, 'fun enterPredicate(state: WamState, predicate: String')),
     assertion(has_substring(Code, 'fun unify(left: Value?, right: Value?): Boolean')),
@@ -114,6 +119,9 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             retractall(user:kt_color(_)),
             retractall(user:kt_parent(_, _)),
             retractall(user:kt_grandparent(_, _)),
+            retractall(user:kt_edge(_, _)),
+            retractall(user:kt_two_step(_, _)),
+            retractall(user:kt_chain(_, _)),
             assertz(user:kt_fact(alpha, beta)),
             assertz(user:kt_same(X, X)),
             assertz(user:(kt_eq(X, Y) :- Y = X)),
@@ -124,7 +132,12 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             assertz(user:kt_color(blue)),
             assertz(user:kt_parent(alice, bob)),
             assertz(user:kt_parent(bob, carol)),
-            assertz(user:(kt_grandparent(X, Z) :- kt_parent(X, Y), kt_parent(Y, Z)))
+            assertz(user:(kt_grandparent(X, Z) :- kt_parent(X, Y), kt_parent(Y, Z))),
+            assertz(user:kt_edge(a, b)),
+            assertz(user:kt_edge(b, c)),
+            assertz(user:kt_edge(c, d)),
+            assertz(user:(kt_two_step(X, Z) :- kt_edge(X, Y), kt_edge(Y, Z))),
+            assertz(user:(kt_chain(X, Z) :- kt_two_step(X, Y), kt_edge(Y, Z)))
         ),
         (   wam_kotlin_target:write_wam_kotlin_project(
                 [ user:kt_fact/2,
@@ -135,7 +148,10 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
                   user:kt_match_pair/3,
                   user:kt_color/1,
                   user:kt_parent/2,
-                  user:kt_grandparent/2
+                  user:kt_grandparent/2,
+                  user:kt_edge/2,
+                  user:kt_two_step/2,
+                  user:kt_chain/2
                 ],
                 [emit_mode(interpreter)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
@@ -170,8 +186,12 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             assertion(GrandStatus == exit(0)),
             assertion(has_substring(GrandOut, 'Ran kt_grandparent/2')),
             assertion(has_substring(GrandOut, 'X3=Atom(name=alice)')),
-            assertion(has_substring(GrandOut, 'Y1=Atom(name=bob)')),
-            assertion(has_substring(GrandOut, 'Y2=Atom(name=carol)'))
+            assertion(has_substring(GrandOut, 'A2=Atom(name=carol)')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_chain/2 a d'], ChainOut, _ChainErr, ChainStatus),
+            assertion(ChainStatus == exit(0)),
+            assertion(has_substring(ChainOut, 'Ran kt_chain/2')),
+            assertion(has_substring(ChainOut, 'Atom(name=a)')),
+            assertion(has_substring(ChainOut, 'Atom(name=d)'))
         ),
         (   retractall(user:kt_fact(_, _)),
             retractall(user:kt_same(_, _)),
@@ -181,7 +201,10 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
             retractall(user:kt_match_pair(_, _, _)),
             retractall(user:kt_color(_)),
             retractall(user:kt_parent(_, _)),
-            retractall(user:kt_grandparent(_, _))
+            retractall(user:kt_grandparent(_, _)),
+            retractall(user:kt_edge(_, _)),
+            retractall(user:kt_two_step(_, _)),
+            retractall(user:kt_chain(_, _))
         )
     ).
 

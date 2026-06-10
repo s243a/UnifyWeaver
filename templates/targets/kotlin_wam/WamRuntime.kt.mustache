@@ -29,6 +29,12 @@ data class CallFrame(
     val code: PredicateCode,
     val returnPc: Int,
     val context: WamContext?,
+    val environmentStack: List<EnvironmentFrame>,
+)
+
+data class EnvironmentFrame(
+    val id: Int,
+    val slots: MutableMap<String, Value?> = linkedMapOf(),
 )
 
 sealed class WamContext {
@@ -48,6 +54,7 @@ data class ChoicePoint(
     val trailSize: Int,
     val context: WamContext?,
     val callStack: List<CallFrame>,
+    val environmentStack: List<EnvironmentFrame>,
 )
 
 class WamState(
@@ -57,11 +64,63 @@ class WamState(
     val trail: MutableList<String> = mutableListOf(),
     val choicePoints: MutableList<ChoicePoint> = mutableListOf(),
     val callStack: MutableList<CallFrame> = mutableListOf(),
+    val environmentStack: MutableList<EnvironmentFrame> = mutableListOf(),
     var context: WamContext? = null,
+    private var nextEnvironmentId: Int = 0,
 ) {
+    fun isEnvironmentRegister(register: String): Boolean =
+        register.startsWith("Y")
+
+    fun currentEnvironment(): EnvironmentFrame? = environmentStack.lastOrNull()
+
+    fun environmentBankContaining(register: String): MutableMap<String, Value?>? =
+        environmentStack.asReversed().firstOrNull { register in it.slots }?.slots
+
+    fun registerBank(register: String): MutableMap<String, Value?> =
+        if (isEnvironmentRegister(register)) currentEnvironment()?.slots ?: registers else registers
+
+    fun bindingBank(register: String): MutableMap<String, Value?> =
+        if (isEnvironmentRegister(register)) environmentBankContaining(register) ?: registerBank(register) else registers
+
+    fun scopedRegisterName(register: String): String =
+        if (isEnvironmentRegister(register)) currentEnvironment()?.let { "${register}@E${it.id}" } ?: register else register
+
+    fun readRegister(register: String): Value? =
+        if (isEnvironmentRegister(register)) environmentBankContaining(register)?.get(register) ?: registers[register] else registers[register]
+
+    fun writeRegister(register: String, value: Value?) {
+        registerBank(register)[register] = value
+    }
+
+    fun newVariable(register: String): Value.Var {
+        val scopedName = scopedRegisterName(register)
+        val value = Value.Var(scopedName)
+        writeRegister(register, value)
+        if (scopedName != register) writeRegister(scopedName, value)
+        return value
+    }
+
+    fun snapshotEnvironmentStack(): List<EnvironmentFrame> =
+        environmentStack.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) }
+
+    fun restoreEnvironmentStack(snapshot: List<EnvironmentFrame>) {
+        environmentStack.clear()
+        environmentStack.addAll(snapshot.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) })
+    }
+
+    fun allocateEnvironment() {
+        environmentStack.add(EnvironmentFrame(nextEnvironmentId++))
+    }
+
+    fun deallocateEnvironment() {
+        if (environmentStack.isNotEmpty()) {
+            environmentStack.removeAt(environmentStack.lastIndex)
+        }
+    }
+
     fun deref(value: Value?): Value? = when (value) {
         is Value.Var -> {
-            val bound = registers[value.name]
+            val bound = readRegister(value.name)
             if (bound == null || bound == value) value else deref(bound)
         }
         else -> value
@@ -75,11 +134,11 @@ class WamState(
 
     fun bind(register: String, value: Value?) {
         trail.add(register)
-        registers[register] = value
+        bindingBank(register)[register] = value
     }
 
     fun bindTarget(register: String, value: Value?) {
-        val current = deref(registers[register])
+        val current = deref(readRegister(register))
         if (current is Value.Var) {
             bind(current.name, value)
         }
@@ -107,11 +166,16 @@ class WamState(
         return false
     }
 
-    fun snapshotRegisters(): Map<String, Value?> = registers.toSortedMap().mapValues { resolve(it.value) }
+    fun snapshotRegisters(): Map<String, Value?> {
+        val snapshot = linkedMapOf<String, Value?>()
+        snapshot.putAll(registers)
+        environmentStack.forEach { snapshot.putAll(it.slots) }
+        return snapshot.toSortedMap().mapValues { resolve(it.value) }
+    }
 
     fun beginStructure(functor: String, register: String): Boolean {
         val arity = functorArity(functor) ?: return false
-        val current = deref(registers[register])
+        val current = deref(readRegister(register))
         if (current == null || current is Value.Var) {
             context = WamContext.Write(register, functor, arity)
             return true
@@ -143,7 +207,7 @@ class WamState(
     }
 
     fun saveChoicePoint(code: PredicateCode, pc: Int) {
-        choicePoints.add(ChoicePoint(code, pc, LinkedHashMap(registers), trail.size, context, callStack.toList()))
+        choicePoints.add(ChoicePoint(code, pc, LinkedHashMap(registers), trail.size, context, callStack.toList(), snapshotEnvironmentStack()))
     }
 
     fun restoreChoicePointFrame(): ChoicePoint? {
@@ -155,6 +219,7 @@ class WamState(
         }
         callStack.clear()
         callStack.addAll(cp.callStack)
+        restoreEnvironmentStack(cp.environmentStack)
         context = cp.context
         pc = cp.pc
         return cp
@@ -210,7 +275,7 @@ class WamRuntime(private val program: WamProgram) {
     fun enterPredicate(state: WamState, predicate: String, returnPc: Int? = null): Boolean {
         val nextCode = program.findCode(predicate) ?: return false
         if (returnPc != null) {
-            state.callStack.add(CallFrame(currentCode, returnPc, state.context))
+            state.callStack.add(CallFrame(currentCode, returnPc, state.context, state.snapshotEnvironmentStack()))
         }
         currentCode = nextCode
         state.context = null
@@ -221,6 +286,7 @@ class WamRuntime(private val program: WamProgram) {
     fun returnFromPredicate(state: WamState): Boolean {
         val frame = state.callStack.removeLastOrNull() ?: return false
         currentCode = frame.code
+        state.restoreEnvironmentStack(frame.environmentStack)
         state.context = frame.context
         state.pc = frame.returnPc
         return true
@@ -251,7 +317,7 @@ class WamRuntime(private val program: WamProgram) {
 
     fun switchOn(state: WamState, register: String, rawEntries: Any?, structureMode: Boolean = false): Boolean {
         val entries = parseSwitchEntries(rawEntries)
-        val value = state.deref(state.registers[register])
+        val value = state.deref(state.readRegister(register))
         val key = if (structureMode) (value as? Value.Struct)?.functor else valueSwitchKey(value)
         val target = key?.let { entries[it] } ?: entries["default"]
         if (target == null || target == "default") {
@@ -308,23 +374,22 @@ class WamRuntime(private val program: WamProgram) {
             "put_constant", "put_integer", "put_float", "put_nil" -> {
                 val value = instruction.args.getOrNull(0) as? Value ?: return false
                 val register = instruction.args.getOrNull(1) as? String ?: return false
-                state.registers[register] = value
+                state.writeRegister(register, value)
                 state.pc += 1
                 return true
             }
             "put_variable" -> {
                 val variable = instruction.args.getOrNull(0) as? String ?: return false
                 val register = instruction.args.getOrNull(1) as? String ?: return false
-                val value = Value.Var(variable)
-                state.registers[variable] = value
-                state.registers[register] = value
+                val value = state.newVariable(variable)
+                state.writeRegister(register, value)
                 state.pc += 1
                 return true
             }
             "put_value", "put_unsafe_value" -> {
                 val source = instruction.args.getOrNull(0) as? String ?: return false
                 val target = instruction.args.getOrNull(1) as? String ?: return false
-                state.registers[target] = state.deref(state.registers[source]) ?: return false
+                state.writeRegister(target, state.deref(state.readRegister(source)) ?: return false)
                 state.pc += 1
                 return true
             }
@@ -344,7 +409,7 @@ class WamRuntime(private val program: WamProgram) {
             "get_constant", "get_integer", "get_float", "get_nil" -> {
                 val expected = instruction.args.getOrNull(0) as? Value ?: return false
                 val register = instruction.args.getOrNull(1) as? String ?: return false
-                val current = state.deref(state.registers[register])
+                val current = state.deref(state.readRegister(register))
                 if (current == null) {
                     state.bind(register, expected)
                     state.pc += 1
@@ -364,17 +429,17 @@ class WamRuntime(private val program: WamProgram) {
             "get_variable" -> {
                 val variable = instruction.args.getOrNull(0) as? String ?: return false
                 val argument = instruction.args.getOrNull(1) as? String ?: return false
-                val value = state.deref(state.registers[argument]) ?: Value.Var(variable)
-                state.registers[variable] = value
-                state.registers[argument] = value
+                val value = state.deref(state.readRegister(argument)) ?: state.newVariable(variable)
+                state.writeRegister(variable, value)
+                state.writeRegister(argument, value)
                 state.pc += 1
                 return true
             }
             "get_value" -> {
                 val variable = instruction.args.getOrNull(0) as? String ?: return false
                 val argument = instruction.args.getOrNull(1) as? String ?: return false
-                val left = state.registers[variable] ?: Value.Var(variable).also { state.registers[variable] = it }
-                val right = state.registers[argument] ?: Value.Var(argument).also { state.registers[argument] = it }
+                val left = state.readRegister(variable) ?: state.newVariable(variable)
+                val right = state.readRegister(argument) ?: state.newVariable(argument)
                 if (!state.unify(left, right)) return false
                 state.pc += 1
                 return true
@@ -394,15 +459,14 @@ class WamRuntime(private val program: WamProgram) {
             }
             "set_variable" -> {
                 val variable = instruction.args.getOrNull(0) as? String ?: return false
-                val value = Value.Var(variable)
-                state.registers[variable] = value
+                val value = state.newVariable(variable)
                 if (!state.pushWriteArg(value)) return false
                 state.pc += 1
                 return true
             }
             "set_value", "set_local_value" -> {
                 val register = instruction.args.getOrNull(0) as? String ?: return false
-                if (!state.pushWriteArg(state.deref(state.registers[register]) ?: return false)) return false
+                if (!state.pushWriteArg(state.deref(state.readRegister(register)) ?: return false)) return false
                 state.pc += 1
                 return true
             }
@@ -421,12 +485,11 @@ class WamRuntime(private val program: WamProgram) {
                 val variable = instruction.args.getOrNull(0) as? String ?: return false
                 val ctx = state.context
                 if (ctx is WamContext.Write) {
-                    val value = Value.Var(variable)
-                    state.registers[variable] = value
+                    val value = state.newVariable(variable)
                     if (!state.pushWriteArg(value)) return false
                 } else {
                     val value = state.nextReadArg() ?: return false
-                    state.registers[variable] = state.deref(value)
+                    state.writeRegister(variable, state.deref(value))
                 }
                 state.pc += 1
                 return true
@@ -435,10 +498,10 @@ class WamRuntime(private val program: WamProgram) {
                 val register = instruction.args.getOrNull(0) as? String ?: return false
                 val ctx = state.context
                 if (ctx is WamContext.Write) {
-                    if (!state.pushWriteArg(state.deref(state.registers[register]) ?: Value.Var(register))) return false
+                    if (!state.pushWriteArg(state.deref(state.readRegister(register)) ?: state.newVariable(register))) return false
                 } else {
                     val value = state.nextReadArg() ?: return false
-                    val regValue = state.registers[register] ?: Value.Var(register).also { state.registers[register] = it }
+                    val regValue = state.readRegister(register) ?: state.newVariable(register)
                     if (!state.unify(regValue, value)) return false
                 }
                 state.pc += 1
@@ -470,7 +533,7 @@ class WamRuntime(private val program: WamProgram) {
                 val op = instruction.args.getOrNull(0) as? String ?: return false
                 val arity = (instruction.args.getOrNull(1) as? Long)?.toInt() ?: return false
                 if (op == "=/2" && arity == 2) {
-                    if (!state.unify(state.registers["A1"], state.registers["A2"])) return false
+                    if (!state.unify(state.readRegister("A1"), state.readRegister("A2"))) return false
                     state.pc += 1
                     return true
                 }
@@ -484,7 +547,13 @@ class WamRuntime(private val program: WamProgram) {
                 val predicate = instruction.args.getOrNull(0) as? String ?: return false
                 return enterPredicate(state, predicate)
             }
-            "allocate", "deallocate" -> {
+            "allocate" -> {
+                state.allocateEnvironment()
+                state.pc += 1
+                return true
+            }
+            "deallocate" -> {
+                state.deallocateEnvironment()
                 state.pc += 1
                 return true
             }
@@ -527,7 +596,7 @@ fun parseStructToken(token: String): Value.Struct? {
 fun stateFromCliArgs(values: List<String>): WamState {
     val state = WamState()
     values.forEachIndexed { index, raw ->
-        state.registers["A${index + 1}"] = parseWamCliValue(raw)
+        state.writeRegister("A${index + 1}", parseWamCliValue(raw))
     }
     return state
 }
