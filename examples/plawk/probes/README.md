@@ -18,6 +18,7 @@ Additional probe:
 ```bash
 swipl -q -s examples/plawk/probes/generate_loop_probe.pl -t halt
 swipl -q -s examples/plawk/probes/generate_meta_call_probe.pl -t halt
+swipl -q -s examples/plawk/probes/generate_reader_probe.pl -t halt
 ```
 
 ## Current results
@@ -64,6 +65,15 @@ closure's base arguments before the extra `call/N` arguments.
 
 ### Reader probe
 
-Not attempted yet. The Phase 0 reader uses `read_file_to_string/3`, which is an
-SWI slurp shortcut. The implementation plan already identifies streaming input
-as a runtime gap for the WAM/LLVM target.
+Command:
+
+```bash
+swipl -q -s examples/plawk/probes/generate_reader_probe.pl -t halt
+```
+
+Result: emits `examples/plawk/generated/plawk_reader_probe.ll` and verifies
+with `llvm-as`. This probe uses the hybrid LLVM WAM builtins
+`stream_open/2`, `read_line/2`, and `stream_close/1`. The builtins are general
+runtime primitives, not PLAWK-specific code: handles are malloc-backed buffered
+readers, `read_line/2` unifies `end_of_file` at EOF, and line atoms exclude the
+record newline.
