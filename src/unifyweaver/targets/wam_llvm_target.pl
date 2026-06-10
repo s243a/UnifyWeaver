@@ -2073,7 +2073,12 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
     % emit_one_record_entry_func/5 inside emit_all_entry_funcs.
     append(WamRecords, HybridRecords, WamLikeRecords),
     (   WamLikeRecords == []
-    ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
+        % Even with no bytecode predicates (everything fully lowered),
+        % the interpreter runtime's do_call/do_execute cases reference
+        % @wam_dispatch_meta_call unconditionally, so its definition
+        % (with empty dispatch tables) must still be emitted.
+    ->  emit_meta_call_dispatch([], MergedCode),
+        EntryFuncs = '', SwitchDefs = ''
     ;   emit_merged_wam_section(WamLikeRecords, LabelMap, NamePCPairs, Options,
                                 MergedCode, EntryFuncs, SwitchDefs)
     ),
@@ -2114,7 +2119,15 @@ emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
     retractall(wam_llvm_last_compile_counts(_, _)),
     assertz(wam_llvm_last_compile_counts(InstrCount, LabelCount)),
     (   InstrCount =:= 0
-    ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
+        % Even with no bytecode (every predicate fully lowered), the
+        % interpreter runtime's do_call/do_execute cases reference
+        % @wam_dispatch_meta_call unconditionally, so its definition
+        % (with empty dispatch tables) must still be emitted.
+    ->  emit_meta_call_dispatch([], MetaCallDispatch),
+        format(string(CodeGlobal),
+"; === Merged WAM code: none (all predicates fully lowered) ===
+~w", [MetaCallDispatch]),
+        EntryFuncs = '', SwitchDefs = ''
     ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
                 AllLiterals, Entries),
         atomic_list_concat(Entries, ',\n', EntriesStr),

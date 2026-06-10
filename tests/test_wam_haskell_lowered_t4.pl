@@ -52,7 +52,7 @@ test(t4_exec_parity) :-
     assertion(sub_string(LSrc, _, _, _, "T4 all-clauses inline")),
     atomic_list_concat([Dir, '/src/TestMain.hs'], TestPath),
     haskell_t4_source(Src),
-    setup_call_cleanup(open(TestPath, write, S), write(S, Src), close(S)),
+    setup_call_cleanup(open(TestPath, write, S, [encoding(utf8)]), write(S, Src), close(S)),
     atomic_list_concat([Dir, '/src'], SrcDir),
     atomic_list_concat([Dir, '/t4_test'], Bin),
     format(atom(Cmd),

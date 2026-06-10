@@ -6908,8 +6908,12 @@ iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-
+    % The generated module embeds UTF-8 characters from runtime
+    % templates (arrows, dashes in comments), so the stream must be
+    % UTF-8 regardless of the process locale (POSIX/ASCII in many CI
+    % containers) -- otherwise format/3 raises an encoding error.
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         format(Stream, "~w", [Content]),
         close(Stream)
     ).
