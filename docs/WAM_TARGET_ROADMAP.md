@@ -106,10 +106,11 @@ on a specific architectural question.
 | **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter | FactSource facade (ETS/SQLite/TSV); no memory-mapped | none | LMDB integration (high-value for >100k); hot-path graph kernels |
 | **Haskell** | how to make materialisation cheap at scale | broad WAM, parMap parallel | dual: WAM-instr + emitter | LMDB key/value (memory-mapped under the hood); raw-pointer interface abandoned due to crashes | parMap rdeepseq | calibrate fork-min-cost like Elixir; investigate cost-aware probing |
 | **C#** | SQL/LINQ-as-substrate; the optimisation-inspiration target | broadest aggregate/join/negation coverage | LINQ pipeline (not WAM-shaped); split into `csharp_target` + `csharp_query_target` + `csharp_native_target` | source-mode sweeps measure cost; memory-mapped file in flight | n/a (LINQ-inspired lineage) | continue source-mode benchmark sweep; tighten cost model |
-| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | WAM-instruction lowering only; no `wam_scala_lowered_emitter.pl`; step-loop interpreter | 3 backends (inline / file CSV / grouped TSV); auto-inline ≤128 rows | none | add per-predicate native fast-path emitter (single biggest gap); port classics to other targets to validate generalisation |
+| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | dual: WAM-instr + per-predicate emitter (`wam_scala_lowered_emitter.pl`, `emit_mode(functions)`) — clause-1 fast path with interpreter fallback | 4 backends (inline / file CSV / grouped TSV / **arity-N LMDB**, validated end-to-end); auto-inline ≤128 rows | all 7 kinds: `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `category_ancestor`, `weighted_shortest_path3`, `astar_shortest_path4` (opt-in `kernel_dispatch(true)`); intra-Scala mode benchmark (`benchmarks/wam_scala_mode_bench.md`) shows kernel ~4×@depth100, ~9×@depth300 | full kernel parity with Rust/Haskell/Elixir/Go; LMDB sidecar (Phase S8) shipping for any arity >= 2, validated end-to-end; next: cross-target benchmark vs Elixir/Haskell |
 | **Clojure** | LMDB JNI integration as a first-class data tier | deterministic-prefix lowering; sequential-only tests | dual: WAM-instr + emitter (deterministic prefix only — no `switch_on_constant` lowering yet) | LMDB only (production-grade JNI loader, delay-wrapped) + cache policies (memoize / shared / two_level) | none | extend lowered emitter to non-deterministic prefixes; add parallelism gates |
 | **Rust** | hand-tuned FFI kernel route | deterministic only in lowered emitter | dual: WAM-instr + emitter (deterministic only) | absent (no FactSource facade); FFI kernels are ad-hoc | effective-distance matrix FFI kernel (concrete demonstration of kernel-based lowering wins) | port the kernel pattern to other targets; add layout policies / FactSource generalisation |
 | **F#** | Haskell-shaped target on the .NET runtime | mirrors Haskell coverage | dual: WAM-instr + emitter | none documented | TPL Parallel.map mentioned, no gating | follow Haskell's LMDB lessons + Elixir's cost-gate calibration |
+| **LLVM** | portable native-codegen via LLVM IR (native binary or WASM) | broad WAM coverage; lowered emitter covers single-clause + multi-clause hybrid + pattern matching + cross-pred call/execute closures (M1-M4) | dual: WAM-instr (full @step) + lowered emitter (M1-M4) with closure analysis for cross-pred direct calls | arena allocator with growable trail/stack/CP/heap (M5/M6); no LMDB integration | 7 foreign-kernel kinds: `transitive_distance3`, `weighted_shortest_path3`, `astar_shortest_path4`, `transitive_closure2`, `category_ancestor`, `countdown_sum2`, `list_suffix2`; auto-detection via `foreign_lowering(true)` | real-workload benchmark suite (currently only have a dispatch microbench); LMDB fact-source; trail-rollback for hybrid clause-1 partial bindings |
 | **Typr** | typed-functional R wrapper with explicit raw-R fallback | recursion-pattern matcher (per-path-visited, tail, tree, mutual); raw-R fallback for producer goals | native pattern lowering (different model — pattern recognition, not WAM-bytecode lowering) | none — input modes (stdin/file/VFS/function) | n/a | continue typed lifting per `docs/handoff/typr-*.md`; doesn't generalise easily to graph-algorithm benchmarks |
 
 ## Table 2 — less-developed hybrid WAM targets
@@ -119,8 +120,7 @@ haven't yet hit the kernel-or-LMDB inflection point.
 
 | Target | Source size | Status | Notes |
 |---|---|---|---|
-| **WAT** (WebAssembly text) | `wam_wat_target.pl` (6325 lines) | Substantial WAM-instruction lowering pipeline | No `wam_wat_lowered_emitter.pl`; single-mode interpreter (Scala-shaped). Browser-deployment angle is the differentiator |
-| **LLVM** | `wam_llvm_target.pl` (4499 lines) | Substantial WAM-instruction lowering | No emitter file; compiles to LLVM IR. Worth investigating for cross-target kernel reuse (LLVM IR as portable kernel format?) |
+| **WAT** (WebAssembly text) | `wam_wat_target.pl` + `wam_wat_lowered_emitter.pl` | Substantial WAM-instruction lowering pipeline plus deterministic clause-1 lowered fast paths | Opt-in hybrid mode now mirrors Rust/Scala-style public-entry replay: lowered success returns immediately; lowered failure reinitialises and falls back to `$run_loop`. Browser-deployment angle remains the differentiator |
 | **C** | `wam_c_target.pl` (907 lines) + `wam_c_runtime/wam_runtime.h` | Has a C runtime header | Smaller surface; useful as a portable substrate for FFI kernels (Rust/Go FFI kernels could share C glue) |
 | **JVM** | `wam_jvm_target.pl` (711 lines) | Smaller than the Scala/Clojure entries | Generic JVM bytecode emit; both Scala and Clojure target the JVM via different routes — this is the third |
 
@@ -146,11 +146,13 @@ haven't yet hit the kernel-or-LMDB inflection point.
    C# explore the LINQ side of the design space while WAM targets
    explore the bytecode side, and we can compare results.
 
-4. **Scala is the breadth-anchor and the dual-mode-emitter outlier.**
-   The classics suite (n-queens, Ackermann, Fibonacci) is the most
-   valuable generalisation test bed in the repo. Scala lacks the
-   per-predicate native fast-path emitter; adding one would let it
-   benchmark against Elixir/Haskell on the same basis.
+4. **Scala is the breadth-anchor.** The classics suite (n-queens,
+   Ackermann, Fibonacci) is the most valuable generalisation test bed in
+   the repo. Scala now has a per-predicate native fast-path emitter
+   (`wam_scala_lowered_emitter.pl`, opt-in via `emit_mode(functions)`),
+   closing the dual-mode-emitter gap and letting it benchmark against
+   Elixir/Haskell on the same basis. The next levers are hot-path graph
+   kernels and an LMDB sidecar.
 
    PR #1827 ports the **discipline** (subprocess invocation +
    true/false verification) to Elixir as a starter classic-programs
@@ -245,15 +247,15 @@ In rough order of expected payoff:
    modules that bypass WAM dispatch entirely, mirroring the
    Go/Rust kernel approach. Coverage status as of this writing:
 
-   | Kernel kind | Rust | Haskell | Elixir |
-   |---|:-:|:-:|:-:|
-   | `transitive_closure2` | ✓ | ✓ | ✓ (PR #1799) |
-   | `category_ancestor` | ✓ | ✓ | ✓ (PR #1803, optimised through #1817) |
-   | `transitive_distance3` | ✓ | ✓ | ✓ (PR #1822) |
-   | `transitive_parent_distance4` | ✓ | ✓ | ✓ (PR #1823) |
-   | `transitive_step_parent_distance5` | ✓ | ✓ | ✓ (PR #1824) |
-   | `weighted_shortest_path3` | ✓ | ✓ | ✓ (PR #1825) |
-   | `astar_shortest_path4` | ✓ | ✓ | ✓ (PR #1826) |
+   | Kernel kind | Rust | Haskell | Elixir | Scala |
+   |---|:-:|:-:|:-:|:-:|
+   | `transitive_closure2` | ✓ | ✓ | ✓ (PR #1799) | ✓ |
+   | `category_ancestor` | ✓ | ✓ | ✓ (PR #1803, optimised through #1817) | ✓ |
+   | `transitive_distance3` | ✓ | ✓ | ✓ (PR #1822) | ✓ |
+   | `transitive_parent_distance4` | ✓ | ✓ | ✓ (PR #1823) | ✓ |
+   | `transitive_step_parent_distance5` | ✓ | ✓ | ✓ (PR #1824) | ✓ |
+   | `weighted_shortest_path3` | ✓ | ✓ | ✓ (PR #1825) | ✓ |
+   | `astar_shortest_path4` | ✓ | ✓ | ✓ (PR #1826) | ✓ |
 
    **Coverage complete.** All 7 kernel kinds the shared detector
    (`recursive_kernel_detection.pl`) recognises now have native

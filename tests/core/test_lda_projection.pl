@@ -21,6 +21,9 @@
     validate_config/1
 ]).
 
+:- use_module('../helpers/smoke_paths', [tmp_root/1, python_cmd/1]).
+:- use_module(library(filesex), [directory_file_path/3]).
+
 %% ============================================
 %% Test Helpers
 %% ============================================
@@ -69,14 +72,17 @@ setup_test_matrix(TempFile) :-
     % Create a simple 4x4 identity W matrix for testing
     get_time(Now),
     NowInt is round(Now * 1000000),
-    format(atom(TempFile), '/tmp/test_W_~d.npy', [NowInt]),
+    tmp_root(Root),
+    format(atom(Name), 'test_W_~d.npy', [NowInt]),
+    directory_file_path(Root, Name, TempFile),
     format(atom(PythonCode),
 'import numpy as np
 W = np.eye(4)  # Simple identity matrix
 np.save("~w", W)
 print("OK")
 ', [TempFile]),
-    process_create(path(python3), ['-c', PythonCode],
+    python_cmd(Py),
+    process_create(path(Py), ['-c', PythonCode],
                   [stdout(pipe(Out)), stderr(null), process(Proc)]),
     read_string(Out, _, Result),
     close(Out),

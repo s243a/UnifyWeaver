@@ -3,6 +3,7 @@
 :- use_module(library(plunit)).
 :- use_module(src/unifyweaver/targets/python_target).
 :- use_module(library(process)).
+:- use_module('../helpers/smoke_paths', [python_cmd/1]).
 
 run_tests :-
     run_tests([python_xml_integration]).
@@ -45,8 +46,9 @@ test(python_xml_source) :-
     
     % Execute Python script
     % Note: It should read from file, not stdin
+    python_cmd(Py),
     setup_call_cleanup(
-        process_create(path(python3), [ScriptFile], [stdout(pipe(Out)), process(PID)]),
+        process_create(path(Py), [ScriptFile], [stdout(pipe(Out)), process(PID)]),
         (
             read_string(Out, _, Output),
             process_wait(PID, ExitStatus),

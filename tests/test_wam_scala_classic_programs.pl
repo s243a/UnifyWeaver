@@ -22,6 +22,18 @@
 % Sample programs
 % ============================================================
 
+% --- 0-arity comparison-only predicates ---
+% Regression for the Scala-target gap the cross-target conformance doc
+% flagged: a 0-arity body like `p :- 3 > 2.` used to break the backend.
+% emit_scala_wrapper/4 called numlist(1, 0, _) (which fails when Low >
+% High), silently failing the whole project write; and the CLI driver's
+% single-query dispatch required at least one argument, so even a
+% compiled 0-arity predicate could not be invoked. Both are fixed.
+:- dynamic user:zarity_true/0.
+:- dynamic user:zarity_false/0.
+user:zarity_true  :- 3 > 2.
+user:zarity_false :- 3 > 4.
+
 % --- List reverse via accumulator (linear time) ---
 :- dynamic user:rev_acc/3.
 :- dynamic user:list_reverse/2.
@@ -124,6 +136,17 @@ scala_available :-
 
 :- begin_tests(wam_scala_classic_programs,
                [ condition(scala_available) ]).
+
+% 0-arity comparison-only predicates: compile + dispatch with no args.
+test(zero_arity_comparison) :-
+    with_scala_project(
+        [user:zarity_true/0, user:zarity_false/0],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'zarity_true/0',  [], "true"),
+            verify_scala_args(TmpDir, 'zarity_false/0', [], "false")
+        )).
 
 test(list_reverse) :-
     with_scala_project(

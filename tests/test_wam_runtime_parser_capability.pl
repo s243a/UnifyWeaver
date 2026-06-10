@@ -76,10 +76,15 @@ test(invalid_request_errors,
 
 test(parser_dependent_builtin_catalogue) :-
     findall(PI, parser_dependent_builtin(PI), PIs),
-    assertion(PIs == [read/2,
+    assertion(PIs == [read/1,
+                      read/2,
+                      read_term/1,
                       read_term_from_atom/2,
                       read_term_from_atom/3,
                       term_to_atom/2]).
+
+test(parser_dependent_goal_read_default_stream) :-
+    once(parser_dependent_goal(read(_), read/1)).
 
 test(parser_dependent_goal_read) :-
     parser_dependent_goal(read(_, _), read/2).
@@ -121,5 +126,76 @@ test(parser_dependent_body_goal_forward_term_to_atom_ignored, [fail]) :-
 
 test(parser_dependent_body_goal_module_qualified_body) :-
     once(parser_dependent_body_goal(user:(true, read(_, _)), read/2)).
+
+% --- F# WAM target (compiled mode opt-in only) ----------------------------
+%
+% F# has no native parser today, but `runtime_parser(compiled)` runs
+% the portable parser end-to-end via WAM.  Keep the default at `none`
+% so existing generated projects do not silently bundle the parser library.
+
+test(fsharp_defaults_to_none) :-
+    wam_target_runtime_parser(wam_fsharp, [], none).
+
+test(fsharp_alias_defaults_to_none) :-
+    wam_target_runtime_parser(fsharp, [], none).
+
+test(fsharp_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(fsharp_cannot_require_native_parser_yet,
+     [throws(error(domain_error(runtime_parser_mode(wam_fsharp), native), _))]) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(native)], _).
+
+test(fsharp_off_explicit_none) :-
+    wam_target_runtime_parser(wam_fsharp, [runtime_parser(off)], none).
+
+
+% --- Haskell WAM target (compiled mode opt-in only) -----------------------
+
+test(haskell_defaults_to_none) :-
+    wam_target_runtime_parser(wam_haskell, [], none).
+
+test(haskell_alias_defaults_to_none) :-
+    wam_target_runtime_parser(haskell, [], none).
+
+test(haskell_alias_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(haskell, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(haskell_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(haskell_cannot_require_native_parser_yet,
+     [throws(error(domain_error(runtime_parser_mode(wam_haskell), native), _))]) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(native)], _).
+
+test(haskell_off_explicit_none) :-
+    wam_target_runtime_parser(wam_haskell, [runtime_parser(off)], none).
+
+
+% --- Rust WAM target (compiled mode opt-in only) --------------------------
+
+test(rust_defaults_to_none) :-
+    wam_target_runtime_parser(wam_rust, [], none).
+
+test(rust_alias_defaults_to_none) :-
+    wam_target_runtime_parser(rust, [], none).
+
+test(rust_alias_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(rust, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(rust_can_opt_into_compiled_parser) :-
+    wam_target_runtime_parser(wam_rust, [runtime_parser(compiled)],
+                              compiled(prolog_term_parser)).
+
+test(rust_cannot_require_native_parser_yet,
+     [throws(error(domain_error(runtime_parser_mode(wam_rust), native), _))]) :-
+    wam_target_runtime_parser(wam_rust, [runtime_parser(native)], _).
+
+test(rust_off_explicit_none) :-
+    wam_target_runtime_parser(wam_rust, [runtime_parser(off)], none).
 
 :- end_tests(wam_runtime_parser_capability).

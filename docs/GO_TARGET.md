@@ -66,6 +66,59 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Cost-Based Optimization**: Using statistics for join ordering
 - **Custom Go functions**: User-defined Go helpers
 
+### Known Limitations
+
+#### Native control-construct codegen (deferred — routed to WAM)
+
+In **WAM Go projects** (`write_wam_go_project/3`), predicates whose clause
+bodies use control constructs are **not** compiled by the native Go
+strategy. They are routed to the WAM-lowered path instead, which handles
+them correctly. The gate lives in `go_pred_has_control_constructs/1`
+(`src/unifyweaver/targets/wam_go_target.pl`) and currently blocks the
+native strategy for:
+
+- **If-then-else** `( Cond -> Then ; Else )`
+- **Disjunction** `( A ; B )`
+- **Negation** `\+ Goal` (and `not/1`)
+- **once/1**
+
+**Why it's blocked.** The current native templates emit code that does not
+compile for these constructs:
+
+- `( X > 0 -> ... )` was compiled to `if arg1 > 0 { ... }` where `arg1` is
+  typed `interface{}` — Go cannot apply `>` to an `interface{}`, so it does
+  not type-check.
+- `\+ Goal` was emitted as an *unwrapped* stdin-pipeline fragment (a
+  `bufio.Scanner` loop at file scope with no enclosing function), a syntax
+  error.
+
+Routing these to the WAM-lowered path keeps generated projects compiling
+(`go build ./...`) and produces correct results today, verified end-to-end
+by `tests/test_wam_go_lowered_ite_exec.pl`.
+
+**What fixing the native templates could add (deferred, not abandoned).** A
+correct native implementation could provide functionality the WAM path
+does not:
+
+1. **Idiomatic, VM-free Go for control-flow predicates.** Native output is
+   a plain Go function rather than WAM register-machine instructions run by
+   the interpreter — potentially faster and easier to read/embed, the same
+   motivation as native fact/aggregation compilation. This requires real
+   type handling (e.g. `arg1.(int)` assertions, or threading static types
+   through codegen instead of `interface{}` everywhere) so comparisons and
+   arithmetic type-check.
+2. **Streaming negation / filter pipelines.** The `\+` template is shaped
+   as a *stdin records → filter → stdout* stream — the Go target's core
+   record-processing model. Finishing it would let `\+`-style filtering run
+   as a streaming Unix-pipe stage, which the WAM register machine does not
+   currently express. This is a deliberate feature (define the streaming
+   semantics and wrap the fragment in a proper function / `main` stage),
+   not just a template patch.
+
+Until then, control-flow predicates compile via the WAM path in Go
+projects, and the same predicates also get fast direct-function versions in
+`lowered.go` via the lowered emitter.
+
 ---
 
 ## Quick Start

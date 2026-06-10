@@ -83,6 +83,105 @@ calling file.
 | `scala_foreign_handlers([handler(P/A, "<scala expr>"), ...])` | Inline Scala source for each foreign handler. |
 | `scala_fact_sources([source(P/A, Spec), ...])` | Declarative fact-source — auto-expands to `foreign_predicates` + `scala_foreign_handlers` + `intern_atoms`. See below. |
 | `intern_atoms([atom1, atom2, ...])` | Pre-intern atoms whose runtime identity matters but which don't appear in any compiled WAM body. |
+| `emit_mode(Mode)` | Code-generation mode. `interpreter` (default) — every predicate runs in the step-loop interpreter. `functions` — every lowerable predicate *also* gets a native Scala fast-path function. `mixed([P/A, ...])` — only the listed predicates are lowered. See [Lowered functions](#lowered-functions-emit_mode). |
+| `kernel_dispatch(true)` | Opt-in hot-path graph kernels. Predicates matching a recognised recursive graph shape are replaced by a native Scala traversal handler that bypasses the WAM loop. See [Graph kernels](#graph-kernels-kernel_dispatch). |
+
+You can also set the mode globally without touching `Options` by asserting
+`user:wam_scala_emit_mode(functions).` before generating.
+
+### Lowered functions (`emit_mode`)
+
+In the default `interpreter` mode the generated program is a pure
+stepping WAM: every predicate is dispatched through `WamRuntime.step`.
+`emit_mode(functions)` brings the Scala target to parity with the
+Haskell / Rust / C++ / F# / Go / Clojure targets, all of which ship a
+per-predicate **lowered emitter**
+([wam_scala_lowered_emitter.pl](../src/unifyweaver/targets/wam_scala_lowered_emitter.pl)).
+
+For every lowerable predicate the codegen emits a native Scala function
+`lowered_<pred>_<arity>(s, program): Boolean` that runs the predicate's
+deterministic clause 1 directly — simple register operations are inlined
+as in-place mutations of the mutable `WamState`; failure-capable head
+unification and structure ops delegate to small `lo*` helpers on
+`WamRuntime`; deterministic builtins (`=/2`, `is/2`, the arithmetic
+comparisons, type checks, `!/0`) route through `loBuiltin`. The generated
+`loweredEntries` map registers an entry wrapper per predicate; `runEntry`
+tries the fast path first and **falls back to a fresh interpreter run
+when clause 1 misses**, so results are identical to the pure interpreter
+for any boolean query (a lowered `true` is always a real solution; a
+lowered `false` defers to the complete step loop, preserving
+first-argument indexing, clause 2+, and backtracking into
+nondeterministic sub-goals).
+
+```prolog
+write_wam_scala_project([user:ancestor/2],
+    [ package('demo.anc'), emit_mode(functions) ], '/tmp/anc').
+```
+
+A predicate is lowered only if its clause 1 is deterministic (no
+`try_me_else` / `retry_me_else` / `trust_me` inside the clause body) and
+every clause-1 instruction is supported; predicates whose clause 1 uses a
+nondeterministic builtin (`member/2`, `between/3`, `sort/2`, `findall/3`,
+…) stay in the interpreter. This mirrors the deterministic-clause-1
+contract of the Rust and Clojure lowered emitters.
+
+### Graph kernels (`kernel_dispatch`)
+
+`kernel_dispatch(true)` brings the Scala target onto the
+Rust/Haskell/Elixir/Go **hot-path kernel** route. When set, the codegen
+runs the shared recursive-kernel detector
+([recursive_kernel_detection.pl](../src/unifyweaver/core/recursive_kernel_detection.pl))
+over the predicates; any predicate matching a recognised graph shape is
+replaced by a synthesized Scala `ForeignHandler` that performs the
+traversal natively, bypassing the WAM step loop entirely. The handler
+builds its adjacency map by enumerating the kernel's edge relation
+through `WamRuntime.collectBinarySolutions/2`, so it works whether the
+edges are WAM-compiled facts or a declarative fact source.
+
+```prolog
+% tc/2 is detected as transitive_closure2 and lowered to a native BFS handler;
+% edge/2 stays WAM-compiled and supplies the adjacency.
+write_wam_scala_project([user:tc/2, user:edge/2],
+    [ package('demo.tc'), kernel_dispatch(true) ], '/tmp/tc').
+```
+
+**All seven** kernel kinds the detector recognises are implemented:
+**`transitive_closure2`**, **`transitive_distance3`** (BFS shortest-path
+distance), **`transitive_parent_distance4`** (target + immediate
+predecessor on the shortest path + distance),
+**`transitive_step_parent_distance5`** (target + first hop from source +
+immediate predecessor + distance), **`category_ancestor`** (depth-bounded
+ancestor search with a visited list; config carries `max_depth`),
+**`weighted_shortest_path3`** (Dijkstra over a ternary weighted edge
+relation; binds the shortest total weight as a float), and
+**`astar_shortest_path4`** (goal-directed A* over a ternary weighted edge
+relation with a heuristic oracle (`direct_dist_pred`) and Minkowski
+dimensionality `f = g^D + h^D`; binds the shortest distance as a float).
+
+> The weighted kernels (`weighted_shortest_path3`, `astar_shortest_path4`)
+> read edge weights as `Double` and bind the result weight as a
+> `FloatTerm` (the register contract is float), so use float-valued edge
+> weights for the interpreter and kernel to agree exactly.
+> `astar_shortest_path4` also needs its heuristic-oracle predicate
+> (`direct_dist_pred`) included in the predicate list so the kernel can
+> enumerate it at runtime.
+
+> Note: `category_ancestor` reads `max_depth/1` at runtime (via the
+> recursive clause's `max_depth(M)` goal), so when running it through the
+> *interpreter* be sure to include `max_depth/1` in the predicate list
+> passed to `write_wam_scala_project/3` — otherwise the `max_depth/1` call
+> has no dispatch target and the recursive clause silently fails. The
+> native kernel bakes `max_depth` in from the kernel config, so it does
+> not depend on `max_depth/1` being compiled. With `max_depth/1` compiled,
+> interpreter and kernel modes agree, and both match SWI-Prolog ground
+> truth (verified in the test suite).
+
+The distance kernel returns the **shortest** path length per reachable
+node (matching the Haskell/Rust/Elixir kernels). The Prolog source
+enumerates one solution per path, so kernel and interpreter agree on
+graphs where each reachable node has a single path length (trees / DAGs
+without length-divergent alternate paths); on graphs with multiple path
+lengths to the same node the kernel reports only the shortest.
 
 ### Fact-source spec forms
 
@@ -161,6 +260,12 @@ Two test suites live in [tests/](../tests/):
   — same gating; runs full Prolog programs (list reverse, naive
   reverse, Ackermann, Fibonacci) end-to-end and verifies known
   answers.
+- [test_wam_scala_lowered_emitter.pl](../tests/test_wam_scala_lowered_emitter.pl)
+  — structural tests for `emit_mode` resolution, predicate
+  partitioning and the generated lowered functions (always run) plus
+  gated runtime *parity* tests that compile the same predicates in both
+  `interpreter` and `functions` mode and assert identical, correct
+  results.
 
 Run them:
 
@@ -171,6 +276,24 @@ SCALA_SMOKE_TESTS=1 swipl -g 'use_module(library(plunit)),consult("tests/test_wa
 ```
 
 ## Benchmark
+
+### Execution modes (interpreter vs lowered vs kernel)
+
+[`tests/benchmarks/wam_scala_mode_bench.pl`](../tests/benchmarks/wam_scala_mode_bench.pl)
+compares the three execution modes on a transitive-closure workload and
+prints per-iteration time + speedup vs the interpreter:
+
+```bash
+swipl -g main -t halt tests/benchmarks/wam_scala_mode_bench.pl -- 300 2000
+```
+
+Headline result: the native graph kernel is **~4× at chain depth 100 and
+~9× at depth 300** on deep reachability (the win grows with depth), while
+`emit_mode(functions)` is roughly neutral for this recursion-heavy
+predicate. Full numbers and interpretation:
+[benchmarks/wam_scala_mode_bench.md](../benchmarks/wam_scala_mode_bench.md).
+
+### Fact-source backends
 
 A synthetic three-way bench compares the WAM-compiled, inline-tuple,
 and file-backed fact-source paths on a chain of `c0 → c1 → … → cN`:
@@ -207,9 +330,57 @@ generated handler re-reads the CSV on every call.
   be in the intern table (immutable `WamProgram.internTable`).
 - No `assert/retract`, `format/2`, `write/1`, `read/1`, or other
   side-effecting builtins.
-- LMDB-backed sidecar fact sources are not yet implemented (Phase S8).
+- LMDB-backed sidecar fact sources are supported for **any arity ≥ 2**
+  via `scala_fact_sources([source(P/N, lmdb([env_path(...), dbi(...),
+  dupsort(...)]))])` (see below).
 - Float arithmetic is `Double` only; rationals and bigints aren't
   supported.
+
+## LMDB fact sources (Phase S8)
+
+Fact relations of **any arity ≥ 2** can be backed by a memory-mapped
+LMDB database instead of inline tuples or CSV — the materialisation
+answer for large relations (>100k facts), mirroring the Haskell/Clojure
+targets. The LMDB key holds the first argument; the value holds the
+remaining arguments joined by a tab (`\t`), which `LmdbFactSource`
+splits back out into registers 2..N. For the common arity-2 (edge)
+relation the value is simply arg2. Use `dupsort(true)` for
+multiple-valued keys (the cursor walks all values for a key).
+
+```prolog
+write_wam_scala_project([user:edge/2],
+    [ package('demo.g'),
+      scala_fact_sources([
+        source(edge/2, lmdb([ env_path('/path/to/lmdb_env'),
+                              dbi(''),            % '' = default/unnamed DB
+                              dupsort(false) ])) % true for multi-value keys
+      ]) ],
+    '/tmp/g').
+```
+
+The generated `LmdbFactSource` resolves `org.lmdbjava` classes
+**reflectively** (`Class.forName`), so the runtime compiles without
+lmdbjava on the classpath — you only need it when an LMDB source is
+actually used. A ground first argument probes by key (`Dbi.get`, or a
+dupsort cursor walk); an unbound first argument streams the whole
+relation.
+
+**Running on JDK 16+:** lmdbjava's optimal `ByteBufferProxy` uses
+internal JDK APIs, so the generated program must be launched with two
+module flags (pass them via `scala -J…`, `java …`, or sbt
+`javaOptions`):
+
+```
+--add-opens   java.base/java.nio=ALL-UNNAMED
+--add-exports java.base/sun.nio.ch=ALL-UNNAMED
+```
+
+The `LmdbFactSource` map size defaults to 1 GiB (virtual; not eagerly
+allocated) and must be ≥ the size the writer created the env with.
+
+The end-to-end protocol contract (seed → read → query) is exercised by
+[test_wam_scala_lmdb_runtime_smoke.pl](../tests/test_wam_scala_lmdb_runtime_smoke.pl),
+gated on `SCALA_LMDB_TESTS` + `LMDBJAVA_CLASSPATH` (the lmdbjava JARs).
 
 ## Contributing
 

@@ -5,8 +5,10 @@ Trail-based mutable state. No external dependencies.
 
 from __future__ import annotations
 import copy
+import os
+import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional, Callable, Dict, List, Tuple
+from typing import Any, Optional, Callable, Dict, List, Tuple, Union
 
 
 # -- Term representation ----------------------------------------------------
@@ -46,7 +48,18 @@ class Ref:
     """Heap address reference."""
     addr: int
 
-Term = Atom | Compound | Var | Int | Float | Ref
+@dataclass
+class StreamHandle:
+    """Host stream wrapper that survives WAM state snapshots by identity."""
+    handle: Any
+    def __deepcopy__(self, memo): return self
+
+# NB: a runtime assignment, not an annotation — `from __future__ import
+# annotations` does NOT defer it, so PEP-604 `X | Y` union syntax would
+# evaluate eagerly and raise TypeError on Python < 3.10. Use typing.Union
+# so the generated runtime imports cleanly on 3.8+ (the rest of the file
+# already targets old Python via Optional/List/Dict).
+Term = Union[Atom, Compound, Var, Int, Float, Ref, StreamHandle]
 
 # -- Atom interning cache -----------------------------------------------------
 # Ensures `make_atom("foo") is make_atom("foo")` — pointer-equality for equal
@@ -125,6 +138,9 @@ class WamState:
         # unwind mechanism; these frames carry WAM-level state snapshots.
         self.catcher_frames: List[CatcherFrame] = []
         self.temp_y_regs: Optional[List] = None
+        self.input_pushback: List[str] = []
+        self.stream_pushback: Dict[int, List[str]] = {}
+        self.output_capture_stack: List[List[str]] = []
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -270,6 +286,75 @@ def _term_identical(a: 'Term', b: 'Term', state: WamState) -> bool:
         return (a.functor == b.functor and len(a.args) == len(b.args)
                 and all(_term_identical(x, y, state) for x, y in zip(a.args, b.args)))
     return False
+
+
+def _term_ground(term: 'Term', state: WamState) -> bool:
+    term = deref(term, state)
+    if isinstance(term, Var):
+        return False
+    if isinstance(term, Compound):
+        return all(_term_ground(arg, state) for arg in term.args)
+    if isinstance(term, Ref):
+        return _term_ground(deref(term, state), state)
+    return True
+
+
+def _standard_order_key(term: 'Term', state: WamState) -> Tuple:
+    term = deref(term, state)
+    if isinstance(term, Var):
+        return (0, term.id)
+    if isinstance(term, Float):
+        return (1, term.f)
+    if isinstance(term, Int):
+        return (1, term.n)
+    if isinstance(term, Atom):
+        return (2, _runtime_atom_text(term.name))
+    if isinstance(term, Compound):
+        functor = _display_functor_name(term.functor, len(term.args))
+        return (3, len(term.args), functor, tuple(_standard_order_key(arg, state) for arg in term.args))
+    if isinstance(term, Ref):
+        return _standard_order_key(deref(term, state), state)
+    return (4, repr(term))
+
+
+def _execute_sort_like(state: WamState, dedup: bool) -> bool:
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is None:
+        return False
+    sorted_items = sorted(items, key=lambda item: _standard_order_key(item, state))
+    if dedup:
+        unique: List[Term] = []
+        previous_key = None
+        have_previous = False
+        for item in sorted_items:
+            key = _standard_order_key(item, state)
+            if not have_previous or key != previous_key:
+                unique.append(item)
+                previous_key = key
+                have_previous = True
+        sorted_items = unique
+    return unify(get_reg(state, 2), _list_from_terms(sorted_items), state)
+
+
+def _pair_key(term: 'Term', state: WamState) -> Optional[Tuple]:
+    term = deref(term, state)
+    if not isinstance(term, Compound) or _display_functor_name(term.functor, len(term.args)) != '-' or len(term.args) != 2:
+        return None
+    return _standard_order_key(term.args[0], state)
+
+
+def _execute_keysort(state: WamState) -> bool:
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is None:
+        return False
+    keyed: List[Tuple[Tuple, Term]] = []
+    for item in items:
+        key = _pair_key(item, state)
+        if key is None:
+            return False
+        keyed.append((key, item))
+    keyed.sort(key=lambda pair: pair[0])
+    return unify(get_reg(state, 2), _list_from_terms([item for _, item in keyed]), state)
 
 
 def _make_cons(head: 'Term', tail: 'Term') -> 'Compound':
@@ -696,6 +781,48 @@ def _list_from_codes(codes: List[int]) -> 'Term':
     return _list_from_terms([Int(code) for code in codes])
 
 
+def _chars_from_list(term: 'Term', state: WamState) -> Optional[List[str]]:
+    items = _term_to_list(term, state)
+    if items is None:
+        return None
+    chars: List[str] = []
+    for item in items:
+        value = deref(item, state)
+        if not isinstance(value, Atom):
+            return None
+        text = _runtime_atom_text(value.name)
+        if len(text) != 1:
+            return None
+        chars.append(text)
+    return chars
+
+
+def _list_from_chars(chars: List[str]) -> 'Term':
+    return _list_from_terms([make_atom(ch) for ch in chars])
+
+
+def _parse_number_text(text: str) -> Optional[Term]:
+    if text == '':
+        return None
+    try:
+        return Int(int(text, 10))
+    except ValueError:
+        pass
+    try:
+        return Float(float(text))
+    except ValueError:
+        return None
+
+
+def _number_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if isinstance(value, Int):
+        return str(value.n)
+    if isinstance(value, Float):
+        return _format_value(value, state)
+    return None
+
+
 def _execute_atom_codes(state: WamState) -> bool:
     atom_term = deref(get_reg(state, 1), state)
     codes_term = deref(get_reg(state, 2), state)
@@ -728,6 +855,151 @@ def _execute_number_codes(state: WamState) -> bool:
         return unify(get_reg(state, 1), Int(int(text)), state)
     except (OverflowError, ValueError):
         return False
+
+
+def _text_coerce(value: Term, state: WamState, allow_float: bool = True) -> Optional[str]:
+    value = deref(value, state)
+    if isinstance(value, Atom):
+        return _runtime_atom_text(value.name)
+    if isinstance(value, Int):
+        return str(value.n)
+    if allow_float and isinstance(value, Float):
+        return _format_value(value, state)
+    return None
+
+
+def _execute_atom_concat(state: WamState) -> bool:
+    left = _text_coerce(get_reg(state, 1), state)
+    right = _text_coerce(get_reg(state, 2), state)
+    if left is None or right is None:
+        return False
+    return unify(get_reg(state, 3), make_atom(left + right), state)
+
+
+def _execute_atom_length(state: WamState) -> bool:
+    text = _text_coerce(get_reg(state, 1), state, allow_float=False)
+    if text is None:
+        return False
+    return unify(get_reg(state, 2), Int(len(text)), state)
+
+
+def _execute_atom_string(state: WamState) -> bool:
+    left = deref(get_reg(state, 1), state)
+    right = deref(get_reg(state, 2), state)
+    if not isinstance(left, Var):
+        text = _text_coerce(left, state)
+        if text is None:
+            return False
+        return unify(get_reg(state, 2), make_atom(text), state)
+    if isinstance(right, Var):
+        return False
+    text = _text_coerce(right, state)
+    if text is None:
+        return False
+    return unify(get_reg(state, 1), make_atom(text), state)
+
+
+def _execute_number_chars(state: WamState) -> bool:
+    number_text = _number_text(get_reg(state, 1), state)
+    if number_text is not None:
+        return unify(get_reg(state, 2), _list_from_chars(list(number_text)), state)
+    chars = _chars_from_list(get_reg(state, 2), state)
+    if chars is None:
+        return False
+    parsed = _parse_number_text(''.join(chars))
+    if parsed is None:
+        return False
+    return unify(get_reg(state, 1), parsed, state)
+
+
+def _execute_atom_number(state: WamState) -> bool:
+    atom_term = deref(get_reg(state, 1), state)
+    if not isinstance(atom_term, Var):
+        if not isinstance(atom_term, Atom):
+            return False
+        parsed = _parse_number_text(_runtime_atom_text(atom_term.name))
+        if parsed is None:
+            return False
+        return unify(get_reg(state, 2), parsed, state)
+    text = _number_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return unify(get_reg(state, 1), make_atom(text), state)
+
+
+def _execute_char_code(state: WamState) -> bool:
+    char_term = deref(get_reg(state, 1), state)
+    code_term = deref(get_reg(state, 2), state)
+    if isinstance(char_term, Atom):
+        text = _runtime_atom_text(char_term.name)
+        if len(text) != 1:
+            return False
+        return unify(get_reg(state, 2), Int(ord(text)), state)
+    if isinstance(code_term, Int) and 0 <= code_term.n <= 255:
+        return unify(get_reg(state, 1), make_atom(chr(code_term.n)), state)
+    return False
+
+
+def _execute_string_code(state: WamState) -> bool:
+    index = deref(get_reg(state, 1), state)
+    text_term = deref(get_reg(state, 2), state)
+    if not isinstance(index, Int) or not isinstance(text_term, Atom):
+        return False
+    text = _runtime_atom_text(text_term.name)
+    if index.n < 1 or index.n > len(text):
+        return False
+    return unify(get_reg(state, 3), Int(ord(text[index.n - 1])), state)
+
+
+def _execute_atomic_list_concat(state: WamState, arity: int) -> bool:
+    if arity == 2:
+        items = _term_to_list(get_reg(state, 1), state)
+        if items is None:
+            return False
+        parts: List[str] = []
+        for item in items:
+            text = _text_coerce(item, state)
+            if text is None:
+                return False
+            parts.append(text)
+        return unify(get_reg(state, 2), make_atom(''.join(parts)), state)
+
+    separator = _text_coerce(get_reg(state, 2), state, allow_float=False)
+    if separator is None:
+        return False
+    items = _term_to_list(get_reg(state, 1), state)
+    if items is not None:
+        parts: List[str] = []
+        for item in items:
+            text = _text_coerce(item, state)
+            if text is None:
+                return False
+            parts.append(text)
+        return unify(get_reg(state, 3), make_atom(separator.join(parts)), state)
+
+    source = _text_coerce(get_reg(state, 3), state, allow_float=False)
+    if source is None or separator == '':
+        return False
+    return unify(get_reg(state, 1), _list_from_terms([make_atom(part) for part in source.split(separator)]), state)
+
+
+def _execute_split_string(state: WamState) -> bool:
+    text = _text_coerce(get_reg(state, 1), state)
+    separators = _text_coerce(get_reg(state, 2), state, allow_float=False)
+    pads = _text_coerce(get_reg(state, 3), state, allow_float=False)
+    if text is None or separators is None or pads is None:
+        return False
+
+    parts: List[str] = []
+    current: List[str] = []
+    for ch in text:
+        if ch in separators:
+            parts.append(''.join(current).strip(pads))
+            current = []
+        else:
+            current.append(ch)
+    parts.append(''.join(current).strip(pads))
+    return unify(get_reg(state, 4), _list_from_terms([make_atom(part) for part in parts]), state)
 
 
 def _execute_append(state: WamState) -> bool:
@@ -889,10 +1161,17 @@ def _parse_constant(name: str) -> 'Term':
 
 
 def _constant_term(atom_arg: 'Term') -> 'Term':
-    if isinstance(atom_arg, (Int, Float)):
+    # Preserve already-typed terms verbatim.  The previous behaviour
+    # was to re-parse Atom("42").name through _parse_constant which
+    # promotes any numeric-looking string to Int / Float -- so a
+    # source-level quoted-numeric atom like `'42'` (correctly emitted
+    # by the codegen as Atom("42")) silently became Int(42) at
+    # put_constant time, breaking read_term_from_atom('42', _) and
+    # related uses of quoted-numeric atoms.  The _parse_constant
+    # fallback below is reserved for the WAM-text load path where
+    # atom_arg arrives as a raw string with no type information.
+    if isinstance(atom_arg, (Int, Float, Atom)):
         return atom_arg
-    if isinstance(atom_arg, Atom):
-        return _parse_constant(atom_arg.name)
     return _parse_constant(str(atom_arg))
 
 
@@ -1059,6 +1338,225 @@ def _format_value(val: 'Term', state: WamState) -> str:
     return str(val)
 
 
+def _atom_needs_canonical_quote(name: str) -> bool:
+    if name == '[]':
+        return False
+    if not name:
+        return True
+    try:
+        int(name)
+        return True
+    except ValueError:
+        try:
+            float(name)
+            return True
+        except ValueError:
+            pass
+    if not name[0].islower():
+        return True
+    return any(not (ch.isalnum() or ch == '_') for ch in name)
+
+
+def _canonical_atom_text(name: str) -> str:
+    if not _atom_needs_canonical_quote(name):
+        return name
+    return "'" + name.replace('\\', '\\\\').replace("'", "\\'") + "'"
+
+
+def _format_canonical_value(val: 'Term', state: WamState) -> str:
+    """Format a WAM term for write_canonical/1."""
+    val = deref(val, state)
+    if isinstance(val, Atom):
+        return _canonical_atom_text(val.name)
+    if isinstance(val, Int):
+        return str(val.n)
+    if isinstance(val, Float):
+        return str(val.f)
+    if isinstance(val, Var):
+        return f"_V{val.id}"
+    if isinstance(val, Compound):
+        if _is_cons_functor(val.functor) and len(val.args) == 2:
+            items = _term_to_list(val, state)
+            if items is not None:
+                return '[' + ', '.join(_format_canonical_value(item, state) for item in items) + ']'
+        functor = _canonical_atom_text(_display_functor_name(val.functor, len(val.args)))
+        return f"{functor}(" + ', '.join(_format_canonical_value(arg, state) for arg in val.args) + ')'
+    if isinstance(val, Ref):
+        return _format_canonical_value(deref(val, state), state)
+    return str(val)
+
+
+def _emit_output(text: str, stream: Any = None, state: Optional[WamState] = None) -> bool:
+    if stream is None and state is not None and state.output_capture_stack:
+        state.output_capture_stack[-1].append(text)
+        return True
+    out = sys.stdout if stream is None else stream
+    try:
+        out.write(text)
+        out.flush()
+    except OSError:
+        return False
+    return True
+
+
+def _capture_sink_functor(sink: 'Term', state: WamState) -> Optional[Tuple[str, Term]]:
+    sink = deref(sink, state)
+    if not isinstance(sink, Compound) or len(sink.args) != 1:
+        return None
+    functor = _display_functor_name(sink.functor, len(sink.args))
+    if functor in ('atom', 'string', 'codes', 'stream'):
+        return functor, sink.args[0]
+    return None
+
+
+def _unify_capture_sink(sink: 'Term', text: str, state: WamState) -> bool:
+    parsed = _capture_sink_functor(sink, state)
+    if parsed is None:
+        return False
+    kind, target = parsed
+    if kind in ('atom', 'string'):
+        return unify(target, make_atom(text), state)
+    if kind == 'codes':
+        return unify(target, _list_from_codes([ord(ch) for ch in text]), state)
+    raw = _unwrap_stream(deref(target, state))
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write(text)
+        raw.flush()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _execute_with_output_to(state: WamState) -> bool:
+    sink = get_reg(state, 1)
+    if _capture_sink_functor(sink, state) is None:
+        return False
+    goal = deref(get_reg(state, 2), state)
+    snapshot = copy.deepcopy(state)
+    state.output_capture_stack.append([])
+    try:
+        ok = _execute_goal_in_state(goal, state)
+    except Exception:
+        if state.output_capture_stack:
+            state.output_capture_stack.pop()
+        raise
+    if not ok:
+        _restore_state_from_snapshot(state, snapshot)
+        return False
+    captured = ''.join(state.output_capture_stack.pop())
+    if _unify_capture_sink(sink, captured, state):
+        return True
+    _restore_state_from_snapshot(state, snapshot)
+    return False
+
+
+def _format_string_text(term: 'Term', state: WamState) -> Optional[str]:
+    term = deref(term, state)
+    if isinstance(term, Atom):
+        return _runtime_atom_text(term.name)
+    if isinstance(term, Int):
+        return str(term.n)
+    return None
+
+
+def _format_s_arg(term: 'Term', state: WamState) -> Optional[str]:
+    term = deref(term, state)
+    if isinstance(term, Atom):
+        return _runtime_atom_text(term.name)
+    codes = _codes_from_list(term, state)
+    if codes is not None:
+        try:
+            return ''.join(chr(code) for code in codes)
+        except (OverflowError, ValueError):
+            return None
+    return _format_value(term, state)
+
+
+def _render_format_buffer(fmt: str, args: List['Term'], state: WamState) -> Optional[str]:
+    out: List[str] = []
+    arg_index = 0
+    i = 0
+    while i < len(fmt):
+        ch = fmt[i]
+        if ch != '~' or i + 1 >= len(fmt):
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        directive = fmt[i]
+        if directive == 'n':
+            out.append('\n')
+        elif directive == 't':
+            out.append('\t')
+        elif directive == '~':
+            out.append('~')
+        elif directive in ('w', 'p'):
+            if arg_index >= len(args):
+                return None
+            out.append(_format_value(args[arg_index], state))
+            arg_index += 1
+        elif directive == 'a':
+            if arg_index >= len(args):
+                return None
+            value = deref(args[arg_index], state)
+            out.append(_runtime_atom_text(value.name) if isinstance(value, Atom) else _format_value(value, state))
+            arg_index += 1
+        elif directive == 'd':
+            if arg_index >= len(args):
+                return None
+            value = deref(args[arg_index], state)
+            out.append(str(value.n) if isinstance(value, Int) else _format_value(value, state))
+            arg_index += 1
+        elif directive == 's':
+            if arg_index >= len(args):
+                return None
+            text = _format_s_arg(args[arg_index], state)
+            if text is None:
+                return None
+            out.append(text)
+            arg_index += 1
+        else:
+            out.append('~')
+            out.append(directive)
+        i += 1
+    return ''.join(out)
+
+
+def _execute_format_builtin(arity: int, state: WamState) -> bool:
+    fmt_reg = 2 if arity == 3 else 1
+    fmt = _format_string_text(get_reg(state, fmt_reg), state)
+    if fmt is None:
+        return False
+    if arity == 1:
+        args: List[Term] = []
+    else:
+        args = _term_to_list(get_reg(state, 3 if arity == 3 else 2), state)
+        if args is None:
+            return False
+    rendered = _render_format_buffer(fmt, args, state)
+    if rendered is None:
+        return False
+    if arity != 3:
+        return _emit_output(rendered, state=state)
+    dest = deref(get_reg(state, 1), state)
+    if isinstance(dest, Atom):
+        name = _runtime_atom_text(dest.name)
+        if name == 'user_output':
+            return _emit_output(rendered, state=state)
+        if name == 'user_error':
+            return _emit_output(rendered, sys.stderr)
+        return False
+    if isinstance(dest, Compound) and len(dest.args) == 1:
+        functor = _display_functor_name(dest.functor, len(dest.args))
+        if functor in ('atom', 'string'):
+            return unify(dest.args[0], make_atom(rendered), state)
+        if functor == 'codes':
+            return unify(dest.args[0], _list_from_codes([ord(ch) for ch in rendered]), state)
+    return False
+
+
 def _deep_copy_term(val: 'Term', var_map: Dict[int, Var], state: WamState) -> 'Term':
     """Copy a term, giving each source variable one fresh target variable."""
     val = deref(val, state)
@@ -1127,17 +1625,13 @@ def _variable_names_from_env(env_term: 'Term', source: WamState, target: WamStat
     return _list_from_terms(list(reversed(pairs)))
 
 
-def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
-    seen: set[int] = set()
-    variables: List[Term] = []
+def _walk_term_vars(term: 'Term', state: WamState) -> List[Var]:
+    variables: List[Var] = []
 
     def walk(value: 'Term') -> None:
         value = deref(value, state)
         if isinstance(value, Var):
-            key = id(value.ref)
-            if key not in seen:
-                seen.add(key)
-                variables.append(value)
+            variables.append(value)
             return
         if isinstance(value, Ref):
             heap_value = state.heap.get(value.addr)
@@ -1149,27 +1643,101 @@ def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
                 walk(arg)
 
     walk(term)
+    return variables
+
+
+def _variables_from_term(term: 'Term', state: WamState) -> 'Term':
+    seen: set[int] = set()
+    variables: List[Term] = []
+    for var in _walk_term_vars(term, state):
+        key = id(var.ref)
+        if key not in seen:
+            seen.add(key)
+            variables.append(var)
     return _list_from_terms(variables)
 
 
+def _variable_name_map_from_env(env_term: 'Term', source: WamState, target: WamState,
+                                var_map: Dict[int, Var]) -> Dict[int, str]:
+    names: Dict[int, str] = {}
+    for pair in _term_to_list(env_term, source) or []:
+        pair = deref(pair, source)
+        if not isinstance(pair, Compound) or len(pair.args) != 2:
+            continue
+        name = deref(pair.args[0], source)
+        if not isinstance(name, Atom):
+            continue
+        var = _copy_term_between_states(pair.args[1], source, target, var_map)
+        if isinstance(var, Var):
+            names[id(var.ref)] = name.name
+    return names
+
+
+def _singletons_from_term(term: 'Term', env_term: 'Term', source: WamState,
+                          target: WamState, var_map: Dict[int, Var]) -> 'Term':
+    occurrences = _walk_term_vars(term, target)
+    counts: Dict[int, int] = {}
+    for var in occurrences:
+        key = id(var.ref)
+        counts[key] = counts.get(key, 0) + 1
+
+    names = _variable_name_map_from_env(env_term, source, target, var_map)
+    emitted: set[int] = set()
+    pairs: List[Term] = []
+    for var in occurrences:
+        key = id(var.ref)
+        if key in emitted or counts.get(key) != 1:
+            continue
+        name = names.get(key, '_')
+        if name != '_' and name.startswith('_'):
+            continue
+        emitted.add(key)
+        pairs.append(Compound('=/2', [make_atom(name), var]))
+    return _list_from_terms(pairs)
+
+
+def _syntax_errors_mode(options: Optional['Term'], state: WamState, default: str) -> str:
+    if options is None:
+        return default
+    opt = _read_option_arg(options, 'syntax_errors', state)
+    opt = deref(opt, state) if opt is not None else None
+    if isinstance(opt, Atom) and opt.name in ('error', 'fail', 'quiet'):
+        return opt.name
+    return default
+
+
+def make_syntax_error(state: WamState, kind: str = 'end_of_clause') -> Term:
+    return Compound('syntax_error/1', [make_atom(kind)])
+
+
 def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term',
-                                 options: Optional['Term'] = None) -> bool:
+                                 options: Optional['Term'] = None,
+                                 syntax_default: str = 'fail') -> bool:
     atom_text = _runtime_atom_text(atom_text)
     code = getattr(state, '_code', None)
     labels = getattr(state, '_labels', None)
+    syntax_mode = _syntax_errors_mode(options, state, syntax_default)
     if not code or not labels:
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
     if 'canonical_op_table/1' not in labels:
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
 
     want_var_names = None
     want_variables = None
+    want_singletons = None
     if options is not None:
         want_var_names = _read_option_arg(options, 'variable_names', state)
         want_variables = _read_option_arg(options, 'variables', state)
+        want_singletons = _read_option_arg(options, 'singletons', state)
 
     parser_entry = 'parse_term_from_atom/3'
-    if (want_var_names is not None or want_variables is not None) and 'parse_term_from_atom/4' in labels:
+    wants_env = (want_var_names is not None or want_variables is not None or
+                 want_singletons is not None)
+    if wants_env and 'parse_term_from_atom/4' in labels:
         parser_entry = 'parse_term_from_atom/4'
     elif parser_entry not in labels:
         return False
@@ -1188,6 +1756,8 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
     if parser_entry == 'parse_term_from_atom/4':
         set_reg(parser_state, 4, var_env)
     if not run_wam(code, labels, parser_entry, parser_state):
+        if syntax_mode == 'error':
+            return throw_iso_error(state, make_syntax_error(state))
         return False
 
     var_map: Dict[int, Var] = {}
@@ -1202,15 +1772,410 @@ def _execute_compiled_parse_atom(state: WamState, atom_text: str, target: 'Term'
         variables = _variables_from_term(copied, state)
         if not unify(want_variables, variables, state):
             return False
+    if want_singletons is not None:
+        singletons = _singletons_from_term(copied, var_env, parser_state, state, var_map)
+        if not unify(want_singletons, singletons, state):
+            return False
     return True
 
 
-def _execute_read_term_from_atom(state: WamState, arity: int = 2) -> bool:
+def _execute_read_term_from_atom(state: WamState, arity: int = 2,
+                                 syntax_default: str = 'fail') -> bool:
     atom_term = deref(get_reg(state, 1), state)
     if not isinstance(atom_term, Atom):
         return False
     options = get_reg(state, 3) if arity == 3 else None
-    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2), options)
+    return _execute_compiled_parse_atom(state, atom_term.name, get_reg(state, 2),
+                                        options, syntax_default)
+
+
+def _unwrap_stream(stream: Any) -> Any:
+    return stream.handle if isinstance(stream, StreamHandle) else stream
+
+
+def _stream_open_mode(mode_term: Term, state: WamState) -> Optional[str]:
+    mode_term = deref(mode_term, state)
+    if not isinstance(mode_term, Atom):
+        return None
+    mode = _runtime_atom_text(mode_term.name)
+    if mode == 'read':
+        return 'r'
+    if mode == 'write':
+        return 'w'
+    if mode == 'append':
+        return 'a'
+    return None
+
+
+def _stream_path_text(path_term: Term, state: WamState) -> Optional[str]:
+    path_term = deref(path_term, state)
+    if not isinstance(path_term, Atom):
+        return None
+    return _runtime_atom_text(path_term.name)
+
+
+def _execute_open(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    mode = _stream_open_mode(get_reg(state, 2), state)
+    if path is None or mode is None:
+        return False
+    try:
+        handle = open(path, mode, encoding='utf-8')
+    except OSError:
+        return False
+    if not unify(get_reg(state, 3), StreamHandle(handle), state):
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _execute_exists_file(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    return path is not None and os.path.isfile(path)
+
+
+def _execute_exists_directory(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    return path is not None and os.path.isdir(path)
+
+
+def _execute_directory_files(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None or not os.path.isdir(path):
+        return False
+    try:
+        names = ['.', '..'] + sorted(os.listdir(path))
+    except OSError:
+        return False
+    return unify(get_reg(state, 2), _list_from_terms([make_atom(name) for name in names]), state)
+
+
+def _execute_make_directory(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None:
+        return False
+    try:
+        os.mkdir(path)
+    except OSError:
+        return False
+    return True
+
+
+def _execute_delete_file(state: WamState) -> bool:
+    path = _stream_path_text(get_reg(state, 1), state)
+    if path is None:
+        return False
+    try:
+        os.remove(path)
+    except OSError:
+        return False
+    return True
+
+
+def _execute_close(state: WamState) -> bool:
+    stream = _unwrap_stream(deref(get_reg(state, 1), state))
+    if stream is None or not hasattr(stream, 'close'):
+        return False
+    try:
+        stream.close()
+    except OSError:
+        return False
+    return True
+
+
+def _read_stream_char(stream: Any) -> str:
+    stream = _unwrap_stream(stream)
+    if hasattr(stream, 'read'):
+        chunk = stream.read(1)
+        return chunk or ''
+    return ''
+
+
+def _read_default_char(state: WamState) -> str:
+    if state.input_pushback:
+        return state.input_pushback.pop()
+    return _read_stream_char(sys.stdin)
+
+
+def _peek_default_char(state: WamState) -> str:
+    ch = _read_default_char(state)
+    if ch != '':
+        state.input_pushback.append(ch)
+    return ch
+
+
+def _stream_pushback_key(stream: Any) -> int:
+    return id(_unwrap_stream(stream))
+
+
+def _read_handle_char(state: WamState, stream: Any) -> Optional[str]:
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return None
+    key = id(raw)
+    chars = state.stream_pushback.get(key)
+    if chars:
+        return chars.pop()
+    return _read_stream_char(raw)
+
+
+def _peek_handle_char(state: WamState, stream: Any) -> Optional[str]:
+    ch = _read_handle_char(state, stream)
+    if ch is not None and ch != '':
+        state.stream_pushback.setdefault(_stream_pushback_key(stream), []).append(ch)
+    return ch
+
+
+def _char_atom_value(ch: str) -> Atom:
+    return make_atom('end_of_file') if ch == '' else make_atom(ch)
+
+
+def _code_value(ch: str) -> Int:
+    return Int(-1) if ch == '' else Int(ord(ch))
+
+
+def _output_atom_char_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if not isinstance(value, Atom):
+        return None
+    text = _runtime_atom_text(value.name)
+    return text if len(text) == 1 else None
+
+
+def _output_code_text(value: Term, state: WamState) -> Optional[str]:
+    value = deref(value, state)
+    if not isinstance(value, Int) or value.n < 0:
+        return None
+    try:
+        return chr(value.n)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _write_stream_char(stream: Any, text: str) -> bool:
+    stream = _unwrap_stream(stream)
+    if stream is None or not hasattr(stream, 'write'):
+        return False
+    try:
+        stream.write(text)
+    except OSError:
+        return False
+    return True
+
+
+def _execute_get_char(state: WamState) -> bool:
+    ch = _read_default_char(state)
+    return unify(get_reg(state, 1), _char_atom_value(ch), state)
+
+
+def _execute_peek_char(state: WamState) -> bool:
+    ch = _peek_default_char(state)
+    return unify(get_reg(state, 1), _char_atom_value(ch), state)
+
+
+def _execute_get_code(state: WamState) -> bool:
+    ch = _read_default_char(state)
+    return unify(get_reg(state, 1), _code_value(ch), state)
+
+
+def _execute_get_char_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _read_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _char_atom_value(ch), state)
+
+
+def _execute_peek_char_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _peek_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _char_atom_value(ch), state)
+
+
+def _execute_get_code_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    ch = _read_handle_char(state, stream)
+    if ch is None:
+        return False
+    return unify(get_reg(state, 2), _code_value(ch), state)
+
+
+def _execute_put_char(state: WamState) -> bool:
+    text = _output_atom_char_text(get_reg(state, 1), state)
+    if text is None:
+        return False
+    return _emit_output(text, state=state)
+
+
+def _execute_put_code(state: WamState) -> bool:
+    text = _output_code_text(get_reg(state, 1), state)
+    if text is None:
+        return False
+    return _emit_output(text, state=state)
+
+
+def _execute_put_char_stream(state: WamState) -> bool:
+    text = _output_atom_char_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return _write_stream_char(deref(get_reg(state, 1), state), text)
+
+
+def _execute_put_code_stream(state: WamState) -> bool:
+    text = _output_code_text(get_reg(state, 2), state)
+    if text is None:
+        return False
+    return _write_stream_char(deref(get_reg(state, 1), state), text)
+
+
+def _execute_read_line_to_string(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+
+    chars: List[str] = []
+    while True:
+        ch = _read_handle_char(state, stream)
+        if ch is None:
+            return False
+        if ch == '':
+            if not chars:
+                return unify(get_reg(state, 2), make_atom('end_of_file'), state)
+            return unify(get_reg(state, 2), make_atom(''.join(chars)), state)
+        if ch == '\n':
+            return unify(get_reg(state, 2), make_atom(''.join(chars)), state)
+        if ch == '\r':
+            next_ch = _read_handle_char(state, stream)
+            if next_ch is None:
+                return False
+            if next_ch not in ('', '\n'):
+                state.stream_pushback.setdefault(_stream_pushback_key(stream), []).append(next_ch)
+            return unify(get_reg(state, 2), make_atom(''.join(chars)), state)
+        chars.append(ch)
+
+
+def _execute_read_string(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    length = deref(get_reg(state, 2), state)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+    if not isinstance(length, Int) or length.n < 0:
+        return False
+
+    chars: List[str] = []
+    for _ in range(length.n):
+        ch = _read_handle_char(state, stream)
+        if ch is None:
+            return False
+        if ch == '':
+            break
+        chars.append(ch)
+
+    text = ''.join(chars)
+    if not unify(get_reg(state, 3), Int(len(text)), state):
+        return False
+    return unify(get_reg(state, 5), make_atom(text), state)
+
+
+def _execute_at_end_of_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+    if state.stream_pushback.get(_stream_pushback_key(stream)):
+        return False
+    try:
+        if hasattr(raw, 'tell') and hasattr(raw, 'seek'):
+            pos = raw.tell()
+            ch = raw.read(1)
+            raw.seek(pos)
+            return ch == ''
+        ch = _peek_handle_char(state, stream)
+    except (OSError, ValueError):
+        return False
+    return ch == ''
+
+
+def _execute_write_to_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write(_format_value(get_reg(state, 2), state))
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _execute_nl_to_stream(state: WamState) -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'write'):
+        return False
+    try:
+        raw.write('\n')
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _execute_read_from_stream(state: WamState, stream: Any, target: Term,
+                              syntax_default: str = 'fail',
+                              read_char: Optional[Callable[[], str]] = None) -> bool:
+    if stream is None or isinstance(stream, (Atom, Compound, Var, Int, Float, Ref)):
+        return False
+
+    buffer = ''
+    while True:
+        ch = read_char() if read_char is not None else _read_stream_char(stream)
+        if ch == '':
+            if not buffer.strip():
+                return unify(target, make_atom('end_of_file'), state)
+            return _execute_compiled_parse_atom(state, buffer.strip(), target, None, syntax_default)
+
+        buffer += ch
+        stripped = buffer.strip()
+        if not stripped.endswith('.'):
+            continue
+
+        candidate = stripped[:-1].strip()
+        if not candidate:
+            continue
+        if _execute_compiled_parse_atom(state, candidate, target, None, 'fail'):
+            return True
+
+
+def _execute_read(state: WamState, syntax_default: str = 'fail') -> bool:
+    stream = deref(get_reg(state, 1), state)
+    raw = _unwrap_stream(stream)
+    if raw is None or not hasattr(raw, 'read'):
+        return False
+    return _execute_read_from_stream(
+        state,
+        stream,
+        get_reg(state, 2),
+        syntax_default,
+        lambda: _read_handle_char(state, stream) or '',
+    )
+
+
+def _execute_read_default_stream(state: WamState,
+                                 syntax_default: str = 'fail') -> bool:
+    return _execute_read_from_stream(
+        state,
+        sys.stdin,
+        get_reg(state, 1),
+        syntax_default,
+        lambda: _read_default_char(state),
+    )
 
 
 def _execute_term_to_atom(state: WamState) -> bool:
@@ -1227,23 +2192,7 @@ def _goal_succeeds_once(goal: 'Term', state: WamState) -> bool:
     """Evaluate a callable goal against an isolated copy of the current state."""
     isolated_goal = copy.deepcopy(deref(goal, state))
     sub = copy.deepcopy(state)
-    goal = deref(isolated_goal, sub)
-    if isinstance(goal, Atom):
-        return _execute_builtin(goal.name, 0, sub)
-    if not isinstance(goal, Compound):
-        return False
-    functor = goal.functor
-    arity = len(goal.args)
-    pred_key = functor if '/' in functor else f"{functor}/{arity}"
-    for i, arg in enumerate(goal.args, start=1):
-        set_reg(sub, i, deref(arg, sub))
-    if _execute_builtin(pred_key, arity, sub):
-        return True
-    code = getattr(state, '_code', None)
-    labels = getattr(state, '_labels', None)
-    if code is not None and labels is not None and pred_key in labels:
-        return run_wam(code, labels, pred_key, sub)
-    return False
+    return _execute_goal_in_state(deref(isolated_goal, sub), sub)
 
 
 def _restore_state_from_snapshot(state: WamState, snapshot: WamState) -> None:
@@ -1259,9 +2208,12 @@ def _execute_goal_in_state(goal: 'Term', state: WamState) -> bool:
         return _execute_builtin(goal.name, 0, state)
     if not isinstance(goal, Compound):
         return False
-    functor = goal.functor
+    functor = _display_functor_name(goal.functor, len(goal.args))
+    if functor == ',' and len(goal.args) == 2:
+        return (_execute_goal_in_state(goal.args[0], state) and
+                _execute_goal_in_state(goal.args[1], state))
     arity = len(goal.args)
-    pred_key = functor if '/' in functor else f"{functor}/{arity}"
+    pred_key = goal.functor if '/' in goal.functor else f"{goal.functor}/{arity}"
     for i, arg in enumerate(goal.args, start=1):
         set_reg(state, i, deref(arg, state))
     if _execute_builtin(pred_key, arity, state):
@@ -1334,11 +2286,19 @@ def throw_iso_error(state: WamState, err_term: Term) -> bool:
 
 
 def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int = -1) -> bool:
-    """Execute a WAM builtin_call instruction."""
+    """Execute a WAM builtin_call instruction.
+
+    Public alias `execute_builtin` is defined below: lowered predicate
+    functions call it (they import the runtime via `from wam_runtime import *`,
+    which skips underscore-prefixed names) to dispatch standard builtins the
+    same way the interpreter loop does.
+    """
     if builtin in ('catch/3', 'catch') and arity == 3:
         return _execute_catch(state)
     if builtin in ('throw/1', 'throw') and arity == 1:
         return _execute_throw(state)
+    if builtin in ('with_output_to/2', 'with_output_to') and arity == 2:
+        return _execute_with_output_to(state)
     if builtin == '!/0' or builtin == '!':  # cut
         target_b = state.cut_b
         if state.e >= 0:
@@ -1354,6 +2314,8 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return not unify(get_reg(sub, 1), get_reg(sub, 2), sub)
     if builtin in ('==/2', '==') and arity == 2:
         return _term_identical(get_reg(state, 1), get_reg(state, 2), state)
+    if builtin in ('\\==/2', '\\==') and arity == 2:
+        return not _term_identical(get_reg(state, 1), get_reg(state, 2), state)
     if builtin in ('is/2', 'is_lax/2', 'is', 'is_lax') and arity == 2:
         return _execute_is_lax(state)
     if builtin in ('is_iso/2', 'is_iso') and arity == 2:
@@ -1391,10 +2353,89 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         return _execute_atom_codes(state)
     if builtin in ('number_codes/2', 'number_codes') and arity == 2:
         return _execute_number_codes(state)
-    if builtin in ('read_term_from_atom/2', 'read_term_from_atom') and arity == 2:
-        return _execute_read_term_from_atom(state, 2)
-    if builtin in ('read_term_from_atom/3',) and arity == 3:
-        return _execute_read_term_from_atom(state, 3)
+    if builtin in ('atom_concat/3', 'atom_concat', 'string_concat/3', 'string_concat') and arity == 3:
+        return _execute_atom_concat(state)
+    if builtin in ('atom_length/2', 'atom_length', 'string_length/2', 'string_length') and arity == 2:
+        return _execute_atom_length(state)
+    if builtin in ('atom_string/2', 'atom_string', 'string_to_atom/2', 'string_to_atom') and arity == 2:
+        return _execute_atom_string(state)
+    if builtin in ('number_chars/2', 'number_chars') and arity == 2:
+        return _execute_number_chars(state)
+    if builtin in ('atom_number/2', 'atom_number') and arity == 2:
+        return _execute_atom_number(state)
+    if builtin in ('char_code/2', 'char_code') and arity == 2:
+        return _execute_char_code(state)
+    if builtin in ('string_code/3', 'string_code') and arity == 3:
+        return _execute_string_code(state)
+    if builtin in ('atomic_list_concat/2', 'atomic_list_concat') and arity == 2:
+        return _execute_atomic_list_concat(state, 2)
+    if builtin in ('atomic_list_concat/3',) and arity == 3:
+        return _execute_atomic_list_concat(state, 3)
+    if builtin in ('split_string/4', 'split_string') and arity == 4:
+        return _execute_split_string(state)
+    if builtin in ('read_term_from_atom/2', 'read_term_from_atom_lax/2',
+                   'read_term_from_atom', 'read_term_from_atom_lax') and arity == 2:
+        return _execute_read_term_from_atom(state, 2, 'fail')
+    if builtin in ('read_term_from_atom_iso/2', 'read_term_from_atom_iso') and arity == 2:
+        return _execute_read_term_from_atom(state, 2, 'error')
+    if builtin in ('read_term_from_atom/3', 'read_term_from_atom_lax/3') and arity == 3:
+        return _execute_read_term_from_atom(state, 3, 'fail')
+    if builtin in ('read_term_from_atom_iso/3',) and arity == 3:
+        return _execute_read_term_from_atom(state, 3, 'error')
+    if builtin in ('open/3', 'open') and arity == 3:
+        return _execute_open(state)
+    if builtin in ('exists_file/1', 'exists_file') and arity == 1:
+        return _execute_exists_file(state)
+    if builtin in ('exists_directory/1', 'exists_directory') and arity == 1:
+        return _execute_exists_directory(state)
+    if builtin in ('directory_files/2', 'directory_files') and arity == 2:
+        return _execute_directory_files(state)
+    if builtin in ('make_directory/1', 'make_directory') and arity == 1:
+        return _execute_make_directory(state)
+    if builtin in ('delete_file/1', 'delete_file') and arity == 1:
+        return _execute_delete_file(state)
+    if builtin in ('close/1', 'close') and arity == 1:
+        return _execute_close(state)
+    if builtin in ('get_char/1', 'get_char') and arity == 1:
+        return _execute_get_char(state)
+    if builtin in ('get_char/2',) and arity == 2:
+        return _execute_get_char_stream(state)
+    if builtin in ('peek_char/1', 'peek_char') and arity == 1:
+        return _execute_peek_char(state)
+    if builtin in ('peek_char/2',) and arity == 2:
+        return _execute_peek_char_stream(state)
+    if builtin in ('get_code/1', 'get_code') and arity == 1:
+        return _execute_get_code(state)
+    if builtin in ('get_code/2',) and arity == 2:
+        return _execute_get_code_stream(state)
+    if builtin in ('put_char/1', 'put_char') and arity == 1:
+        return _execute_put_char(state)
+    if builtin in ('put_char/2',) and arity == 2:
+        return _execute_put_char_stream(state)
+    if builtin in ('put_code/1', 'put_code') and arity == 1:
+        return _execute_put_code(state)
+    if builtin in ('put_code/2',) and arity == 2:
+        return _execute_put_code_stream(state)
+    if builtin in ('read_line_to_string/2', 'read_line_to_string') and arity == 2:
+        return _execute_read_line_to_string(state)
+    if builtin in ('read_string/5', 'read_string') and arity == 5:
+        return _execute_read_string(state)
+    if builtin in ('at_end_of_stream/1', 'at_end_of_stream') and arity == 1:
+        return _execute_at_end_of_stream(state)
+    if builtin in ('write_to_stream/2', 'write_to_stream') and arity == 2:
+        return _execute_write_to_stream(state)
+    if builtin in ('nl_to_stream/1', 'nl_to_stream') and arity == 1:
+        return _execute_nl_to_stream(state)
+    if builtin in ('read/1', 'read_lax/1', 'read_term/1', 'read_term_lax/1',
+                   'read', 'read_lax', 'read_term', 'read_term_lax') and arity == 1:
+        return _execute_read_default_stream(state, 'fail')
+    if builtin in ('read_iso/1', 'read_iso',
+                   'read_term_iso/1', 'read_term_iso') and arity == 1:
+        return _execute_read_default_stream(state, 'error')
+    if builtin in ('read/2', 'read_lax/2', 'read', 'read_lax') and arity == 2:
+        return _execute_read(state, 'fail')
+    if builtin in ('read_iso/2', 'read_iso') and arity == 2:
+        return _execute_read(state, 'error')
     if builtin in ('term_to_atom/2', 'term_to_atom') and arity == 2:
         return _execute_term_to_atom(state)
     if builtin in ('append/3', 'append') and arity == 3:
@@ -1430,6 +2471,11 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
     if builtin in ('compound/1', 'compound'):
         val = deref(get_reg(state, 1), state)
         return isinstance(val, Compound)
+    if builtin in ('atomic/1', 'atomic'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, (Atom, Int, Float))
+    if builtin in ('ground/1', 'ground'):
+        return _term_ground(get_reg(state, 1), state)
     if builtin in ('is_list/1', 'is_list'):
         val = deref(get_reg(state, 1), state)
         return _term_to_list(val, state) is not None
@@ -1444,6 +2490,12 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         if items is None:
             return False
         return _execute_member_from_index(get_reg(state, 1), items, 0, resume_ip, state)
+    if builtin in ('sort/2', 'sort') and arity == 2:
+        return _execute_sort_like(state, dedup=True)
+    if builtin in ('msort/2', 'msort') and arity == 2:
+        return _execute_sort_like(state, dedup=False)
+    if builtin in ('keysort/2', 'keysort') and arity == 2:
+        return _execute_keysort(state)
     if builtin in ('functor/3', 'functor') and arity == 3:
         term = deref(get_reg(state, 1), state)
         name = deref(get_reg(state, 2), state)
@@ -1490,15 +2542,26 @@ def _execute_builtin(builtin: str, arity: int, state: 'WamState', resume_ip: int
         target = get_reg(state, 2)
         return unify(target, _deep_copy_term(original, {}, state), state)
     if builtin in ('write/1', 'display/1', 'print/1'):
-        print(_format_value(get_reg(state, 1), state), end='')
-        return True
+        return _emit_output(_format_value(get_reg(state, 1), state), state=state)
+    if builtin in ('write_canonical/1',):
+        return _emit_output(_format_canonical_value(get_reg(state, 1), state), state=state)
     if builtin in ('writeln/1',):
-        print(_format_value(get_reg(state, 1), state))
-        return True
+        return _emit_output(_format_value(get_reg(state, 1), state) + '\n', state=state)
+    if builtin in ('tab/1',):
+        n = deref(get_reg(state, 1), state)
+        if not isinstance(n, Int) or n.n < 0:
+            return False
+        return _emit_output(' ' * n.n, state=state)
+    if builtin in ('format/1', 'format/2', 'format/3'):
+        return _execute_format_builtin(arity, state)
     if builtin in ('nl/0', 'nl'):
-        print()
-        return True
+        return _emit_output('\n', state=state)
     return False
+
+
+# Public alias so `from wam_runtime import *` (which skips underscore names)
+# exposes the builtin dispatcher to generated lowered predicate functions.
+execute_builtin = _execute_builtin
 
 
 # -- Main WAM interpreter loop ---------------------------------------------
@@ -1528,27 +2591,38 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
     arg_snapshot: list = list(state.regs)  # snapshot at initial entry
 
     def fail():
+        # An exhausted FFI continuation (result < 0) means the builtin
+        # whose CP this is has no more solutions — but the WAM might still
+        # have OLDER choice points stacked behind it that we need to try
+        # before reporting "no more". The continuation has typically
+        # already shrunk state.b to the next fallback CP; loop and retry
+        # so we don't drop those by returning False outright.
         nonlocal ip
-        if state.b < 0:
-            return False
-        cp = state.stack[state.b]
-        restore_choice_point(state)
-        # next_clause is now a pre-resolved PC int, string label, or callable
-        next_ip = cp.next_clause
-        if callable(next_ip):
-            # Callable: FFI continuation — call with state, returns new IP
-            result = next_ip(state)
-            if result < 0:
+        while True:
+            if state.b < 0:
                 return False
-            ip = result
-        elif isinstance(next_ip, int) and next_ip >= 0:
-            ip = next_ip
-        else:
-            # Fallback: try string label resolution
-            ip = labels.get(cp.next_clause, -1)
-            if ip < 0:
-                return False
-        return True
+            cp = state.stack[state.b]
+            restore_choice_point(state)
+            next_ip = cp.next_clause
+            if callable(next_ip):
+                # Callable: FFI continuation — call with state, returns new IP.
+                result = next_ip(state)
+                if result < 0:
+                    # Exhausted; the continuation updated state.b. Try again.
+                    continue
+                ip = result
+                return True
+            elif isinstance(next_ip, int) and next_ip >= 0:
+                ip = next_ip
+                return True
+            else:
+                # Fallback: try string label resolution.
+                resolved = labels.get(cp.next_clause, -1)
+                if resolved < 0:
+                    # Unresolved label; pop this CP and try the next one.
+                    continue
+                ip = resolved
+                return True
 
     while ip < code_len:
         instr = code[ip]

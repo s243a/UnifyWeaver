@@ -124,12 +124,29 @@ case class Execute(pred: String, arity: Int)            extends Instruction
 case class Jump(label: String)                          extends Instruction
 case class TryMeElse(label: String)                     extends Instruction
 case class RetryMeElse(label: String)                   extends Instruction
+// Indexed-dispatch chain ops (issue #2400). Emitted by
+// build_term_index_with_chains in wam_target.pl when a dispatch
+// group (e.g. all list-shaped first args in classify/1) has more
+// than one matching clause and clause 1 isn't one of them. The
+// switch_on_term/constant/structure instruction jumps to the
+// chain's first Try; backtrack walks through Retry…Trust. Unlike
+// the linear-chain TryMeElse, these JUMP to the target body label
+// (already past the retry_me_else / trust_me prologue) and the CP
+// saved by Try/Retry points at the NEXT chain instruction (so
+// backtrack resumes the chain rather than restarting a clause's
+// retry chain).
+case class Try(label: String)                           extends Instruction
+case class Retry(label: String)                         extends Instruction
+case class Trust(label: String)                         extends Instruction
 // Resolved control (populated by resolveInstructions)
 case class CallPc(targetPc: Int, arity: Int)            extends Instruction
 case class ExecutePc(targetPc: Int)                     extends Instruction
 case class JumpPc(targetPc: Int)                        extends Instruction
 case class TryMeElsePc(targetPc: Int)                   extends Instruction
 case class RetryMeElsePc(targetPc: Int)                 extends Instruction
+case class TryPc(targetPc: Int)                         extends Instruction
+case class RetryPc(targetPc: Int)                       extends Instruction
+case class TrustPc(targetPc: Int)                       extends Instruction
 // Environment
 case object Allocate                                    extends Instruction
 case object Deallocate                                  extends Instruction
@@ -156,7 +173,10 @@ case class UnifyConstant(value: WamTerm)                extends Instruction
 // Choice
 case object TrustMe                                     extends Instruction
 // First-argument indexing
-case class SwitchOnConstant(cases: Array[SwitchCase])   extends Instruction
+// `reg` selects the indexed argument register: 1 for the A1-indexed
+// forms (switch_on_constant), 2 for the A2-indexed forms
+// (switch_on_constant_a2). Defaults to 1 so existing codegen is unchanged.
+case class SwitchOnConstant(cases: Array[SwitchCase], reg: Int = 1) extends Instruction
 // Type-based first-arg discrimination. Emitted when a predicate's
 // clauses mix const, list, and compound first args. Each TermSwitch*
 // case carries a target label resolved to a PC by resolveInstructions.
@@ -168,7 +188,8 @@ final case class TermSwitchStruct(functorId: Int, arity: Int, label: String, tar
 case class SwitchOnTerm(constCases:  Array[TermSwitchConst],
                         structCases: Array[TermSwitchStruct],
                         listLabel:   String,
-                        listTargetPc: Int = -1) extends Instruction
+                        listTargetPc: Int = -1,
+                        reg: Int = 1) extends Instruction
 // Builtins and foreign
 case class BuiltinCall(pred: String, arity: Int)        extends Instruction
 case class CallForeign(pred: String, arity: Int)        extends Instruction
@@ -240,9 +261,13 @@ final class LmdbFactSource(
   val dbName: String = "",
   val arity: Int = 2,
   val dupsort: Boolean = false,
-  internTable: InternTable
+  internTable: InternTable,
+  // Maximum LMDB map size in bytes (virtual; not eagerly allocated). Must
+  // be >= the size the env was created with by the writer. Defaults to
+  // 1 GiB, which is ample for typical fact relations.
+  val mapSize: Long = 1073741824L
 ) {
-  require(arity == 2, "LmdbFactSource currently only supports arity=2")
+  require(arity >= 2, "LmdbFactSource requires arity >= 2")
 
   // Resolve lmdbjava classes via Class.forName so the runtime
   // compiles without lmdbjava on the classpath. Same indirection the
@@ -262,8 +287,20 @@ final class LmdbFactSource(
 
   private def openEnv(): AnyRef = {
     val builder = envClass.getMethod("create").invoke(null)
-    val openMethod = builder.getClass.getMethod("open", classOf[java.io.File])
-    openMethod.invoke(builder, new java.io.File(envPath)).asInstanceOf[AnyRef]
+    // lmdbjava (0.9.x) requires the map size to be set before open; it is
+    // the maximum virtual size of the memory map (not eagerly allocated).
+    // Must be >= the size the writer created the env with.
+    builder.getClass.getMethod("setMapSize", java.lang.Long.TYPE)
+           .invoke(builder, java.lang.Long.valueOf(mapSize))
+    builder.getClass.getMethod("setMaxReaders", java.lang.Integer.TYPE)
+           .invoke(builder, java.lang.Integer.valueOf(126))
+    // Env.Builder.open(File, EnvFlags...) — pass an empty EnvFlags array so
+    // the path is treated as a directory containing data.mdb/lock.mdb.
+    val envFlagsClass = lmdbClass("EnvFlags")
+    val emptyEnvFlags = java.lang.reflect.Array.newInstance(envFlagsClass, 0)
+    val openMethod = builder.getClass.getMethod("open",
+      classOf[java.io.File], emptyEnvFlags.getClass)
+    openMethod.invoke(builder, new java.io.File(envPath), emptyEnvFlags).asInstanceOf[AnyRef]
   }
 
   private def openDbi(envInst: AnyRef): AnyRef = {
@@ -277,8 +314,11 @@ final class LmdbFactSource(
       } else {
         java.lang.reflect.Array.newInstance(flagsClass, 0).asInstanceOf[AnyRef]
       }
+    // An empty dbName means the unnamed/default database (lmdbjava takes a
+    // null name for it); a non-empty name opens that named DBI.
+    val nameArg: String = if (dbName == null || dbName.isEmpty) null else dbName
     val openDbi = envClass.getMethod("openDbi", classOf[String], flagArrType)
-    openDbi.invoke(envInst, dbName, flagsArr).asInstanceOf[AnyRef]
+    openDbi.invoke(envInst, nameArg, flagsArr).asInstanceOf[AnyRef]
   }
 
   /** Full scan via cursor first/next. Used when the caller wants
@@ -308,11 +348,11 @@ final class LmdbFactSource(
         try cursorSeekAndCollectDupSort(cursor, keyStr)
         finally closeCursor(cursor)
       } else {
-        // Unique key path — Txn.get is the safe single-shot lookup.
+        // Unique key path — Dbi.get(txn, key) is the safe single-shot lookup.
         val keyBuf = bufferFromString(keyStr)
-        val getMethod = txnClass.getMethod("get",
-          dbiClass, classOf[java.nio.ByteBuffer])
-        val valBuf = getMethod.invoke(txn, dbi, keyBuf)
+        // Dbi.get(Txn, T): the T parameter erases to Object at runtime.
+        val getMethod = dbiClass.getMethod("get", txnClass, classOf[Object])
+        val valBuf = getMethod.invoke(dbi, txn, keyBuf)
         if (valBuf == null) Seq.empty
         else Seq(tupleToBindings(keyStr, bufferToString(valBuf.asInstanceOf[java.nio.ByteBuffer])))
       }
@@ -371,7 +411,7 @@ final class LmdbFactSource(
 
   private def cursorSeekAndCollectDupSort(cursor: AnyRef, key: String): Seq[Map[Int, WamTerm]] = {
     val keyBuf = bufferFromString(key)
-    val getM = cursorClass.getMethod("get", classOf[java.nio.ByteBuffer], seekOpClass)
+    val getM = cursorClass.getMethod("get", classOf[Object], seekOpClass)
     val mdbSet     = seekOpClass.getField("MDB_SET").get(null)
     val mdbNextDup = seekOpClass.getField("MDB_NEXT_DUP").get(null)
     val keyM = cursorClass.getMethod("key")
@@ -419,15 +459,28 @@ final class LmdbFactSource(
     case _            => None
   }
 
-  /** Build the bindings map for an arity-2 (key, value) pair. The
-   *  WAM register convention is reg1 = arg1, reg2 = arg2 for foreign
-   *  calls. Strings are interned (mutable intern table absorbs them
-   *  on first sight). */
-  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] =
-    Map(
-      1 -> (Atom(internTable.intern(key)): WamTerm),
-      2 -> (Atom(internTable.intern(value)): WamTerm)
-    )
+  /** Build the bindings map for one stored row. The LMDB key holds arg1;
+   *  the value holds args 2..N joined by a tab (`\t`), so for the arity-2
+   *  case the value is just arg2 (no tab) and this degenerates to the
+   *  original behaviour. The WAM register convention is reg_i = arg_i for
+   *  foreign calls. All parts are interned as atoms (the mutable intern
+   *  table absorbs them on first sight); numeric round-tripping therefore
+   *  uses the string form. */
+  private def tupleToBindings(key: String, value: String): Map[Int, WamTerm] = {
+    val b = scala.collection.mutable.Map[Int, WamTerm](1 -> (Atom(internTable.intern(key)): WamTerm))
+    if (arity <= 2) {
+      b(2) = Atom(internTable.intern(value))
+    } else {
+      // split with limit -1 so trailing empty fields are preserved
+      val parts = value.split("\t", -1)
+      var i = 0
+      while (i < parts.length && (i + 2) <= arity) {
+        b(i + 2) = Atom(internTable.intern(parts(i)))
+        i += 1
+      }
+    }
+    b.toMap
+  }
 }
 
 // ============================================================
@@ -546,13 +599,16 @@ object WamRuntime {
       case Jump(lbl)              => labels.get(lbl).map(JumpPc(_)).getOrElse(Jump(lbl))
       case TryMeElse(lbl)        => labels.get(lbl).map(TryMeElsePc(_)).getOrElse(TryMeElse(lbl))
       case RetryMeElse(lbl)      => labels.get(lbl).map(RetryMeElsePc(_)).getOrElse(RetryMeElse(lbl))
-      case SwitchOnConstant(cases) =>
+      case Try(lbl)              => labels.get(lbl).map(TryPc(_)).getOrElse(Try(lbl))
+      case Retry(lbl)            => labels.get(lbl).map(RetryPc(_)).getOrElse(Retry(lbl))
+      case Trust(lbl)            => labels.get(lbl).map(TrustPc(_)).getOrElse(Trust(lbl))
+      case SwitchOnConstant(cases, reg) =>
         val resolved = cases.map { sc =>
           if (sc.label == "default") sc  // default = fallthrough (targetPc stays -1) or resolved below
           else labels.get(sc.label).map(pc => sc.copy(targetPc = pc)).getOrElse(sc)
         }
-        SwitchOnConstant(resolved)
-      case SwitchOnTerm(consts, structs, listLabel, _) =>
+        SwitchOnConstant(resolved, reg)
+      case SwitchOnTerm(consts, structs, listLabel, _, reg) =>
         val rConsts  = consts.map { c =>
           if (c.label == "default") c
           else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
@@ -562,7 +618,7 @@ object WamRuntime {
           else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
         }
         val rListPc  = labels.getOrElse(listLabel, -1)
-        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc)
+        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc, reg)
       case other => other
     }
 
@@ -668,6 +724,23 @@ object WamRuntime {
   // ----------------------------------------------------------
 
   def snapshotRegs(s: WamState): Array[WamTerm] = s.regs.clone()
+
+  /** T4 (multi_clause_n): restore `s` to a clause-entry snapshot the lowered
+   *  function captured before trying the next clause. The lowered function
+   *  enumerates ALL its clauses itself (first-solution / deterministic-prefix
+   *  semantics, like loCall), so the interpreter is never entered for the
+   *  predicate. Mirrors backtrack's WamCP restore, minus the pc (the lowered
+   *  function controls its own control flow). */
+  def loRestoreClause(s: WamState, regs: Array[WamTerm], trailLen: Int,
+                       env: List[EnvFrame], cutBar: Int, varId: Int): Unit = {
+    unwindTrail(s, trailLen)
+    System.arraycopy(regs, 0, s.regs, 0, REG_ARRAY_SIZE)
+    s.envStack   = env
+    s.cutBar     = cutBar
+    s.nextVarId  = varId
+    s.unifyQueue = Nil
+    s.buildStack = Nil
+  }
 
   def pushChoicePoint(s: WamState, targetPc: Int): Unit = {
     val cp = ChoicePoint(
@@ -906,8 +979,8 @@ object WamRuntime {
   // First-argument indexing
   // ----------------------------------------------------------
 
-  def switchTarget(s: WamState, cases: Array[SwitchCase]): Unit = {
-    val key = deref(s.bindings, s.regs(1))
+  def switchTarget(s: WamState, cases: Array[SwitchCase], reg: Int = 1): Unit = {
+    val key = deref(s.bindings, s.regs(reg))
     // Find every case (including "default"-labeled ones) whose value
     // matches the key. The WAM compiler emits a "default"-labeled case
     // for every value whose first matching clause sits at the head of
@@ -1169,13 +1242,61 @@ object WamRuntime {
         program.labels.get(lbl).foreach(pushChoicePoint(s, _))
         s.pc += 1
 
+      // Indexed-dispatch chain ops (issue #2400).  Layout:
+      //   L_<P>_<A>_<group>_dispatch:
+      //       try   L_<P>_<A>_<I1>_body
+      //       retry L_<P>_<A>_<I2>_body
+      //       ...
+      //       trust L_<P>_<A>_<IN>_body
+      // try/retry push a CP that resumes at the NEXT chain instruction
+      // (s.pc + 1) and JUMP to the body label.  trust just jumps —
+      // there's no CP after the last alternative.  This is symmetric
+      // to TryMeElse/RetryMeElse/TrustMe but with the destination
+      // carried by the instruction (not implicit pc+1) so the chain
+      // can dispatch into the middle of a predicate's clause bodies
+      // without re-entering the linear chain's retry_me_else chain.
+
+      case TryPc(targetPc) =>
+        pushChoicePoint(s, s.pc + 1)
+        s.pc = targetPc
+
+      case Try(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) =>
+            pushChoicePoint(s, s.pc + 1)
+            s.pc = target
+          case None => backtrack(s)
+        }
+
+      case RetryPc(targetPc) =>
+        pushChoicePoint(s, s.pc + 1)
+        s.pc = targetPc
+
+      case Retry(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) =>
+            pushChoicePoint(s, s.pc + 1)
+            s.pc = target
+          case None => backtrack(s)
+        }
+
+      case TrustPc(targetPc) =>
+        s.pc = targetPc
+
+      case Trust(lbl) =>
+        program.labels.get(lbl) match {
+          case Some(target) => s.pc = target
+          case None => backtrack(s)
+        }
+
       // --- Indexing ---
 
-      case SwitchOnConstant(cases) =>
-        switchTarget(s, cases)
+      case SwitchOnConstant(cases, reg) =>
+        switchTarget(s, cases, reg)
 
-      case SwitchOnTerm(consts, structs, _listLabel, listPc) =>
-        // Type-discriminating dispatch on regs(1):
+      case SwitchOnTerm(consts, structs, _listLabel, listPc, switchReg) =>
+        // Type-discriminating dispatch on regs(switchReg) (1 for A1-indexed
+        // forms, 2 for the _a2 forms):
         //   * Ref       → fall through (variable: any clause may match)
         //   * Atom/Int/Float → look up in const cases
         //   * Cons cell ([|]/2) → jump to listPc if set, else fall through
@@ -1183,7 +1304,7 @@ object WamRuntime {
         // "default" labels mean "fall through to the try_me_else chain
         // at pc + 1" — i.e. the WAM compiler is saying "I don't have a
         // single direct clause; let the chain enumerate".
-        val v = deref(s.bindings, s.regs(1))
+        val v = deref(s.bindings, s.regs(switchReg))
         v match {
           case Ref(_) =>
             s.pc += 1
@@ -1210,7 +1331,7 @@ object WamRuntime {
 
       // --- Builtins ---
 
-      case BuiltinCall(pred, _) => pred match {
+      case BuiltinCall(pred, builtinArity) => pred match {
         case "=/2" =>
           val a = deref(s.bindings, s.regs(1))
           val b = deref(s.bindings, s.regs(2))
@@ -1380,7 +1501,17 @@ object WamRuntime {
           }
 
         case _ =>
-          backtrack(s)
+          // Extended builtins (atom_codes, atom_length, ground, atomic,
+          // sort, msort, bagof, setof, write, nl, between, format, succ,
+          // atom_concat, sub_atom, call/N) are implemented in
+          // interceptedExecuteBuiltin. The WAM compiler emits them as
+          // `builtin_call <name>/<arity>`, so route the unhandled cases
+          // there (withReturn = true → advance to the next instruction on
+          // success) before treating it as an unknown builtin and failing.
+          val slash = pred.lastIndexOf('/')
+          val bname = if (slash >= 0) pred.substring(0, slash) else pred
+          if (!interceptedExecuteBuiltin(s, program, bname, builtinArity, withReturn = true))
+            backtrack(s)
       }
 
       // --- Foreign ---
@@ -2397,5 +2528,282 @@ object WamRuntime {
   def runPredicate(program: WamProgram, startPc: Int, argRegs: Array[WamTerm]): Boolean = {
     val s = newState(startPc, argRegs)
     run(s, program)
+  }
+
+  // ==========================================================
+  // Lowered fast-path primitives (Layer B′)
+  // ==========================================================
+  // Helper methods invoked by the per-predicate functions emitted by
+  // wam_scala_lowered_emitter.pl (emit_mode functions / mixed). Each one
+  // performs the forward semantics of the corresponding `step` case but
+  // returns a Boolean instead of calling `backtrack` — the lowered
+  // function decides what to do on failure. No method here advances
+  // `s.pc`; the lowered function controls its own straight-line flow.
+
+  /** get_constant: bind an unbound register or unify against its value. */
+  def loGetConstant(s: WamState, value: WamTerm, reg: Int): Boolean = {
+    val current = deref(s.bindings, s.regs(reg))
+    if (current == null) { s.regs(reg) = value; true }
+    else unify(s, current, value)
+  }
+
+  /** get_value: unify two registers' dereferenced values. */
+  def loGetValue(s: WamState, varReg: Int, argReg: Int): Boolean =
+    unify(s, deref(s.bindings, getReg(s, varReg)), deref(s.bindings, s.regs(argReg)))
+
+  /** get_structure: read-mode against a matching Struct, write-mode against
+   *  an unbound Ref. Arity is supplied by codegen (no peek-ahead needed). */
+  def loGetStructure(s: WamState, program: WamProgram, functorId: Int, reg: Int, arity: Int): Boolean = {
+    deref(s.bindings, s.regs(reg)) match {
+      case Struct(f, _, args) if f == functorId =>
+        s.unifyMode = true; s.unifyQueue = args.toList; true
+      case Ref(_) =>
+        s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+        s.unifyMode = false; true
+      case _ => false
+    }
+  }
+
+  /** get_list: read-mode against a cons Struct, write-mode against a Ref. */
+  def loGetList(s: WamState, program: WamProgram, reg: Int, consId: Int): Boolean = {
+    deref(s.bindings, s.regs(reg)) match {
+      case Struct(f, 2, args) if f == consId =>
+        s.unifyMode = true; s.unifyQueue = args.toList; true
+      case Ref(_) =>
+        s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
+        s.unifyMode = false; true
+      case _ => false
+    }
+  }
+
+  /** unify_variable: read-mode pops the queue into reg; write-mode appends
+   *  a fresh var to the active build frame. */
+  def loUnifyVariable(s: WamState, reg: Int): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest => setReg(s, reg, item); s.unifyQueue = rest; true
+    } else {
+      val v = freshVar(s); setReg(s, reg, v); appendBuildArg(s, v); true
+    }
+  }
+
+  /** unify_value: read-mode unifies reg with the queue head; write-mode
+   *  appends reg's value to the build frame. */
+  def loUnifyValue(s: WamState, reg: Int): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest =>
+        val ok = unify(s, deref(s.bindings, getReg(s, reg)), item)
+        s.unifyQueue = rest; ok
+    } else {
+      appendBuildArg(s, deref(s.bindings, getReg(s, reg))); true
+    }
+  }
+
+  /** unify_constant: read-mode unifies the queue head with the constant;
+   *  write-mode appends the constant to the build frame. */
+  def loUnifyConstant(s: WamState, value: WamTerm): Boolean = {
+    if (s.unifyMode) s.unifyQueue match {
+      case Nil => false
+      case item :: rest =>
+        val ok = unify(s, deref(s.bindings, item), value)
+        s.unifyQueue = rest; ok
+    } else {
+      appendBuildArg(s, value); true
+    }
+  }
+
+  /** set_variable: fresh var into reg + build frame (always succeeds). */
+  def loSetVariable(s: WamState, reg: Int): Boolean = {
+    val v = freshVar(s); setReg(s, reg, v); appendBuildArg(s, v); true
+  }
+
+  /** set_value: reg's value appended to the build frame. */
+  def loSetValue(s: WamState, reg: Int): Boolean = {
+    appendBuildArg(s, deref(s.bindings, getReg(s, reg))); true
+  }
+
+  /** set_constant: constant appended to the build frame. */
+  def loSetConstant(s: WamState, value: WamTerm): Boolean = {
+    appendBuildArg(s, value); true
+  }
+
+  /** put_structure: open a new struct build frame (write mode). */
+  def loPutStructure(s: WamState, functorId: Int, reg: Int, sArity: Int): Unit =
+    s.buildStack = BuildFrame(reg, functorId, sArity, Nil) :: s.buildStack
+
+  /** put_list: open a new cons build frame (write mode). */
+  def loPutList(s: WamState, reg: Int, consId: Int): Unit =
+    s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
+
+  /** allocate: push an environment frame, set the cut barrier. */
+  def loAllocate(s: WamState): Unit = {
+    val frame = EnvFrame(new Array[WamTerm](100))
+    var i = 201
+    while (i < 300) { if (s.regs(i) != null) frame.savedRegs(i - 200) = s.regs(i); i += 1 }
+    s.envStack = frame :: s.envStack
+    s.cutBar = s.choicePoints.length
+  }
+
+  /** deallocate: pop the top environment frame. */
+  def loDeallocate(s: WamState): Unit =
+    s.envStack = s.envStack.drop(1)
+
+  /** Deterministic builtins. Returns success/failure without backtracking.
+   *  Only the operators the lowered emitter whitelists reach here. */
+  def loBuiltin(s: WamState, program: WamProgram, pred: String): Boolean = {
+    def cmp(op: (Num, Num) => Boolean): Boolean =
+      (evalArith(s, program, s.regs(1)), evalArith(s, program, s.regs(2))) match {
+        case (Some(a), Some(b)) => op(a, b)
+        case _                  => false
+      }
+    pred match {
+      case "=/2"    => unify(s, deref(s.bindings, s.regs(1)), deref(s.bindings, s.regs(2)))
+      case "true/0" => true
+      case "fail/0" => false
+      case "!/0" =>
+        val len = s.choicePoints.length
+        if (len > s.cutBar) s.choicePoints.remove(s.cutBar, len - s.cutBar)
+        true
+      case "is/2" =>
+        evalArith(s, program, s.regs(2)) match {
+          case Some(n) => unify(s, s.regs(1), numToTerm(n))
+          case None    => false
+        }
+      case "=:=/2"  => cmp(numEq)
+      case "=\\=/2" => cmp((a, b) => !numEq(a, b))
+      case "</2"    => cmp(numLt)
+      case ">/2"    => cmp((a, b) => numLt(b, a))
+      case "=</2"   => cmp((a, b) => !numLt(b, a))
+      case ">=/2"   => cmp((a, b) => !numLt(a, b))
+      case "var/1"     => deref(s.bindings, s.regs(1)) match { case Ref(_) => true; case _ => false }
+      case "nonvar/1"  => deref(s.bindings, s.regs(1)) match { case Ref(_) => false; case _ => true }
+      case "atom/1"    => deref(s.bindings, s.regs(1)) match { case Atom(_) => true; case _ => false }
+      case "integer/1" => deref(s.bindings, s.regs(1)) match { case IntTerm(_) => true; case _ => false }
+      case "float/1"   => deref(s.bindings, s.regs(1)) match { case FloatTerm(_) => true; case _ => false }
+      case "number/1"  => deref(s.bindings, s.regs(1)) match { case IntTerm(_) | FloatTerm(_) => true; case _ => false }
+      case "atomic/1"  => deref(s.bindings, s.regs(1)) match { case Atom(_) | IntTerm(_) | FloatTerm(_) => true; case _ => false }
+      case _ => false
+    }
+  }
+
+  /** call: run a sub-predicate to its first solution, then continue the
+   *  lowered body. Resolves through dispatch, so it transparently handles
+   *  foreign-predicate stubs too. Deterministic-prefix semantics: only the
+   *  first solution is taken (matches the Rust/Clojure lowered contract). */
+  def loCall(s: WamState, program: WamProgram, name: String, arity: Int): Boolean = {
+    program.dispatch.get(s"$name/$arity") match {
+      case None => false
+      case Some(pc) =>
+        val savedCS = s.callStack
+        s.callStack = Nil
+        s.pc = pc
+        s.status = Running
+        val ok = run(s, program)
+        s.callStack = savedCS
+        s.status = Running
+        ok
+    }
+  }
+
+  /** execute: tail call into a sub-predicate; its result is this clause's
+   *  result. */
+  def loExecute(s: WamState, program: WamProgram, name: String, arity: Int): Boolean = {
+    program.dispatch.get(s"$name/$arity") match {
+      case None => false
+      case Some(pc) =>
+        s.pc = pc
+        s.status = Running
+        run(s, program)
+    }
+  }
+
+  // ==========================================================
+  // Graph-kernel support
+  // ==========================================================
+
+  /** Enumerate every solution of a binary predicate `predKey` (e.g.
+   *  "edge/2") with both arguments unbound at entry, returning the
+   *  (arg1, arg2) pairs.  Runs in a fresh state and drives the existing
+   *  choice-point machinery (so it works for WAM-compiled facts, rule
+   *  predicates, and foreign fact-sources alike).  Used by the native
+   *  graph kernels emitted by wam_scala_target.pl to build an adjacency
+   *  map from the kernel's edge relation. */
+  def collectBinarySolutions(program: WamProgram, predKey: String): Vector[(WamTerm, WamTerm)] = {
+    program.dispatch.get(predKey) match {
+      case None => Vector.empty
+      case Some(startPc) =>
+        val out = mutable.ArrayBuffer.empty[(WamTerm, WamTerm)]
+        val s = newState(startPc, Array.empty[WamTerm])
+        // Two fresh unbound argument registers.
+        s.regs(1) = freshVar(s)
+        s.regs(2) = freshVar(s)
+        var live = run(s, program)
+        var guard = 0
+        val maxSolutions = 5000000  // safety bound against runaway enumeration
+        while (live && guard < maxSolutions) {
+          out += ((deepDeref(s, s.regs(1)), deepDeref(s, s.regs(2))))
+          guard += 1
+          backtrack(s)
+          if (s.status == Failed) live = false
+          else live = run(s, program)
+        }
+        out.toVector
+    }
+  }
+
+  /** Walk a WAM cons list ("[|]"/2 cells terminated by "[]") into a Vector
+   *  of its elements. Improper tails and non-list terms yield whatever
+   *  prefix was proper. Used by graph kernels to read an input list
+   *  argument (e.g. category_ancestor's `visited`). */
+  def wamListToVector(program: WamProgram, term: WamTerm): Vector[WamTerm] = {
+    val consId = program.internTable.lookupId("[|]")
+    val out = mutable.ArrayBuffer.empty[WamTerm]
+    var cur = term
+    var continue = true
+    while (continue) {
+      cur match {
+        case Struct(f, 2, args) if f == consId =>
+          out += args(0); cur = args(1)
+        case _ => continue = false
+      }
+    }
+    out.toVector
+  }
+
+  /** Enumerate every solution of a ternary predicate `predKey` (e.g. a
+   *  weighted edge relation "edge/3") with all three arguments unbound at
+   *  entry, returning the (arg1, arg2, arg3) triples. Ternary analogue of
+   *  collectBinarySolutions; used by the weighted-path / A* kernels to read
+   *  a weighted adjacency relation. */
+  def collectTernarySolutions(program: WamProgram, predKey: String): Vector[(WamTerm, WamTerm, WamTerm)] = {
+    program.dispatch.get(predKey) match {
+      case None => Vector.empty
+      case Some(startPc) =>
+        val out = mutable.ArrayBuffer.empty[(WamTerm, WamTerm, WamTerm)]
+        val s = newState(startPc, Array.empty[WamTerm])
+        s.regs(1) = freshVar(s)
+        s.regs(2) = freshVar(s)
+        s.regs(3) = freshVar(s)
+        var live = run(s, program)
+        var guard = 0
+        val maxSolutions = 5000000
+        while (live && guard < maxSolutions) {
+          out += ((deepDeref(s, s.regs(1)), deepDeref(s, s.regs(2)), deepDeref(s, s.regs(3))))
+          guard += 1
+          backtrack(s)
+          if (s.status == Failed) live = false
+          else live = run(s, program)
+        }
+        out.toVector
+    }
+  }
+
+  /** Numeric value of an IntTerm/FloatTerm as a Double (0.0 otherwise).
+   *  Used by weighted graph kernels to read edge weights. */
+  def numericWeight(t: WamTerm): Double = t match {
+    case IntTerm(n)   => n.toDouble
+    case FloatTerm(d) => d
+    case _            => 0.0
   }
 }

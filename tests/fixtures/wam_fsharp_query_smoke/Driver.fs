@@ -67,6 +67,7 @@ let mkContext () =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources     = Map.empty
       WcCancellationToken = None }
 
 let mkQueryState (a1: Value) (a2: Value) (vidStart: int) =
@@ -87,7 +88,10 @@ let mkQueryState (a1: Value) (a2: Value) (vidStart: int) =
       WsCutBar     = 0
       WsVarCounter = vidStart
       WsBuilder    = None
-      WsAggAccum   = [] }
+      WsBuilderStack = []
+      WsAggAccum   = []
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 // -- Working queries: clauses 1-2 reachable --------------------------------
 

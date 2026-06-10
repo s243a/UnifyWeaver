@@ -36,6 +36,7 @@
 :- use_module(library(option)).
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 :- use_module('../core/predicate_preprocessing',
               [declared_preprocess_metadata/4]).
@@ -59,12 +60,13 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
-    split_into_segments(Lines, 1, Segments),
+    split_into_segments(Lines, 1, Segments0),
+    clause_body_segments(Segments0, ClauseSegments),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
     option(module_name(ModName), Options, 'WamPredLow'),
     camel_case(ModName, CamelMod),
-    classify_predicate(Pred/Arity, Segments, Options, Info),
+    classify_predicate(Pred/Arity, ClauseSegments, Options, Info),
     format_fact_shape_comment(Info, ShapeComment),
     Info = fact_shape_info(_, _, _, Layout),
     (   Layout = external_source(_)
@@ -74,12 +76,12 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     ->  render_external_source_module(CamelMod, CamelPred, PredStr, Arity,
                                       ShapeComment, Layout, Code)
     ;   Layout = inline_data(_),
-        catch(extract_facts(Segments, Arity, FactsLiteral), _, fail),
-        choose_index(Segments, Arity, Options, IndexResult)
+        catch(extract_facts(ClauseSegments, Arity, FactsLiteral), _, fail),
+        choose_index(ClauseSegments, Arity, Options, IndexResult)
     ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
                                   ShapeComment, FactsLiteral, IndexResult, Code)
     ;   render_compiled_module(CamelMod, CamelPred, Pred/Arity, PredStr,
-                               ShapeComment, Segments, Labels, Options, Code)
+                               ShapeComment, Segments0, Labels, Options, Code)
     ).
 
 %% choose_index(+Segments, +Arity, +Options, -IndexResult)
@@ -394,24 +396,50 @@ escape_elixir_string(In, Out) :-
 
 %% classify_predicate(+PredIndicator, +Segments, +Options, -Info)
 %  Info is the term `fact_shape_info(NClauses, FactOnly, FirstArg, Layout)`.
-classify_predicate(Pred/Arity, Segments, Options, Info) :-
+classify_predicate(Pred/Arity, Segments0, Options, Info) :-
+    clause_body_segments(Segments0, Segments),
     clause_count(Segments, NClauses),
     fact_only(Segments, FactOnly),
     first_arg_groundness(Segments, Arity, FirstArg),
     pick_layout(Pred/Arity, NClauses, FactOnly, Options, Layout),
     Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
 
+%% clause_body_segments(+Segments0, -Segments) is det.
+%  Keep actual clause-body segments and drop WAM indexing / choice-chain
+%  scaffolding segments. Newer WAM output can insert retry/trust-only labels
+%  between fact body labels; counting those as clauses broke Phase-A layout
+%  classification and inline-data extraction.
+clause_body_segments(Segments0, Segments) :-
+    include(clause_body_segment, Segments0, Segments).
+
+clause_body_segment(_Name-Instrs) :-
+    member(_PC-Instr, Instrs),
+    \+ classifier_scaffold_instr(Instr),
+    !.
+
+classifier_scaffold_instr(try_me_else(_)).
+classifier_scaffold_instr(retry_me_else(_)).
+classifier_scaffold_instr(trust_me).
+classifier_scaffold_instr(switch_on_constant(_)).
+classifier_scaffold_instr(switch_on_constant_a2(_)).
+classifier_scaffold_instr(switch_on_constant_fallthrough(_)).
+classifier_scaffold_instr(switch_on_constant_a2_fallthrough(_)).
+classifier_scaffold_instr(switch_on_structure(_)).
+classifier_scaffold_instr(switch_on_structure_a2(_)).
+classifier_scaffold_instr(switch_on_term(_)).
+classifier_scaffold_instr(switch_on_term_a2(_)).
+
 %% clause_count(+Segments, -N)
-%  Each top-level segment corresponds to one clause (or the predicate
-%  header segment, which is still per-clause since the WAM emitter
-%  synthesises one segment per clause). CPS sub-segments (`_kN`) are
-%  generated later and never appear in this list.
-clause_count(Segments, N) :-
+%  Counts semantic clause-body segments. Raw split_into_segments/3 output may
+%  include indexing / choice-chain scaffolding labels; those are ignored.
+clause_count(Segments0, N) :-
+    clause_body_segments(Segments0, Segments),
     length(Segments, N).
 
 %% fact_only(+Segments, -Bool)
-%  `true` iff no clause has a body-level call.
-fact_only(Segments, true) :-
+%  `true` iff no semantic clause has a body-level call.
+fact_only(Segments0, true) :-
+    clause_body_segments(Segments0, Segments),
     forall(member(_-Instrs, Segments),
            forall(member(_-Instr, Instrs),
                   \+ is_body_call_instr(Instr))), !.
@@ -426,8 +454,9 @@ is_body_call_instr(builtin_call(_, _)).
 %  `mixed`. Determined by which head-unification instruction binds A1
 %  in each clause.
 first_arg_groundness(_Segments, 0, none) :- !.
-first_arg_groundness(Segments, Arity, Status) :-
+first_arg_groundness(Segments0, Arity, Status) :-
     Arity > 0,
+    clause_body_segments(Segments0, Segments),
     maplist(clause_arg1_type, Segments, Types),
     combine_groundness(Types, Status).
 
@@ -584,7 +613,8 @@ tier2_purity_eligible(Pred, Arity, Cert) :-
 %% extract_facts(+Segments, +Arity, -ElixirLiteral)
 %  ElixirLiteral is a string like "[\n    {\"a\", \"b\"},\n    ...\n  ]"
 %  suitable for dropping into a module attribute.
-extract_facts(Segments, Arity, ElixirLiteral) :-
+extract_facts(Segments0, Arity, ElixirLiteral) :-
+    clause_body_segments(Segments0, Segments),
     maplist(extract_clause_tuple(Arity), Segments, TupleLiterals),
     (   TupleLiterals = []
     ->  ElixirLiteral = '[]'
@@ -613,11 +643,19 @@ extract_arg_value(Instrs, Slot, ElixirVal) :-
     ).
 
 %% elixir_string_literal(+RawString, -Literal)
-%  Wraps the raw WAM operand in double quotes, escaping backslashes and
-%  embedded double-quotes so the result is a valid Elixir string.
+%  Format a WAM constant token as an Elixir string. Quoted WAM atoms are
+%  unquoted by wam_classify_constant_token/2 first, so atoms containing
+%  separators round-trip through inline fact extraction.
 elixir_string_literal(C, Literal) :-
-    (   atom(C) -> atom_string(C, CStr) ; CStr = C ),
-    string_chars(CStr, Chars),
+    wam_classify_constant_token(C, Class),
+    (   Class = atom(Value)
+    ->  true
+    ;   Class = integer(N)
+    ->  number_string(N, Value)
+    ;   Class = float(F)
+    ->  number_string(F, Value)
+    ),
+    string_chars(Value, Chars),
     maplist(escape_elixir_char, Chars, NestedChars),
     append(NestedChars, EscapedChars),
     string_chars(Escaped, EscapedChars),
@@ -641,8 +679,9 @@ escape_elixir_char(C, [C]).
 %  IndexResult is `indexed(MapLiteral)` when a first-arg index applies;
 %  `no_index` if any clause has a variable (or otherwise non-ground)
 %  arg1 that we cannot use as a map key.
-extract_arg1_index(Segments, Arity, IndexResult) :-
+extract_arg1_index(Segments0, Arity, IndexResult) :-
     Arity >= 1,
+    clause_body_segments(Segments0, Segments),
     maplist(extract_clause_arg1(Arity), Segments, KeyTuplePairs),
     (   all_pairs_have_ground_key(KeyTuplePairs)
     ->  group_and_render_index(KeyTuplePairs, MapLiteral),
@@ -711,12 +750,21 @@ render_index_entry(Key-Tuples, Entry) :-
 %  default ~1M atom table limit. See the experiment writeup for
 %  measurements.
 elixir_constant_literal(TokenStr, ElixirLiteral) :-
-    (   number_string(_, TokenStr)
-    ->  ElixirLiteral = TokenStr
-    ;   intern_atoms_enabled,
-        valid_elixir_atom_name(TokenStr)
-    ->  format(string(ElixirLiteral), ':~w', [TokenStr])
-    ;   format(string(ElixirLiteral), '"~w"', [TokenStr])
+    %% Atom-vs-number disambiguation via wam_text_parser. A bare
+    %% token `5` is the integer 5 (emit as bare); a quoted token
+    %% `'5'` is the atom whose name is "5" (emit as :5 or "5" per
+    %% the intern_atoms_enabled toggle).
+    wam_classify_constant_token(TokenStr, Class),
+    (   Class = integer(N)
+    ->  format(string(ElixirLiteral), "~w", [N])
+    ;   Class = float(F)
+    ->  format(string(ElixirLiteral), "~w", [F])
+    ;   Class = atom(Name),
+        intern_atoms_enabled,
+        valid_elixir_atom_name(Name)
+    ->  format(string(ElixirLiteral), ':~w', [Name])
+    ;   Class = atom(Name),
+        format(string(ElixirLiteral), '"~w"', [Name])
     ).
 
 %% intern_atoms_enabled is asserted by write_wam_elixir_project/3
@@ -758,7 +806,11 @@ tokenize_chars([C | Rest], Tokens) :-
     ->  tokenize_chars(Rest, Tokens)
     ;   C == '\''
     ->  read_quoted_chars(Rest, TokenChars, Remainder),
-        string_chars(Token, TokenChars),
+        % Preserve the outer single quotes attached to the token so
+        % atom-vs-number is recoverable downstream via
+        % wam_text_parser:wam_classify_constant_token/2 (bare `5`
+        % is the integer 5; quoted `'5'` is the atom whose name is "5").
+        string_chars(Token, ['\''|TokenChars]),
         Tokens = [Token | RestTokens],
         tokenize_chars(Remainder, RestTokens)
     ;   read_unquoted_chars([C | Rest], TokenChars, Remainder),
@@ -771,8 +823,11 @@ wam_separator_char(' ').
 wam_separator_char('\t').
 wam_separator_char(',').
 
+% read_quoted_chars/3: returns the inner unescaped chars WITH the
+% trailing closing quote appended. The caller prepends the opening
+% quote so the produced token has both outer quotes preserved.
 read_quoted_chars([], [], []).             % unterminated quote — yield what we have
-read_quoted_chars(['\'' | Rest], [], Rest).
+read_quoted_chars(['\'' | Rest], ['\''], Rest).
 read_quoted_chars(['\\', Escaped | Rest], [Real | More], Remainder) :-
     !,
     unescape_wam_char(Escaped, Real),
@@ -846,19 +901,78 @@ generate_all_segments(Segments, Labels, Suffix, SegCodes) :-
     % emit `clause_X_impl` names while the surface `clause_X` slot is
     % taken by the super-wrapper. For the default Suffix="" path every
     % emitted byte is byte-for-byte identical to the pre-wiring output.
-    maplist(generate_one_segment(Labels, Suffix), Segments, SegCodesNested),
+    maplist(generate_one_segment(Labels, Suffix, Segments), Segments, SegCodesNested),
     append(SegCodesNested, SegCodes).
 
-generate_one_segment(Labels, Suffix, Name-Instrs, ThisSegCodes) :-
+generate_one_segment(Labels, Suffix, AllSegments, Name-Instrs, ThisSegCodes) :-
     segment_func_name(Name, Suffix, FuncName),
-    classify_segment_head(Instrs, HeadType, BodyInstrs),
-    % CPS split: every non-tail `call P, N` terminates a sub-segment;
-    % subsequent instrs go into a fresh continuation function. This lets
-    % backtrack re-enter a retry point without losing the outer caller's
-    % post-call code (which Elixir would otherwise have on a collapsed
-    % tail-call stack).
+    % If this segment's body does not end in a control-transfer
+    % instruction, control falls through to the next label in WAM
+    % order. The lowered segments are independent functions, so make
+    % that fall-through explicit by appending a synthetic jump to the
+    % next segment. This is what wires an if-then-else else-branch
+    % (which ends in plain head/body instructions, not a jump) to its
+    % continuation; without it the else segment returned a raw
+    % mid-execution state instead of proceeding. Well-formed clause
+    % segments already end in proceed/execute/fail, so this is a no-op
+    % for every non-ITE predicate (output stays byte-identical).
+    maybe_add_fallthrough(Name, Instrs, AllSegments, Instrs1),
+    classify_segment_head(Instrs1, HeadType, Prefix, BodyInstrs0),
+    % When a retry/trust segment has an empty body (all instructions
+    % were placed in a sibling _body segment for switch_on_constant
+    % dispatch), inject a tail-call to the body function so the
+    % retry path is not dead code.
+    (   BodyInstrs0 == [],
+        HeadType \= none,
+        atom_string(Name, NameStr),
+        string_concat(NameStr, "_body", BodyNameStr),
+        member(BodyName-BodySiblingInstrs, AllSegments),
+        atom_string(BodyName, BodyNameStr)
+    ->  BodyInstrs = BodySiblingInstrs
+    ;   BodyInstrs = BodyInstrs0
+    ),
     split_body_at_calls(BodyInstrs, SubSegs),
-    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, Suffix, ThisSegCodes).
+    emit_sub_segments(SubSegs, FuncName, HeadType, Prefix, Labels, Suffix, ThisSegCodes).
+
+%% maybe_add_fallthrough(+Name, +Instrs, +AllSegments, -Instrs1)
+%  Append a synthetic `jump(NextLabel)` when this segment's last
+%  instruction is not a control transfer and another segment follows it
+%  in WAM order — making the implicit PC fall-through explicit for the
+%  independent lowered segment functions. No-op (Instrs1 == Instrs) for
+%  the last segment or any segment that already ends in a terminal, so
+%  every non-ITE predicate is unaffected.
+maybe_add_fallthrough(Name, Instrs, AllSegments, Instrs1) :-
+    (   Instrs \= [],
+        last(Instrs, _-LastInstr),
+        \+ is_terminal_instr(LastInstr),
+        next_segment_label(Name, AllSegments, NextLabel)
+    ->  append(Instrs, [fallthrough-jump(NextLabel)], Instrs1)
+    ;   Instrs1 = Instrs
+    ).
+
+%% is_terminal_instr(+Instr)
+%  Instructions that transfer control away from the straight-line flow,
+%  so the following label is NOT reached by fall-through. call/execute
+%  carry their own continuation; end_aggregate throws fail.
+is_terminal_instr(proceed).
+is_terminal_instr(execute(_)).
+is_terminal_instr(fail).
+is_terminal_instr(halt).
+is_terminal_instr(jump(_)).
+is_terminal_instr(call(_, _)).
+is_terminal_instr(end_aggregate(_)).
+% A segment consisting of (or ending in) a choice-point head dispatches
+% through the CP / empty-body sibling injection, never via PC fall-through,
+% so it must not receive a synthetic jump.
+is_terminal_instr(try_me_else(_)).
+is_terminal_instr(retry_me_else(_)).
+is_terminal_instr(trust_me).
+
+%% next_segment_label(+Name, +AllSegments, -NextLabel)
+%  The label of the segment immediately following Name in WAM order.
+%  Fails when Name is the last segment.
+next_segment_label(Name, AllSegments, NextLabel) :-
+    append(_, [Name-_, NextLabel-_ | _], AllSegments), !.
 
 %% split_body_at_calls(+Instrs, -SubSegs)
 %  Splits a flat instr list into sub-segment lists, cutting after every
@@ -901,17 +1015,28 @@ split_body_at_calls_([Instr | Rest], AccRev, Segs) :-
 %  to lower_instr_list (so switch_on_constant arms pick up the right
 %  target names). BaseFunc is already suffixed by the caller, so the
 %  `_kN` continuation format produces e.g. `clause_main_impl_k1`.
-emit_sub_segments([OnlySeg], BaseFunc, HeadType, Labels, Suffix, [Code]) :-
+emit_sub_segments([OnlySeg], BaseFunc, HeadType, Prefix, Labels, Suffix, [Code]) :-
+    lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode),
     lower_instr_list(OnlySeg, Labels, BaseFunc, Suffix, Exprs),
     atomic_list_concat(Exprs, '\n', BodyCode),
-    wrap_segment(BaseFunc, HeadType, BodyCode, Suffix, Code).
+    wrap_segment(BaseFunc, HeadType, PfxCode, BodyCode, Suffix, Code).
 
-emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Labels, Suffix, [FirstCode | MoreCodes]) :-
+emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Prefix, Labels, Suffix, [FirstCode | MoreCodes]) :-
     MoreSegs = [_|_],
     format(string(NextFunc), '~w_k1', [BaseFunc]),
+    lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode),
     lower_seg_with_continuation(FirstSeg, NextFunc, Labels, BaseFunc, Suffix, FirstBody),
-    wrap_segment(BaseFunc, HeadType, FirstBody, Suffix, FirstCode),
+    wrap_segment(BaseFunc, HeadType, PfxCode, FirstBody, Suffix, FirstCode),
     emit_cont_segments(MoreSegs, BaseFunc, 1, Labels, Suffix, MoreCodes).
+
+%% lower_prefix_code(+Prefix, +Labels, +BaseFunc, +Suffix, -PfxCode)
+%  Lower the pre-head instructions to Elixir source. "" when there is no
+%  prefix (every ordinary clause), which keeps wrap_segment output
+%  byte-for-byte identical to before.
+lower_prefix_code([], _Labels, _BaseFunc, _Suffix, "") :- !.
+lower_prefix_code(Prefix, Labels, BaseFunc, Suffix, PfxCode) :-
+    lower_instr_list(Prefix, Labels, BaseFunc, Suffix, Exprs),
+    atomic_list_concat(Exprs, '\n', PfxCode).
 
 emit_cont_segments([FinalSeg], BaseFunc, Idx, Labels, Suffix, [Code]) :-
     format(string(FuncName), '~w_k~w', [BaseFunc, Idx]),
@@ -1033,11 +1158,17 @@ build_switch_arm_group(Suffix, Key-Labels, Arm) :-
         % CP — which points at that same clause — would cause a duplicate
         % solution on backtracking. The inline-dispatched clause pushes
         % its own retry CP, which remains correct.
-        format(string(Arm),
-               '~w -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
-               [KeyLit, LocalFunc])
-    ;   format(string(Arm), '~w -> :ok', [KeyLit])
-    ).
+        format(string(Body),
+               'throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
+               [LocalFunc])
+    ;   Body = ':ok'
+    ),
+    build_switch_arm_aliases(Key, KeyLit, Body, Arm).
+
+build_switch_arm_aliases("[]", KeyLit, Body, Arm) :- !,
+    format(string(Arm), '~w -> ~w\n          [] -> ~w', [KeyLit, Body, Body]).
+build_switch_arm_aliases(_, KeyLit, Body, Arm) :-
+    format(string(Arm), '~w -> ~w', [KeyLit, Body]).
 
 segment_func_name("clause_start", "clause_main") :- !.
 segment_func_name(Label, Name) :-
@@ -1057,12 +1188,36 @@ segment_func_name(Label, Suffix, Name) :-
     ;   format(string(Name), "~w~w", [BaseName, Suffix])
     ).
 
-classify_segment_head(Instrs, HeadType, BodyInstrs) :-
-    (   select(_PC-try_me_else(L), Instrs, BodyInstrs) -> HeadType = try_me_else(L)
-    ;   select(_PC-retry_me_else(L), Instrs, BodyInstrs) -> HeadType = retry_me_else(L)
-    ;   select(_PC-trust_me, Instrs, BodyInstrs) -> HeadType = trust_me
-    ;   HeadType = none, BodyInstrs = Instrs
-    ), !.
+% classify_segment_head(+Instrs, -HeadType, -Prefix, -BodyInstrs)
+%
+% Prefix holds any instructions that precede the choice-point head
+% (try_me_else / retry_me_else / trust_me). For ordinary clauses the head
+% is the first instruction so Prefix is []. For an if-then-else the WAM
+% emits the shared head-arg setup (allocate, get_variable Y1.., get_level)
+% BEFORE the try_me_else; those must run before the choice point is
+% snapshotted so the else branch (which restores to that snapshot on
+% backtrack) still sees the permanent registers. Using append/3 (rather
+% than the former select/3) preserves that prefix in order.
+classify_segment_head(Instrs, HeadType, Prefix, BodyInstrs) :-
+    (   append(Pre0, [_-try_me_else(L)|Body0], Instrs) -> HeadType = try_me_else(L)
+    ;   append(Pre0, [_-retry_me_else(L)|Body0], Instrs) -> HeadType = retry_me_else(L)
+    ;   append(Pre0, [_-trust_me|Body0], Instrs) -> HeadType = trust_me
+    ;   HeadType = none, Pre0 = [], Body0 = Instrs
+    ), !,
+    % switch_on_* indexing instructions can precede the head try_me_else
+    % (multi-clause first-argument indexing); they manipulate the choice
+    % point this segment pushes, so they must run AFTER it — keep them at
+    % the front of the body, not in the pre-snapshot prefix. The remaining
+    % pre-head instructions (an if-then-else's allocate / get_variable /
+    % get_level head setup) form the real prefix. For ordinary clauses
+    % Pre0 is [] (or all switches), so Prefix is [] and output is
+    % byte-for-byte identical to before.
+    partition(is_switch_instr_pc, Pre0, SwitchPre, Prefix),
+    append(SwitchPre, Body0, BodyInstrs).
+
+is_switch_instr_pc(_-Instr) :-
+    functor(Instr, F, _),
+    atom_concat(switch_on_, _, F).
 
 % Phase 4b.5: _branch variant emission. When Suffix is "_branch" the
 % function is called directly by the Tier-2 super-wrapper as one of
@@ -1072,8 +1227,21 @@ classify_segment_head(Instrs, HeadType, BodyInstrs) :-
 % producing duplicate solutions across branches; the chain-CP
 % finding from Phase 4b's runtime probe). The no-push shape mirrors
 % the existing trust_me / none templates.
-wrap_segment(FuncName, _HeadType, BodyCode, "_branch", Code) :-
+% PfxCode (3rd arg) is the lowered pre-head prefix — empty "" for every
+% ordinary clause (head is the first instruction), non-empty only for an
+% if-then-else's shared head-arg setup. For the choice-point heads
+% (try_me_else / retry_me_else) the prefix is emitted BEFORE the cp
+% snapshot so the snapshot captures the permanent registers the else
+% branch needs; for the no-snapshot heads it is prepended to the body.
+% wrap_pfx_lead/2 and wrap_pfx_body/3 collapse to byte-identical output
+% when PfxCode is "".
+wrap_pfx_body("", Body, Body) :- !.
+wrap_pfx_body(PfxCode, Body, Combined) :-
+    atomic_list_concat([PfxCode, '\n', Body], Combined).
+
+wrap_segment(FuncName, _HeadType, PfxCode, BodyCode0, "_branch", Code) :-
     !,
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1087,7 +1255,10 @@ wrap_segment(FuncName, _HeadType, BodyCode, "_branch", Code) :-
     end
   end', [FuncName, BodyCode]).
 
-wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
+% No prefix (every ordinary clause): the cp snapshot sits before the
+% try, byte-for-byte identical to the pre-change emitter.
+wrap_segment(FuncName, try_me_else(L), "", BodyCode, Suffix, Code) :-
+    !,
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
@@ -1105,8 +1276,33 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
         end
     end
   end', [FuncName, FallbackFunc, BodyCode]).
+% if-then-else prefix: run the shared head setup INSIDE the try and take
+% the cp snapshot after it, so the else branch (which restores to the
+% snapshot on backtrack) sees the permanent registers, and any failing
+% head match in the prefix backtracks cleanly through the existing choice
+% points rather than escaping the function.
+wrap_segment(FuncName, try_me_else(L), PfxCode, BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
+    format(string(Code),
+'  defp ~w(state) do
+    try do
+~w
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}
+~w
+    catch
+      {:fail, s} ->
+        case WamRuntime.backtrack(s) do
+          :fail -> throw({:fail, %{s | choice_points: []}})
+          other -> other
+        end
+    end
+  end', [FuncName, PfxCode, FallbackFunc, BodyCode]).
 
-wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
+wrap_segment(FuncName, retry_me_else(L), "", BodyCode, Suffix, Code) :-
+    !,
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
@@ -1124,13 +1320,33 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
         end
     end
   end', [FuncName, FallbackFunc, BodyCode]).
+wrap_segment(FuncName, retry_me_else(L), PfxCode, BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
+    format(string(Code),
+'  defp ~w(state) do
+    try do
+~w
+    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}
+~w
+    catch
+      {:fail, s} ->
+        case WamRuntime.backtrack(s) do
+          :fail -> throw({:fail, %{s | choice_points: []}})
+          other -> other
+        end
+    end
+  end', [FuncName, PfxCode, FallbackFunc, BodyCode]).
 
 % Suffix is unused here because trust_me / none clauses have no
 % try_me_else fallback label to resolve through segment_func_name/3
 % — only the try_me_else / retry_me_else arms above need it. Suffix
 % still flows into BodyCode via lower_instr_list/5, so any
 % switch_on_constant inside the body picks the right `_impl` target.
-wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
+wrap_segment(FuncName, trust_me, PfxCode, BodyCode0, _Suffix, Code) :-
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1144,7 +1360,8 @@ wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
     end
   end', [FuncName, BodyCode]).
 
-wrap_segment(FuncName, none, BodyCode, _Suffix, Code) :-
+wrap_segment(FuncName, none, PfxCode, BodyCode0, _Suffix, Code) :-
+    wrap_pfx_body(PfxCode, BodyCode0, BodyCode),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -1282,6 +1499,7 @@ instr_cost(builtin_call(_, _),    5) :- !.
 instr_cost(call(_, _),            5) :- !.
 instr_cost(execute(_),            5) :- !.
 instr_cost(begin_aggregate(_, _, _), 10) :- !.
+instr_cost(begin_aggregate(_, _, _, _), 10) :- !.
 instr_cost(end_aggregate(_),      5) :- !.
 instr_cost(put_structure(_, _),   3) :- !.
 instr_cost(get_structure(_, _),   3) :- !.
@@ -1289,6 +1507,12 @@ instr_cost(put_list(_),           3) :- !.
 instr_cost(get_list(_),           3) :- !.
 instr_cost(switch_on_constant(_), 2) :- !.
 instr_cost(switch_on_constant_a2(_), 2) :- !.
+instr_cost(switch_on_constant_fallthrough(_), 2) :- !.
+instr_cost(switch_on_constant_a2_fallthrough(_), 2) :- !.
+instr_cost(switch_on_term(_), 3) :- !.
+instr_cost(switch_on_term_a2(_), 3) :- !.
+instr_cost(switch_on_structure(_), 2) :- !.
+instr_cost(switch_on_structure_a2(_), 2) :- !.
 instr_cost(_,                     1).
 
 %% emit_par_tier2_wrapper(+EntryFunc, +EntryImplFunc, +BranchImplFuncs, -Code)
@@ -1533,15 +1757,28 @@ instr_from_parts(["set_value", Xn], set_value(Xn)).
 instr_from_parts(["set_constant", C], set_constant(C)).
 instr_from_parts(["switch_on_constant"|Entries], switch_on_constant(Entries)).
 instr_from_parts(["switch_on_constant_a2"|Entries], switch_on_constant_a2(Entries)).
+instr_from_parts(["switch_on_constant_fallthrough"|Entries], switch_on_constant_fallthrough(Entries)).
+instr_from_parts(["switch_on_constant_a2_fallthrough"|Entries], switch_on_constant_a2_fallthrough(Entries)).
+instr_from_parts(["switch_on_term"|Tokens], switch_on_term(Tokens)).
+instr_from_parts(["switch_on_term_a2"|Tokens], switch_on_term_a2(Tokens)).
+instr_from_parts(["switch_on_structure"|Entries], switch_on_structure(Entries)).
+instr_from_parts(["switch_on_structure_a2"|Entries], switch_on_structure_a2(Entries)).
 instr_from_parts(["proceed"], proceed).
 instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type, ValReg, ResReg)).
-% bagof/setof inlining (inline_bagof_setof(true)) emits a 4th token —
-% the witness/quantifier list — that the WAM compiler uses for group
-% backtracking. PR 1 ignores the witness (no grouping yet); future
-% witness-group PR can read it.
-instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, _Witness],
-                 begin_aggregate(Type, ValReg, ResReg)).
+% bagof/setof with witness-group backtracking: the 4th token is a
+% semicolon-delimited list of witness register names (e.g. "'Y2;Y3'").
+% Passed through to push_aggregate_frame so the runtime can snapshot
+% witness values per solution and group at finalise time.
+instr_from_parts(["begin_aggregate", Type, ValReg, ResReg, WitnessStr],
+                 begin_aggregate(Type, ValReg, ResReg, WitnessStr)).
 instr_from_parts(["end_aggregate", ValReg], end_aggregate(ValReg)).
+% if-then-else / negation / once soft-cut commit and the unconditional
+% jump that ends a then-branch. Previously these fell through to raw/1
+% and raised "TODO" at runtime, so any predicate containing ( C -> T ; E ),
+% \+ G or once/1 crashed (cut_ite) or returned a malformed mid-execution
+% state (the else branch never reached its continuation).
+instr_from_parts(["cut_ite"], cut_ite).
+instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(Parts, raw(Combined)) :-
     atomic_list_concat(Parts, ' ', Combined).
 
@@ -1555,7 +1792,7 @@ wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = cond do
-      val == ~w -> state
+      WamRuntime.constant_match?(val, ~w) -> state
       match?({:unbound, _}, val) ->
         {:unbound, id} = val
         state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, ~w)
@@ -1651,8 +1888,40 @@ wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, _Suffix, Code
       s -> s
     end', [CLit]).
 
-wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
-    Code = '    :ok # Handled by wrap_segment'.
+% cut_ite — the soft-cut commit of ( Cond -> Then ; Else ) / \+ / once.
+% When the condition succeeds we commit to the then-branch by discarding
+% the choice point the ITE's try_me_else pushed (it points at the else
+% segment). Dropping the top CP is the standard cut_ite semantics; the
+% guard keeps it safe if the CP stack is unexpectedly empty.
+wam_elixir_lower_instr(cut_ite, _PC, _Labels, _FuncName, _Suffix, Code) :-
+    Code = '    state = case state.choice_points do
+      [_ite_cp | rest] -> %{state | choice_points: rest}
+      [] -> state
+    end'.
+
+% jump L — unconditional transfer to label L's segment. Ends a then-branch
+% (jump to the continuation) and is also injected as the else branch's
+% fall-through (see maybe_add_fallthrough/4). Tail-calls the segment
+% function, threading the current Suffix so _impl jumps to _impl and
+% _branch to _branch.
+wam_elixir_lower_instr(jump(L), _PC, _Labels, _FuncName, Suffix, Code) :-
+    segment_func_name(L, Suffix, Target),
+    format(string(Code), '    ~w(state)', [Target]).
+
+% A try_me_else reaching this clause is in BODY position (the segment's
+% head try_me_else is removed by classify_segment_head and realised by
+% wrap_segment). That only happens for a NESTED if-then-else, where the
+% inner ITE's try_me_else follows the outer commit with no intervening
+% label. Push its choice point here, pointing at the inner else segment,
+% mirroring wrap_segment's snapshot — without this the inner else is
+% unreachable and the inner condition's failure escapes the predicate.
+wam_elixir_lower_instr(try_me_else(L), _PC, _Labels, _FuncName, Suffix, Code) :-
+    segment_func_name(L, Suffix, ElseFunc),
+    format(string(Code),
+'    cp = %{pc: &~w/1, regs: state.regs, y_regs: state.y_regs,
+           heap: state.heap, heap_len: state.heap_len,
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+    state = %{state | choice_points: [cp | state.choice_points]}', [ElseFunc]).
 
 wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
@@ -1820,6 +2089,46 @@ wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, 
         end
     end', [ArmsStr]).
 
+wam_elixir_lower_instr(switch_on_constant_fallthrough(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    case val do
+      {:unbound, _} -> :ok
+      _ ->
+        case val do
+          ~w
+          _ -> :ok
+        end
+    end', [ArmsStr]).
+
+wam_elixir_lower_instr(switch_on_constant_a2_fallthrough(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    case val do
+      {:unbound, _} -> :ok
+      _ ->
+        case val do
+          ~w
+          _ -> :ok
+        end
+    end', [ArmsStr]).
+
+wam_elixir_lower_instr(switch_on_term(Tokens), _PC, _Labels, _FuncName, Suffix, Code) :-
+    parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel),
+    build_switch_on_term_code(1, ConstEntries, StructEntries, ListLabel, Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_term_a2(Tokens), _PC, _Labels, _FuncName, Suffix, Code) :-
+    parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel),
+    build_switch_on_term_code(2, ConstEntries, StructEntries, ListLabel, Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_structure(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_on_term_code(1, [], Entries, "none", Suffix, Code).
+
+wam_elixir_lower_instr(switch_on_structure_a2(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_on_term_code(2, [], Entries, "none", Suffix, Code).
+
 wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, _Suffix, Code) :-
     % CPS: proceed = tail-call the continuation stored in state.cp. The
     % caller\'s post-call code (or the driver\'s terminal_cp) lives in
@@ -1840,6 +2149,16 @@ wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg),
 '    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w)',
         [AggType, ValReg, ResReg]).
 
+wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg, WitnessStr),
+                       _PC, _Labels, _FuncName, _Suffix, Code) :-
+    agg_type_atom(AggTypeStr, AggType),
+    reg_id(ValueReg, ValReg),
+    reg_id(ResultReg, ResReg),
+    witness_str_to_reg_ids(WitnessStr, WitnessRegIds),
+    format(string(Code),
+'    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w, ~w)',
+        [AggType, ValReg, ResReg, WitnessRegIds]).
+
 % Control flow note: the throw({:fail, state}) here is caught by the
 % enclosing wrap_segment\'s try/catch, which calls WamRuntime.backtrack
 % on the thrown state. backtrack/1 sees the aggregate CP at the top of
@@ -1857,6 +2176,113 @@ wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix
 
 wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
+
+%% witness_str_to_reg_ids(+WitnessStr, -RegIdList)
+%  Converts the WAM witness string (e.g. "'Y2;Y3'") to an Elixir list
+%  literal of integer reg IDs (e.g. "[203, 204]").
+witness_str_to_reg_ids(WitnessStr, RegIdList) :-
+    (   atom(WitnessStr) -> atom_string(WitnessStr, WStr0)
+    ;   WStr0 = WitnessStr
+    ),
+    ( string_concat("'", Rest0, WStr0),
+      string_concat(Inner, "'", Rest0)
+    -> WStr = Inner
+    ;  WStr = WStr0
+    ),
+    split_string(WStr, ";", " ", Parts),
+    maplist(witness_part_to_id, Parts, Ids),
+    format(string(RegIdList), "~w", [Ids]).
+
+witness_part_to_id(Part, Id) :-
+    atom_string(RegAtom, Part),
+    reg_id(RegAtom, Id).
+
+%% parse_switch_on_term_tokens(+Tokens, -ConstEntries, -StructEntries, -ListLabel)
+%  Parses the flat token list from `switch_on_term CLen <consts...> SLen <structs...> ListLabel`.
+parse_switch_on_term_tokens(Tokens, ConstEntries, StructEntries, ListLabel) :-
+    Tokens = [CLenStr|Rest0],
+    (atom(CLenStr) -> atom_number(CLenStr, CLen) ; number_string(CLen, CLenStr)),
+    length(ConstEntries, CLen),
+    append(ConstEntries, [SLenStr|Rest1], Rest0),
+    (atom(SLenStr) -> atom_number(SLenStr, SLen) ; number_string(SLen, SLenStr)),
+    length(StructEntries, SLen),
+    append(StructEntries, [ListLabel], Rest1).
+
+%% build_switch_on_term_code(+RegIdx, +ConstEntries, +StructEntries, +ListLabel, +Suffix, -Code)
+%  Generates Elixir code for switch_on_term / switch_on_term_a2.
+%  Type-dispatches on the dereferenced register value:
+%    unbound   → fall through (:ok)
+%    {:ref, _} → heap lookup: list functor → list arm, else struct arm
+%    other     → constant arm
+build_switch_on_term_code(RegIdx, ConstEntries, StructEntries, ListLabel, Suffix, Code) :-
+    build_sot_list_dispatch(ListLabel, Suffix, ListCode),
+    build_sot_struct_dispatch(StructEntries, Suffix, StructCode),
+    build_sot_const_dispatch(ConstEntries, Suffix, ConstCode),
+    format(string(Code),
+'    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, ~w))
+    cond do
+      match?({:unbound, _}, val) -> :ok
+      match?({:ref, _}, val) ->
+        {:ref, __sot_addr} = val
+        case Map.get(state.heap, __sot_addr) do
+          {:str, sot_fn} ->
+            cond do
+              sot_fn == "./2" or sot_fn == "[|]/2" ->
+~w
+              true ->
+~w
+            end
+          _ -> throw({:fail, state})
+        end
+      true ->
+~w
+    end', [RegIdx, ListCode, StructCode, ConstCode]).
+
+%% build_sot_list_dispatch(+ListLabel, +Suffix, -Code)
+build_sot_list_dispatch(ListLabel, _Suffix, Code) :-
+    (ListLabel == "none" ; ListLabel == none), !,
+    Code = "                throw({:fail, state})".
+build_sot_list_dispatch(ListLabel, _Suffix, Code) :-
+    (ListLabel == "default" ; ListLabel == default), !,
+    Code = "                :ok".
+build_sot_list_dispatch(ListLabel, Suffix, Code) :-
+    atom_string(ListLabel, LabelStr),
+    segment_func_name(LabelStr, Suffix, Func),
+    format(string(Code),
+           "                throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})",
+           [Func]).
+
+%% build_sot_struct_dispatch(+StructEntries, +Suffix, -Code)
+build_sot_struct_dispatch(StructEntries, Suffix, Code) :-
+    (   StructEntries == []
+    ->  Code = "                throw({:fail, state})"
+    ;   maplist(build_sot_struct_arm(Suffix), StructEntries, Arms),
+        atomic_list_concat(Arms, '\n                  ', ArmsJoined),
+        format(string(Code),
+               "                case sot_fn do\n                  ~w\n                  _ -> throw({:fail, state})\n                end",
+               [ArmsJoined])
+    ).
+
+build_sot_struct_arm(Suffix, Entry, Arm) :-
+    split_last_colon(Entry, Key, Label),
+    (   (Label == "default" ; Label == default)
+    ->  format(string(Arm), '"~w" -> :ok', [Key])
+    ;   atom_string(Label, LabelStr),
+        segment_func_name(LabelStr, Suffix, Func),
+        format(string(Arm),
+               '"~w" -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
+               [Key, Func])
+    ).
+
+%% build_sot_const_dispatch(+ConstEntries, +Suffix, -Code)
+build_sot_const_dispatch(ConstEntries, Suffix, Code) :-
+    (   ConstEntries == []
+    ->  Code = "        throw({:fail, state})"
+    ;   build_switch_arms(ConstEntries, Suffix, ArmsStr),
+        format(string(Code),
+               "        case val do\n          ~w\n          _ -> throw({:fail, state})\n        end",
+               [ArmsStr])
+    ).
 
 %% escape_backslashes_for_elixir(+Token, -Escaped)
 %  Double backslashes when emitting `Token` into an Elixir double-

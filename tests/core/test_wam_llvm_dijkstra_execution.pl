@@ -238,7 +238,7 @@ run_wsp_for(Label, PredIndicator, WeightPred, Facts, StartAtom, TargetAtom,
     -> format('    FAIL: llc exit=~w~n', [LlcExit]),
        ExitCode = -1
     ;  format(atom(ClangCmd),
-           'clang ~w -o ~w 2>~w.clang.err',
+           'clang ~w -o ~w -lm 2>~w.clang.err',
            [OPath, BinPath, LLPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0

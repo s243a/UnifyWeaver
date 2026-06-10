@@ -85,11 +85,39 @@ test(builtin_op_cut_id_ten) :-
     assertion(LLVMId == 10),
     assertion(CILId == 10).
 
-test(builtin_op_unknown_consistent) :-
-    builtin_op_to_id('nonexistent/7', LLVMId),
-    builtin_op_to_cil_id('nonexistent/7', CILId),
-    assertion(LLVMId == 99),
-    assertion(CILId == 99).
+test(builtin_op_ids_agree_on_shared_set) :-
+    % Harmonization invariant: for every builtin that BOTH the LLVM and
+    % CIL targets implement, the integer op-id must be identical. The
+    % targets need NOT implement the same SET of builtins — LLVM has ~115,
+    % CIL a core subset, and the name-dispatch targets (Go, Rust, Python,
+    % JVM, ...) have no id table at all (their compilers optimise the
+    % string switch, so no jump-table numbering is needed). So we compare
+    % only the overlapping set: ids must agree where both implement an op;
+    % extra builtins on a target are expected, not an error.
+    %
+    % Unimplemented ops map to each target's reserved "unknown" sentinel
+    % (looked up here, not hard-coded — LLVM's is 200, CIL's is 99, and
+    % they need not match). The sentinel must differ from any real op id
+    % so codegen can detect an unsupported builtin.
+    builtin_op_to_id('this_is_not_a_real_builtin/9', LLVMUnknown),
+    builtin_op_to_cil_id('this_is_not_a_real_builtin/9', CILUnknown),
+    builtin_op_to_id('is/2', LLVMIs),
+    builtin_op_to_cil_id('is/2', CILIs),
+    assertion(LLVMUnknown =\= LLVMIs),
+    assertion(CILUnknown =\= CILIs),
+    % Compare the matching set: every op CIL also implements must share
+    % LLVM's id.
+    findall(Op, (builtin_op_to_id(Op, _), ground(Op)), LLVMOps),
+    findall(Op,
+            ( member(Op, LLVMOps),
+              builtin_op_to_cil_id(Op, CId),
+              CId =\= CILUnknown ),
+            SharedOps),
+    assertion(SharedOps \== []),
+    forall(member(Op, SharedOps),
+           ( builtin_op_to_id(Op, LId),
+             builtin_op_to_cil_id(Op, CId),
+             assertion(LId =:= CId) )).
 
 % ============================================================================
 % Instruction set: all targets must have the same 25 instruction cases
@@ -260,7 +288,11 @@ test(llvm_has_read_write_mode) :-
     compile_step_wam_to_llvm([], Code),
     assertion(sub_atom(Code, _, _, _, 'wam_peek_stack_type')),
     assertion(sub_atom(Code, _, _, _, 'wam_unify_ctx_next')),
-    assertion(sub_atom(Code, _, _, _, 'wam_write_ctx_dec')).
+    % Write-mode arg writing: the LLVM target builds compound args via
+    % wam_push_write_ctx + wam_write_ctx_set_arg (the write cursor is
+    % advanced inside set_arg). This replaced the older standalone
+    % wam_write_ctx_dec helper.
+    assertion(sub_atom(Code, _, _, _, 'wam_write_ctx_set_arg')).
 
 test(ilasm_has_read_write_mode) :-
     compile_step_wam_to_cil([], Code),

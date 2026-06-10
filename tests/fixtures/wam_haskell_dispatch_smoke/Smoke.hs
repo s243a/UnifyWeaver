@@ -62,6 +62,7 @@ mkState regs cps = WamState
   , wsBindings = IM.empty
   , wsCutBar = 0
   , wsBuilder = NoBuilder
+  , wsBuilderStack = []
   , wsVarCounter = 1000
   , wsAggAccum = []
   }

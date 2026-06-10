@@ -32,7 +32,9 @@ wam_target_runtime_parser(Target, Options, Mode) :-
 %% parser_dependent_builtin(?Name/Arity)
 %
 % Builtins/features that need source text parsed into runtime terms.
+parser_dependent_builtin(read/1).
 parser_dependent_builtin(read/2).
+parser_dependent_builtin(read_term/1).
 parser_dependent_builtin(read_term_from_atom/2).
 parser_dependent_builtin(read_term_from_atom/3).
 parser_dependent_builtin(term_to_atom/2).
@@ -115,17 +117,44 @@ target_runtime_parser_default(wam_r, native(parse_term)).
 % restriction; we register both modes here and leave native as
 % the default since it ships today.
 target_runtime_parser_default(wam_cpp, native(parse_term)).
+% F# has no native runtime parser today; the F# target compiles the
+% portable parser through WAM and that path now executes correctly
+% end-to-end (42/42 inputs in test_wam_fsharp_parser_smoke.pl, including
+% prefix-directive '`:- p`', list patterns, and clauses with bodies).
+% A series of runtime fixes -- PR #2407 (B0 cut-barrier protocol),
+% PR #2408 (VList/Str list-encoding equivalence), PR #2415 (member/2
+% via MemberRetry), PR #2419 (==/2 list-encoding, findall result-reg
+% seeding), PR #2423 (dispatchCall WsCP reset), PR #2422 (lowered
+% quoted-atom rendering) -- closed the gaps that the earlier version
+% of this comment was warning about (Proceed-stubbed instructions).
+%
+% Default is kept at `none` so existing F# projects don't silently
+% pull in the parser library; `runtime_parser(compiled)` is opt-in.
+% See docs/WAM_RUNTIME_PARSER_STATUS.md for the cross-target picture
+% and why we don't flip the default.
+target_runtime_parser_default(wam_fsharp, none).
+target_runtime_parser_default(wam_haskell, none).
+target_runtime_parser_default(wam_rust, none).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_cpp, native(parse_term)).
 target_runtime_parser_mode_(wam_cpp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_fsharp, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_haskell, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
 normalize_runtime_parser_target(cpp, wam_cpp) :- !.
 normalize_runtime_parser_target(wam_cpp, wam_cpp) :- !.
+normalize_runtime_parser_target(fsharp, wam_fsharp) :- !.
+normalize_runtime_parser_target(wam_fsharp, wam_fsharp) :- !.
+normalize_runtime_parser_target(haskell, wam_haskell) :- !.
+normalize_runtime_parser_target(wam_haskell, wam_haskell) :- !.
+normalize_runtime_parser_target(rust, wam_rust) :- !.
+normalize_runtime_parser_target(wam_rust, wam_rust) :- !.
 normalize_runtime_parser_target(Target, Target).
 
 strip_module_qualifier(Module:Goal, Stripped) :-

@@ -71,12 +71,16 @@ Survey columns: ✅ shipped · ⚠️ partial · ❌ missing.
 
 | Status | Elixir | C++ | Rust | Haskell |
 |---|---|---|---|---|
-| Consumes `compile_predicate_to_wam_items` | ❌ | ❌ | ❌ | ❌ |
-| Calls `parse_wam_text` (legacy text path) | ✅ | ✅ | ✅ | ✅ |
+| Interpreter consumes shared WAM items | ✅ | ❌ | ❌ | ❌ |
+| Lowered emitter consumes shared WAM items | ❌ | ❌ | ❌ | ❌ |
+| Calls `parse_wam_text` / text rewrite path | ✅ | ✅ | ✅ | ✅ |
 | `format(string(...))` site count | 56 | 22 | 74 | 88 |
 
-Phase 1 of the Items API hasn't landed in `wam_target.pl` yet.
-Tracked separately in `WAM_ITEMS_API_SPECIFICATION.md`.
+The Elixir interpreter path now converts ISO-rewritten WAM text through the
+shared items bridge before emitting instruction tuples. The lowered emitter
+still consumes WAM text directly. Native `compile_predicate_to_wam_items/3`
+generation and fully items-level ISO rewriting remain tracked in
+`WAM_ITEMS_API_SPECIFICATION.md` and `WAM_REPRESENTATION_MODES.md`.
 
 ## 2. Dependency graph
 
@@ -424,7 +428,8 @@ After this roadmap completes, natural follow-ups:
 - **`bagof/3` + `setof/3`** — mirror C++ PR series #2086 → #2112.
   Larger scope; needs witness-grouping infrastructure and the
   `aggregate_next_group` synthetic op.
-- **Items API migration** — Elixir is #6 in the
+- **Items API migration** — Elixir interpreter mode now uses the shared
+  items bridge, but lowered mode still needs migration. Elixir is #6 in the
   `WAM_ITEMS_API_SPECIFICATION.md` Phase 2 plan. Drops the 56
   `format(string(...))` calls.
 - **Option B for catch/throw** — if PR #2 bench shows side-stack

@@ -1,0 +1,177 @@
+# Tree-likeness index — depth-likeness probes
+
+**Status:** Python prototypes + F# probe (validated against Python on
+simplewiki). The F# probe in `fsharp_v1_v3_probe/` is the production-
+quality counterpart: it uses LightningDB cursors, reuses calibration
+across seeds, and scales to enwiki (2.26M nodes).
+
+## What this is
+
+A series of probes investigating whether the directionally-weighted
+power-mean metric `d_wPow` (see `docs/design/TREE_LIKENESS_INDEX.md`)
+behaves like graph depth under various budget choices. Each script
+varies the "budget" parameter `B` and measures the per-node
+distribution of `d_wPow(v) - depth(v)`.
+
+Four budget variants explored:
+
+| Script | Budget | What it tests |
+|---|---|---|
+| `scripts/v1_v3_root_targeted_depth_probe.py` | `B = depth(v)` (tightest) or `B = 15` (fixed) | shortcuts to root under tight/standard budgets |
+| `scripts/v2_arbitrary_pair_carrot_probe.py` | `B = min carrot cost` between arbitrary pairs | cross-graph shortcuts between topical pairs |
+| `scripts/v3_max_parent_distance_probe.py` | `B = max acyclic parent dist to root` | multi-ancestor averaging behaviour |
+
+The fourth row (B = 15 fixed) was an earlier intermediate result captured
+in the same script `v1_v3_root_targeted_depth_probe.py` (commented config
+toggle); the corresponding results file is preserved separately.
+
+### V3 budget from the materialised `max_dist_to_root` metric
+
+V3's budget `B` (max acyclic parent distance to root) *is* the
+`max_dist_to_root` root-anchored metric (docs/design/ROOT_ANCHORED_METRICS_*).
+`scripts/max_dist_budget.py` holds that quantity as two cross-checked
+implementations, and V3 can now read the **ingest-materialised** lookup instead
+of recomputing it:
+
+```bash
+# 1. build a Phase-1 scoped LMDB rooted at the V3 root, then materialise the
+#    metric UNBOUNDED (max_depth >= graph diameter so it isn't truncated):
+python3 examples/benchmark/build_scoped_subtree_lmdb.py --src <phase1_lmdb> \
+    --root 137597 --out /tmp/sw_scoped --max-depth 100
+python3 benchmarks/root-metrics/prototype/build_max_distance.py \
+    --lmdb /tmp/sw_scoped --max-depth 100
+# 2. point V3 at it:
+python3 scripts/v3_max_parent_distance_probe.py --max-dist-metric /tmp/sw_scoped
+```
+
+**Budget DP corrected.** The probe's original in-line DP assumed "every parent
+has a smaller BFS depth" and only followed shortest-depth-decreasing parents, so
+it **undercounted** any node with a near-root shortcut parent *and* a longer
+ancestor chain through a deeper parent — on a diamond (`4->{1,3}`, `3->2`,
+`2->1`) it returned `max_dist[4]=1` instead of the true longest acyclic path
+`4->3->2->1 = 3`. `dp_max_dist` now computes the true longest path via a
+topological-order (Kahn) longest-path DP, and `max_dist_budget.py`'s self-check
+asserts it **equals** the materialised `max_dist_to_root` metric. With the DP
+fixed, `--max-dist-metric` is an equivalent **precompute** (read the table vs
+recompute), not a correction.
+
+⚠️ **This changes V3 results.** Any V3 numbers in
+`docs/reports/depth_likeness_budget_variants.md` / `results/` produced before
+this fix used the undercounted budget `B`; the corrected DP grows `B` for
+shortcut-parent nodes, so the MIN/AVG/SHORTCUT split will shift. Those committed
+results should be regenerated. Run `python3 scripts/max_dist_budget.py` to see
+the DP/metric agreement.
+
+## Headline empirical findings
+
+See `docs/reports/depth_likeness_budget_variants.md` for the full
+write-up. Brief:
+
+- **V1 with `B = depth`**: `d_wPow = depth + 1` *exactly* for depths 1-9
+  (168 nodes, zero stdev). Shortcuts to root simply don't fit at the
+  tight budget. Above depth 10, shortcuts emerge.
+- **V2 arbitrary pairs**: ~39% of pairs have shortcuts (`d_wPow < carrot+1`).
+  Cross-topical shortcuts are *abundant*, not rare. **Caveat: 61% of
+  pairs hit the 5s enumeration timeout — strongly suggesting this is an
+  undercount, and motivating the port to a proper target.**
+- **V3 `B = max_parent_distance`**: ~42% MIN-LIKE, ~25% AVG-LIKE, ~12%
+  SHORTCUT. Loosening budget admits alternate-ancestor averaging, not
+  many extra shortcuts. Confirms shortcuts-to-root are rare.
+
+The key cross-variant insight: **shortcuts to root are rare; shortcuts
+between arbitrary topical pairs are common**. The "shortcuts are rare"
+design-note claim is direction-dependent, not a property of the graph.
+
+## Running the probes
+
+### Prerequisites
+- Python 3 with `lmdb` package
+- A simplewiki post-fix LMDB at `/tmp/sw_post_fix_lmdb` (built with the
+  3-mode categorylinks ingester in `correct` mode — see
+  `examples/benchmark/build_articles_subgraph.py` and the
+  `mysql_stream_lmdb` runtime binary)
+
+### Build the LMDB once
+```bash
+BIN=path/to/mysql_stream_lmdb
+DUMPS=path/to/simplewiki-dumps
+$BIN $DUMPS/simplewiki-latest-categorylinks.sql.gz /tmp/sw_post_fix_lmdb \
+    --mode correct \
+    --linktarget-dump $DUMPS/simplewiki-latest-linktarget.sql.gz \
+    --page-dump $DUMPS/simplewiki-latest-page.sql.gz \
+    --cl-type subcat --refresh
+```
+
+### Run each probe
+```bash
+python3 scripts/v1_v3_root_targeted_depth_probe.py  # ~10s
+python3 scripts/v2_arbitrary_pair_carrot_probe.py   # ~5-10 min (lots of timeouts)
+python3 scripts/v3_max_parent_distance_probe.py     # ~30s
+```
+
+Outputs are in `results/` (committed for reference, not regenerated by
+test infrastructure).
+
+## Why these are prototypes, not production
+
+- **Performance**: V2 hits 61% timeouts at 5s/pair. The bidirectional
+  kernel in F# (`templates/targets/fsharp_wam/kernel_bidirectional_ancestor.fs.mustache`)
+  is ~10-100× faster per query thanks to LightningDB cursors and proper
+  A* heuristics. The Python A* prune I added helps but doesn't close the
+  gap.
+- **Cross-validation**: no parity tests between Python and the F# kernel.
+  If the F# kernel's `d_wPow` disagrees with these results, the F# kernel
+  is authoritative — there's a bug somewhere in the Python.
+- **Scale**: these scripts load the entire graph into RAM as dict-of-list
+  adjacency. Fine for simplewiki (~80k nodes, ~290k edges); would not
+  scale to enwiki (~3.7M nodes, ~10M edges).
+- **One-off**: no harness integration with the test infrastructure. The
+  scripts run as standalone Python programs.
+
+## F# probe (`fsharp_v1_v3_probe/`)
+
+A standalone F# project that bundles the bidirectional kernel template
+(with mustache var resolved) and runs V1 (B = depth) or V3 (B = max
+parent dist) on any LMDB. Built with `dotnet build -c Release`, takes
+~5 seconds.
+
+Key extensions over the production kernel:
+- `nativeKernel_bidirectional_ancestor_withMinDist` — a variant that
+  accepts a precomputed BFS distance map, so calibration is done once
+  and reused across many seed queries. Without this, each seed call
+  re-runs a full graph BFS — fine on simplewiki (~0.3s per seed) but
+  prohibitive on enwiki (~31s per seed).
+- Per-seed harness reads a TSV of seed ids, loops over them, writes
+  TSV output.
+- `--variant v3` switch enables max-parent-distance budget (with DP
+  to compute max_dist in children-BFS-depth order).
+
+Cross-target parity validated: F# V1 simplewiki matches Python V1
+simplewiki to floating-point precision (same calibration constants
+D=4.914, b_eff=14.828; same per-seed d_wPow values).
+
+### enwiki measurement
+
+The F# probe was the unblocker for enwiki scale. The post-fix
+enwiki LMDB rooted at `Category:Main_topic_classifications`
+(page_id 7345184) has 2.26M reachable nodes, 6.7M edges — 30×
+larger than simplewiki Articles. Per-seed query is ~0.05s after
+the one-time 8s calibration.
+
+V1 results (`results/enwiki_v1_fsharp_B_equals_min_depth.tsv`):
+0% shortcuts at depths 1-11, 20% at depth 12. Stronger
+tree-likeness than simplewiki at the same depth range — see
+`docs/reports/depth_likeness_budget_variants.md` for the full
+discussion.
+
+## Remaining work (lower priority)
+
+- V2 (arbitrary-pair) on enwiki — requires a generalised A*
+  heuristic for arbitrary targets (the current kernel's heuristic
+  assumes target is an ancestor). Not done.
+- Cross-target parity on enwiki — only simplewiki was directly
+  compared. enwiki F# results are accepted on the strength of the
+  simplewiki parity validation.
+- Port to Rust/Haskell — once F# results are interpreted, repeating
+  with a faster target may be useful for full-graph-scan
+  measurements.

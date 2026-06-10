@@ -134,6 +134,12 @@ tmp/
 # visible mid-run).
 tests/tmp_cpp_*/
 tests/tmp_*/
+# Same dirs when a suite is invoked with the repo root as cwd
+# (some test runners use relative paths that resolve to the
+# current working directory).
+tmp_cpp_*/
+tmp_wam_*/
+tmp_scala_*/
 
 
 # Downloaded libraries (use setup scripts to install)

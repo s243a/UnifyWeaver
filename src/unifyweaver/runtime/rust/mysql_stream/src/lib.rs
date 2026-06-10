@@ -14,6 +14,8 @@ use std::io::{self, BufRead, BufReader, Read};
 
 use flate2::read::GzDecoder;
 
+pub mod categorylinks_resolve;
+
 /// A single column value from a MySQL INSERT row.
 ///
 /// `Str` holds raw bytes rather than a String because MySQL VARBINARY
@@ -21,8 +23,14 @@ use flate2::read::GzDecoder;
 /// aren't necessarily valid UTF-8. Consumers decode as needed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Field {
-    /// Integer literal (unquoted digits, optional minus sign).
+    /// Integer literal (unquoted digits, optional minus sign, no decimal).
     Int(i64),
+    /// Floating-point literal (digits with a decimal point and/or
+    /// exponent). Used by MediaWiki's `page_random` column among others.
+    /// We don't `PartialEq` against bit-equal floats specially —
+    /// downstream consumers should treat this as opaque unless they need
+    /// the value.
+    Float(f64),
     /// Quoted string/bytes literal, with MySQL escape sequences already
     /// decoded. May or may not be valid UTF-8.
     Str(Vec<u8>),
@@ -199,7 +207,15 @@ impl<R: BufRead> MysqlInsertIter<R> {
         }
     }
 
-    /// Parse an integer literal: optional `-`, then decimal digits.
+    /// Parse a numeric literal: optional `-`, decimal digits, and an
+    /// optional fractional part (`.` followed by more digits) and/or
+    /// exponent (`e` or `E` followed by optional sign and digits).
+    ///
+    /// Returns `Field::Int` if the literal has no fractional or
+    /// exponent part (preserves the original Int-only behaviour for
+    /// integer columns), otherwise `Field::Float`. MediaWiki's
+    /// `page_random` column emits values like `0.198981091825` that
+    /// would otherwise terminate tuple parsing at the decimal point.
     fn parse_int(&mut self) -> Option<Field> {
         let start = self.pos;
         if self.buf.get(self.pos)? == &b'-' {
@@ -216,8 +232,40 @@ impl<R: BufRead> MysqlInsertIter<R> {
         if self.pos == digit_start {
             return None;
         }
+        let mut is_float = false;
+        // Optional fractional part.
+        if let Some(&b'.') = self.buf.get(self.pos) {
+            is_float = true;
+            self.pos += 1;
+            while let Some(&c) = self.buf.get(self.pos) {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        // Optional exponent: `e`/`E` then optional sign then digits.
+        if matches!(self.buf.get(self.pos), Some(b'e') | Some(b'E')) {
+            is_float = true;
+            self.pos += 1;
+            if matches!(self.buf.get(self.pos), Some(b'+') | Some(b'-')) {
+                self.pos += 1;
+            }
+            while let Some(&c) = self.buf.get(self.pos) {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
         let s = std::str::from_utf8(&self.buf[start..self.pos]).ok()?;
-        Some(Field::Int(s.parse().ok()?))
+        if is_float {
+            Some(Field::Float(s.parse().ok()?))
+        } else {
+            Some(Field::Int(s.parse().ok()?))
+        }
     }
 
     /// Parse a quoted string. Assumes `self.pos` points at the opening `'`.
@@ -334,6 +382,44 @@ mod tests {
         assert_eq!(
             parse(input),
             vec![vec![Field::Int(1), Field::Int(2), Field::Int(3)]]
+        );
+    }
+
+    /// MediaWiki's `page` table has `page_random` (a double like
+    /// `0.198981091825`). Before adding `Field::Float`, the parser would
+    /// halt mid-tuple on the `.` and silently yield zero rows from the
+    /// entire dump.
+    #[test]
+    fn float_column_does_not_break_tuple() {
+        let input = "INSERT INTO `page` VALUES (4985,14,'Computer_science',0,0,0.198981091825,'20240101000000',NULL);\n";
+        assert_eq!(
+            parse(input),
+            vec![vec![
+                Field::Int(4985),
+                Field::Int(14),
+                s(b"Computer_science"),
+                Field::Int(0),
+                Field::Int(0),
+                Field::Float(0.198981091825),
+                s(b"20240101000000"),
+                Field::Null,
+            ]]
+        );
+    }
+
+    /// Negative integers and exponent notation (1e10, -1.5E-3) should
+    /// both round-trip through `Field::Int` or `Field::Float` as
+    /// appropriate.
+    #[test]
+    fn float_with_exponent_and_negative_int() {
+        let input = "INSERT INTO `t` VALUES (-42,1e10,-1.5E-3);\n";
+        assert_eq!(
+            parse(input),
+            vec![vec![
+                Field::Int(-42),
+                Field::Float(1e10),
+                Field::Float(-1.5e-3),
+            ]]
         );
     }
 

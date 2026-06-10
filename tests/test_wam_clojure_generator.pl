@@ -430,8 +430,8 @@ test(switch_on_constant_preserves_default_fallthrough) :-
         read_file_to_string(CorePath, CoreCode, []),
         read_file_to_string(RuntimePath, RuntimeCode, []),
         assertion(sub_string(CoreCode, _, _, _, '{:value "a" :label "default"}')),
-        assertion(sub_string(CoreCode, _, _, _, '{:value "b" :label "L_wam_choice_fact_1_2"}')),
-        assertion(sub_string(CoreCode, _, _, _, '{:value "c" :label "L_wam_choice_fact_1_3"}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:value "b" :label "L_wam_choice_fact_1_2_body"}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:value "c" :label "L_wam_choice_fact_1_3_body"}')),
         assertion(sub_string(RuntimeCode, _, _, _, ':default-fallthrough?')),
         assertion(sub_string(RuntimeCode, _, _, _, '(advance state)')),
         delete_directory_and_contents(TmpDir)

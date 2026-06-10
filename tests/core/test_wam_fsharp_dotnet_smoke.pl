@@ -44,11 +44,26 @@
 % Build directories are removed on success. Set the environment
 % variable WAM_FSHARP_SMOKE_KEEP=1 to keep them for inspection.
 %
+% Cross-platform tmp directory
+% ----------------------------
+% Build directories live under a writable tmp root resolved with the
+% following precedence (first existing+writable wins):
+%   1. UW_SMOKE_TMPDIR        explicit override for this test
+%   2. TMPDIR / TMP / TEMP    standard env vars (Unix / Windows / Cygwin)
+%   3. $PREFIX/tmp            Termux convention
+%   4. /data/data/com.termux/files/usr/tmp   Termux default path
+%   5. /tmp                   Unix default
+%   6. ./tmp                  cwd-relative last resort
+% Cleanup uses library(filesex):delete_directory_and_contents/1 so
+% the test does not depend on `rm` being on PATH (works on Windows).
+%
 % Usage:
 %   swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_dotnet_smoke.pl
 
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target').
-:- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
+:- use_module(library(filesex), [directory_file_path/3,
+                                  make_directory_path/1]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
@@ -82,11 +97,7 @@ dotnet_available :-
 %% Paths
 %% ========================================================================
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
+%% tmp_root/1 and clean_dir/1 imported from helpers/smoke_paths.
 
 smoke_root(Dir) :-
     tmp_root(Root),
@@ -95,14 +106,6 @@ smoke_root(Dir) :-
 %% ========================================================================
 %% Project generation + build
 %% ========================================================================
-
-clean_dir(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir],
-            [stdout(null), stderr(null), process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
-    ).
 
 %% setenv on the parent so the child inherits HOME / PATH / etc. and just
 %% sees our additions.  Avoids the InvalidOperationException from NuGet

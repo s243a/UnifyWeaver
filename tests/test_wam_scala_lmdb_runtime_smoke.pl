@@ -37,19 +37,25 @@
 :- use_module('../src/unifyweaver/targets/wam_scala_target').
 
 :- dynamic user:wam_pair_lmdb/2.
+:- dynamic user:wam_triple_lmdb/3.
 
 % Body is irrelevant - the predicate is replaced by a CallForeign stub
 % that delegates to the LmdbFactSource. Listed here so write_wam_scala_project
 % finds it.
 user:wam_pair_lmdb(_, _).
+user:wam_triple_lmdb(_, _, _).
 
 % ============================================================
 % Gating
 % ============================================================
 
 %% scala_lmdb_available/0 - true if all preconditions hold.
+%  Opt-in via SCALA_LMDB_TESTS being set (to any value); requires scalac on
+%  PATH and LMDBJAVA_CLASSPATH pointing at the lmdbjava JARs. Note getenv/2
+%  unifies the value as an *atom*, so we must not compare it to the string
+%  "1" (that never matches) — presence of the variable is the opt-in signal.
 scala_lmdb_available :-
-    getenv('SCALA_LMDB_TESTS', "1"),
+    getenv('SCALA_LMDB_TESTS', _),
     scalac_on_path,
     getenv('LMDBJAVA_CLASSPATH', _).
 
@@ -98,7 +104,8 @@ test(lmdb_fact_source_end_to_end) :-
             TmpDir),
         % Drop the seeder source alongside the generated sources so
         % scalac sees them all as one compilation unit.
-        write_lmdb_seeder_source(TmpDir),
+        write_lmdb_seeder_source(TmpDir,
+            "    put(\"alpha\",   \"bravo\")\n    put(\"charlie\", \"delta\")\n    put(\"echo\",    \"foxtrot\")\n"),
         compile_lmdb_project(TmpDir),
         seed_lmdb_env(TmpDir, AbsLmdbEnv),
         % Query: wam_pair_lmdb(alpha, X) should return true (alpha is
@@ -107,6 +114,38 @@ test(lmdb_fact_source_end_to_end) :-
         verify_lmdb(TmpDir, 'wam_pair_lmdb/2', ['alpha', 'bravo'], "true"),
         verify_lmdb(TmpDir, 'wam_pair_lmdb/2', ['alpha', 'wrong'], "false"),
         verify_lmdb(TmpDir, 'wam_pair_lmdb/2', ['missing', 'bravo'], "false"),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% Arity-3 end-to-end: the LMDB value holds args 2..N tab-joined, which
+% LmdbFactSource splits back out into registers 2..N. Seed two rows
+% (k1 -> a<TAB>b, k2 -> c<TAB>d) and verify triples bind correctly.
+test(lmdb_arity3_fact_source) :-
+    once((
+        unique_lmdb_tmp_dir('tmp_scala_lmdb3', TmpDir),
+        directory_file_path(TmpDir, 'lmdb_env', LmdbEnv),
+        make_directory_path(LmdbEnv),
+        absolute_file_name(LmdbEnv, AbsLmdbEnv),
+        write_wam_scala_project(
+            [user:wam_triple_lmdb/3],
+            [package('generated.wam_scala_lmdb_smoke.core'),
+             runtime_package('generated.wam_scala_lmdb_smoke.runtime'),
+             scala_fact_sources([
+                source(wam_triple_lmdb/3,
+                       lmdb([env_path(AbsLmdbEnv),
+                             dbi(''),
+                             dupsort(false)]))
+             ])],
+            TmpDir),
+        % Tab (\t) separates arg2 and arg3 in the stored value.
+        write_lmdb_seeder_source(TmpDir,
+            "    put(\"k1\", \"a\\tb\")\n    put(\"k2\", \"c\\td\")\n"),
+        compile_lmdb_project(TmpDir),
+        seed_lmdb_env(TmpDir, AbsLmdbEnv),
+        verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['k1', 'a', 'b'], "true"),
+        verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['k1', 'a', 'x'], "false"),
+        verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['k2', 'c', 'd'], "true"),
+        verify_lmdb(TmpDir, 'wam_triple_lmdb/3', ['nope', 'a', 'b'], "false"),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -122,17 +161,21 @@ unique_lmdb_tmp_dir(Prefix, TmpDir) :-
     format(atom(TmpDir), '~w_~w', [Prefix, Stamp]),
     make_directory_path(TmpDir).
 
-%% write_lmdb_seeder_source(+ProjectDir)
+%% write_lmdb_seeder_source(+ProjectDir, +Puts)
 %  Drops a small Scala main that uses lmdbjava DIRECTLY to populate a
 %  test LMDB env. Compiled alongside the generated WAM runtime so the
-%  same JVM classpath is used for both seed and read.
-write_lmdb_seeder_source(ProjectDir) :-
+%  same JVM classpath is used for both seed and read. `Puts` is a Scala
+%  source fragment of `put("k", "v")` statements (the value may embed a
+%  tab `\t` to encode args 2..N for arity > 2).
+write_lmdb_seeder_source(ProjectDir, Puts) :-
     directory_file_path(ProjectDir,
         'src/main/scala/generated/wam_scala_lmdb_smoke/core/LmdbSeeder.scala',
         Path),
     file_directory_name(Path, Dir),
     make_directory_path(Dir),
-    SeederSrc = "package generated.wam_scala_lmdb_smoke.core\n\nimport java.io.File\nimport java.nio.ByteBuffer\nimport java.nio.charset.StandardCharsets\n\n// Standalone seeder - uses lmdbjava directly (no FactSource\n// indirection) to populate a small LMDB env with three known\n// (key, value) pairs. Run once before the WAM project queries.\nobject LmdbSeeder {\n  def main(args: Array[String]): Unit = {\n    val envPath = args(0)\n    val envDir = new File(envPath)\n    envDir.mkdirs()\n    val envClass = Class.forName(\"org.lmdbjava.Env\")\n    val builder = envClass.getMethod(\"create\").invoke(null)\n    // setMapSize(1L << 20) - 1 MiB, ample for three rows.\n    val setMapSize = builder.getClass.getMethod(\"setMapSize\", java.lang.Long.TYPE)\n    setMapSize.invoke(builder, java.lang.Long.valueOf(1L << 20))\n    val openMethod = builder.getClass.getMethod(\"open\", classOf[File])\n    val env = openMethod.invoke(builder, envDir)\n    val flagsClass = Class.forName(\"org.lmdbjava.DbiFlags\")\n    val mdbCreate = flagsClass.getField(\"MDB_CREATE\").get(null)\n    val flagArr = java.lang.reflect.Array.newInstance(flagsClass, 1)\n    java.lang.reflect.Array.set(flagArr, 0, mdbCreate)\n    val openDbi = envClass.getMethod(\"openDbi\", classOf[String], flagArr.getClass)\n    val dbi = openDbi.invoke(env, \"\", flagArr)\n    val txnWrite = envClass.getMethod(\"txnWrite\")\n    val txn = txnWrite.invoke(env)\n    try {\n      val putMethod = dbi.getClass.getMethod(\"put\",\n        Class.forName(\"org.lmdbjava.Txn\"),\n        classOf[ByteBuffer], classOf[ByteBuffer])\n      def put(k: String, v: String): Unit = {\n        val kb = utf8(k); val vb = utf8(v)\n        putMethod.invoke(dbi, txn, kb, vb)\n      }\n      put(\"alpha\",   \"bravo\")\n      put(\"charlie\", \"delta\")\n      put(\"echo\",    \"foxtrot\")\n      val commit = txn.getClass.getMethod(\"commit\")\n      commit.invoke(txn)\n    } finally {\n      val close = txn.getClass.getMethod(\"close\")\n      close.invoke(txn)\n    }\n    val envClose = envClass.getMethod(\"close\")\n    envClose.invoke(env)\n  }\n  private def utf8(s: String): ByteBuffer = {\n    val bytes = s.getBytes(StandardCharsets.UTF_8)\n    val buf = ByteBuffer.allocateDirect(bytes.length)\n    buf.put(bytes)\n    buf.flip()\n    buf\n  }\n}\n",
+    SeederHead = "package generated.wam_scala_lmdb_smoke.core\n\nimport java.io.File\nimport java.nio.ByteBuffer\nimport java.nio.charset.StandardCharsets\n\n// Standalone seeder - uses lmdbjava directly (no FactSource\n// indirection) to populate the default (unnamed) LMDB database via\n// auto-txn Dbi.put(key, value). For arity > 2 the value embeds tab\n// separators. Map size matches LmdbFactSource's default.\nobject LmdbSeeder {\n  def main(args: Array[String]): Unit = {\n    val envPath = args(0)\n    val envDir = new File(envPath)\n    envDir.mkdirs()\n    val envClass = Class.forName(\"org.lmdbjava.Env\")\n    val builder = envClass.getMethod(\"create\").invoke(null)\n    builder.getClass.getMethod(\"setMapSize\", java.lang.Long.TYPE)\n           .invoke(builder, java.lang.Long.valueOf(1L << 30))\n    val envFlagsClass = Class.forName(\"org.lmdbjava.EnvFlags\")\n    val emptyEnvFlags = java.lang.reflect.Array.newInstance(envFlagsClass, 0)\n    val openMethod = builder.getClass.getMethod(\"open\", classOf[File], emptyEnvFlags.getClass)\n    val env = openMethod.invoke(builder, envDir, emptyEnvFlags)\n    val dbiFlagsClass = Class.forName(\"org.lmdbjava.DbiFlags\")\n    val emptyDbiFlags = java.lang.reflect.Array.newInstance(dbiFlagsClass, 0)\n    val openDbi = envClass.getMethod(\"openDbi\", classOf[String], emptyDbiFlags.getClass)\n    val dbi = openDbi.invoke(env, null, emptyDbiFlags)\n    val putMethod = dbi.getClass.getMethod(\"put\", classOf[Object], classOf[Object])\n    def put(k: String, v: String): Unit = { putMethod.invoke(dbi, utf8(k), utf8(v)); () }\n",
+    SeederTail = "    val envClose = envClass.getMethod(\"close\")\n    envClose.invoke(env)\n  }\n  private def utf8(s: String): ByteBuffer = {\n    val bytes = s.getBytes(StandardCharsets.UTF_8)\n    val buf = ByteBuffer.allocateDirect(bytes.length)\n    buf.put(bytes)\n    buf.flip()\n    buf\n  }\n}\n",
+    atomic_list_concat([SeederHead, Puts, SeederTail], SeederSrc),
     setup_call_cleanup(
         open(Path, write, Stream),
         write(Stream, SeederSrc),
@@ -182,7 +225,9 @@ seed_lmdb_env(ProjectDir, EnvPath) :-
     getenv('LMDBJAVA_CLASSPATH', LmdbCp),
     format(atom(FullCp), '~w:~w', [ClassDir, LmdbCp]),
     process_create(path(scala),
-                   ['-classpath', FullCp,
+                   ['-J--add-opens=java.base/java.nio=ALL-UNNAMED',
+                    '-J--add-exports=java.base/sun.nio.ch=ALL-UNNAMED',
+                    '-classpath', FullCp,
                     'generated.wam_scala_lmdb_smoke.core.LmdbSeeder',
                     EnvPath],
                    [cwd(AbsProjectDir),
@@ -209,7 +254,11 @@ verify_lmdb(ProjectDir, PredKey, Args, Expected) :-
     maplist([A, S]>>atom_string(A, S), Args, ArgStrs),
     getenv('LMDBJAVA_CLASSPATH', LmdbCp),
     format(atom(FullCp), '~w:~w', [ClassDir, LmdbCp]),
-    append(['-classpath', FullCp,
+    % lmdbjava's ByteBufferProxy reflects on java.nio.Buffer.address, which
+    % JDK 16+ strong-encapsulates; --add-opens grants the access.
+    append(['-J--add-opens=java.base/java.nio=ALL-UNNAMED',
+                    '-J--add-exports=java.base/sun.nio.ch=ALL-UNNAMED',
+            '-classpath', FullCp,
             'generated.wam_scala_lmdb_smoke.core.GeneratedProgram',
             PredStr], ArgStrs, ProcArgs),
     process_create(path(scala), ProcArgs,

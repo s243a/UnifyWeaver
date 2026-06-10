@@ -28,10 +28,26 @@
 %%   tests/test_wam_haskell_target.pl is unaffected in that case.
 %%
 %% Honours WAM_HS_DISPATCH_SMOKE_KEEP=1 to retain the build dir.
+%%
+%% Cross-platform tmp directory
+%% ----------------------------
+%% Build directories live under a writable tmp root resolved with the
+%% following precedence (first existing+writable wins):
+%%   1. UW_SMOKE_TMPDIR        explicit override for this test
+%%   2. TMPDIR / TMP / TEMP    standard env vars (Unix / Windows / Cygwin)
+%%   3. $PREFIX/tmp            Termux convention
+%%   4. /data/data/com.termux/files/usr/tmp   Termux default path
+%%   5. /tmp                   Unix default
+%%   6. ./tmp                  cwd-relative last resort
+%% Cleanup uses library(filesex):delete_directory_and_contents/1 so
+%% the test does not depend on `rm` being on PATH (works on Windows).
 
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
-:- use_module(library(filesex), [directory_file_path/3, make_directory_path/1, copy_file/2]).
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
+:- use_module(library(filesex), [directory_file_path/3,
+                                  make_directory_path/1,
+                                  copy_file/2]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
@@ -78,11 +94,7 @@ fixture_smoke_path(Path) :-
     repo_root(Root),
     directory_file_path(Root, 'tests/fixtures/wam_haskell_dispatch_smoke/Smoke.hs', Path).
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
+%% tmp_root/1 and clean_dir/1 imported from helpers/smoke_paths.
 
 build_dir(Dir) :-
     tmp_root(Root),
@@ -208,14 +220,7 @@ parse_smoke_output(Out, Test) :-
 cleanup_build_dir(Dir) :-
     (   getenv('WAM_HS_DISPATCH_SMOKE_KEEP', V), V \== ''
     ->  format('[INFO] keeping build dir ~w (WAM_HS_DISPATCH_SMOKE_KEEP set)~n', [Dir])
-    ;   catch(delete_directory_and_contents_safe(Dir), _, true)
-    ).
-
-delete_directory_and_contents_safe(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir], [process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
+    ;   clean_dir(Dir)
     ).
 
 %% ========================================================================

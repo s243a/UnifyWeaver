@@ -17,6 +17,7 @@ import WamRuntime
 import Predicates
 import qualified Lowered
 {{lmdb_import}}
+{{csr_import}}
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -141,7 +142,16 @@ main = do
     -- See docs/design/WAM_LMDB_RESIDENT_INTERNING_*.md.
     let lmdbInternDir = factsDir ++ "/lmdb"
     internEnv <- openLmdbInternEnvReadonly lmdbInternDir
+{{^lmdb_skip_intern_table}}
     !lmdbInternTable <- loadInternTableFromLmdb internEnv "s2i" "i2s"
+{{/lmdb_skip_intern_table}}
+{{#lmdb_skip_intern_table}}
+    -- appendix #18 lever: in int_atom_seeds(lmdb) mode the seeds, edges, and
+    -- output are int-keyed (iAtom = id; results printed as raw ids), so the
+    -- s2i/i2s intern table is dead weight — ~3.78M entries / ~3.8 GB RSS at
+    -- enwiki that starves the OS page cache of the LMDB. Skip the load;
+    -- fullInternTable falls back to compileTimeAtomTable below.
+{{/lmdb_skip_intern_table}}
     !lmdbArticleCategories <- loadArticleCategoriesFromLmdb internEnv "article_category"
 {{^demand_bfs_mode_cursor}}
     -- in_memory demand-BFS mode: pre-load the full child->parent
@@ -206,9 +216,19 @@ main = do
     -- Int-atom-seeds(lmdb) mode: the intern table comes from LMDB
     -- (s2i / i2s sub-dbs) — already loaded into lmdbInternTable above.
     -- iAtom is identity since seed/edge IDs are pre-interned int32.
+{{^lmdb_skip_intern_table}}
     let !fullInternTable = lmdbInternTable
         iAtom :: Int -> Int
         iAtom = id
+{{/lmdb_skip_intern_table}}
+{{#lmdb_skip_intern_table}}
+    -- intern-table skipped (see above): the only consumer is extractDouble,
+    -- which needs the WAM program's own atoms — those live in
+    -- compileTimeAtomTable. Category-node ids never flow through it as atoms.
+    let !fullInternTable = compileTimeAtomTable
+        iAtom :: Int -> Int
+        iAtom = id
+{{/lmdb_skip_intern_table}}
 {{/int_atom_seeds_lmdb}}
 {{/int_atom_seeds}}
 
@@ -278,6 +298,9 @@ main = do
     -- Phase B1: LMDB fact source setup (conditional, empty when not enabled)
 {{lmdb_setup}}
 
+    -- Phase B2: CSR reverse-index setup (conditional, empty when not enabled)
+{{csr_setup}}
+
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- wcInternTable is the system-wide atom intern table (compile-time +
@@ -289,6 +312,7 @@ main = do
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
 {{inline_facts}}
 {{lmdb_context}}
+{{csr_context}}
             }
 
     t2 <- getCurrentTime
@@ -400,6 +424,25 @@ collectSolutions !ctx s0 hopsVarId =
           Just _ -> hops : rest
           Nothing -> rest
 
+-- | Phase 3: ST-mode collectSolutions using runMutableRegs.
+-- Same semantics as collectSolutions but uses mutable STArray registers
+-- for O(1) register access (7.66x faster on register-heavy workloads).
+collectSolutionsST :: WamContext -> WamState -> Int -> [Double]
+collectSolutionsST !ctx s0 hopsVarId =
+    case runMutableRegs ctx s0 of
+      Nothing -> []
+      Just s1 ->
+        let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
+              Just v -> extractDouble (wcInternTable ctx) (derefVar (wsBindings s1) v)
+              Nothing -> Nothing
+            hops = fromMaybe 0 hopsVal
+            rest = case backtrack s1 of
+              Just s2 -> collectSolutionsST ctx s2 hopsVarId
+              Nothing -> []
+        in case hopsVal of
+          Just _ -> hops : rest
+          Nothing -> rest
+
 -- | Collect all Hops solutions via executeForeign dispatch.
 -- Used when the query predicate has an FFI kernel — bypasses WAM
 -- code and calls the native kernel directly. The first result comes
@@ -481,6 +524,7 @@ runDemandBFS spec parents rootId = case spec of
       , dfrFluxScores  = Nothing
       }
 
+{{#demand_bfs_mode_cursor}}
 -- | Phase 2b.3 cursor-mode counterpart of runDemandBFS. Same dispatch
 -- shape but the demand set is computed via LMDB cursor on the
 -- category_child sub-db instead of an in-memory IntMap. No 5M-edge
@@ -505,6 +549,7 @@ runDemandBFSCursor spec env childDbName rootId = case spec of
       , dfrSortedSeeds = Nothing
       , dfrFluxScores  = Nothing
       }
+{{/demand_bfs_mode_cursor}}
 
 -- | Compute the backward-reachable demand set from a root node, with an
 -- optional hop limit. Nothing = unbounded (legacy behaviour). The bound

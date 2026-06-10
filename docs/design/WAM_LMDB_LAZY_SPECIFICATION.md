@@ -3,34 +3,50 @@
 **Status**: Design specification. Companion to
 [`WAM_LMDB_LAZY_PHILOSOPHY.md`](WAM_LMDB_LAZY_PHILOSOPHY.md) (the
 "why") and [`WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md`](WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md)
-(the "when").
+(the "when"). Reverse-child artifact policy is covered separately in
+[`WAM_REVERSE_INDEX_ARTIFACTS.md`](WAM_REVERSE_INDEX_ARTIFACTS.md).
 
-**Snapshot date**: 2026-05-20.
+**Snapshot date**: 2026-05-21.
 
 This document specifies the cross-target interface for the three
-LMDB-access tiers L0 / L1 / L2 (see philosophy doc §2 for the
-vocabulary), plus the scan-vs-seek axis and the workload-segregation
-contract. The intent is that each target's implementation can be
-audited against the same surface area.
+LMDB-access modes `eager` / `lazy` / `cached` (see philosophy doc §2
+for the vocabulary), plus the scan-vs-seek axis and the
+workload-segregation contract. The intent is that each target's
+implementation can be audited against the same surface area.
 
-## 1. Tier model
+## Vocabulary
 
-Three modes per target:
+This triad uses three distinct sets of identifiers — keep them separate:
 
-| Tier | Materialisation | Cache layer | Per-call cost |
+- **Modes** (runtime materialisation behaviour): `eager`, `lazy`, `cached`.
+- **Phases** (project sequencing labels): R7, R8, R9, R10, H1, X.
+- **Cache tiers** (Haskell-internal, *within* `cached` mode):
+  per-HEC L1 cache + sharded L2 cache.
+
+See the Vocabulary block in
+[`WAM_LMDB_LAZY_PHILOSOPHY.md`](WAM_LMDB_LAZY_PHILOSOPHY.md) for the
+full discussion. Earlier drafts used `L0`/`L1`/`L2` as mode names;
+those are stale.
+
+## 1. Mode model
+
+Three runtime modes per target:
+
+| Mode | Materialisation | Cache layer | Per-call cost |
 | --- | --- | --- | ---: |
-| L0 (eager) | Yes — full demand-set Vec/HashMap built at startup | n/a (the materialisation *is* the cache) | O(1) HashMap lookup |
-| L1 (lazy) | No | None | O(log B) LMDB cursor seek |
-| L2 (lazy + cache) | No | Yes — bounded-size LRU or sharded HashMap | O(1) on hit, O(log B) on miss |
+| `eager` | Yes — full demand-set Vec/HashMap built at startup | n/a (the materialisation *is* the cache) | O(1) HashMap lookup |
+| `lazy` | No | None | O(log B) LMDB cursor seek |
+| `cached` | No | Yes — bounded-size LRU or sharded HashMap | O(1) on hit, O(log B) on miss |
 
-A target MUST implement L0 (which most already do). A target SHOULD
-implement L2 for any LMDB-backed fact source whose `fact_count`
-exceeds the existing `use_lmdb(auto)` threshold. A target MAY
-implement L1 for workloads with explicit segregation declarations.
+A target MUST implement `eager` (which most already do). A target
+SHOULD implement `cached` for any LMDB-backed fact source whose
+`fact_count` exceeds the existing `use_lmdb(auto)` threshold. A
+target MAY implement `lazy` for workloads with explicit segregation
+declarations.
 
 ## 2. The canonical lookup interface
 
-All three tiers expose the **same shape** to callers. The contract:
+All three modes expose the **same shape** to callers. The contract:
 
 ```
 lookup_parents(key) -> Iterator<Edge>
@@ -59,7 +75,7 @@ without forcing materialisation.
 
 ## 3. Source trait / interface
 
-Each target defines a source trait that all three tiers implement:
+Each target defines a source trait that all three modes implement:
 
 ### Rust
 
@@ -73,9 +89,12 @@ pub trait LookupSource {
 Implementations:
 
 ```rust
-pub struct EagerVecLookup { ... }
-pub struct LmdbCursorLookup<'env> { ... }  // L1
-pub struct CachedLookup<S: LookupSource> { inner: S, cache: ... }  // L2 decorator
+pub struct EagerVecLookup { ... }                      // `eager`
+pub struct LmdbCursorLookup<'env> { ... }              // `lazy`
+pub struct CachedLookup<S: LookupSource> {             // `cached` (Decorator)
+    inner: S,
+    cache: ...,
+}
 ```
 
 ### Haskell
@@ -91,12 +110,12 @@ Haskell already has this conceptually inside `EdgeLookup` in
 ### Other targets
 
 Same pattern: a trait/interface whose method returns the target's
-native lazy iterator type. Each tier implements the trait.
+native lazy iterator type. Each mode implements the trait.
 
-## 4. Cache-tier spec (L2)
+## 4. Cache-layer spec (`cached` mode)
 
-The L2 cache wraps any L1 implementation via the Decorator pattern.
-Spec:
+The `cached` mode wraps any `lazy` implementation via the Decorator
+pattern. Spec:
 
 - **Bounded size**: configurable via existing `cache_capacity(...)`
   option (already in `cache_strategy(auto)`).
@@ -105,17 +124,22 @@ Spec:
   shards = number of capabilities / threads.
 - **Eviction policy**: LRU on a per-shard basis. The cache contract
   is "correctness preserved on eviction" — any miss falls through to
-  the inner L1 source.
-- **Composition with L1**: L2 is a Decorator over L1, not a replacement.
-  Same `LookupSource` trait. This means L1 and L2 are interchangeable
-  in calling code — the kernel doesn't know which it has.
-- **Concurrent access**: per-shard locking (Haskell uses `IORef`-protected
-  Maps; Rust uses `dashmap` or sharded `RwLock<HashMap>`).
+  the inner `lazy` source.
+- **Composition with `lazy`**: `cached` is a Decorator over `lazy`,
+  not a replacement. Same `LookupSource` trait. This means `lazy`
+  and `cached` are interchangeable in calling code — the kernel
+  doesn't know which it has.
+- **Concurrent access**: per-shard locking (Haskell uses `IORef`-
+  protected Maps; Rust uses `dashmap` or sharded `RwLock<HashMap>`).
+- **Internal cache tiers** (Haskell): inside `cached` mode the
+  Haskell runtime composes a per-HEC L1 cache with a sharded L2
+  cache via `lmdb_cache_mode(per_hec|sharded|two_level)`. These
+  tiers are *internal* to `cached` and not exposed as separate modes.
 
 ## 5. Scan vs seek
 
-A second axis, orthogonal to the L0/L1/L2 tier. Some sources can
-expose a *range* read in addition to point lookups.
+A second axis, orthogonal to the mode (§1). Some sources can expose
+a *range* read in addition to point lookups.
 
 ### 5.1 Scan trait
 
@@ -129,7 +153,7 @@ pub trait ScanSource: LookupSource {
 
 The iterator yields `(child, parent)` pairs from the half-open
 range `[start, end)` of child IDs. Only `LmdbCursorLookup`
-implements `ScanSource`; the eager Vec implementation can fall
+implements `ScanSource`; the `eager` Vec implementation can fall
 through to a filter on its existing data.
 
 ### 5.2 When the kernel uses scans
@@ -160,7 +184,7 @@ seeks-only.
 
 ## 6. Workload-segregation contract
 
-The signal that allows L1 to be picked over L2.
+The signal that allows `lazy` to be picked over `cached`.
 
 ### 6.1 Caller-side declaration
 
@@ -177,7 +201,8 @@ declaration:
 ```
 
 When `workload_segregated(true)`, the cost-model resolver MAY pick
-L1 over L2. When unset (default), the resolver picks L2.
+`lazy` over `cached`. When unset (default), the resolver picks
+`cached`.
 
 The `segregation_cluster_id` is purely informational at this stage
 — it provides a name for telemetry / cache-eviction-boundary
@@ -194,10 +219,10 @@ A workload is *segregated* iff:
   workload is one query against a cold cache).
 
 If the caller declares `workload_segregated(true)` and the
-guarantee is violated, the result is **slower** L1 execution due
-to repeated LMDB cursor walks — but **not incorrect**. L1 produces
-the same answers as L2 on identical input; the segregation flag is
-strictly a performance hint.
+guarantee is violated, the result is **slower** `lazy` execution due
+to repeated LMDB cursor walks — but **not incorrect**. `lazy`
+produces the same answers as `cached` on identical input; the
+segregation flag is strictly a performance hint.
 
 ### 6.3 Compiler-inferred segregation (deferred)
 
@@ -213,7 +238,12 @@ revision.
 
 ## 7. Cost-model integration
 
-The existing resolver predicates extend to cover the new axes:
+The existing resolver predicates extend to cover the new axes. The
+auto-resolver pattern follows the existing convention in
+[`CACHE_COST_MODEL_PHILOSOPHY.md`](CACHE_COST_MODEL_PHILOSOPHY.md)
+and [`COST_FUNCTION_PHILOSOPHY.md`](COST_FUNCTION_PHILOSOPHY.md) —
+the user picks an explicit mode or sets `auto` and the resolver
+chooses from workload metadata.
 
 ### 7.1 New input fields
 
@@ -228,13 +258,25 @@ Added to the workload-metadata vocabulary used by `resolve_*` predicates:
 | `cache_miss_rate_estimate` | float | 0.5 | empirical / heuristic |
 | `expected_query_count_per_process` | int | 1 | caller-declared |
 
-### 7.2 Resolver: `resolve_lmdb_lookup_tier/2`
+### 7.2 Codegen option + resolver
 
-New predicate, sits next to the existing `resolve_auto_lmdb_cache_mode/2`:
+The user-facing codegen option:
 
 ```prolog
-resolve_lmdb_lookup_tier(Options, Tier) :-
-    % Tier = l0 | l1 | l2
+lmdb_materialisation(auto | eager | lazy | cached)
+```
+
+When set explicitly to `eager`/`lazy`/`cached`, the codegen emits
+that mode unconditionally. When set to `auto` (default), the
+resolver picks. This matches the existing pattern for
+`cache_strategy(auto)`, `lmdb_cache_mode(auto)`, and `use_lmdb(auto)`.
+
+The resolver predicate, sitting next to the existing
+`resolve_auto_lmdb_cache_mode/2`:
+
+```prolog
+resolve_auto_lmdb_materialisation(Options, Mode) :-
+    % Mode = eager | lazy | cached
     option(fact_count(F), Options),
     option(demand_set_estimate(D), Options),
     option(memory_budget(B), Options),
@@ -242,56 +284,57 @@ resolve_lmdb_lookup_tier(Options, Tier) :-
     option(expected_query_count_per_process(NQ), Options, 1),
     edge_size_bytes(F, EdgeBytes),
     (   D * EdgeBytes > B
-    ->  % Demand set doesn't fit; must use lazy
-        ( WS == true -> Tier = l1 ; Tier = l2 )
+    ->  % Demand set doesn't fit; must use a lazy form
+        ( WS == true -> Mode = lazy ; Mode = cached )
     ;   % Demand set fits; eager wins if NQ * ε amortises M
         crossover_eager_lazy(F, D, NQ, ChooseEager),
         (   ChooseEager == true
-        ->  Tier = l0
-        ;   ( WS == true -> Tier = l1 ; Tier = l2 )
+        ->  Mode = eager
+        ;   ( WS == true -> Mode = lazy ; Mode = cached )
         )
     ).
 ```
 
-### 7.3 Resolver: `resolve_lmdb_access_mode/2`
+### 7.3 Resolver: `resolve_auto_lmdb_access_mode/2`
 
 For the scan-vs-seek axis:
 
 ```prolog
-resolve_lmdb_access_mode(Options, Mode) :-
-    % Mode = seek | scan
+resolve_auto_lmdb_access_mode(Options, Access) :-
+    % Access = seek | scan
     option(physical_layout_quality(Q), Options, insertion_order),
     option(expected_keys_per_call(K), Options, 1),
     option(scan_threshold_keys(T), Options, 16),
     (   Q \= insertion_order, K >= T
-    ->  Mode = scan
-    ;   Mode = seek
+    ->  Access = scan
+    ;   Access = seek
     ).
 ```
 
-The two resolvers compose: `(l0|l1|l2) × (seek|scan)` = 6 combinations,
-but only 4 are meaningful (L0 doesn't use either; L1+scan, L2+seek,
-L2+scan, and L1+seek are the four lazy options).
+The two resolvers compose: `(eager|lazy|cached) × (seek|scan)` = 6
+combinations, but only 4 are meaningful (`eager` doesn't use either;
+`lazy`+scan, `cached`+seek, `cached`+scan, and `lazy`+seek are the
+four lazy options).
 
 ## 8. Generated-code shape
 
-### 8.1 Rust (per-tier)
+### 8.1 Rust (per mode)
 
-For L0 — current behaviour:
+For `eager` — current behaviour:
 
 ```rust
 let runtime_category_parents: Vec<(String, String)> = (...materialisation...);
 vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&runtime_category_parents));
 ```
 
-For L1:
+For `lazy`:
 
 ```rust
 let lookup = LmdbCursorLookup::new(&lmdb, &reachable_ids, &i2s);
 vm.register_foreign_lookup("category_parent/2", Box::new(lookup));
 ```
 
-For L2:
+For `cached`:
 
 ```rust
 let inner = LmdbCursorLookup::new(&lmdb, &reachable_ids, &i2s);
@@ -301,24 +344,25 @@ vm.register_foreign_lookup("category_parent/2", Box::new(lookup));
 
 `register_foreign_lookup` is the new runtime API the WAM-Rust runtime
 needs. Today the kernel calls into `ffi_facts: HashMap<String,
-HashMap<u32, Vec<u32>>>` for foreign-predicate edge lookups; the L1/L2
-path replaces that with a trait object call.
+HashMap<u32, Vec<u32>>>` for foreign-predicate edge lookups; the
+`lazy`/`cached` path replaces that with a trait object call.
 
-### 8.2 Haskell (per-tier)
+### 8.2 Haskell (per mode)
 
-L0 — `resident` (IntMap) mode. Already implemented.
+`eager` — `resident` (IntMap) mode. Already implemented.
 
-L1 — a hypothetical `lazyCursor` mode (not yet implemented). Would
-remove the per-HEC L1 and sharded L2 caches from the
-`lmdbFactSource.hs.mustache` template.
+`lazy` — a hypothetical `lazyCursor` mode (not yet implemented).
+Would remove the per-HEC L1 and sharded L2 caches from the
+`lmdb_fact_source.hs.mustache` template.
 
-L2 — `resident_cursor` mode with `lmdb_cache_mode(per_hec |
+`cached` — `resident_cursor` mode with `lmdb_cache_mode(per_hec |
 sharded | two_level)`. Already implemented.
 
-So in Haskell, L2 is the existing implementation; L1 would be an L2
-instance with cache size = 0, which is a configuration value
-already exposed. **No new Haskell code is required to support L1**;
-the spec just blesses it as a valid configuration.
+So in Haskell, `cached` is the existing implementation; `lazy`
+would be a `cached` instance with cache size = 0, which is a
+configuration value already exposed. **No new Haskell code is
+required to support `lazy`**; the spec just blesses it as a valid
+configuration.
 
 ### 8.3 Scan-mode hooks
 
@@ -329,56 +373,68 @@ range API.
 
 ## 9. Testing contract
 
-For each target and each tier:
+For each target and each mode:
 
 1. **Correctness**: a small fixture (`1k_cats`, 5933 edges) yields
    identical `tuple_count` and per-tuple `effective_distance` under
-   L0, L1, and L2 modes.
-2. **Cache behaviour**: at L2, count cache hits / misses via
+   `eager`, `lazy`, and `cached` modes.
+2. **Cache behaviour**: at `cached`, count cache hits / misses via
    instrumentation; assert hits > 0 on the test workload.
-3. **Segregation contract**: at L1 with `workload_segregated(true)`,
-   confirm no cross-seed key revisits via instrumentation.
+3. **Segregation contract**: at `lazy` with
+   `workload_segregated(true)`, confirm no cross-seed key revisits
+   via instrumentation.
 4. **Scan vs seek**: a smoke test on a topologically-sorted fixture
    confirms scan yields the same results as repeated seeks.
 
 ## 10. Versioning and migration
 
-Adding L1 / L2 / scan-mode is *additive*:
+Adding `lazy` / `cached` / scan-mode is *additive*:
 
-- Existing benchmarks default to L0 (unchanged behaviour).
-- The cost-model resolver opts into L2 only when `lmdb_lazy_tier(auto)`
-  is set; existing call sites without that option remain at L0.
-- The LMDB on-disk format is unchanged. The new `layout_strategy` and
-  `scan_threshold` fields in the meta sub-db are optional reads with
-  documented defaults.
+- Existing benchmarks default to `eager` (unchanged behaviour).
+- The cost-model resolver opts into `cached` only when
+  `lmdb_materialisation(auto)` is set; existing call sites without
+  that option remain at `eager`.
+- The LMDB on-disk format is unchanged. The new `layout_strategy`
+  and `scan_threshold` fields in the meta sub-db are optional reads
+  with documented defaults.
 
-This means each target can adopt the L1/L2 work incrementally without
-breaking existing benchmarks.
+This means each target can adopt the `lazy`/`cached` work incrementally
+without breaking existing benchmarks.
 
 ## 11. Out of scope (for this spec revision)
 
-- **Multi-process shared cache**: would let L2 share state across
-  process invocations. Out of scope; could be added with the LMDB
-  itself as a shared cache by definition (an L2-as-LMDB-table
-  pattern).
-- **Adaptive tier switching**: the cost model picks once per
-  process. Switching tiers mid-run is more invasive and not
+- **Multi-process shared cache**: would let `cached` share state
+  across process invocations. Out of scope; could be added with the
+  LMDB itself as a shared cache by definition (a `cached`-as-LMDB-
+  table pattern).
+- **Adaptive mode switching**: the cost model picks once per
+  process. Switching modes mid-run is more invasive and not
   motivated by any current measurement.
 - **Compiler-inferred segregation**: see §6.3. Deferred.
-- **MST-sort ingest pre-processor**: see philosophy doc §4.2.
-  Deferred to its own design doc when motivated by a workload.
+- **Reverse-child artifact selection**: see
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`. This spec defines the hot
+  parent-edge lookup tier; reverse `category_child/2` artifacts are an
+  orthogonal planning/warmup/runtime availability axis.
+- **MST-sort ingest pre-processor**: see philosophy doc §4.2 and
+  `WAM_REVERSE_INDEX_ARTIFACTS.md`. Deferred until motivated by a
+  workload.
 
 ## 12. References
 
 - `WAM_LMDB_LAZY_PHILOSOPHY.md` — the "why" doc.
 - `WAM_LMDB_LAZY_IMPLEMENTATION_PLAN.md` — the "when" doc with
   phased rollout.
+- `WAM_REVERSE_INDEX_ARTIFACTS.md` — reverse-child artifacts, CSR
+  layout, and phase policy.
 - `WAM_LMDB_RESIDENT_INTERNING_SPECIFICATION.md` — LMDB layout this
   spec reads from.
 - `QUERY_PLAN_RUNTIME_PHILOSOPHY.md` — the broader runtime-planner
   pattern.
-- `CACHE_COST_MODEL_PHILOSOPHY.md` — cost-model framework.
+- `CACHE_COST_MODEL_PHILOSOPHY.md` — cost-model framework + the
+  existing auto-resolver pattern.
+- `COST_FUNCTION_PHILOSOPHY.md` — Green's-function / flux cost
+  functions that compose with the resolver.
 - `templates/targets/rust_wam/lmdb_fact_source_lmdb_zero.rs.mustache`
   — current Rust `LookupSource`-equivalent (eager only).
 - `templates/targets/haskell_wam/lmdb_fact_source.hs.mustache` —
-  current Haskell L2 implementation.
+  current Haskell `cached`-mode implementation.

@@ -14,6 +14,7 @@
     generate_transitive_closure/4,
     load_template/2,
     load_template/3,
+    load_template_from_file/2,
     cache_template/2,
     clear_template_cache/0,
     clear_template_cache/1,
@@ -28,6 +29,7 @@
 :- discontiguous template/2.
 
 :- use_module(library(lists)).
+:- use_module(constraint_analyzer, [get_dedup_strategy/2]).
 
 %% ============================================
 %% DYNAMIC PREDICATES (Configuration & Cache)
@@ -250,12 +252,13 @@ render_named_template(TemplateName, Dict, Options, Result) :-
 %% ORIGINAL TEMPLATE RENDERING (unchanged)
 %% ============================================
 
-%% Named placeholder substitution + section blocks.
+%% Named placeholder substitution + section/match blocks.
 %
-% Supports a small mustache subset:
-%   {{name}}              — substitution (existing behavior)
-%   {{#flag}}...{{/flag}}  — truthy section: rendered iff Dict says flag is truthy
-%   {{^flag}}...{{/flag}}  — inverted section: rendered iff Dict says flag is falsy
+% Supports a mustache subset plus match/case extension:
+%   {{name}}                                       -- substitution
+%   {{#flag}}...{{/flag}}                           -- truthy section
+%   {{^flag}}...{{/flag}}                           -- inverted section
+%   {{match key}}{{case v1}}...{{case v2}}...{{default}}...{{/match}}  -- match/case dispatch
 %
 % Section bodies may themselves contain {{name}} substitutions and other
 % sections (with different tag names; see limitation below).
@@ -269,7 +272,8 @@ render_named_template(TemplateName, Dict, Options, Result) :-
 % sections nest fine.
 render_template(Template, Dict, Result) :-
     atom_string(Template, TStr),
-    expand_sections(TStr, Dict, Expanded),
+    expand_match_blocks(TStr, Dict, MatchExpanded),
+    expand_sections(MatchExpanded, Dict, Expanded),
     render_template_string(Expanded, Dict, Result).
 
 % Fixed version using atom_string and sub_atom for reliable replacement
@@ -397,6 +401,237 @@ falsy_value("").
 falsy_value('').
 falsy_value([]).
 
+%% ============================================
+%% MATCH/CASE BLOCK EXPANSION
+%% ============================================
+%
+% {{match key}}{{case val1}}body1{{case val2}}body2{{default}}fallback{{/match}}
+%
+% Dispatches on the value of `key` in the Dict. The first {{case}}
+% whose value matches is rendered; if none match, {{default}} is
+% rendered (or nothing if no default). Only exact string match is
+% supported currently.
+%
+% Future: the case_matches/2 predicate can be extended to support
+% glob patterns (e.g., lmdb_*), regex (PCRE2 via re_match/2), or
+% structured patterns. Python and VB use regex in match statements;
+% bash's case uses glob. The predicate is factored out to make this
+% extension straightforward.
+
+%% expand_match_blocks(+Template, +Dict, -Result)
+%  Find and expand all {{match key}}...{{/match}} blocks in Template.
+%  Runs before section expansion so match blocks can contain sections.
+expand_match_blocks(Template, Dict, Result) :-
+    (   find_match_block(Template, Key, Before, MatchBody, After)
+    ->  parse_match_cases(MatchBody, Cases, Default),
+        resolve_match(Key, Dict, Cases, Default, Rendered),
+        expand_match_blocks(Rendered, Dict, RenderedExpanded),
+        expand_match_blocks(After, Dict, AfterExpanded),
+        string_concat(Before, RenderedExpanded, P1),
+        string_concat(P1, AfterExpanded, Result)
+    ;   Result = Template
+    ).
+
+%% find_match_block(+Str, -Key, -Before, -Body, -After)
+%  Locate the first {{match key}} in Str and its balanced {{/match}}.
+%  Handles nested match blocks via depth counting.
+find_match_block(Str, Key, Before, Body, After) :-
+    sub_string(Str, OpenIdx, 8, _, "{{match "),
+    AfterOpen is OpenIdx + 8,
+    sub_string(Str, AfterOpen, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, KeyStr),
+    KeyStr \= "",
+    atom_string(Key, KeyStr),
+    BodyStart is AfterOpen + EndRel + 2,
+    sub_string(Str, BodyStart, _, 0, BodyAndAfter),
+    find_balanced_match_close(BodyAndAfter, 1, 0, CloseRel),
+    sub_string(BodyAndAfter, 0, CloseRel, _, Body),
+    CloseEnd is CloseRel + 10,
+    sub_string(BodyAndAfter, CloseEnd, _, 0, After),
+    sub_string(Str, 0, OpenIdx, _, Before).
+
+%% find_balanced_match_close(+Str, +Depth, +Pos, -ClosePos)
+%  Scan Str from Pos looking for the balanced {{/match}} at Depth=0.
+%  Depth starts at 1 (for the already-opened outer match block).
+find_balanced_match_close(Str, Depth, Pos, ClosePos) :-
+    sub_string(Str, Pos, _, 0, Rest),
+    (   Depth =:= 0
+    ->  ClosePos = Pos
+    ;   Rest \= "",
+        next_match_event(Rest, EventType, EventOffset, EventLen),
+        AbsOffset is Pos + EventOffset,
+        NextPos is AbsOffset + EventLen,
+        (   EventType = open
+        ->  Depth1 is Depth + 1,
+            find_balanced_match_close(Str, Depth1, NextPos, ClosePos)
+        ;   EventType = close,
+            Depth1 is Depth - 1,
+            (   Depth1 =:= 0
+            ->  ClosePos = AbsOffset
+            ;   find_balanced_match_close(Str, Depth1, NextPos, ClosePos)
+            )
+        )
+    ).
+
+%% next_match_event(+Str, -Type, -Offset, -Len)
+%  Find the nearest {{match ...}} (open) or {{/match}} (close) in Str.
+next_match_event(Str, Type, Offset, Len) :-
+    (   sub_string(Str, OpenIdx, 8, _, "{{match ") -> true ; OpenIdx = 999999999 ),
+    (   sub_string(Str, CloseIdx, 10, _, "{{/match}}") -> true ; CloseIdx = 999999999 ),
+    OpenIdx + CloseIdx < 1999999998,  % at least one must exist
+    (   OpenIdx < CloseIdx
+    ->  Type = open, Offset = OpenIdx, Len = 8
+    ;   Type = close, Offset = CloseIdx, Len = 10
+    ).
+
+%% parse_match_cases(+Body, -Cases, -Default)
+%  Parse the body of a match block into a list of case(Value, CaseBody)
+%  and an optional Default body. Cases appear as {{case value}}...
+%  and {{default}}... The last segment before {{case}}/{{default}}/end
+%  is the case body.
+parse_match_cases(Body, Cases, Default) :-
+    split_match_segments(Body, Segments),
+    extract_cases(Segments, Cases, Default).
+
+%% split_match_segments(+Body, -Segments)
+%  Split match body into segments at {{case ...}} and {{default}} markers.
+%  Returns a list of segment(Type, Value, Content) terms where Type is
+%  'case_seg' or 'default_seg', Value is the case value (or '' for default),
+%  and Content is the text content.
+split_match_segments(Body, Segments) :-
+    split_match_segments_(Body, [], Segments).
+
+split_match_segments_("", Acc, Segments) :-
+    reverse(Acc, Segments).
+split_match_segments_(Body, Acc, Segments) :-
+    Body \= "",
+    (   find_next_case_marker(Body, Type, Value, Before, After)
+    ->  (   Before \= "", Acc = []
+        ->  % Leading text before first case — discard (whitespace/comments)
+            split_match_segments_(After, [segment(Type, Value, "")|Acc], Segments)
+        ;   Before \= "", Acc = [segment(PrevType, PrevVal, _)|RestAcc]
+        ->  % Attach Before as content of previous segment
+            split_match_segments_(After, [segment(Type, Value, "")|[segment(PrevType, PrevVal, Before)|RestAcc]], Segments)
+        ;   split_match_segments_(After, [segment(Type, Value, "")|Acc], Segments)
+        )
+    ;   % No more markers — remaining text is content of last segment
+        (   Acc = [segment(PrevType, PrevVal, _)|RestAcc]
+        ->  reverse([segment(PrevType, PrevVal, Body)|RestAcc], Segments)
+        ;   Segments = []  % no cases at all
+        )
+    ).
+
+%% find_next_case_marker(+Str, -Type, -Value, -Before, -After)
+%  Find the next top-level {{case value}} or {{default}} in Str,
+%  skipping any that are inside nested {{match}}...{{/match}} blocks.
+find_next_case_marker(Str, Type, Value, Before, After) :-
+    find_next_case_marker_(Str, 0, 0, Type, Value, MarkerIdx, AfterIdx),
+    sub_string(Str, 0, MarkerIdx, _, Before),
+    sub_string(Str, AfterIdx, _, 0, After).
+
+%% find_next_case_marker_(+Str, +Pos, +Depth, -Type, -Value, -MarkerIdx, -AfterIdx)
+%  Scan from Pos at match nesting Depth for the next depth-0 case/default.
+find_next_case_marker_(Str, Pos, Depth, Type, Value, MarkerIdx, AfterIdx) :-
+    sub_string(Str, Pos, _, 0, Rest),
+    Rest \= "",
+    find_earliest_tag(Rest, TagType, TagOffset, TagVal, TagAfterRel),
+    AbsIdx is Pos + TagOffset,
+    AbsAfter is Pos + TagAfterRel,
+    (   TagType = match_open
+    ->  Depth1 is Depth + 1,
+        find_next_case_marker_(Str, AbsAfter, Depth1, Type, Value, MarkerIdx, AfterIdx)
+    ;   TagType = match_close
+    ->  Depth1 is Depth - 1,
+        (   Depth1 >= 0
+        ->  find_next_case_marker_(Str, AbsAfter, Depth1, Type, Value, MarkerIdx, AfterIdx)
+        ;   fail
+        )
+    ;   (TagType = case_tag ; TagType = default_tag),
+        (   Depth =:= 0
+        ->  (TagType = case_tag -> Type = case_seg ; Type = default_seg),
+            Value = TagVal, MarkerIdx = AbsIdx, AfterIdx = AbsAfter
+        ;   find_next_case_marker_(Str, AbsAfter, Depth, Type, Value, MarkerIdx, AfterIdx)
+        )
+    ).
+
+%% find_earliest_tag(+Str, -TagType, -Offset, -Value, -AfterOffset)
+%  Find the earliest of {{match }}, {{/match}}, {{case }}, {{default}} in Str.
+find_earliest_tag(Str, TagType, Offset, Value, AfterOffset) :-
+    findall(Idx-Type-Val-After,
+            ( tag_candidate(Str, Idx, Type, Val, After) ),
+            Candidates),
+    Candidates \= [],
+    sort(Candidates, [Offset-TagType-Value-AfterOffset|_]).
+
+tag_candidate(Str, Idx, match_open, '', After) :-
+    sub_string(Str, Idx, 8, _, "{{match "),
+    Start is Idx + 8,
+    sub_string(Str, Start, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    After is Start + EndRel + 2.
+tag_candidate(Str, Idx, match_close, '', After) :-
+    sub_string(Str, Idx, 10, _, "{{/match}}"),
+    After is Idx + 10.
+tag_candidate(Str, Idx, case_tag, Val, After) :-
+    sub_string(Str, Idx, 7, _, "{{case "),
+    Start is Idx + 7,
+    sub_string(Str, Start, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, ValStr),
+    atom_string(Val, ValStr),
+    After is Start + EndRel + 2.
+tag_candidate(Str, Idx, default_tag, '', After) :-
+    sub_string(Str, Idx, 11, _, "{{default}}"),
+    After is Idx + 11.
+
+find_case_at(Str, Idx, Value, AfterIdx) :-
+    sub_string(Str, Idx, 7, _, "{{case "),
+    Start is Idx + 7,
+    sub_string(Str, Start, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, ValStr),
+    atom_string(Value, ValStr),
+    AfterIdx is Start + EndRel + 2.
+
+find_default_at(Str, Idx, AfterIdx) :-
+    sub_string(Str, Idx, 11, _, "{{default}}"),
+    AfterIdx is Idx + 11.
+
+%% extract_cases(+Segments, -Cases, -Default)
+extract_cases([], [], "").
+extract_cases(Segments, Cases, Default) :-
+    Segments \= [],
+    include(is_case_seg, Segments, CaseSegs),
+    maplist(seg_to_case, CaseSegs, Cases),
+    (   member(segment(default_seg, _, DefBody), Segments)
+    ->  Default = DefBody
+    ;   Default = ""
+    ).
+
+is_case_seg(segment(case_seg, _, _)).
+seg_to_case(segment(case_seg, Val, Body), case(Val, Body)).
+
+%% resolve_match(+Key, +Dict, +Cases, +Default, -Rendered)
+%  Find the first matching case and return its body, or Default.
+resolve_match(Key, Dict, Cases, Default, Rendered) :-
+    (   member(Key=DictValue, Dict),
+        atom_string(DictValue, DictValueStr),
+        member(case(CaseValue, CaseBody), Cases),
+        atom_string(CaseValue, CaseValueStr),
+        case_matches(DictValueStr, CaseValueStr)
+    ->  Rendered = CaseBody
+    ;   Rendered = Default
+    ).
+
+%% case_matches(+ActualValue, +PatternValue)
+%  Currently: exact string match.
+%  Future extensions (see philosophy note above):
+%    - Glob: case_matches_glob/2 using wildcard expansion
+%    - Regex: case_matches_regex/2 using re_match/2 (PCRE2)
+%    - Structured: case_matches_term/2 for Prolog term patterns
+case_matches(Value, Pattern) :- Value = Pattern.
+
 %% Compose multiple templates into one
 compose_templates([], _, "") :- !.
 compose_templates([Name|Rest], Dict, Result) :-
@@ -451,8 +686,13 @@ version = "0.1.0"
 edition = "2021"
 description = "Generated by UnifyWeaver WAM-to-Rust transpilation"
 
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
 [dependencies]
-{{#use_lmdb_zero}}lmdb-zero = "0.4"
+{{#use_rayon}}rayon = "1"
+{{/use_rayon}}{{#use_lmdb_zero}}lmdb-zero = "0.4"
 {{/use_lmdb_zero}}{{#use_heed}}heed = "0.20"
 {{/use_heed}}').
 
@@ -955,6 +1195,111 @@ test_template_system :-
     render_template('plain {{x}} plain {{y}} plain', [x='X', y='Y'], R16),
     (sub_string(R16, _, _, _, 'plain X plain Y plain')
      -> writeln('PASS') ; (format('FAIL: got ~w~n', [R16]), fail)),
+
+    % === Match/Case Edge Case Tests (sections 3.1-3.8) ===
+
+    % Test 17: Section inside case body (3.1)
+    write('Test 17 - Section inside case body: '),
+    render_template("{{match mode}}{{case cached}}{{#has_l2}}L2 on{{/has_l2}}{{^has_l2}}L2 off{{/has_l2}}{{case eager}}no cache{{/match}}",
+                    [mode=cached, has_l2=true], R17),
+    (   sub_string(R17, _, _, _, "L2 on"), \+ sub_string(R17, _, _, _, "L2 off")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R17]), fail)
+    ),
+
+    % Test 18: Nested match blocks (3.2)
+    write('Test 18 - Nested match blocks: '),
+    render_template("{{match outer}}{{case a}}{{match inner}}{{case x}}AX{{case y}}AY{{/match}}{{case b}}B{{/match}}",
+                    [outer=a, inner=y], R18),
+    (   sub_string(R18, _, _, _, "AY")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R18]), fail)
+    ),
+
+    % Test 19: Nested match, outer selects non-nested case (3.2 variant)
+    write('Test 19 - Nested match, outer=b: '),
+    render_template("{{match outer}}{{case a}}{{match inner}}{{case x}}AX{{/match}}{{case b}}B{{/match}}",
+                    [outer=b], R19),
+    (   sub_string(R19, _, _, _, "B"), \+ sub_string(R19, _, _, _, "AX")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R19]), fail)
+    ),
+
+    % Test 20: Underscores in case values (3.3)
+    write('Test 20 - Underscores in case values: '),
+    render_template("{{match backend}}{{case lmdb_offset}}LMDB{{case sorted_array}}SORTED{{/match}}",
+                    [backend=lmdb_offset], R20),
+    (   sub_string(R20, _, _, _, "LMDB")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R20]), fail)
+    ),
+
+    % Test 21: Hyphens in case values (3.4)
+    write('Test 21 - Hyphens in case values: '),
+    render_template("{{match target}}{{case wam-fsharp}}Fsharp{{case wam-haskell}}Haskell{{/match}}",
+                    [target='wam-fsharp'], R21),
+    (   sub_string(R21, _, _, _, "Fsharp")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R21]), fail)
+    ),
+
+    % Test 22: Empty case body (3.5)
+    write('Test 22 - Empty case body: '),
+    render_template("{{match mode}}{{case skip}}{{case keep}}KEPT{{/match}}", [mode=skip], R22a),
+    render_template("{{match mode}}{{case skip}}{{case keep}}KEPT{{/match}}", [mode=keep], R22b),
+    (   R22a = "", sub_string(R22b, _, _, _, "KEPT")
+    ->  writeln('PASS')
+    ;   (format('FAIL: skip=~w keep=~w~n', [R22a, R22b]), fail)
+    ),
+
+    % Test 23: Match with only default (3.6)
+    write('Test 23 - Only default: '),
+    render_template("{{match anything}}{{default}}ALWAYS{{/match}}", [anything=whatever], R23),
+    (   sub_string(R23, _, _, _, "ALWAYS")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R23]), fail)
+    ),
+
+    % Test 24: Whitespace handling (3.7)
+    write('Test 24 - Whitespace preserved: '),
+    render_template("{{match mode}}\n  {{case eager}}\n    EAGER\n  {{case lazy}}\n    LAZY\n{{/match}}", [mode=eager], R24),
+    (   sub_string(R24, _, _, _, "EAGER"), sub_string(R24, _, _, _, "\n")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R24]), fail)
+    ),
+
+    % Test 25: Malformed - no closing {{/match}} (3.8)
+    write('Test 25 - Malformed no /match: '),
+    render_template("{{match key}}{{case a}}body", [key=a], R25),
+    (   sub_string(R25, _, _, _, "{{match key}}")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R25]), fail)
+    ),
+
+    % Test 26: Malformed - no key in {{match}} (3.8)
+    write('Test 26 - Malformed no key: '),
+    render_template("{{match}}{{case a}}body{{/match}}", [key=a], R26),
+    (   sub_string(R26, _, _, _, "{{match}}")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R26]), fail)
+    ),
+
+    % Test 27: Orphan {{/match}} (3.8)
+    write('Test 27 - Orphan /match: '),
+    render_template("hello{{/match}}world", [], R27),
+    (   sub_string(R27, _, _, _, "hello"), sub_string(R27, _, _, _, "world")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R27]), fail)
+    ),
+
+    % Test 28: Variable substitution inside matched case body
+    write('Test 28 - Var substitution in case: '),
+    render_template("{{match mode}}{{case cached}}cache={{size}}{{default}}none{{/match}}",
+                    [mode=cached, size='64'], R28),
+    (   sub_string(R28, _, _, _, "cache=64")
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [R28]), fail)
+    ),
 
     % Clean up
     clear_template_cache(test_cached),

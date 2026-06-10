@@ -8,6 +8,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cross-target audit: WAM first-argument-indexing instruction handlers**
+  (`docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`). After fixing the Scala
+  `switch_on_*_a2` / `_fallthrough` gap, audited all WAM targets for the
+  same gap and — crucially — quantified the *actual* correctness impact:
+  first-arg indexing is an optimization, so a target that **drops** an
+  unhandled switch instruction (Python/Go/Rust/R/Lua) stays correct (just
+  unoptimised; confirmed by running `member/2` on the Python target),
+  while only targets whose catch-all emits a **harmful** instruction
+  (haskell → `Proceed`, elixir main path → `:fail`, wat → `allocate`,
+  jvm → `ldc`) actually mis-execute indexed predicates. The doc gives the
+  coverage matrix, the drop-vs-harmful classification with file:line
+  evidence, and a prioritised fix plan (harmful-catch-all targets first).
+- **WAM Scala target: arity-N LMDB fact sources.** The `lmdb(...)`
+  fact-source backend, previously arity-2 only, now supports any arity
+  ≥ 2: the LMDB key holds arg1 and the value holds args 2..N tab-joined,
+  which `LmdbFactSource` splits back into registers 2..N (arity-2 is the
+  no-tab degenerate case, unchanged). The codegen handler clause and the
+  runtime drop the arity-2 restriction. `tests/test_wam_scala_lmdb_runtime_smoke.pl`
+  gains a gated arity-3 end-to-end test (seed `k → a<TAB>b` → query the
+  triple).
+
+### Fixed
+- **WAM Scala target: LMDB fact source now actually works (Phase S8).**
+  The arity-2 `lmdb(...)` fact-source adaptor and its runtime test had
+  never been able to run; validating them end-to-end (with `lmdbjava`
+  0.9.0) surfaced and fixed several latent bugs:
+  - `write_runtime_source/3` placed `WamRuntime` in the program's
+    `package` but `GeneratedProgram` imports it from `runtime_package` —
+    so whenever the two differ, including the **default options**
+    (`…core` vs `…runtime`), the generated project failed to compile.
+    All prior tests happened to pass the same package for both, hiding it.
+    Now placed in `runtime_package`.
+  - The LMDB runtime test's gate (`getenv('SCALA_LMDB_TESTS', "1")`) could
+    never be true (`getenv/2` yields an atom, never the string `"1"`), so
+    the test was permanently skipped. Gate now keys on the variable's
+    presence.
+  - `LmdbFactSource` reflection was written against a different lmdbjava
+    API: fixed `Env.Builder.open(File, EnvFlags…)` + `setMapSize`/
+    `setMaxReaders`, `Dbi.get(Txn, key)` (was `Txn.get`), `Cursor.get`,
+    generic-erasure parameter types (`Object`, not `ByteBuffer`), and
+    default/unnamed-DB handling; added a configurable `mapSize` (default
+    1 GiB). The end-to-end LMDB smoke test (seed → read → query) now
+    passes.
+  - Documented the JDK 16+ module flags lmdbjava requires
+    (`--add-opens java.base/java.nio` and
+    `--add-exports java.base/sun.nio.ch`).
+
+### Added
+- **WAM Scala target: execution-mode benchmark** — new
+  `tests/benchmarks/wam_scala_mode_bench.pl` compares the interpreter,
+  lowered (`emit_mode(functions)`), and kernel (`kernel_dispatch(true)`)
+  modes on a transitive-closure workload via the generated program's
+  `--bench` inner-loop mode. Results + interpretation in
+  `benchmarks/wam_scala_mode_bench.md`: the native graph kernel runs deep
+  reachability ~4× faster at chain depth 100 and ~9× at depth 300 (the win
+  grows with depth), with fixed setup overhead on trivial/shallow queries;
+  the lowered emitter is roughly neutral for recursion-heavy predicates
+  (its benefit is largest for single-clause inline-deterministic ones).
+- **WAM Scala target: hot-path graph kernels (opt-in `kernel_dispatch(true)`)** —
+  brings Scala onto the Rust/Haskell/Elixir/Go native-kernel route. The
+  shared recursive-kernel detector runs over the predicates; a matching
+  predicate is replaced by a synthesized Scala `ForeignHandler` that does
+  the traversal natively, bypassing the WAM step loop. The handler builds
+  its adjacency map from the kernel's edge relation via a new
+  `WamRuntime.collectBinarySolutions/2` enumerator (works for WAM facts
+  and fact sources alike). Kernel kinds implemented: `transitive_closure2`,
+  `transitive_distance3` (BFS shortest-path distance),
+  `transitive_parent_distance4` (target + immediate predecessor + distance),
+  `transitive_step_parent_distance5` (target + first hop + parent +
+  distance), `category_ancestor` (depth-bounded ancestor search with a
+  visited list, `max_depth` from config; parses the visited list via a new
+  `WamRuntime.wamListToVector/2` helper), and `weighted_shortest_path3`
+  (Dijkstra over a ternary weighted edge relation via a new
+  `WamRuntime.collectTernarySolutions/2` enumerator; binds the shortest
+  total weight as a float), and `astar_shortest_path4` (goal-directed A*
+  over the ternary weighted edges with a heuristic oracle
+  (`direct_dist_pred`) and Minkowski dimensionality `f = g^D + h^D`; binds
+  the shortest distance as a float). **All seven recognised kernel kinds
+  are now implemented**, bringing Scala to full graph-kernel parity with
+  the Rust/Haskell/Elixir/Go targets.
+  `tests/test_wam_scala_kernels.pl` has structural tests plus gated runtime
+  tests asserting kernel-mode and interpreter-mode results are identical
+  and correct.
+- **WAM Scala target: per-predicate lowered emitter** — brings the Scala
+  hybrid WAM to parity with the Haskell/Rust/C++/F#/Go/Clojure targets,
+  all of which already shipped a `wam_*_lowered_emitter.pl`.
+  - New `src/unifyweaver/targets/wam_scala_lowered_emitter.pl` emits a
+    native Scala `lowered_<pred>_<arity>(s, program): Boolean` function
+    per lowerable predicate (deterministic clause 1; simple register ops
+    inlined, structure/unify ops via new `lo*` `WamRuntime` helpers,
+    deterministic builtins via `loBuiltin`).
+  - New `emit_mode(Mode)` option on `write_wam_scala_project/3`
+    (`interpreter` default / `functions` / `mixed([P/A,...])`), plus a
+    global `user:wam_scala_emit_mode/1` hook. The generated
+    `loweredEntries` map + `runEntry` try the fast path and fall back to a
+    fresh interpreter run on a clause-1 miss, so results are identical to
+    the pure interpreter for any boolean query.
+  - New `tests/test_wam_scala_lowered_emitter.pl` — structural tests
+    (always run) plus gated runtime parity tests that compile the same
+    predicates in both modes and assert identical, correct results.
+  - Fixed first-argument indexing instructions that were silently
+    degrading to `Raw(...)` stubs and breaking the interpreter for some
+    predicate shapes, now handled (matching the F#/C/C++/R targets):
+    `switch_on_constant_fallthrough` (mixed fact+rule predicates such as
+    the factorial/Ackermann/Fibonacci base cases) reuses the
+    `SwitchOnConstant` instruction; `switch_on_term_a2` /
+    `switch_on_constant_a2` (+`_fallthrough`) second-argument indexing
+    (e.g. `member/2`) dispatch on the correct register via a new `reg`
+    field on the `SwitchOnConstant` / `SwitchOnTerm` runtime instructions
+    (defaulting to 1, so A1-indexed codegen is unchanged).
 - **Client-Server Phase 8: Service Tracing** - OpenTelemetry-compatible distributed tracing
   - `tracing(Bool)` option to enable distributed tracing
   - Trace exporters: `otlp`, `jaeger`, `zipkin`, `datadog`, `console`, `none`

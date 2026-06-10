@@ -56,6 +56,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1, copy_file/2]).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
@@ -103,11 +104,7 @@ fixture_smoke_path(Path) :-
     repo_root(Root),
     directory_file_path(Root, 'tests/fixtures/wam_put_structure_dyn_smoke/Smoke.hs', Path).
 
-tmp_root(Root) :-
-    (   getenv('TMPDIR', R0), R0 \== ''
-    ->  Root = R0
-    ;   Root = '/tmp'
-    ).
+% tmp_root/1 imported from helpers/smoke_paths (cross-platform).
 
 build_dir(Dir) :-
     tmp_root(Root),
@@ -236,14 +233,7 @@ parse_smoke_output(Out, Test) :-
 cleanup_build_dir(Dir) :-
     (   getenv('WAM_PSD_SMOKE_KEEP', V), V \== ''
     ->  format('[INFO] keeping build dir ~w (WAM_PSD_SMOKE_KEEP set)~n', [Dir])
-    ;   catch(delete_directory_and_contents_safe(Dir), _, true)
-    ).
-
-delete_directory_and_contents_safe(Dir) :-
-    (   exists_directory(Dir)
-    ->  process_create(path(rm), ['-rf', Dir], [process(Pid)]),
-        process_wait(Pid, _)
-    ;   true
+    ;   clean_dir(Dir)
     ).
 
 %% ========================================================================

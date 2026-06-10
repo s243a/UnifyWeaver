@@ -29,6 +29,8 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 % ============================================================================
 % Parsing — identical to Haskell emitter (WAM text format is target-agnostic)
@@ -73,10 +75,33 @@ tokenize_fs(Line, Term) :-
 %    - CallForeign resolves ambiguity for foreign calls at compile time
 %    - Detected kernels are excluded upstream by wam_fsharp_partition_predicates
 wam_fsharp_lowerable(_PI, WamCode, lowerable) :-
-    parse_wam_text_fs(WamCode, PCInstrs, _),
+    parse_wam_text_fs(WamCode, PCInstrs, LabelMap),
     clause1_instrs_fs(PCInstrs, C1),
-    is_deterministic_pred_fs(C1),
-    forall(member(I, C1), supported_fs(I)).
+    forall(member(I, C1), supported_fs(I)),
+    % Clause 1 must fold cleanly via the shared structurer. This enables
+    % if-then-else / negation lowering (clause 1's internal try_me_else is a
+    % well-formed ITE block, consumed into ite/3) while still rejecting any
+    % stray choice-point markers (predicate-level try/retry/trust that are
+    % not part of a clean block remain in the structured form, failing the
+    % checks below, so such predicates fall back to the interpreter).
+    clause1_pc_fs(PCInstrs, C1PC),
+    struct_stream_fs(C1PC, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured).
+
+%% clause1_pc_fs(+PCInstrs, -Clause1PCs)
+%  Like clause1_instrs_fs/2 but keeps pc(PC,Instr) form, matching exactly the
+%  clause-1 slice emit_func_fs structures.
+clause1_pc_fs([], []).
+clause1_pc_fs(PCInstrs0, C1) :-
+    strip_switch_prefixes_fs(PCInstrs0, PCInstrs),
+    PCInstrs0 \== PCInstrs, !,
+    clause1_pc_fs(PCInstrs, C1).
+clause1_pc_fs([pc(_, try_me_else(_))|Rest], C1) :- !,
+    take_to_proceed_pc_fs(Rest, C1).
+clause1_pc_fs(PCInstrs, PCInstrs).
 
 % Match Rust/Clojure lowered emitters: only deterministic clause-1 bodies are
 % lowered. Choicepoint-manipulating instructions should stay interpreter-driven.
@@ -218,7 +243,9 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
     % Skip all switch_on_constant* prefixes before deciding whether this is
     % a multi-clause or single-clause lowered body.
     strip_switch_prefixes_fs(PCInstrs, PCInstrs1),
-    (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
+    (   emit_func_t5_fs(PCInstrs1, LabelMap, ForeignPreds)
+    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  % Multi-clause: push CP for clause-2+ backtrack, try clause 1
         atom_string(LAtom, LStr),
         (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
@@ -232,25 +259,141 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("                         CpHeapLen  = s_init.WsHeapLen~n"),
         format("                         CpBindings = s_init.WsBindings~n"),
         format("                         CpCutBar   = s_init.WsCutBar~n"),
+        format("                         CpB0StackLen = List.length s_init.WsB0Stack~n"),
         format("                         CpAggFrame = None~n"),
         format("                         CpBuiltin  = None } :: s_init.WsCPs~n"),
         format("            WsCPsLen = s_init.WsCPsLen + 1 }~n"),
         format("    let clause1 (s_c1: WamState) : WamState option =~n"),
         take_to_proceed_pc_fs(BodyPCs, Clause1PCs),
-        emit_instrs_lm_fs(Clause1PCs, "s_c1", "        ", ForeignPreds, LabelMap),
+        emit_clause_struct_fs(Clause1PCs, LabelMap, "s_c1", "        ", ForeignPreds),
         format("    match clause1 s_cp with~n"),
         format("    | Some result -> Some result~n"),
         format("    | None ->~n"),
         format("        // Clause 1 failed — backtrack to clause 2+ in the interpreter~n"),
         format("        backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n")
     ;   % Single-clause: straightforward binding chain
-        emit_instrs_lm_fs(PCInstrs1, "s_init", "    ", ForeignPreds, LabelMap)
+        emit_clause_struct_fs(PCInstrs1, LabelMap, "s_init", "    ", ForeignPreds)
     ).
 
 take_to_proceed_pc_fs([], []).
 take_to_proceed_pc_fs([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
 take_to_proceed_pc_fs([pc(PC, fail)|_], [pc(PC, fail)]) :- !.
 take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
+
+% ============================================================================
+% T5: multi-clause as a first-argument dispatch (wam_clause_chain)
+%
+%  When the clauses discriminate on a DISTINCT first-argument constant
+%  (lowering type T5 in docs/proposals/WAM_LOWERING_TAXONOMY_AND_MATRIX.md)
+%  ALL clauses are lowered to native F# and selected by a deref-and-match
+%  cascade, instead of lowering only clause 1 and reaching clauses 2+ through
+%  the interpreter on backtrack. When the first argument is BOUND this is
+%  deterministic dispatch with no interpreter hop; when it is UNBOUND (or the
+%  register is unset) we defer to the interpreter via the same choice-point /
+%  backtrack / run fallback the ordinary multi-clause path uses.
+%
+%  Each clause body is emitted in FULL (the leading `get_constant V, A1` is
+%  kept): on the bound fast path it harmlessly re-matches the already-bound
+%  first argument, and on the unbound fallback it is exactly what binds the
+%  variable. Mirrors the Haskell emitter's emit_func_t5/4.
+% ============================================================================
+
+%% emit_func_t5_fs(+PCInstrs1, +LabelMap, +FP) is semidet.
+%  Emits the T5 dispatch body and succeeds, or fails (emitting nothing) when
+%  the predicate is not a distinct-first-argument constant chain. All checks
+%  run before any output, so a failure leaves the stream untouched for the
+%  caller's ordinary multi/single-clause emission.
+emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
+    PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
+    maplist(t5_strip_pc_fs, PCInstrs1, PlainInstrs),
+    clause_chain(PlainInstrs, chain(_Guards)),
+    t5_split_clauses_pc_fs(PCInstrs1, Slices),
+    Slices = [_, _ | _],
+    forall(( member(Sl, Slices), member(pc(_, In), Sl) ), supported_fs(In)),
+    maplist(t5_slice_discriminator_fs, Slices, Discrs),
+    % All checks passed — emit.
+    atom_string(L2Atom, L2Str),
+    ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
+    t5_emit_clause_defs_fs(Slices, 1, LabelMap, FP),
+    % Interpreter fallback for the unbound/unset first-argument case.
+    format("    let t5fallback () : WamState option =~n"),
+    format("        let s_cp =~n"),
+    format("            { s_init with~n"),
+    format("                WsCPs    = { CpNextPC   = ~w~n", [AltPC]),
+    format("                             CpRegs     = s_init.WsRegs~n"),
+    format("                             CpStack    = s_init.WsStack~n"),
+    format("                             CpCP       = s_init.WsCP~n"),
+    format("                             CpTrailLen = s_init.WsTrailLen~n"),
+    format("                             CpHeapLen  = s_init.WsHeapLen~n"),
+    format("                             CpBindings = s_init.WsBindings~n"),
+    format("                             CpCutBar   = s_init.WsCutBar~n"),
+    format("                             CpB0StackLen = List.length s_init.WsB0Stack~n"),
+    format("                             CpAggFrame = None~n"),
+    format("                             CpBuiltin  = None } :: s_init.WsCPs~n"),
+    format("                WsCPsLen = s_init.WsCPsLen + 1 }~n"),
+    format("        match t5clause_1 s_cp with~n"),
+    format("        | Some result -> Some result~n"),
+    format("        | None ->~n"),
+    format("            backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n"),
+    % Dispatch: deref the first argument once, then select.
+    format("    match (getReg 1 s_init |> Option.map (derefVar s_init.WsBindings)) with~n"),
+    format("    | Some (Unbound _) -> t5fallback ()~n"),
+    format("    | Some v ->~n"),
+    t5_emit_dispatch_arms_fs(Discrs, 1),
+    format("    | None -> t5fallback ()~n").
+
+t5_strip_pc_fs(pc(_, I), I).
+
+%% t5_split_clauses_pc_fs(+PCInstrs1, -Slices)
+%  Split the switch-stripped pc-instruction list (opens with try_me_else) at
+%  the choice-point separators into per-clause slices, each trimmed to its
+%  terminal proceed/fail. Mirrors wam_clause_chain's split_clauses but keeps
+%  the pc(PC,Instr) wrappers for emission.
+t5_split_clauses_pc_fs([pc(_, try_me_else(_))|Rest], [Slice|More]) :-
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+
+t5_split_more_pc_fs([], []).
+t5_split_more_pc_fs([pc(_, retry_me_else(_))|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+t5_split_more_pc_fs([pc(_, trust_me)|Rest], [Slice|More]) :- !,
+    t5_collect_clause_pc_fs(Rest, Clause, After),
+    take_to_proceed_pc_fs(Clause, Slice),
+    t5_split_more_pc_fs(After, More).
+
+t5_collect_clause_pc_fs([], [], []).
+t5_collect_clause_pc_fs([pc(P, retry_me_else(L))|Rest], [], [pc(P, retry_me_else(L))|Rest]) :- !.
+t5_collect_clause_pc_fs([pc(P, trust_me)|Rest], [], [pc(P, trust_me)|Rest]) :- !.
+t5_collect_clause_pc_fs([Item|Rest], [Item|More], After) :-
+    t5_collect_clause_pc_fs(Rest, More, After).
+
+%% t5_slice_discriminator_fs(+Slice, -FSharpValueExpr)
+t5_slice_discriminator_fs([pc(_, get_constant(VStr, _A1))|_], FC) :-
+    val_fs(VStr, FC).
+
+%% t5_emit_clause_defs_fs(+Slices, +Index, +LabelMap, +FP)
+t5_emit_clause_defs_fs([], _, _, _).
+t5_emit_clause_defs_fs([Slice|Rest], N, LabelMap, FP) :-
+    format("    let t5clause_~w (s_c~w: WamState) : WamState option =~n", [N, N]),
+    format(atom(SV), 's_c~w', [N]),
+    emit_clause_struct_fs(Slice, LabelMap, SV, "        ", FP),
+    N1 is N + 1,
+    t5_emit_clause_defs_fs(Rest, N1, LabelMap, FP).
+
+%% t5_emit_dispatch_arms_fs(+Discrs, +Index)
+%  Emit the bound-value if/elif cascade inside the `| Some v ->` arm.
+t5_emit_dispatch_arms_fs([FC|Rest], 1) :- !,
+    format("        if v = (~w) then t5clause_1 s_init~n", [FC]),
+    t5_emit_dispatch_arms_fs(Rest, 2).
+t5_emit_dispatch_arms_fs([], _) :- !,
+    format("        else None~n").
+t5_emit_dispatch_arms_fs([FC|Rest], N) :-
+    format("        elif v = (~w) then t5clause_~w s_init~n", [FC, N]),
+    N1 is N + 1,
+    t5_emit_dispatch_arms_fs(Rest, N1).
 
 % ============================================================================
 % Instruction emission — F# binding chain style
@@ -270,7 +413,6 @@ take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 %  This drives the indentation decision in emit_instrs_fs for the
 %  last-instruction case (body = "Some SVout") and intermediate case
 %  (body = the rest of the chain at IndInner).
-is_match_instr_fs(deallocate).
 is_match_instr_fs(get_constant(_, _)).
 is_match_instr_fs(get_value(_, _)).
 is_match_instr_fs(get_structure(_, _)).
@@ -281,13 +423,16 @@ is_match_instr_fs(get_integer(_, _)).
 is_match_instr_fs(unify_variable(_)).
 is_match_instr_fs(unify_value(_)).
 is_match_instr_fs(unify_constant(_)).
-is_match_instr_fs(put_structure(_, _)).
-is_match_instr_fs(put_list(_)).
+% PutStructure / PutList moved to inline let-binding emitters; no longer
+% match-emitting.
 is_match_instr_fs(set_variable(_)).
 is_match_instr_fs(set_value(_)).
 is_match_instr_fs(set_constant(_)).
 is_match_instr_fs(call(_, _)).
 is_match_instr_fs(call_foreign(_, _)).
+% Cut (!/0) is now an always-succeed let-binding (inlined below).
+% Every other builtin_call still delegates to step as a match arm.
+is_match_instr_fs(builtin_call("!/0", _)) :- !, fail.
 is_match_instr_fs(builtin_call(_, _)).
 is_match_instr_fs(cut_ite).
 is_match_instr_fs(jump(_)).
@@ -334,18 +479,6 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
         emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM),
         format("~w| None -> None~n", [Ind])
     ).
-emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
-    format("~wmatch (~n", [Ind]),
-    atom_concat(Ind, "    ", CondInd),
-    emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
-    format("~w) with~n", [Ind]),
-    fresh_sv_fs(SV, SVthen),
-    format("~w| Some ~w ->~n", [Ind, SVthen]),
-    atom_concat(Ind, "    ", ThenInd),
-    emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
-    format("~w| None ->~n", [Ind]),
-    atom_concat(Ind, "    ", ElseInd),
-    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
 
 % execute/1 is a tail call — it must always be the last instruction.
 % If it isn’t, the chain silently breaks because emit_one_fs emits a bare
@@ -386,6 +519,23 @@ emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
         ;   emit_instrs_lm_fs(Rest, SVout, Ind, FP, LM)
         )
     ).
+
+%% emit_ite_match_fs(+SV, +CondInstrs, +ThenInstrs, +ElseInstrs, +Ind, +FP)
+%  Helper for emit_instrs_lm_fs's try_me_else clause: emits the F# nested
+%  match for an if-then-else block.  Placed after the emit_instrs_lm_fs
+%  clause group so the latter is contiguous.
+emit_ite_match_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", CondInd),
+    emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVthen),
+    format("~w| Some ~w ->~n", [Ind, SVthen]),
+    atom_concat(Ind, "    ", ThenInd),
+    emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
+    format("~w| None ->~n", [Ind]),
+    atom_concat(Ind, "    ", ElseInd),
+    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
 
 %% emit_instrs_fs(+PCInstrs, +CurrentStateVar, +Indent, +ForeignPreds)
 %  Legacy 4-arg version used inside ITE blocks (LabelMap not needed there
@@ -497,6 +647,113 @@ is_terminal_instr_fs(proceed).
 is_terminal_instr_fs(fail).
 is_terminal_instr_fs(execute(_)).
 
+% ============================================================================
+% Structured ITE emission (shared nesting-aware structurer)
+% ============================================================================
+%
+%  The flat split_ite_blocks_lm_fs/split_at_jump_fs heuristic is NOT nesting
+%  aware (split_at_jump_fs stops at an inner jump) and only recognises
+%  cut_ite, not the !/0 negation commit. Feed clause 1 through the shared
+%  wam_ite_structurer instead: struct_stream_fs/3 rebuilds a label-marked
+%  stream (control markers bare so the structurer matches them, labels as
+%  strings to match try_me_else/jump args, data instructions keep pc(PC,_)
+%  for emit_one_fs), structure_ite folds every block into ite(Cond,Then,Else),
+%  and emit_structured_fs/4 walks it — reusing the exact F# match-arm
+%  threading (is_match_instr_fs / "| None -> None") so non-ITE predicates
+%  emit byte-identically and nested blocks recurse for free.
+
+emit_clause_struct_fs(ClausePCs, LabelMap, SV, Ind, FP) :-
+    struct_stream_fs(ClausePCs, LabelMap, Stream),
+    structure_ite(Stream, Structured),
+    emit_structured_fs(Structured, SV, Ind, FP).
+
+struct_stream_fs([], _LM, []).
+struct_stream_fs([pc(PC, Instr)|Rest], LM, Out) :-
+    findall(label(LStr), (member(L-PC, LM), atom_string(L, LStr)), Labels),
+    struct_item_fs(PC, Instr, Item),
+    append(Labels, [Item|More], Out),
+    struct_stream_fs(Rest, LM, More).
+
+struct_item_fs(_PC, try_me_else(L), try_me_else(L)) :- !.
+struct_item_fs(_PC, jump(L),        jump(L))        :- !.
+struct_item_fs(_PC, trust_me,       trust_me)       :- !.
+struct_item_fs(_PC, cut_ite,        cut_ite)        :- !.
+struct_item_fs(_PC, builtin_call(Op, N), builtin_call(Op, N)) :- neg_commit_op_fs(Op), !.
+struct_item_fs(PC, Instr, pc(PC, Instr)).
+
+neg_commit_op_fs("!/0").
+neg_commit_op_fs('!/0').
+
+%% emit_structured_fs(+Structured, +SV, +Ind, +FP)
+%  Structured is a list of pc(PC,Instr) and ite(Cond,Then,Else). Emits an
+%  F# expression of type WamState option.
+emit_structured_fs([], SV, I, _FP) :-
+    format("~wSome ~w~n", [I, SV]).
+% If-then-else with a continuation — bind the result, then continue.
+emit_structured_fs([ite(C, T, E)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", IteInd),
+    emit_ite_match_struct_fs(SV, C, T, E, IteInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVcont),
+    format("~w| Some ~w ->~n", [Ind, SVcont]),
+    atom_concat(Ind, "    ", ContInd),
+    emit_structured_fs(Rest, SVcont, ContInd, FP),
+    format("~w| None -> None~n", [Ind]).
+% If-then-else as the final expression.
+emit_structured_fs([ite(C, T, E)], SV, Ind, FP) :- !,
+    emit_ite_match_struct_fs(SV, C, T, E, Ind, FP).
+% Terminal: fail
+emit_structured_fs([pc(_PC, fail)|Rest], _SV, Ind, _FP) :- !,
+    (   Rest \= []
+    ->  format("~w// WARNING: fail is not the last instruction — ~w instruction(s) unreachable~n", [Ind, Rest])
+    ;   true
+    ),
+    format("~wNone~n", [Ind]).
+% Terminal: execute (tail call)
+emit_structured_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP) :- !,
+    (   Rest \= []
+    ->  format("~w// WARNING: execute(~w) is not the last instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
+               [Ind, PredStr, Rest])
+    ;   true
+    ),
+    emit_one_fs(execute(PredStr), PC, SV, _, Ind, FP).
+% Last plain instruction.
+emit_structured_fs([pc(PC, Instr)], SV, Ind, FP) :- !,
+    emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
+    (   is_terminal_instr_fs(Instr) -> true
+    ;   is_match_instr_fs(Instr)
+    ->  format("~wSome ~w~n", [IndInner, SVout]),
+        format("~w| None -> None~n", [Ind])
+    ;   format("~wSome ~w~n", [Ind, SVout])
+    ).
+% Plain instruction with more following.
+emit_structured_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :- Rest \= [], !,
+    emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
+    (   is_match_instr_fs(Instr)
+    ->  emit_structured_fs(Rest, SVout, IndInner, FP),
+        format("~w| None -> None~n", [Ind])
+    ;   emit_structured_fs(Rest, SVout, Ind, FP)
+    ).
+
+%% emit_ite_match_struct_fs(+SV, +Cond, +Then, +Else, +Ind, +FP)
+%  F# nested match for one ite/3 block; branches recurse through
+%  emit_structured_fs so nested blocks are handled.
+emit_ite_match_struct_fs(SV, CondInstrs, ThenInstrs, ElseInstrs, Ind, FP) :-
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", CondInd),
+    emit_structured_fs(CondInstrs, SV, CondInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVthen),
+    format("~w| Some ~w ->~n", [Ind, SVthen]),
+    atom_concat(Ind, "    ", ThenInd),
+    emit_structured_fs(ThenInstrs, SVthen, ThenInd, FP),
+    format("~w| None ->~n", [Ind]),
+    atom_concat(Ind, "    ", ElseInd),
+    emit_structured_fs(ElseInstrs, SV, ElseInd, FP).
+
 %% split_ite_blocks_fs/6 — legacy no-LabelMap version
 %  Used inside emit_instrs_fs (4-arg). ContInstrs is always [] here
 %  because ITE blocks inside ITE blocks are rare in lowerable predicates.
@@ -582,14 +839,19 @@ emit_one_fs(fail, _, _SV, _SVout, I, _FP) :-
 emit_one_fs(allocate, _, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
     format("~wlet ~w = { ~w with~n", [I, SVout, SV]),
-    format("~w               WsStack = { EfSavedCP = ~w.WsCP; EfYRegs = Map.empty } :: ~w.WsStack~n", [I, SV, SV]),
+    format("~w               WsStack = { EfSavedCP = ~w.WsCP; EfYRegs = Map.empty; EfSavedCutBar = ~w.WsCutBar } :: ~w.WsStack~n", [I, SV, SV, SV]),
     format("~w               WsCutBar = ~w.WsCPsLen }~n", [I, SV]).
 
-% Deallocate — can fail on empty stack, delegate to step
-emit_one_fs(deallocate, PC, SV, SVout, I, _FP) :-
+% Deallocate — inline pop of env frame.  Empty stack is a hard programming
+% error (compiler bug, not a runtime failure) so failwith rather than None.
+% Switched from match-emitting to let-binding: removed deallocate from
+% is_match_instr_fs/1 below.
+emit_one_fs(deallocate, _PC, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } Deallocate with~n", [I, SV, PC]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet ~w =~n", [I, SVout]),
+    format("~w    match ~w.WsStack with~n", [I, SV]),
+    format("~w    | ef :: rest -> { ~w with WsStack = rest; WsCP = ef.EfSavedCP; WsCutBar = ef.EfSavedCutBar }~n", [I, SV]),
+    format("~w    | [] -> failwith \"Deallocate: empty WsStack\"~n", [I]).
 
 % GetVariable Xn Ai — always succeeds, inline register copy
 emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
@@ -602,29 +864,97 @@ emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
            [I, SVout, Xn, SV, Ai, SV, SV]).
 
 % GetConstant C Ai — can fail, delegate to step
-emit_one_fs(get_constant(CStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetConstant C Ai — inline: deref reg, succeed on match (with []/VList []
+% equivalence) or bind-when-Unbound, else fail.  Same logic as the
+% interpreter's step branch.
+emit_one_fs(get_constant(CStr, AiStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetConstant (~w, ~w)) with~n", [I, SV, PC, FC, Ai]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Ai, SV]),
+    format("~w       | Some v when v = (~w) -> Some ~w~n", [I, FC, SV]),
+    format("~w       | Some (VList []) when (~w) = Atom \"[]\" -> Some ~w~n", [I, FC, SV]),
+    format("~w       | Some (Unbound vid) ->~n", [I]),
+    format("~w           let r = Array.copy ~w.WsRegs~n", [I, SV]),
+    format("~w           r.[~w] <- (~w)~n", [I, Ai, FC]),
+    format("~w           Some { ~w with~n", [I, SV]),
+    format("~w                    WsRegs = r~n", [I]),
+    format("~w                    WsBindings = Map.add vid (~w) ~w.WsBindings~n", [I, FC, SV]),
+    format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+           [I, SV, SV]),
+    format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetValue Xn Ai — can fail (unification), delegate to step
-emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetValue Xn Ai — inline: deref both regs, equal -> succeed, Unbound ai ->
+% bind to xn's value, else fail.
+emit_one_fs(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetValue (~w, ~w)) with~n", [I, SV, PC, Xn, Ai]),
+    format("~wmatch (match getReg ~w ~w, getReg ~w ~w with~n", [I, Ai, SV, Xn, SV]),
+    format("~w       | Some a, Some x when a = x -> Some ~w~n", [I, SV]),
+    format("~w       | Some (Unbound vid), Some x ->~n", [I]),
+    format("~w           let r = Array.copy ~w.WsRegs~n", [I, SV]),
+    format("~w           r.[~w] <- x~n", [I, Ai]),
+    format("~w           Some { ~w with~n", [I, SV]),
+    format("~w                    WsRegs = r~n", [I]),
+    format("~w                    WsBindings = Map.add vid x ~w.WsBindings~n", [I, SV]),
+    format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+           [I, SV, SV]),
+    format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetStructure F Ai — can fail, delegate to step
-% Accept both canonical lowered form get_structure("f/2", "A1") and
-% legacy split-arity form get_structure("f", "2", "A1").
-emit_one_fs(get_structure(FStr, AiStr), PC, SV, SVout, I, _FP) :-
+% GetStructure F Ai — inline read-mode / write-mode dispatch.  85
+% occurrences in the parser smoke (the biggest single source of step
+% delegations after Unify*), so worth inlining.  Mirrors step's
+% GetStructure cases:
+%   (1) reg holds Str matching fn/arity -> read mode (ReadArgs)
+%   (2) reg holds VList cons cell AND fn = "[|]"/2 -> read mode (cons-as-list)
+%   (3) reg holds Unbound, arity = 0 -> bind to Str(fn, [])
+%   (4) reg holds Unbound, arity > 0 -> write mode (BuildStruct)
+%   (5) otherwise -> fail (None)
+% Cons-cell branch (2) is only emitted when the static fn = "[|]" and
+% arity = 2; otherwise it'd be unreachable dead code (compiler warning).
+emit_one_fs(get_structure(FStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     parse_functor_fs(FStr, FuncName, Arity),
     escape_dq_fs(FuncName, EscFuncName),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetStructure (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, EscFuncName, Arity, Ai]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Ai, SV]),
+    %% (1) Same-functor Str match
+    format("~w       | Some (Str (fn0, args)) when fn0 = \"~w\" && List.length args = ~w ->~n",
+           [I, EscFuncName, Arity]),
+    (   Arity =:= 0
+    ->  format("~w           Some ~w~n", [I, SV])
+    ;   format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (ReadArgs args) }~n", [I])
+    ),
+    %% (2) Cons-cell match (only when fn = "[|]" and arity = 2)
+    (   FuncName == '[|]', Arity =:= 2
+    ->  format("~w       | Some (VList (h :: t)) ->~n", [I]),
+        format("~w           let tailVal = if List.isEmpty t then Atom \"[]\" else VList t~n", [I]),
+        format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (ReadArgs [h; tailVal]) }~n", [I])
+    ;   true
+    ),
+    %% (3) Unbound, arity = 0: bind to Str(fn, [])
+    (   Arity =:= 0
+    ->  format("~w       | Some (Unbound vid) ->~n", [I]),
+        format("~w           let str = Str (\"~w\", [])~n", [I, EscFuncName]),
+        format("~w           let s0 = putReg ~w str ~w~n", [I, Ai, SV]),
+        format("~w           Some { s0 with~n", [I]),
+        format("~w                    WsBindings = Map.add vid str ~w.WsBindings~n", [I, SV]),
+        format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
+               [I, SV, SV]),
+        format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV])
+    %% (4) Unbound, arity > 0: write mode (BuildStruct)
+    ;   format("~w       | Some (Unbound _) ->~n", [I]),
+        format("~w           let push = pushBuilderIfActive ~w~n", [I, SV]),
+        format("~w           Some { push with WsBuilder = Some (BuildStruct (\"~w\", ~w, ~w, [])) }~n",
+               [I, EscFuncName, Ai, Arity])
+    ),
+    %% (5) Default fail
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(get_structure(FnStr, ArityStr, AiStr), PC, SV, SVout, I, _FP) :-
@@ -639,11 +969,23 @@ emit_one_fs(get_structure(FnStr, ArityStr, AiStr), PC, SV, SVout, I, _FP) :-
            [I, SV, PC, EscFnStr, Arity, Ai]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetList Ai — can fail, delegate to step
-emit_one_fs(get_list(AiStr), PC, SV, SVout, I, _FP) :-
+% GetList Ai — inline 3-case dispatch (VList cons, Str "[|]" cons, Unbound).
+% Read-mode for the first two (sets ReadArgs builder), write-mode for the
+% Unbound case (sets BuildList builder).  pushBuilderIfActive preserves any
+% outer build context the same way step does.
+emit_one_fs(get_list(AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (GetList ~w) with~n", [I, SV, PC, Ai]),
+    format("~wmatch (let push = pushBuilderIfActive ~w in~n", [I, SV]),
+    format("~w       match getReg ~w ~w with~n", [I, Ai, SV]),
+    format("~w       | Some (VList (h :: t)) ->~n", [I]),
+    format("~w           let tailVal = if List.isEmpty t then Atom \"[]\" else VList t~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (ReadArgs [h; tailVal]) }~n", [I]),
+    format("~w       | Some (Str (\"[|]\", [h; t])) ->~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (ReadArgs [h; t]) }~n", [I]),
+    format("~w       | Some (Unbound _) ->~n", [I]),
+    format("~w           Some { push with WsBuilder = Some (BuildList (~w, [])) }~n", [I, Ai]),
+    format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % GetNil / GetInteger are Rust-lowered aliases for GetConstant.
@@ -664,10 +1006,24 @@ emit_one_fs(get_integer(NStr, AiStr), PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Unify* — can fail, delegate to step
-emit_one_fs(unify_variable(XnStr), PC, SV, SVout, I, _FP) :-
+% UnifyVariable Xn — inline read-mode + write-mode dispatch.  Far hotter
+% than the other Unify* in real workloads (87 occurrences across the parser
+% smoke alone) so worth bypassing step's dispatch + WsPC record-with alloc.
+% Read mode: copy next arg into Xn (always succeeds).
+% Write mode (no readable arg): create fresh var, store in Xn, append to
+% the active builder (BuildList / BuildStruct), which may fail if no
+% builder is active.
+emit_one_fs(unify_variable(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyVariable ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (match readNextArg ~w with~n", [I, SV]),
+    format("~w       | Some (v, sR) -> Some (putReg ~w v sR)~n", [I, Xn]),
+    format("~w       | None ->~n", [I]),
+    format("~w           let vid = ~w.WsVarCounter~n", [I, SV]),
+    format("~w           let var = Unbound vid~n", [I]),
+    format("~w           let sW = putReg ~w var { ~w with WsVarCounter = ~w.WsVarCounter + 1 }~n",
+           [I, Xn, SV, SV]),
+    format("~w           addToBuilder var sW) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 emit_one_fs(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
@@ -676,10 +1032,17 @@ emit_one_fs(unify_value(XnStr), PC, SV, SVout, I, _FP) :-
     format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyValue ~w) with~n", [I, SV, PC, Xn]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(unify_constant(CStr), PC, SV, SVout, I, _FP) :-
+% UnifyConstant C — inline read-mode + write-mode dispatch.  By far the most
+% frequent step-delegating instruction in compiled parser code (132 of them
+% in the parser smoke alone), so the biggest win for inlining.  Read mode:
+% unify constant with the next structure arg.  Write mode: append constant
+% to the active builder.  Both can fail.
+emit_one_fs(unify_constant(CStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (UnifyConstant (~w)) with~n", [I, SV, PC, FC]),
+    format("~wmatch (match readNextArg ~w with~n", [I, SV]),
+    format("~w       | Some (v, sR) -> unifyVal v (~w) sR~n", [I, FC]),
+    format("~w       | None -> addToBuilder (~w) ~w) with~n", [I, FC, SV]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % PutValue Xn Ai — always succeeds, inline
@@ -706,37 +1069,53 @@ emit_one_fs(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
            [I, SVout, Ai, FC, SV]).
 
 % PutStructure, PutList, SetVariable, SetValue, SetConstant — delegate to step
-emit_one_fs(put_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
+% PutStructure / PutList — always-succeed let-bindings.  Both start a fresh
+% build context; pushBuilderIfActive preserves any outer one.  Removed from
+% is_match_instr_fs/1 below since they no longer emit match arms.
+emit_one_fs(put_structure(FnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     parse_functor_fs(FnStr, FuncName, Arity),
     escape_dq_fs(FuncName, EscFuncName),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (PutStructure (\"~w\", ~w, ~w)) with~n",
-           [I, SV, PC, EscFuncName, Ai, Arity]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet push_~w = pushBuilderIfActive ~w~n", [I, SVout, SV]),
+    format("~wlet ~w = { push_~w with WsBuilder = Some (BuildStruct (\"~w\", ~w, ~w, [])) }~n",
+           [I, SVout, SVout, EscFuncName, Ai, Arity]).
 
-emit_one_fs(put_list(AiStr), PC, SV, SVout, I, _FP) :-
+emit_one_fs(put_list(AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (PutList ~w) with~n", [I, SV, PC, Ai]),
-    format("~w| Some ~w ->~n", [I, SVout]).
+    format("~wlet push_~w = pushBuilderIfActive ~w~n", [I, SVout, SV]),
+    format("~wlet ~w = { push_~w with WsBuilder = Some (BuildList (~w, [])) }~n",
+           [I, SVout, SVout, Ai]).
 
-emit_one_fs(set_variable(XnStr), PC, SV, SVout, I, _FP) :-
+% SetVariable Xn — inline: create fresh var, store in Xn, append to active
+% builder.  Always reaches addToBuilder (no None short-circuit), but
+% addToBuilder itself can return None when no builder is active, so the
+% emit stays match-emitting.
+emit_one_fs(set_variable(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetVariable ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (let vid = ~w.WsVarCounter in~n", [I, SV]),
+    format("~w       let var = Unbound vid in~n", [I]),
+    format("~w       let sV = putReg ~w var { ~w with WsVarCounter = ~w.WsVarCounter + 1 } in~n",
+           [I, Xn, SV, SV]),
+    format("~w       addToBuilder var sV) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(set_value(XnStr), PC, SV, SVout, I, _FP) :-
+% SetValue Xn — inline: read Xn (failwith on unbound), append to builder.
+emit_one_fs(set_value(XnStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetValue ~w) with~n", [I, SV, PC, Xn]),
+    format("~wmatch (match getReg ~w ~w with~n", [I, Xn, SV]),
+    format("~w       | Some v -> addToBuilder v ~w~n", [I, SV]),
+    format("~w       | None   -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-emit_one_fs(set_constant(CStr), PC, SV, SVout, I, _FP) :-
+% SetConstant C — inline: append constant to builder.
+emit_one_fs(set_constant(CStr), _PC, SV, SVout, I, _FP) :-
     val_fs(CStr, FC),
     fresh_sv_fs(SV, SVout),
-    format("~wmatch step ctx { ~w with WsPC = ~w } (SetConstant (~w)) with~n", [I, SV, PC, FC]),
+    format("~wmatch addToBuilder (~w) ~w with~n", [I, FC, SV]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Call — use callForeign for known foreign preds, dispatchCall otherwise
@@ -767,7 +1146,16 @@ emit_one_fs(call_foreign(PredStr, NStr), PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 
-% BuiltinCall — delegate to step
+% BuiltinCall !/0 (cut) — inline always-succeed: drop CPs above WsCutBar.
+% Common enough (every clause with `:- !` body) and step's branch is
+% trivial, so worth bypassing the step dispatch + WsPC record-with allocation.
+emit_one_fs(builtin_call("!/0", _NStr), _PC, SV, SVout, I, _FP) :- !,
+    fresh_sv_fs(SV, SVout),
+    format("~wlet drop_~w = max 0 (~w.WsCPsLen - ~w.WsCutBar)~n", [I, SVout, SV, SV]),
+    format("~wlet ~w = { ~w with WsCPs = List.skip drop_~w ~w.WsCPs; WsCPsLen = ~w.WsCutBar }~n",
+           [I, SVout, SV, SVout, SV, SV]).
+
+% BuiltinCall (general) — delegate to step
 emit_one_fs(builtin_call(OpStr, NStr), PC, SV, SVout, I, _FP) :-
     escape_dq_fs(OpStr, EscOp),
     fresh_sv_fs(SV, SVout),
@@ -940,13 +1328,40 @@ fresh_sv_fs(Cur, Next) :-
 
 %% val_fs(+Str, -FSharpExpr)
 %  Convert a WAM value token to its F# Value constructor.
+%
+%  Quote handling matches wam_fsharp_target:fs_wam_value/2: a token
+%  with outer single quotes (e.g. `'42'`, `'+'`) is *always* an atom,
+%  even if the inner content looks like a number.  Without this the
+%  lowered emitter rendered `read_term_from_atom('42', _T)` as
+%  Atom "'42'" -- a 4-char atom -- so the runtime parser tokenized
+%  the quotes as syntax errors and every literal-atom parser test
+%  failed.
 val_fs(Str, FS) :-
-    (   number_string(N, Str), integer(N)
-    ->  format(atom(FS), 'Integer ~w', [N])
-    ;   number_string(F, Str), float(F)
-    ->  format(atom(FS), 'Float ~w', [F])
-    ;   escape_dq_fs(Str, EscStr),
+    val_fs_strip_quotes(Str, Inner, ForceAtom),
+    (   ForceAtom == true
+    ->  escape_dq_fs(Inner, EscStr),
         format(atom(FS), 'Atom "~w"', [EscStr])
+    ;   number_string(N, Inner), integer(N)
+    ->  format(atom(FS), 'Integer ~w', [N])
+    ;   number_string(F, Inner), float(F)
+    ->  format(atom(FS), 'Float ~w', [F])
+    ;   escape_dq_fs(Inner, EscStr),
+        format(atom(FS), 'Atom "~w"', [EscStr])
+    ).
+
+%% val_fs_strip_quotes(+Raw, -Inner, -ForceAtom)
+%  Strip a single pair of outer single quotes if present; ForceAtom
+%  is true iff the quotes were present (so the caller knows to skip
+%  the number-parse fallback).  Mirrors
+%  wam_fsharp_target:fs_strip_quoted_atom/3 but keeps the lowered
+%  emitter self-contained.
+val_fs_strip_quotes(S0, S, ForceAtom) :-
+    string_chars(S0, Chars0),
+    (   Chars0 = [''''|Rest], append(Inner, [''''], Rest)
+    ->  string_chars(S, Inner),
+        ForceAtom = true
+    ;   S = S0,
+        ForceAtom = false
     ).
 
 %% reg_to_int_fs(+RegStr, -Int)

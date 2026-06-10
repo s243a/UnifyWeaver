@@ -48,6 +48,40 @@ test_haskell_helper_functions_present :-
     ;   fail_test(Test, 'Missing bindOutput/copyTermWalk/copyTermArgs helpers')
     ).
 
+% M17 soft cut: the runtime must declare GetLevel/Cut instructions and both
+% interpreters (step + stepST) must handle them. Enabled via
+% ite_use_y_level(true) at the compile sites so cuts in negation / forall
+% scope correctly instead of using legacy cut_ite.
+test_haskell_m17_get_level_cut :-
+    Test = 'WAM-Haskell: M17 get_level/cut emitted for negation (no cut_ite)',
+    Dir = 'output/test_haskell_m17_check',
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    catch(
+        (   assertz((user:m17chk_g(1))),
+            assertz((user:m17chk :- \+ (m17chk_g(_), !, fail))),
+            write_wam_haskell_project([user:m17chk_g/1, user:m17chk/0],
+                                      [module_name('m17chk'), emit_mode(functions)], Dir),
+            atomic_list_concat([Dir, '/src/Predicates.hs'], PredF),
+            atomic_list_concat([Dir, '/src/WamRuntime.hs'], RtF),
+            read_file_to_string(PredF, PredCode, []),
+            read_file_to_string(RtF, RtCode, []),
+            (   sub_string(PredCode, _, _, _, "GetLevel "),   % instruction emitted (M17, not cut_ite)
+                sub_string(RtCode, _, _, _, "GetLevel reg"),  % step handler present
+                sub_string(RtCode, _, _, _, "Cut reg")
+            ->  Ok = true
+            ;   Ok = false
+            )
+        ),
+        _Err,
+        Ok = error),
+    retractall(user:m17chk_g(_)),
+    retractall(user:m17chk),
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    (   Ok == true
+    ->  pass(Test)
+    ;   fail_test(Test, 'get_level not emitted in Predicates.hs or runtime handler missing')
+    ).
+
 test_haskell_functor_builtin_present :-
     Test = 'WAM-Haskell: functor/3 step case generated',
     (   compile_wam_runtime_to_haskell([], [], Code),
@@ -2520,6 +2554,7 @@ run_tests :-
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
+    test_haskell_m17_get_level_cut,
     test_haskell_functor_builtin_present,
     test_haskell_arg_builtin_present,
     test_haskell_univ_builtin_present,

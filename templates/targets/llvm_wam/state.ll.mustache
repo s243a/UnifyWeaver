@@ -176,15 +176,27 @@ cp_done_label:
   ret void
 }
 
+; === Hot per-instruction helpers ===
+;
+; The @step dispatcher in wam_llvm_target.pl calls 5-10 of these tiny
+; accessors per WAM instruction. Without `alwaysinline nounwind`, each
+; case keeps them as external calls — the C runtime gets the equivalent
+; helpers (`resolve_reg`, `trail_binding`, `wam_deref_ptr`) inlined for
+; free via `static inline` in wam_c_runtime/wam_runtime.h:474+. Marking
+; these `alwaysinline nounwind` lets LLVM SROA / mem2reg promote
+; %WamState field accesses across consecutive instructions, merge GEPs,
+; and turn the dispatch loop into the inline switch that
+; docs/WAM_PERF_CROSS_TARGET.md says "is universal across targets".
+
 ; Get register value by index
-define %Value @wam_get_reg(%WamState* %vm, i32 %idx) {
+define %Value @wam_get_reg(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %val = load %Value, %Value* %reg_ptr
   ret %Value %val
 }
 
 ; Set register value by index
-define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
+define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   store %Value %val, %Value* %reg_ptr
   ret void
@@ -207,7 +219,7 @@ define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
 ;   7 = Bool     (payload = 0 or 1)
 
 ; Get the tag of a register value.
-define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
+define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %tag = load i32, i32* %tag_ptr
@@ -216,7 +228,7 @@ define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
 
 ; Get the raw i64 payload of a register value. Caller is responsible for
 ; knowing the tag (use wam_get_reg_tag first if the type is not known).
-define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
+define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
   %pay = load i64, i64* %pay_ptr
@@ -225,7 +237,7 @@ define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
 
 ; Get a register payload as a double. Tag must be 2 (Float) — the caller
 ; is responsible for checking. Performs an i64 → double bitcast.
-define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
+define double @wam_get_reg_double(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
   %pay = load i64, i64* %pay_ptr
@@ -234,7 +246,7 @@ define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
 }
 
 ; Set a register to an Atom value with the given interned atom ID.
-define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
+define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -244,7 +256,7 @@ define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
 }
 
 ; Set a register to an Integer value.
-define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
+define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -254,7 +266,7 @@ define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
 }
 
 ; Set a register to a Float value. Performs a double → i64 bitcast.
-define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
+define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) alwaysinline nounwind {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
   %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
@@ -265,7 +277,7 @@ define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
 }
 
 ; Increment PC
-define void @wam_inc_pc(%WamState* %vm) {
+define void @wam_inc_pc(%WamState* %vm) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   %pc = load i32, i32* %pc_ptr
   %new_pc = add i32 %pc, 1
@@ -274,35 +286,57 @@ define void @wam_inc_pc(%WamState* %vm) {
 }
 
 ; Get current PC
-define i32 @wam_get_pc(%WamState* %vm) {
+define i32 @wam_get_pc(%WamState* %vm) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   %pc = load i32, i32* %pc_ptr
   ret i32 %pc
 }
 
 ; Set PC
-define void @wam_set_pc(%WamState* %vm, i32 %pc) {
+define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   store i32 %pc, i32* %pc_ptr
   ret void
 }
 
-; Push trail entry
-define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
+; M5: Doubling-realloc grow for the trail. Called by @wam_trail_binding
+; (and @wam_trail_heap_binding) when the size hits the current cap.
+; CPs hold trail indices, not pointers, so post-realloc indices remain
+; valid; nothing else needs to be patched up.
+define void @wam_trail_grow(%WamState* %vm) {
+entry:
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %new_tc = mul i32 %tc, 2
+  %new_tc_i64 = zext i32 %new_tc to i64
+  %elem_size = ptrtoint %TrailEntry* getelementptr (%TrailEntry, %TrailEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_tc_i64, %elem_size
+  %trail_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %old_trail = load %TrailEntry*, %TrailEntry** %trail_ptr
+  %old_i8 = bitcast %TrailEntry* %old_trail to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_trail = bitcast i8* %new_i8 to %TrailEntry*
+  store %TrailEntry* %new_trail, %TrailEntry** %trail_ptr
+  store i32 %new_tc, i32* %tc_ptr
+  ret void
+}
+
+; Push trail entry (M5: grows automatically when at cap).
+define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
   %tc = load i32, i32* %tc_ptr
-  %ovf = icmp sge i32 %ts, %tc
-  br i1 %ovf, label %abort, label %store
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
-  call void @exit(i32 4)
-  unreachable
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
 
 store:
+  ; Reload trail pointer — realloc may have moved it.
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -326,24 +360,136 @@ store:
 @.fmt_arith_fail = private constant [26 x i8] c"ERROR: eval_arith failed\0A\00"
 
 
-; Push value onto heap, return address. Aborts via exit(2) on overflow
-; (the alternative is silent buffer overrun and a confusing later
-; segfault — make it loud while heap-grow remains TODO).
-define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
+; ============================================================================
+; M6: Growable heap allocator (with WriteCtx fixup)
+; ============================================================================
+;
+; The heap was the last fixed-size allocator after M5. The reason it was
+; held back: WriteCtx stack entries store a `%Value*` in their `data`
+; field that can point into the WAM heap (set by @wam_write_ctx_set_args
+; in get_list write mode), and a naive realloc would invalidate those
+; pointers — subsequent @wam_write_ctx_set_arg calls would write to
+; freed memory.
+;
+; M6 fixes that by walking the stack on heap grow and translating any
+; WriteCtx data pointer that was in the old heap range to the new heap
+; base + same byte offset. The walk only fires on the rare grow event
+; (geometric doubling — log N grows for N cells over the lifetime of a
+; query), and only inspects stack frames (cap is small even after the
+; M5 stack grow), so the amortised cost stays well under one cycle per
+; heap push.
+;
+; Refs (%Value{tag=5, payload=heap_addr}) hold heap INDICES (i32), not
+; pointers, so they survive realloc untouched. Same for any code that
+; reads heap[index] via @wam_heap_get — the index is stable.
+
+define void @wam_heap_grow(%WamState* %vm) {
+entry:
+  ; Snapshot old heap pointer + cap for the post-realloc fixup pass.
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %old_hc = load i32, i32* %hc_ptr
+  %heap_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %old_heap = load %Value*, %Value** %heap_ptr_ptr
+  ; Double the capacity and realloc.
+  %new_hc = mul i32 %old_hc, 2
+  %new_hc_i64 = zext i32 %new_hc to i64
+  %elem_size = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %new_bytes = mul i64 %new_hc_i64, %elem_size
+  %old_i8 = bitcast %Value* %old_heap to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_heap = bitcast i8* %new_i8 to %Value*
+  store %Value* %new_heap, %Value** %heap_ptr_ptr
+  store i32 %new_hc, i32* %hc_ptr
+  ; Fix up any WriteCtx data pointers that were in the old heap range.
+  call void @wam_fixup_writectx_after_heap_grow(%WamState* %vm,
+      %Value* %old_heap, i32 %old_hc, %Value* %new_heap)
+  ret void
+}
+
+; Walks the stack, translating any WriteCtx (type=2) entry whose
+; `data` pointer fell within the old heap range to the corresponding
+; offset inside the new heap.
+;
+; Pointers that lived in the arena (set by put_structure / get_structure
+; write mode) fall outside the old heap range and are left untouched
+; — the arena buffer is independent of the WAM heap.
+;
+; Other stack-entry types (EnvFrame type=0, UnifyCtx type=1) carry
+; data pointers that point into the arena (set by put_structure /
+; get_structure) or are null (EnvFrame doesn't use the field at all),
+; so they're skipped.
+define void @wam_fixup_writectx_after_heap_grow(
+    %WamState* %vm, %Value* %old_heap, i32 %old_cap, %Value* %new_heap) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_end = getelementptr %Value, %Value* %old_heap, i32 %old_cap
+  %old_base_i64 = ptrtoint %Value* %old_heap to i64
+  %old_end_i64 = ptrtoint %Value* %old_end to i64
+  %new_base_i64 = ptrtoint %Value* %new_heap to i64
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i_next, %loop_continue ]
+  %done = icmp sge i32 %i, %ss
+  br i1 %done, label %exit, label %check_entry
+
+check_entry:
+  %entry_ptr = getelementptr %StackEntry, %StackEntry* %stack, i32 %i
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_writectx = icmp eq i32 %type, 2
+  br i1 %is_writectx, label %check_data, label %loop_continue
+
+check_data:
+  %data_pp = getelementptr %StackEntry, %StackEntry* %entry_ptr, i32 0, i32 2
+  %data_ptr = load %Value*, %Value** %data_pp
+  %is_null = icmp eq %Value* %data_ptr, null
+  br i1 %is_null, label %loop_continue, label %check_range
+
+check_range:
+  %data_i64 = ptrtoint %Value* %data_ptr to i64
+  %ge = icmp uge i64 %data_i64, %old_base_i64
+  %lt = icmp ult i64 %data_i64, %old_end_i64
+  %in_range = and i1 %ge, %lt
+  br i1 %in_range, label %translate, label %loop_continue
+
+translate:
+  %byte_offset = sub i64 %data_i64, %old_base_i64
+  %new_addr = add i64 %new_base_i64, %byte_offset
+  %new_data_ptr = inttoptr i64 %new_addr to %Value*
+  store %Value* %new_data_ptr, %Value** %data_pp
+  br label %loop_continue
+
+loop_continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+exit:
+  ret void
+}
+
+; Push value onto heap, return address. (M6: replaces the M5-era
+; exit(2) abort path with a doubling realloc + WriteCtx fixup. Refs
+; into the heap are unaffected because they store i32 indices, not
+; pointers.)
+define i32 @wam_heap_push(%WamState* %vm, %Value %val) nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
   %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
   %hc = load i32, i32* %hc_ptr
-  %ovf = icmp sge i32 %hs, %hc
-  br i1 %ovf, label %abort, label %store_it
+  %need_grow = icmp sge i32 %hs, %hc
+  br i1 %need_grow, label %grow, label %store_it
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_oom, i32 0, i32 0), i32 %hs, i32 %hc)
-  call void @exit(i32 2)
-  unreachable
+grow:
+  call void @wam_heap_grow(%WamState* %vm)
+  br label %store_it
 
 store_it:
+  ; Reload heap pointer — realloc may have moved it.
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
@@ -359,7 +505,7 @@ declare void @exit(i32)
 ; Load / store a heap slot by absolute index. Used by the Ref-aware
 ; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
 ; that put_variable uses as shared storage for aliased registers.
-define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
+define %Value @wam_heap_get(%WamState* %vm, i32 %addr) alwaysinline nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
@@ -381,7 +527,7 @@ load:
 
 @.fmt_heap_bounds = private constant [41 x i8] c"FATAL: WAM heap oob read at %d (cap=%d)\0A\00"
 
-define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) {
+define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) alwaysinline nounwind {
 entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
@@ -410,7 +556,10 @@ store:
 ; heap cell — lets `value_is_unbound` fire downstream). Bounded by 64
 ; hops as a safety guard against malformed chains; if the limit is
 ; exceeded, returns the last seen cell.
-define %Value @wam_deref_value(%WamState* %vm, %Value %v) {
+;
+; Bounded loop, called from many @step cases — alwaysinline + nounwind
+; matches the C runtime's `wam_deref_ptr` in wam_c_runtime/wam_runtime.h.
+define %Value @wam_deref_value(%WamState* %vm, %Value %v) alwaysinline nounwind {
 entry:
   br label %loop
 loop:
@@ -434,7 +583,7 @@ done:
 ; Read a register's value with full Ref-dereferencing. Used by binding
 ; sites that want to inspect "is this logically unbound?" — a Ref to
 ; an unbound heap cell reads back as the Unbound sentinel here.
-define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
+define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) alwaysinline nounwind {
   %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
   %d = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
   ret %Value %d
@@ -446,7 +595,7 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
 ; binding. No Ref-chain following — put_variable creates depth-1 Refs,
 ; and more exotic chains would also require the structural-unify path
 ; to produce them.
-define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) {
+define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
   %tag = extractvalue %Value %cur, 0
@@ -467,7 +616,7 @@ reg_bind:
 
 ; Bind through a Ref value if it points to an Unbound heap cell.
 ; Does NOT update any register.
-define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) {
+define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) alwaysinline nounwind {
 entry:
   %tag = extractvalue %Value %ref_val, 0
   %is_ref = icmp eq i32 %tag, 5
@@ -486,25 +635,166 @@ done:
   ret void
 }
 
+; M10: Proper recursive structural unification with binding.
+; Used by builtin_unify (=/2) when both operands are bound to
+; compounds -- the prior fallback to value_equals does shallow
+; structural equality and fails on lists like [11|_] vs [11|22|_]
+; (Ref vs Integer payloads). This routine:
+;   - Derefs both operands.
+;   - If either is Unbound, binds (through the Ref) and succeeds.
+;     Direct-Unbound operands (rare: only registers explicitly
+;     storing Unbound, no surrounding heap cell) cannot be bound
+;     and are reported as failure to keep the helper signature
+;     pointer-free; callers needing register-direct binding should
+;     handle that case separately before calling.
+;   - On same-tag bound operands: atomic-tag => payload compare;
+;     compound-tag => same functor+arity + recurse on args.
+; Recursive => NOT alwaysinline. `inlinehint` lets non-recursive
+; call sites still get inlined.
+define i1 @wam_unify_value(%WamState* %vm, %Value %a, %Value %b) inlinehint nounwind {
+entry:
+  %da = call %Value @wam_deref_value(%WamState* %vm, %Value %a)
+  %db = call %Value @wam_deref_value(%WamState* %vm, %Value %b)
+  %a_unb = call i1 @value_is_unbound(%Value %da)
+  br i1 %a_unb, label %bind_a, label %check_b_unb
+
+bind_a:
+  %a_tag = extractvalue %Value %a, 0
+  %a_is_ref = icmp eq i32 %a_tag, 5
+  br i1 %a_is_ref, label %bind_a_through, label %fail_no_binding
+
+bind_a_through:
+  %a_addr_i64 = extractvalue %Value %a, 1
+  %a_addr = trunc i64 %a_addr_i64 to i32
+  %a_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %a_old)
+  ; M104: if b is also a Ref to an unbound heap cell, store the
+  ; ORIGINAL b (the Ref) into a's cell rather than the deref'd
+  ; Unbound sentinel. That way a now points at b's cell, and
+  ; subsequent var(a) / var(b) / a == b / etc. all see them as
+  ; the same variable. Previously bind_a_through stored db (=
+  ; Unbound) which left a and b as two distinct unbound cells.
+  %ba_b_tag = extractvalue %Value %b, 0
+  %ba_b_is_ref = icmp eq i32 %ba_b_tag, 5
+  %ba_db_unb = call i1 @value_is_unbound(%Value %db)
+  %ba_alias = and i1 %ba_b_is_ref, %ba_db_unb
+  %ba_to_write = select i1 %ba_alias, %Value %b, %Value %db
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_to_write)
+  ret i1 true
+
+check_b_unb:
+  %b_unb = call i1 @value_is_unbound(%Value %db)
+  br i1 %b_unb, label %bind_b, label %both_bound
+
+bind_b:
+  %b_tag = extractvalue %Value %b, 0
+  %b_is_ref = icmp eq i32 %b_tag, 5
+  br i1 %b_is_ref, label %bind_b_through, label %fail_no_binding
+
+bind_b_through:
+  %b_addr_i64 = extractvalue %Value %b, 1
+  %b_addr = trunc i64 %b_addr_i64 to i32
+  %b_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %b_old)
+  ; M104: symmetric to bind_a_through -- if a is also an unbound
+  ; Ref, store the original a so they alias.
+  %bb_a_tag = extractvalue %Value %a, 0
+  %bb_a_is_ref = icmp eq i32 %bb_a_tag, 5
+  %bb_da_unb = call i1 @value_is_unbound(%Value %da)
+  %bb_alias = and i1 %bb_a_is_ref, %bb_da_unb
+  %bb_to_write = select i1 %bb_alias, %Value %a, %Value %da
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_to_write)
+  ret i1 true
+
+both_bound:
+  %tag_a = extractvalue %Value %da, 0
+  %tag_b = extractvalue %Value %db, 0
+  %tags_eq = icmp eq i32 %tag_a, %tag_b
+  br i1 %tags_eq, label %same_tag, label %fail
+
+same_tag:
+  %is_compound = icmp eq i32 %tag_a, 3
+  br i1 %is_compound, label %compound_unify, label %atomic_eq
+
+atomic_eq:
+  %pay_a = extractvalue %Value %da, 1
+  %pay_b = extractvalue %Value %db, 1
+  %pay_eq = icmp eq i64 %pay_a, %pay_b
+  ret i1 %pay_eq
+
+compound_unify:
+  %cpa = extractvalue %Value %da, 1
+  %cpb = extractvalue %Value %db, 1
+  %ptr_eq = icmp eq i64 %cpa, %cpb
+  br i1 %ptr_eq, label %success, label %deep_unify
+
+deep_unify:
+  %ap = inttoptr i64 %cpa to %Compound*
+  %bp = inttoptr i64 %cpb to %Compound*
+  %afn_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 0
+  %bfn_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 0
+  %afn = load i8*, i8** %afn_slot
+  %bfn = load i8*, i8** %bfn_slot
+  %fn_eq = icmp eq i8* %afn, %bfn
+  br i1 %fn_eq, label %check_arity, label %fail
+
+check_arity:
+  %aar_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 1
+  %bar_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 1
+  %aar = load i32, i32* %aar_slot
+  %bar = load i32, i32* %bar_slot
+  %ar_eq = icmp eq i32 %aar, %bar
+  br i1 %ar_eq, label %args_init, label %fail
+
+args_init:
+  %aargs_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 2
+  %bargs_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 2
+  %aargs = load %Value*, %Value** %aargs_slot
+  %bargs = load %Value*, %Value** %bargs_slot
+  %has_args = icmp sgt i32 %aar, 0
+  br i1 %has_args, label %args_loop, label %success
+
+args_loop:
+  %idx = phi i32 [ 0, %args_init ], [ %next_idx, %step ]
+  %ae_ptr = getelementptr %Value, %Value* %aargs, i32 %idx
+  %be_ptr = getelementptr %Value, %Value* %bargs, i32 %idx
+  %ae = load %Value, %Value* %ae_ptr
+  %be = load %Value, %Value* %be_ptr
+  %arg_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %ae, %Value %be)
+  br i1 %arg_ok, label %step, label %fail
+
+step:
+  %next_idx = add i32 %idx, 1
+  %done2 = icmp sge i32 %next_idx, %aar
+  br i1 %done2, label %success, label %args_loop
+
+success:
+  ret i1 true
+fail:
+  ret i1 false
+fail_no_binding:
+  ret i1 false
+}
+
 ; Trail a heap-cell binding. Uses the high bit (0x40000000) of the
 ; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
 ; register indices (which are always 0-63). unwind_trail reads that
 ; bit to pick reg_set vs heap_set on restore.
-define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) {
+define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) nounwind {
 entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
   %tc = load i32, i32* %tc_ptr
-  %ovf = icmp sge i32 %ts, %tc
-  br i1 %ovf, label %abort, label %store
+  %need_grow = icmp sge i32 %ts, %tc
+  br i1 %need_grow, label %grow, label %store
 
-abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
-  call void @exit(i32 4)
-  unreachable
+grow:
+  call void @wam_trail_grow(%WamState* %vm)
+  br label %store
 
 store:
+  ; Reload trail pointer — realloc may have moved it.
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -519,34 +809,34 @@ store:
 }
 
 ; Set halted flag
-define void @wam_set_halted(%WamState* %vm, i1 %val) {
+define void @wam_set_halted(%WamState* %vm, i1 %val) alwaysinline nounwind {
   %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
   store i1 %val, i1* %h_ptr
   ret void
 }
 
 ; Check halted flag
-define i1 @wam_is_halted(%WamState* %vm) {
+define i1 @wam_is_halted(%WamState* %vm) alwaysinline nounwind {
   %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
   %h = load i1, i1* %h_ptr
   ret i1 %h
 }
 
 ; Get/set continuation pointer
-define i32 @wam_get_cp(%WamState* %vm) {
+define i32 @wam_get_cp(%WamState* %vm) alwaysinline nounwind {
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   %cp = load i32, i32* %cp_ptr
   ret i32 %cp
 }
 
-define void @wam_set_cp(%WamState* %vm, i32 %cp) {
+define void @wam_set_cp(%WamState* %vm, i32 %cp) alwaysinline nounwind {
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   store i32 %cp, i32* %cp_ptr
   ret void
 }
 
 ; Fetch instruction at current PC
-define %Instruction* @wam_fetch(%WamState* %vm) {
+define %Instruction* @wam_fetch(%WamState* %vm) alwaysinline nounwind {
 entry:
   %pc = call i32 @wam_get_pc(%WamState* %vm)
   %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
@@ -565,7 +855,7 @@ out_of_bounds:
 }
 
 ; Look up label → PC (returns -1 if not found)
-define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) {
+define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) alwaysinline nounwind {
 entry:
   %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
   %lc = load i32, i32* %lc_ptr
@@ -591,12 +881,15 @@ not_found:
 ;   0 on no match — caller should return false (backtrack)
 define i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
 entry:
-  ; Fetch A1 (register index 0)
-  %a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  ; NOTE: minimal deref — register array holds the value directly; a proper
-  ; deref chain walk would follow Ref tag=5 chains. The current WAM target
-  ; stores resolved values in registers, so this matches the Rust reference
-  ; (which calls self.deref_var for the same purpose).
+  ; M9: deref A1 before the unbound-vs-bound branch. Without this,
+  ; first-arg-indexed multi-clause predicates called from inside an
+  ; aggregation body (findall / aggregate_all) get a Ref in A1 — the
+  ; put_value at the call site copies a put_variable-created Ref into
+  ; A1 — and the pre-M9 code mistook the Ref-payload for a constant
+  ; payload to scan against, never matching, and the body silently
+  ; failed instead of generating solutions. wam_get_reg_deref walks
+  ; the Ref chain so we see the underlying Unbound / Atom / Integer.
+  %a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %is_unbound = call i1 @value_is_unbound(%Value %a1)
   br i1 %is_unbound, label %skip_switch, label %scan_init
 
@@ -660,7 +953,9 @@ not_match:
 ; but reads A2 (register 1) instead of A1 (register 0).
 define i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
 entry:
-  %a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  ; M9: deref A2 — same fix as wam_switch_on_constant, see the
+  ; comment there for the rationale.
+  %a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %is_unbound = call i1 @value_is_unbound(%Value %a2)
   br i1 %is_unbound, label %skip_switch, label %scan_init
 
@@ -714,8 +1009,110 @@ not_match:
 
 ; === Stack Context Helpers (for compound term read/write mode) ===
 
-; Push a UnifyCtx (type=1) with args array and arg count
+; ============================================================================
+; M5: Growable stack + choice-point allocators
+; ============================================================================
+;
+; The stack, choice-point array, and trail (above) all start with the
+; modest initial capacity set in @wam_state_new and double via realloc
+; when a push hits the cap. Stack overflow used to silently write past
+; the end of the buffer (no overflow check was present in
+; wam_push_unify_ctx / wam_push_write_ctx / the allocate @step case);
+; CP overflow same. M5 routes every push through an ensure_capacity
+; helper that calls into the doubling-grow path.
+;
+; Pointer-stability invariant: the choice-point struct stores trail
+; marks and heap-top markers as INDICES (i32), not as pointers, so
+; trail-grow / CP-grow is transparent to backtrack. The stack stores
+; %Value* in its UnifyCtx / WriteCtx `data` field — for UnifyCtx those
+; point into the arena (allocated by put_structure), for WriteCtx via
+; @wam_write_ctx_set_args those can point into the WAM heap (get_list
+; write mode). Since this PR does NOT grow the heap (heap overflow
+; still exits via the existing abort path), those pointers remain
+; stable for the duration of any active WriteCtx and stack-grow itself
+; only moves the stack buffer, not the heap. Heap-grow is a follow-up
+; that would require either walking the stack on grow or changing the
+; WriteCtx data field to a heap-relative index.
+
+define void @wam_stack_grow(%WamState* %vm) {
+entry:
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %new_sc = mul i32 %sc, 2
+  %new_sc_i64 = zext i32 %new_sc to i64
+  %elem_size = ptrtoint %StackEntry* getelementptr (%StackEntry, %StackEntry* null, i32 1) to i64
+  %new_bytes = mul i64 %new_sc_i64, %elem_size
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %old_stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %old_i8 = bitcast %StackEntry* %old_stack to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_stack = bitcast i8* %new_i8 to %StackEntry*
+  store %StackEntry* %new_stack, %StackEntry** %stack_ptr
+  store i32 %new_sc, i32* %sc_ptr
+  ret void
+}
+
+; Ensures there is at least one free slot at the top of the stack.
+; Callers MUST invoke this BEFORE reading the stack pointer (because
+; grow may realloc the buffer to a new address). All push helpers
+; below follow this discipline.
+define void @wam_stack_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  %sc = load i32, i32* %sc_ptr
+  %ovf = icmp sge i32 %ss, %sc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_stack_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+define void @wam_cp_grow(%WamState* %vm) {
+entry:
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %new_cc = mul i32 %cc, 2
+  %new_cc_i64 = zext i32 %new_cc to i64
+  %elem_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1) to i64
+  %new_bytes = mul i64 %new_cc_i64, %elem_size
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %old_cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %old_i8 = bitcast %ChoicePoint* %old_cps to i8*
+  %new_i8 = call i8* @realloc(i8* %old_i8, i64 %new_bytes)
+  %new_cps = bitcast i8* %new_i8 to %ChoicePoint*
+  store %ChoicePoint* %new_cps, %ChoicePoint** %cps_ptr
+  store i32 %new_cc, i32* %cc_ptr
+  ret void
+}
+
+define void @wam_cp_ensure_capacity(%WamState* %vm) nounwind {
+entry:
+  %cn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cn = load i32, i32* %cn_ptr
+  %cc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  %cc = load i32, i32* %cc_ptr
+  %ovf = icmp sge i32 %cn, %cc
+  br i1 %ovf, label %grow, label %done
+
+grow:
+  call void @wam_cp_grow(%WamState* %vm)
+  br label %done
+
+done:
+  ret void
+}
+
+; Push a UnifyCtx (type=1) with args array and arg count.
+; M5: calls @wam_stack_ensure_capacity first so the buffer is grown
+; if at cap; reloads the stack pointer afterward in case realloc moved it.
 define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -742,7 +1139,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
 ; Push a WriteCtx (type=2) with write count.
 ; For compound terms, data field stores the args %Value* pointer
 ; so set_value/set_constant write directly into the compound's args array.
+; M5: routes through @wam_stack_ensure_capacity first.
 define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
+  call void @wam_stack_ensure_capacity(%WamState* %vm)
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -1009,14 +1408,20 @@ store:
 ; agg_type: 0=sum, 1=count, 2=min, 3=max, 4=collect, 5=bag
 ; For count, we just return Integer(count).
 ; For sum/min/max, we iterate over the %Value array.
-; collect/bag return a sentinel atom for now (full list support is TODO).
-define %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum, i32 %count) {
+; M9: collect (agg_type=4) and bag (agg_type=5) build a Prolog
+; cons-cell list from the accumulator entries. Both return the same
+; shape — bag/findall preserves order/duplicates, set goes through a
+; downstream sort/dedup pass that doesn't change the per-entry shape.
+define %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum, i32 %count) {
 entry:
   switch i32 %agg_type, label %default_case [
     i32 0, label %sum_case
     i32 1, label %count_case
     i32 2, label %min_case
     i32 3, label %max_case
+    i32 4, label %collect_case
+    i32 5, label %collect_case
+    i32 6, label %set_case
   ]
 
 count_case:
@@ -1026,10 +1431,31 @@ count_case:
   ret %Value %c_final
 
 sum_case:
-  br label %sum_loop
+  ; M14: scan once for any Float entry. If all entries are Integer
+  ; we use the integer path (preserves precision; the original
+  ; behaviour). If any entry is a Float we use a double accumulator
+  ; -- previously the integer loop just added raw payload bits which
+  ; gave junk for Float entries (Float bits != the underlying value).
+  br label %sum_scan
+sum_scan:
+  %scan_i = phi i32 [0, %sum_case], [%scan_inext, %sum_scan_step]
+  %had_float = phi i1 [false, %sum_case], [%scan_new_hadf, %sum_scan_step]
+  %scan_done = icmp sge i32 %scan_i, %count
+  br i1 %scan_done, label %sum_dispatch, label %sum_scan_step
+sum_scan_step:
+  %scan_slot = getelementptr %Value, %Value* %accum, i32 %scan_i
+  %scan_val = load %Value, %Value* %scan_slot
+  %scan_tag = extractvalue %Value %scan_val, 0
+  %scan_is_f = icmp eq i32 %scan_tag, 2
+  %scan_new_hadf = or i1 %had_float, %scan_is_f
+  %scan_inext = add i32 %scan_i, 1
+  br label %sum_scan
+sum_dispatch:
+  br i1 %had_float, label %sum_float, label %sum_loop
+
 sum_loop:
-  %i_s = phi i32 [0, %sum_case], [%next_s, %sum_body]
-  %acc_s = phi i64 [0, %sum_case], [%new_acc_s, %sum_body]
+  %i_s = phi i32 [0, %sum_dispatch], [%next_s, %sum_body]
+  %acc_s = phi i64 [0, %sum_dispatch], [%new_acc_s, %sum_body]
   %done_s = icmp sge i32 %i_s, %count
   br i1 %done_s, label %sum_done, label %sum_body
 sum_body:
@@ -1040,11 +1466,29 @@ sum_body:
   %next_s = add i32 %i_s, 1
   br label %sum_loop
 sum_done:
-  ; PHI value %acc_s is valid here as %sum_done is a direct successor
-  ; of the loop block and the edge carries the final iteration state.
   %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
   %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
   ret %Value %s_final
+
+sum_float:
+  br label %sum_floop
+sum_floop:
+  %i_sf = phi i32 [0, %sum_float], [%next_sf, %sum_fbody]
+  %acc_sf = phi double [0.0, %sum_float], [%new_acc_sf, %sum_fbody]
+  %done_sf = icmp sge i32 %i_sf, %count
+  br i1 %done_sf, label %sum_fdone, label %sum_fbody
+sum_fbody:
+  %slot_sf = getelementptr %Value, %Value* %accum, i32 %i_sf
+  %val_sf = load %Value, %Value* %slot_sf
+  ; Promote each entry to double -- Integers go via sitofp, Floats
+  ; reinterpret their payload bits.
+  %term_d = call double @value_to_double(%Value %val_sf)
+  %new_acc_sf = fadd double %acc_sf, %term_d
+  %next_sf = add i32 %i_sf, 1
+  br label %sum_floop
+sum_fdone:
+  %sf_val = call %Value @value_float(double %acc_sf)
+  ret %Value %sf_val
 
 min_case:
   ; Initial value: take first element if count > 0, else 0
@@ -1109,11 +1553,715 @@ max_done:
   %x_final = insertvalue %Value %x_val, i64 %best_x, 1
   ret %Value %x_final
 
+collect_case:
+  ; M9: build the result list from accum[count-1] down to accum[0].
+  ; Tail seed: empty-list Atom whose payload is the interned `[]`
+  ; atom id (set up at codegen time in wam_llvm_target.pl).
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0       ; tag 0 = Atom
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  ; If count == 0, just return the empty list.
+  %has_any = icmp sgt i32 %count, 0
+  br i1 %has_any, label %collect_setup, label %collect_done_empty
+
+collect_done_empty:
+  ret %Value %empty_v
+
+collect_setup:
+  call void @wam_arena_ensure()
+  br label %collect_loop
+
+collect_loop:
+  ; idx walks down from count-1 to 0; tail threads through.
+  %ci = phi i32 [ %count, %collect_setup ], [ %ci_prev, %collect_step ]
+  %tail = phi %Value [ %empty_v, %collect_setup ], [ %new_cons, %collect_step ]
+  %ci_done = icmp sle i32 %ci, 0
+  br i1 %ci_done, label %collect_finish, label %collect_step
+
+collect_step:
+  %ci_prev = sub i32 %ci, 1
+  %slot = getelementptr %Value, %Value* %accum, i32 %ci_prev
+  %head = load %Value, %Value* %slot
+  ; Allocate a fresh %Compound on the arena: { functor_ptr, arity, args_ptr }.
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cp_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %cp = bitcast i8* %cp_mem to %Compound*
+  ; Functor: `[|]` (cons). The string global @.fn__5B_7C_5D is
+  ; emitted by emit_functor_string_globals when "[|]" is in the
+  ; functor_string_global table — wam_llvm_target.pl asserts it
+  ; eagerly for the M9 collect path even if the source program
+  ; never explicitly constructs a cons cell.
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn_ptr  = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %fn_ptr, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  store i32 2, i32* %ar_slot
+  ; Allocate the 2-element args array on the arena.
+  %args_mem = call i8* @wam_arena_alloc(i64 32)         ; 2 * sizeof(%Value)
+  %args = bitcast i8* %args_mem to %Value*
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  store %Value* %args, %Value** %args_slot
+  ; args[0] = head, args[1] = tail.
+  %a0 = getelementptr %Value, %Value* %args, i32 0
+  store %Value %head, %Value* %a0
+  %a1 = getelementptr %Value, %Value* %args, i32 1
+  store %Value %tail, %Value* %a1
+  ; Wrap the compound as a %Value{tag=3, payload=ptrtoint(cp)}.
+  %cp_i64 = ptrtoint %Compound* %cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %cp_i64, 1
+  br label %collect_loop
+
+collect_finish:
+  ret %Value %tail
+
+set_case:
+  ; M10: setof / set -- sort the accumulator in place by (tag, payload)
+  ; lexicographic, then build a cons-cell chain skipping adjacent
+  ; duplicates. Same shape as collect_case but goes through an
+  ; insertion-sort + dedup pass first.
+  %set_has_any = icmp sgt i32 %count, 0
+  br i1 %set_has_any, label %set_sort_init, label %set_empty
+
+set_empty:
+  %set_e_id = load i64, i64* @wam_empty_list_atom_id
+  %set_ev0 = insertvalue %Value undef, i32 0, 0
+  %set_ev  = insertvalue %Value %set_ev0, i64 %set_e_id, 1
+  ret %Value %set_ev
+
+set_sort_init:
+  br label %set_sort_outer
+set_sort_outer:
+  %set_so_i = phi i32 [ 1, %set_sort_init ], [ %set_so_i1, %set_sort_done_inner ]
+  %set_so_more = icmp slt i32 %set_so_i, %count
+  br i1 %set_so_more, label %set_sort_pick, label %set_build_init
+set_sort_pick:
+  %set_so_key_ptr = getelementptr %Value, %Value* %accum, i32 %set_so_i
+  %set_so_key = load %Value, %Value* %set_so_key_ptr
+  %set_so_key_tag = extractvalue %Value %set_so_key, 0
+  %set_so_key_pay = extractvalue %Value %set_so_key, 1
+  br label %set_sort_inner
+set_sort_inner:
+  %set_si_j = phi i32 [ %set_so_i, %set_sort_pick ], [ %set_si_j_dec, %set_si_shift ]
+  %set_si_j_dec = sub i32 %set_si_j, 1
+  %set_si_j_pos = icmp sge i32 %set_si_j_dec, 0
+  br i1 %set_si_j_pos, label %set_si_cmp, label %set_si_done
+set_si_cmp:
+  %set_si_left_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j_dec
+  %set_si_left = load %Value, %Value* %set_si_left_ptr
+  ; M70: delegate to @wam_term_cmp (same migration as the plain msort
+  ; loop above). Same behaviour on integer-only setof; correct
+  ; standard order on atoms / compounds.
+  %set_si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %set_si_left, %Value %set_so_key)
+  %set_should_shift = icmp sgt i32 %set_si_cmp_r, 0
+  br i1 %set_should_shift, label %set_si_shift, label %set_si_done
+set_si_shift:
+  %set_si_dst_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_si_left, %Value* %set_si_dst_ptr
+  br label %set_sort_inner
+set_si_done:
+  %set_si_dst2_ptr = getelementptr %Value, %Value* %accum, i32 %set_si_j
+  store %Value %set_so_key, %Value* %set_si_dst2_ptr
+  br label %set_sort_done_inner
+set_sort_done_inner:
+  %set_so_i1 = add i32 %set_so_i, 1
+  br label %set_sort_outer
+
+set_build_init:
+  ; Build cons chain from i = count-1 down to 0, but skip when
+  ; accum[i] equals the value just emitted (the head of the running
+  ; chain). Since the array is sorted, duplicates are adjacent, so
+  ; comparing against the just-emitted head is sufficient for full
+  ; deduplication. The first element always emits.
+  call void @wam_arena_ensure()
+  %set_empty_id = load i64, i64* @wam_empty_list_atom_id
+  %set_emptyv0 = insertvalue %Value undef, i32 0, 0
+  %set_emptyv  = insertvalue %Value %set_emptyv0, i64 %set_empty_id, 1
+  br label %set_build_loop
+
+set_build_loop:
+  %set_bi = phi i32 [ %count, %set_build_init ], [ %set_bi_prev, %set_build_step_or_skip ]
+  %set_btail = phi %Value [ %set_emptyv, %set_build_init ], [ %set_new_tail, %set_build_step_or_skip ]
+  %set_bi_done = icmp sle i32 %set_bi, 0
+  br i1 %set_bi_done, label %set_finish, label %set_check_dup
+
+set_check_dup:
+  %set_bi_prev = sub i32 %set_bi, 1
+  %set_head_ptr = getelementptr %Value, %Value* %accum, i32 %set_bi_prev
+  %set_head = load %Value, %Value* %set_head_ptr
+  ; If this is NOT the last unprocessed slot (bi_prev > 0), check
+  ; whether accum[bi_prev] equals accum[bi_prev - 1]. If equal, the
+  ; PRIOR pass will emit accum[bi_prev - 1]; we skip this one to
+  ; avoid the dup. Equivalent: emit only when current != prev.
+  %set_has_prior = icmp sgt i32 %set_bi_prev, 0
+  br i1 %set_has_prior, label %set_dup_check, label %set_emit
+
+set_dup_check:
+  %set_prior_idx = sub i32 %set_bi_prev, 1
+  %set_prior_ptr = getelementptr %Value, %Value* %accum, i32 %set_prior_idx
+  %set_prior = load %Value, %Value* %set_prior_ptr
+  %set_h_tag = extractvalue %Value %set_head, 0
+  %set_h_pay = extractvalue %Value %set_head, 1
+  %set_p_tag = extractvalue %Value %set_prior, 0
+  %set_p_pay = extractvalue %Value %set_prior, 1
+  %set_tags_eq = icmp eq i32 %set_h_tag, %set_p_tag
+  %set_pays_eq = icmp eq i64 %set_h_pay, %set_p_pay
+  %set_is_dup = and i1 %set_tags_eq, %set_pays_eq
+  br i1 %set_is_dup, label %set_skip, label %set_emit
+
+set_skip:
+  ; Drop this duplicate: tail stays the same, advance.
+  br label %set_build_step_or_skip
+
+set_emit:
+  ; Build a new cons cell: { [|]/2, [head, tail] }
+  %set_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %set_cp_mem = call i8* @wam_arena_alloc(i64 %set_cp_size)
+  %set_cp = bitcast i8* %set_cp_mem to %Compound*
+  %set_fn_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 0
+  %set_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %set_fn_ptr, i8** %set_fn_slot
+  %set_ar_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 1
+  store i32 2, i32* %set_ar_slot
+  %set_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %set_args = bitcast i8* %set_args_mem to %Value*
+  %set_args_slot = getelementptr %Compound, %Compound* %set_cp, i32 0, i32 2
+  store %Value* %set_args, %Value** %set_args_slot
+  %set_a0 = getelementptr %Value, %Value* %set_args, i32 0
+  store %Value %set_head, %Value* %set_a0
+  %set_a1 = getelementptr %Value, %Value* %set_args, i32 1
+  store %Value %set_btail, %Value* %set_a1
+  %set_cp_i64 = ptrtoint %Compound* %set_cp to i64
+  %set_nc0 = insertvalue %Value undef, i32 3, 0
+  %set_nc = insertvalue %Value %set_nc0, i64 %set_cp_i64, 1
+  br label %set_build_step_or_skip
+
+set_build_step_or_skip:
+  %set_new_tail = phi %Value [ %set_btail, %set_skip ], [ %set_nc, %set_emit ]
+  br label %set_build_loop
+
+set_finish:
+  ret %Value %set_btail
+
 default_case:
-  ; collect/bag: return sentinel atom 0 for now (minimal scope)
+  ; Unknown agg_type — return sentinel Atom 0.
   %d_val = insertvalue %Value undef, i32 0, 0
   %d_final = insertvalue %Value %d_val, i64 0, 1
   ret %Value %d_final
+}
+
+; M10: msort/2 runtime helper. Walks the input list (a [|]/2 Compound
+; chain terminated by the `[]` Atom), copies elements into an arena
+; buffer, sorts in place with insertion sort, and rebuilds a [|]/2
+; Compound chain of the same length. Comparator: (tag, payload)
+; lexicographic so ints/atoms/floats all order consistently and
+; distinct tags sort apart. Compound vs compound currently compares
+; only the payload (the pointer) -- good enough for the typical
+; "sort a flat list of ints" case; structural ordering is M11 work.
+; Returns the new list's head Value (Compound, or the [] Atom when
+; the input is empty).
+
+; M21: recursive pretty-printer used by write/1 and friends.
+; Prints Integers, Floats, Atoms via existing format strings, and
+; Compounds as either list notation ([a, b, c] when the functor is
+; [|]/2) or term notation (functor(arg, ...)) otherwise. Unbound
+; cells render as `_`; unknown atoms (id out of range) render as
+; `?`. Recurses into compound args -- no depth limit, so a cyclic
+; term would loop, but the rest of the runtime never produces
+; cycles.
+define void @wam_write_value(%WamState* %vm, %Value %v) {
+entry:
+  %wv.d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %wv.tag = extractvalue %Value %wv.d, 0
+  switch i32 %wv.tag, label %wv.unbound [
+    i32 0, label %wv.atom
+    i32 1, label %wv.int
+    i32 2, label %wv.float
+    i32 3, label %wv.compound
+  ]
+
+wv.int:
+  %wv.iv = extractvalue %Value %wv.d, 1
+  %wv.fmt_lld = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_lld, i64 %wv.iv)
+  ret void
+
+wv.float:
+  %wv.fb = extractvalue %Value %wv.d, 1
+  %wv.fv = bitcast i64 %wv.fb to double
+  %wv.fmt_dbl = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_dbl, double %wv.fv)
+  ret void
+
+wv.atom:
+  %wv.aid = extractvalue %Value %wv.d, 1
+  %wv.eid = load i64, i64* @wam_empty_list_atom_id
+  %wv.is_empty = icmp eq i64 %wv.aid, %wv.eid
+  br i1 %wv.is_empty, label %wv.empty_list, label %wv.atom_str
+
+wv.empty_list:
+  call i32 @putchar(i32 91)
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.atom_str:
+  %wv.str = call i8* @wam_atom_to_string(i64 %wv.aid)
+  %wv.null = icmp eq i8* %wv.str, null
+  br i1 %wv.null, label %wv.atom_unknown, label %wv.atom_go
+
+wv.atom_go:
+  %wv.fmt_str = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str, i8* %wv.str)
+  ret void
+
+wv.atom_unknown:
+  call i32 @putchar(i32 63)
+  ret void
+
+wv.unbound:
+  call i32 @putchar(i32 95)
+  ret void
+
+wv.compound:
+  %wv.cp_bits = extractvalue %Value %wv.d, 1
+  %wv.cp = inttoptr i64 %wv.cp_bits to %Compound*
+  %wv.fn_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 0
+  %wv.fn_ptr = load i8*, i8** %wv.fn_slot
+  %wv.ar_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 1
+  %wv.arity = load i32, i32* %wv.ar_slot
+  %wv.args_slot = getelementptr %Compound, %Compound* %wv.cp, i32 0, i32 2
+  %wv.args = load %Value*, %Value** %wv.args_slot
+  ; Detect list notation by comparing the functor ptr to @.fn__5B_7C_5D
+  ; (the eager-registered [|]/2 string). Compound args of [|] are
+  ; (Head, Tail) where Tail recurses through more [|] cells or
+  ; terminates in the [] Atom.
+  %wv.bracket = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.is_list = icmp eq i8* %wv.fn_ptr, %wv.bracket
+  br i1 %wv.is_list, label %wv.list, label %wv.term
+
+wv.list:
+  call i32 @putchar(i32 91)
+  %wv.h0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.h0 = load %Value, %Value* %wv.h0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.h0)
+  %wv.t0_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.t0 = load %Value, %Value* %wv.t0_ptr
+  br label %wv.list_walk
+
+wv.list_walk:
+  %wv.cur = phi %Value [ %wv.t0, %wv.list ], [ %wv.cur_next, %wv.list_step ]
+  %wv.cur_d = call %Value @wam_deref_value(%WamState* %vm, %Value %wv.cur)
+  %wv.cur_tag = extractvalue %Value %wv.cur_d, 0
+  %wv.cur_is_atom = icmp eq i32 %wv.cur_tag, 0
+  br i1 %wv.cur_is_atom, label %wv.list_check_end, label %wv.list_check_cons
+
+wv.list_check_end:
+  %wv.cur_aid = extractvalue %Value %wv.cur_d, 1
+  %wv.eid2 = load i64, i64* @wam_empty_list_atom_id
+  %wv.cur_is_end = icmp eq i64 %wv.cur_aid, %wv.eid2
+  br i1 %wv.cur_is_end, label %wv.list_done, label %wv.list_improper
+
+wv.list_check_cons:
+  %wv.cur_is_cmp = icmp eq i32 %wv.cur_tag, 3
+  br i1 %wv.cur_is_cmp, label %wv.list_check_cons2, label %wv.list_improper
+
+wv.list_check_cons2:
+  %wv.cur_cp_bits = extractvalue %Value %wv.cur_d, 1
+  %wv.cur_cp = inttoptr i64 %wv.cur_cp_bits to %Compound*
+  %wv.cur_fn_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 0
+  %wv.cur_fn_ptr = load i8*, i8** %wv.cur_fn_slot
+  %wv.bracket2 = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %wv.cur_is_list = icmp eq i8* %wv.cur_fn_ptr, %wv.bracket2
+  br i1 %wv.cur_is_list, label %wv.list_step, label %wv.list_improper
+
+wv.list_step:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  %wv.cur_args_slot = getelementptr %Compound, %Compound* %wv.cur_cp, i32 0, i32 2
+  %wv.cur_args = load %Value*, %Value** %wv.cur_args_slot
+  %wv.cur_h_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 0
+  %wv.cur_h = load %Value, %Value* %wv.cur_h_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_h)
+  %wv.cur_t_ptr = getelementptr %Value, %Value* %wv.cur_args, i32 1
+  %wv.cur_next = load %Value, %Value* %wv.cur_t_ptr
+  br label %wv.list_walk
+
+wv.list_improper:
+  call i32 @putchar(i32 124)
+  call void @wam_write_value(%WamState* %vm, %Value %wv.cur_d)
+  br label %wv.list_done
+
+wv.list_done:
+  call i32 @putchar(i32 93)
+  ret void
+
+wv.term:
+  ; M22 / M23: detect infix / prefix operator notation before
+  ; falling through to the canonical functor(args) form.
+  ; Single-char ops (fn[1] == 0): M22 path.
+  ; Two-char ops (fn[1] != 0, fn[2] == 0): M23 path. Symbolic 2-byte
+  ; operators like ``->`` / ``:-`` / ``==`` / ``=<`` print without
+  ; spaces; word-like 2-char ops (``is``, ``mod``, ``xor``) need
+  ; word-boundary spacing and are deferred.
+  %wv.fn1_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 1
+  %wv.fn1 = load i8, i8* %wv.fn1_ptr
+  %wv.fn1_zero = icmp eq i8 %wv.fn1, 0
+  br i1 %wv.fn1_zero, label %wv.maybe_op, label %wv.maybe_op2
+
+wv.maybe_op:
+  %wv.fn0_char = load i8, i8* %wv.fn_ptr
+  %wv.is_binary = icmp eq i32 %wv.arity, 2
+  %wv.is_unary = icmp eq i32 %wv.arity, 1
+  br i1 %wv.is_binary, label %wv.binary_op, label %wv.unary_check
+
+wv.maybe_op2:
+  ; Only consider 2-char ops for arity=2.
+  %wv.b2 = icmp eq i32 %wv.arity, 2
+  br i1 %wv.b2, label %wv.check_2char, label %wv.canonical
+
+wv.check_2char:
+  ; fn[2] == 0 -> exactly 2 bytes (M23 path).
+  ; fn[2] != 0 -> maybe a 3-byte word op (M24 path).
+  %wv.fn2_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 2
+  %wv.fn2 = load i8, i8* %wv.fn2_ptr
+  %wv.fn2_zero = icmp eq i8 %wv.fn2, 0
+  br i1 %wv.fn2_zero, label %wv.binary_op2, label %wv.check_3char
+
+wv.check_3char:
+  ; fn[3] must be 0 -- only handle exactly 3-byte ops.
+  %wv.fn3_ptr = getelementptr i8, i8* %wv.fn_ptr, i32 3
+  %wv.fn3 = load i8, i8* %wv.fn3_ptr
+  %wv.fn3_zero = icmp eq i8 %wv.fn3, 0
+  br i1 %wv.fn3_zero, label %wv.binary_op3, label %wv.canonical
+
+wv.binary_op3:
+  ; Pack (fn[0], fn[1], fn[2]) into i32:
+  ;   (fn[0] << 16) | (fn[1] << 8) | fn[2]
+  %wv.fn0_c3 = load i8, i8* %wv.fn_ptr
+  %wv.fn0_z3 = zext i8 %wv.fn0_c3 to i32
+  %wv.fn1_z3 = zext i8 %wv.fn1 to i32
+  %wv.fn2_z3 = zext i8 %wv.fn2 to i32
+  %wv.fn0_s3 = shl i32 %wv.fn0_z3, 16
+  %wv.fn1_s3 = shl i32 %wv.fn1_z3, 8
+  %wv.packed3_a = or i32 %wv.fn0_s3, %wv.fn1_s3
+  %wv.packed3 = or i32 %wv.packed3_a, %wv.fn2_z3
+  switch i32 %wv.packed3, label %wv.canonical [
+    i32 7171940, label %wv.infix_word3  ; ''m'' ''o'' ''d'' (109,111,100)
+    i32 7892850, label %wv.infix_word3  ; ''x'' ''o'' ''r'' (120,111,114)
+    i32 7497069, label %wv.infix_word3  ; ''r'' ''e'' ''m'' (114,101,109)
+    i32 6580598, label %wv.infix_word3  ; ''d'' ''i'' ''v'' (100,105,118)
+    i32 4012605, label %wv.infix3       ; ''='' '':'' ''='' -> ``=:=``
+    i32 4021309, label %wv.infix3       ; ''='' ''\\'' ''='' -> ``=\\=``
+    i32 4009518, label %wv.infix3       ; ''='' ''.'' ''.'' -> ``=..``
+    i32 6044989, label %wv.infix3       ; ''\\'' ''='' ''='' -> ``\\==``
+    i32 4209980, label %wv.infix3       ; ''@'' ''='' ''<'' -> ``@=<``
+    i32 4210237, label %wv.infix3       ; ''@'' ''>'' ''='' -> ``@>=``
+  ]
+
+wv.infix3:
+  ; Print: arg0 + fn[0..2] (no spaces, symbolic 3-byte op) + arg1.
+  %wv.s3_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.s3_a0 = load %Value, %Value* %wv.s3_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a0)
+  %wv.s3_fn0_i32 = zext i8 %wv.fn0_c3 to i32
+  call i32 @putchar(i32 %wv.s3_fn0_i32)
+  %wv.s3_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.s3_fn1_i32)
+  %wv.s3_fn2_i32 = zext i8 %wv.fn2 to i32
+  call i32 @putchar(i32 %wv.s3_fn2_i32)
+  %wv.s3_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.s3_a1 = load %Value, %Value* %wv.s3_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.s3_a1)
+  ret void
+
+wv.infix_word3:
+  ; Print: arg0 + '' '' + fn[0..2] + '' '' + arg1.
+  %wv.w3_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.w3_a0 = load %Value, %Value* %wv.w3_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w3_a0)
+  call i32 @putchar(i32 32)
+  %wv.w3_fn0_i32 = zext i8 %wv.fn0_c3 to i32
+  call i32 @putchar(i32 %wv.w3_fn0_i32)
+  %wv.w3_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.w3_fn1_i32)
+  %wv.w3_fn2_i32 = zext i8 %wv.fn2 to i32
+  call i32 @putchar(i32 %wv.w3_fn2_i32)
+  call i32 @putchar(i32 32)
+  %wv.w3_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.w3_a1 = load %Value, %Value* %wv.w3_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w3_a1)
+  ret void
+
+wv.binary_op2:
+  ; Pack (fn[0], fn[1]) into i16: (fn[0] << 8) | fn[1].
+  %wv.fn0_c2 = load i8, i8* %wv.fn_ptr
+  %wv.fn0_z16 = zext i8 %wv.fn0_c2 to i16
+  %wv.fn1_z16 = zext i8 %wv.fn1 to i16
+  %wv.fn0_shift = shl i16 %wv.fn0_z16, 8
+  %wv.packed = or i16 %wv.fn0_shift, %wv.fn1_z16
+  switch i16 %wv.packed, label %wv.canonical [
+    i16 11582, label %wv.infix2       ; ''-'' ''>'' -> ``->``
+    i16 14893, label %wv.infix2       ; '':'' ''-'' -> ``:-``
+    i16 15677, label %wv.infix2       ; ''='' ''='' -> ``==``
+    i16 23613, label %wv.infix2       ; ''\\'' ''='' -> ``\\=``
+    i16 15676, label %wv.infix2       ; ''='' ''<'' -> ``=<``
+    i16 15933, label %wv.infix2       ; ''>'' ''='' -> ``>=``
+    i16 12079, label %wv.infix2       ; ''/'' ''/'' -> ``//``
+    i16 10794, label %wv.infix2       ; ''*'' ''*'' -> ``**``
+    i16 26995, label %wv.infix_word2  ; ''i'' ''s'' -> `` is `` (word-spaced)
+  ]
+
+wv.infix2:
+  %wv.i2_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.i2_a0 = load %Value, %Value* %wv.i2_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a0)
+  %wv.i2_fn0_c = load i8, i8* %wv.fn_ptr
+  %wv.i2_fn0_i32 = zext i8 %wv.i2_fn0_c to i32
+  call i32 @putchar(i32 %wv.i2_fn0_i32)
+  %wv.i2_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.i2_fn1_i32)
+  %wv.i2_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.i2_a1 = load %Value, %Value* %wv.i2_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.i2_a1)
+  ret void
+
+wv.infix_word2:
+  ; Word-like 2-char op (``is``) -- emit `` is `` with surrounding
+  ; spaces so adjacent atoms / numbers don''t collide with the op
+  ; name. Same arg flow as wv.infix2.
+  %wv.w2_a0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.w2_a0 = load %Value, %Value* %wv.w2_a0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w2_a0)
+  call i32 @putchar(i32 32)
+  %wv.w2_fn0_c = load i8, i8* %wv.fn_ptr
+  %wv.w2_fn0_i32 = zext i8 %wv.w2_fn0_c to i32
+  call i32 @putchar(i32 %wv.w2_fn0_i32)
+  %wv.w2_fn1_i32 = zext i8 %wv.fn1 to i32
+  call i32 @putchar(i32 %wv.w2_fn1_i32)
+  call i32 @putchar(i32 32)
+  %wv.w2_a1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.w2_a1 = load %Value, %Value* %wv.w2_a1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.w2_a1)
+  ret void
+
+wv.binary_op:
+  ; Single-byte binary operators that print as infix without parens.
+  ; Precedence is not modelled yet -- a child operator with lower
+  ; priority than its parent should be parenthesised, but the
+  ; runtime doesn''t have an op-priority table yet.
+  switch i8 %wv.fn0_char, label %wv.canonical [
+    i8 43, label %wv.infix  ; ''+''
+    i8 45, label %wv.infix  ; ''-''
+    i8 42, label %wv.infix  ; ''*''
+    i8 47, label %wv.infix  ; ''/''
+    i8 61, label %wv.infix  ; ''=''
+    i8 60, label %wv.infix  ; ''<''
+    i8 62, label %wv.infix  ; ''>''
+    i8 58, label %wv.infix  ; '':''
+    i8 94, label %wv.infix  ; ''^''
+  ]
+
+wv.infix:
+  %wv.iarg0_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.iarg0 = load %Value, %Value* %wv.iarg0_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg0)
+  %wv.fn0_i32 = zext i8 %wv.fn0_char to i32
+  call i32 @putchar(i32 %wv.fn0_i32)
+  %wv.iarg1_ptr = getelementptr %Value, %Value* %wv.args, i32 1
+  %wv.iarg1 = load %Value, %Value* %wv.iarg1_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.iarg1)
+  ret void
+
+wv.unary_check:
+  br i1 %wv.is_unary, label %wv.maybe_prefix, label %wv.canonical
+
+wv.maybe_prefix:
+  ; Only ``-`` is a meaningful single-char prefix op; ``+`` is a no-op
+  ; that real code never writes out. ``\+`` is two characters.
+  %wv.is_neg = icmp eq i8 %wv.fn0_char, 45
+  br i1 %wv.is_neg, label %wv.prefix, label %wv.canonical
+
+wv.prefix:
+  call i32 @putchar(i32 45)
+  %wv.parg_ptr = getelementptr %Value, %Value* %wv.args, i32 0
+  %wv.parg = load %Value, %Value* %wv.parg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.parg)
+  ret void
+
+wv.canonical:
+  %wv.fmt_str2 = getelementptr [3 x i8], [3 x i8]* @.fmt_str, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %wv.fmt_str2, i8* %wv.fn_ptr)
+  call i32 @putchar(i32 40)
+  br label %wv.term_loop
+
+wv.term_loop:
+  %wv.ti = phi i32 [ 0, %wv.canonical ], [ %wv.ti_next, %wv.term_after ]
+  %wv.done_t = icmp sge i32 %wv.ti, %wv.arity
+  br i1 %wv.done_t, label %wv.term_done, label %wv.term_iter
+
+wv.term_iter:
+  %wv.first = icmp eq i32 %wv.ti, 0
+  br i1 %wv.first, label %wv.term_arg, label %wv.term_sep
+
+wv.term_sep:
+  call i32 @putchar(i32 44)
+  call i32 @putchar(i32 32)
+  br label %wv.term_arg
+
+wv.term_arg:
+  %wv.arg_ptr = getelementptr %Value, %Value* %wv.args, i32 %wv.ti
+  %wv.arg = load %Value, %Value* %wv.arg_ptr
+  call void @wam_write_value(%WamState* %vm, %Value %wv.arg)
+  br label %wv.term_after
+
+wv.term_after:
+  %wv.ti_next = add i32 %wv.ti, 1
+  br label %wv.term_loop
+
+wv.term_done:
+  call i32 @putchar(i32 41)
+  ret void
+}
+
+define %Value @wam_msort_list(%WamState* %vm, %Value %head_in) inlinehint nounwind {
+entry:
+  call void @wam_arena_ensure()
+  ; ---- Pass 1: count elements ----
+  br label %count_loop
+count_loop:
+  %cnt_cur = phi %Value [ %head_in, %entry ], [ %cnt_next, %cnt_step ]
+  %cnt_n = phi i32 [ 0, %entry ], [ %cnt_n1, %cnt_step ]
+  %cnt_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cnt_cur)
+  %cnt_tag = extractvalue %Value %cnt_d, 0
+  %cnt_is_cmp = icmp eq i32 %cnt_tag, 3
+  br i1 %cnt_is_cmp, label %cnt_step, label %cnt_done
+cnt_step:
+  %cnt_cp_bits = extractvalue %Value %cnt_d, 1
+  %cnt_cp = inttoptr i64 %cnt_cp_bits to %Compound*
+  %cnt_args_slot = getelementptr %Compound, %Compound* %cnt_cp, i32 0, i32 2
+  %cnt_args = load %Value*, %Value** %cnt_args_slot
+  %cnt_tail_ptr = getelementptr %Value, %Value* %cnt_args, i32 1
+  %cnt_next = load %Value, %Value* %cnt_tail_ptr
+  %cnt_n1 = add i32 %cnt_n, 1
+  br label %count_loop
+cnt_done:
+  ; If the input was empty (only the [] atom), return it unchanged.
+  %is_empty = icmp eq i32 %cnt_n, 0
+  br i1 %is_empty, label %ret_empty, label %alloc_buf
+ret_empty:
+  ret %Value %cnt_d
+
+  ; ---- Allocate buffer of N Values ----
+alloc_buf:
+  %n64 = zext i32 %cnt_n to i64
+  %buf_bytes = shl i64 %n64, 4
+  %buf_mem = call i8* @wam_arena_alloc(i64 %buf_bytes)
+  %buf = bitcast i8* %buf_mem to %Value*
+
+  ; ---- Pass 2: copy elements into buffer ----
+  br label %copy_loop
+copy_loop:
+  %cp_cur = phi %Value [ %head_in, %alloc_buf ], [ %cp_next, %cp_step ]
+  %cp_i = phi i32 [ 0, %alloc_buf ], [ %cp_i1, %cp_step ]
+  %cp_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_cur)
+  %cp_tag = extractvalue %Value %cp_d, 0
+  %cp_is_cmp = icmp eq i32 %cp_tag, 3
+  br i1 %cp_is_cmp, label %cp_step, label %sort_init
+cp_step:
+  %cp_cp_bits = extractvalue %Value %cp_d, 1
+  %cp_cp = inttoptr i64 %cp_cp_bits to %Compound*
+  %cp_args_slot = getelementptr %Compound, %Compound* %cp_cp, i32 0, i32 2
+  %cp_args = load %Value*, %Value** %cp_args_slot
+  %cp_h_ptr = getelementptr %Value, %Value* %cp_args, i32 0
+  %cp_h = load %Value, %Value* %cp_h_ptr
+  ; Deref the head so the buffer stores the underlying value, not a
+  ; Ref into the input -- sorting by tag/payload needs the actual data.
+  %cp_h_d = call %Value @wam_deref_value(%WamState* %vm, %Value %cp_h)
+  %cp_slot = getelementptr %Value, %Value* %buf, i32 %cp_i
+  store %Value %cp_h_d, %Value* %cp_slot
+  %cp_tail_ptr = getelementptr %Value, %Value* %cp_args, i32 1
+  %cp_next = load %Value, %Value* %cp_tail_ptr
+  %cp_i1 = add i32 %cp_i, 1
+  br label %copy_loop
+
+  ; ---- Insertion sort over buf[0..cnt_n) ----
+sort_init:
+  br label %sort_outer
+sort_outer:
+  %so_i = phi i32 [ 1, %sort_init ], [ %so_i1, %sort_done_inner ]
+  %so_more = icmp slt i32 %so_i, %cnt_n
+  br i1 %so_more, label %sort_pick, label %build_init
+sort_pick:
+  %so_key_ptr = getelementptr %Value, %Value* %buf, i32 %so_i
+  %so_key = load %Value, %Value* %so_key_ptr
+  %so_key_tag = extractvalue %Value %so_key, 0
+  %so_key_pay = extractvalue %Value %so_key, 1
+  br label %sort_inner
+sort_inner:
+  %si_j = phi i32 [ %so_i, %sort_pick ], [ %si_j_dec, %si_shift ]
+  %si_j_dec = sub i32 %si_j, 1
+  %si_j_pos = icmp sge i32 %si_j_dec, 0
+  br i1 %si_j_pos, label %si_cmp, label %si_done
+si_cmp:
+  %si_left_ptr = getelementptr %Value, %Value* %buf, i32 %si_j_dec
+  %si_left = load %Value, %Value* %si_left_ptr
+  ; M70: delegate to @wam_term_cmp -- proper standard term order
+  ; (alphabetic atoms, recursive compound, etc.) replaces the old
+  ; (tag, payload) ordering. Behaviour unchanged for integer-only
+  ; lists (which is what every existing msort test uses) and now
+  ; correct for atoms / floats / compounds.
+  %si_cmp_r = call i32 @wam_term_cmp(%WamState* %vm, %Value %si_left, %Value %so_key)
+  %should_shift = icmp sgt i32 %si_cmp_r, 0
+  br i1 %should_shift, label %si_shift, label %si_done
+si_shift:
+  %si_dst_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %si_left, %Value* %si_dst_ptr
+  br label %sort_inner
+si_done:
+  %si_dst2_ptr = getelementptr %Value, %Value* %buf, i32 %si_j
+  store %Value %so_key, %Value* %si_dst2_ptr
+  br label %sort_done_inner
+sort_done_inner:
+  %so_i1 = add i32 %so_i, 1
+  br label %sort_outer
+
+  ; ---- Build output [|]/2 chain from buf[n-1] down to buf[0] ----
+build_init:
+  %empty_id = load i64, i64* @wam_empty_list_atom_id
+  %empty_v0 = insertvalue %Value undef, i32 0, 0
+  %empty_v  = insertvalue %Value %empty_v0, i64 %empty_id, 1
+  br label %build_loop
+build_loop:
+  %bi = phi i32 [ %cnt_n, %build_init ], [ %bi_prev, %build_step ]
+  %btail = phi %Value [ %empty_v, %build_init ], [ %new_cons, %build_step ]
+  %bi_done = icmp sle i32 %bi, 0
+  br i1 %bi_done, label %build_finish, label %build_step
+build_step:
+  %bi_prev = sub i32 %bi, 1
+  %b_head_ptr = getelementptr %Value, %Value* %buf, i32 %bi_prev
+  %b_head = load %Value, %Value* %b_head_ptr
+  %b_cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %b_cp_mem = call i8* @wam_arena_alloc(i64 %b_cp_size)
+  %b_cp = bitcast i8* %b_cp_mem to %Compound*
+  %b_fn_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 0
+  %b_fn_ptr = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  store i8* %b_fn_ptr, i8** %b_fn_slot
+  %b_ar_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 1
+  store i32 2, i32* %b_ar_slot
+  %b_args_mem = call i8* @wam_arena_alloc(i64 32)
+  %b_args = bitcast i8* %b_args_mem to %Value*
+  %b_args_slot = getelementptr %Compound, %Compound* %b_cp, i32 0, i32 2
+  store %Value* %b_args, %Value** %b_args_slot
+  %b_a0 = getelementptr %Value, %Value* %b_args, i32 0
+  store %Value %b_head, %Value* %b_a0
+  %b_a1 = getelementptr %Value, %Value* %b_args, i32 1
+  store %Value %btail, %Value* %b_a1
+  %b_cp_i64 = ptrtoint %Compound* %b_cp to i64
+  %nc0 = insertvalue %Value undef, i32 3, 0
+  %new_cons = insertvalue %Value %nc0, i64 %b_cp_i64, 1
+  br label %build_loop
+build_finish:
+  ret %Value %btail
 }
 
 ; Update the agg_return_pc of the nearest aggregate-frame CP.
@@ -1206,13 +2354,23 @@ done:
   ret void
 }
 
-define i64 @wam_arena_mark() {
+define i64 @wam_arena_mark() alwaysinline nounwind {
   %pos = load i64, i64* @wam_arena_pos
   ret i64 %pos
 }
 
-define void @wam_arena_rewind(i64 %mark) {
+define void @wam_arena_rewind(i64 %mark) alwaysinline nounwind {
   store i64 %mark, i64* @wam_arena_pos
+  ret void
+}
+
+; Reset the bump pointer to 0 without releasing the underlying buffer.
+; Cheaper than @wam_arena_destroy + next-iteration @wam_arena_init pair
+; (which does free + malloc of a 1 MiB buffer per query). Used by
+; @wam_cleanup so callers that loop over queries don't pay the
+; per-iteration alloc/free.
+define void @wam_arena_reset() alwaysinline nounwind {
+  store i64 0, i64* @wam_arena_pos
   ret void
 }
 
@@ -1251,11 +2409,29 @@ done:
   ret void
 }
 
-; Module-level cleanup: frees the arena buffer. Callers should invoke
-; this after all WAM execution is complete. For native targets, the OS
-; reclaims memory on exit, so this is optional but good practice. For
-; WASM targets (where there is no OS cleanup), this is required.
-define void @wam_cleanup() {
+; Per-query cleanup: invalidates all arena pointers (compounds and
+; lists allocated via @wam_arena_alloc become unsafe to dereference)
+; but keeps the underlying buffer mapped so the next query reuses it.
+; This is what wam_llvm_target.pl's comments already advertise:
+;   "memory is reclaimed by @wam_cleanup via arena rewind"
+;   "Compounds are transient and reclaimed on @wam_cleanup"
+; A previous implementation called @wam_arena_destroy (free + next-iter
+; malloc), which made every WASM-exported predicate call pay the full
+; arena alloc/free cost. The arena-reset path drops per-iter cost from
+; ~240ns to ~190ns on the dispatch microbench (5-clause + arithmetic).
+;
+; To actually release the buffer (e.g. before module unload), call
+; @wam_full_shutdown instead.
+define void @wam_cleanup() alwaysinline nounwind {
+  call void @wam_arena_reset()
+  ret void
+}
+
+; Full release: hands the arena buffer back to malloc. Idempotent —
+; a second call is a no-op because @wam_arena_destroy checks the
+; null sentinel. Use this on module unload or process shutdown for
+; long-running hosts that want to reclaim the 1 MiB arena.
+define void @wam_full_shutdown() nounwind {
   call void @wam_arena_destroy()
   ret void
 }
@@ -2617,7 +3793,7 @@ cds_bail:
 ; array at a different offset (zero-copy view).
 
 ; Create a %Value with tag=4 (List) from a %List pointer.
-define %Value @wam_make_list_value(%List* %list_ptr) {
+define %Value @wam_make_list_value(%List* %list_ptr) alwaysinline nounwind readnone {
   %ptr_i64 = ptrtoint %List* %list_ptr to i64
   %v0 = insertvalue %Value undef, i32 4, 0
   %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
@@ -2631,8 +3807,18 @@ define %Value @wam_make_list_value(%List* %list_ptr) {
 ; Format strings for write/1 and nl/0 builtins.
 @.fmt_int = private constant [3 x i8] c"%d\00"
 @.fmt_nl  = private constant [2 x i8] c"\0A\00"
+; M12: extras used by format/2.
+@.fmt_lld = private constant [5 x i8] c"%lld\00"
+@.fmt_str = private constant [3 x i8] c"%s\00"
+@.fmt_dbl = private constant [3 x i8] c"%g\00"
+@.fmt_chr = private constant [3 x i8] c"%c\00"
+; M15: variable-precision fixed-point. printf "%.*f" reads the
+; precision from the argument list before the double.
+@.fmt_starf = private constant [5 x i8] c"%.*f\00"
+; Scientific notation, variable precision (~Ne directive).
+@.fmt_stare = private constant [5 x i8] c"%.*e\00"
 
-define %Value @wam_make_empty_list_value() {
+define %Value @wam_make_empty_list_value() alwaysinline nounwind readnone {
   %v0 = insertvalue %Value undef, i32 4, 0
   %ptr_i64 = ptrtoint %List* @wam_empty_list to i64
   %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
@@ -3140,7 +4326,7 @@ do_finalize:
   %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
   %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
   %count = load i32, i32* %count_ptr
-  %result = call %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum_ptr, i32 %count)
+  %result = call %Value @wam_apply_aggregation(%WamState* %vm, i32 %agg_type, %Value* %accum_ptr, i32 %count)
 
   ; Restore trail (unwind to CP's mark)
   %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
@@ -3154,8 +4340,14 @@ do_finalize:
   %src_raw = bitcast %Value* %src_regs to i8*
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
 
-  ; Bind result register to computed value
-  call void @wam_set_reg(%WamState* %vm, i32 %res_reg, %Value %result)
+  ; M9: bind via wam_bind_reg so the result propagates through Refs
+  ; — when the caller's L is an unbound var (Ref to a heap cell), the
+  ; binding needs to write through to the heap cell to be visible at
+  ; the caller's site. Pre-M9 wam_set_reg just overwrote the register
+  ; slot, leaving the heap cell unbound and the caller unable to read
+  ; the aggregation result.
+  call void @wam_trail_binding(%WamState* %vm, i32 %res_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %res_reg, %Value %result)
 
   ; Pop the aggregate frame
   store i32 %top_idx, i32* %cpn_ptr
@@ -3194,12 +4386,13 @@ define void @wam_push_foreign_choice_point(
     i32 %result_reg,
     i32 %return_pc) {
 entry:
+  ; M5: ensure cap before reading cps pointer (grow may realloc).
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %cpn = load i32, i32* %cpn_ptr
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
   %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
 
-  ; TODO: check capacity and realloc if needed (current cap=64, sufficient for now)
   %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
 
   ; next_pc = 0 (unused for foreign iter — backtrack handler reads cursor instead)
@@ -3306,31 +4499,40 @@ yield:
   br i1 %is_paired, label %yield_paired, label %yield_single
 
 yield_single:
-  ; Read result[cursor], write to result_reg
+  ; Read result[cursor], write to result_reg. M28: route through
+  ; trail_binding + bind_reg instead of set_reg so a result_reg
+  ; that holds a Ref into the heap (e.g. the put_value Y_var, A_n
+  ; pattern that aggregate_all uses for its value reg) gets the
+  ; underlying heap cell bound. Without this, the next iteration''s
+  ; deref of the Y-aliased reg sees Unbound and the aggregator
+  ; collects a sentinel instead of the yielded value.
   %fr_ptr_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
   %results_raw_s = load i8*, i8** %fr_ptr_s
   %results_s = bitcast i8* %results_raw_s to %Value*
   %cursor_64_s = zext i32 %cursor to i64
   %val_ptr_s = getelementptr %Value, %Value* %results_s, i64 %cursor_64_s
   %val_s = load %Value, %Value* %val_ptr_s
-  call void @wam_set_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
+  call void @wam_trail_binding(%WamState* %vm, i32 %result_reg)
+  call void @wam_bind_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
   %next_cursor_s = add i32 %cursor, 1
   br label %yield_done
 
 yield_paired:
   ; Paired mode: result[cursor] → reg 1 (A2), result[cursor+1] → reg 2 (A3).
-  ; Cursor advances by 2.
+  ; Cursor advances by 2. M28: same trail + bind change as yield_single.
   %fr_ptr_p = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
   %results_raw_p = load i8*, i8** %fr_ptr_p
   %results_p = bitcast i8* %results_raw_p to %Value*
   %cursor_64_p = zext i32 %cursor to i64
   %val1_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p
   %val1 = load %Value, %Value* %val1_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %val1)
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %val1)
   %cursor_64_p1 = add i64 %cursor_64_p, 1
   %val2_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p1
   %val2 = load %Value, %Value* %val2_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %val2)
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %val2)
   %next_cursor_p = add i32 %cursor, 2
   br label %yield_done
 
@@ -3377,5 +4579,11 @@ pop_restore:
   %pop_scp = load i32, i32* %pop_scp_ptr
   call void @wam_set_cp(%WamState* %vm, i32 %pop_scp)
 
-  ret i1 false
+  ; M28: after popping the exhausted foreign-iter CP, retry backtrack
+  ; on the now-exposed CP underneath. Without this, an aggregate
+  ; sitting below a between/3 iterator never finalises -- foreign_
+  ; iter_next''s false return goes straight back to run_loop which
+  ; reads it as "no more solutions" and fails the whole goal.
+  %pop_retry = call i1 @backtrack(%WamState* %vm)
+  ret i1 %pop_retry
 }

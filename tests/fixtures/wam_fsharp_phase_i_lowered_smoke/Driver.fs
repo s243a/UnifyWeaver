@@ -45,6 +45,7 @@ let mkContext () =
       WcAtomDeintern      = Map.empty
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = Map.empty
+      WcLookupSources     = Map.empty
       WcCancellationToken = None }
 
 let mkState (regs: (int * Value) list) =
@@ -65,7 +66,10 @@ let mkState (regs: (int * Value) list) =
       WsCutBar     = 0
       WsVarCounter = 0
       WsBuilder    = None
-      WsAggAccum   = [] }
+      WsBuilderStack = []
+      WsAggAccum   = []
+      WsB0Stack    = []
+      WsCatchers   = [] }
 
 // -- arg/3 specialized ----------------------------------------------------
 

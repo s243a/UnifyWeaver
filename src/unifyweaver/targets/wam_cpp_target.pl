@@ -71,7 +71,8 @@
 % wrapper parse_pred_blocks/2 below is kept as a thin alias since
 % existing call sites still use that name.
 :- use_module(wam_text_parser, [
-    wam_text_to_items/2
+    wam_text_to_items/2,
+    wam_classify_constant_token/2
 ]).
 
 :- multifile user:wam_cpp_emit_mode/1.
@@ -147,31 +148,23 @@ cpp_atomics_to_string([X, Y|Rest], Sep, Result) :-
 %% cpp_value_literal(+ConstantToken, -CppLiteral)
 %  Convert a WAM constant (atom, integer, float, []) into a C++ Value
 %  literal usable inside the generated source.
+%
+%  Atom-vs-number disambiguation: tokens that arrived with outer
+%  single quotes preserved (per wam_text_parser:wam_tokenize_line/2)
+%  are atoms regardless of whether the inner text reparses as a
+%  number. wam_classify_constant_token/2 implements the convention;
+%  this emitter just maps the classification to a C++ Value literal.
 cpp_value_literal(C, Val) :-
     to_string(C, Str),
-    (   atom_marker_prefix(Str, AtomContent)
-    ->  % Atom-marker (\\x01 prefix) — emit as Atom regardless of
-        % whether the content re-parses as a number. The marker
-        % itself is stripped; only AtomContent reaches the output.
-        escape_cpp_string(AtomContent, EscStr),
-        format(atom(Val), 'Value::Atom("~w")', [EscStr])
-    ;   number_string(N, Str), integer(N)
+    wam_classify_constant_token(Str, Class),
+    (   Class = integer(N)
     ->  format(atom(Val), 'Value::Integer(~w)', [N])
-    ;   number_string(F, Str), float(F)
+    ;   Class = float(F)
     ->  format(atom(Val), 'Value::Float(~w)', [F])
-    ;   Str == "[]"
-    ->  Val = 'Value::Atom("[]")'
-    ;   escape_cpp_string(Str, EscStr),
+    ;   Class = atom(Name),
+        escape_cpp_string(Name, EscStr),
         format(atom(Val), 'Value::Atom("~w")', [EscStr])
     ).
-
-%% atom_marker_prefix(+Str, -Stripped) is semidet.
-%  True iff Str starts with the atom-marker (\\x01); Stripped is the
-%  remainder. Matches the marker convention emitted by
-%  wam_target:quote_wam_constant/2 for atoms-that-look-like-numbers.
-atom_marker_prefix(Str, Stripped) :-
-    string_codes(Str, [1|RestCodes]),
-    string_codes(Stripped, RestCodes).
 
 to_string(X, S) :- string(X), !, S = X.
 to_string(X, S) :- atom(X), !, atom_string(X, S).
@@ -301,22 +294,50 @@ wam_instruction_to_cpp_literal_det(retry_me_else(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::RetryMeElse(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(trust_me, _, 'Instruction::TrustMe()').
+%% Indexed-dispatch chain ops (issue #2400).
+wam_instruction_to_cpp_literal_det(try(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Try(~w)', [Idx]).
+wam_instruction_to_cpp_literal_det(retry(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Retry(~w)', [Idx]).
+wam_instruction_to_cpp_literal_det(trust(L), LabelMap, Code) :-
+    label_index(L, LabelMap, Idx),
+    format(atom(Code), 'Instruction::Trust(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(jump(L), LabelMap, Code) :-
     label_index(L, LabelMap, Idx),
     format(atom(Code), 'Instruction::Jump(~w)', [Idx]).
 wam_instruction_to_cpp_literal_det(cut_ite, _, 'Instruction::CutIte()').
+wam_instruction_to_cpp_literal_det(get_level(Yn), _, Code) :-
+    to_string(Yn, YS),
+    format(atom(Code), 'Instruction::GetLevel("~w")', [YS]).
+wam_instruction_to_cpp_literal_det(cut(Yn), _, Code) :-
+    to_string(Yn, YS),
+    format(atom(Code), 'Instruction::Cut("~w")', [YS]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R), _, Code) :-
     to_string(K, KS), to_string(V, VS), to_string(R, RS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV), escape_cpp_string(RS, ER),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w")', [EK, EV, ER]).
 wam_instruction_to_cpp_literal_det(begin_aggregate(K, V, R, W), _, Code) :-
-    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS),
+    to_string(K, KS), to_string(V, VS), to_string(R, RS), to_string(W, WS0),
+    % The witness spec is emitted as a quoted atom in the WAM text (e.g.
+    % 'Y3' or 'Y1;Y2'), so the parser token keeps the surrounding single
+    % quotes. Strip them — otherwise witness_regs holds "'Y3'" and the
+    % runtime's get_cell("'Y3'") fails, leaving witness_cells empty and
+    % silently degrading bagof/setof grouping to a flat findall.
+    strip_surrounding_squotes(WS0, WS),
     escape_cpp_string(KS, EK), escape_cpp_string(VS, EV),
     escape_cpp_string(RS, ER), escape_cpp_string(WS, EW),
     format(atom(Code),
            'Instruction::BeginAggregate("~w", "~w", "~w", "~w")',
            [EK, EV, ER, EW]).
+strip_surrounding_squotes(S0, S) :-
+    string_chars(S0, Cs),
+    (   Cs = ['\''|Rest], append(Mid, ['\''], Rest)
+    ->  string_chars(S, Mid)
+    ;   S = S0
+    ).
 wam_instruction_to_cpp_literal_det(end_aggregate(R), _, Code) :-
     to_string(R, RS),
     escape_cpp_string(RS, ER),
@@ -415,7 +436,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     findall(Items, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
               parse_pred_blocks(WamText, Items0),
               iso_errors_rewrite(IsoConfig, PI, Items0, Items)
             ),
@@ -1401,7 +1422,7 @@ wam_cpp_iso_audit(Predicates, Options, Audit) :-
 
 iso_errors_audit_predicate(PI, Mode, Sites) :-
     (   catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamText),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
               parse_pred_blocks(WamText, Items)
             ),
             _, fail)
@@ -2218,6 +2239,23 @@ instr_to_setup_line(retry_me_else(L), Labels, Line) :- !,
     label_resolve(L, Labels, PC),
     format(atom(Line),
            '    vm.instrs.push_back(Instruction::RetryMeElse(~w));', [PC]).
+%% Indexed-dispatch chain ops (issue #2400).  See wam_target.pl''s
+%% build_term_index_with_chains.  Target is the body label of one of
+%% the matching clauses; the chain''s next-instruction PC is captured
+%% in the CP at runtime so backtrack resumes through the chain
+%% rather than re-entering the linear retry chain.
+instr_to_setup_line(try(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Try(~w));', [PC]).
+instr_to_setup_line(retry(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Retry(~w));', [PC]).
+instr_to_setup_line(trust(L), Labels, Line) :- !,
+    label_resolve(L, Labels, PC),
+    format(atom(Line),
+           '    vm.instrs.push_back(Instruction::Trust(~w));', [PC]).
 instr_to_setup_line(jump(L), Labels, Line) :- !,
     label_resolve(L, Labels, PC),
     format(atom(Line),
@@ -2348,13 +2386,19 @@ last_colon_index([_|T], I, Acc, Out) :-
     I1 is I + 1, last_colon_index(T, I1, Acc, Out).
 
 %% key_to_cpp_value(+KeyStr, -CppLiteral)
-%  Atom / Integer / Float literal for a switch key.
+%  Atom / Integer / Float literal for a switch key. KeyStr comes
+%  from wam_target:quote_wam_constant/2 (via the switch_on_constant
+%  entry serialiser), so atom-vs-number disambiguation goes through
+%  wam_classify_constant_token/2 — same convention as
+%  cpp_value_literal/2.
 key_to_cpp_value(KeyStr, Lit) :-
-    (   number_string(N, KeyStr), integer(N)
+    wam_classify_constant_token(KeyStr, Class),
+    (   Class = integer(N)
     ->  format(atom(Lit), 'Value::Integer(~w)', [N])
-    ;   number_string(F, KeyStr), float(F)
+    ;   Class = float(F)
     ->  format(atom(Lit), 'Value::Float(~w)', [F])
-    ;   escape_cpp_string(KeyStr, Esc),
+    ;   Class = atom(Name),
+        escape_cpp_string(Name, Esc),
         format(atom(Lit), 'Value::Atom("~w")', [Esc])
     ).
 
@@ -2594,7 +2638,7 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     findall(Code, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true)], WamCode),
+            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
             Err,
@@ -3066,7 +3110,10 @@ struct Instruction {
         SetVariable, SetValue, SetConstant,
         Call, Execute, Proceed, Fail, Allocate, Deallocate,
         BuiltinCall, CallForeign,
-        TryMeElse, RetryMeElse, TrustMe, Jump, CutIte,
+        TryMeElse, RetryMeElse, TrustMe,
+        Try, Retry, Trust,                                   // chain ops (#2400)
+        Jump, CutIte,
+        GetLevel, Cut,                                       // M17 soft cut
         BeginAggregate, EndAggregate,
         SwitchOnConstant, SwitchOnConstantA2,
         SwitchOnStructure, SwitchOnStructureA2,
@@ -3162,9 +3209,20 @@ struct Instruction {
     static Instruction RetryMeElse(std::size_t target)
         { Instruction i; i.op = Op::RetryMeElse; i.target = target; return i; }
     static Instruction TrustMe()    { Instruction i; i.op = Op::TrustMe;    return i; }
+    // Indexed-dispatch chain ops (issue #2400).
+    static Instruction Try(std::size_t target)
+        { Instruction i; i.op = Op::Try; i.target = target; return i; }
+    static Instruction Retry(std::size_t target)
+        { Instruction i; i.op = Op::Retry; i.target = target; return i; }
+    static Instruction Trust(std::size_t target)
+        { Instruction i; i.op = Op::Trust; i.target = target; return i; }
     static Instruction Jump(std::size_t target)
         { Instruction i; i.op = Op::Jump; i.target = target; return i; }
     static Instruction CutIte()     { Instruction i; i.op = Op::CutIte;     return i; }
+    static Instruction GetLevel(std::string yn)
+        { Instruction i; i.op = Op::GetLevel; i.a = std::move(yn); return i; }
+    static Instruction Cut(std::string yn)
+        { Instruction i; i.op = Op::Cut; i.a = std::move(yn); return i; }
     static Instruction BeginAggregate(std::string kind, std::string vreg, std::string rreg)
         { Instruction i; i.op = Op::BeginAggregate; i.a = std::move(kind);
           i.b = std::move(vreg); i.val = Value::Atom(std::move(rreg)); return i; }
@@ -3262,6 +3320,15 @@ struct TrailEntry {
 // nested calls that both use Y1 don''t clobber each other.
 struct EnvFrame {
     std::size_t saved_cp = 0;
+    // B0: the choicepoint-stack height when this clause''s predicate was
+    // called (captured by Allocate from cut_barrier, which Call/Execute
+    // set to choice_points.size() before transferring control). A plain
+    // cut (!/0) in this clause truncates choicepoints back to b0, so it
+    // removes only this predicate''s own alternatives and body CPs, never
+    // a caller''s choicepoint. Survives nested calls because each callee
+    // gets its own frame; restored on backtrack via ChoicePoint''s
+    // saved_env_stack snapshot.
+    std::size_t b0 = 0;
     std::unordered_map<std::string, CellPtr> y_regs;
 };
 
@@ -3662,6 +3729,16 @@ struct WamState {
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
+    // Create one fresh unbound variable cell and alias it into BOTH
+    // registers, so they share identity (binding one binds the other).
+    // Used by lowered put_variable: copying a Value into two registers
+    // would give two independent cells, losing variable identity.
+    void    put_variable_reg(const std::string& a, const std::string& b);
+    // Assign a register to a fresh cell holding v (repoint, do NOT mutate
+    // the existing cell — any register aliasing this one must not see the
+    // new value). Mirrors the interpreter PutConstant. Used by lowered
+    // put_constant.
+    void    assign_reg(const std::string& name, Value v);
 
     // Deref through Unbound chains until a concrete value (or a terminal
     // unbound cell) is reached. Returns by value (snapshot).
@@ -3670,6 +3747,10 @@ struct WamState {
     // bind_cell mutates *cell, recording the previous content on the trail.
     void    bind_cell(CellPtr cell, Value v);
     void    trail_binding(const std::string& name); // legacy reg-name trail
+    // Undo all bindings recorded since `mark` (trail.size() at the mark).
+    // Used by lowered if-then-else when the condition fails, before the
+    // else branch runs.
+    void    unwind_trail_to(std::size_t mark);
 
     // Unification: takes Cell pointers so binding works correctly.
     bool    unify_cells(CellPtr a, CellPtr b);
@@ -4050,6 +4131,16 @@ void WamState::set_cell(const std::string& name, CellPtr c) {
     regs[name] = std::move(c);
 }
 
+void WamState::put_variable_reg(const std::string& a, const std::string& b) {
+    CellPtr c = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+    set_cell(a, c);
+    set_cell(b, c);
+}
+
+void WamState::assign_reg(const std::string& name, Value v) {
+    set_cell(name, make_cell(std::move(v)));
+}
+
 Value WamState::get_reg(const std::string& name) const {
     if (is_y_reg(name)) {
         if (env_stack.empty()) return Value{};
@@ -4084,6 +4175,14 @@ void WamState::trail_binding(const std::string& name) {
     e.cell = it->second;
     e.prev = *it->second;
     trail.push_back(std::move(e));
+}
+
+void WamState::unwind_trail_to(std::size_t mark) {
+    while (trail.size() > mark) {
+        TrailEntry t = std::move(trail.back());
+        trail.pop_back();
+        *t.cell = std::move(t.prev);
+    }
 }
 
 void WamState::bind_cell(CellPtr cell, Value v) {
@@ -4449,7 +4548,20 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     if (op == "true/0") { pc += 1; return true; }
     if (op == "fail/0") { return false; }
     if (op == "!/0")    {
-        if (choice_points.size() > cut_barrier) choice_points.resize(cut_barrier);
+        // Cut to this clause''s B0 (the choicepoint height when its
+        // predicate was called), held in the current env frame. This
+        // keeps a cut local to the predicate: it prunes this predicate''s
+        // own alternatives and the body CPs it created, but never a
+        // caller''s choicepoint (e.g. the choicepoint of an enclosing
+        // negation or if-then-else whose condition called this
+        // predicate). Envless
+        // clauses (no Allocate) can only contain neck cuts -- they have
+        // no in-body call to clobber cut_barrier -- so the global
+        // cut_barrier (set to call-time height by Call/Execute) is the
+        // correct fallback.
+        std::size_t level = env_stack.empty() ? cut_barrier
+                                              : env_stack.back().b0;
+        if (choice_points.size() > level) choice_points.resize(level);
         pc += 1; return true;
     }
 
@@ -7612,6 +7724,12 @@ bool WamState::step(const Instruction& instr) {
         case Instruction::Op::Allocate: {
             EnvFrame f;
             f.saved_cp = cp;
+            // Capture B0 for this clause: cut_barrier was set to the
+            // caller-time choicepoint height by the Call/Execute that
+            // entered this predicate (and is restored on backtrack via
+            // the choicepoint snapshot), so it is the correct cut level
+            // for a plain cut in this clause body.
+            f.b0 = cut_barrier;
             env_stack.push_back(std::move(f));
             pc += 1; return true;
         }
@@ -7673,6 +7791,11 @@ bool WamState::step(const Instruction& instr) {
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
                 cp = pc + 1;
+                // Record B0 for the callee: a plain cut in the callee
+                // cuts back to this choicepoint height (see EnvFrame::b0
+                // / Allocate). Saved/restored across backtracking by the
+                // callee''s try_me_else choicepoint snapshot of cut_barrier.
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }
@@ -7726,6 +7849,8 @@ bool WamState::step(const Instruction& instr) {
             }
             auto it = labels.find(instr.a);
             if (it != labels.end()) {
+                // Record B0 for the tail-called callee (see Op::Call).
+                cut_barrier = choice_points.size();
                 pc = it->second;
                 return true;
             }
@@ -8043,6 +8168,75 @@ bool WamState::step(const Instruction& instr) {
             }
             pc += 1; return true;
         }
+
+        // ---- Indexed-dispatch chain ops (issue #2400) -------------
+        // Emitted by wam_target.pl''s build_term_index_with_chains for
+        // SwitchOnTerm / SwitchOnConstant / SwitchOnStructure targets
+        // whose dispatch group has >1 matching clauses.  Layout:
+        //   L_<P>_<A>_<group>_dispatch:
+        //       try   L_<P>_<A>_<I1>_body
+        //       retry L_<P>_<A>_<I2>_body
+        //       ...
+        //       trust L_<P>_<A>_<IN>_body
+        // Each instruction''s target is the body label (PC).  CP push
+        // captures pc+1 (the next chain entry) so backtrack resumes
+        // through the chain.  Unlike TryMeElse/RetryMeElse, these
+        // JUMP to the body and don''t need the indexed_entry hack —
+        // the chain is self-contained.
+        case Instruction::Op::Try: {
+            // Push a CP that resumes the chain at pc+1 (= next chain
+            // instr) on backtrack, then JUMP to the body label.
+            indexed_entry = false; // chain is self-contained
+            ChoicePoint cp_;
+            cp_.alt_pc = pc + 1;
+            cp_.saved_cp = cp;
+            cp_.trail_mark = trail.size();
+            cp_.cut_barrier = cut_barrier;
+            cp_.saved_regs = regs;
+            cp_.saved_mode_stack = mode_stack;
+            cp_.saved_env_stack = env_stack;
+            cp_.saved_body_frames = body_frames;
+            choice_points.push_back(std::move(cp_));
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Retry: {
+            // Mutate the top CP''s alt_pc to pc+1 (next chain instr).
+            // The CP itself stays on the stack -- C++''s backtrack
+            // restores from but never pops, so Try''s CP survives
+            // each backtrack and we just update where to resume.
+            // (Symmetric to RetryMeElse''s mutate-don''t-push branch.)
+            // Defensive fallback: if no CP exists (shouldn''t happen
+            // in well-formed chains), synthesize one so the chain
+            // stays consistent.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.back().alt_pc = pc + 1;
+            } else {
+                ChoicePoint cp_;
+                cp_.alt_pc = pc + 1;
+                cp_.saved_cp = cp;
+                cp_.trail_mark = trail.size();
+                cp_.cut_barrier = cut_barrier;
+                cp_.saved_regs = regs;
+                cp_.saved_mode_stack = mode_stack;
+                cp_.saved_env_stack = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            }
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Trust: {
+            // Last entry in the chain: pop the chain CP and jump to
+            // the body label.  Mirrors TrustMe but jumps rather
+            // than falling through.  Skipping the pop leaks the
+            // chain CP and causes an infinite retry loop when this
+            // clause body fails and backtrack restores from it.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.pop_back();
+            }
+            pc = instr.target; return true;
+        }
         case Instruction::Op::CutIte: {
             // Soft cut for inlined if-then-else. The topmost CP at this
             // point is the matching try_me_else (Cond just succeeded;
@@ -8064,6 +8258,32 @@ bool WamState::step(const Instruction& instr) {
             }
             pc += 1; return true;
         }
+        // M17 soft cut. get_level snapshots the choicepoint level into a
+        // Y register BEFORE the if-then-else / negation try_me_else; cut
+        // truncates choicepoints back to that level at the commit site,
+        // removing the ITE/negation CP AND every CP the condition (or a
+        // negated goals generator) pushed above it. This fixes the legacy
+        // cut_ite, which only dropped the single topmost CP and so could
+        // not cut a negation over a generator (e.g. the forall negative
+        // case left the generators CP alive).
+        case Instruction::Op::GetLevel: {
+            CellPtr c = get_cell(instr.a);
+            bind_cell(c, Value::Integer(
+                static_cast<std::int64_t>(choice_points.size())));
+            pc += 1; return true;
+        }
+        case Instruction::Op::Cut: {
+            CellPtr c = get_cell(instr.a);
+            Value v = deref(*c);
+            if (v.tag == Value::Tag::Integer) {
+                std::size_t target = static_cast<std::size_t>(v.i);
+                if (choice_points.size() > target) {
+                    choice_points.resize(target);
+                }
+                if (cut_barrier > target) cut_barrier = target;
+            }
+            pc += 1; return true;
+        }
 
         // ---- Builtins ----------------------------------------------
         case Instruction::Op::BuiltinCall: {
@@ -8076,6 +8296,17 @@ bool WamState::step(const Instruction& instr) {
                 pc = it->second;
                 return true;
             }
+            // Nondeterministic / CP-aware builtins need their own dispatch
+            // arms (mirroring the Call opcode) because builtin() only
+            // handles the deterministic ops. The shared WAM compiler emits
+            // these as builtin_call, so without these arms they fall
+            // through to builtin() and silently fail.
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
+            if (instr.a == "retract/1") return dispatch_retract(pc + 1);
+            if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
             return builtin(instr.a, instr.n);
         }
         case Instruction::Op::CallForeign:

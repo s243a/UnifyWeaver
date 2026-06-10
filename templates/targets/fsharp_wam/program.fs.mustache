@@ -1,0 +1,450 @@
+module Program
+
+open System
+open System.Diagnostics
+open WamTypes
+open WamRuntime
+open Predicates
+open Lowered
+{{#has_lmdb}}open LmdbFactSource
+{{/has_lmdb}}{{#has_csr}}open CsrReader
+{{/has_csr}}
+// -- TSV loading helpers --------------------------------------------------
+
+let loadTsvPairs (path: string) : (string * string) array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.choose (fun l ->
+        let parts = l.Split('\t')
+        if parts.Length >= 2 then Some (parts.[0].Trim(), parts.[1].Trim())
+        else None)
+
+let loadSingleColumn (path: string) : string array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.map (fun l -> l.Trim())
+
+// -- Atom interning from all string sources --------------------------------
+
+let buildFullAtomInternTable (code: Instruction array) (extraAtoms: string seq) : Map<string, int> * Map<int, string> =
+    let atoms = System.Collections.Generic.HashSet<string>()
+    for instr in code do
+        match instr with
+        | GetConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | PutConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | SwitchOnConstantPc table -> for (k, _) in table do atoms.Add(k) |> ignore
+        | _ -> ()
+    for a in extraAtoms do atoms.Add(a) |> ignore
+    let sorted = atoms |> Seq.sort |> Seq.toArray
+    let intern   = sorted |> Array.mapi (fun i a -> (a, i)) |> Map.ofArray
+    let deintern = sorted |> Array.mapi (fun i a -> (i, a)) |> Map.ofArray
+    intern, deintern
+
+// -- Build interned FFI facts map -----------------------------------------
+
+let buildFfiFacts (pairs: (string * string) array) (intern: Map<string, int>) : Map<int, int list> =
+    let mutable m : Map<int, int list> = Map.empty
+    for (child, parent) in pairs do
+        match Map.tryFind child intern, Map.tryFind parent intern with
+        | Some cid, Some pid ->
+            let existing = Map.tryFind cid m |> Option.defaultValue []
+            m <- Map.add cid (pid :: existing) m
+        | _ -> ()
+    m
+
+// -- Extract double from WAM Value ----------------------------------------
+
+let extractDouble (v: Value) : float option =
+    match v with
+    | Float f   -> Some f
+    | Integer n -> Some (float n)
+    | _         -> None
+
+{{#has_bidirectional}}
+// -- Direction-weighted effective distance metric -------------------------
+//
+// Each path is weighted by direction: w = (1/D)^N * (1/(b*D))^M
+// where N = parent hops, M = child hops, D = dimensionality, b = branch ratio.
+// Normalized power-mean: d = (Sum(w * (h+1)^(-n)) / Sum(w))^(-1/n)
+//
+// D and b are calibrated per-graph from BFS growth rates and fan-out
+// statistics (see GraphCalibration in kernel_bidirectional_ancestor).
+// Fallback defaults: D={{dimensionality}}, b={{branch_factor}}.
+
+let effectiveDistanceWeighted
+    (cal: GraphCalibration) (results: (int * int * int) list) (n: float) : float =
+    if List.isEmpty results then infinity
+    else
+        let parentW = 1.0 / cal.Dimensionality
+        let childW = 1.0 / (cal.BranchRatio * cal.Dimensionality)
+        let mutable sumWF = 0.0
+        let mutable sumW = 0.0
+        for (totalHops, parentHops, childHops) in results do
+            let w = (parentW ** float parentHops) * (childW ** float childHops)
+            sumWF <- sumWF + w * (float (totalHops + 1)) ** (-n)
+            sumW <- sumW + w
+        (sumWF / sumW) ** (-1.0 / n)
+{{/has_bidirectional}}
+
+[<EntryPoint>]
+let main argv =
+    let factsDir = if argv.Length > 0 then argv.[0] else "."
+    let numReps  = if argv.Length > 1 then (try int argv.[1] with _ -> 3) else 3
+
+    let sw = Stopwatch.StartNew()
+
+    // Resolve call instructions (compile-time; independent of fact source).
+    let foreignPreds = [ {{foreign_preds}} ]
+    let resolvedCode = resolveCallInstrs allLabels foreignPreds (Array.toList allCode) |> List.toArray
+
+{{^has_lmdb}}
+    // ---- TSV fact source (in-memory, string-interned) -------------------
+    let categoryParents   = loadTsvPairs (System.IO.Path.Combine(factsDir, "category_parent.tsv"))
+    let articleCategories = loadTsvPairs (System.IO.Path.Combine(factsDir, "article_category.tsv"))
+    let roots             = loadSingleColumn (System.IO.Path.Combine(factsDir, "root_categories.tsv"))
+    let root = if roots.Length > 0 then roots.[0] else "Physics"
+
+    // Build atom intern table from instructions + all TSV atoms
+    let extraAtoms = seq {
+        for (c, p) in categoryParents do yield c; yield p
+        for (_, c) in articleCategories do yield c
+        for r in roots do yield r
+    }
+    let atomIntern, atomDeintern = buildFullAtomInternTable resolvedCode extraAtoms
+
+    // Build interned FFI facts: category_parent child -> [parent ids]
+    let parentsInterned = buildFfiFacts categoryParents atomIntern
+
+    // Seed categories (distinct second column of article_category)
+    let seedCats =
+        articleCategories
+        |> Array.map snd
+        |> Array.distinct
+        |> Array.sort
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d" loadMs
+{{/has_lmdb}}
+{{#has_lmdb}}
+    // ---- LMDB fact source (int-native; no TSV graph, no string interning) -
+    //
+    // The Phase-1 resident LMDB stores the graph in its own int id space
+    // (s2i/i2s + category_parent/category_child keyed by those ints).  The
+    // fixture's article_category column 2 and root_ids.txt ARE those LMDB
+    // ints, so seeds and root are consumed directly as ints and the kernel
+    // recursion stays entirely in int space.  The only "interning" is an
+    // identity map over the ids that cross the WAM register boundary (seed in
+    // r1, root in r2), so Atom "4985" derefs/interns back to 4985.  This is
+    // the key parity move over the Haskell target, which string-interned the
+    // whole graph; here the graph never leaves int space.
+    let lmdbEnv = openEnv (System.IO.Path.Combine(factsDir, "lmdb"))
+
+    // Seeds: distinct ints from article_category column 2 (no header skip).
+    let seedInts =
+        System.IO.File.ReadAllLines(System.IO.Path.Combine(factsDir, "article_category.tsv"))
+        |> Array.choose (fun l ->
+            let t = l.Trim()
+            if t.Length = 0 || t.StartsWith("#") then None
+            else
+                let parts = t.Split('\t')
+                if parts.Length >= 2 then
+                    match System.Int32.TryParse(parts.[1].Trim()) with
+                    | true, v -> Some v
+                    | _ -> None
+                else None)
+        |> Array.distinct
+        |> Array.sort
+
+    // Root: first non-blank int in root_ids.txt.
+    let rootInt =
+        let rp = System.IO.Path.Combine(factsDir, "root_ids.txt")
+        match System.IO.File.ReadAllLines rp |> Array.tryFind (fun l -> l.Trim().Length > 0) with
+        | Some l -> int (l.Trim())
+        | None -> 0
+
+{{#has_csr_kernel}}
+    // Forward-CSR kernel path: the kernel's UPWARD category_parent lookup reads
+    // a forward (child->parents) CSR artifact at <factsDir>/csr -- a lazy-class
+    // path (per-lookup binary search + .val file seek), but via a raw
+    // FileStream rather than LightningDB's managed cursor. Demand set is built
+    // from the LMDB category_child cursor (load-time); lookups are
+    // demand-filtered so the upward walk never leaves it. No LMDB in the kernel
+    // hot path. Hypothesis: beats LMDB-lazy by avoiding the managed per-call
+    // P/Invoke overhead.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let csrParent =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_parent")
+        :> ILookupSource
+    let lmdbLookupFn (k: int) : int list =
+        if demandSet.Contains k then csrParent.Lookup k |> List.filter demandSet.Contains
+        else []
+{{/has_csr_kernel}}
+{{^has_csr_kernel}}
+{{match materialisation}}
+{{case eager}}
+{{#has_csr}}
+    // Eager + CSR demand BFS: build the demand set by walking DOWN
+    // category_child via the compact binary-searched CSR artifact (no LMDB
+    // cursor for the down-walk), then materialise the demand-pruned
+    // category_parent map from LMDB. CSR is keyed by raw page ids (sorted
+    // index), so this stays int-native -- no s2i indirection.
+    let csrChild =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_child")
+        :> ILookupSource
+    let demandSet = reachableToRootVia (fun k -> csrChild.Lookup k) rootInt
+    let parentsDict = loadCategoryParentDemandDict lmdbEnv demandSet
+    let lmdbLookupFn (k: int) : int list =
+        match parentsDict.TryGetValue k with
+        | true, v -> v
+        | _ -> []
+{{/has_csr}}
+{{^has_csr}}
+    // Eager (single LMDB scan): read category_parent ONCE, build the reverse
+    // (= category_child) in memory, BFS the demand set from it, and prune the
+    // parent Dictionary to demand-set edges -- one cursor pass instead of two.
+    // The kernel reads it through `lmdbLookupFn`, so WcFfiFacts stays empty and
+    // no immutable Map is ever built.  parentsDict is already demand-pruned, so
+    // the lookup is a plain O(1) Dictionary hit -- no per-call demand filter.
+    let parentsDict, demandSet = loadEagerDemandSingleScan lmdbEnv rootInt
+    let lmdbLookupFn (k: int) : int list =
+        match parentsDict.TryGetValue k with
+        | true, v -> v
+        | _ -> []
+{{/has_csr}}
+{{case lazy}}
+    // Lazy: NO parent materialisation.  Only the demand set is built (a cursor
+    // BFS down category_child); each kernel lookup opens a short-lived cursor
+    // on category_parent and reads that child's parents on demand, filtered to
+    // the demand set so the upward walk never leaves it.  Trades the eager load
+    // cost for per-lookup cursor cost.
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let lazySource = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+    let lmdbLookupFn (k: int) : int list =
+        if demandSet.Contains k then lazySource.Lookup k |> List.filter demandSet.Contains
+        else []
+{{default}}
+    // Cached: lazy cursor lookup behind the two-level (L1 thread-local +
+    // bounded L2) cache, so repeated parent lookups across seeds are served
+    // from memory.  Demand set built and applied exactly as in lazy mode.
+    //
+    // Cache sizing: the demand set IS the working set -- every parent the
+    // kernel can ever touch is in it -- and its exact size is known here at
+    // runtime.  So size L2 to cover the demand set (it is what makes "cached"
+    // actually cache rather than thrash); a compile-time {{l2_capacity}} guess
+    // floors at 256 and would miss ~98% of a 14k-node working set.  The
+    // configured value is still honoured as a LOWER bound / memory ceiling
+    // override.  L1 is rounded up to the next power of two >= demand (its
+    // index is a bit-mask, so it must be a power of two).
+    let demandSet = reachableToRoot lmdbEnv rootInt System.Int32.MaxValue
+    let l2Cap = max {{l2_capacity}} demandSet.Count
+    let l1Cap =
+        let mutable p = 1024
+        while p < demandSet.Count do p <- p * 2
+        p
+    // Filter UNDER the cache so it stores already-pruned lists: a cache hit
+    // then returns the filtered list directly, with no per-lookup re-filter or
+    // allocation.  (Filtering outside the cache kept cached as slow as lazy.)
+    let lazyInner = LmdbCursorLookup(lmdbEnv, "category_parent") :> ILookupSource
+    let filteredInner = DemandFilteredSource(lazyInner, demandSet) :> ILookupSource
+    let cachedSource = TwoLevelCachedLookupSource(filteredInner, l1Capacity = l1Cap, maxL2Entries = l2Cap) :> ILookupSource
+    // No demandSet.Contains guard here: DemandFilteredSource already returns
+    // only demand-set parents, so a non-demand node can never be reached (all
+    // its parents are non-demand -> []).  Dropping the guard removes an
+    // O(log n) F# Set lookup from every kernel call -- the last gap to eager.
+    let lmdbLookupFn (k: int) : int list = cachedSource.Lookup k
+{{/match}}
+{{/has_csr_kernel}}
+    eprintfn "demand_set=%d" demandSet.Count
+    let parentsInterned : Map<int, int list> = Map.empty
+
+    // Identity intern over the ids that cross the register boundary.
+    let atomIntern =
+        seq { yield! seedInts; yield rootInt }
+        |> Seq.distinct
+        |> Seq.map (fun i -> (string i, i))
+        |> Map.ofSeq
+    let atomDeintern = atomIntern |> Map.toSeq |> Seq.map (fun (s, i) -> (i, s)) |> Map.ofSeq
+    let seedCats = seedInts |> Array.map string
+    let root = string rootInt
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d seeds=%d" loadMs seedCats.Length
+{{/has_lmdb}}
+
+    // Build WamContext
+    let ctx =
+        { WcCode             = resolvedCode
+          WcLabels            = allLabels
+          WcForeignFacts      = Map.empty
+          WcFfiFacts          = Map.ofList [ ("category_parent", parentsInterned) ]
+          WcFfiWeightedFacts  = Map.empty
+          WcAtomIntern        = atomIntern
+          WcAtomDeintern      = atomDeintern
+          WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
+          WcLoweredPredicates = loweredPredicates
+          WcLookupSources     = {{lookup_sources_expr}}
+          WcCancellationToken = None }
+
+    let emptyState =
+        { WsPC         = 0
+          WsRegs       = Array.create MaxRegs (Unbound -1)
+          WsStack      = []
+          WsHeap       = []
+          WsHeapLen    = 0
+          WsTrail      = []
+          WsTrailLen   = 0
+          WsCP         = 0
+          WsCPs        = []
+          WsCPsLen     = 0
+          WsBindings   = Map.empty
+          WsCutBar     = 0
+          WsVarCounter = 0
+          WsBuilder    = None
+          WsBuilderStack = []
+          WsAggAccum   = []
+          WsB0Stack    = []
+          WsCatchers   = [] }
+
+    // Find entry point: prefer lowered predicates, fall back to code array
+    let queryPred =
+        let candidates = [
+            "category_ancestor$effective_distance_sum_selected/3"
+            "category_ancestor$effective_distance_sum_bound/3"
+            "category_ancestor/4"
+        ]
+        candidates
+        |> List.tryFind (fun p ->
+            Map.containsKey p ctx.WcLoweredPredicates ||
+            Map.containsKey p ctx.WcLabels)
+        |> Option.defaultValue "category_ancestor/4"
+
+    let setupMs = sw.ElapsedMilliseconds
+    eprintfn "setup_ms=%d queryPred=%s" setupMs queryPred
+
+    // Benchmark loop: numReps repetitions
+    let mutable totalSolutions = 0
+    let mutable lastQueryMs = 0L
+
+{{#has_lmdb}}
+    // LMDB int-native fast path: call the native kernel directly, bypassing
+    // the per-seed WAM dispatch (register-array alloc, derefVar, intern
+    // Map.tryFind, choice-point setup) that callForeign/executeForeign would
+    // pay for every seed.  This matches what the Rust matrix bench does (tight
+    // native kernel loop) and isolates kernel cost from the WAM-target
+    // dispatch tax.  Seeds and root are already ints; the lookup is resolved
+    // once.  depth/visited mirror the executeForeign seeding (visited=[cat],
+    // depth=1) so the result matches the dispatched path exactly.
+    let maxDepthCfg = Map.tryFind "max_depth" ctx.WcForeignConfig |> Option.defaultValue 10
+    let lookupFn = lmdbLookupFn
+{{match kernel_kind}}
+{{case bidirectional_ancestor}}
+    // Bidirectional kernel setup (hoisted out of the rep loop):
+    //   lookupParents = lmdbLookupFn (the LMDB category_parent fast path
+    //     already configured for the selected materialisation mode above)
+    //   lookupChildren = CSR cursor over category_child (the bidir kernel
+    //     walks DOWN as well as up; without it the descent direction is
+    //     dead and bidirectional degenerates to upward-only)
+    //   parentStepCost / childStepCost / costBudget = mirror the hardcoded
+    //     dispatch defaults in WamRuntime.fs's executeForeign
+    //     "category_ancestor/4" branch (parent=1.0, child=3.0, budget=10.0)
+    //     so the native benchmark loop's timing is directly comparable to
+    //     the WAM-dispatched path.
+{{#has_csr}}
+    let csrChildBidir =
+        CsrReader.CsrLookupSource(System.IO.Path.Combine(factsDir, "csr"), "category_child")
+        :> ILookupSource
+    let lookupChildrenBidir (k: int) : int list = csrChildBidir.Lookup k
+{{/has_csr}}
+{{^has_csr}}
+    // No CSR artifact present: downward direction is dead.  The kernel
+    // will still run but will only explore upward edges — i.e. degenerates
+    // to category_ancestor-shaped traversal.  Documented degradation,
+    // not a build failure.
+    let lookupChildrenBidir (_: int) : int list = []
+{{/has_csr}}
+    let lookupParentsBidir : int -> int list = lmdbLookupFn
+    let parentStepCost = 1.0
+    let childStepCost = 3.0
+    let costBudget = 10.0
+{{/match}}
+    for rep = 1 to numReps do
+        let querySw = Stopwatch.StartNew()
+        let mutable repSolutions = 0
+{{match kernel_kind}}
+{{case category_ancestor}}
+        // category_ancestor native benchmark loop (LMDB fast path)
+        for cat in seedInts do
+            let hits = nativeKernel_category_ancestor lookupFn cat rootInt maxDepthCfg 1 [ cat ]
+            if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+{{case bidirectional_ancestor}}
+        // bidirectional_ancestor native benchmark loop (LMDB parents + CSR children).
+        // Mirrors WamRuntime.fs executeForeign's "category_ancestor/4"
+        // bidirectional dispatch; setup is hoisted above the rep loop.
+        for cat in seedInts do
+            let hits =
+                nativeKernel_bidirectional_ancestor
+                    lookupParentsBidir lookupChildrenBidir
+                    cat rootInt
+                    parentStepCost childStepCost costBudget
+            if not (List.isEmpty hits) then repSolutions <- repSolutions + 1
+{{default}}
+        // Unknown kernel kind: skip the native benchmark loop.
+        for _cat in seedInts do
+            ()
+{{/match}}
+        querySw.Stop()
+        lastQueryMs <- querySw.ElapsedMilliseconds
+        totalSolutions <- totalSolutions + repSolutions
+        eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
+            rep lastQueryMs seedInts.Length repSolutions
+{{/has_lmdb}}
+{{^has_lmdb}}
+    for rep = 1 to numReps do
+        let querySw = Stopwatch.StartNew()
+        let mutable repSolutions = 0
+
+        for cat in seedCats do
+            let varId = 1000000
+            let regs = Array.create MaxRegs (Unbound -1)
+            // NON-LMDB path: facts live in WcFfiFacts (in-memory), so
+            // category_ancestor/4 runs as compiled WAM bytecode via
+            // dispatchCall, with the raw /4 shape category_ancestor(+Cat,
+            // -Ancestor, -Hops, +Visited): A2 and A3 are OUTPUTs (Unbound) and
+            // A4 is seeded with [Cat] for the cycle-detection guard. The /3
+            // lowered aggregates fold a target root in, so they use A2=root.
+            // (The LMDB int-native path does NOT use this loop -- it calls the
+            // native kernel directly in the has_lmdb branch above, where A2=root
+            // is the kernel's input(2). Conflating the two here regressed the
+            // non-LMDB category-ancestor smoke to solutions=0.)
+            if queryPred.EndsWith "/4" then
+                regs.[1] <- Atom cat
+                regs.[2] <- Unbound varId
+                regs.[3] <- Unbound (varId + 1)
+                regs.[4] <- VList [ Atom cat ]
+            else
+                regs.[1] <- Atom cat
+                regs.[2] <- Atom root
+                regs.[3] <- Unbound varId
+            let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
+            match dispatchCall ctx queryPred s0 with
+            | Some s1 ->
+                repSolutions <- repSolutions + 1
+            | None -> ()
+
+        querySw.Stop()
+        lastQueryMs <- querySw.ElapsedMilliseconds
+        totalSolutions <- totalSolutions + repSolutions
+        eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
+            rep lastQueryMs seedCats.Length repSolutions
+{{/has_lmdb}}
+
+    sw.Stop()
+    let totalMs = sw.ElapsedMilliseconds
+
+    // Summary output
+    printfn "query_ms=%d seeds=%d solutions=%d reps=%d"
+        lastQueryMs seedCats.Length (totalSolutions / numReps) numReps
+    printfn "total_ms=%d" totalMs
+    0

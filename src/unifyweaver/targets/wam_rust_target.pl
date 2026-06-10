@@ -28,11 +28,21 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_text_parser', [
+    wam_classify_constant_token/2,
+    wam_tokenize_line/2
+]).
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
     rust_lowered_func_name/2
 ]).
+:- use_module('../targets/wam_runtime_parser_capability', [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
 :- use_module('../core/recursive_kernel_detection', [
     detect_recursive_kernel/4,
     kernel_metadata/4,
@@ -41,6 +51,10 @@
     kernel_native_call/2
 ]).
 
+rust_safe_function_name(Pred/Arity, FuncName) :-
+    !,
+    rust_safe_function_name(Pred, BaseName),
+    format(atom(FuncName), '~w_~w', [BaseName, Arity]).
 rust_safe_function_name(Pred, FuncName) :-
     atom_string(Pred, PredStr),
     string_codes(PredStr, Codes),
@@ -89,6 +103,14 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
+                    // Empty-list aliasing: the [] atom and an empty Value::List
+                    // are the same term. A list tail peeled down to its end is
+                    // Value::List([]), and a clause head get_constant [] must
+                    // match it (e.g. append/3 base case capp([],L,L)).
+                    Some(Value::List(ref items)) if items.is_empty()
+                        && matches!(c, Value::Atom(s) if s == "[]") => {
+                        self.pc += 1; true
+                    }
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
                         self.set_reg_str(ai, c.clone());
@@ -109,23 +131,18 @@ wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
-    Body = '                let val_a = self.get_reg_raw(ai);
+    Body = '                // get_value Xn, Ai is full unification of the two.
+                // The old hand-rolled version only did raw equality plus
+                // unbound-binding, so it could not unify two bound compound
+                // terms or follow a heap Ref — e.g. append/3 binding the
+                // accumulated result list against a tail cell. Route through
+                // unify(), which derefs (incl. Ref->heap), binds vars, and
+                // structurally unifies with cons-cell aliasing.
+                let val_a = self.get_reg_raw(ai);
                 let val_x = self.get_reg(xn);
                 match (val_a, val_x) {
-                    (Some(a), Some(x)) if a == x => { self.pc += 1; true }
-                    (Some(a), _) if a.is_unbound() => {
-                        self.trail_binding(ai);
-                        if let Some(x) = self.get_reg(xn) {
-                            self.set_reg_str(ai, x);
-                        }
-                        self.pc += 1; true
-                    }
-                    (_, Some(x)) if x.is_unbound() => {
-                        self.trail_binding(xn);
-                        if let Some(a) = self.get_reg_raw(ai) {
-                            self.put_reg(xn, a);
-                        }
-                        self.pc += 1; true
+                    (Some(a), Some(x)) => {
+                        if self.unify(&a, &x) { self.pc += 1; true } else { false }
                     }
                     _ => false,
                 }'.
@@ -135,17 +152,23 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
-                        self.trail_binding(ai);
-                        self.set_reg_str(ai, Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.smut().push(StackEntry::WriteCtx(arity));
+                        self.heap.push(Value::Str(fn_str.clone(), vec![]));
+                        for _ in 0..arity {
+                            self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        }
+                        self.trail_binding(ai);
+                        if let Value::Unbound(ref name) = val {
+                            self.bind_var(name, Value::Ref(addr));
+                        }
+                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == &format!("str({})", fn_str) {
+                            if s == fn_str || s == &format!("str({})", fn_str) {
                                 let arity = fn_str.split(\'/\').nth(1)
                                     .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                                 let args = self.heap_subargs(addr + 1, arity);
@@ -164,13 +187,22 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+                    // Deref BEFORE the unbound test: a bound variable is still
+                    // typed Unbound, and treating a bound list tail as unbound
+                    // would wrongly take the write-mode branch.
+                    let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
+                        self.heap.push(Value::Str("./2".to_string(), vec![]));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
                         self.trail_binding(ai);
+                        if let Value::Unbound(ref name) = val {
+                            self.bind_var(name, Value::Ref(addr));
+                        }
                         self.set_reg_str(ai, Value::Ref(addr));
-                        self.smut().push(StackEntry::WriteCtx(2));
+                        self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
                         if let Some((head, tail)) = items.split_first() {
@@ -178,9 +210,15 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                                 vec![head.clone(), Value::List(tail.to_vec())]));
                             self.pc += 1; true
                         } else { false }
+                    } else if let Value::Str(s, args) = &val {
+                        // Materialised cons cell, e.g. "[|]/2"/"./2".
+                        if self.is_cons_functor(s) && args.len() == 2 {
+                            self.smut().push(StackEntry::UnifyCtx(args.clone()));
+                            self.pc += 1; true
+                        } else { false }
                     } else if let Value::Ref(addr) = &val {
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == "str(./2)" {
+                            if self.is_cons_functor(s) {
                                 let args = self.heap_subargs(addr + 1, 2);
                                 self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
@@ -201,16 +239,12 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         self.put_reg(xn, arg);
                         self.pc += 1; true
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        let addr = self.heap.len();
-                        let var = Value::Unbound(format!("_H{}", addr));
-                        self.heap.push(var.clone());
-                        self.smut().pop();
-                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                        self.put_reg(xn, var);
-                        self.pc += 1; true
-                    } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    let var = Value::Unbound(format!("_H{}", self.var_counter));
+                    self.var_counter += 1;
+                    self.set_heap_or_list(var.clone());
+                    self.put_reg(xn, var);
+                    self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
@@ -236,14 +270,10 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                             self.pc += 1; true
                         } else { false }
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        if let Some(val) = self.get_reg(xn) {
-                            self.heap.push(val);
-                            self.smut().pop();
-                            if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                            self.pc += 1; true
-                        } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    if let Some(val) = self.get_reg(xn) {
+                        self.set_heap_or_list(val);
+                        self.pc += 1; true
                     } else { false }
                 } else { false }'.
 
@@ -259,13 +289,9 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                             self.pc += 1; true
                         } else { false }
                     } else { false }
-                } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
-                    if n > 0 {
-                        self.heap.push(c.clone());
-                        self.smut().pop();
-                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
-                        self.pc += 1; true
-                    } else { false }
+                } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
+                    self.set_heap_or_list(c.clone());
+                    self.pc += 1; true
                 } else { false }'.
 
 % --- Body Construction Instructions ---
@@ -303,6 +329,16 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
+                // If this register holds an unbound placeholder (one a prior
+                // set_variable embedded into an enclosing term), bind it to the
+                // new structure so the embedded copy resolves here. The compiler
+                // builds nested terms outer-first — +(+(A,B),C), or a list tail
+                // cell — leaving a placeholder a later put_structure must fill.
+                if let Some(cur) = self.get_reg_raw(ai) {
+                    if let Value::Unbound(name) = self.deref_var(&cur) {
+                        self.bind_var(&name, Value::Ref(addr));
+                    }
+                }
                 self.set_reg_str(ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
@@ -320,10 +356,15 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let var = Value::Unbound(format!("_H{}", addr));
-                self.heap.push(var.clone());
-                self.put_reg(xn, var);
+    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter));
+                self.var_counter += 1;
+                self.put_reg(xn, var.clone());
+                // Write the fresh variable into the current structure/list arg
+                // slot, exactly as set_value/set_constant do. Without this the
+                // placeholder never lands in the term being built, so any
+                // structure/list with a variable argument (nested arithmetic
+                // +(+(A,B),C); list tail cells [H|T]) had its args misaligned.
+                self.set_heap_or_list(var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
@@ -592,7 +633,9 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
-                self.cut_barrier = self.choice_points.len();
+                self.cut_barrier = self.pending_cut_barrier
+                    .take()
+                    .unwrap_or(self.choice_points.len());
                 let saved_cp = self.cp;
                 self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
@@ -608,6 +651,12 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     self.cp = self.pc + 1;
                     self.pc = target_pc;
                     true
+                } else if self.foreign_predicates.contains(p) {
+                    self.cp = self.pc + 1;
+                    if self.execute_foreign_predicate(p, *_arity) {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
@@ -658,6 +707,8 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
+                } else if self.foreign_predicates.contains(p) {
+                    self.execute_foreign_predicate(p, 0)
                 } else { false }'.
 
 wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
@@ -669,6 +720,15 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
                 self.cp = 0; // halt
                 self.pc = ret;
                 true'.
+
+wam_instruction_arm('Instruction::Jump(label)', Body) :-
+    Body = '                if let Some(&target_pc) = self.labels.get(label) {
+                    self.pc = target_pc;
+                    true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::NoOp', Body) :-
+    Body = '                self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
@@ -706,6 +766,7 @@ wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
 
 wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
+                    let clause_barrier = self.choice_points.len();
                     self.choice_points.push(ChoicePoint {
                         next_pc,
                         saved_args: self.save_regs(),
@@ -716,11 +777,17 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
                     });
+                    if label.starts_with("L_ite_else_") {
+                        self.pending_cut_barrier = None;
+                    } else {
+                        self.pending_cut_barrier = Some(clause_barrier);
+                    }
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
-    Body = '                self.choice_points.push(ChoicePoint {
+    Body = '                let clause_barrier = self.choice_points.len();
+                self.choice_points.push(ChoicePoint {
                     next_pc: *next_pc,
                     saved_args: self.save_regs(),
                     cp: self.cp,
@@ -730,6 +797,7 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                     builtin_state: None,
                     cut_barrier: self.cut_barrier,
                 });
+                self.pending_cut_barrier = Some(clause_barrier);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::TrustMe', Body) :-
@@ -741,6 +809,7 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
                     }
+                    self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
                     self.pc += 1; true
                 } else { false }'.
 
@@ -748,6 +817,7 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
     Body = '                if let Some(cp) = self.choice_points.last_mut() {
                     cp.next_pc = *next_pc;
                 }
+                self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
                 self.pc += 1; true'.
 
 % --- Indexing Instructions ---
@@ -782,6 +852,27 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                     }
                 }
                 // Unbound A1: skip dispatch, advance to next instruction
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        for (key, label) in table {
+                            if *key == val {
+                                if let Some(&pc) = self.labels.get(label) {
+                                    self.pc = pc; return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                // No table key matched (or A1 unbound): fall through to the
+                // next instruction (the try_me_else clause chain). Unlike
+                // SwitchOnConstant this never fails — failing here skipped the
+                // chain entirely and, because the dropped instruction also
+                // shifted every later label by one, backtracking landed past
+                // retry_me_else and looped.
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
@@ -960,6 +1051,7 @@ compile_backtrack_to_rust(Code0) :-
             self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
             self.cut_barrier = cp.cut_barrier;
+            self.pending_cut_barrier = None;
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
@@ -1002,6 +1094,14 @@ compile_execute_builtin_to_rust(Code) :-
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
             "!/0" => { self.choice_points.truncate(self.cut_barrier); self.pc += 1; true }
+            "=/2" => {
+                // Unification: the compiler emits `X = Y` as builtin_call =/2.
+                // Without a handler it fell through to `_ => false`, so even
+                // `a = a` failed.
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
+            }
             _ => false,
         }
     }'.
@@ -1053,8 +1153,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             "==/2" => {
-                let v1 = self.get_reg_raw("A1");
-                let v2 = self.get_reg_raw("A2");
+                let v1 = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                let v2 = self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
                 if v1 == v2 { self.pc += 1; true } else { false }
             }
             _ => false,
@@ -1152,8 +1254,17 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "append/3" => {
-                eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
-                false
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                match (self.value_as_list(&a1), self.value_as_list(&a2)) {
+                    (Some(mut left), Some(right)) => {
+                        left.extend(right);
+                        if self.unify(&a3, &Value::List(left)) { self.pc += 1; true }
+                        else { false }
+                    }
+                    _ => false,
+                }
             }
             "functor/3" => {
                 let t = self.get_reg_raw("A1")
@@ -1310,6 +1421,12 @@ compile_execute_term_builtin_to_rust(Code) :-
                     } else { false }
                 } else { false }
             }
+            "reverse/2" => { self.execute_reverse_builtin() }
+            "atom_codes/2" => { self.execute_atom_codes_builtin() }
+            "number_codes/2" => { self.execute_number_codes_builtin() }
+            "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
+            "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
+            "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
             _ => false,
         }
     }
@@ -1348,12 +1465,278 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             _ => v.clone(),
         }
+    }
+
+    fn execute_reverse_builtin(&mut self) -> bool {
+        let src = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let dst = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        match self.value_as_list(&src) {
+            Some(mut items) => {
+                items.reverse();
+                if self.unify(&dst, &Value::List(items)) { self.pc += 1; true }
+                else { false }
+            }
+            None => false,
+        }
+    }
+
+    fn execute_atom_codes_builtin(&mut self) -> bool {
+        let atom_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let codes_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let atom = self.deref_heap(&self.deref_var(&atom_raw));
+        let codes = self.deref_heap(&self.deref_var(&codes_raw));
+        match (atom, codes) {
+            (Value::Atom(text), _) => {
+                let list = Self::string_to_codes_value(&text);
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                match self.code_list_to_string(&items) {
+                    Some(text) => {
+                        if self.unify(&atom_raw, &Value::Atom(text)) { self.pc += 1; true }
+                        else { false }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_number_codes_builtin(&mut self) -> bool {
+        let num_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let codes_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let num = self.deref_heap(&self.deref_var(&num_raw));
+        let codes = self.deref_heap(&self.deref_var(&codes_raw));
+        match (num, codes) {
+            (Value::Integer(n), _) => {
+                let list = Self::string_to_codes_value(&n.to_string());
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Float(f), _) => {
+                let list = Self::string_to_codes_value(&f.to_string());
+                if self.unify(&codes_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                match self.code_list_to_string(&items) {
+                    Some(text) => {
+                        let parsed = if let Ok(n) = text.parse::<i64>() {
+                            Some(Value::Integer(n))
+                        } else if let Ok(f) = text.parse::<f64>() {
+                            Some(Value::Float(f))
+                        } else {
+                            None
+                        };
+                        match parsed {
+                            Some(v) => {
+                                if self.unify(&num_raw, &v) { self.pc += 1; true }
+                                else { false }
+                            }
+                            None => false,
+                        }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_term_to_atom_builtin(&mut self) -> bool {
+        let term_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let atom_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let term = self.deref_heap(&self.deref_var(&term_raw));
+        if matches!(term, Value::Unbound(_)) {
+            let atom = self.deref_heap(&self.deref_var(&atom_raw));
+            match atom {
+                Value::Atom(text) => {
+                    if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
+                    else { false }
+                }
+                _ => false,
+            }
+        } else {
+            let rendered = self.term_to_atom_text(&term);
+            if self.unify(&atom_raw, &Value::Atom(rendered)) { self.pc += 1; true }
+            else { false }
+        }
+    }
+
+    fn execute_read_term_from_atom_builtin(&mut self, _arity: usize) -> bool {
+        let atom = self.get_reg_raw("A1")
+            .map(|v| self.deref_heap(&self.deref_var(&v)));
+        match atom {
+            Some(Value::Atom(text)) => {
+                if self.bind_compiled_parse_atom(&text, "A2") { self.pc += 1; true }
+                else { false }
+            }
+            _ => false,
+        }
+    }
+
+    fn bind_compiled_parse_atom(&mut self, atom_text: &str, target_reg: &str) -> bool {
+        if !self.labels.contains_key("canonical_op_table/1") ||
+           !self.labels.contains_key("parse_term_from_atom/3") {
+            return false;
+        }
+        let mut parser = WamState::new(self.code.clone(), self.labels.clone());
+
+        let ops_var = Value::Unbound("_RP_ops".to_string());
+        parser.set_reg_str("A1", ops_var.clone());
+        if !parser.run_named_label("canonical_op_table/1") {
+            return false;
+        }
+        let ops = parser.deref_heap(&parser.deref_var(&ops_var));
+
+        parser.reset_query();
+        let parsed_var = Value::Unbound("_RP_term".to_string());
+        parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
+        parser.set_reg_str("A2", ops);
+        parser.set_reg_str("A3", parsed_var.clone());
+        if !parser.run_named_label("parse_term_from_atom/3") {
+            return false;
+        }
+
+        let parsed = parser.deref_heap(&parser.deref_var(&parsed_var));
+        let mut var_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let copied = self.copy_external_term_from(&parser, &parsed, &mut var_map);
+        match self.get_reg_raw(target_reg) {
+            Some(target) => self.unify(&target, &copied),
+            None => false,
+        }
+    }
+
+    fn run_named_label(&mut self, label: &str) -> bool {
+        match self.labels.get(label).copied() {
+            Some(pc) => {
+                self.pc = pc;
+                self.cp = 0;
+                self.step_count = 0;
+                self.run()
+            }
+            None => false,
+        }
+    }
+
+    fn copy_external_term_from(
+        &mut self,
+        source: &WamState,
+        value: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        let derefed_var = source.deref_var(value);
+        let derefed = source.deref_heap(&derefed_var);
+        match derefed {
+            Value::Unbound(name) => {
+                if let Some(new_name) = var_map.get(&name) {
+                    Value::Unbound(new_name.clone())
+                } else {
+                    self.var_counter += 1;
+                    let new_name = format!("_RP{}", self.var_counter);
+                    var_map.insert(name, new_name.clone());
+                    Value::Unbound(new_name)
+                }
+            }
+            Value::Str(f, args) => {
+                let copied_args: Vec<Value> = args.iter()
+                    .map(|a| self.copy_external_term_from(source, a, var_map))
+                    .collect();
+                Value::Str(Self::display_functor_name(&f, copied_args.len()), copied_args)
+            }
+            Value::List(items) => {
+                let copied_items: Vec<Value> = items.iter()
+                    .map(|i| self.copy_external_term_from(source, i, var_map))
+                    .collect();
+                Value::List(copied_items)
+            }
+            other => other,
+        }
+    }
+
+    fn value_as_list(&self, value: &Value) -> Option<Vec<Value>> {
+        let derefed = self.deref_heap(&self.deref_var(value));
+        match derefed {
+            Value::List(items) => Some(items),
+            Value::Atom(s) if s == "[]" => Some(Vec::new()),
+            Value::Str(f, args) if self.is_cons_functor(&f) && args.len() == 2 => {
+                let mut tail = self.value_as_list(&args[1])?;
+                tail.insert(0, args[0].clone());
+                Some(tail)
+            }
+            _ => None,
+        }
+    }
+
+    fn string_to_codes_value(text: &str) -> Value {
+        Value::List(text.chars()
+            .map(|c| Value::Integer(c as i64))
+            .collect())
+    }
+
+    fn code_list_to_string(&self, items: &[Value]) -> Option<String> {
+        let mut out = String::new();
+        for item in items {
+            let derefed = self.deref_heap(&self.deref_var(item));
+            match derefed {
+                Value::Integer(code) if code >= 0 => {
+                    out.push(char::from_u32(code as u32)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    fn term_to_atom_text(&self, value: &Value) -> String {
+        let derefed = self.deref_heap(&self.deref_var(value));
+        match derefed {
+            Value::Atom(s) => s,
+            Value::Integer(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Unbound(name) => name,
+            Value::List(items) => {
+                let rendered: Vec<String> = items.iter()
+                    .map(|i| self.term_to_atom_text(i))
+                    .collect();
+                format!("[{}]", rendered.join(", "))
+            }
+            Value::Str(f, args) => {
+                let name = Self::display_functor_name(&f, args.len());
+                let rendered: Vec<String> = args.iter()
+                    .map(|a| self.term_to_atom_text(a))
+                    .collect();
+                format!("{}({})", name, rendered.join(", "))
+            }
+            Value::Ref(_) => format!("{}", derefed),
+            Value::Uninit => "_".to_string(),
+        }
+    }
+
+    fn display_functor_name(functor: &str, arity: usize) -> String {
+        let mut name = functor
+            .strip_prefix("str(")
+            .and_then(|s| s.strip_suffix(")"))
+            .unwrap_or(functor);
+        if let Some((base, ar)) = name.rsplit_once(''/'') {
+            if ar.parse::<usize>().ok() == Some(arity) {
+                name = base;
+            }
+        }
+        name.to_string()
     }'.
 
 compile_execute_foreign_predicate_to_rust(Code) :-
     Code = '    /// Execute a registered foreign predicate by name/arity.
     pub fn execute_foreign_predicate(&mut self, pred: &str, arity: usize) -> bool {
-        let pred_key = format!("{}/{}", pred, arity);
+        let pred_key = if pred.contains(\'/\') && self.foreign_predicates.contains(pred) {
+            pred.to_string()
+        } else {
+            format!("{}/{}", pred, arity)
+        };
         if !self.foreign_predicates.contains(&pred_key) {
             return false;
         }
@@ -1390,14 +1773,15 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 let cat_id = self.intern_atom(&cat);
                 let root_id = self.intern_atom(&root);
-                let visited_ids: Vec<u32> = visited.iter().filter_map(|item| {
+                let mut visited_ids: Vec<u32> = visited.iter().filter_map(|item| {
                     match self.deref_var(item) {
                         Value::Atom(s) => Some(self.intern_atom(&s)),
                         _ => None,
                     }
                 }).collect();
                 let mut hops: Vec<i64> = Vec::new();
-                self.collect_native_category_ancestor_hops(cat_id, root_id, &visited_ids, max_depth, &edge_pred, &mut hops);
+                let acc = self.resolve_edge_accessor(&edge_pred);
+                self.collect_native_category_ancestor_hops(cat_id, root_id, &mut visited_ids, max_depth, &acc, 0, &mut hops);
                 if hops.is_empty() {
                     return false;
                 }
@@ -1711,6 +2095,43 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
+            "lazy_lmdb_lookup" => {
+                // R7: lazy parent-edge lookup via the LookupSource trait.
+                // A1 is the input atom key; A2 is the binding target.
+                // The backend (e.g. LmdbFactSource) maps the atom to an
+                // int, looks up parents, and maps each result back to
+                // an atom. Mirrors Haskell EdgeLookup :: Int -> [Int]
+                // but with the kernel staying in atom-space.
+                let key_atom = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let value_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let source = match self.lazy_lookup(&pred_key) {
+                    Some(src) => src,
+                    None => return false,
+                };
+                let key_int = match source.lookup_key_for_atom(&key_atom) {
+                    Some(k) => k,
+                    None => return false,
+                };
+                let value_ints = source.lookup_parents(key_int);
+                if value_ints.is_empty() {
+                    return false;
+                }
+                let results: Vec<Value> = value_ints.iter().filter_map(|vid| {
+                    source.atom_for_key(*vid).map(|s| {
+                        Value::Str("__tuple__".to_string(), vec![Value::Atom(s)])
+                    })
+                }).collect();
+                if results.is_empty() {
+                    return false;
+                }
+                self.finish_foreign_results(&pred_key, vec![value_reg], results)
+            }
             _ => false,
         }
     }'.
@@ -1793,7 +2214,11 @@ compile_foreign_result_helpers_to_rust(Code) :-
 
 compile_parse_foreign_tuple_layout_to_rust(Code) :-
     Code = '    fn parse_foreign_tuple_layout(layout: &str) -> Option<usize> {
-        layout.strip_prefix("tuple:")?.parse::<usize>().ok()
+        if let Some(inner) = layout.strip_prefix("tuple(").and_then(|s| s.strip_suffix(")")) {
+            inner.parse::<usize>().ok()
+        } else {
+            layout.strip_prefix("tuple:")?.parse::<usize>().ok()
+        }
     }'.
 
 compile_collect_native_category_ancestor_to_rust(Code) :-
@@ -1801,18 +2226,47 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
         &self,
         cat_id: u32,
         root_id: u32,
-        visited: &[u32],
+        visited: &mut Vec<u32>,
         max_depth: usize,
-        edge_pred: &str,
+        acc: &EdgeAccessor,
+        depth: i64,
         out: &mut Vec<i64>,
     ) {
-        let ffi_table = self.ffi_facts.get(edge_pred);
+        // ROOT_ANCHORED_METRICS admissible prune: when a materialised
+        // min_dist_to_root table is loaded, a node whose shortest remaining
+        // distance to root exceeds the remaining depth budget cannot reach
+        // root within max_depth, so the whole branch is cut. A node absent
+        // from the table is unreachable and likewise pruned. Disabled (empty
+        // table) by default; never changes results, only avoids exploring
+        // walks that provably cannot reach root in budget.
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => {
+                    if depth + (d as i64) > max_depth as i64 {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
+        // R7: route through self.edge_parents so lazy_lookups is
+        // consulted before ffi_facts. This keeps the kernels_on
+        // native path working under lmdb_materialisation(lazy).
+        //
+        // Accumulator-passing (ported from the Haskell kernel, perf-log
+        // #16/#207): thread the hop count DOWN as `depth` and emit the
+        // final distance (depth + 1) when the root is reached, instead of
+        // pushing 1 and incrementing every emitted result on the way back
+        // up. Eliminates the O(sum-of-path-depths) re-increment pass
+        // (~57M ops at simplewiki). Output is byte-identical: at a level
+        // with visited.len() == L the old code yielded L (push 1 + L-1
+        // increments) and this yields depth + 1 == L, in the same DFS
+        // emission order.
+        let parents = self.edge_parents_via(cat_id, acc);
         let root_seen = visited.contains(&root_id);
         if !root_seen {
-            if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
-                if values.contains(&root_id) {
-                    out.push(1);
-                }
+            if parents.contains(&root_id) {
+                out.push(depth + 1);
             }
         }
 
@@ -1820,21 +2274,18 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
             return;
         }
 
-        if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
-            let values = values.clone();
-            for parent_id in &values {
-                if visited.contains(parent_id) {
-                    continue;
-                }
-                let mut next_visited: Vec<u32> = Vec::with_capacity(visited.len() + 1);
-                next_visited.push(*parent_id);
-                next_visited.extend_from_slice(visited);
-                let before = out.len();
-                self.collect_native_category_ancestor_hops(*parent_id, root_id, &next_visited, max_depth, edge_pred, out);
-                for hop in out.iter_mut().skip(before) {
-                    *hop += 1;
-                }
+        // Single reused `visited` Vec with DFS push/pop instead of a fresh
+        // per-branch allocation (was ~64M Vec allocs at simplewiki). The
+        // path-so-far is restored by pop() on the way back up, so contents
+        // at every level are identical to the old `[parent | visited]`
+        // copy — output is byte-identical.
+        for parent_id in &parents {
+            if visited.contains(parent_id) {
+                continue;
             }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_hops(*parent_id, root_id, visited, max_depth, acc, depth + 1, out);
+            visited.pop();
         }
     }'.
 
@@ -2430,6 +2881,14 @@ compile_eval_arith_to_rust(Code) :-
                 }
             }
             Value::Str(op, args) => self.eval_arith_compound(op, args),
+            Value::Unbound(_) => {
+                // A bound placeholder variable (e.g. the embedded arg of a
+                // nested expression +(+(A,B),C)) derefs through the binding
+                // table to the real subterm. Without this it fell to None and
+                // any depth>=2 arithmetic failed.
+                let d = self.deref_var(expr);
+                if d == *expr { None } else { self.eval_arith(&d) }
+            }
             Value::Atom(name) => {
                 // Try register dereference
                 if name.starts_with(\'A\') || name.starts_with(\'X\') || name.starts_with(\'Y\') {
@@ -2496,7 +2955,7 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
-    rust_safe_function_name(Pred, FuncName),
+    rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -2613,8 +3072,7 @@ wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, La
 
 wam_lines_to_rust([], _, _, _, [], []).
 wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, Labels)
     ;   CleanParts = [First|_],
@@ -2641,9 +3099,10 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
 wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::GetConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
 wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2670,17 +3129,15 @@ wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyValue("~w".to_string())', [Xn]).
 wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
-    (   number_string(N, C)
-    ->  format(string(Rust),
-            'Instruction::UnifyConstant(Value::Integer(~w))', [N])
-    ;   format(string(Rust),
-            'Instruction::UnifyConstant(Value::Atom("~w".to_string()))', [C])
-    ).
+    rust_const_value(C, VExpr),
+    format(string(Rust), 'Instruction::UnifyConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
+    rust_const_value(CC, VExpr),
     format(string(Rust),
-        'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
-        [CC, CAi]).
+        'Instruction::PutConstant(~w, "~w".to_string())',
+        [VExpr, CAi]).
+
 wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
@@ -2706,12 +3163,8 @@ wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetValue("~w".to_string())', [Xn]).
 wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
-    (   number_string(N, C)
-    ->  format(string(Rust),
-            'Instruction::SetConstant(Value::Integer(~w))', [N])
-    ;   format(string(Rust),
-            'Instruction::SetConstant(Value::Atom("~w".to_string()))', [C])
-    ).
+    rust_const_value(C, VExpr),
+    format(string(Rust), 'Instruction::SetConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
 wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
@@ -2753,15 +3206,36 @@ wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["try", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::TryMeElse("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
+wam_line_to_rust_instr(["trust", _Label], _, _, "Instruction::TrustMe").
 wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::Jump("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["cut_ite"], _, _, "Instruction::NoOp").
 % Indexing instructions
 wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries], _, _, Rust) :-
+    % Entries with a "default" target mean "fall through" for that key, so
+    % they carry no jump and are dropped from the table. Emitting this as a
+    % real instruction (rather than the unknown-fallback comment) keeps every
+    % later label PC aligned — the missing instruction shifted them by one.
+    exclude(is_default_index_entry, Entries, JumpEntries),
+    maplist(parse_index_entry_constant, JumpEntries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust),
+        'Instruction::SwitchOnConstantFallthrough(vec![~w])', [Joined]).
 wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
@@ -2770,10 +3244,36 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
-% Fallback for unknown instructions
+% Fallback for unknown instructions. Emit a real NoOp (not a bare comment):
+% a comment is dropped from the vec! literal, which shifts every later label
+% PC by one and corrupts backtracking (a missing trust_me/retry_me_else made
+% the choice point loop). NoOp preserves alignment, and for the indexing
+% hints that land here (switch_on_term, ...) falling through to the
+% try_me_else chain is correct.
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
-    format(string(Rust), '/* unknown: ~w */', [Joined]).
+    format(string(Rust), 'Instruction::NoOp /* unknown: ~w */', [Joined]).
+
+%% rust_const_value(+Const, -RustValueExpr)
+%  Render a WAM constant token as the right Value variant. Numeric
+%  constants MUST become Value::Integer/Value::Float, not Value::Atom:
+%  put_constant/get_constant previously emitted Value::Atom("28") for the
+%  integer 28, so `R is <expr>` with R bound to a ground integer (the head
+%  arg, e.g. cbi_arith(28) or the cfib(N,R) result check) failed — is/2's
+%  result match only handles Unbound/Integer/Float, not Atom. That failure
+%  triggered runaway backtracking in recursive programs (fib). set_/
+%  unify_constant already did this; this routes the remaining two through
+%  the same rule.
+rust_const_value(C, Expr) :-
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
+    ->  format(string(Expr), 'Value::Integer(~w)', [N])
+    ;   Class = float(N)
+    ->  format(string(Expr), 'Value::Float(~w)', [N])
+    ;   Class = atom(A)
+    ->  escape_rust_string(A, Escaped),
+        format(string(Expr), 'Value::Atom("~w".to_string())', [Escaped])
+    ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
     option(foreign_lowering(ForeignSpec), Options),
@@ -2797,6 +3297,11 @@ rust_foreign_spec(Pred/Arity,
         Pred/Arity) :-
     is_list(SetupOps),
     is_list(RewriteCalls).
+
+%% is_default_index_entry(+Entry) — true for a "K:default" switch entry.
+is_default_index_entry(Entry) :-
+    ( string(Entry) -> S = Entry ; atom_string(Entry, S) ),
+    sub_string(S, _, _, 0, ":default").
 
 parse_index_entry_constant(Entry, Rust) :-
     (   sub_string(Entry, Before, 1, After, ":")
@@ -2864,9 +3369,13 @@ build_rust_wam_arg_setup(Arity, Setup) :-
 %  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
 detect_kernels([], []).
 detect_kernels([PI|Rest], Kernels) :-
-    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   PI = Module:Pred/Arity -> true ; PI = Pred/Arity, Module = user ),
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   rust_runtime_parser_support_module(Module)
+    ->  Clauses = []
+    ;   catch(findall(Head-Body, Module:clause(Head, Body), Clauses),
+              _, Clauses = [])
+    ),
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
@@ -2957,6 +3466,9 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+    wam_target_runtime_parser(wam_rust, Options, RuntimeParserMode),
+    rust_validate_runtime_parser_mode(Predicates, RuntimeParserMode),
+    rust_project_predicates(Predicates, RuntimeParserMode, ProjectPredicates),
 
     % Detect recursive kernels in the predicate list. Detected kernels
     % are handled by the FFI (execute_foreign_predicate) at runtime and
@@ -2965,7 +3477,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Rust] kernel detection suppressed~n', [])
-    ;   detect_kernels(Predicates, DetectedKernels),
+    ;   detect_kernels(ProjectPredicates, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
@@ -3001,11 +3513,15 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     ;   UseLmdbZero = false, UseHeed = false
     ),
 
-    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed)
+    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed).
+    % parallel(true) promotes rayon from an optional dep to a hard dep so the
+    % generated bench can call par_iter without a --features flag.
+    option(parallel(UseRayon), Options, false),
     render_named_template(rust_wam_cargo,
         [module_name=ModuleName,
          use_lmdb_zero=UseLmdbZero,
-         use_heed=UseHeed],
+         use_heed=UseHeed,
+         use_rayon=UseRayon],
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
@@ -3055,7 +3571,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
 
     % Compile predicates and generate lib.rs
     pairs_keys(DetectedKernels, DetectedKeys),
-    compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
+    compile_predicates_for_project(ProjectPredicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
@@ -3065,8 +3581,79 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
 
+    % Generate src/main.rs benchmark harness from template file.
+    % Rust crate names auto-convert dashes to underscores, so e.g.
+    % package "wam-rust-bench" => crate "wam_rust_bench" for imports.
+    atom_string(ModuleName, ModuleNameStr),
+    string_chars(ModuleNameStr, ModuleChars),
+    maplist([C, U]>>(C == '-' -> U = '_' ; U = C), ModuleChars, UnderscoreChars),
+    string_chars(CrateName, UnderscoreChars),
+    read_template_file('templates/targets/rust_wam/main.rs.mustache', MainTemplate),
+    render_template(MainTemplate, [date=Date, crate_name=CrateName], MainContent),
+    directory_file_path(SrcDir, 'main.rs', MainRsPath),
+    write_file(MainRsPath, MainContent),
+
     format('WAM Rust project created at: ~w~n', [ProjectDir]),
-    format('  Predicates compiled: ~w~n', [Predicates]).
+    format('  Predicates compiled: ~w~n', [ProjectPredicates]).
+
+%% rust_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In `compiled` mode, append the portable parser plus the target-agnostic
+%  wrapper predicates. Other modes leave the user predicate list unchanged.
+rust_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    rust_runtime_parser_predicates(ParserPreds),
+    rust_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+rust_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+rust_runtime_parser_support_module(prolog_term_parser).
+rust_runtime_parser_support_module(cpp_runtime_parser_wrappers).
+
+rust_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+        (   current_predicate(prolog_term_parser:Name/Arity),
+            functor(Head, Name, Arity),
+            \+ predicate_property(prolog_term_parser:Head, imported_from(_)),
+            once(clause(prolog_term_parser:Head, _))
+        ),
+        Raw),
+    sort(Raw, Predicates).
+
+rust_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+        (   current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+            functor(Head, Name, Arity),
+            \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                  imported_from(_)),
+            once(clause(cpp_runtime_parser_wrappers:Head, _))
+        ),
+        Raw),
+    sort(Raw, Predicates).
+
+rust_validate_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   rust_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_rust_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+rust_validate_runtime_parser_mode(_Predicates, _Mode).
+
+rust_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    rust_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+rust_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    clause(Module:Head, Body).
+rust_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    clause(user:Head, Body).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 %  Two-pass compilation: collects all WAM-fallback predicates into a shared
@@ -3112,6 +3699,31 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
         format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
     ).
 
+%% rust_pred_has_control_constructs(+Module:Pred/Arity)
+%  True if any clause body uses a backtracking-driven control construct
+%  (\+, ->, ;, once, forall, or a cut). The native Rust emitter
+%  (rust_target.pl) targets deterministic shapes (tail-recursion kernels,
+%  fact lookups) and does NOT model these: it mis-lowers them into a whole
+%  stdin-driven program whose body, under include_main(false), dangles at
+%  module level (syntax error). Mirrors go_pred_has_control_constructs/1;
+%  used to decline native and route such predicates to the lowered/WAM path.
+rust_pred_has_control_constructs(Module:Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Module:Head, Body),
+    rust_body_has_control(Body),
+    !.
+
+rust_body_has_control(G) :- var(G), !, fail.
+rust_body_has_control((_ -> _)) :- !.
+rust_body_has_control((_ ; _)) :- !.
+rust_body_has_control(\+ _) :- !.
+rust_body_has_control(not(_)) :- !.
+rust_body_has_control(once(_)) :- !.
+rust_body_has_control(forall(_, _)) :- !.
+rust_body_has_control(!) :- !.
+rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
+rust_body_has_control(_) :- fail.
+
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
 classify_predicates([], _, []).
@@ -3121,6 +3733,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ),
     (   % Check for auto-detectable FFI kernel FIRST (unless suppressed)
         \+ option(no_kernels(true), Options),
+        \+ rust_runtime_parser_support_module(Module),
         functor(KHead, Pred, Arity),
         findall(KHead-KBody, Module:clause(KHead, KBody), KClauses),
         KClauses \= [],
@@ -3128,7 +3741,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
     ;   % Try native Rust lowering (disable WAM fallback inside rust_target
-        % so we can distinguish truly-native from WAM-needing predicates)
+        % so we can distinguish truly-native from WAM-needing predicates).
+        % Decline native for backtracking control constructs (\+, ->, ;,
+        % once, forall, cut): the native emitter mis-lowers them (see
+        % rust_pred_has_control_constructs/1), so route them to the
+        % lowered/WAM path which models choicepoints correctly.
+        \+ rust_pred_has_control_constructs(Module:Pred/Arity),
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
                 [include_main(false), wam_fallback(false)|Options], PredCode),
@@ -3232,7 +3850,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
 %  Generates a thin WAM predicate wrapper that references the shared code table.
 compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
     atom_string(Pred, PredStr),
-    rust_safe_function_name(Pred, FuncName),
+    rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     format(string(RustCode),
@@ -3261,9 +3879,22 @@ write_file(Path, Content) :-
 read_template_file(RelativePath, Content) :-
     (   exists_file(RelativePath)
     ->  read_file_to_string(RelativePath, Content, [])
+    ;   resolve_template_path(RelativePath, AbsPath), exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Content, [])
     ;   format(atom(Content),
             '// Template not found: ~w', [RelativePath])
     ).
+
+%% resolve_template_path(+RelativePath, -AbsPath)
+%  Resolve a repo-root-relative template path against this module's source
+%  location, so generation works from any working directory (e.g. the
+%  conformance harness runs from tests/, where the cwd-relative
+%  'templates/...' path does not exist). Mirrors the python/go targets.
+resolve_template_path(RelativePath, AbsPath) :-
+    source_file(wam_rust_target:write_wam_rust_project(_,_,_), ThisFile),
+    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
+    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
+    absolute_file_name(Raw, AbsPath).
 
 % ============================================================================
 % CARGO CHECK VALIDATION

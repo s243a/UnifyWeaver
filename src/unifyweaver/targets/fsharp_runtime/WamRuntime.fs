@@ -74,6 +74,7 @@ type ChoicePoint =
       CpHeapLen  : int
       CpBindings : Map<int, Value>   // O(1) snapshot — immutable tree
       CpCutBar   : int
+      CpB0StackLen : int              // issue #2400 fu — see binding source
       CpAggFrame : AggFrame option
       CpBuiltin  : BuiltinState option }
 
@@ -100,7 +101,9 @@ type WamState =
       WsCutBar    : int
       WsVarCounter: int                  // fresh variable id counter
       WsBuilder   : BuilderState option  // PutStructure / PutList accumulator
-      WsAggAccum  : Value list }
+      WsAggAccum  : Value list
+      WsB0Stack   : int list             // Call/Proceed cut-barrier stack (issue #2400 fu)
+    }
 
 and BuilderState =
     | BuildStruct of fn: string * reg: int * arity: int * args: Value list
@@ -513,6 +516,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s1 with WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -526,6 +530,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = None
                    CpBuiltin  = None }
         Some { s1 with WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -602,6 +607,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                    CpHeapLen  = s.WsHeapLen
                    CpBindings = s.WsBindings
                    CpCutBar   = s.WsCutBar
+                   CpB0StackLen = List.length s.WsB0Stack
                    CpAggFrame = Some af
                    CpBuiltin  = None }
         Some { s1 with WsCPs = cp :: s.WsCPs; WsCPsLen = s.WsCPsLen + 1 }
@@ -719,6 +725,7 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
                                CpHeapLen  = s.WsHeapLen
                                CpBindings = s.WsBindings
                                CpCutBar   = s.WsCutBar
+                               CpB0StackLen = List.length s.WsB0Stack
                                CpAggFrame = None
                                CpBuiltin  = Some (FactRetry (vid, rest, retPC)) }
                     Some { s with

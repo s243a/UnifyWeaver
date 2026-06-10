@@ -54,7 +54,12 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_target', [
+    compile_predicate_to_wam_text/3,
+    compile_predicate_to_wam_items/3
+]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module(wam_ir_mode, [wam_ir_mode/4]).
 :- use_module('../core/template_system', [render_template/3]).
 % Lowered emitter: real Phase-2 implementation lives there. We keep the
 % module load lazy via catch/3 so the file remains usable even if the
@@ -100,6 +105,17 @@ validate_emit_mode(mixed(L),    mixed(L))    :- is_list(L), !.
 validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_r_emit_mode, Other),
                 wam_r_resolve_emit_mode/2)).
+
+wam_r_emit_ir_mode(Options, EmitMode, IrMode) :-
+    wam_ir_mode(wam_r, EmitMode, Options, IrMode),
+    (   IrMode == direct_target
+    ->  throw(error(domain_error(wam_r_ir_mode, direct_target),
+                    wam_r_emit_ir_mode/3))
+    ;   IrMode == wam_items_native
+    ->  throw(error(existence_error(wam_ir_mode, wam_items_native),
+                    wam_r_emit_ir_mode/3))
+    ;   true
+    ).
 
 %% should_try_lower(+Mode, +Pred, +Arity) is semidet.
 should_try_lower(functions,    _, _) :- !.
@@ -219,7 +235,11 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         )
     ;   C == '\''
     ->  (   CurR == []
-        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ->  % Enter quoted region — keep the opening quote attached
+            % to the token so atom-vs-number is recoverable
+            % downstream via wam_text_parser:wam_classify_constant_token/2.
+            % A bare `5` is the integer 5; a quoted `'5'` is the atom.
+            tokenize_wam_chars(Rest, ['\''], Acc, inside, Tokens)
         ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
         )
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
@@ -229,7 +249,9 @@ tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
         Rest = [Escaped|More]
     ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
     ;   C == '\''
-    ->  reverse(CurR, CurC), string_chars(T, CurC),
+    ->  % Closing quote — keep it attached to the token so the
+        % outer quotes survive to the constant classifier.
+        reverse(['\''|CurR], CurC), string_chars(T, CurC),
         tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
     ).
@@ -466,15 +488,22 @@ strip_arity_suffix(Pred, Name) :-
     ).
 
 %% constant_to_r_term(+ConstStr, -RTermLit)
-%  Numbers become Integer(N) / FloatTerm(N); everything else interns as Atom.
+%  Numbers become IntTerm(N) / FloatTerm(N); everything else interns as Atom.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name
+%  is "5". tokenize_wam_chars/5 above preserves outer quotes
+%  attached to the token; this is what makes the discriminator
+%  reach this predicate.
 constant_to_r_term(C, Lit) :-
-    (   number_string(N, C),
-        integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Lit), 'IntTerm(~w)', [N])
-    ;   number_string(F, C),
-        float(F)
+    ;   Class = float(F)
     ->  format(string(Lit), 'FloatTerm(~w)', [F])
-    ;   intern_r_atom(C, AtomId),
+    ;   Class = atom(Name),
+        intern_r_atom(Name, AtomId),
         format(string(Lit), 'Atom(~w)', [AtomId])
     ).
 
@@ -526,6 +555,11 @@ split_at_first_colon(Token, Before, After) :-
 %    Instructions: list of R Instruction-constructor literals
 %    LabelMap:     list of "label" - PC pairs (R uses 1-based indexing)
 %    LabelEntries: formatted "<label>" = N pair lines
+wam_code_to_r_data(WamCode, Options, Instructions, LabelMap, LabelEntries) :-
+    is_list(WamCode),
+    !,
+    mark_ite_try_me_else_items(WamCode, Items),
+    wam_items_to_data(Items, Options, 1, Instructions, LabelMap, LabelEntries).
 wam_code_to_r_data(WamCode, Options, Instructions, LabelMap, LabelEntries) :-
     atom_string(WamCode, Str),
     split_string(Str, "\n", "", Lines0),
@@ -583,6 +617,114 @@ wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelMap, LabelEntries
         wam_lines_to_data(Rest, Options, PC1, Instrs2, LabelMap, LabelEntries)
     ).
 
+wam_items_to_data([], _, _, [], [], []).
+wam_items_to_data([label(LabelName)|Rest], Options, PC, Instructions, LabelMap, LabelEntries) :-
+    !,
+    format(string(LEntry), '    "~w" = ~wL', [LabelName, PC]),
+    LabelMap = [LabelName-PC | LM2],
+    LabelEntries = [LEntry | LE2],
+    wam_items_to_data(Rest, Options, PC, Instructions, LM2, LE2).
+wam_items_to_data([Item|Rest], Options, PC, [Lit|Instrs2], LabelMap, LabelEntries) :-
+    wam_item_parts(Item, Parts),
+    wam_parts_to_r(Parts, Options, Lit),
+    PC1 is PC + 1,
+    wam_items_to_data(Rest, Options, PC1, Instrs2, LabelMap, LabelEntries).
+
+mark_ite_try_me_else_items([], []).
+mark_ite_try_me_else_items([try_me_else(Label)|Rest], [try_me_else_ite(Label)|Rest2]) :-
+    next_branch_marker_items(Rest, cut_ite),
+    !,
+    mark_ite_try_me_else_items(Rest, Rest2).
+mark_ite_try_me_else_items([Item|Rest], [Item|Rest2]) :-
+    mark_ite_try_me_else_items(Rest, Rest2).
+
+next_branch_marker_items([], _) :- fail.
+next_branch_marker_items([Item|Rest], Marker) :-
+    (   branch_marker_item(Item, Found)
+    ->  Marker = Found
+    ;   next_branch_marker_items(Rest, Marker)
+    ).
+
+branch_marker_item(try_me_else(_), try_me_else).
+branch_marker_item(try_me_else_ite(_), try_me_else_ite).
+branch_marker_item(retry_me_else(_), retry_me_else).
+branch_marker_item(trust_me, trust_me).
+branch_marker_item(cut_ite, cut_ite).
+
+wam_item_parts(get_constant(C, Ai), ["get_constant", C, Ai]).
+wam_item_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
+wam_item_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
+wam_item_parts(get_structure(F, Ai), ["get_structure", F, Ai]).
+wam_item_parts(get_list(Ai), ["get_list", Ai]).
+wam_item_parts(get_nil(Ai), ["get_nil", Ai]).
+wam_item_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
+wam_item_parts(get_float(F, Ai), ["get_float", F, Ai]).
+wam_item_parts(unify_variable(Xn), ["unify_variable", Xn]).
+wam_item_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_parts(unify_constant(C), ["unify_constant", C]).
+wam_item_parts(unify_nil, ["unify_nil"]).
+wam_item_parts(unify_void(N), ["unify_void", N]).
+wam_item_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
+wam_item_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_parts(put_unsafe_value(Yn, Ai), ["put_unsafe_value", Yn, Ai]).
+wam_item_parts(put_constant(C, Ai), ["put_constant", C, Ai]).
+wam_item_parts(put_nil(Ai), ["put_nil", Ai]).
+wam_item_parts(put_integer(N, Ai), ["put_integer", N, Ai]).
+wam_item_parts(put_float(F, Ai), ["put_float", F, Ai]).
+wam_item_parts(put_structure(F, Ai), ["put_structure", F, Ai]).
+wam_item_parts(put_list(Ai), ["put_list", Ai]).
+wam_item_parts(set_variable(Xn), ["set_variable", Xn]).
+wam_item_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_parts(set_local_value(Xn), ["set_local_value", Xn]).
+wam_item_parts(set_constant(C), ["set_constant", C]).
+wam_item_parts(set_nil, ["set_nil"]).
+wam_item_parts(set_integer(N), ["set_integer", N]).
+wam_item_parts(set_void(N), ["set_void", N]).
+wam_item_parts(call(P, N), ["call", P, N]).
+wam_item_parts(execute(P), ["execute", P]).
+wam_item_parts(proceed, ["proceed"]).
+wam_item_parts(fail, ["fail"]).
+wam_item_parts(allocate, ["allocate"]).
+wam_item_parts(deallocate, ["deallocate"]).
+wam_item_parts(builtin_call(Op, Ar), ["builtin_call", Op, Ar]).
+wam_item_parts(call_foreign(Pred, Ar), ["call_foreign", Pred, Ar]).
+wam_item_parts(arg(N, Reg, OutReg), ["arg", N, Reg, OutReg]).
+wam_item_parts(try_me_else(L), ["try_me_else", L]).
+wam_item_parts(try_me_else_ite(L), ["try_me_else_ite", L]).
+wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
+wam_item_parts(trust_me, ["trust_me"]).
+wam_item_parts(try(L), ["try", L]).
+wam_item_parts(retry(L), ["retry", L]).
+wam_item_parts(trust(L), ["trust", L]).
+wam_item_parts(jump(L), ["jump", L]).
+wam_item_parts(cut_ite, ["cut_ite"]).
+wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
+wam_item_parts(begin_aggregate(K, V, R, W), ["begin_aggregate", K, V, R, W]).
+wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
+wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).
+wam_item_parts(switch_on_constant_fallthrough(Es), ["switch_on_constant_fallthrough"|Es]).
+wam_item_parts(switch_on_constant_a2(Es), ["switch_on_constant_a2"|Es]).
+wam_item_parts(switch_on_constant_a2_fallthrough(Es), ["switch_on_constant_a2_fallthrough"|Es]).
+wam_item_parts(switch_on_structure(Es), ["switch_on_structure"|Es]).
+wam_item_parts(switch_on_structure_a2(Es), ["switch_on_structure_a2"|Es]).
+wam_item_parts(switch_on_term(Ts), ["switch_on_term"|Ts]).
+wam_item_parts(switch_on_term_a2(Ts), ["switch_on_term_a2"|Ts]).
+wam_item_parts(Item, Parts) :-
+    Item =.. [Name|Args],
+    atom_string(Name, NameStr),
+    maplist(r_item_arg_string, Args, ArgStrs),
+    Parts = [NameStr|ArgStrs].
+
+r_item_arg_string(Value, Str) :-
+    (   string(Value)
+    ->  Str = Value
+    ;   atom(Value)
+    ->  atom_string(Value, Str)
+    ;   number(Value)
+    ->  number_string(Value, Str)
+    ;   term_string(Value, Str)
+    ).
+
 % ============================================================================
 % FACT SHAPE CLASSIFICATION
 % ============================================================================
@@ -593,13 +735,24 @@ wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelMap, LabelEntries
 %  emits all layouts through the compiled WAM path, so this is metadata
 %  and testable policy plumbing rather than a runtime behavior change.
 classify_r_fact_predicate(PredIndicator, WamLines, Options, Info) :-
-    split_wam_into_segments_r(WamLines, Segments),
+    split_wam_into_segments_r(WamLines, Segments0),
+    include(r_clause_body_segment, Segments0, Segments),
     length(Segments, NClauses),
     r_fact_only(Segments, FactOnly),
     (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
     r_first_arg_groundness(Segments, Arity, FirstArg),
     r_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout),
     Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+r_clause_body_segment(_Label-Instrs) :-
+    member(Instr, Instrs),
+    \+ r_choice_chain_instr(Instr),
+    Instr \= switch_on_constant,
+    !.
+
+r_choice_chain_instr(try_me_else(_)).
+r_choice_chain_instr(retry_me_else(_)).
+r_choice_chain_instr(trust_me).
 
 %% split_wam_into_segments_r(+Lines, -Segments) is det.
 %  Groups WAM text lines into Label-InstrList pairs.
@@ -768,8 +921,9 @@ compile_predicates_for_project(Predicates, Options,
     option(foreign_predicates(ForeignPredicates), Options, []),
     append_missing_foreign_predicates(Predicates, ForeignPredicates,
                                       CompilePredicates),
-    wam_r_resolve_emit_mode(Options, Mode),
-    compile_all_predicates(CompilePredicates, Options, Mode, 1,
+    wam_r_resolve_emit_mode(Options, EmitMode),
+    wam_r_emit_ir_mode(Options, EmitMode, IrMode),
+    compile_all_predicates(CompilePredicates, Options, EmitMode, IrMode, 1,
                            [], [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, Wrappers, LoweredEntries,
@@ -797,11 +951,11 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
+compile_all_predicates([], _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch,
                        Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch).
-compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
+compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
                        InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
                        FactCommentAcc, LoweredDispAcc,
                        AllInstrs, TopLevelLabelEntries,
@@ -842,14 +996,15 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         % to P/Arity defaults compile_predicate_to_wam's module to
         % `user`, which silently produces "no clauses" for predicates
         % defined in any other module.
-        compile_predicate_to_wam(Pred, [], WamCode),
+        compile_predicate_to_wam_text(Pred, [], WamCode),
+        compile_r_predicate_array_wam(Pred, IrMode, WamCode, WamForArray),
         WamCodeForLower = WamCode,
         atom_string(WamCode, WamStr),
         split_string(WamStr, "\n", "", WamLines),
         classify_r_fact_predicate(Pred, WamLines, Options, FactInfo),
         format_r_fact_shape_comment(Pred, FactInfo, FactComment),
         NewFactCommentAcc = [FactComment | FactCommentAcc],
-        wam_code_to_r_data(WamCode, Options, PredInstrs, _LMap,
+        wam_code_to_r_data(WamForArray, Options, PredInstrs, _LMap,
                            PredSubLabelEntries0),
         length(PredInstrs, PredLen),
         NewPC is BasePC + PredLen,
@@ -904,7 +1059,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         % lowered-dispatch-assignments block of the program template
         % so they run after the lowered functions are defined.
         NewLoweredDispAcc = [RangeReg, DispEntry | LoweredDispAcc]
-    ;   should_try_lower(Mode, P, Arity),
+    ;   should_try_lower(EmitMode, P, Arity),
         WamCodeForLower \= "",
         catch(wam_r_lowerable(Pred, WamCodeForLower, _Reason), _, fail),
         catch(lower_predicate_to_r(Pred, WamCodeForLower, Options,
@@ -921,7 +1076,7 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
     ),
-    compile_all_predicates(Rest, Options, Mode, NewPC,
+    compile_all_predicates(Rest, Options, EmitMode, IrMode, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
                            NewFactCommentAcc,
@@ -929,6 +1084,10 @@ compile_all_predicates([Pred|Rest], Options, Mode, BasePC,
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, AllWrappers, AllLowered,
                            AllFactComments, AllLoweredDispatch).
+
+compile_r_predicate_array_wam(_Pred, wam_text, WamCode, WamCode).
+compile_r_predicate_array_wam(Pred, wam_items_bridge, _WamCode, Items) :-
+    compile_predicate_to_wam_items(Pred, [], Items).
 
 %% emit_lowered_dispatch_entry(+Pred, +Arity, +FuncName, -Entry)
 %  Generates an `assign("Pred/Arity", FuncName, envir = ...)` line
@@ -1851,8 +2010,12 @@ r_predicate_clause(Name/Arity, Head, Body) :-
 % ============================================================================
 
 write_file(Path, Content) :-
+    % UTF-8 so the runtime/generated sources (which contain non-ASCII
+    % characters) write correctly regardless of the process locale
+    % (POSIX/ASCII in many CI containers); otherwise write/2 raises an
+    % encoding error.
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         write(Stream, Content),
         close(Stream)
     ).

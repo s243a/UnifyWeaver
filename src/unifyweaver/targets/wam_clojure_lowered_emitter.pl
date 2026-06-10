@@ -21,6 +21,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 % =====================================================================
 % Parsing
@@ -30,6 +31,31 @@ parse_wam_text(WamText, Instrs) :-
     atom_string(WamText, S),
     split_string(S, "\n", "", Lines),
     parse_lines(Lines, Instrs).
+
+% Label-preserving parse: keeps label(Name) markers so structure_ite can
+% locate the else/cont boundaries of an (C -> T ; E) / \+ / once block.
+parse_wam_text_labeled(WamText, Instrs) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    parse_lines_labeled(Lines, Instrs).
+
+parse_lines_labeled([], []).
+parse_lines_labeled([Line|Rest], Instrs) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  parse_lines_labeled(Rest, Instrs)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelStr),
+            Instrs = [label(LabelStr)|More],
+            parse_lines_labeled(Rest, More)
+        ;   instr_from_parts(CleanParts, Instr)
+        ->  Instrs = [Instr|More],
+            parse_lines_labeled(Rest, More)
+        ;   parse_lines_labeled(Rest, Instrs)
+        )
+    ).
 
 parse_lines([], []).
 parse_lines([Line|Rest], Instrs) :-
@@ -181,10 +207,16 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     ),
     clause1_instrs(Instrs, C1Instrs0),
     (   is_deterministic_pred_clojure(Instrs)
-    ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs)
-    ;   C1Instrs = []
+    ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs),
+        with_output_to(string(Body), emit_instrs(C1Instrs, "  "))
+    ;   clojure_structured_clause1(WamCode, Structured)
+    ->  % Single-clause if-then-else / negation / once: emit native
+        % branching instead of the no-op stub (which delegated to run-wam).
+        with_output_to(string(Body), emit_struct_clj_body(Structured, "  "))
+    ;   % Multi-clause or unstructurable: keep the no-op stub; run-wam
+        % interprets the predicate from start-pc (sound fallback).
+        with_output_to(string(Body), emit_instrs([], "  "))
     ),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "  ")),
     format(string(ClojureCode),
 ';; ~w — lowered from ~w/~w
 (defn ~w [state]
@@ -210,6 +242,76 @@ emit_instr_bindings([Instr|Rest], Index, Indent) :-
     format("~w      s~w (if (= :running (:status ~w)) ~w ~w)~n",
            [Indent, NextIndex, InState, Expr, InState]),
     emit_instr_bindings(Rest, NextIndex, Indent).
+
+% =====================================================================
+% Structured ITE emission (shared nesting-aware structurer)
+% =====================================================================
+%
+%  Clojure's flat `(let [s0 state s1 ...] sN)` threading cannot express an
+%  if-then-else (there is no jump), so the previous emitter produced a
+%  no-op stub for any predicate containing try_me_else and relied on
+%  run-wam (the interpreter) to execute it. This adds native branching:
+%  clause 1 is folded by the shared structurer into ite(Cond,Then,Else)
+%  and emitted as a let whose binding for the block is
+%      (if (= :running (:status sCond)) <then from sCond> <else from sPre>)
+%  i.e. run the condition; on success take Then (inheriting the condition's
+%  bindings), else take Else from the PRE-condition state (discarding them)
+%  — the same Maybe-style discipline as the Haskell/F# backends. A failed
+%  condition builtin calls runtime/backtrack with no choice point in scope,
+%  which yields :status :failed (not :running), so the `if` routes to Else.
+
+%% clojure_structured_clause1(+WamCode, -Structured) is semidet.
+clojure_structured_clause1(WamCode, Structured) :-
+    \+ is_list(WamCode),                       % need the text to recover labels
+    parse_wam_text_labeled(WamCode, LInstrs0),
+    ( LInstrs0 = [label(_)|LInstrs1] -> true ; LInstrs1 = LInstrs0 ),
+    \+ ( LInstrs1 = [try_me_else(_)|_] ),       % single-clause predicates only
+    take_to_terminal(LInstrs1, C1L),
+    structure_ite(C1L, Structured),
+    \+ member(try_me_else(_), Structured),
+    \+ member(trust_me, Structured),
+    \+ member(retry_me_else(_), Structured),
+    once(member(ite(_, _, _), Structured)).     % must actually contain an ITE
+
+%% emit_struct_clj_body(+Structured, +Indent)
+emit_struct_clj_body(Structured, Indent) :-
+    nb_setval(clj_sv_ctr, 0),
+    with_output_to(string(Bindings), emit_clj_bindings(Structured, "state", FinalSV, Indent)),
+    format("~w(let [~n~w~w      ]~n~w  ~w)~n", [Indent, Bindings, Indent, Indent, FinalSV]).
+
+fresh_clj_sv(SV) :-
+    nb_getval(clj_sv_ctr, N), N1 is N + 1, nb_setval(clj_sv_ctr, N1),
+    format(atom(SV), 's~w', [N1]).
+
+%% emit_clj_bindings(+Structured, +InSV, -OutSV, +Indent)
+emit_clj_bindings([], InSV, InSV, _Ind).
+emit_clj_bindings([ite(C, T, E)|Rest], InSV, OutSV, Ind) :- !,
+    emit_clj_bindings(C, InSV, CondSV, Ind),
+    fresh_clj_sv(IteSV),
+    emit_clj_branch(T, CondSV, ThenExpr, Ind),
+    emit_clj_branch(E, InSV, ElseExpr, Ind),
+    format("~w      ;; if-then-else~n", [Ind]),
+    format("~w      ~w (if (= :running (:status ~w))~n", [Ind, IteSV, CondSV]),
+    format("~w            ~w~n", [Ind, ThenExpr]),
+    format("~w            ~w)~n", [Ind, ElseExpr]),
+    emit_clj_bindings(Rest, IteSV, OutSV, Ind).
+emit_clj_bindings([Instr|Rest], InSV, OutSV, Ind) :-
+    fresh_clj_sv(SV),
+    emit_lowered_expr(Instr, InSV, Expr),
+    instr_comment(Instr, Comment),
+    format("~w      ;; ~w~n", [Ind, Comment]),
+    format("~w      ~w (if (= :running (:status ~w)) ~w ~w)~n", [Ind, SV, InSV, Expr, InSV]),
+    emit_clj_bindings(Rest, SV, OutSV, Ind).
+
+%% emit_clj_branch(+Instrs, +InSV, -Expr, +Indent)
+%  A branch body as a self-contained Clojure expression (nested let, or
+%  just InSV when the branch is empty).
+emit_clj_branch(Instrs, InSV, Expr, Ind) :-
+    with_output_to(string(B), emit_clj_bindings(Instrs, InSV, FSV, Ind)),
+    (   B == ""
+    ->  Expr = FSV
+    ;   format(atom(Expr), '(let [~n~w~w            ] ~w)', [B, Ind, FSV])
+    ).
 
 lowered_direct_prefix(Instrs, Prefix) :-
     lowered_direct_prefix(Instrs, allow_control, Prefix).
@@ -416,14 +518,50 @@ clojure_direct_builtin("select/3", "3").
 clojure_direct_builtin("select/3", 3).
 clojure_direct_builtin('select/3', "3").
 clojure_direct_builtin('select/3', 3).
+clojure_direct_builtin("between/3", "3").
+clojure_direct_builtin("between/3", 3).
+clojure_direct_builtin('between/3', "3").
+clojure_direct_builtin('between/3', 3).
 clojure_direct_builtin("numlist/3", "3").
 clojure_direct_builtin("numlist/3", 3).
 clojure_direct_builtin('numlist/3', "3").
 clojure_direct_builtin('numlist/3', 3).
+clojure_direct_builtin("sum_list/2", "2").
+clojure_direct_builtin("sum_list/2", 2).
+clojure_direct_builtin('sum_list/2', "2").
+clojure_direct_builtin('sum_list/2', 2).
+clojure_direct_builtin("min_list/2", "2").
+clojure_direct_builtin("min_list/2", 2).
+clojure_direct_builtin('min_list/2', "2").
+clojure_direct_builtin('min_list/2', 2).
+clojure_direct_builtin("max_list/2", "2").
+clojure_direct_builtin("max_list/2", 2).
+clojure_direct_builtin('max_list/2', "2").
+clojure_direct_builtin('max_list/2', 2).
 clojure_direct_builtin("delete/3", "3").
 clojure_direct_builtin("delete/3", 3).
 clojure_direct_builtin('delete/3', "3").
 clojure_direct_builtin('delete/3', 3).
+clojure_direct_builtin("subtract/3", "3").
+clojure_direct_builtin("subtract/3", 3).
+clojure_direct_builtin('subtract/3', "3").
+clojure_direct_builtin('subtract/3', 3).
+clojure_direct_builtin("intersection/3", "3").
+clojure_direct_builtin("intersection/3", 3).
+clojure_direct_builtin('intersection/3', "3").
+clojure_direct_builtin('intersection/3', 3).
+clojure_direct_builtin("union/3", "3").
+clojure_direct_builtin("union/3", 3).
+clojure_direct_builtin('union/3', "3").
+clojure_direct_builtin('union/3', 3).
+clojure_direct_builtin("permutation/2", "2").
+clojure_direct_builtin("permutation/2", 2).
+clojure_direct_builtin('permutation/2', "2").
+clojure_direct_builtin('permutation/2', 2).
+clojure_direct_builtin("list_to_set/2", "2").
+clojure_direct_builtin("list_to_set/2", 2).
+clojure_direct_builtin('list_to_set/2', "2").
+clojure_direct_builtin('list_to_set/2', 2).
 clojure_direct_builtin("sort/2", "2").
 clojure_direct_builtin("sort/2", 2).
 clojure_direct_builtin('sort/2', "2").
@@ -432,10 +570,22 @@ clojure_direct_builtin("msort/2", "2").
 clojure_direct_builtin("msort/2", 2).
 clojure_direct_builtin('msort/2', "2").
 clojure_direct_builtin('msort/2', 2).
+clojure_direct_builtin("keysort/2", "2").
+clojure_direct_builtin("keysort/2", 2).
+clojure_direct_builtin('keysort/2', "2").
+clojure_direct_builtin('keysort/2', 2).
 clojure_direct_builtin("copy_term/2", "2").
 clojure_direct_builtin("copy_term/2", 2).
 clojure_direct_builtin('copy_term/2', "2").
 clojure_direct_builtin('copy_term/2', 2).
+clojure_direct_builtin("term_variables/2", "2").
+clojure_direct_builtin("term_variables/2", 2).
+clojure_direct_builtin('term_variables/2', "2").
+clojure_direct_builtin('term_variables/2', 2).
+clojure_direct_builtin("variant/2", "2").
+clojure_direct_builtin("variant/2", 2).
+clojure_direct_builtin('variant/2', "2").
+clojure_direct_builtin('variant/2', 2).
 clojure_direct_builtin("functor/3", "3").
 clojure_direct_builtin("functor/3", 3).
 clojure_direct_builtin('functor/3', "3").
@@ -444,6 +594,14 @@ clojure_direct_builtin("arg/3", "3").
 clojure_direct_builtin("arg/3", 3).
 clojure_direct_builtin('arg/3', "3").
 clojure_direct_builtin('arg/3', 3).
+clojure_direct_builtin("compound_name_arity/3", "3").
+clojure_direct_builtin("compound_name_arity/3", 3).
+clojure_direct_builtin('compound_name_arity/3', "3").
+clojure_direct_builtin('compound_name_arity/3', 3).
+clojure_direct_builtin("compound_name_arguments/3", "3").
+clojure_direct_builtin("compound_name_arguments/3", 3).
+clojure_direct_builtin('compound_name_arguments/3', "3").
+clojure_direct_builtin('compound_name_arguments/3', 3).
 clojure_direct_builtin("=../2", "2").
 clojure_direct_builtin("=../2", 2).
 clojure_direct_builtin('=../2', "2").
@@ -508,6 +666,14 @@ clojure_direct_builtin("char_code/2", "2").
 clojure_direct_builtin("char_code/2", 2).
 clojure_direct_builtin('char_code/2', "2").
 clojure_direct_builtin('char_code/2', 2).
+clojure_direct_builtin("string_code/3", "3").
+clojure_direct_builtin("string_code/3", 3).
+clojure_direct_builtin('string_code/3', "3").
+clojure_direct_builtin('string_code/3', 3).
+clojure_direct_builtin("split_string/4", "4").
+clojure_direct_builtin("split_string/4", 4).
+clojure_direct_builtin('split_string/4', "4").
+clojure_direct_builtin('split_string/4', 4).
 clojure_direct_builtin("char_type/2", "2").
 clojure_direct_builtin("char_type/2", 2).
 clojure_direct_builtin('char_type/2', "2").
@@ -765,9 +931,7 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "length/2" ; Op == 'length/2'),
     !,
-    format(atom(Expr),
-           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound)) len (runtime/proper-list-length ~w list-value) out (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (if (some? len) (let [[ok next-state] (runtime/unify-values ~w out len)] (if ok (runtime/advance next-state) (runtime/backtrack ~w))) (runtime/backtrack ~w)))',
-           [S, S, S, S, S, S, S, S]).
+    format(atom(Expr), '(runtime/apply-length-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "member/2" ; Op == 'member/2'),
@@ -803,19 +967,22 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "nth0/3" ; Op == 'nth0/3'),
     !,
-    format(atom(Expr), '(runtime/apply-nth0-solution ~w)', [S]).
+    format(atom(Expr), '(runtime/apply-nth0-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "nth1/3" ; Op == 'nth1/3'),
     !,
-    format(atom(Expr), '(runtime/apply-nth1-solution ~w)', [S]).
+    format(atom(Expr), '(runtime/apply-nth1-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "select/3" ; Op == 'select/3'),
     !,
-    format(atom(Expr),
-           '(let [list-value (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound))] (runtime/apply-select-solution ~w (inc (:pc ~w)) list-value))',
-           [S, S, S, S]).
+    format(atom(Expr), '(runtime/apply-select-solution ~w (inc (:pc ~w)))', [S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "between/3" ; Op == 'between/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-between-solution ~w (inc (:pc ~w)))', [S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "numlist/3" ; Op == 'numlist/3'),
@@ -823,9 +990,42 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr), '(runtime/apply-numlist-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
+    (   Op == "sum_list/2" ; Op == 'sum_list/2'
+    ;   Op == "min_list/2" ; Op == 'min_list/2'
+    ;   Op == "max_list/2" ; Op == 'max_list/2'
+    ),
+    !,
+    format(atom(Expr), '(runtime/apply-numeric-list-reducer-solution ~w "~w")', [S, Op]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
     (Op == "delete/3" ; Op == 'delete/3'),
     !,
     format(atom(Expr), '(runtime/apply-delete-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "subtract/3" ; Op == 'subtract/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-subtract-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "intersection/3" ; Op == 'intersection/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-intersection-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "union/3" ; Op == 'union/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-union-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "permutation/2" ; Op == 'permutation/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-permutation-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "list_to_set/2" ; Op == 'list_to_set/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-list-to-set-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "sort/2" ; Op == 'sort/2'),
@@ -838,9 +1038,24 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr), '(runtime/apply-msort-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
+    (Op == "keysort/2" ; Op == 'keysort/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-keysort-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
     (Op == "copy_term/2" ; Op == 'copy_term/2'),
     !,
     format(atom(Expr), '(runtime/apply-copy-term-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "term_variables/2" ; Op == 'term_variables/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-term-variables-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "variant/2" ; Op == 'variant/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-variant-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "functor/3" ; Op == 'functor/3'),
@@ -851,6 +1066,16 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "arg/3" ; Op == 'arg/3'),
     !,
     format(atom(Expr), '(runtime/apply-arg-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compound_name_arity/3" ; Op == 'compound_name_arity/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-compound-name-arity-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "compound_name_arguments/3" ; Op == 'compound_name_arguments/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-compound-name-arguments-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "=../2" ; Op == '=../2'),
@@ -905,6 +1130,16 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "char_code/2" ; Op == 'char_code/2'),
     !,
     format(atom(Expr), '(runtime/apply-char-code-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "string_code/3" ; Op == 'string_code/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-string-code-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "split_string/4" ; Op == 'split_string/4'),
+    !,
+    format(atom(Expr), '(runtime/apply-split-string-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "char_type/2" ; Op == 'char_type/2'),

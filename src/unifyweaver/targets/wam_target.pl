@@ -9,6 +9,8 @@
 :- module(wam_target, [
     target_info/1,
     compile_predicate_to_wam/3,          % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_text/3,     % +PredIndicator, +Options, -WAMCode
+    compile_predicate_to_wam_items/3,    % +PredIndicator, +Options, -Items
     compile_predicate/3,                 % +PredIndicator, +Options, -WAMCode (dispatch alias)
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
@@ -21,9 +23,11 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(gensym)).
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
 :- use_module('../core/binding_state_analysis').
+:- use_module('../targets/wam_text_parser', [wam_text_to_items/2]).
 
 %% target_info(-Info)
 target_info(info{
@@ -46,7 +50,15 @@ compile_predicate(PredArity, Options, Code) :-
     compile_predicate_to_wam(PredArity, Options, Code).
 
 %% compile_predicate_to_wam(+PredIndicator, +Options, -Code)
+%  Compatibility wrapper: returns canonical WAM text, matching the historical
+%  API. New callers that want an explicit format should use
+%  compile_predicate_to_wam_text/3 or compile_predicate_to_wam_items/3.
 compile_predicate_to_wam(PredIndicator, Options, Code) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code).
+
+%% compile_predicate_to_wam_text(+PredIndicator, +Options, -Code)
+%  Compile a predicate to canonical WAM text.
+compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     % Handle module qualification
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity -> option(module(Module), Options, user)
@@ -62,12 +74,21 @@ compile_predicate_to_wam(PredIndicator, Options, Code) :-
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)
     ).
 
+%% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
+%  Compile a predicate to structured WAM items. This bridge keeps the legacy
+%  text generator as the source of truth for now, then normalizes through the
+%  shared parser. A later generator pass can replace this with direct item
+%  emission without changing target-facing call sites.
+compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
+    compile_predicate_to_wam_text(PredIndicator, Options, Code),
+    wam_text_to_items(Code, Items).
+
 %% compile_wam_module(+Predicates, +Options, -Code) is det.
 %
 %   Compiles a list of predicates to a single WAM module using templates.
 compile_wam_module(Predicates, Options, Code) :-
     maplist({Options}/[PI, PredCode]>> (
-        compile_predicate_to_wam(PI, Options, PredCode)
+        compile_predicate_to_wam_text(PI, Options, PredCode)
     ), Predicates, PredCodes),
     
     atomic_list_concat(PredCodes, '\n\n', AllPredsCode),
@@ -95,6 +116,25 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ->  b_setval(wam_inline_bagof_setof, true)
     ;   b_setval(wam_inline_bagof_setof, false)
     ),
+    % M10: \+ G inlines to (G -> fail ; true) by default. Opt out
+    % with inline_not_as_failure(false) -- builds a builtin_call
+    % \+/1 instead, which the runtime must metacall.
+    (   option(inline_not_as_failure(false), Options)
+    ->  b_setval(wam_inline_not, false)
+    ;   b_setval(wam_inline_not, true)
+    ),
+    % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
+    % instead of the legacy cut_ite. Targets that opt in (currently
+    % LLVM) implement the new instructions properly; others keep the
+    % cut_ite pattern. Default off so existing C++/Go/Lua/etc. paths
+    % don''t see new opcodes they don''t parse.
+    (   option(ite_use_y_level(true), Options)
+    ->  b_setval(wam_ite_use_y_level, true)
+    ;   b_setval(wam_ite_use_y_level, false)
+    ),
+    % Reset cut scope to clause level at the start of each predicate
+    % compilation (see current_cut_target/1).
+    set_cut_target(clause),
     % args_first_emission: emit set_variable for ALL outer-compound
     % args BEFORE any nested put_structure. The legacy emit
     % interleaved `set_variable Xn ; put_structure F/N, Xn ;
@@ -129,15 +169,25 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ),
     % Apply peephole optimization
     peephole_optimize(ClausesCode0, ClausesCode),
-    % Generate argument index (try first arg, fall back to second arg)
+    % Generate argument index (try first arg, fall back to second arg).
+    % Index is (HeaderLine, DispatchChainsCode) — the header is the
+    % switch_on_* instruction; chains are dedicated try/retry/trust
+    % sequences for groups with >1 matching clause, placed AFTER the
+    % linear chain so switch_on_term's "default" / fall-through path
+    % reaches the linear chain's try_me_else, not a chain.
     (   length(Clauses, NC), NC > 1,
-        (   build_first_arg_index(Pred, Arity, Clauses, IndexCode)
+        (   build_first_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains)
         ;   Arity >= 2,
-            build_second_arg_index(Pred, Arity, Clauses, IndexCode)
+            build_second_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains)
         )
-    ->  format(string(Code), "~w~n~w~n~w", [Label, IndexCode, ClausesCode])
+    ->  combine_clauses_and_chains(ClausesCode, DispatchChains, ChainedClauses),
+        format(string(Code), "~w~n~w~n~w", [Label, IndexHeader, ChainedClauses])
     ;   format(string(Code), "~w~n~w", [Label, ClausesCode])
     ).
+
+combine_clauses_and_chains(ClausesCode, "", ClausesCode) :- !.
+combine_clauses_and_chains(ClausesCode, Chains, Combined) :-
+    format(string(Combined), "~w~n~w", [ClausesCode, Chains]).
 
 %% build_first_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  Analyzes first arguments of all clauses and emits indexing instructions.
@@ -151,29 +201,37 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %    through to the try_me_else chain (which catches the variable
 %    clauses). v1 limits the prefix to constant-only; structure /
 %    mixed prefixes with a trailing variable clause skip indexing.
-build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
+build_first_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains) :-
     classify_first_args(Clauses, Types),
     (   \+ member(variable, Types)
-    ->  build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode)
+    ->  build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types,
+                                          IndexHeader, DispatchChains)
     ;   build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
-                                               IndexCode)
+                                               IndexHeader),
+        DispatchChains = ""
     ).
 
-build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
+build_first_arg_index_homogeneous(Pred, Arity, Clauses, Types,
+                                  IndexHeader, DispatchChains) :-
     (   forall(member(T, Types), T = constant)
-    ->  build_constant_index(Clauses, 1, Pred, Arity, Entries),
+    ->  collect_const_groups(Clauses, 1, ConstGroups),
+        groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                     Entries, DispatchChains),
         Entries \= [],
         format_index_entries(Entries, EntriesStr),
-        format(string(IndexCode), "    switch_on_constant ~w", [EntriesStr])
+        format(string(IndexHeader), "    switch_on_constant ~w", [EntriesStr])
     ;   forall(member(T, Types), T = structure),
         \+ first_args_contain_list(Clauses)
-    ->  build_structure_index(Clauses, 1, Pred, Arity, Entries),
+    ->  collect_struct_groups(Clauses, 1, StructGroups),
+        groups_to_entries_and_chains(StructGroups, Pred, Arity, struct,
+                                     Entries, DispatchChains),
         Entries \= [],
         format_index_entries(Entries, EntriesStr),
-        format(string(IndexCode), "    switch_on_structure ~w", [EntriesStr])
+        format(string(IndexHeader), "    switch_on_structure ~w", [EntriesStr])
     ;   % Mixed — emit switch_on_term with type-based dispatch
-        build_term_index(Clauses, 1, Pred, Arity, Types, ConstEntries, StructEntries, ListLabel),
-        format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode)
+        build_term_index_with_chains(Clauses, Pred, Arity,
+            ConstEntries, StructEntries, ListLabel, DispatchChains),
+        format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexHeader)
     ).
 
 build_first_arg_index_with_fallthrough(Pred, Arity, Clauses, Types, IndexCode) :-
@@ -273,6 +331,202 @@ format_switch_on_term(ConstEntries, StructEntries, ListLabel, IndexCode) :-
            "    switch_on_term ~w ~w ~w ~w ~w",
            [CLen, CStr, SLen, SStr, ListLabel]).
 
+%% ========================================================================
+%% Indexed-dispatch group collection + chain emission
+%%
+%% Standard-WAM indexed dispatch (switch_on_term / switch_on_constant /
+%% switch_on_structure) needs to jump into a clause body WITHOUT
+%% reusing the linear chain's `try_me_else / retry_me_else / trust_me`
+%% protocol — those instructions assume the top CP is "ours" (pushed
+%% by the predicate's leading try_me_else), but an indexed jump
+%% bypasses that push.  Reusing them corrupts the outer caller's CP
+%% (see issue #2400).
+%%
+%% Fix: for each dispatch group with >1 matching clauses (and not
+%% including clause 1, which is reached by fall-through), synthesize
+%% a dedicated `try / retry … / trust` chain pointing at the
+%% `L_<Pred>_<Arity>_<I>_body` labels emitted by
+%% compile_clauses_fragments/7.  The chain pushes/modifies/pops a CP
+%% owned by THIS predicate, leaving outer CPs untouched.
+%% ========================================================================
+
+%% collect_const_groups(+Clauses, +I, -Groups)
+%  Groups: list of GroupKey-IndexList pairs (clause indices in order).
+collect_const_groups(Clauses, StartI, Groups) :-
+    collect_const_groups_aux(Clauses, StartI, Pairs0),
+    pairs_group_keys(Pairs0, Groups).
+
+collect_const_groups_aux([], _, []).
+collect_const_groups_aux([Head-_|Rest], I, [FirstArg-I|RestPairs]) :-
+    Head =.. [_|[FirstArg|_]],
+    NextI is I + 1,
+    collect_const_groups_aux(Rest, NextI, RestPairs).
+
+%% collect_struct_groups(+Clauses, +I, -Groups)
+collect_struct_groups(Clauses, StartI, Groups) :-
+    collect_struct_groups_aux(Clauses, StartI, Pairs0),
+    pairs_group_keys(Pairs0, Groups).
+
+collect_struct_groups_aux([], _, []).
+collect_struct_groups_aux([Head-_|Rest], I, [FN-I|RestPairs]) :-
+    Head =.. [_|[FirstArg|_]],
+    FirstArg =.. [F|SubArgs],
+    length(SubArgs, SArity),
+    format(atom(FN), "~w/~w", [F, SArity]),
+    NextI is I + 1,
+    collect_struct_groups_aux(Rest, NextI, RestPairs).
+
+%% pairs_group_keys(+KVPairs, -Groups)
+%  Preserves first-occurrence order of keys; values for the same key
+%  accumulate in encounter order.
+pairs_group_keys([], []).
+pairs_group_keys([K-V|Rest], [K-[V|Vs]|GroupedRest]) :-
+    partition_by_key(K, Rest, Vs, NonMatching),
+    pairs_group_keys(NonMatching, GroupedRest).
+
+partition_by_key(_, [], [], []).
+partition_by_key(K, [K-V|Rest], [V|Match], NonMatch) :-
+    !,
+    partition_by_key(K, Rest, Match, NonMatch).
+partition_by_key(K, [Other|Rest], Match, [Other|NonMatch]) :-
+    partition_by_key(K, Rest, Match, NonMatch).
+
+%% groups_to_entries_and_chains(+Groups, +Pred, +Arity, +Kind,
+%%                              -Entries, -DispatchCode)
+%  Each group becomes a `Key-Label` index entry.  Label is:
+%    - "default" if the first matching clause is clause 1;
+%    - L_<Pred>_<Arity>_<I>_body if exactly one clause matches and
+%      it is not clause 1;
+%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_dispatch when >1
+%      clauses match (none of which is clause 1) — a chain is
+%      emitted in DispatchCode targeting the body labels.
+groups_to_entries_and_chains([], _, _, _, [], "").
+groups_to_entries_and_chains([Key-Indices|Rest], Pred, Arity, Kind,
+                             [Key-Label|RestEntries], DispatchCode) :-
+    group_label_and_chain(Key, Indices, Pred, Arity, Kind,
+                          Label, ChainCode),
+    groups_to_entries_and_chains(Rest, Pred, Arity, Kind,
+                                 RestEntries, RestDispatchCode),
+    (   ChainCode == ""
+    ->  DispatchCode = RestDispatchCode
+    ;   RestDispatchCode == ""
+    ->  DispatchCode = ChainCode
+    ;   format(string(DispatchCode), "~w~n~w", [ChainCode, RestDispatchCode])
+    ).
+
+%% group_label_and_chain(+Key, +Indices, +Pred, +Arity, +Kind,
+%%                       -Label, -ChainCode)
+group_label_and_chain(_, [1|_], _, _, _, default, "") :- !.
+group_label_and_chain(_, [I], Pred, Arity, _, Label, "") :-
+    !,
+    format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
+group_label_and_chain(Key, Indices, Pred, Arity, Kind, Label, ChainCode) :-
+    sanitize_dispatch_key(Key, Kind, KeyAtom),
+    format(atom(Label), "L_~w_~w_~w_~w_dispatch",
+           [Pred, Arity, Kind, KeyAtom]),
+    format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
+
+%% sanitize_dispatch_key(+Key, +Kind, -Atom)
+%  Map a dispatch key (atom / integer / float / "name/arity" /
+%  list-bucket sentinel) to a label-safe atom.
+sanitize_dispatch_key(Key, _, Atom) :-
+    (   atom(Key)
+    ->  atom_chars(Key, Chars),
+        maplist(safe_label_char, Chars, SafeChars),
+        atom_chars(Atom, SafeChars)
+    ;   format(atom(Atom), "~w", [Key])
+    ).
+
+safe_label_char(Ch, '_') :-
+    \+ char_type(Ch, alnum),
+    Ch \== '_', !.
+safe_label_char(Ch, Ch).
+
+%% format_dispatch_chain(+Label, +Indices, +Pred, +Arity, -Code)
+%  Synthesizes a try/retry/trust chain pointing at the body labels
+%  of the matching clauses.  Format:
+%    Label:
+%        try L_<Pred>_<Arity>_<I1>_body
+%        retry L_<Pred>_<Arity>_<I2>_body
+%        ...
+%        trust L_<Pred>_<Arity>_<IN>_body
+format_dispatch_chain(Label, Indices, Pred, Arity, Code) :-
+    length(Indices, N),
+    chain_lines(Indices, 1, N, Pred, Arity, Lines),
+    atomic_list_concat([Label, ":\n" | Lines], "", Code).
+
+chain_lines([], _, _, _, _, []).
+chain_lines([I|Rest], Pos, N, Pred, Arity, [Line|RestLines]) :-
+    (   Pos == 1, N > 1
+    ->  Op = try
+    ;   Pos == N
+    ->  Op = trust
+    ;   Op = retry
+    ),
+    format(atom(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]),
+    format(string(Line), "    ~w ~w~n", [Op, BodyLabel]),
+    NextPos is Pos + 1,
+    chain_lines(Rest, NextPos, N, Pred, Arity, RestLines).
+
+%% build_term_index_with_chains(+Clauses, +Pred, +Arity,
+%%                              -ConstEntries, -StructEntries,
+%%                              -ListLabel, -DispatchCode)
+%  Like build_term_index but groups multi-clause matches and
+%  synthesizes try/retry/trust dispatch chains for them.
+build_term_index_with_chains(Clauses, Pred, Arity,
+        ConstEntries, StructEntries, ListLabel, DispatchCode) :-
+    collect_term_groups(Clauses, 1, ConstGroupsRaw, StructGroupsRaw,
+                        ListIndicesRaw),
+    pairs_group_keys(ConstGroupsRaw, ConstGroups),
+    pairs_group_keys(StructGroupsRaw, StructGroups),
+    sort(ListIndicesRaw, ListIndices),
+    groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                 ConstEntries, CConstDC),
+    groups_to_entries_and_chains(StructGroups, Pred, Arity, struct,
+                                 StructEntries, CStructDC),
+    list_indices_to_label(ListIndices, Pred, Arity, ListLabel, CListDC),
+    concat_nonempty([CConstDC, CStructDC, CListDC], DispatchCode).
+
+list_indices_to_label([], _, _, none, "") :- !.
+list_indices_to_label([1|_], _, _, default, "") :- !.
+list_indices_to_label([I], Pred, Arity, Label, "") :-
+    !,
+    format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
+list_indices_to_label(Indices, Pred, Arity, Label, ChainCode) :-
+    format(atom(Label), "L_~w_~w_list_dispatch", [Pred, Arity]),
+    format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
+
+concat_nonempty(Parts, Result) :-
+    include([P]>>(P \== ""), Parts, NonEmpty),
+    atomic_list_concat(NonEmpty, "\n", Result).
+
+%% collect_term_groups(+Clauses, +I, -ConstPairs, -StructPairs, -ListIdxs)
+collect_term_groups([], _, [], [], []).
+collect_term_groups([Head-_|Rest], I, ConstPairs, StructPairs, ListIdxs) :-
+    Head =.. [_|[FirstArg|_]],
+    NextI is I + 1,
+    collect_term_groups(Rest, NextI, RestConst, RestStruct, RestList),
+    (   atomic(FirstArg)
+    ->  ConstPairs = [FirstArg-I|RestConst],
+        StructPairs = RestStruct,
+        ListIdxs = RestList
+    ;   is_list_term(FirstArg)
+    ->  ConstPairs = RestConst,
+        StructPairs = RestStruct,
+        ListIdxs = [I|RestList]
+    ;   compound(FirstArg)
+    ->  FirstArg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        format(atom(FN), "~w/~w", [F, SArity]),
+        ConstPairs = RestConst,
+        StructPairs = [FN-I|RestStruct],
+        ListIdxs = RestList
+    ;   % Variable / other — not indexable here.
+        ConstPairs = RestConst,
+        StructPairs = RestStruct,
+        ListIdxs = RestList
+    ).
+
 %% build_second_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  When first-arg indexing fails (e.g., all variable first args),
 %  try indexing on the second argument instead. Mirrors the A1
@@ -290,6 +544,15 @@ build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
     ;   build_second_arg_index_with_fallthrough(Pred, Arity, Clauses, Types,
                                                 IndexCode)
     ).
+
+%% Compat wrapper: build_first_arg_index/5 above expects
+%% (IndexHeader, DispatchChains).  Second-arg indexing still uses the
+%% legacy single-output shape — TODO: extend with dispatch chains too,
+%% but the SwitchOnTerm-via-A2 path is rarer and the same fix applies
+%% mechanically.  For now wrap so the calling site type-checks.
+build_second_arg_index(Pred, Arity, Clauses, IndexHeader, DispatchChains) :-
+    build_second_arg_index(Pred, Arity, Clauses, IndexHeader),
+    DispatchChains = "".
 
 build_second_arg_index_homogeneous(Pred, Arity, Clauses, Types, IndexCode) :-
     (   forall(member(T, Types), T = constant)
@@ -440,24 +703,24 @@ format_index_entries(Entries, Str) :-
 %  Value is an atom, string, or number. QuotedString is a string
 %  suitable to embed after `get_constant`, `put_constant`, etc.
 %
-%  Atom-vs-number disambiguation: when an atom''s textual form would
-%  re-parse as a number (`''5''`, `''42''`, `''-3.14''`), the emitted
-%  text gets a `\\x01` marker INSIDE the quotes — e.g. `''\\x015''`.
-%  After the tokenizer strips the outer quotes, the token is
-%  `\\x015`. Constant-emitters that recognise the marker treat the
-%  token as an atom (stripping the marker); ones that don''t still
-%  produce a (visibly-weird-but-valid) atom name, which is better
-%  than the previous silent-coercion-to-integer.
+%  Atom-vs-number disambiguation: atoms whose textual form would
+%  re-parse as a number (`''5''`, `''42''`, `''-3.14''`) are emitted
+%  in single quotes (`''5''`). The discriminator is the presence of
+%  outer quotes in the emitted text. Downstream tokenizers must
+%  preserve that signal — either by keeping the quotes attached to
+%  the token (the convention used by wam_text_parser and the F#
+%  splitter) or by exposing a parallel quote-state flag — so that
+%  constant-emitters can branch on atom-vs-number without re-parsing
+%  the textual form. See
+%  wam_text_parser:wam_classify_constant_token/2 for the shared
+%  classification helper.
 quote_wam_constant(Value, Quoted) :-
     (   number(Value)
     ->  format(string(Quoted), "~w", [Value])
     ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
-        (   atom_looks_like_number(Str)
-        ->  % Quote with marker so the round-trip preserves Atom-ness
-            % vs Number even when the textual form is numeric.
-            escape_for_wam_quoting(Str, Escaped),
-            format(string(Quoted), "'~w'", [Escaped])
-        ;   constant_needs_quoting(Str)
+        (   ( atom_looks_like_number(Str)
+            ; constant_needs_quoting(Str)
+            )
         ->  escape_for_wam_quoting(Str, Escaped),
             format(string(Quoted), "'~w'", [Escaped])
         ;   Quoted = Str
@@ -466,8 +729,8 @@ quote_wam_constant(Value, Quoted) :-
 
 %% atom_looks_like_number(+Str) is semidet.
 %  True iff Str (which is the textual form of an atom) would re-parse
-%  as a number. Used by quote_wam_constant to decide whether to add
-%  the atom-marker.
+%  as a number. Used by quote_wam_constant to decide whether to force
+%  quoting so the round-trip preserves atom-vs-number.
 atom_looks_like_number(Str) :-
     catch(number_string(_, Str), _, fail).
 
@@ -548,6 +811,28 @@ goals_contain_call_or_aggregate(Goals) :-
 wam_inline_bagof_setof_enabled :-
     catch(b_getval(wam_inline_bagof_setof, true), _, fail).
 
+wam_inline_not_enabled :-
+    catch(b_getval(wam_inline_not, true), _, fail).
+
+wam_ite_use_y_level_enabled :-
+    catch(b_getval(wam_ite_use_y_level, true), _, fail).
+
+% Current cut scope for a plain `!` emission. `clause` (the default)
+% means a `!` is transparent to the enclosing clause and emits
+% `builtin_call !/0` (the runtime cuts to the clause B0). Inside an
+% if-then-else CONDITION the cut is OPAQUE (local to the condition, like
+% call/1): the target is set to the condition''s barrier Y-register and a
+% `!` emits `cut Yn`, pruning only the condition''s own choicepoints and
+% leaving the if-then-else choicepoint intact. Saved/restored around
+% condition compilation so Then/Else branches revert to the enclosing
+% scope. Only meaningful under wam_ite_use_y_level_enabled (get_level/cut
+% targets); legacy targets always emit builtin_call !/0.
+current_cut_target(Target) :-
+    ( catch(b_getval(wam_cut_target, T), _, fail) -> Target = T ; Target = clause ).
+
+set_cut_target(Target) :-
+    b_setval(wam_cut_target, Target).
+
 is_builtin_goal(is).
 is_builtin_goal(=).
 is_builtin_goal(\=).
@@ -568,6 +853,11 @@ is_builtin_goal(length).
 is_builtin_goal(is_list).
 is_builtin_goal(append).
 is_builtin_goal((\+)).
+is_builtin_goal(atom_length).
+is_builtin_goal(atom_codes).
+is_builtin_goal(atom_chars).
+is_builtin_goal(char_code).
+is_builtin_goal(between).
 
 %% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
 %  For permanent-variable detection, expand aggregate_all/findall/
@@ -632,12 +922,24 @@ compile_multi_clause_wam(Pred, Arity, Clauses, Options, Code) :-
 compile_clauses_fragments([], _, _, _, _, _, []).
 compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
                          [Choice, HeadCode, BodyCode | RestFragments]) :-
+    %% Clauses 2..N also get an `L_<Pred>_<Arity>_<I>_body:` label
+    %% emitted immediately AFTER the retry_me_else / trust_me line.
+    %% Indexed dispatch (try/retry/trust chains synthesized by
+    %% build_first_arg_index) jumps to this body label so the
+    %% clause body runs without re-entering the linear chain's CP
+    %% protocol.  Clause 1 has no separate body label because
+    %% indexed dispatch never targets it (groups containing clause 1
+    %% use "default" → fall through to the leading try_me_else).
     (   I == 1
     ->  format(string(Choice), "    try_me_else L_~w_~w_~w", [Pred, Arity, 2])
     ;   I == N
-    ->  format(string(Choice), "L_~w_~w_~w:~n    trust_me", [Pred, Arity, I])
+    ->  format(string(Choice),
+               "L_~w_~w_~w:~n    trust_me~nL_~w_~w_~w_body:",
+               [Pred, Arity, I, Pred, Arity, I])
     ;   Next is I + 1,
-        format(string(Choice), "L_~w_~w_~w:~n    retry_me_else L_~w_~w_~w", [Pred, Arity, I, Pred, Arity, Next])
+        format(string(Choice),
+               "L_~w_~w_~w:~n    retry_me_else L_~w_~w_~w~nL_~w_~w_~w_body:",
+               [Pred, Arity, I, Pred, Arity, Next, Pred, Arity, I])
     ),
     % Compile clause body — pre-assign Yi for permanent vars before head
     set_clause_binding_context(Head, Body),
@@ -915,6 +1217,51 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % Negation-as-failure: \+ G. Rewrite to ((G, !, fail) ; true) so
+    % the existing disjunction compiler handles the bookkeeping.
+    % `!/0` cuts to the env frame''s cut_barrier (set by allocate to
+    % the cpn at clause entry), wiping the outer disjunction''s
+    % choice point AND any inner CPs that the condition''s multi-
+    % clause calls may have left behind -- exactly the cleanup that
+    % a proper \+ needs. `fail` then propagates up. The alternate
+    % `(G -> fail ; true)` rewrite goes through `cut_ite` which is
+    % a soft cut and only pops one CP -- it gets the wrong CP when
+    % G pushes its own choice points.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  (   wam_ite_use_y_level_enabled
+        % M17 targets (get_level/cut): use the soft-cut form
+        % (NotGoal -> fail ; true). cut Yn truncates choicepoints back to
+        % the snapshot taken BEFORE the negation try_me_else, so it wipes
+        % the negation CP AND any CPs NotGoal pushed above it -- the same
+        % correctness the hard-cut form gives, but WITHOUT a clause-scope
+        % `!`. That matters because a clause-scope cut would (via the
+        % runtime''s B0 mechanism) cut to the enclosing clause''s level and
+        % wrongly prune sibling choicepoints created before the \+. The
+        % soft cut is scoped to the negation alone.
+        ->  compile_goals([((NotGoal -> fail ; true)) | Rest],
+                          V0, HasEnv, Vf, Code)
+        % Legacy targets (no get_level/cut): keep the hard-cut rewrite
+        % ((G, !, fail) ; true) -- see note below on why soft-cut+cut_ite
+        % gets the wrong CP when G is nondeterministic on these targets.
+        ;   compile_goals([((NotGoal, !, fail) ; true) | Rest],
+                          V0, HasEnv, Vf, Code)
+        )
+    % M71: forall(Cond, Action) inlines as
+    %   ((Cond, (Action -> fail ; true)) -> fail ; true)
+    % i.e., \+ (Cond, \+ Action) using soft-cut (-> form) for BOTH
+    % negations. The cut-based ((G, !, fail) ; true) rewrite that \+
+    % uses by default doesn''t nest correctly here: the inner ! and
+    % outer ! both target the clause''s single cut_barrier, so the
+    % inner cut wipes the outer disjunction''s CP and forall always
+    % fails. Soft-cut (-> ; ) gives proper local-scope cuts.
+    ;   nonvar(Goal),
+        Goal = forall(ForallCond, ForallAction)
+    ->  compile_goals(
+            [((ForallCond, (ForallAction -> fail ; true)) -> fail ; true)
+             | Rest],
+            V0, HasEnv, Vf, Code)
     % Bare if-then: (Cond -> Then) without an Else clause. Reuses the
     % if-then-else compiler with Else=fail — semantically identical
     % for the success path; Cond-failure just falls through to fail
@@ -950,26 +1297,40 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     % normal dispatch (including if-then-else inlining).
     ;   Goal = once(OnceGoal)
     ->  compile_goals([(OnceGoal -> true) | Rest], V0, HasEnv, Vf, Code)
-    % forall(G, T) — for every solution of G, T must succeed.
-    % Desugars to \+ (G, \+ T): negation-as-failure over the
-    % conjunction of generator + negated test. Recursion routes
-    % through compile_goal_call, which emits `call \+/1, 1` and the
-    % runtime handles negation via the builtin path.
-    ;   Goal = forall(GenGoal, TestGoal)
-    ->  compile_goals([\+ (GenGoal, \+ TestGoal) | Rest],
-                      V0, HasEnv, Vf, Code)
+    % M71: forall/2 now handled by the earlier M71 clause that uses
+    % the soft-cut rewrite. This stale clause used \+ (G, \+ T) which
+    % was broken for nested negation (both cuts hit the same barrier);
+    % the earlier clause takes precedence so this would never fire,
+    % but remove it to avoid confusion if the earlier clause ever moves.
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        (   %% Term-construction builtins (=../2 and functor/3) compose-mode
-            %% lowering routes through compile_goal_execute which dispatches
-            %% to emit_put_structure_dyn_lowering when the binding-state
-            %% preconditions hold. We add the deallocate here (HasEnv == yes
-            %% case) so the resulting tail-call stays TCO-correct.
+        (   %% Term-construction builtins (=../2 and functor/3) only
+            %% take the `deallocate-before-execute` fast path when the
+            %% compose-mode lowering (emit_put_structure_dyn_lowering)
+            %% actually fires — that path reads from input registers
+            %% rather than Y registers, so the env frame can be popped
+            %% beforehand without consequence.  When the binding-state
+            %% preconditions don''t hold (e.g. `Term =.. [Name|Args]`
+            %% with Args runtime-variable, as in parse_atom_head''s
+            %% functor-call clause), compile_goal_execute falls through
+            %% to the generic builtin path which emits PutList +
+            %% SetValue Y_n reads inline.  Emitting Deallocate before
+            %% that body is the codegen bug behind issue #2400''s
+            %% `p(a)` parser regression: the Y reg reads see a stale
+            %% env frame and the =.. compose builds garbage.
+            %%
+            %% Fix: route the fast path only when the special lowering
+            %% will actually apply.  Otherwise fall through to the
+            %% generic builtin-with-env handling below, which emits
+            %% PutCode + BuiltinCall + Deallocate + Proceed in the
+            %% right order.
             is_term_construction_goal(Goal),
-            HasEnv == yes
+            HasEnv == yes,
+            term_construction_uses_special_lowering(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
             format(string(Code), "    deallocate~n~w", [ExecCode])
-        ;   is_term_construction_goal(Goal)
+        ;   is_term_construction_goal(Goal),
+            term_construction_uses_special_lowering(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, Code)
         ;   %% Visited-set lowering (Layer 2.5) routes through
             %% compile_goal_execute where the rewrite clause fires.
@@ -1032,10 +1393,20 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = collect-CollectVar -> AggType = collect, ValueVar = CollectVar
     ;   AggType = collect, ValueVar = Template  % default: direct callers
     ),
-    % Find or allocate the Result register (where output goes)
+    % Find or allocate the Result register (where output goes).  If the
+    % result is a local variable first introduced by this aggregate,
+    % initialize its register before begin_aggregate so finalization has
+    % an unbound cell to unify with; head-bound results are already
+    % initialized by get_variable/get_value.
     (   var(Result), get_var_reg(Result, V0, ResultReg0)
-    ->  V1 = V0
-    ;   allocate_var(Result, V0, V1, ResultReg0)
+    ->  V1 = V0,
+        InitResultCode = ""
+    ;   var(Result)
+    ->  allocate_var(Result, V0, V1, ResultReg0),
+        format(string(InitResultCode), "    put_variable ~w, ~w",
+               [ResultReg0, ResultReg0])
+    ;   allocate_var(Result, V0, V1, ResultReg0),
+        InitResultCode = ""
     ),
     % Compile the Value register (what gets collected per solution)
     (   var(ValueVar)
@@ -1100,10 +1471,17 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % for lookup.
     aggregate_witness_clause(AggType, ValueVar, InnerGoal, Vf,
                              WitnessRegsClause),
-    (   InitValueCode \= ""
+    (   InitResultCode == ""
+    ->  InitAggregateCode = InitValueCode
+    ;   InitValueCode == ""
+    ->  InitAggregateCode = InitResultCode
+    ;   format(string(InitAggregateCode), "~w~n~w",
+               [InitResultCode, InitValueCode])
+    ),
+    (   InitAggregateCode \= ""
     ->  format(string(Code),
             "~w~n    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
-            [InitValueCode, AggType, ValueReg, ResultReg0,
+            [InitAggregateCode, AggType, ValueReg, ResultReg0,
              WitnessRegsClause, FullInnerCode, ValueReg])
     ;   format(string(Code),
             "    begin_aggregate ~w, ~w, ~w~w~n~w~n    end_aggregate ~w",
@@ -1345,26 +1723,81 @@ flatten_conjunction(Goal, [Goal]).
 %  implementation and just fails.
 compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
-    % Flatten condition into a goal list
-    flatten_conjunction(CondGoal, CondGoals),
-    compile_inner_call_goals(CondGoals, V0, V1, CondCode),
+    ( wam_ite_use_y_level_enabled
+    -> % M17: allocate a fresh permanent Y for the cut barrier.
+       % get_level Y_n snapshots cp_count BEFORE try_me_else; cut Y_n
+       % at the commit site sets cp_count = Y_n. Together they cut
+       % the ITE choice point AND any inner CPs the condition''s
+       % multi-clause calls left behind -- the naive cut_ite (which
+       % decrements cp_count by 1) silently picked the wrong CP in
+       % that case.
+       %
+       % allocate_var falls back to X if no y_alloc reservation
+       % exists for the var; X regs are caller-saved and the inner
+       % call would clobber the snapshot before cut reads it. Reserve
+       % a fresh Y at the top so allocate_var picks it up.
+       V0 = vmap(Bindings0, XCount0),
+       max_yi_index(Bindings0, 0, MaxY),
+       NextY is MaxY + 1,
+       format(atom(BarrierReg), "Y~w", [NextY]),
+       gensym('$ite_barrier_', BarrierVar),
+       % A cut in the CONDITION is local to it (ISO: the condition of
+       % ->/2 is opaque to cut, like call/1). If the condition has a
+       % top-level cut, reserve a SECOND Y and snapshot the condition''s
+       % entry level into it with a get_level emitted AFTER try_me_else
+       % (so it captures the level WITH the ITE choice point but BEFORE
+       % any CP the condition pushes). A `!` in the condition then emits
+       % `cut CondBarrierReg`, pruning only the condition''s own CPs and
+       % leaving the ITE choice point intact -- so e.g. \+ (G, !, fail)
+       % (which desugars to ((G,!,fail) -> fail ; true)) correctly
+       % succeeds when the cut-guarded condition fails.
+       flatten_conjunction(CondGoal, CondGoals),
+       (   memberchk('!', CondGoals)
+       ->  CondY is MaxY + 2,
+           format(atom(CondBarrierReg), "Y~w", [CondY]),
+           gensym('$ite_cond_barrier_', CondBarrierVar),
+           V0a = vmap([b(BarrierVar, BarrierReg),
+                       b(CondBarrierVar, CondBarrierReg)|Bindings0], XCount0),
+           format(string(CondGetLevel), "    get_level ~w~n", [CondBarrierReg])
+       ;   CondBarrierReg = none,
+           V0a = vmap([b(BarrierVar, BarrierReg)|Bindings0], XCount0),
+           CondGetLevel = ""
+       )
+    ;  V0a = V0,
+       BarrierReg = none,
+       CondBarrierReg = none,
+       CondGetLevel = "",
+       flatten_conjunction(CondGoal, CondGoals)
+    ),
+    % Compile the condition with cuts scoped to CondBarrierReg (when one
+    % was reserved); Then/Else revert to the enclosing scope so their
+    % cuts stay transparent to the clause / outer condition.
+    (   CondBarrierReg == none
+    ->  compile_inner_call_goals(CondGoals, V0a, V1, CondCode)
+    ;   current_cut_target(OldTarget),
+        set_cut_target(CondBarrierReg),
+        compile_inner_call_goals(CondGoals, V0a, V1, CondCode),
+        set_cut_target(OldTarget)
+    ),
     % Then and Else can each be themselves a nested if-then-else --
     % compile_ite_branch recurses on those forms. Else starts from
-    % V0 since backtrack restores to before the condition.
+    % V0a since backtrack restores to before the condition (but the
+    % barrier var is already allocated so its slot is reserved).
     compile_ite_branch(ThenGoal, V1, V2, ThenCode),
-    compile_ite_branch(ElseGoal, V0, V3, ElseCode),
-    % Use the wider variable map as output
+    compile_ite_branch(ElseGoal, V0a, V3, ElseCode),
     (   V2 = V3 -> Vf = V2
-    ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
+    ;   Vf = V2
     ),
-    % Emit: try_me_else ElseLabel / Cond / !/0 / Then / jump ContLabel
-    %        ElseLabel: trust_me / Else / ContLabel:
-    % Use cut_ite (soft cut) instead of !/0 — pops only the if-then-else
-    % CP, preserving aggregate frames and outer choice points.
-    % ContLabel marks the continuation after both branches.
-    format(string(Code),
-        "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
-        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
+    ( BarrierReg == none
+    -> format(string(Code),
+          "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [ElseLabel, CondCode, ThenCode, ContLabel,
+           ElseLabel, ElseCode, ContLabel])
+    ;  format(string(Code),
+          "    get_level ~w~n    try_me_else ~w~n~w~w~n    cut ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+          [BarrierReg, ElseLabel, CondGetLevel, CondCode, BarrierReg, ThenCode,
+           ContLabel, ElseLabel, ElseCode, ContLabel])
+    ).
 
 %% compile_ite_branch(+Branch, +V0, -Vf, -Code) is det.
 %  Compile a Then- or Else-branch of an if-then-else. If the branch
@@ -1408,6 +1841,11 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    ;   nonvar(Goal),
+        Goal = _ExistentialVars^ExistentialGoal
+    ->  flatten_conjunction(ExistentialGoal, ExistentialGoals),
+        append(ExistentialGoals, Rest, ExpandedGoals),
+        compile_inner_call_goals(ExpandedGoals, V0, Vf, Code)
     ;   Goal = (CondGoal -> ThenGoal)
     ->  compile_if_then_else(CondGoal, ThenGoal, fail, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
@@ -1417,14 +1855,41 @@ compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
     ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, no, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
+    ;   Goal = findall(Template, InnerGoal, Result)
+    ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
+        compile_inner_call_goals(Rest, V1, Vf, RestCode),
+        join_goal_codes(GoalCode, RestCode, Code)
+    % M93b: \+ G inlining for inner goal positions (if-then-else
+    % conditions, disjunction arms, etc). Without this, an inner
+    % `\+ G' falls through to compile_goal_call which emits
+    % `builtin_call \+/1, 1' -- but the LLVM target has no \+/1
+    % dispatch case, so the runtime metacall path is taken. That
+    % path was previously colliding with op id 99 (getenv) via the
+    % catch-all in builtin_op_to_id; even after fixing the
+    % collision, no inner backend actually implements \+ as a
+    % builtin, so \+ G in an inner position would always fail.
+    % Inline-rewrite to the soft-cut form `(G -> fail ; true)' to
+    % match the existing top-level handling (compile_goals at the
+    % outer call site) and to avoid the nested-cut barrier issue
+    % the hard-cut form has when stacked.
+    ;   nonvar(Goal),
+        Goal = \+(NotGoal),
+        wam_inline_not_enabled
+    ->  compile_inner_call_goals([((NotGoal -> fail ; true)) | Rest],
+                                  V0, Vf, Code)
     % once(G) / forall(G, T) — same desugarings as compile_goals.
     % Recurse with the rewritten goal so the if-then-else / negation
     % machinery picks it up.
     ;   Goal = once(OnceGoal)
     ->  compile_inner_call_goals([(OnceGoal -> true) | Rest], V0, Vf, Code)
+    % M71: forall rewrites to soft-cut form (matches the compile_goals
+    % clause). The old \+ (G, \+ T) form fails for nested negation
+    % because both ! cuts hit the clause''s single cut_barrier.
     ;   Goal = forall(GenGoal, TestGoal)
-    ->  compile_inner_call_goals([\+ (GenGoal, \+ TestGoal) | Rest],
-                                 V0, Vf, Code)
+    ->  compile_inner_call_goals(
+            [((GenGoal, (TestGoal -> fail ; true)) -> fail ; true)
+             | Rest],
+            V0, Vf, Code)
     ;   compile_goal_call(Goal, V0, V1, GoalCode),
         compile_inner_call_goals(Rest, V1, Vf, RestCode),
         join_goal_codes(GoalCode, RestCode, Code)
@@ -1459,6 +1924,17 @@ allocate_var(Var, VIn, VOut, Reg) :-
 % that genuinely needs a module registry which no target has yet.
 % String + atom guard per #1647 follow-up review (Perplexity)
 % covers any code path that represents module names as strings.
+% Plain cut. Emit a scope-correct cut: inside an if-then-else condition
+% the cut is local to the condition (cut Yn to the condition barrier);
+% elsewhere it is transparent to the clause (builtin_call !/0, runtime
+% cuts to clause B0). See current_cut_target/1.
+compile_goal_call('!', V, V, Code) :-
+    !,
+    (   current_cut_target(Target),
+        Target \== clause
+    ->  format(string(Code), "    cut ~w", [Target])
+    ;   Code = "    builtin_call !/0, 0"
+    ).
 compile_goal_call(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
@@ -1679,6 +2155,12 @@ is_builtin_pred('!', 0).     % cut
 is_builtin_pred(\+, 1).      % negation-as-failure
 is_builtin_pred(member, 2).  % list operations
 is_builtin_pred(append, 3).
+is_builtin_pred(reverse, 2).  % list reverse -- F#, Python, R, Clojure, Go,
+                              % Rust, C++ all dispatch this as a builtin
+                              % call.  Haskell / Lua targets that
+                              % previously relied on `execute reverse/2`
+                              % finding a labeled clause may need a
+                              % builtin_call handler.
 is_builtin_pred(length, 2).
 is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
@@ -1692,6 +2174,9 @@ is_builtin_pred(unifiable, 3).      % non-binding unification + bindings list
 is_builtin_pred(plus, 3).           % bidirectional integer addition
 is_builtin_pred(delete, 3).         % remove all matching elements
 is_builtin_pred(subtract, 3).       % set difference: List1 minus List2
+is_builtin_pred(intersection, 3).   % set intersection: elements in both
+is_builtin_pred(union, 3).          % set union: A1 ++ (A2 minus A1)
+is_builtin_pred(list_to_set, 2).    % dedupe list (first-occurrence order).
 is_builtin_pred(must_be, 2).        % type check with type_error throw
 is_builtin_pred(string_chars, 2).   % alias for atom_chars/2 (atoms = strings).
 is_builtin_pred(string_codes, 2).   % alias for atom_codes/2.
@@ -1724,6 +2209,68 @@ is_builtin_pred(exists_directory, 1).   % exists_directory(+Path).
 is_builtin_pred(directory_files, 2).    % directory_files(+Dir, -Files).
 is_builtin_pred(make_directory, 1).     % make_directory(+Path).
 is_builtin_pred(delete_file, 1).        % delete_file(+Path).
+is_builtin_pred(rename_file, 2).        % rename_file(+Old, +New).
+is_builtin_pred(delete_directory, 1).   % delete_directory(+Path).
+is_builtin_pred(size_file, 2).          % size_file(+Path, -Size).
+is_builtin_pred(time_file, 2).          % time_file(+Path, -Time).
+is_builtin_pred(getenv, 2).             % getenv(+Name, -Value).
+is_builtin_pred(setenv, 2).             % setenv(+Name, +Value).
+is_builtin_pred(unsetenv, 1).           % unsetenv(+Name).
+is_builtin_pred(chmod, 2).              % chmod(+Path, +Mode).
+is_builtin_pred(access, 2).             % access(+Path, +ModeBits) -- F_OK=0, R_OK=4, W_OK=2, X_OK=1.
+is_builtin_pred(shell, 1).              % shell(+Command).
+is_builtin_pred(shell, 2).              % shell(+Command, -Status).
+is_builtin_pred(working_directory, 2).  % working_directory(?Old, ?New).
+is_builtin_pred(getpid, 1).             % getpid(-Pid).
+is_builtin_pred(getuid, 1).             % getuid(-Uid).
+is_builtin_pred(geteuid, 1).            % geteuid(-EUid).
+is_builtin_pred(getgid, 1).             % getgid(-Gid).
+is_builtin_pred(getegid, 1).            % getegid(-EGid).
+is_builtin_pred(getppid, 1).            % getppid(-PPid).
+is_builtin_pred(getpgrp, 1).            % getpgrp(-PGid) -- process group id.
+is_builtin_pred(realpath, 2).           % realpath(+Path, -Abs) -- canonical absolute path.
+is_builtin_pred(kill, 2).               % kill(+Pid, +Sig) -- signal 0 = existence check.
+is_builtin_pred(truncate, 2).           % truncate(+Path, +Length) -- set file size.
+is_builtin_pred(chown, 3).              % chown(+Path, +Uid, +Gid) -- change owner.
+is_builtin_pred(ground, 1).             % ground(+Term) -- true iff no unbound vars.
+is_builtin_pred(file_base_name, 2).     % file_base_name(+Path, -Base).
+is_builtin_pred(file_directory_name, 2).% file_directory_name(+Path, -Dir).
+is_builtin_pred(file_name_extension, 3).% file_name_extension(?Base, ?Ext, ?File).
+is_builtin_pred(read_link, 2).          % read_link(+Path, -Target) -- libc readlink.
+is_builtin_pred(symlink, 2).            % symlink(+Target, +LinkPath) -- libc symlink.
+is_builtin_pred(link, 2).               % link(+Old, +New) -- libc link (hard link).
+is_builtin_pred(is_absolute_file_name, 1). % is_absolute_file_name(+Path).
+is_builtin_pred(same_file, 2).          % same_file(+Path1, +Path2) -- inode equality.
+is_builtin_pred(tmp_file, 2).           % tmp_file(+Base, -Path) -- mkstemp-based.
+is_builtin_pred(mkfifo, 2).             % mkfifo(+Path, +Mode) -- create named pipe.
+is_builtin_pred(umask, 2).              % umask(?Old, +New) -- libc umask.
+is_builtin_pred(monotonic_time, 1).     % monotonic_time(-Seconds) -- CLOCK_MONOTONIC.
+is_builtin_pred(nice, 1).               % nice(+Inc) -- adjust process priority.
+is_builtin_pred(getpriority, 1).        % getpriority(-Prio) -- read self priority.
+is_builtin_pred(setpriority, 1).        % setpriority(+Prio) -- set self priority.
+is_builtin_pred(getrlimit, 2).          % getrlimit(+Resource, -SoftLimit).
+is_builtin_pred(setrlimit, 2).          % setrlimit(+Resource, +SoftLimit).
+is_builtin_pred(getlogin, 1).           % getlogin(-Name) -- libc getlogin.
+is_builtin_pred(uname_sysname, 1).      % uname_sysname(-Sysname).
+is_builtin_pred(uname_machine, 1).      % uname_machine(-Machine).
+is_builtin_pred(copy_file, 2).          % copy_file(+Src, +Dst) -- open/read/write/close.
+is_builtin_pred(read_file_to_atom, 2).  % read_file_to_atom(+Path, -Atom).
+is_builtin_pred(write_atom_to_file, 2). % write_atom_to_file(+Path, +Content) -- O_TRUNC.
+is_builtin_pred(append_atom_to_file, 2). % append_atom_to_file(+Path, +Content) -- O_APPEND.
+is_builtin_pred(errno, 1).              % errno(-N) -- thread-local errno.
+is_builtin_pred(strerror, 2).           % strerror(+Errno, -Message).
+is_builtin_pred(process_max_rss, 1).    % process_max_rss(-KB) -- getrusage ru_maxrss.
+is_builtin_pred(process_user_time, 1).  % process_user_time(-Seconds) -- ru_utime.
+is_builtin_pred(process_system_time, 1).% process_system_time(-Seconds) -- ru_stime.
+is_builtin_pred(path_join, 3).          % path_join(+Base, +Rel, -Full).
+is_builtin_pred(system_to_atom, 2).     % system_to_atom(+Cmd, -Output) -- capture stdout.
+is_builtin_pred(atom_to_system, 2).     % atom_to_system(+Cmd, +Content) -- write to stdin.
+is_builtin_pred(atom_split, 3).         % atom_split(+Atom, +Sep, -Parts) -- split on single char.
+is_builtin_pred(sleep, 1).              % sleep(+Seconds).
+is_builtin_pred(gethostname, 1).        % gethostname(-Name).
+is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
+is_builtin_pred(halt, 0).               % halt/0 -- exit(0).
+is_builtin_pred(halt, 1).               % halt(+Code) -- exit(Code).
 is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
 is_builtin_pred(display, 1).
 is_builtin_pred(nl, 0).
@@ -1745,10 +2292,15 @@ is_builtin_pred(term_to_atom, 2). % bidirectional canonical-form term ↔ atom.
 is_builtin_pred(read, 1).         % stdin: read a term terminated by `.`.
 is_builtin_pred(read_term, 1).    % alias for read/1.
 is_builtin_pred(get_char, 1).     % stdin: read one char as atom.
+is_builtin_pred(get_char, 2).     % stream: read one char as atom.
 is_builtin_pred(get_code, 1).     % stdin: read one char as int code.
+is_builtin_pred(get_code, 2).     % stream: read one char as int code.
 is_builtin_pred(peek_char, 1).    % stdin: peek one char (un-consumed).
+is_builtin_pred(peek_char, 2).    % stream: peek one char (un-consumed).
 is_builtin_pred(put_char, 1).     % stdout: write one single-char atom.
+is_builtin_pred(put_char, 2).     % stream: write one single-char atom.
 is_builtin_pred(put_code, 1).     % stdout: write one int code as char.
+is_builtin_pred(put_code, 2).     % stream: write one int code as char.
 is_builtin_pred(atomic_list_concat, 2). % concatenate list of atomics.
 is_builtin_pred(atomic_list_concat, 3). % concat with separator (or split).
 is_builtin_pred(atom_string, 2).        % atom ↔ string (interchangeable).
@@ -1759,6 +2311,10 @@ is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
 is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
+is_builtin_pred(atom_concat, 3).  % atom_concat(+A1, +A2, -A12) -- forward concat.
+is_builtin_pred(sub_atom, 5).     % sub_atom(+A, +B, +L, ?After, ?Sub) -- deterministic extraction.
+is_builtin_pred(atom_number, 2).  % atom_number(?A, ?N) -- integer mode only.
 is_builtin_pred(assertz, 1).      % dynamic db: append fact.
 is_builtin_pred(asserta, 1).      % dynamic db: prepend fact.
 % retract/1 is nondeterministic — dispatched via the Call/Execute
@@ -1778,7 +2334,15 @@ is_builtin_pred(compare, 3).      % standard order: -1 / 0 / +1 as atom.
 is_builtin_pred(char_type, 2).    % char classification + case conv.
 is_builtin_pred(upcase_atom, 2).  % whole-atom case conversion: upper.
 is_builtin_pred(downcase_atom, 2).% whole-atom case conversion: lower.
+is_builtin_pred(nth0, 3).         % nth0(+Index, +List, ?Elem) -- 0-indexed.
+is_builtin_pred(nth1, 3).         % nth1(+Index, +List, ?Elem) -- 1-indexed.
+is_builtin_pred(last, 2).         % last(+List, ?Elem).
+is_builtin_pred(memberchk, 2).    % memberchk(?Elem, +List) -- deterministic membership.
 is_builtin_pred(numlist, 3).      % integer range generator: [Lo..Hi].
+is_builtin_pred(sum_list, 2).     % sum_list(+List, ?Sum) -- integer sum.
+is_builtin_pred(sumlist, 2).      % alias of sum_list.
+is_builtin_pred(max_list, 2).     % max_list(+List, ?Max) -- empty fails.
+is_builtin_pred(min_list, 2).     % min_list(+List, ?Min) -- empty fails.
 is_builtin_pred(sort, 2).         % stable sort + dedup (std order).
 is_builtin_pred(msort, 2).        % stable sort, NO dedup (std order).
 is_builtin_pred(select, 3).       % nondet list element selection.
@@ -1832,7 +2396,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  quote_wam_constant(Arg, ArgStr),
         format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
-    ;   is_list_term(Arg)
+    ;   is_list_term(Arg),
+        proper_list(Arg, _)
     ->  Arg = [H|T],
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V2),
@@ -2262,6 +2827,38 @@ is_term_construction_goal(Goal) :-
     ;   Goal = (\+ member(_, _))
     ).
 
+%% term_construction_uses_special_lowering(+Goal)
+%
+%   True iff the term-construction goal will actually take the
+%   compose-mode lowering path in compile_goal_execute /
+%   compile_goal_call (emit_put_structure_dyn_lowering).  When this
+%   holds, the body reads from input registers and Deallocate may
+%   safely precede it.  When it fails, compile_goal_execute falls
+%   through to the generic builtin path which emits Y-register reads
+%   inline, so Deallocate must follow them (otherwise Y reads land
+%   on a popped env frame — issue #2400 follow-up).
+term_construction_uses_special_lowering(T =.. L) :-
+    parse_univ_list_pattern(L, NameVar, _FixedArgs),
+    catch(
+        ( current_clause_binding_env(BeforeEnv),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound)
+        ),
+        _, fail),
+    !.
+term_construction_uses_special_lowering(functor(T, NameVar, Arity)) :-
+    integer(Arity), Arity >= 0,
+    var(T), var(NameVar),
+    catch(
+        ( current_clause_binding_env(BeforeEnv),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+          binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound)
+        ),
+        _, fail),
+    !.
+term_construction_uses_special_lowering(\+ member(_, _)).
+term_construction_uses_special_lowering(arg(_, _, _)).
+
 %% emit_not_member_list_lowering(+X, +L, +V0, -Vf, -Code)
 %
 %  Emits a single `not_member_list XReg LReg` WAM instruction. Both
@@ -2340,8 +2937,22 @@ is_ground_atom_list(L, Atoms) :-
     maplist(atom, Items),
     Atoms = Items.
 
-proper_list(T, []) :- T == [], !.
-proper_list([H|T], [H|R]) :- proper_list(T, R).
+% Walk a list term, collecting its elements. Must FAIL (not loop) on a
+% partial or improper list, so callers (compile_put_argument/5 via the
+% `proper_list(Arg, _)` guard from #aac54075, and is_ground_atom_list/2)
+% can rely on a clean failure to fall through to the compound branch
+% (put_structure for the '[|]'/2 cons cell). The nonvar/1 guards stop the
+% recursion the moment a tail is an unbound variable, so a partial list
+% like [a|_] fails instead of recursing forever; an improper tail like
+% [a|b] fails when proper_list_/2 hits a non-list, non-[] tail.
+proper_list(T, Items) :-
+    nonvar(T),
+    proper_list_(T, Items).
+
+proper_list_(T, []) :- T == [], !.
+proper_list_([H|T], [H|R]) :-
+    nonvar(T),
+    proper_list_(T, R).
 
 %% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
 %

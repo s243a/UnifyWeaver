@@ -20,7 +20,17 @@
 :- module(wam_scala_target, [
     compile_wam_predicate_to_scala/4,  % +Pred/Arity, +WamCode, +Options, -ScalaCode
     write_wam_scala_project/3,         % +Predicates, +Options, +ProjectDir
-    scala_foreign_predicate/3          % +Pred, +Arity, +Options
+    scala_foreign_predicate/3,         % +Pred, +Arity, +Options
+    % --- Hooks for the lowered emitter (wam_scala_lowered_emitter.pl) ---
+    % These expose the codegen-time atom interning / register / constant /
+    % functor helpers so the lowered emitter produces atom IDs and register
+    % indices that match the shared instruction array exactly.
+    scala_lowered_constant_term/2,     % +ConstTokenStr, -ScalaTermLiteral
+    scala_lowered_functor_arity/3,     % +FunctorTokenStr, -Name, -Arity
+    scala_lowered_reg_index/2,         % +RegNameStr, -IntIndex
+    scala_lowered_intern_atom/2,       % +AtomStr, -IntId
+    scala_resolve_emit_mode/2,         % +Options, -Mode
+    scala_partition_predicates/4       % +Mode, +Predicates, -Interp, -Lowered
 ]).
 
 :- use_module(library(lists)).
@@ -28,6 +38,9 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../core/recursive_kernel_detection',
+              [detect_recursive_kernel/4, kernel_config/2]).
 
 % ============================================================================
 % ATOM INTERNING TABLE (compile-time)
@@ -96,6 +109,20 @@ reg_to_int(Reg, Int) :-
     ).
 
 % ============================================================================
+% LOWERED-EMITTER HOOKS
+% ============================================================================
+% Thin, exported wrappers around the codegen-time interning / register /
+% constant / functor helpers, so wam_scala_lowered_emitter.pl produces atom
+% IDs and register indices that match the shared instruction array.  They
+% MUST be called within the same intern-table session as the main program
+% emission (see compile_predicates_for_project/6) so the IDs line up.
+
+scala_lowered_reg_index(RegStr, Int)      :- reg_to_int(RegStr, Int).
+scala_lowered_constant_term(CStr, Term)   :- constant_to_scala_term(CStr, Term).
+scala_lowered_functor_arity(FStr, N, A)   :- parse_functor_arity(FStr, N, A).
+scala_lowered_intern_atom(AtomStr, Id)    :- intern_scala_atom(AtomStr, Id).
+
+% ============================================================================
 % WAM LINE → SCALA INSTRUCTION LITERAL
 % ============================================================================
 
@@ -139,7 +166,10 @@ tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
         )
     ;   C == '\''
     ->  (   CurR == []
-        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ->  % Enter quoted region — keep the opening quote attached
+            % to the token so atom-vs-number is recoverable
+            % downstream via wam_classify_constant_token/2.
+            tokenize_wam_chars(Rest, ['\''], Acc, inside, Tokens)
         ;   % Stray quote in the middle of an unquoted token — keep it.
             tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
         )
@@ -150,7 +180,9 @@ tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
         Rest = [Escaped|More]
     ->  tokenize_wam_chars(More, [Escaped|CurR], Acc, inside, Tokens)
     ;   C == '\''
-    ->  reverse(CurR, CurC), string_chars(T, CurC),
+    ->  % Closing quote — keep it attached so the outer quotes
+        % survive to the constant classifier.
+        reverse(['\''|CurR], CurC), string_chars(T, CurC),
         tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
     ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
     ).
@@ -212,6 +244,21 @@ wam_parts_to_scala(["retry_me_else", Label], Lit) :-
     format(string(Lit), 'RetryMeElse("~w")', [Label]).
 
 wam_parts_to_scala(["trust_me"], 'TrustMe').
+
+%% Indexed-dispatch chain ops (issue #2400).  See wam_target.pl''s
+%% build_term_index_with_chains: synthesized try/retry/trust chains
+%% target the L_<Pred>_<Arity>_<I>_body labels when a dispatch group
+%% has >1 matching clauses.  Unlike try_me_else (CP points to alt,
+%% advance pc), these instructions JUMP to the body label and the
+%% CP holds the in-chain fall-through PC (= next chain instruction).
+wam_parts_to_scala(["try", Label], Lit) :-
+    format(string(Lit), 'Try("~w")', [Label]).
+
+wam_parts_to_scala(["retry", Label], Lit) :-
+    format(string(Lit), 'Retry("~w")', [Label]).
+
+wam_parts_to_scala(["trust", Label], Lit) :-
+    format(string(Lit), 'Trust("~w")', [Label]).
 
 % --- Environment ---
 wam_parts_to_scala(["allocate"], 'Allocate').
@@ -310,6 +357,17 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(Array(~w))', [CasesStr]).
 
+% switch_on_constant_fallthrough is shape-compatible with switch_on_constant:
+% both match A1 against the listed constants and jump to the matching label
+% on a hit. The runtime's switchTarget already falls through to pc+1 on a
+% miss (or to a "default"-labelled case with targetPc = -1), which is exactly
+% fall-through semantics — so we reuse the SwitchOnConstant instruction.
+% Mirrors wam_fsharp_target.pl. Without this the instruction degraded to a
+% Raw(...) stub and broke first-argument-indexed predicates (e.g. the
+% mixed fact+rule shape of factorial/Ackermann/Fibonacci base cases).
+wam_parts_to_scala(["switch_on_constant_fallthrough" | Cases], Lit) :-
+    wam_parts_to_scala(["switch_on_constant" | Cases], Lit).
+
 % --- Switch on term (type-based dispatch) ---
 % First-arg type indexing emitted by the WAM compiler when a predicate
 % mixes constant, list, and compound first-arg shapes. Format:
@@ -320,7 +378,25 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
 % `<functor>/<arity>:<label>`. ListLabel routes any cons cell ([|]/2).
 wam_parts_to_scala(["switch_on_term" | Rest], Lit) :-
     parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
-    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit).
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, 1, Lit).
+
+% A2-indexed variants. The WAM compiler emits the `_a2` family when it
+% indexes on the second argument (e.g. member/2's list arg). Same case
+% layout; only the indexed register differs (regs(2) instead of regs(1)).
+% Without these the instructions degraded to Raw(...) stubs and broke the
+% interpreter for A2-indexed predicates. Mirrors the F#/C/C++ targets.
+wam_parts_to_scala(["switch_on_term_a2" | Rest], Lit) :-
+    parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, 2, Lit).
+
+wam_parts_to_scala(["switch_on_constant_a2" | Cases], Lit) :-
+    normalize_switch_case_tokens(Cases, NormalizedCases),
+    parse_switch_cases(NormalizedCases, CaseLits),
+    atomic_list_concat(CaseLits, ', ', CasesStr),
+    format(string(Lit), 'SwitchOnConstant(Array(~w), 2)', [CasesStr]).
+
+wam_parts_to_scala(["switch_on_constant_a2_fallthrough" | Cases], Lit) :-
+    wam_parts_to_scala(["switch_on_constant_a2" | Cases], Lit).
 
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
@@ -379,14 +455,20 @@ strip_arity_suffix(Pred, Name) :-
 %  Converts a WAM constant token to its Scala-source-literal form.
 %  Integer tokens become IntTerm(N); float tokens become FloatTerm(N);
 %  everything else is interned as an atom.
+%
+%  Atom-vs-number disambiguation goes through
+%  wam_text_parser:wam_classify_constant_token/2: a bare token `5`
+%  is the integer 5, a quoted token `'5'` is the atom whose name is
+%  "5". tokenize_wam_chars/5 above preserves outer quotes attached
+%  to the token so the discriminator reaches this predicate.
 constant_to_scala_term(C, Lit) :-
-    (   number_string(N, C),
-        integer(N)
+    wam_classify_constant_token(C, Class),
+    (   Class = integer(N)
     ->  format(string(Lit), 'IntTerm(~w)', [N])
-    ;   number_string(F, C),
-        float(F)
+    ;   Class = float(F)
     ->  format(string(Lit), 'FloatTerm(~w)', [F])
-    ;   intern_scala_atom(C, AtomId),
+    ;   Class = atom(Name),
+        intern_scala_atom(Name, AtomId),
         format(string(Lit), 'Atom(~w)', [AtomId])
     ).
 
@@ -465,14 +547,24 @@ split_at_first_colon(Token, Before, After) :-
     B1 is B + 1,
     sub_string(Token, B1, _, 0, After).
 
-format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
+%% format_switch_on_term_lit(+ConstCases, +StructCases, +ListLabel, +Reg, -Lit)
+%  Reg selects the indexed argument register (1 for switch_on_term, 2 for
+%  switch_on_term_a2). The Scala SwitchOnTerm case class defaults reg to 1,
+%  so for Reg==1 we omit it (keeping output identical to the pre-A2 codegen)
+%  and for Reg==2 we pass it as a named argument.
+format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Reg, Lit) :-
     maplist(const_case_lit, ConstCases, ConstLits),
     atomic_list_concat(ConstLits, ', ', ConstStr),
     maplist(struct_case_lit, StructCases, StructLits),
     atomic_list_concat(StructLits, ', ', StructStr),
-    format(string(Lit),
-           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
-           [ConstStr, StructStr, ListLabel]).
+    (   Reg =:= 1
+    ->  format(string(Lit),
+               'SwitchOnTerm(Array(~w), Array(~w), "~w")',
+               [ConstStr, StructStr, ListLabel])
+    ;   format(string(Lit),
+               'SwitchOnTerm(Array(~w), Array(~w), "~w", reg = ~w)',
+               [ConstStr, StructStr, ListLabel, Reg])
+    ).
 
 const_case_lit(case(ValueLit, Label), Lit) :-
     format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
@@ -622,15 +714,24 @@ is_pred_label(PredKey, Entry) :-
 %  Generates a def wrapper that calls runPredicate with the right start PC.
 emit_scala_wrapper(Pred, Arity, StartPc, Code) :-
     % Build argument list: a1: WamTerm, a2: WamTerm, ...
-    numlist(1, Arity, ArgNums),
+    % numlist/3 fails when Low > High, so guard the 0-arity case (e.g.
+    % `p :- 3 > 2.`): without this the wrapper — and the whole project
+    % write — silently fails for any 0-arity predicate.
+    (   Arity >= 1 -> numlist(1, Arity, ArgNums) ; ArgNums = [] ),
     maplist([N, Arg]>>(format(string(Arg), 'a~w: WamTerm', [N])), ArgNums, ArgDecls),
     atomic_list_concat(ArgDecls, ', ', ArgDeclStr),
     maplist([N, Arg]>>(format(string(Arg), 'a~w', [N])), ArgNums, ArgNames),
     atomic_list_concat(ArgNames, ', ', ArgNameStr),
     scala_pred_name(Pred, ScalaName),
+    % Route through runEntry so a lowered fast path (when present) is used;
+    % runEntry falls back to runPredicate at StartPc otherwise. Behaviour is
+    % identical in interpreter mode (loweredEntries is empty).
+    % Array[WamTerm](...) is typed explicitly so the 0-arg case emits a
+    % well-typed empty array (`Array()` alone infers Array[Nothing] and
+    % won't match runEntry's Array[WamTerm] parameter).
     format(string(Code),
-           '  def ~w(~w): Boolean =\n    WamRuntime.runPredicate(sharedProgram, ~w, Array(~w))\n',
-           [ScalaName, ArgDeclStr, StartPc, ArgNameStr]).
+           '  def ~w(~w): Boolean =\n    runEntry("~w/~w", ~w, Array[WamTerm](~w))\n',
+           [ScalaName, ArgDeclStr, Pred, Arity, StartPc, ArgNameStr]).
 
 %% scala_pred_name(+PrologName, -ScalaName)
 %  Converts a Prolog predicate atom to a Scala camelCase identifier.
@@ -696,6 +797,191 @@ scala_foreign_handlers_code(Options, Code) :-
 
 scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
     format(string(Entry), '    "~w/~w" -> ~w', [Pred, Arity, HandlerCode]).
+
+% ============================================================================
+% HOT-PATH GRAPH KERNELS
+% ============================================================================
+% Opt-in (kernel_dispatch(true)) native lowering of recursive graph
+% predicates, bringing the Scala target to parity with the
+% Rust/Haskell/Elixir/Go kernel route. A predicate matching one of the
+% shapes recognised by core/recursive_kernel_detection.pl is replaced by a
+% synthesized Scala ForeignHandler that performs the traversal natively
+% (bypassing the WAM step loop), reusing the existing foreign-predicate
+% seam. The handler builds its adjacency map by enumerating the kernel's
+% edge relation through WamRuntime.collectBinarySolutions/2, so it works
+% whether the edges are WAM-compiled facts or a declarative fact source.
+%
+% Currently implemented kernel kinds: transitive_closure2, transitive_distance3,
+% transitive_parent_distance4, transitive_step_parent_distance5,
+% category_ancestor, weighted_shortest_path3, astar_shortest_path4
+% (all seven recognised kinds).
+% The remaining six (category_ancestor, transitive_distance3,
+% weighted_shortest_path3, transitive_parent_distance4,
+% astar_shortest_path4, transitive_step_parent_distance5) follow the same
+% pattern and are slated as follow-ups.
+
+%% expand_kernels_in_options(+Predicates, +Options0, -Options) is det.
+%  When kernel_dispatch(true) is set, detect kernels among Predicates and
+%  fold the implementable ones into foreign_predicates + scala_foreign_handlers
+%  (union with any user-supplied entries). Otherwise a no-op.
+expand_kernels_in_options(Predicates, Options0, Options) :-
+    (   option(kernel_dispatch(true), Options0)
+    ->  detect_scala_kernels(Predicates, Kernels),
+        findall(P/A-Code,
+                ( member(_Key-Kernel, Kernels),
+                  kernel_predicate_indicator(Kernel, P/A),
+                  emit_scala_kernel_handler(Kernel, Code)
+                ),
+                KernelPairs),
+        (   KernelPairs == []
+        ->  Options = Options0
+        ;   findall(KP, member(KP-_, KernelPairs), KernelPreds),
+            findall(handler(KP, C), member(KP-C, KernelPairs), KernelHandlers),
+            option(foreign_predicates(FPs0), Options0, []),
+            option(scala_foreign_handlers(FHs0), Options0, []),
+            list_union(FPs0, KernelPreds, FPsAll),
+            list_union(FHs0, KernelHandlers, FHsAll),
+            replace_option(foreign_predicates, FPsAll, Options0, O1),
+            replace_option(scala_foreign_handlers, FHsAll, O1, Options)
+        )
+    ;   Options = Options0
+    ).
+
+%% detect_scala_kernels(+Predicates, -Kernels)
+%  Kernels = list of "pred/arity"-recursive_kernel(...) pairs. Mirrors the
+%  Rust/Elixir detect_kernels/2.
+detect_scala_kernels([], []).
+detect_scala_kernels([PI|Rest], Kernels) :-
+    ( PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        catch(detect_recursive_kernel(Pred, Arity, Clauses, Kernel), _, fail)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key-Kernel | RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_scala_kernels(Rest, RestKernels).
+
+kernel_predicate_indicator(recursive_kernel(_, Pred/Arity, _), Pred/Arity).
+
+%% emit_scala_kernel_handler(+Kernel, -ScalaHandlerCode) is semidet.
+%  Synthesizes the Scala ForeignHandler source for a detected kernel.
+%  Fails for kernel kinds not yet implemented (so they fall back to the
+%  ordinary WAM compilation path and remain correct, just not accelerated).
+emit_scala_kernel_handler(recursive_kernel(transitive_closure2, _Pred/2, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    % BFS from arg(0) over the edge relation; every node reachable in >=1
+    % step is a solution binding register 2. Adjacency is built once
+    % (lazy val) from collectBinarySolutions so repeated queries reuse it.
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val visited = scala.collection.mutable.LinkedHashSet[WamTerm]()\n        val queue = scala.collection.mutable.Queue[WamTerm](source)\n        while (queue.nonEmpty) {\n          val node = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !visited.contains(nb)) {\n            visited += nb\n            queue.enqueue(nb)\n          }\n        }\n        val sols = visited.toVector.map(t => Map(2 -> t))\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% transitive_distance3: tdist(Start, Target, Distance). BFS over the edge
+% relation; each reachable node (excluding the source) is a solution
+% binding register 2 = target and register 3 = the BFS shortest-path
+% distance (IntTerm). Matches the Haskell/Rust/Elixir kernels, which
+% return the shortest distance only (the Prolog source enumerates one
+% solution per path, so kernel and interpreter agree on graphs where each
+% reachable node has a single path length, e.g. trees / DAGs without
+% length-divergent alternate paths).
+emit_scala_kernel_handler(recursive_kernel(transitive_distance3, _Pred/3, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            dist(nb) = d + 1\n            queue.enqueue((nb, d + 1))\n          }\n        }\n        val sols = dist.toVector.map { case (t, dd) => Map(2 -> t, 3 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% transitive_parent_distance4: pd(Start, Target, Parent, Distance). BFS over
+% the edge relation; each reachable node (excluding the source) is a
+% solution binding register 2 = target, register 3 = the immediate
+% predecessor on the BFS shortest path, and register 4 = the distance.
+% Matches the Haskell/Rust/Elixir kernels (shortest path only; see the
+% transitive_distance3 note on path-length divergence).
+emit_scala_kernel_handler(recursive_kernel(transitive_parent_distance4, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        // node -> (parent-on-shortest-path, distance)\n        val info = scala.collection.mutable.LinkedHashMap[WamTerm, (WamTerm, Int)]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            info(nb) = (node, d + 1)\n            queue.enqueue((nb, d + 1))\n          }\n        }\n        val sols = info.toVector.map { case (t, (p, dd)) => Map(2 -> t, 3 -> p, 4 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% transitive_step_parent_distance5: tspd(Start, Target, Step, Parent, Distance).
+% BFS over the edge relation; each reachable node (excluding the source) is
+% a solution binding register 2 = target, register 3 = the FIRST hop from
+% the source on the shortest path, register 4 = the immediate predecessor
+% of the target, and register 5 = the distance. The first hop is the source's
+% direct neighbour that begins the path (propagated through the BFS frontier);
+% matches the Haskell/Rust/Elixir kernels.
+emit_scala_kernel_handler(recursive_kernel(transitive_step_parent_distance5, _Pred/5, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        // node -> (first-hop-from-source, parent-on-shortest-path, distance)\n        val info = scala.collection.mutable.LinkedHashMap[WamTerm, (WamTerm, WamTerm, Int)]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        // queue entries: (node, first-hop-step, distance)\n        val queue = scala.collection.mutable.Queue[(WamTerm, WamTerm, Int)]((source, source, 0))\n        while (queue.nonEmpty) {\n          val (node, step, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            val nbStep = if (node == source) nb else step\n            info(nb) = (nbStep, node, d + 1)\n            queue.enqueue((nb, nbStep, d + 1))\n          }\n        }\n        val sols = info.toVector.map { case (t, (st, p, dd)) => Map(2 -> t, 3 -> st, 4 -> p, 5 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% category_ancestor: ca(Cat, Root, Hops, Visited). Depth-bounded DFS up the
+% parent (edge) relation, returning one Hops solution per acyclic path from
+% Cat to Root within max_depth, skipping nodes already in Visited (cycle
+% break). Inputs: register 1 = cat, register 2 = root, register 4 = visited
+% list; output: register 3 = hop count. max_depth is baked in from the
+% kernel config. Mirrors the Haskell/Rust/Elixir reference (the base hop
+% check is depth-unguarded; only the recursive descent is bounded, so the
+% deepest hop found is max_depth + 1). Returns all paths' hop counts, so it
+% agrees with the interpreter (no shortest-only collapsing).
+emit_scala_kernel_handler(recursive_kernel(category_ancestor, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    member(max_depth(MaxDepth), ConfigOps),
+    integer(MaxDepth),
+    format(atom(EdgeKey), '~w/2', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private val maxDepth: Int = ~w\n      private lazy val parents: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val cat = args(0)\n        val root = args(1)\n        val init = WamRuntime.wamListToVector(sharedProgram, args(3)).toSet\n        val hits = scala.collection.mutable.ArrayBuffer.empty[Int]\n        def go(acc: Int, c: WamTerm, depth: Int, visited: Set[WamTerm]): Unit = {\n          val ps = parents.getOrElse(c, Vector.empty)\n          val hop = acc + 1\n          for (p <- ps if p == root) hits += hop\n          if (depth < maxDepth)\n            for (mid <- ps if !visited.contains(mid))\n              go(hop, mid, depth + 1, visited + mid)\n        }\n        go(0, cat, init.size, init)\n        val sols = hits.toVector.map(h => Map(3 -> (IntTerm(h): WamTerm)))\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [MaxDepth, EdgeKeyLit]).
+
+% weighted_shortest_path3: wsp(Start, Target, Weight). Dijkstra over a ternary
+% weighted edge relation edge(From, To, W); each reachable node (excluding the
+% source) is a solution binding register 2 = target and register 3 = the
+% shortest total weight as a FloatTerm. Weights are read as Double (the
+% register contract is output(3, float)), so use float-valued edge weights for
+% the interpreter and kernel to agree exactly. Mirrors the Haskell/Rust/Elixir
+% Dijkstra kernel (shortest weight only; like the distance kernels it returns
+% one solution per node, so it agrees with the interpreter on graphs where
+% each target has a single path).
+emit_scala_kernel_handler(recursive_kernel(weighted_shortest_path3, _Pred/3, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    format(atom(EdgeKey), '~w/3', [EdgePred]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((0.0, source))\n        val out = scala.collection.mutable.LinkedHashMap[WamTerm, Double]()\n        while (pq.nonEmpty) {\n          val (cost, node) = pq.dequeue()\n          val best = dist.getOrElse(node, Double.PositiveInfinity)\n          if (cost <= best) {\n            if (node != source && !out.contains(node)) out(node) = cost\n            for ((nxt, w) <- adj.getOrElse(node, Vector.empty)) {\n              val nc = cost + w\n              if (nc < dist.getOrElse(nxt, Double.PositiveInfinity)) {\n                dist(nxt) = nc\n                pq.enqueue((nc, nxt))\n              }\n            }\n          }\n        }\n        val sols = out.toVector.map { case (t, c) => Map(2 -> (t: WamTerm), 3 -> (FloatTerm(c): WamTerm)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EdgeKeyLit]).
+
+% astar_shortest_path4: astar(Source, Target, Dim, Dist). Goal-directed A*
+% over a ternary weighted edge relation, using a heuristic oracle
+% (direct_dist_pred(Node, Target, H), falling back to the edges themselves).
+% Priority f(n) = g(n)^D + h(n)^D where D is the Minkowski dimensionality
+% taken from register 3 at runtime (config value baked in as the fallback).
+% Inputs: register 1 = source, register 2 = bound target, register 3 = dim;
+% output: register 4 = the shortest-path distance as a FloatTerm (at most one
+% solution). Mirrors the Haskell/Rust/Elixir A* kernel. Float weights so
+% interpreter and kernel agree exactly (see weighted_shortest_path3 note).
+emit_scala_kernel_handler(recursive_kernel(astar_shortest_path4, _Pred/4, ConfigOps), Code) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    member(direct_dist_pred(DistPred/DistArity), ConfigOps),
+    member(dimensionality(ConfigDim), ConfigOps),
+    integer(ConfigDim),
+    format(atom(EdgeKey), '~w/3', [EdgePred]),
+    format(atom(DistKey), '~w/~w', [DistPred, DistArity]),
+    scala_string_literal(EdgeKey, EdgeKeyLit),
+    scala_string_literal(DistKey, DistKeyLit),
+    format(string(Code),
+"new ForeignHandler {\n      private val configDim: Double = ~w.0\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      private lazy val heur: Map[WamTerm, Vector[(WamTerm, Double)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, WamRuntime.numericWeight(t._3))) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val target = args(1)\n        val dim = args(2) match { case IntTerm(n) => n.toDouble; case FloatTerm(d) => d; case _ => configDim }\n        def heuristic(node: WamTerm): Double =\n          heur.getOrElse(node, Vector.empty).collectFirst { case (t, h) if t == target => h }.getOrElse(0.0)\n        val g = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((math.pow(0.0, dim) + math.pow(heuristic(source), dim), source))\n        var result: Option[Double] = None\n        while (pq.nonEmpty && result.isEmpty) {\n          val (_f, node) = pq.dequeue()\n          if (node == target) result = g.get(node)\n          else {\n            val gn = g.getOrElse(node, Double.PositiveInfinity)\n            for ((nxt, w) <- adj.getOrElse(node, Vector.empty)) {\n              val newG = gn + w\n              if (newG < g.getOrElse(nxt, Double.PositiveInfinity)) {\n                g(nxt) = newG\n                pq.enqueue((math.pow(newG, dim) + math.pow(heuristic(nxt), dim), nxt))\n              }\n            }\n          }\n        }\n        result match {\n          case Some(d) => ForeignMulti(Vector(Map(4 -> (FloatTerm(d): WamTerm))))\n          case None    => ForeignFail\n        }\n      }\n    }",
+           [ConfigDim, EdgeKeyLit, DistKeyLit]).
 
 % ============================================================================
 % FACT BACKEND SEAM (Phase S7)
@@ -783,7 +1069,8 @@ fact_source_spec_to_handler_code(2, grouped_by_first(Path), Code) :-
     format(string(Code),
            "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if internTable.isInRange(id) => Some(internTable.stringOf(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [PathLit]).
-fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
+fact_source_spec_to_handler_code(Arity, lmdb(SpecOpts), Code) :-
+    integer(Arity), Arity >= 2,
     !,
     is_list(SpecOpts),
     option(env_path(EnvPath), SpecOpts),
@@ -798,10 +1085,12 @@ fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
     % LmdbFactSource (constructed at handler-instance init) and
     % dispatches to lookupByArg1 if arg1 is ground, streamAll
     % otherwise. Same shape as the Elixir adaptor's open/3 +
-    % lookup_by_arg1/3 + stream_all/2 callback split.
+    % lookup_by_arg1/3 + stream_all/2 callback split. For arity > 2 the
+    % LMDB value holds args 2..N tab-joined; LmdbFactSource splits them
+    % back out into registers 2..N.
     format(string(Code),
-           "new ForeignHandler {\n      private val source: LmdbFactSource = new LmdbFactSource(\n        envPath = ~w,\n        dbName  = ~w,\n        arity   = 2,\n        dupsort = ~w,\n        internTable = internTable\n      )\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = args(0) match {\n          case Atom(_) | IntTerm(_) | FloatTerm(_) => source.lookupByArg1(args(0))\n          case _                                   => source.streamAll()\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
-           [EnvPathLit, DbNameLit, DupsortLit]).
+           "new ForeignHandler {\n      private val source: LmdbFactSource = new LmdbFactSource(\n        envPath = ~w,\n        dbName  = ~w,\n        arity   = ~w,\n        dupsort = ~w,\n        internTable = internTable\n      )\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = args(0) match {\n          case Atom(_) | IntTerm(_) | FloatTerm(_) => source.lookupByArg1(args(0))\n          case _                                   => source.streamAll()\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EnvPathLit, DbNameLit, Arity, DupsortLit]).
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
 %  The solutions Seq is hoisted to a `val` on the anonymous class so it
@@ -864,7 +1153,12 @@ replace_option(Key, Value, Options0, [NewEntry | Cleaned]) :-
 %  expand into equivalent foreign_predicates + scala_foreign_handlers +
 %  intern_atoms entries, so the rest of the pipeline doesn't need to know
 %  about fact sources as a distinct concept.
-write_wam_scala_project(Predicates, Options0, ProjectDir) :-
+write_wam_scala_project(Predicates, Options1, ProjectDir) :-
+    % Expand auto-detected graph kernels (opt-in: kernel_dispatch(true))
+    % into foreign_predicates + scala_foreign_handlers entries, then expand
+    % declarative fact sources. Both run before compilation so the rest of
+    % the pipeline treats kernels/fact-sources as ordinary foreign preds.
+    expand_kernels_in_options(Predicates, Options1, Options0),
     expand_fact_sources_in_options(Options0, Options),
     make_directory_path(ProjectDir),
     % --- build.sbt ---
@@ -875,6 +1169,11 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     % --- Compile all predicates ---
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode),
+    % --- Lowered per-predicate fast-path functions (emit_mode functions/mixed).
+    %     Runs in the SAME intern-table session as the compile above so atom
+    %     IDs match the shared instruction array. Must precede emit_scala_intern_table/1
+    %     so any atom it interns is captured in the emitted seed array. --
+    scala_generate_lowered(Predicates, Options, LoweredFunctionsBody, LoweredEntriesBody),
     % --- Intern table ---
     emit_scala_intern_table(IdToStringStr),
     % --- Format instruction array body ---
@@ -895,7 +1194,8 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     write_program_source(ProjectDir, Pkg, RPkg,
                          InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr,
-                         ForeignHandlersBody).
+                         ForeignHandlersBody,
+                         LoweredFunctionsBody, LoweredEntriesBody).
 
 write_build_sbt(ProjectDir, ModName) :-
     find_template('templates/targets/scala_wam/build.sbt.mustache', Template),
@@ -911,18 +1211,25 @@ write_build_properties(ProjectDir) :-
     directory_file_path(ProjDir, 'build.properties', Path),
     write_file(Path, Content).
 
-write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
+% WamRuntime is placed in the runtime_package, which GeneratedProgram imports
+% (`import <runtime_package>.WamRuntime._`). Previously this used Package
+% (the program's package) and ignored RuntimePkg, so whenever the two
+% differed — including the DEFAULT options (core vs runtime) — the generated
+% program failed to compile ("value runtime is not a member of ..."). All the
+% smoke/kernel tests happened to pass the same package for both, hiding it.
+write_runtime_source(ProjectDir, _Package, RuntimePkg) :-
     find_template('templates/targets/scala_wam/runtime.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
-    render_template(Template, ['package'=Package, 'date'=DateStr], Content),
-    scala_source_path(ProjectDir, Package, 'WamRuntime', Path),
+    render_template(Template, ['package'=RuntimePkg, 'date'=DateStr], Content),
+    scala_source_path(ProjectDir, RuntimePkg, 'WamRuntime', Path),
     make_directory_path_for(Path),
     write_file(Path, Content).
 
 write_program_source(ProjectDir, Package, RuntimePkg,
                      InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr,
-                     ForeignHandlersBody) :-
+                     ForeignHandlersBody,
+                     LoweredFunctionsBody, LoweredEntriesBody) :-
     find_template('templates/targets/scala_wam/program.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -934,11 +1241,117 @@ write_program_source(ProjectDir, Package, RuntimePkg,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
           'intern_id_to_string'=IdToStringStr,
-          'foreign_handlers'=ForeignHandlersBody
+          'foreign_handlers'=ForeignHandlersBody,
+          'lowered_functions'=LoweredFunctionsBody,
+          'lowered_entries'=LoweredEntriesBody
         ], Content),
     scala_source_path(ProjectDir, Package, 'GeneratedProgram', Path),
     make_directory_path_for(Path),
     write_file(Path, Content).
+
+% ============================================================================
+% EMIT MODE + LOWERED-FUNCTION GENERATION
+% ============================================================================
+% Mirrors the dual-mode lowering seam in the F#/Rust/Haskell targets.
+%   emit_mode(interpreter)  — default; all predicates run in the step loop.
+%   emit_mode(functions)    — every lowerable predicate also gets a native
+%                             Scala fast-path function tried before the loop.
+%   emit_mode(mixed([P/A])) — only the listed predicates are lowered.
+% Resolution order: Options, then user:wam_scala_emit_mode/1, then default.
+
+:- multifile user:wam_scala_emit_mode/1.
+
+%% scala_resolve_emit_mode(+Options, -Mode)
+scala_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M0), Options)
+    ->  scala_validate_emit_mode(M0, Mode)
+    ;   catch(user:wam_scala_emit_mode(M1), _, fail)
+    ->  scala_validate_emit_mode(M1, Mode)
+    ;   Mode = interpreter
+    ).
+
+scala_validate_emit_mode(interpreter, interpreter) :- !.
+scala_validate_emit_mode(functions,   functions)   :- !.
+scala_validate_emit_mode(mixed(L),    mixed(L))    :- is_list(L), !.
+scala_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_scala_emit_mode, Other),
+                scala_resolve_emit_mode/2)).
+
+%% scala_partition_predicates(+Mode, +Predicates, -Interpreted, -Lowered)
+scala_partition_predicates(interpreter, Predicates, Predicates, []) :- !.
+scala_partition_predicates(functions, Predicates, Interp, Lowered) :- !,
+    scala_partition_try_lower(Predicates, Interp, Lowered).
+scala_partition_predicates(mixed(Hot), Predicates, Interp, Lowered) :- !,
+    scala_partition_mixed(Predicates, Hot, Interp, Lowered).
+
+scala_partition_try_lower([], [], []).
+scala_partition_try_lower([P|Rest], Interp, Lowered) :-
+    (   scala_predicate_is_lowerable(P)
+    ->  Lowered = [P|LR], scala_partition_try_lower(Rest, Interp, LR)
+    ;   Interp = [P|IR], scala_partition_try_lower(Rest, IR, Lowered)
+    ).
+
+scala_partition_mixed([], _, [], []).
+scala_partition_mixed([P|Rest], Hot, Interp, Lowered) :-
+    (   scala_indicator_in_list(P, Hot),
+        scala_predicate_is_lowerable(P)
+    ->  Lowered = [P|LR], scala_partition_mixed(Rest, Hot, Interp, LR)
+    ;   Interp = [P|IR], scala_partition_mixed(Rest, Hot, IR, Lowered)
+    ).
+
+scala_indicator_in_list(P, L) :- memberchk(P, L), !.
+scala_indicator_in_list(_:Pred/Arity, L) :- memberchk(Pred/Arity, L), !.
+
+scala_predicate_is_lowerable(P) :-
+    catch(scala_predicate_wamcode(P, WamCode), _, fail),
+    catch(wam_scala_lowerable(P, WamCode, _), _, fail).
+
+scala_predicate_wamcode(user:Pred/Arity, WamCode) :- !,
+    compile_predicate_to_wam(Pred/Arity, [], WamCode).
+scala_predicate_wamcode(Module:Pred/Arity, WamCode) :- !,
+    compile_predicate_to_wam(Module:Pred/Arity, [], WamCode).
+scala_predicate_wamcode(Pred/Arity, WamCode) :-
+    compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+%% scala_generate_lowered(+Predicates, +Options, -FunctionsBody, -EntriesBody)
+%  Produces the Scala source for the lowered functions and the
+%  loweredEntries Map body. Empty strings in interpreter mode so the
+%  generated program is byte-identical to the pre-lowering output.
+scala_generate_lowered(Predicates, Options, FunctionsBody, EntriesBody) :-
+    scala_resolve_emit_mode(Options, Mode),
+    (   Mode == interpreter
+    ->  FunctionsBody = "", EntriesBody = ""
+    ;   scala_partition_predicates(Mode, Predicates, _Interp, Lowered0),
+        exclude(scala_pred_is_foreign(Options), Lowered0, Lowered),
+        scala_lower_each(Lowered, FuncCodes, Entries),
+        atomic_list_concat(FuncCodes, '\n', FunctionsBody),
+        atomic_list_concat(Entries, ',\n', EntriesBody)
+    ).
+
+scala_pred_is_foreign(Options, P) :-
+    ( P = _:Pred/Arity -> true ; P = Pred/Arity ),
+    scala_foreign_predicate(Pred, Arity, Options).
+
+scala_lower_each([], [], []).
+scala_lower_each([P|Rest], [Code|Cs], [Entry|Es]) :-
+    scala_predicate_wamcode(P, WamCode),
+    lower_predicate_to_scala(P, WamCode, [], lowered(PredKey, FuncName, Code)),
+    (   % T4 (multi_clause_n): the lowered function lowers EVERY clause and is
+        % complete (first-solution, deterministic-prefix), so it never needs
+        % the interpreter fallback — emit a direct entry. This is what makes
+        % "the interpreter is never entered for the predicate" hold.
+        catch(wam_scala_lowerable(P, WamCode, multi_clause_n), _, fail)
+    ->  format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => ~w(WamRuntime.newState(prog.dispatch("~w"), args), prog))',
+            [PredKey, FuncName, PredKey])
+    ;   % All other shapes: try the lowered fast path; on failure fall back to
+        % a fresh interpreter run (a lowered `false` defers to the complete
+        % step loop — e.g. T5's unbound-A1 case, or clause-2+ of multi_clause_1).
+        format(string(Entry),
+            '    "~w" -> ((prog: WamProgram, args: Array[WamTerm]) => { val startPc = prog.dispatch("~w"); if (~w(WamRuntime.newState(startPc, args), prog)) true else WamRuntime.runPredicate(prog, startPc, args) })',
+            [PredKey, PredKey, FuncName])
+    ),
+    scala_lower_each(Rest, Cs, Es).
 
 % ============================================================================
 % HELPERS
@@ -958,20 +1371,45 @@ make_directory_path_for(FilePath) :-
     make_directory_path(Dir).
 
 write_file(Path, Content) :-
+    % UTF-8 so the runtime/generated sources (which contain non-ASCII
+    % characters) write correctly regardless of the process locale
+    % (POSIX/ASCII in many CI containers); otherwise write/2 raises an
+    % encoding error.
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         write(Stream, Content),
         close(Stream)
     ).
 
 %% find_template(+RelPath, -Template) is det.
-%  Locates a template file relative to the UnifyWeaver project root.
+%  Locates a template file relative to the UnifyWeaver project root,
+%  derived from THIS module's source location so it works regardless of
+%  the current working directory. The previous version called
+%  source_file(wam_scala_target, _) -- a bare module atom, which is a
+%  predicate Head (wam_scala_target/0, undefined), so the lookup failed
+%  and silently fell back to the cwd-relative path. It also walked up
+%  only three directories (to .../src), not four (the repo root). Both
+%  meant templates were found ONLY when the cwd was the repo root (e.g.
+%  the conformance harness, cwd=tests/, could not build Scala at all).
 find_template(RelPath, Template) :-
-    (   source_file(wam_scala_target, SrcFile)
-    ->  file_directory_name(SrcFile, SrcDir),
-        file_directory_name(SrcDir, TargetsDir),
-        file_directory_name(TargetsDir, UnifyWeaverDir),
-        atomic_list_concat([UnifyWeaverDir, '/', RelPath], AbsPath)
+    (   source_file(find_template(_, _), SrcFile)
+    ->  file_directory_name(SrcFile, SrcDir),        % .../src/unifyweaver/targets
+        file_directory_name(SrcDir, UWDir),          % .../src/unifyweaver
+        file_directory_name(UWDir, SrcRoot),         % .../src
+        file_directory_name(SrcRoot, ProjectRoot),   % .../  (repo root)
+        atomic_list_concat([ProjectRoot, '/', RelPath], AbsPath)
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).
+
+% ============================================================================
+% LOWERED EMITTER WIRING
+% ============================================================================
+% Loaded last so that, when wam_scala_lowered_emitter.pl re-imports the
+% scala_lowered_* hook predicates from this module, they are already defined.
+% The dependency is mutual (the emitter uses our hooks; we use its
+% lower_predicate_to_scala/4 + wam_scala_lowerable/3), so load order matters.
+:- use_module('../targets/wam_scala_lowered_emitter', [
+       wam_scala_lowerable/3,
+       lower_predicate_to_scala/4
+   ]).

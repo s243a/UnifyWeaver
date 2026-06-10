@@ -25,13 +25,18 @@
 	is_deterministic_pred_py/1,      % +Instrs
 	python_func_name/2,              % +Functor/Arity, -PythonName
 	parse_wam_text_py/2,             % +WamText, -Instrs
+	parse_wam_text_py_labeled/2,     % +WamText, -Instrs (keeps label/1 markers)
 	is_match_instr_py/1,             % +Instr
 	is_ite_block_py/2,               % +Instrs, -Blocks
-	emit_ite_block_py/5              % +FuncName, +Blocks, +Indent, +Opts, -Lines
+	emit_ite_block_py/5,             % +FuncName, +Blocks, +Indent, +Opts, -Lines
+	py_structured_clause1/2,         % +WamCode, -StructuredInstrs (soft-cut ITE)
+	emit_structured_python/4         % +FunctorArity, +Structured, +Opts, -Lines
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module(wam_ite_structurer, [structure_ite/2]).
 
 % ============================================================================
 % Deterministic predicate detection
@@ -92,29 +97,39 @@ constant_atom_py(C, Atom) :-
 	    atom_string(Atom, S)
 	).
 
+%% constant_number_py(+C, -Number) is semidet.
+%
+%  Succeeds only when C is a *bare* numeric token (no surrounding
+%  single quotes) — quoted atoms whose textual form parses as a
+%  number (`'5'`, `'-3.14'`) are atoms, not numbers. Discriminator
+%  is the same one used by wam_text_parser:wam_classify_constant_token/2.
 constant_number_py(C, Number) :-
-	constant_atom_py(C, Atom),
-	catch(atom_number(Atom, Number), _, fail).
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(Number)
+	;   Class = float(Number)
+	).
 
 constant_term_py(C, Term) :-
-	(   constant_number_py(C, Number)
-	->  (   integer(Number)
-	    ->  format(string(Term), "Int(~w)", [Number])
-	    ;   format(string(Term), "Float(~w)", [Number])
-	    )
-	;   escape_py(C, EC),
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(N)
+	->  format(string(Term), "Int(~w)", [N])
+	;   Class = float(F)
+	->  format(string(Term), "Float(~w)", [F])
+	;   Class = atom(Name),
+	    escape_py(Name, EC),
 	    format(string(Term), "Atom(\"~w\")", [EC])
 	).
 
 constant_match_condition_py(C, VarExpr, Cond) :-
-	(   constant_number_py(C, Number)
-	->  (   integer(Number)
-	    ->  format(string(Cond), 'isinstance(~w, Int) and ~w.n == ~w',
-	            [VarExpr, VarExpr, Number])
-	    ;   format(string(Cond), 'isinstance(~w, Float) and ~w.f == ~w',
-	            [VarExpr, VarExpr, Number])
-	    )
-	;   escape_py(C, EC),
+	wam_classify_constant_token(C, Class),
+	(   Class = integer(N)
+	->  format(string(Cond), 'isinstance(~w, Int) and ~w.n == ~w',
+	        [VarExpr, VarExpr, N])
+	;   Class = float(F)
+	->  format(string(Cond), 'isinstance(~w, Float) and ~w.f == ~w',
+	        [VarExpr, VarExpr, F])
+	;   Class = atom(Name),
+	    escape_py(Name, EC),
 	    format(string(Cond), 'isinstance(~w, Atom) and ~w.name == "~w"',
 	        [VarExpr, VarExpr, EC])
 	).
@@ -127,6 +142,151 @@ parse_wam_text_py(WamText, Instrs) :-
 	atom_string(WamText, S),
 	split_string(S, "\n", "", Lines),
 	parse_lines_py(Lines, Instrs).
+
+%% parse_wam_text_py_labeled(+WamText, -Instrs)
+%  Like parse_wam_text_py/2 but keeps label(Name) markers (as strings, so
+%  they unify with the string arguments of try_me_else / jump), so the
+%  shared structurer can find the LElse / LCont boundaries of an
+%  if-then-else block. Mirrors the Rust/Clojure/LLVM labeled parsers.
+parse_wam_text_py_labeled(WamText, Instrs) :-
+	atom_string(WamText, S),
+	split_string(S, "\n", "", Lines),
+	parse_lines_py_labeled(Lines, Instrs).
+
+parse_lines_py_labeled([], []).
+parse_lines_py_labeled([Line|Rest], Instrs) :-
+	split_string(Line, " \t,", " \t,", Parts),
+	delete(Parts, "", CleanParts),
+	(   CleanParts == []
+	->  parse_lines_py_labeled(Rest, Instrs)
+	;   CleanParts = [First|_],
+		(   sub_string(First, _, 1, 0, ":")
+		->  sub_string(First, 0, _, 1, LabelStr),
+			Instrs = [label(LabelStr)|More],
+			parse_lines_py_labeled(Rest, More)
+		;   instr_from_parts_py(CleanParts, Instr)
+		->  Instrs = [Instr|More],
+			parse_lines_py_labeled(Rest, More)
+		;   parse_lines_py_labeled(Rest, Instrs)
+		)
+	).
+
+% ============================================================================
+% If-then-else / negation / once lowering (shared structurer)
+%
+% Predicates with a soft-cut block — ( Cond -> Then ; Else ), \+ Goal,
+% once/1 — compile to try_me_else(LElse) <cond> cut_ite <then> jump(LCont) ;
+% LElse: trust_me <else> ; LCont: <cont>. is_deterministic_pred_py/1
+% rejects the internal try_me_else, so previously such predicates stayed in
+% the interpreter (sound but not lowered). Folding clause 1 through
+% wam_ite_structurer lets them lower to native Python if/else.
+%
+% Python derefs registers through the binding table, so — like the Rust
+% emitter — undoing the trail before the else branch restores any partial
+% bindings the condition made; no register snapshot is needed. The runtime
+% only trails a binding when state.b >= 0 (a choice point is live), and a
+% lowered ITE pushes no choice point, so the emitted code sets state.b to
+% the trail mark for the duration of the condition to force trailing, then
+% restores it.
+% ============================================================================
+
+%% py_structured_clause1(+WamCode, -Structured) is semidet.
+%  Parse the label-preserving stream, take clause 1, and fold its ITE
+%  blocks. Fails for genuine multi-clause predicates (their try_me_else is
+%  the first instruction, or the structurer cannot match a clean block).
+py_structured_clause1(WamCode, Structured) :-
+	(   is_list(WamCode) -> LInstrs = WamCode
+	;   parse_wam_text_py_labeled(WamCode, LInstrs)
+	),
+	\+ ( LInstrs = [try_me_else(_)|_] ),    % not predicate-level multi-clause
+	take_to_proceed_py(LInstrs, C1L),
+	structure_ite(C1L, Structured),
+	member(ite(_,_,_), Structured),         % there is an ITE to lower
+	\+ member(try_me_else(_), Structured),   % nothing unstructured survived
+	\+ member(retry_me_else(_), Structured),
+	\+ member(trust_me, Structured),
+	forall(member(I, Structured), py_supported_structured(I)).
+
+%% take_to_proceed_py(+Instrs, -Clause1) — up to and including the first
+%  proceed / fail terminator (label/1 markers pass through to the
+%  structurer, which drops them).
+take_to_proceed_py([], []).
+take_to_proceed_py([proceed|_], [proceed]) :- !.
+take_to_proceed_py([fail|_], [fail]) :- !.
+take_to_proceed_py([I|Rest], [I|Out]) :- take_to_proceed_py(Rest, Out).
+
+%% py_supported_structured(+StructuredInstr) — recurse through ite/3; each
+%  leaf must be an instruction emit_instr_py/2 can render.
+py_supported_structured(ite(C, T, E)) :- !,
+	forall(member(I, C), py_supported_structured(I)),
+	forall(member(I, T), py_supported_structured(I)),
+	forall(member(I, E), py_supported_structured(I)).
+py_supported_structured(I) :-
+	catch(emit_instr_py(I, _), _, fail).
+
+%% emit_structured_python(+Functor/Arity, +Structured, +Options, -Lines)
+%  Render a structured (ITE-folded) clause 1 as a lowered Python function.
+emit_structured_python(Functor/Arity, Structured, _Options, Lines) :-
+	python_func_name(Functor/Arity, FuncName),
+	atom_string(Functor, FStr),
+	nb_setval(py_ite_ctr, 0),
+	emit_struct_py(Structured, 4, BodyLines0),
+	(   BodyLines0 == [] -> BodyLines = ["    return True"] ; BodyLines = BodyLines0 ),
+	atomic_list_concat(BodyLines, '\n', Body),
+	format(string(Lines),
+'def ~w(state):
+    """Lowered predicate: ~w/~w (if-then-else / negation / once)"""
+~w', [FuncName, FStr, Arity, Body]).
+
+fresh_py_ite(N) :-
+	nb_getval(py_ite_ctr, N0), N is N0 + 1, nb_setval(py_ite_ctr, N).
+
+%% emit_struct_py(+Items, +Indent, -Lines) — Lines is a list of Python
+%  source lines at absolute indent Indent.
+emit_struct_py([], _Indent, []).
+emit_struct_py([Item|Rest], Indent, Lines) :-
+	emit_struct_item_py(Item, Indent, ItemLines),
+	emit_struct_py(Rest, Indent, RestLines),
+	append(ItemLines, RestLines, Lines).
+
+emit_struct_item_py(ite(Cond, Then, Else), Indent, Lines) :- !,
+	fresh_py_ite(N),
+	I1 is Indent + 4,
+	indent_str(Indent, Pad),
+	indent_str(I1, Pad1),
+	emit_struct_py(Cond, I1, CondLines),
+	emit_struct_py(Then, I1, ThenLines),
+	emit_struct_py(Else, I1, ElseLines),
+	format(string(LMark),  "~w_ite_mark~w = state.trail_len", [Pad, N]),
+	format(string(LSave),  "~w_ite_savedb~w = state.b", [Pad, N]),
+	format(string(LForce), "~wstate.b = _ite_mark~w", [Pad, N]),
+	format(string(LDef),   "~wdef _ite_cond~w():", [Pad, N]),
+	format(string(LCondT), "~wreturn True", [Pad1]),
+	format(string(LIf),    "~wif _ite_cond~w():", [Pad, N]),
+	format(string(LThenB), "~wstate.b = _ite_savedb~w", [Pad1, N]),
+	format(string(LElse),  "~welse:", [Pad]),
+	format(string(LElseB), "~wstate.b = _ite_savedb~w", [Pad1, N]),
+	format(string(LUndo),  "~wundo_trail(state, _ite_mark~w)", [Pad1, N]),
+	% then-branch body (may be empty -> the state.b restore is the body)
+	append([LThenB], ThenLines, ThenBody),
+	% else-branch body: restore b, roll back the condition's bindings, run else
+	append([LElseB, LUndo], ElseLines, ElseBody),
+	append([LMark, LSave, LForce, LDef | CondLines], [LCondT, LIf | ThenBody], Head0),
+	append(Head0, [LElse | ElseBody], Lines).
+emit_struct_item_py(Instr, Indent, Lines) :-
+	emit_instr_py(Instr, Code0),
+	reindent_py(Code0, Indent, Lines).
+
+%% reindent_py(+Code, +Indent, -Lines) — split the 4-space-based Code from
+%  emit_instr_py/2 into lines and shift each to absolute indent Indent.
+reindent_py(Code, Indent, Lines) :-
+	Extra is Indent - 4,
+	indent_str(Extra, ExtraPad),
+	split_string(Code, "\n", "", Raw),
+	maplist(shift_line_py(ExtraPad), Raw, Lines).
+
+shift_line_py(_ExtraPad, "", "") :- !.
+shift_line_py(ExtraPad, Line, Out) :- string_concat(ExtraPad, Line, Out).
 
 parse_lines_py([], []).
 parse_lines_py([Line|Rest], Instrs) :-
@@ -199,6 +359,12 @@ instr_from_parts_py(["return_add1", OutReg, InReg], return_add1(OutReg, InReg)).
 instr_from_parts_py(["neck_cut"], neck_cut).
 instr_from_parts_py(["get_level", Yn], get_level(Yn)).
 instr_from_parts_py(["cut", Yn], cut(Yn)).
+% Soft-cut commit and the then-branch's jump-to-continuation. Needed by the
+% label-preserving parse + wam_ite_structurer so ( Cond -> Then ; Else ),
+% \+ Goal and once/1 fold into ite(Cond,Then,Else). For ordinary
+% (non-ITE) predicates these never appear, so adding them here is inert.
+instr_from_parts_py(["cut_ite"], cut_ite).
+instr_from_parts_py(["jump", L], jump(L)).
 
 % ============================================================================
 % ITE (if/then/else) block detection
@@ -764,12 +930,20 @@ emit_instr_py(is(TargetStr, ExprStr), Code) :-
 
 % --- Built-in calls ---
 
+% A builtin_call dispatches to the SAME builtin implementation the
+% interpreter uses (execute_builtin, the public alias of the runtime's
+% _execute_builtin). It reads its arguments straight from the A-registers
+% (and derefs internally), so no _args list is needed. The previous
+% execute_foreign route only knew user-registered foreign predicates and
+% raised "Unknown foreign predicate" for every standard builtin (=/2, >/2,
+% is/2, true/0, fail/0, ...), so any lowered predicate containing one
+% crashed. call_foreign (below) keeps the execute_foreign path — that is
+% the genuine foreign-predicate instruction.
 emit_instr_py(builtin_call(OpStr, ArStr), Code) :-
 	escape_py(OpStr, EOp),
 	format(string(Code),
-'    _args = [deref(state.regs[i+1], state) for i in range(~w)]
-    if not execute_foreign("~w", ~w, _args, state): return False',
-		[ArStr, EOp, ArStr]).
+'    if not execute_builtin("~w", ~w, state): return False',
+		[EOp, ArStr]).
 
 emit_instr_py(call_foreign(PredStr, ArStr), Code) :-
 	escape_py(PredStr, EP),

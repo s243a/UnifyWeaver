@@ -67,20 +67,35 @@ llvm_wam_type_map(wam_state, '%WamState*').
 
 %% reg_name_to_index(+Name, -Index)
 %  Maps WAM register names to fixed array indices in the [64 x %Value] array.
-%  Register ABI: argument registers A1..A16 occupy slots 0..15,
-%  temporary registers X1..X48 occupy slots 16..63.
-%  A1→0, A2→1, ..., A16→15, X1→16, X2→17, ..., X48→63
+%  Register ABI (M10): disjoint X and Y windows so a callee clause
+%  without `allocate` cannot corrupt the caller's permanent vars by
+%  writing to a "temporary" with the same slot index.
+%
+%    A1..A16  -> 0..15   (argument registers, caller-saved)
+%    X1..X32  -> 16..47  (temporaries, do not survive calls in canonical WAM)
+%    Y1..Y16  -> 48..63  (permanents, snapshotted by allocate)
+%
+%  Pre-M10 used X1..X48 -> 16..63 AND Y1..Y48 -> 16..63 (same slots).
+%  A callee clause with no allocate would write to e.g. X1=slot 16,
+%  silently overwriting the caller's Y1=slot 16 between the `call`
+%  and `deallocate` -- the caller's permanent var was corrupted
+%  exactly when it was about to be used. The disjoint layout makes
+%  this category of bug impossible.
+%
+%  Trade-off: callers limited to Y16 permanents and X32 temporaries
+%  per clause. Existing tests fit (max X seen in the corpus is X11
+%  on an 8-element list build; Y rarely exceeds Y4).
 reg_name_to_index(Name, Index) :-
     atom_string(Name, Str),
     (   string_concat("A", NumStr, Str)
     ->  number_string(Num, NumStr),
-        Index is Num - 1                    % A1 → 0, A2 → 1, ...
+        Index is Num - 1                    % A1 -> 0, A2 -> 1, ...
     ;   string_concat("X", NumStr, Str)
     ->  number_string(Num, NumStr),
-        Index is Num + 15                   % X1 → 16, X2 → 17, ...
+        Index is Num + 15                   % X1 -> 16, X2 -> 17, ...
     ;   string_concat("Y", NumStr, Str)
     ->  number_string(Num, NumStr),
-        Index is Num + 15                   % Y regs share X space
+        Index is Num + 47                   % Y1 -> 48, Y2 -> 49, ...
     ;   fail
     ).
 

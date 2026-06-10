@@ -99,7 +99,7 @@ miss:
     shell(LlcCmd, LlcExit),
     ( LlcExit =\= 0
     -> format('    FAIL: llc exit=~w~n', [LlcExit]), ExitCode = -1
-    ;  format(atom(ClangCmd), 'clang ~w -o ~w 2>~w.clang.err',
+    ;  format(atom(ClangCmd), 'clang ~w -o ~w -lm 2>~w.clang.err',
            [OPath, BinPath, LLPath]),
        shell(ClangCmd, ClangExit),
        ( ClangExit =\= 0

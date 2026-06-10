@@ -2,6 +2,9 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_rust_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
+:- use_module('../../src/unifyweaver/core/template_system', [render_template/3]).
+:- use_module('../../src/unifyweaver/core/cost_model',
+              [resolve_auto_lmdb_materialisation/2, resolve_lmdb_cache_capacity/2]).
 
 %% generate_wam_rust_matrix_benchmark.pl
 %%
@@ -20,25 +23,29 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
+    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom]
     ->  true
+    ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom]
+    ->  FactCountAtom = '0'
+    ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom]
+    ->  LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
-    ->  LmdbCrateAtom = auto
+    ->  LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
-    ->  LmdbModeAtom = none, LmdbCrateAtom = auto
+    ->  LmdbModeAtom = none, LmdbCrateAtom = auto, LmdbMaterialisationAtom = eager, FactCountAtom = '0'
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>]~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|cursor>] [<lmdb_zero|heed|auto>] [<eager|lazy|cached|auto>] [<fact-count>]~n',
             []),
         halt(1)
     ),
-    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir),
+    generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom, OutputDir),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir) :-
+generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisationAtom, FactCountAtom, OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
@@ -48,6 +55,11 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     parse_kernel_mode(KernelModeAtom, KernelOptions),
     parse_lmdb_mode(LmdbModeAtom, LmdbOptions),
     parse_lmdb_crate(LmdbCrateAtom, LmdbCrateOptions),
+    materialisation_metadata(FactCountAtom, Metadata),
+    resolve_lmdb_materialisation(LmdbMaterialisationAtom, Metadata,
+                                 LmdbMaterialisation, LmdbMaterialisationOptions),
+    resolve_lmdb_cache_capacity(Metadata, CacheCapacity),
+    validate_lmdb_materialisation_combo(LmdbMaterialisation, LmdbModeAtom),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
     tmp_file_stream(text, TmpPath, TmpStream),
@@ -56,13 +68,19 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
-    append([[module_name(wam_rust_matrix_bench), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
-            KernelOptions, LmdbOptions, LmdbCrateOptions], Options),
+    % module_name MUST be wam_lib: the matrix-bench main.rs (write_matrix_main)
+    % imports the runtime via `use wam_lib::...`, and the shared
+    % Cargo.toml.mustache no longer forces `[lib] name = "wam_lib"` (removed in
+    % PR #2754 so the *main* wam_rust target can import via <module_name>::).
+    % With no [lib] override the lib crate takes the package name, so the
+    % package must be named wam_lib for the matrix bench's imports to resolve.
+    append([[module_name(wam_lib), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
+            KernelOptions, LmdbOptions, LmdbCrateOptions, LmdbMaterialisationOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
-    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom),
+    write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity),
     format(user_error,
-           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w output=~w~n',
-           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, OutputDir]).
+           '[WAM-Rust-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w lmdb_crate=~w materialisation=~w(from ~w) cache_capacity=~w output=~w~n',
+           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom, LmdbMaterialisation, LmdbMaterialisationAtom, CacheCapacity, OutputDir]).
 
 parse_lmdb_mode(none, []).
 parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
@@ -70,6 +88,47 @@ parse_lmdb_mode(cursor, [lmdb_mode(cursor)]).
 parse_lmdb_crate(auto, [lmdb_crate(auto)]).
 parse_lmdb_crate(lmdb_zero, [lmdb_crate(lmdb_zero)]).
 parse_lmdb_crate(heed, [lmdb_crate(heed)]).
+
+% lmdb_materialisation option (eager | lazy | cached | auto).
+% - eager: build runtime_category_parents Vec at startup.
+% - lazy:  parent edges read on-demand via LookupSource trait + LMDB cursor.
+% - cached: lazy + a sharded bounded cache (CachedLookup decorator).
+% - auto (R8b): the cost-model resolver picks eager/lazy/cached from
+%   fixture metadata (fact_count, workload_segregated, ...). Mode
+%   selection is codegen-time and static — MemAvailable is read at
+%   *runtime* for the cache-capacity clamp, never baked in here.
+%
+% The matrix bench regenerates one project per fixture scale, so
+% fact_count is a legitimate generation-time parameter. When omitted
+% (FactCountAtom = '0') the resolver's safe default is eager.
+materialisation_metadata(FactCountAtom, Metadata) :-
+    ( atom_number(FactCountAtom, FactCount0) -> true ; FactCount0 = 0 ),
+    FactCount is max(0, FactCount0),
+    Metadata = [fact_count(FactCount)].
+
+% Resolve the requested materialisation atom against fixture metadata.
+% Explicit eager/lazy/cached pass through unchanged; auto runs the
+% cost-model decision tree. Always re-derives the option list from the
+% resolved mode so downstream codegen sees the concrete mode.
+resolve_lmdb_materialisation(RequestedAtom, Metadata, Mode, [lmdb_materialisation(Mode)]) :-
+    resolve_auto_lmdb_materialisation([lmdb_materialisation(RequestedAtom) | Metadata], Mode).
+
+% Lazy / cached modes only make sense when the LMDB is opened at
+% runtime (i.e., lmdb_mode == cursor). Without it there is no
+% LmdbFactSource for the LookupSource backend to wrap.
+validate_lmdb_materialisation_combo(eager, _).
+validate_lmdb_materialisation_combo(lazy, cursor) :- !.
+validate_lmdb_materialisation_combo(lazy, LmdbModeAtom) :-
+    format(user_error,
+        'Error: lmdb_materialisation(lazy) requires lmdb_mode(cursor); got lmdb_mode(~w)~n',
+        [LmdbModeAtom]),
+    halt(1).
+validate_lmdb_materialisation_combo(cached, cursor) :- !.
+validate_lmdb_materialisation_combo(cached, LmdbModeAtom) :-
+    format(user_error,
+        'Error: lmdb_materialisation(cached) requires lmdb_mode(cursor); got lmdb_mode(~w)~n',
+        [LmdbModeAtom]),
+    halt(1).
 
 parse_variant(seeded, [
     dialect(swi),
@@ -108,7 +167,7 @@ collect_wam_predicates(accumulated, [
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).
 
-write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom) :-
+write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity) :-
     directory_file_path(OutputDir, 'src', SrcDir),
     directory_file_path(SrcDir, 'main.rs', MainPath),
     format(string(ModeMetric), 'wam_rust_matrix_~w_~w', [EmitModeAtom, KernelModeAtom]),
@@ -116,12 +175,102 @@ write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom) :-
     ->  rust_main_template_lmdb(Template)
     ;   rust_main_template(Template)
     ),
-    format(string(Code), Template, [ModeMetric]),
+    format(string(BaseCode), Template, [ModeMetric]),
+    apply_lmdb_materialisation_transform(LmdbMaterialisation, CacheCapacity, BaseCode, Code),
     setup_call_cleanup(
         open(MainPath, write, Stream, [encoding(utf8)]),
         format(Stream, '~w', [Code]),
         close(Stream)
     ).
+
+% R8a: for lmdb_materialisation(lazy|cached), render the
+% materialisation-mode-dispatched setup block from the mustache
+% template and splice it in place of the eager block in
+% `rust_main_template_lmdb`. The LazyCategoryParents struct (shared
+% by lazy and cached) is injected after the LmdbFactSource use
+% statement. Eager mode is a pass-through (the base template
+% already has the eager setup inline).
+apply_lmdb_materialisation_transform(eager, _CacheCapacity, Code, Code).
+apply_lmdb_materialisation_transform(lazy, CacheCapacity, BaseCode, Code) :-
+    rewrite_for_lookup_source_mode(lazy, CacheCapacity, BaseCode, Code).
+apply_lmdb_materialisation_transform(cached, CacheCapacity, BaseCode, Code) :-
+    rewrite_for_lookup_source_mode(cached, CacheCapacity, BaseCode, Code).
+
+% --- R8a lookup-source-mode rewrite (lazy + cached) ---
+%
+% Used by apply_lmdb_materialisation_transform for both lazy and
+% cached modes. Renders the materialisation-setup mustache template
+% with the appropriate {{case}} branch active, then splices it into
+% the rendered base main.rs at the eager-block anchors. Also injects
+% the LazyCategoryParents struct (shared between lazy and cached) at
+% module scope.
+rewrite_for_lookup_source_mode(Mode, CacheCapacity, BaseCode, Code) :-
+    materialisation_setup_dict(Mode, CacheCapacity, Dict),
+    materialisation_setup_template(SetupTemplate),
+    render_template(SetupTemplate, Dict, RenderedSetup),
+    lazy_struct_template(StructTemplate),
+    render_template(StructTemplate, [], RenderedStruct),
+    inject_lazy_struct(BaseCode, RenderedStruct, Code1),
+    replace_eager_setup_block(Code1, RenderedSetup, Code).
+
+% Build the Dict passed to render_template for the materialisation
+% setup template. cache_capacity_default is the §3.1
+% `unrestricted_working_set` clamp computed by R8b's resolver
+% (resolve_lmdb_cache_capacity/2); the generated Rust applies the
+% MemAvailable-dependent clamp on top of it at runtime. cache_cap_pct
+% and cache_floor_bytes parameterise that runtime clamp (§3.1).
+materialisation_setup_dict(Mode, CacheCapacity, [
+    materialisation = Mode,
+    cache_capacity_default = CacheCapacity,
+    cache_shards_default = 4,
+    cache_cap_pct = '0.5',
+    cache_floor_bytes = 536870912
+]).
+
+% Locate + read the materialisation-setup mustache template.
+materialisation_setup_template(Code) :-
+    rust_wam_template_path('materialisation_setup.rs.mustache', Path),
+    read_file_to_string(Path, Code, []).
+
+% Locate + read the LazyCategoryParents struct mustache.
+lazy_struct_template(Code) :-
+    rust_wam_template_path('lazy_category_parents.rs.mustache', Path),
+    read_file_to_string(Path, Code, []).
+
+% Compute the absolute path of a template under templates/targets/rust_wam/.
+% Mirrors the F# pattern (`fsharp_*_template_source/1`): walk up from
+% this source file to project root, append the templates/ path.
+rust_wam_template_path(Filename, Path) :-
+    source_file(rust_wam_template_path(_, _), SrcFile),
+    file_directory_name(SrcFile, BenchDir),         % examples/benchmark/
+    file_directory_name(BenchDir, ExamplesDir),     % examples/
+    file_directory_name(ExamplesDir, ProjectRoot),  % project root
+    atomic_list_concat([ProjectRoot,
+                        '/templates/targets/rust_wam/', Filename], Path).
+
+inject_lazy_struct(Source, RenderedStruct, Result) :-
+    StructAnchor = "use wam_lib::lmdb_fact_source::LmdbFactSource;",
+    find_and_split_once(Source, StructAnchor, Prefix, Suffix),
+    atomics_to_string([Prefix, StructAnchor, "\n", RenderedStruct, Suffix], Result).
+
+replace_eager_setup_block(Source, RenderedSetup, Result) :-
+    BlockStart = "    // Build runtime_category_parents",
+    BlockEnd = "    setup_foreign_predicates(&mut vm);",
+    find_and_split_once(Source, BlockStart, Prefix, MidPlusEnd),
+    find_and_split_once(MidPlusEnd, BlockEnd, _DiscardedMid, Suffix),
+    atomics_to_string([Prefix, RenderedSetup, Suffix], Result).
+
+% First-match deterministic split: Source = Prefix ++ Needle ++ Suffix.
+find_and_split_once(Source, Needle, Prefix, Suffix) :-
+    once((
+        string_concat(Prefix, Rest, Source),
+        string_concat(Needle, Suffix, Rest)
+    )).
+
+% (R7's inline lazy_struct_definition/1 and lazy_setup_block/1 were
+% retired in R8a — their content now lives in
+% templates/targets/rust_wam/{lazy_category_parents,materialisation_setup}.rs.mustache
+% and is rendered via the template_system.)
 
 rust_main_template('use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -129,12 +278,13 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
-use wam_rust_matrix_bench::foreign_pred_keys;
-use wam_rust_matrix_bench::setup_foreign_predicates;
-use wam_rust_matrix_bench::shared_wam_program;
-use wam_rust_matrix_bench::instructions::Instruction;
-use wam_rust_matrix_bench::state::WamState;
-use wam_rust_matrix_bench::value::Value;
+use wam_lib::foreign_pred_keys;
+use wam_lib::setup_foreign_predicates;
+use wam_lib::shared_wam_program;
+use wam_lib::instructions::Instruction;
+use wam_lib::state::WamState;
+use wam_lib::value::Value;
+use rayon::prelude::*;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
@@ -611,28 +761,77 @@ fn main() {
     let mut total_backtracks = 0u64;
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
 
-    for cat in &seed_cats {
-        vm.reset_query();
-        vm.step_limit = step_limit;
-        let mut weight_sum = 0.0f64;
-        if vm.foreign_predicates.contains("category_ancestor/4") {
-            let cat_id = vm.intern_atom(cat);
-            let root_id = vm.intern_atom(&root);
-            let visited_ids = vec![cat_id];
-            let mut hops = Vec::new();
-            vm.collect_native_category_ancestor_hops(
-                cat_id,
-                root_id,
-                &visited_ids,
-                max_depth_limit,
-                "category_parent",
-                &mut hops,
-            );
-            for hop in hops.iter().take(10001) {
-                let distance = (*hop as f64) + 1.0;
-                weight_sum += distance.powf(-n);
+    // Seed-level parallelism. The native category_ancestor kernel is &self
+    // (read-only over eager ffi_facts, or the Send+Sync lazy/cached
+    // LookupSource whose LMDB reads use a per-worker thread-local txn), so
+    // each seed query is independent and runs on its own Rayon worker.
+    // WAM_THREADS pins the pool size for -jN scaling sweeps; unset = all cores
+    // (Rayon also honours RAYON_NUM_THREADS).
+    if let Ok(t) = std::env::var("WAM_THREADS") {
+        if let Ok(nthreads) = t.parse::<usize>() {
+            if nthreads > 0 {
+                let _ = rayon::ThreadPoolBuilder::new()
+                    .num_threads(nthreads)
+                    .build_global();
             }
-        } else {
+        }
+    }
+    if vm.foreign_predicates.contains("category_ancestor/4") {
+        // Pre-resolve every seed + the root to interned ids serially
+        // (intern_atom is &mut self), then resolve the constant edge
+        // accessor once. After this point vm is only borrowed &self, so the
+        // par_iter below can share it across workers.
+        let root_id = vm.intern_atom(&root);
+        let seed_ids: Vec<(String, u32)> = seed_cats
+            .iter()
+            .map(|cat| {
+                let id = vm.intern_atom(cat);
+                (cat.clone(), id)
+            })
+            .collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let vm_ref = &vm;
+        let acc_ref = &acc;
+        let exponent = n;
+        let depth_limit = max_depth_limit;
+        let results: Vec<(String, f64)> = seed_ids
+            .par_iter()
+            .filter_map(|(cat, cat_id)| {
+                let mut visited_ids = vec![*cat_id];
+                let mut hops = Vec::new();
+                vm_ref.collect_native_category_ancestor_hops(
+                    *cat_id,
+                    root_id,
+                    &mut visited_ids,
+                    depth_limit,
+                    acc_ref,
+                    0,
+                    &mut hops,
+                );
+                let mut weight_sum = 0.0f64;
+                for hop in hops.iter().take(10001) {
+                    let distance = (*hop as f64) + 1.0;
+                    weight_sum += distance.powf(-exponent);
+                }
+                if weight_sum > 0.0 {
+                    Some((cat.clone(), weight_sum))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (cat, weight_sum) in results {
+            seed_weight_sums.insert(cat, weight_sum);
+        }
+        // The native kernel runs outside the WAM step loop, so it neither
+        // steps nor backtracks the VM; total_steps/total_backtracks stay 0.
+    } else {
+        // WAM-fallback path: mutates vm per seed (reset_query / run /
+        // backtrack), so it stays serial.
+        for cat in &seed_cats {
+            vm.reset_query();
+            vm.step_limit = step_limit;
+            let mut weight_sum = 0.0f64;
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
@@ -668,11 +867,11 @@ fn main() {
                     break;
                 }
             }
-        }
-        total_steps += vm.step_count;
-        total_backtracks += vm.backtrack_count;
-        if weight_sum > 0.0 {
-            seed_weight_sums.insert(cat.clone(), weight_sum);
+            total_steps += vm.step_count;
+            total_backtracks += vm.backtrack_count;
+            if weight_sum > 0.0 {
+                seed_weight_sums.insert(cat.clone(), weight_sum);
+            }
         }
     }
     let query_ms = query_start.elapsed().as_millis();
@@ -726,13 +925,14 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
-use wam_rust_matrix_bench::foreign_pred_keys;
-use wam_rust_matrix_bench::setup_foreign_predicates;
-use wam_rust_matrix_bench::shared_wam_program;
-use wam_rust_matrix_bench::instructions::Instruction;
-use wam_rust_matrix_bench::state::WamState;
-use wam_rust_matrix_bench::value::Value;
-use wam_rust_matrix_bench::lmdb_fact_source::LmdbFactSource;
+use wam_lib::foreign_pred_keys;
+use wam_lib::setup_foreign_predicates;
+use wam_lib::shared_wam_program;
+use wam_lib::instructions::Instruction;
+use wam_lib::state::WamState;
+use wam_lib::value::Value;
+use wam_lib::lmdb_fact_source::LmdbFactSource;
+use rayon::prelude::*;
 
 fn load_tsv_pairs(path: &Path) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {}", path.display(), e));
@@ -1157,19 +1357,48 @@ fn main() {
     });
 
     let max_depth_limit = 10usize;
-    let reachable_ids: HashSet<i32> = lmdb
-        .reachable_to_root(root_id, max_depth_limit)
-        .expect("reachable_to_root");
+    // WAM_DEMAND controls the query-time reachable_to_root BFS:
+    //   on   (default) - always run it.
+    //   off            - always skip it (DB assumed pre-scoped).
+    //   auto           - skip iff the DB self-declares scoped (a `meta` marker
+    //                    written by build_scoped_subtree_lmdb.py).
+    // Skipping is safe on a pre-scoped subtree: every node is already in scope,
+    // so the BFS just re-walks the whole DB. An empty reachable_ids set leaves
+    // the kernel demand filter a no-op (it guards on !is_empty), so lazy/cached
+    // need no further change; the eager branch below loads all edges instead of
+    // the demand-filtered subset.
+    let demand_enabled = match std::env::var("WAM_DEMAND").as_deref() {
+        Ok("off") => false,
+        Ok("auto") => !lmdb.is_scoped(),
+        _ => true,
+    };
+    let reachable_ids: HashSet<i32> = if demand_enabled {
+        lmdb.reachable_to_root(root_id, max_depth_limit)
+            .expect("reachable_to_root")
+    } else {
+        HashSet::new()
+    };
 
-    // Build runtime_category_parents by iterating each reachable child and
-    // looking up its parents.  Only edges where BOTH endpoints are in the
-    // demand set are kept, matching TSV-mode filtering semantics.
+    // Build runtime_category_parents (eager materialisation). With demand
+    // enabled, iterate each reachable child and keep only edges where BOTH
+    // endpoints are in the demand set (matches TSV-mode filtering). With demand
+    // disabled (pre-scoped DB), every edge is in scope, so load them all.
     let mut runtime_category_parents: Vec<(String, String)> = Vec::new();
-    for child_id in &reachable_ids {
-        let parents = lmdb.lookup_parents(*child_id).unwrap_or_default();
-        for parent_id in parents {
-            if reachable_ids.contains(&parent_id) {
-                if let (Some(c), Some(p)) = (i2s.get(child_id), i2s.get(&parent_id)) {
+    if demand_enabled {
+        for child_id in &reachable_ids {
+            let parents = lmdb.lookup_parents(*child_id).unwrap_or_default();
+            for parent_id in parents {
+                if reachable_ids.contains(&parent_id) {
+                    if let (Some(c), Some(p)) = (i2s.get(child_id), i2s.get(&parent_id)) {
+                        runtime_category_parents.push((c.clone(), p.clone()));
+                    }
+                }
+            }
+        }
+    } else {
+        for (child_id, c) in &i2s {
+            for parent_id in lmdb.lookup_parents(*child_id).unwrap_or_default() {
+                if let Some(p) = i2s.get(&parent_id) {
                     runtime_category_parents.push((c.clone(), p.clone()));
                 }
             }
@@ -1236,28 +1465,110 @@ fn main() {
     let mut total_backtracks = 0u64;
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
 
-    for cat in &seed_cats {
-        vm.reset_query();
-        vm.step_limit = step_limit;
-        let mut weight_sum = 0.0f64;
-        if vm.foreign_predicates.contains("category_ancestor/4") {
-            let cat_id = vm.intern_atom(cat);
-            let root_id = vm.intern_atom(&root);
-            let visited_ids = vec![cat_id];
-            let mut hops = Vec::new();
-            vm.collect_native_category_ancestor_hops(
-                cat_id,
-                root_id,
-                &visited_ids,
-                max_depth_limit,
-                "category_parent",
-                &mut hops,
-            );
-            for hop in hops.iter().take(10001) {
-                let distance = (*hop as f64) + 1.0;
-                weight_sum += distance.powf(-n);
+    // Seed-level parallelism. The native category_ancestor kernel is &self
+    // (read-only over eager ffi_facts, or the Send+Sync lazy/cached
+    // LookupSource whose LMDB reads use a per-worker thread-local txn), so
+    // each seed query is independent and runs on its own Rayon worker.
+    // WAM_THREADS pins the pool size for -jN scaling sweeps; unset = all cores
+    // (Rayon also honours RAYON_NUM_THREADS).
+    if let Ok(t) = std::env::var("WAM_THREADS") {
+        if let Ok(nthreads) = t.parse::<usize>() {
+            if nthreads > 0 {
+                let _ = rayon::ThreadPoolBuilder::new()
+                    .num_threads(nthreads)
+                    .build_global();
             }
+        }
+    }
+    if vm.foreign_predicates.contains("category_ancestor/4") {
+        // Pre-resolve every seed + the root to interned ids serially
+        // (intern_atom is &mut self), then resolve the constant edge
+        // accessor once. After this point vm is only borrowed &self, so the
+        // par_iter below can share it across workers.
+        // Int-native cursor mode (WAM_INT_NATIVE=1): seeds, root, and the graph
+        // share ONE raw page-id space (no s2i indirection), so parse seeds /
+        // reuse the raw root int directly and tell the lazy edge accessor to
+        // skip the wam<->lmdb maps. Matches the eager int-seed path and the F#
+        // target on int-native fixtures (e.g. simplewiki_articles), where the
+        // s2i-backed path would remap seeds into the wrong id space.
+        let int_native = std::env::var("WAM_INT_NATIVE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if int_native {
+            vm.set_int_native_edges(true);
+        }
+        let root_id_raw_i32 = root_id;
+        let root_id: u32 = if int_native {
+            root_id_raw_i32 as u32
         } else {
+            vm.intern_atom(&root)
+        };
+        let seed_ids: Vec<(String, u32)> = seed_cats
+            .iter()
+            .filter_map(|cat| {
+                if int_native {
+                    cat.trim().parse::<u32>().ok().map(|id| (cat.clone(), id))
+                } else {
+                    Some((cat.clone(), vm.intern_atom(cat)))
+                }
+            })
+            .collect();
+        // ROOT_ANCHORED_METRICS: WAM_MIN_DIST_PRUNE=1 loads the materialised
+        // metric_min_dist_to_root table (built at ingest by
+        // build_scoped_subtree_lmdb.py) and hands it to the kernel as an
+        // admissible A*-style prune. Off by default (empty table => no-op), so
+        // it is opt-in and A/B-able; never changes results.
+        let min_dist_prune = std::env::var("WAM_MIN_DIST_PRUNE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if min_dist_prune {
+            let md = lmdb.load_min_dist().expect("load_min_dist");
+            eprintln!("min_dist_prune: loaded {} node distances", md.len());
+            vm.set_min_dist(&md);
+        }
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let vm_ref = &vm;
+        let acc_ref = &acc;
+        let exponent = n;
+        let depth_limit = max_depth_limit;
+        let results: Vec<(String, f64)> = seed_ids
+            .par_iter()
+            .filter_map(|(cat, cat_id)| {
+                let mut visited_ids = vec![*cat_id];
+                let mut hops = Vec::new();
+                vm_ref.collect_native_category_ancestor_hops(
+                    *cat_id,
+                    root_id,
+                    &mut visited_ids,
+                    depth_limit,
+                    acc_ref,
+                    0,
+                    &mut hops,
+                );
+                let mut weight_sum = 0.0f64;
+                for hop in hops.iter().take(10001) {
+                    let distance = (*hop as f64) + 1.0;
+                    weight_sum += distance.powf(-exponent);
+                }
+                if weight_sum > 0.0 {
+                    Some((cat.clone(), weight_sum))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (cat, weight_sum) in results {
+            seed_weight_sums.insert(cat, weight_sum);
+        }
+        // The native kernel runs outside the WAM step loop, so it neither
+        // steps nor backtracks the VM; total_steps/total_backtracks stay 0.
+    } else {
+        // WAM-fallback path: mutates vm per seed (reset_query / run /
+        // backtrack), so it stays serial.
+        for cat in &seed_cats {
+            vm.reset_query();
+            vm.step_limit = step_limit;
+            let mut weight_sum = 0.0f64;
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
@@ -1293,11 +1604,11 @@ fn main() {
                     break;
                 }
             }
-        }
-        total_steps += vm.step_count;
-        total_backtracks += vm.backtrack_count;
-        if weight_sum > 0.0 {
-            seed_weight_sums.insert(cat.clone(), weight_sum);
+            total_steps += vm.step_count;
+            total_backtracks += vm.backtrack_count;
+            if weight_sum > 0.0 {
+                seed_weight_sums.insert(cat.clone(), weight_sum);
+            }
         }
     }
     let query_ms = query_start.elapsed().as_millis();

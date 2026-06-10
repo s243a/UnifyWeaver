@@ -34,6 +34,14 @@ test_simple_fact(foo, bar).
 
 :- dynamic test_failed/0.
 
+:- dynamic rust_parser_read_demo/0.
+rust_parser_read_demo :-
+    read_term_from_atom('p(a)', _).
+
+:- dynamic rust_parser_term_to_atom_forward/0.
+rust_parser_term_to_atom_forward :-
+    term_to_atom(p(a), _).
+
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
 :- dynamic tail_suffix/2.
@@ -273,6 +281,45 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
+cargo_available :-
+    catch(
+        (   process_create(path(cargo), ['--version'],
+                [stdout(pipe(S)), stderr(pipe(_)), process(Pid)]),
+            read_string(S, _, _),
+            close(S),
+            process_wait(Pid, exit(0))
+        ),
+        _,
+        fail).
+
+cargo_test_project(ProjectDir, TestName, Result) :-
+    (   cargo_available
+    ->  format(atom(Cmd), 'cd "~w" && cargo test --test ~w 2>&1',
+            [ProjectDir, TestName]),
+        catch(
+            (   process_create(path(sh), ['-c', Cmd],
+                    [stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+                read_string(Out, _, OutStr),
+                close(Out),
+                read_string(Err, _, ErrStr),
+                close(Err),
+                process_wait(Pid, exit(ExitCode))
+            ),
+            E,
+            (   format(user_error, 'cargo test error: ~w~n', [E]),
+                ExitCode = -1,
+                OutStr = "",
+                ErrStr = ""
+            )
+        ),
+        (   ExitCode == 0
+        ->  Result = ok
+        ;   atomic_list_concat([OutStr, ErrStr], '\n', FullOutput),
+            Result = error(ExitCode, FullOutput)
+        )
+    ;   Result = not_available
+    ).
+
 check_brace_balance(String) :-
     string_chars(String, Chars),
     count_chars(Chars, '{', Open),
@@ -409,14 +456,19 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
         sub_string(S, _, _, _, 'builtin_state'),
-        sub_string(S, _, _, _, 'eprintln!'),
         %% Phase 4: Group A term inspection builtins are present.
         sub_string(S, _, _, _, '"functor/3"'),
         sub_string(S, _, _, _, '"arg/3"'),
         sub_string(S, _, _, _, '"=../2"'),
         sub_string(S, _, _, _, '"copy_term/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
-        sub_string(S, _, _, _, 'copy_term_walk')
+        sub_string(S, _, _, _, 'copy_term_walk'),
+        %% Runtime-parser bridge support and the parser-required text/list builtins.
+        sub_string(S, _, _, _, '"atom_codes/2"'),
+        sub_string(S, _, _, _, '"number_codes/2"'),
+        sub_string(S, _, _, _, '"reverse/2"'),
+        sub_string(S, _, _, _, '"term_to_atom/2"'),
+        sub_string(S, _, _, _, 'bind_compiled_parse_atom')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
     ).
@@ -1703,6 +1755,254 @@ test_generated_project_has_parser :-
         fail_test(Test, 'Generated state.rs missing parser')
     ).
 
+test_runtime_parser_off_rejects_read :-
+    Test = 'WAM-Rust: runtime_parser(off) rejects parser-dependent bodies',
+    TmpDir = 'output/test_wam_rust_runtime_parser_off',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   catch(
+            write_wam_rust_project(
+                [user:rust_parser_read_demo/0],
+                [module_name('rust_parser_off'), runtime_parser(off)],
+                TmpDir),
+            error(permission_error(use, runtime_parser, read_term_from_atom/2), _),
+            true)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(off) did not reject read_term_from_atom/2')
+    ).
+
+test_runtime_parser_off_allows_forward_term_to_atom :-
+    Test = 'WAM-Rust: runtime_parser(off) allows forward term_to_atom/2',
+    TmpDir = 'output/test_wam_rust_runtime_parser_term_to_atom_forward',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:rust_parser_term_to_atom_forward/0],
+            [module_name('rust_parser_forward'), runtime_parser(off)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'Module: rust_parser_forward'),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(off) rejected safe forward term_to_atom/2')
+    ).
+
+test_runtime_parser_compiled_includes_parser_and_wrappers :-
+    Test = 'WAM-Rust: runtime_parser(compiled) includes parser and wrappers',
+    TmpDir = 'output/test_wam_rust_runtime_parser_compiled',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:rust_parser_read_demo/0],
+            [module_name('rust_parser_compiled'), runtime_parser(compiled)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'labels.insert("parse_term_from_atom/3"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("canonical_op_table/1"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("parse_atom_to_term/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) did not include parser/wrapper labels')
+    ).
+
+test_runtime_parser_compiled_arity_qualified_wrappers :-
+    Test = 'WAM-Rust: compiled runtime parser wrappers are arity-qualified',
+    TmpDir = 'output/test_wam_rust_runtime_parser_arity_wrappers',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_arity_wrappers'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub fn read_term_from_atom_2'),
+        sub_string(LibStr, _, _, _, 'pub fn read_term_from_atom_3'),
+        sub_string(LibStr, _, _, _, 'pub fn parse_term_from_atom_3'),
+        sub_string(LibStr, _, _, _, 'pub fn parse_term_from_atom_4')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) emitted duplicate non-arity-qualified wrapper names')
+    ).
+
+test_runtime_parser_compiled_cargo_checks_wrappers :-
+    Test = 'WAM-Rust: compiled runtime parser support crate cargo-checks',
+    TmpDir = 'output/test_wam_rust_runtime_parser_cargo_check',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_cargo_check'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        cargo_check_project(TmpDir, Result),
+        (   Result = ok
+        ;   Result = not_available
+        )
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(compiled) support crate failed cargo check')
+    ).
+
+write_runtime_parser_bridge_test(ProjectDir) :-
+    directory_file_path(ProjectDir, 'tests', TestsDir),
+    make_directory_path(TestsDir),
+    directory_file_path(TestsDir, 'parser_bridge.rs', TestPath),
+    setup_call_cleanup(
+        open(TestPath, write, S),
+        write(S, 'use std::collections::HashMap;
+
+use rust_parser_bridge_e2e::state::WamState;
+use rust_parser_bridge_e2e::value::Value;
+use rust_parser_bridge_e2e::{
+    canonical_op_table_1, parse_atom_to_term_2, parse_term_from_atom_3,
+    parse_term_from_codes_3,
+};
+
+fn empty_vm() -> WamState {
+    WamState::new(Vec::new(), HashMap::new())
+}
+
+fn deref_named(vm: &WamState, name: &str) -> Value {
+    vm.deref_heap(&vm.deref_var(&Value::Unbound(name.to_string())))
+}
+
+fn op_table(vm: &mut WamState) -> Value {
+    assert!(canonical_op_table_1(vm, Value::Unbound("Ops".to_string())));
+    deref_named(vm, "Ops")
+}
+
+#[test]
+fn compiled_runtime_parser_parses_public_entries() {
+    let mut vm = empty_vm();
+    let ops = op_table(&mut vm);
+    vm.reset_query();
+    assert!(parse_term_from_atom_3(
+        &mut vm,
+        Value::Atom("p(a)".to_string()),
+        ops,
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+
+    let mut vm = empty_vm();
+    let ops = op_table(&mut vm);
+    vm.reset_query();
+    let codes = Value::List("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
+    assert!(parse_term_from_codes_3(
+        &mut vm,
+        codes,
+        ops,
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+}
+
+#[test]
+fn compiled_runtime_parser_bridge_parses_atom() {
+    let mut vm = empty_vm();
+    assert!(parse_atom_to_term_2(
+        &mut vm,
+        Value::Atom("p(a)".to_string()),
+        Value::Unbound("T".to_string()),
+    ));
+    assert_eq!(format!("{}", deref_named(&vm, "T")), "p(a)");
+}
+'),
+        close(S)
+    ).
+
+test_runtime_parser_compiled_executes_parser_bridge :-
+    Test = 'WAM-Rust: compiled runtime parser bridge executes parser',
+    TmpDir = 'output/test_wam_rust_runtime_parser_bridge_e2e',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [cpp_runtime_parser_wrappers:parse_atom_to_term/2],
+            [module_name('rust_parser_bridge_e2e'),
+             runtime_parser(compiled), no_kernels(true)],
+            TmpDir),
+        write_runtime_parser_bridge_test(TmpDir),
+        cargo_test_project(TmpDir, parser_bridge, Result)
+    ->  (   (Result = ok ; Result = not_available)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true),
+            pass(Test)
+        ;   (   Result = error(_, Output)
+            ->  format(user_error,
+                    'runtime parser bridge cargo test failed:~n~w~n',
+                    [Output])
+            ;   true
+            ),
+            catch(delete_directory_and_contents(TmpDir), _, true),
+            fail_test(Test,
+                'runtime_parser(compiled) parser bridge did not execute')
+        )
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test,
+            'runtime_parser(compiled) parser bridge did not generate')
+    ).
+
+test_rust_wam_constant_tokens_strip_quotes :-
+    Test = 'WAM-Rust: WAM constant tokens preserve quoted atoms as atoms',
+    (   wam_rust_target:wam_line_to_rust_instr(
+            ["unify_constant", "':-'"], user:test/0, [], R1),
+        wam_rust_target:wam_line_to_rust_instr(
+            ["set_constant", "'42'"], user:test/0, [], R2),
+        sub_string(R1, _, _, _, 'Value::Atom(":-".to_string())'),
+        sub_string(R2, _, _, _, 'Value::Atom("42".to_string())'),
+        \+ sub_string(R2, _, _, _, 'Value::Integer(42)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'quoted WAM constants were rendered with quotes or numeric type')
+    ).
+
+test_runtime_parser_default_excludes_wrappers :-
+    Test = 'WAM-Rust: runtime_parser(auto) does not bundle parser wrappers',
+    TmpDir = 'output/test_wam_rust_runtime_parser_default',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('rust_parser_default')],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("read_term_from_atom/2"'),
+        \+ sub_string(LibStr, _, _, _, 'labels.insert("parse_term_from_atom/3"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'runtime_parser(auto) unexpectedly bundled parser wrappers')
+    ).
+
 test_parser_resilience :-
     Test = 'WAM-Rust: parser handles malformed input gracefully',
     (   read_file_to_string(
@@ -1866,6 +2166,88 @@ test_lowered_calls_detected_kernel_via_callforeign :-
     ;   fail_test(Test, 'Lowered helper did not emit CallForeign for detected kernel')
     ).
 
+%% R7: LookupSource trait + lazy_lookups field present in the runtime template.
+test_r7_lookupsource_trait_in_state_template :-
+    Test = 'WAM-Rust R7: LookupSource trait + lazy_lookups field in state template',
+    (   read_file_to_string('templates/targets/rust_wam/state.rs.mustache', S, []),
+        sub_string(S, _, _, _, "pub trait LookupSource: Send + Sync"),
+        sub_string(S, _, _, _, "fn lookup_key_for_atom"),
+        sub_string(S, _, _, _, "fn lookup_parents"),
+        sub_string(S, _, _, _, "fn atom_for_key"),
+        sub_string(S, _, _, _, "pub lazy_lookups: HashMap<String, Arc<dyn LookupSource>>"),
+        sub_string(S, _, _, _, "pub fn register_lazy_lookup"),
+        sub_string(S, _, _, _, "pub fn edge_parents")
+    ->  pass(Test)
+    ;   fail_test(Test, 'state.rs.mustache missing LookupSource trait or lazy_lookups infrastructure')
+    ).
+
+%% R7: lazy_lmdb_lookup arm emitted in execute_foreign_predicate.
+test_r7_lazy_lmdb_lookup_handler_arm :-
+    Test = 'WAM-Rust R7: execute_foreign_predicate has lazy_lmdb_lookup arm',
+    (   wam_rust_target:compile_execute_foreign_predicate_to_rust(Code),
+        sub_string(Code, _, _, _, "\"lazy_lmdb_lookup\" => {"),
+        sub_string(Code, _, _, _, "lookup_key_for_atom(&key_atom)"),
+        sub_string(Code, _, _, _, "source.lookup_parents(key_int)"),
+        sub_string(Code, _, _, _, "source.atom_for_key(*vid)"),
+        sub_string(Code, _, _, _, "finish_foreign_results(&pred_key, vec![value_reg], results)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'execute_foreign_predicate is missing the lazy_lmdb_lookup arm or its key calls')
+    ).
+
+%% R7: native category_ancestor routes through the resolved edge accessor
+%% (lazy_lookups-aware), resolving the constant predicate ONCE rather than
+%% re-hashing it per call (interning principle).
+test_r7_native_category_ancestor_uses_edge_parents :-
+    Test = 'WAM-Rust R7: native category_ancestor uses resolved edge accessor (not per-call ffi_facts string lookup)',
+    (   wam_rust_target:compile_collect_native_category_ancestor_to_rust(Code),
+        % Hot path consults the pre-resolved accessor, not a per-call
+        % string-keyed map lookup.
+        sub_string(Code, _, _, _, "self.edge_parents_via(cat_id, acc)"),
+        \+ sub_string(Code, _, _, _, "self.edge_parents(cat_id, edge_pred)"),
+        \+ sub_string(Code, _, _, _, "self.ffi_facts.get(edge_pred)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'kernel should call edge_parents_via(cat_id, acc) against the resolved accessor, not a per-call predicate lookup')
+    ).
+
+%% Regression: rust_val_literal must strip outer quotes from atom tokens
+%% so a Prolog source-level `'42'` (numeric-looking quoted atom) becomes
+%% Value::Atom("42") rather than Value::Atom("'42'").  The naive
+%% number_string-first path emitted the literal-with-quotes verbatim and
+%% broke any predicate that bound a quoted-numeric atom.  Same fix as F#
+%% PR #2422 -- the Rust lowered emitter was the last target with this bug.
+test_lowered_quoted_numeric_atom_strips_quotes :-
+    Test = 'WAM-Rust: lowered put_constant on quoted-numeric atom strips outer quotes',
+    %% `put_constant '42', A1` -> the WAM tokenizer hands the lowered
+    %% emitter the literal string `'42'` (with quotes).  Rendering
+    %% should produce Value::Atom("42"), not Value::Atom("'42'").
+    WamCode = 'put_constant \'42\' A1\nproceed\n',
+    (   lower_predicate_to_rust(test_quoted_numeric/1, WamCode, [], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        %% Must contain the quote-stripped form...
+        sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())'),
+        %% ...and must NOT contain the buggy verbatim-with-quotes form.
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Lowered emitter rendered quoted-numeric atom with quotes baked into the Rust string literal')
+    ).
+
+%% Companion: a normal (unquoted) numeric token must still classify as
+%% Integer, not Atom -- catches the symmetric regression where the
+%% quote-stripping pass might over-strip and accidentally turn an
+%% integer literal into an atom.
+test_lowered_unquoted_integer_stays_integer :-
+    Test = 'WAM-Rust: lowered put_constant on unquoted integer renders Value::Integer',
+    WamCode = 'put_constant 42 A1\nproceed\n',
+    (   lower_predicate_to_rust(test_unquoted_integer/1, WamCode, [], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        sub_string(RustCode, _, _, _, 'Value::Integer(42)'),
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Lowered emitter mis-classified an unquoted integer as an atom')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -1938,6 +2320,14 @@ run_tests :-
     test_state_template_has_parser,
     test_parser_handles_all_instructions,
     test_generated_project_has_parser,
+    test_runtime_parser_off_rejects_read,
+    test_runtime_parser_off_allows_forward_term_to_atom,
+    test_runtime_parser_compiled_includes_parser_and_wrappers,
+    test_runtime_parser_compiled_arity_qualified_wrappers,
+    test_runtime_parser_compiled_cargo_checks_wrappers,
+    test_runtime_parser_compiled_executes_parser_bridge,
+    test_rust_wam_constant_tokens_strip_quotes,
+    test_runtime_parser_default_excludes_wrappers,
     test_parser_resilience,
     test_cross_predicate_shared_wam,
     test_cross_predicate_distinct_pcs,
@@ -1946,6 +2336,11 @@ run_tests :-
     test_native_wam_mixed_project,
     test_rust_wam_lib_imports_hashset,
     test_lowered_calls_detected_kernel_via_callforeign,
+    test_r7_lookupsource_trait_in_state_template,
+    test_r7_lazy_lmdb_lookup_handler_arm,
+    test_r7_native_category_ancestor_uses_edge_parents,
+    test_lowered_quoted_numeric_atom_strips_quotes,
+    test_lowered_unquoted_integer_stays_integer,
 
     format('~n========================================~n'),
     (   test_failed

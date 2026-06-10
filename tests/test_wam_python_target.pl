@@ -14,6 +14,7 @@
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/core/target_registry').
 :- use_module('../src/unifyweaver/core/prolog_term_parser').
+:- use_module('../src/unifyweaver/targets/wam_text_parser', [wam_text_to_items/2]).
 
 % ============================================================================
 % Registry smoke tests
@@ -28,10 +29,10 @@ test(wam_python_module) :-
 	target_registry:target_module(wam_python, wam_python_target).
 
 test(wam_python_has_wam_capability) :-
-	target_registry:target_has_capability(wam_python, wam).
+	once(target_registry:target_has_capability(wam_python, wam)).
 
 test(wam_python_has_trail_backtracking) :-
-	target_registry:target_has_capability(wam_python, trail_backtracking).
+	once(target_registry:target_has_capability(wam_python, trail_backtracking)).
 
 :- end_tests(wam_python_registry).
 
@@ -304,6 +305,120 @@ test(compile_runtime_reads_static_runtime_source) :-
 :- end_tests(wam_python_phase_a).
 
 % ============================================================================
+% Items-mode migration audit
+% ============================================================================
+
+:- dynamic user:py_items_api_demo/0.
+user:py_items_api_demo.
+
+:- begin_tests(wam_python_items_mode_audit).
+
+test(python_planning_uses_common_items_api) :-
+    once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_items(PredIndicator, [ite_use_y_level(true)], Items)"),
+    sub_string(Content, _, _, _, "python_wam_items_plan(Items, Wam)"),
+    sub_string(Content, _, _, _, "compile_wam_predicate_items_to_python(Pred/Arity, Items, Options, PredCode)"),
+    !.
+
+test(python_lowered_mode_keeps_text_plan) :-
+    once(source_file(wam_python_target:compile_wam_predicate_to_python(_, _, _, _), Path)),
+    read_file_to_string(Path, Content, []),
+    sub_string(Content, _, _, _, "python_wam_emit_ir_mode(Options, IrMode)"),
+    sub_string(Content, _, _, _, "wam_ir_mode(wam_python, EmitMode, Options, IrMode)"),
+    sub_string(Content, _, _, _, "compile_predicate_to_wam_text(PredIndicator, [ite_use_y_level(true)], WamText)"),
+    sub_string(Content, _, _, _, "wam_plan_text(Wam, WamText)"),
+    !.
+
+
+test(items_adapter_matches_text_adapter_for_standard_items) :-
+    WamText = 'demo/1:
+    get_constant foo, A1
+    put_constant \'42\', A2
+    call bar/2, 2
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:wam_items_to_python_instructions(Items, demo/1, Instrs, Labels),
+    sub_string(Instrs, _, _, _, '("__label__", "demo/1")'),
+    sub_string(Instrs, _, _, _, '("get_constant", Atom("foo"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A2)'),
+    sub_string(Instrs, _, _, _, '("call", "bar/2", 2)'),
+    sub_string(Instrs, _, _, _, '("proceed",)'),
+    sub_string(Labels, _, _, _, '("__label__", "demo/1")'),
+    !.
+
+test(items_adapter_preserves_typed_atom_constants) :-
+    Items = [label("typed/1"), put_constant('42', "A1"), put_constant(42, "A2"), proceed],
+    wam_python_target:wam_items_to_python_instructions(Items, typed/1, Instrs, _Labels),
+    sub_string(Instrs, _, _, _, '("put_constant", Atom("42"), A1)'),
+    sub_string(Instrs, _, _, _, '("put_constant", Int(42), A2)'),
+    !.
+
+
+test(items_predicate_compiler_matches_text_compiler) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_text_to_items(WamText, Items),
+    wam_python_target:compile_wam_predicate_to_python(demo/1, WamText, [], TextCode),
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items, [], ItemsCode),
+    assertion(ItemsCode == TextCode).
+
+test(items_predicate_compiler_honors_registrar_prefix) :-
+    Items = [label("demo/1"), put_constant(foo, "A1"), proceed],
+    wam_python_target:compile_wam_predicate_items_to_python(demo/1, Items,
+        [registrar_prefix(register_)], Code),
+    sub_string(Code, _, _, _, 'def register_pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    !.
+
+test(compile_all_interpreter_uses_items_plan) :-
+    WamText = 'demo/1:
+    put_constant foo, A1
+    proceed',
+    wam_python_target:compile_all_predicates([demo/1-WamText], [], Code),
+    sub_string(Code, _, _, _, 'def pred_demo_1(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["demo/1"] = ('),
+    sub_string(Code, _, _, _, '("put_constant", Atom("foo"), A1)'),
+    !.
+
+test(compile_all_generated_predicate_uses_items_api) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0], [], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_allows_text_ir_override) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_text)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_rejects_direct_target_ir,
+     [throws(error(domain_error(wam_python_ir_mode, direct_target), _))]) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(direct_target)], _).
+
+test(compile_all_generated_predicate_accepts_native_items_ir) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], Code),
+    sub_string(Code, _, _, _, 'def pred_py_items_api_demo_0(raw_program):'),
+    sub_string(Code, _, _, _, 'raw_program["py_items_api_demo/0"] = ('),
+    sub_string(Code, _, _, _, '("proceed",)'),
+    !.
+
+test(compile_all_generated_predicate_native_items_matches_bridge) :-
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_bridge)], BridgeCode),
+    wam_python_target:compile_all_predicates([user:py_items_api_demo/0],
+        [wam_ir(wam_items_native)], NativeCode),
+    assertion(NativeCode == BridgeCode).
+:- end_tests(wam_python_items_mode_audit).
+
+% ============================================================================
 % Phase B: Label pre-resolution — load_program, call_pc, run_wam(code, labels, ...)
 % ============================================================================
 
@@ -456,7 +571,26 @@ test(iso_errors_text_rewrite_uses_is_key_tables) :-
 	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Succ0, SuccIso),
 	assertion(sub_string(SuccIso, _, _, _, "builtin_call succ_iso/2 2")),
 	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), succ_demo/0, Succ0, SuccLax),
-	assertion(sub_string(SuccLax, _, _, _, "builtin_call succ_lax/2 2")).
+	assertion(sub_string(SuccLax, _, _, _, "builtin_call succ_lax/2 2")),
+	Read0 = 'read_demo/0:\n  call read_term_from_atom/2, 2\n  builtin_call read_term_from_atom/3 3',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_demo/0, Read0, ReadIso),
+	assertion(sub_string(ReadIso, _, _, _, "call read_term_from_atom_iso/2, 2")),
+	assertion(sub_string(ReadIso, _, _, _, "builtin_call read_term_from_atom_iso/3 3")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_demo/0, Read0, ReadLax),
+	assertion(sub_string(ReadLax, _, _, _, "call read_term_from_atom_lax/2, 2")),
+	assertion(sub_string(ReadLax, _, _, _, "builtin_call read_term_from_atom_lax/3 3")),
+	ReadDefault0 = 'read_default_demo/0:\n  builtin_call read/1 1\n  call read_term/1, 1',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_default_demo/0, ReadDefault0, ReadDefaultIso),
+	assertion(sub_string(ReadDefaultIso, _, _, _, "builtin_call read_iso/1 1")),
+	assertion(sub_string(ReadDefaultIso, _, _, _, "call read_term_iso/1, 1")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_default_demo/0, ReadDefault0, ReadDefaultLax),
+	assertion(sub_string(ReadDefaultLax, _, _, _, "builtin_call read_lax/1 1")),
+	assertion(sub_string(ReadDefaultLax, _, _, _, "call read_term_lax/1, 1")),
+	ReadStream0 = 'read_stream_demo/0:\n  builtin_call read/2 2',
+	wam_python_target:iso_errors_rewrite_text(iso_config(true, []), read_stream_demo/0, ReadStream0, ReadStreamIso),
+	assertion(sub_string(ReadStreamIso, _, _, _, "builtin_call read_iso/2 2")),
+	wam_python_target:iso_errors_rewrite_text(iso_config(false, []), read_stream_demo/0, ReadStream0, ReadStreamLax),
+	assertion(sub_string(ReadStreamLax, _, _, _, "builtin_call read_lax/2 2")).
 
 test(iso_errors_project_generation_rewrites_wam_text) :-
 	setup_call_cleanup(
@@ -584,6 +718,46 @@ test(runtime_parser_compiled_runs_read_term_from_atom) :-
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
+% Regression for the run_wam fail() FFI-continuation-exhaustion bug:
+% `read_term_from_atom` failed to parse any term whose grammar required
+% backtracking through a builtin's choice-point continuation (e.g. the
+% member/2 driving resolve_infix/4 inside parse_op_loop/10). Symptom:
+% `'p(a)'` worked, but `'p(a,b)'`, `'[1,2,3]'`, `'1+2'` all returned
+% None — the wrapper goal `read_term_from_atom(_, T), T = ...` failed.
+%
+% Root cause: when an FFI continuation returned -1 (no more solutions),
+% fail() in WamRuntime.py returned False outright instead of letting
+% older choice-points on the stack run. The continuation had already
+% updated state.b to its fallback; fail() just dropped that fallback.
+% Fix: wrap the body of fail() in a `while True:` loop so an
+% exhausted-continuation result restarts the loop, picking up whatever
+% CP state.b now points at.
+test(runtime_parser_compiled_runs_read_term_multi_arg) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_multi_arg_demo),
+			assertz((user:py_read_term_multi_arg_demo :-
+				read_term_from_atom('p(a,b)', T1), T1 = p(a, b),
+				read_term_from_atom('foo(bar,baz)', T2), T2 = foo(bar, baz),
+				read_term_from_atom('[1,2,3]', T3), T3 = [1, 2, 3],
+				read_term_from_atom('1+2', T4), T4 = 1 + 2,
+				read_term_from_atom('2*3+4', T5), T5 = 2 * 3 + 4)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_multi_arg', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_multi_arg_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_multi_arg_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_multi_arg_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
 test(runtime_parser_compiled_read_term_variable_names) :-
 	setup_call_cleanup(
 		(   retractall(user:py_read_term_vars_demo),
@@ -631,6 +805,788 @@ test(runtime_parser_compiled_read_term_variables) :-
 			once(sub_string(Output, _, _, _, "True"))
 		),
 		(   retractall(user:py_read_term_variables_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_singletons) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_singletons_demo),
+			assertz((user:py_read_term_singletons_demo :-
+				read_term_from_atom('p(A,B,A,_,_C,_C,D)', T,
+					[variables(Vars), variable_names(Vs), singletons(Ss)]),
+				T = p(X, Y, X, Anon, Z, Z, W),
+				Vars = [X, Y, Anon, Z, W],
+				Vs = ['A'=X, 'B'=Y, '_C'=Z, 'D'=W],
+				Ss = ['B'=Y, '_'=Anon, 'D'=W])),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read_singletons', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_term_singletons_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_term_singletons_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_term_singletons_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+% Regression: read_term_from_atom on a bare numeric-looking atom (`'42'`).
+% Two bugs collided to break this:
+%   (1) _constant_term in WamRuntime.py re-parsed Atom("42").name through
+%       _parse_constant, which promotes numeric-looking strings to Int.
+%       So put_constant Atom("42") silently became Int(42) at runtime,
+%       and read_term_from_atom rejects non-Atom input (returns False).
+%   (2) wam_lines_to_python used a naive whitespace split that broke any
+%       atom token containing a space (`':- p'`), splitting it across
+%       multiple parts and emitting a `# SKIP:` comment instead of the
+%       real put_constant -- so even after (1) was fixed, a directive-
+%       shaped atom never made it into A1.
+% Both fixes verified by this test: bare integer-shaped quoted atoms,
+% prefix-directive atoms, prefix-NaF atoms.
+test(runtime_parser_compiled_read_term_integer_shaped_atom) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_int_shape),
+			assertz((user:py_read_int_shape :-
+				read_term_from_atom('42', T),
+				T == 42)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_int_shape', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_int_shape/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_int_shape/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_int_shape),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_prefix_directive) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_prefix_directive),
+			assertz((user:py_read_prefix_directive :-
+				read_term_from_atom(':- p', T),
+				T == ':-'(p))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_prefix_dir', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_prefix_directive/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_prefix_directive/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_prefix_directive),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_prefix_naf) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_prefix_naf),
+			assertz((user:py_read_prefix_naf :-
+				read_term_from_atom('\\+ foo', T),
+				T == '\\+'(foo))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_prefix_naf', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read_prefix_naf/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_prefix_naf/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_prefix_naf),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_read_term_syntax_errors_policy) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_term_syntax_lax),
+			retractall(user:py_read_term_syntax_iso),
+			retractall(user:py_read_term_syntax_override),
+			assertz((user:py_read_term_syntax_lax :-
+				\+ read_term_from_atom('p(', _))),
+			assertz((user:py_read_term_syntax_iso :-
+				catch(read_term_from_atom('p(', _),
+					error(syntax_error(_), _),
+					true))),
+			assertz((user:py_read_term_syntax_override :-
+				\+ read_term_from_atom('p(', _, [syntax_errors(fail)]))),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_syntax_errors', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([
+				user:py_read_term_syntax_lax/0,
+				user:py_read_term_syntax_iso/0,
+				user:py_read_term_syntax_override/0
+			], [runtime_parser(compiled),
+				iso_errors(user:py_read_term_syntax_iso/0, true),
+				iso_errors(user:py_read_term_syntax_override/0, true)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"for entry in ('py_read_term_syntax_lax/0', 'py_read_term_syntax_iso/0', 'py_read_term_syntax_override/0'):",
+				"    state = wr.WamState()",
+				"    print(entry, wr.run_wam(code, labels, entry, state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "py_read_term_syntax_lax/0 True")),
+			once(sub_string(Output, _, _, _, "py_read_term_syntax_iso/0 True")),
+			once(sub_string(Output, _, _, _, "py_read_term_syntax_override/0 True"))
+		),
+		(   retractall(user:py_read_term_syntax_lax),
+			retractall(user:py_read_term_syntax_iso),
+			retractall(user:py_read_term_syntax_override),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_read2_from_python_stream) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read2_demo),
+			assertz((user:py_read2_demo(S) :-
+				read(S, T1), T1 = fact(1),
+				read(S, T2), T2 = fact(2),
+				read(S, T3), T3 = expr(1 + 2 * 3),
+				read(S, T4), T4 = end_of_file)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read2', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read2_demo/1],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"wr.set_reg(state, 1, io.StringIO('fact(1).\\nfact(2).\\nexpr(1+2*3).\\n'))",
+				"print(wr.run_wam(code, labels, 'py_read2_demo/1', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read2_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_read2_from_opened_file) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read2_file_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read2_file', ProjectDir),
+			atomic_list_concat([ProjectDir, '/read_terms.pl'], DataFile),
+			assertz((user:py_read2_file_demo :-
+				open(DataFile, read, S),
+				read(S, T1), T1 = fact(1),
+				read(S, T2), T2 = fact(2),
+				read(S, T3), T3 = expr(1 + 2 * 3),
+				read(S, T4), T4 = end_of_file,
+				close(S)))
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read2_file_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			setup_call_cleanup(
+				open(DataFile, write, Out),
+				format(Out, "fact(1).~nfact(2).~nexpr(1+2*3).~n", []),
+				close(Out)),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read2_file_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read2_file_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_parser_compiled_runs_read1_from_stdin) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read1_demo),
+			assertz((user:py_read1_demo :-
+				read(T1), T1 = fact(1),
+				read_term(T2), T2 = fact(2),
+				read(T3), T3 = end_of_file)),
+			user:python_parser_tmp_dir('tmp_wam_python_parser_read1', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_read1_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdin = sys.stdin",
+				"sys.stdin = io.StringIO('fact(1).\\nfact(2).\\n')",
+				"try:",
+				"    print(wr.run_wam(code, labels, 'py_read1_demo/0', state))",
+				"finally:",
+				"    sys.stdin = old_stdin"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read1_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_char_input_reads_from_stdin) :-
+	setup_call_cleanup(
+		(   retractall(user:py_char_input_demo),
+			assertz((user:py_char_input_demo :-
+				peek_char(C0), C0 = a,
+				get_char(C1), C1 = a,
+				get_code(Code), Code = 98,
+				peek_char(E0), E0 = end_of_file,
+				get_char(E1), E1 = end_of_file,
+				get_code(ECode), ECode = -1)),
+			user:python_parser_tmp_dir('tmp_wam_python_char_input', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_char_input_demo/0],
+				[runtime_parser(compiled)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdin = sys.stdin",
+				"sys.stdin = io.StringIO('ab')",
+				"try:",
+				"    print(wr.run_wam(code, labels, 'py_char_input_demo/0', state))",
+				"finally:",
+				"    sys.stdin = old_stdin"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_char_input_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_char_output_writes_to_stdout) :-
+	setup_call_cleanup(
+		(   retractall(user:py_char_output_demo),
+			assertz((user:py_char_output_demo :-
+				put_char(a),
+				put_code(98),
+				put_code(10))),
+			user:python_parser_tmp_dir('tmp_wam_python_char_output', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_char_output_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok = wr.run_wam(code, labels, 'py_char_output_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"print(repr(capture.getvalue()))",
+				"print(ok)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "'ab\\n'")),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_char_output_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_output_canonical_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_output_canonical_demo),
+			assertz((user:py_output_canonical_demo :-
+				write_canonical('hello world'),
+				tab(2),
+				write_canonical(f('two words', [a, 2])),
+				nl,
+				\+ tab(-1))),
+			user:python_parser_tmp_dir('tmp_wam_python_output_canonical', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_output_canonical_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok = wr.run_wam(code, labels, 'py_output_canonical_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"print(repr(capture.getvalue()))",
+				"print(ok)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "'hello world'  f('two words', [a, 2])\\n")),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_output_canonical_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_format_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_format_stdout_demo),
+			retractall(user:py_format_dest_demo),
+			assertz((user:py_format_stdout_demo :-
+				format('plain~n'),
+				format('X=~w D=~d A=~a S=~s T=~~~n', [foo(1), 42, hello, [111, 107]]))),
+			assertz((user:py_format_dest_demo :-
+				format(atom(A), 'n=~d', [42]),
+				A = 'n=42',
+				format(string(S), 's=~a', [hello]),
+				S = 's=hello',
+				format(codes(C), 'ab', []),
+				C = [97, 98])),
+			user:python_parser_tmp_dir('tmp_wam_python_format_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project(
+				[user:py_format_stdout_demo/0, user:py_format_dest_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import io, sys",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"old_stdout = sys.stdout",
+				"capture = io.StringIO()",
+				"sys.stdout = capture",
+				"try:",
+				"    ok_stdout = wr.run_wam(code, labels, 'py_format_stdout_demo/0', state)",
+				"finally:",
+				"    sys.stdout = old_stdout",
+				"state2 = wr.WamState()",
+				"ok_dest = wr.run_wam(code, labels, 'py_format_dest_demo/0', state2)",
+				"print(repr(capture.getvalue()))",
+				"print(ok_stdout)",
+				"print(ok_dest)"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "plain\\nX=foo(1) D=42 A=hello S=ok T=~\\n")),
+			once(sub_string(Output, _, _, _, "True\nTrue"))
+		),
+		(   retractall(user:py_format_stdout_demo),
+			retractall(user:py_format_dest_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_list_ordering_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_list_ordering_demo),
+			assertz((user:py_list_ordering_demo :-
+				sort([3, 1, 2, 1, 3], Sorted),
+				Sorted = [1, 2, 3],
+				msort([3, 1, 2, 1, 3], MSorted),
+				MSorted = [1, 1, 2, 3, 3],
+				sort([foo, 1, bar, 2], Mixed),
+				Mixed = [1, 2, bar, foo],
+				keysort([b-1, a-2, b-3, a-4], KeySorted),
+				KeySorted = [a-2, a-4, b-1, b-3],
+				sort([], EmptySorted),
+				EmptySorted = [],
+				keysort([], EmptyKeys),
+				EmptyKeys = [],
+				\+ keysort([bad], _))),
+			user:python_parser_tmp_dir('tmp_wam_python_list_ordering', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_list_ordering_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_list_ordering_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_list_ordering_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_with_output_to_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_with_output_to_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_with_output_to', ProjectDir),
+			atomic_list_concat([ProjectDir, '/wot_stream.txt'], StreamOutFile),
+			atomic_list_concat([ProjectDir, '/wot_stream_format.txt'], StreamFmtFile),
+			assertz((user:py_with_output_to_demo :-
+				with_output_to(atom(A), write(hello)),
+				A = hello,
+				with_output_to(atom(B), (write(foo), write(bar))),
+				B = foobar,
+				with_output_to(atom(C), format('X = ~w', [42])),
+				C = 'X = 42',
+				with_output_to(string(S), write(test)),
+				S = test,
+				with_output_to(codes(Cs), write(ab)),
+				Cs = [97, 98],
+				with_output_to(atom(Empty), true),
+				Empty = '',
+				\+ with_output_to(atom(_), fail),
+				with_output_to(atom(Tabbed), (write(x), tab(3), write(y))),
+				Tabbed = 'x   y',
+				with_output_to(atom(Outer),
+					(write(a), with_output_to(atom(Inner), write(b)), write(c))),
+				Outer = ac,
+				Inner = b,
+				with_output_to(atom(Chars), (put_char(q), put_code(82))),
+				Chars = qR,
+				Seed = keep,
+				\+ with_output_to(atom(Seed), write(changed)),
+				Seed = keep,
+				open(StreamOutFile, write, Out),
+				with_output_to(stream(Out), (write(hello), write(' '), write(world))),
+				close(Out),
+				open(StreamOutFile, read, In),
+				read_line_to_string(In, Line),
+				close(In),
+				Line = 'hello world',
+				open(StreamFmtFile, write, FOut),
+				with_output_to(stream(FOut), format('~w-~w', [42, ok])),
+				close(FOut),
+				open(StreamFmtFile, read, FIn),
+				read_line_to_string(FIn, FLine),
+				close(FIn),
+				FLine = '42-ok'))
+		),
+		(   wam_python_target:write_wam_python_project([user:py_with_output_to_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_with_output_to_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_with_output_to_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_stream_char_io_reads_and_writes_files) :-
+	setup_call_cleanup(
+		(   retractall(user:py_stream_char_io_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_stream_char_io', ProjectDir),
+			atomic_list_concat([ProjectDir, '/chars_in.txt'], InFile),
+			atomic_list_concat([ProjectDir, '/chars_out.txt'], OutFile),
+			assertz((user:py_stream_char_io_demo :-
+				open(InFile, read, In),
+				peek_char(In, C0), C0 = a,
+				get_char(In, C1), C1 = a,
+				get_code(In, Code), Code = 98,
+				peek_char(In, E0), E0 = end_of_file,
+				get_char(In, E1), E1 = end_of_file,
+				get_code(In, ECode), ECode = -1,
+				close(In),
+				open(OutFile, write, Out),
+				put_char(Out, x),
+				put_code(Out, 121),
+				put_code(Out, 10),
+				close(Out)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				write(Input, ab),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_stream_char_io_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import pathlib",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"ok = wr.run_wam(code, labels, 'py_stream_char_io_demo/0', state)",
+				"print(ok)",
+				"print(repr(pathlib.Path('chars_out.txt').read_text()))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True")),
+			once(sub_string(Output, _, _, _, "'xy\\n'"))
+		),
+		(   retractall(user:py_stream_char_io_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_read_line_to_string_reads_file_lines) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_line_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_read_line', ProjectDir),
+			atomic_list_concat([ProjectDir, '/lines.txt'], InFile),
+			assertz((user:py_read_line_demo :-
+				open(InFile, read, S),
+				peek_char(S, C0), C0 = f,
+				read_line_to_string(S, L1), L1 = foo,
+				read_line_to_string(S, L2), L2 = '',
+				read_line_to_string(S, L3), L3 = bar,
+				read_line_to_string(S, L4), L4 = end_of_file,
+				close(S)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				format(Input, "foo~n~nbar", []),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_read_line_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_line_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_line_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_read_string_reads_bounded_chunks) :-
+	setup_call_cleanup(
+		(   retractall(user:py_read_string_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_read_string', ProjectDir),
+			atomic_list_concat([ProjectDir, '/string.txt'], InFile),
+			assertz((user:py_read_string_demo :-
+				open(InFile, read, S),
+				peek_char(S, C0), C0 = h,
+				read_string(S, 5, N1, _, S1), N1 = 5, S1 = hello,
+				read_string(S, 100, N2, _, S2), N2 = 6, S2 = ' world',
+				read_string(S, 3, N3, _, S3), N3 = 0, S3 = '',
+				close(S)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				write(Input, 'hello world'),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_read_string_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_read_string_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_read_string_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_stream_eof_and_output_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_stream_helper_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_stream_helpers', ProjectDir),
+			atomic_list_concat([ProjectDir, '/eof.txt'], InFile),
+			atomic_list_concat([ProjectDir, '/stream_out.txt'], OutFile),
+			assertz((user:py_stream_helper_demo :-
+				open(InFile, read, In),
+				\+ at_end_of_stream(In),
+				peek_char(In, C0), C0 = z,
+				\+ at_end_of_stream(In),
+				get_char(In, C1), C1 = z,
+				at_end_of_stream(In),
+				close(In),
+				open(OutFile, write, Out),
+				write_to_stream(Out, alpha),
+				nl_to_stream(Out),
+				write_to_stream(Out, pair(beta, 2)),
+				close(Out)))
+		),
+		(   setup_call_cleanup(open(InFile, write, Input),
+				write(Input, z),
+				close(Input)),
+			wam_python_target:write_wam_python_project([user:py_stream_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import pathlib",
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_stream_helper_demo/0', state))",
+				"print(repr(pathlib.Path('stream_out.txt').read_text()))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True")),
+			once(sub_string(Output, _, _, _, "'alpha\\npair(beta, 2)'"))
+		),
+		(   retractall(user:py_stream_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_atom_string_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_atom_string_helper_demo),
+			assertz((user:py_atom_string_helper_demo :-
+				atom_concat(foo, bar, FooBar), FooBar = foobar,
+				string_concat(FooBar, 7, FooBar7), FooBar7 = foobar7,
+				atom_length(FooBar7, 7),
+				string_length(123, 3),
+				atom_string(Atom, baz), Atom = baz,
+				atom_string(99, Text), Text = '99',
+				string_to_atom(qux, Q), Q = qux,
+				\+ atom_concat(_, b, ab),
+				\+ atom_length(f(1), _))),
+			user:python_parser_tmp_dir('tmp_wam_python_atom_string_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_atom_string_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_atom_string_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_atom_string_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_number_char_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_number_char_helper_demo),
+			assertz((user:py_number_char_helper_demo :-
+				number_chars(120, Chars), Chars = ['1', '2', '0'],
+				number_chars(N, ['-', '4', '2']), N = -42,
+				number_chars(F, ['3', '.', '5']), F = 3.5,
+				atom_number('17', AN), AN = 17,
+				atom_number(Atom, 2.5), Atom = '2.5',
+				char_code(a, Code), Code = 97,
+				char_code(Char, 98), Char = b,
+				string_code(2, abc, BCode), BCode = 98,
+				\+ number_chars(_, []),
+				\+ atom_number(not_a_number, _),
+				\+ char_code(ab, _),
+				\+ string_code(4, abc, _))),
+			user:python_parser_tmp_dir('tmp_wam_python_number_char_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_number_char_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_number_char_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_number_char_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_atomic_split_string_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_atomic_split_helper_demo),
+			assertz((user:py_atomic_split_helper_demo :-
+				atomic_list_concat([a, 2, b], Joined), Joined = 'a2b',
+				atomic_list_concat([a, b, c], '-', Hyphen), Hyphen = 'a-b-c',
+				atomic_list_concat(Parts, '-', 'x-y-z'), Parts = [x, y, z],
+				split_string(' a, b,,c ', ',', ' ', Split), Split = [a, b, '', c],
+				\+ atomic_list_concat(_, '', abc),
+				\+ split_string(f(1), ',', '', _))),
+			user:python_parser_tmp_dir('tmp_wam_python_atomic_split_helpers', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_atomic_split_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_atomic_split_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_atomic_split_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_filesystem_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_filesystem_helper_demo),
+			user:python_parser_tmp_dir('tmp_wam_python_filesystem_helpers', ProjectDir),
+			atomic_list_concat([ProjectDir, '/fs_dir'], Dir),
+			atomic_list_concat([Dir, '/data.txt'], File),
+			assertz((user:py_filesystem_helper_demo :-
+				\+ exists_directory(Dir),
+				make_directory(Dir),
+				exists_directory(Dir),
+				\+ exists_file(File),
+				open(File, write, Out),
+				write_to_stream(Out, payload),
+				close(Out),
+				exists_file(File),
+				directory_files(Dir, Files),
+				member('.', Files),
+				member('..', Files),
+				member('data.txt', Files),
+				delete_file(File),
+				\+ exists_file(File),
+				\+ delete_file(File)))
+		),
+		(   wam_python_target:write_wam_python_project([user:py_filesystem_helper_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_filesystem_helper_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_filesystem_helper_demo),
+			user:python_parser_cleanup_tmp_dir(ProjectDir)
+		)).
+
+test(runtime_term_type_parity_helpers) :-
+	setup_call_cleanup(
+		(   retractall(user:py_term_type_parity_demo),
+			assertz((user:py_term_type_parity_demo :-
+				a \== b,
+				\+ (same \== same),
+				ground(f(a, [1, b])),
+				\+ ground(f(_)))),
+			user:python_parser_tmp_dir('tmp_wam_python_term_type_parity', ProjectDir)
+		),
+		(   wam_python_target:write_wam_python_project([user:py_term_type_parity_demo/0],
+				[runtime_parser(off)], ProjectDir),
+			atomic_list_concat([
+				"import predicates as p, wam_runtime as wr",
+				"code, labels = wr.load_program(p.build_program())",
+				"state = wr.WamState()",
+				"print(wr.run_wam(code, labels, 'py_term_type_parity_demo/0', state))"
+			], '\n', Script),
+			user:python_parser_run_snippet(ProjectDir, Script, Output),
+			once(sub_string(Output, _, _, _, "True"))
+		),
+		(   retractall(user:py_term_type_parity_demo),
 			user:python_parser_cleanup_tmp_dir(ProjectDir)
 		)).
 
@@ -929,7 +1885,7 @@ test(is_not_match_call) :-
 test(ite_block_detected) :-
 	% Two-clause ITE: foo(a) and foo(b)
 	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 2).
 
 test(ite_block_three_clauses) :-
@@ -937,7 +1893,7 @@ test(ite_block_three_clauses) :-
 	Instrs = [get_constant(a, "1"), proceed,
 	          get_constant(b, "1"), proceed,
 	          get_constant(c, "1"), proceed],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 3).
 
 test(ite_block_not_detected_single_clause) :-
@@ -950,7 +1906,7 @@ test(ite_block_with_fail_fallthrough) :-
 	Instrs = [get_constant(a, "1"), proceed,
 	          get_constant(b, "1"), proceed,
 	          fail],
-	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	once(wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks)),
 	length(Blocks, 3).
 
 test(emit_ite_generates_if, [nondet]) :-
@@ -1115,6 +2071,27 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"float/1",
 		"number/1",
 		"compound/1",
+		"atomic/1",
+		"ground/1",
+		"\\==/2",
+		"atom_concat/3",
+		"atom_length/2",
+		"atom_string/2",
+		"string_concat/3",
+		"string_length/2",
+		"string_to_atom/2",
+		"number_chars/2",
+		"atom_number/2",
+		"char_code/2",
+		"string_code/3",
+		"atomic_list_concat/2",
+		"atomic_list_concat/3",
+		"split_string/4",
+		"exists_file/1",
+		"exists_directory/1",
+		"directory_files/2",
+		"make_directory/1",
+		"delete_file/1",
 		"var/1",
 		"nonvar/1",
 		"is_list/1",
@@ -1136,6 +2113,27 @@ test(static_runtime_has_lua_baseline_builtins, [nondet]) :-
 		"\\\\+/1",
 		"write/1",
 		"display/1",
+		"tab/1",
+		"write_canonical/1",
+		"format/1",
+		"format/2",
+		"format/3",
+		"with_output_to/2",
+		"sort/2",
+		"msort/2",
+		"keysort/2",
+		"put_char/1",
+		"put_char/2",
+		"put_code/1",
+		"put_code/2",
+		"get_char/2",
+		"get_code/2",
+		"peek_char/2",
+		"read_line_to_string/2",
+		"read_string/5",
+		"at_end_of_stream/1",
+		"write_to_stream/2",
+		"nl_to_stream/1",
 		"nl/0"
 	]), sub_string(Content, _, _, _, Needle)).
 
@@ -1147,8 +2145,45 @@ test(static_runtime_naf_uses_isolated_goal_execution, [nondet]) :-
 
 test(static_runtime_io_emits_output, [nondet]) :-
 	runtime_py_path(P), read_file_to_string(P, Content, []),
-	sub_string(Content, _, _, _, "print(_format_value(get_reg(state, 1), state), end='')"),
-	sub_string(Content, _, _, _, "print()").
+	sub_string(Content, _, _, _, "def _emit_output"),
+	sub_string(Content, _, _, _, "return _emit_output(_format_value(get_reg(state, 1), state), state=state)"),
+	sub_string(Content, _, _, _, "def _format_canonical_value"),
+	sub_string(Content, _, _, _, "'write_canonical/1'"),
+	sub_string(Content, _, _, _, "'tab/1'"),
+	sub_string(Content, _, _, _, "def _execute_format_builtin"),
+	sub_string(Content, _, _, _, "'format/1'"),
+	sub_string(Content, _, _, _, "'format/2'"),
+	sub_string(Content, _, _, _, "'format/3'"),
+	sub_string(Content, _, _, _, "def _execute_with_output_to"),
+	sub_string(Content, _, _, _, "'with_output_to/2'"),
+	sub_string(Content, _, _, _, "def _execute_sort_like"),
+	sub_string(Content, _, _, _, "def _execute_keysort"),
+	sub_string(Content, _, _, _, "'sort/2'"),
+	sub_string(Content, _, _, _, "'msort/2'"),
+	sub_string(Content, _, _, _, "'keysort/2'"),
+	sub_string(Content, _, _, _, "def _execute_put_char"),
+	sub_string(Content, _, _, _, "def _execute_put_code"),
+	sub_string(Content, _, _, _, "def _execute_read_line_to_string"),
+	sub_string(Content, _, _, _, "def _execute_read_string"),
+	sub_string(Content, _, _, _, "def _execute_at_end_of_stream"),
+	sub_string(Content, _, _, _, "def _execute_write_to_stream"),
+	sub_string(Content, _, _, _, "def _execute_nl_to_stream"),
+	sub_string(Content, _, _, _, "def _execute_atom_concat"),
+	sub_string(Content, _, _, _, "def _execute_atom_length"),
+	sub_string(Content, _, _, _, "def _execute_atom_string"),
+	sub_string(Content, _, _, _, "def _execute_number_chars"),
+	sub_string(Content, _, _, _, "def _execute_atom_number"),
+	sub_string(Content, _, _, _, "def _execute_char_code"),
+	sub_string(Content, _, _, _, "def _execute_string_code"),
+	sub_string(Content, _, _, _, "def _execute_atomic_list_concat"),
+	sub_string(Content, _, _, _, "def _execute_split_string"),
+	sub_string(Content, _, _, _, "def _execute_exists_file"),
+	sub_string(Content, _, _, _, "def _execute_directory_files"),
+	sub_string(Content, _, _, _, "def _execute_delete_file"),
+	sub_string(Content, _, _, _, "def _term_ground"),
+	sub_string(Content, _, _, _, "'atomic/1'"),
+	sub_string(Content, _, _, _, "'\\\\==/2'"),
+	sub_string(Content, _, _, _, "return _emit_output('\\n', state=state)").
 
 :- end_tests(wam_python_builtin_parity_guard).
 
@@ -1156,7 +2191,49 @@ test(static_runtime_io_emits_output, [nondet]) :-
 % Generated-project E2E coverage for packaged static runtime builtins
 % ============================================================================
 
+% Cut / negation / forall predicates (M17 get_level/cut path, enabled via
+% ite_use_y_level). pcut_inline (a cut inside a negated conjunction) and
+% pcut_forall_neg (forall over a multi-solution generator) were wrong under
+% the legacy cut_ite and are fixed by the M17 path.
+:- dynamic user:pcut_acc/3.
+:- dynamic user:pcut_plen/2.
+:- dynamic user:pcut_gen/1.
+:- dynamic user:pcut_partial/0.
+:- dynamic user:pcut_inline/0.
+:- dynamic user:pcut_forall_neg/0.
+:- dynamic user:pcut_forall_pass/0.
+user:pcut_acc(L, _, _) :- var(L), !, fail.
+user:pcut_acc([], N, N) :- !.
+user:pcut_acc([_|T], A, N) :- A1 is A + 1, pcut_acc(T, A1, N).
+user:pcut_plen(L, N) :- pcut_acc(L, 0, N).
+user:pcut_gen(1).
+user:pcut_gen(2).
+user:pcut_gen(3).
+user:pcut_partial :- \+ pcut_plen([a,b|_], _).          % partial list rejected -> true
+user:pcut_inline :- \+ (pcut_gen(_), !, fail).          % inline cut in negation -> true
+user:pcut_forall_neg :- \+ forall(pcut_gen(X), X =:= 1). % not all -> \+ true
+user:pcut_forall_pass :- forall(pcut_gen(X), X >= 1).    % all -> true
+
 :- begin_tests(wam_python_builtin_e2e).
+
+test(generated_project_cut_negation_forall) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_cut_e2e', ProjectDir),
+		(   wam_python_target:write_wam_python_project(
+				[user:pcut_acc/3, user:pcut_plen/2, user:pcut_gen/1,
+				 user:pcut_partial/0, user:pcut_inline/0,
+				 user:pcut_forall_neg/0, user:pcut_forall_pass/0],
+				[], ProjectDir),
+			run_generated_query(ProjectDir, 'pcut_partial/0', O1),
+			\+ sub_string(O1, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_inline/0', O2),
+			\+ sub_string(O2, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_forall_neg/0', O3),
+			\+ sub_string(O3, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'pcut_forall_pass/0', O4),
+			\+ sub_string(O4, _, _, _, "false.")
+		),
+		cleanup_tmp_dir(ProjectDir)).
 
 test(generated_project_runs_term_builtins) :-
 	setup_call_cleanup(
@@ -1325,6 +2402,11 @@ type_compare_wam(
   put_constant same, 1
   put_constant same, 2
   builtin_call ==/2 2
+  put_constant left, 1
+  put_constant right, 2
+  builtin_call \\==/2 2
+  put_integer 42, 1
+  builtin_call atomic/1 1
   put_integer 2, 1
   put_integer 2, 2
   builtin_call =:=/2 2
