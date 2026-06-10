@@ -96,7 +96,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
@@ -169,12 +169,18 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   above). Remaining T4/T5 holes are intentional: clojure has no distinct
   first-arg dispatch (T4 only); python's multi-clause story is its T5
   `if/elif/else`; wat has neither yet.
-- **T6 (first-arg indexing)** — *nobody* lowers it; all targets drop the
-  `switch_on_*` prefix and try clauses in order. This is the natural next
-  advancement after T5: the same clause-head analysis, but the back-end
-  emits a native `switch`/jump-table on the first argument's principal
-  functor instead of an if-cascade. Shared front-end, per-target back-end —
-  high leverage, and a perf win that's sound behind a gate.
+- **T6 (first-arg indexing)** — **Rust** now has a *gated* T6 (`~`): it
+  reuses the T5 `wam_clause_chain` front-end, but when the discriminators are
+  all atoms and there are ≥ `t6_min_clauses` of them (default 8) the back-end
+  emits a native two-stage `match` (string switch → integer jump table)
+  instead of the if-cascade. The other targets still drop the `switch_on_*`
+  prefix and try clauses in order. This is the natural next advancement after
+  T5 (same clause-head analysis, switch back-end): shared front-end,
+  per-target back-end — high leverage, and a perf win that's sound behind a
+  gate. Measured on generated Rust: a tie at 4 clauses, 1.55× at 8, 5.7× at
+  64, 12.7× at 256 — so it is gated to the many-clause case (see
+  `docs/reports/wam_rust_dispatch_alloc_perf.md`); the compiler flattens the
+  cascade for few clauses (matching the prior Go array-dispatch result).
 - **T2 (ITE)** — complete everywhere **except WAT** (the one remaining ITE
   gap; WAT has native `if/then/else` + `block`, so it's tractable). Closing
   it makes the T2 column fully ✓.
