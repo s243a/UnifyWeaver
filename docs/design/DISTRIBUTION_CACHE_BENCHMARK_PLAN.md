@@ -35,9 +35,19 @@ The main curve is marginal speedup per cached byte or per cached node.
 Start with the simplest semantics:
 
 - graph: SimpleWiki category graph first, enwiki later;
-- root: `Category:Main_topic_classifications` or the canonical root used by the
-  existing tree-likeness fixtures;
-- edge direction: parent-only paths toward the root;
+- SimpleWiki subtree root: `Category:Articles`;
+- enwiki-oriented root: `Category:Main_topic_classifications`, or the canonical
+  root used by the existing tree-likeness fixtures;
+- broader category roots: `Category:Container_categories` and
+  `Category:Categories` need filtering before benchmark use because they include
+  massive container/admin/template regions;
+- individual container categories can still be valid subtree roots, but
+  `Category:Container_categories` itself should be treated as a high-branching
+  registry outlier rather than part of the same global branch-factor population;
+- edge direction: parent-only paths toward the selected benchmark root;
+- avoid mixing content and admin/container regions in one benchmark population;
+  once admin categories enter the sample, branch-factor and support-width
+  statistics are no longer globally homogeneous;
 - path statistic: hop count `L`;
 - distribution representation: exact histogram, plus optional exact cumulative
   bases derived from that histogram;

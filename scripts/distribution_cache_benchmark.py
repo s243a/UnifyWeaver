@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (s243a)
-"""Benchmark exact parent-only distribution cache cutoffs on tiny fixtures."""
+"""Benchmark exact parent-only distribution cache cutoffs."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 import time
@@ -20,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.distribution_cache_support import (  # noqa: E402
     EXPONENT,
     FIXTURES,
+    ROOT,
     SearchStats,
     build_cache,
     cache_bytes,
@@ -28,12 +30,15 @@ from tools.distribution_cache_support import (  # noqa: E402
     first_moment_cdf,
     full_exact_search,
     histogram_bytes,
+    load_parent_edges_tsv,
     mass_cdf,
+    reachable_nodes_by_parent_distance,
     support_sizes,
     weighted_power_cdf,
 )
 
 
+SIMPLEWIKI_ROOT = "Category:Articles"
 DEFAULT_DEPTHS = [0, 1, 2, 3]
 DEFAULT_BUDGETS = [2, 4, 6]
 
@@ -55,6 +60,20 @@ def parse_int_list(text: str) -> list[int]:
     return values
 
 
+def parse_targets(text: str) -> list[str]:
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def load_targets_file(path: Path) -> list[str]:
+    targets = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line and not line.startswith("#"):
+                targets.append(line)
+    return targets
+
+
 def timed_call(fn, *args, **kwargs):
     started = time.perf_counter_ns()
     result = fn(*args, **kwargs)
@@ -70,6 +89,10 @@ def percentile(values: list[int], pct: float) -> float:
     return float(ordered[index])
 
 
+def safe_graph_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "graph"
+
+
 def histogram_record(hist, budget):
     mass = mass_cdf(hist, budget)
     return {
@@ -81,15 +104,16 @@ def histogram_record(hist, budget):
     }
 
 
-def query_record(fixture_name, precompute_depth, budget, target, mode, hist, runtime_ms, stats, exact_hist):
+def query_record(graph_name, graph_label, root, precompute_depth, budget, target, mode, hist, runtime_ms, stats, exact_hist):
     exact_mass = mass_cdf(exact_hist, budget)
     result_mass = mass_cdf(hist, budget)
     absolute_error = abs(result_mass - exact_mass)
     relative_error = 0.0 if exact_mass == 0 else absolute_error / exact_mass
     return {
         "record_type": "query",
-        "graph": "tiny_fixture",
-        "fixture": fixture_name,
+        "graph": graph_name,
+        "fixture": graph_label,
+        "root": root,
         "target_node": target,
         "D_pre": precompute_depth,
         "B_search": budget,
@@ -111,15 +135,15 @@ def query_record(fixture_name, precompute_depth, budget, target, mode, hist, run
     }
 
 
-def cache_record(fixture_name, precompute_depth, cache, build_runtime_ms):
+def cache_record(graph_name, graph_label, root, precompute_depth, cache, build_runtime_ms):
     sizes = support_sizes(cache)
     total_mass = sum(sum(hist.values()) for hist in cache.values())
     raw_hist_bytes = sum(histogram_bytes(hist) for hist in cache.values())
     return {
         "record_type": "cache_build",
-        "graph": "tiny_fixture",
-        "fixture": fixture_name,
-        "root": "R",
+        "graph": graph_name,
+        "fixture": graph_label,
+        "root": root,
         "D_pre": precompute_depth,
         "eligible_nodes": len(cache),
         "cached_nodes": len(cache),
@@ -134,20 +158,20 @@ def cache_record(fixture_name, precompute_depth, cache, build_runtime_ms):
     }
 
 
-def run_fixture_benchmark(fixture_name, fixture, depths, budgets):
-    parents = fixture["parents"]
-    targets = fixture["targets"]
+def run_graph_benchmark(graph_name, graph_label, parents, targets, depths, budgets, root):
     records = []
     for precompute_depth in depths:
-        cache, build_runtime_ms = timed_call(build_cache, parents, precompute_depth)
-        records.append(cache_record(fixture_name, precompute_depth, cache, build_runtime_ms))
+        cache, build_runtime_ms = timed_call(build_cache, parents, precompute_depth, root=root)
+        records.append(cache_record(graph_name, graph_label, root, precompute_depth, cache, build_runtime_ms))
         for budget in budgets:
             for target in targets:
                 full_stats = SearchStats()
-                full_hist, full_runtime_ms = timed_call(full_exact_search, target, parents, budget, stats=full_stats)
+                full_hist, full_runtime_ms = timed_call(full_exact_search, target, parents, budget, root=root, stats=full_stats)
                 records.append(
                     query_record(
-                        fixture_name,
+                        graph_name,
+                        graph_label,
+                        root,
                         precompute_depth,
                         budget,
                         target,
@@ -166,11 +190,14 @@ def run_fixture_benchmark(fixture_name, fixture, depths, budgets):
                     parents,
                     budget,
                     cache,
+                    root=root,
                     stats=cached_stats,
                 )
                 records.append(
                     query_record(
-                        fixture_name,
+                        graph_name,
+                        graph_label,
+                        root,
                         precompute_depth,
                         budget,
                         target,
@@ -182,6 +209,32 @@ def run_fixture_benchmark(fixture_name, fixture, depths, budgets):
                     )
                 )
     return records
+
+
+def run_fixture_benchmark(fixture_name, fixture, depths, budgets):
+    return run_graph_benchmark(
+        "tiny_fixture",
+        fixture_name,
+        fixture["parents"],
+        fixture["targets"],
+        depths,
+        budgets,
+        ROOT,
+    )
+
+
+def select_file_targets(parents, root, explicit_targets, targets_file, max_target_depth, target_limit):
+    if explicit_targets:
+        targets = parse_targets(explicit_targets)
+    elif targets_file:
+        targets = load_targets_file(targets_file)
+    else:
+        targets = reachable_nodes_by_parent_distance(parents, root, max_target_depth)
+    if target_limit is not None:
+        targets = targets[:target_limit]
+    if not targets:
+        raise SystemExit("no benchmark targets selected")
+    return targets
 
 
 def summarize(records):
@@ -230,8 +283,9 @@ def summarize(records):
 def write_outputs(records, summary, output_dir, graph_name):
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    jsonl_path = output_dir / f"distribution_cache_benchmark_{graph_name}_{timestamp}.jsonl"
-    summary_path = output_dir / f"distribution_cache_summary_{graph_name}_{timestamp}.md"
+    safe_name = safe_graph_name(graph_name)
+    jsonl_path = output_dir / f"distribution_cache_benchmark_{safe_name}_{timestamp}.jsonl"
+    summary_path = output_dir / f"distribution_cache_summary_{safe_name}_{timestamp}.md"
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -241,27 +295,52 @@ def write_outputs(records, summary, output_dir, graph_name):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixtures", default="all", help="Comma-separated fixture names or 'all'.")
+    parser.add_argument("--fixtures", default="all", help="Comma-separated fixture names or all. Ignored when --edge-file is set.")
+    parser.add_argument("--edge-file", type=Path, help="Optional TSV edge list with child<TAB>parent rows.")
+    parser.add_argument("--graph-name", help="Graph label used in records and output filenames.")
+    parser.add_argument("--root", help="Root node. Defaults to R for fixtures and Category:Articles for edge files.")
+    parser.add_argument("--targets", help="Comma-separated target nodes for edge-file mode.")
+    parser.add_argument("--targets-file", type=Path, help="Optional newline-delimited target list for edge-file mode.")
+    parser.add_argument("--max-target-depth", type=int, help="Select reachable edge-file targets within this parent distance from root.")
+    parser.add_argument("--target-limit", type=int, help="Limit selected edge-file targets after sorting/filtering.")
     parser.add_argument("--precompute-depths", default=",".join(map(str, DEFAULT_DEPTHS)))
     parser.add_argument("--budgets", default=",".join(map(str, DEFAULT_BUDGETS)))
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     parser.add_argument("--fail-on-error", action="store_true", help="Exit nonzero if cached histograms differ.")
     args = parser.parse_args(argv)
 
-    fixture_names = sorted(FIXTURES) if args.fixtures == "all" else [name.strip() for name in args.fixtures.split(",")]
     depths = parse_int_list(args.precompute_depths)
     budgets = parse_int_list(args.budgets)
-
     records = []
-    for fixture_name in fixture_names:
-        if fixture_name not in FIXTURES:
-            raise SystemExit(f"unknown fixture: {fixture_name}")
-        records.extend(run_fixture_benchmark(fixture_name, FIXTURES[fixture_name], depths, budgets))
+
+    if args.edge_file:
+        root = args.root or SIMPLEWIKI_ROOT
+        parents = load_parent_edges_tsv(args.edge_file)
+        graph_name = args.graph_name or args.edge_file.stem
+        targets = select_file_targets(
+            parents,
+            root,
+            args.targets,
+            args.targets_file,
+            args.max_target_depth,
+            args.target_limit,
+        )
+        records.extend(run_graph_benchmark(graph_name, graph_name, parents, targets, depths, budgets, root))
+    else:
+        root = args.root or ROOT
+        if root != ROOT:
+            raise SystemExit("--root is only supported with --edge-file; fixtures use root R")
+        fixture_names = sorted(FIXTURES) if args.fixtures == "all" else [name.strip() for name in args.fixtures.split(",")]
+        graph_name = args.graph_name or "tiny_fixture"
+        for fixture_name in fixture_names:
+            if fixture_name not in FIXTURES:
+                raise SystemExit(f"unknown fixture: {fixture_name}")
+            records.extend(run_fixture_benchmark(fixture_name, FIXTURES[fixture_name], depths, budgets))
 
     summary = summarize(records)
     print(summary, end="")
     if args.output_dir:
-        jsonl_path, summary_path = write_outputs(records, summary, args.output_dir, "tiny_fixture")
+        jsonl_path, summary_path = write_outputs(records, summary, args.output_dir, graph_name)
         print(f"\nwrote {jsonl_path}")
         print(f"wrote {summary_path}")
 

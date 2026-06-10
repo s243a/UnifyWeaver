@@ -191,6 +191,40 @@ def all_nodes(parents, root=ROOT):
     return nodes
 
 
+def reachable_nodes_by_parent_distance(parents, root=ROOT, max_depth=None):
+    distance_memo = {}
+    nodes = []
+    for node in sorted(all_nodes(parents, root)):
+        distance = min_parent_distance(node, parents, root, distance_memo)
+        if distance == math.inf:
+            continue
+        if max_depth is not None and distance > max_depth:
+            continue
+        nodes.append(node)
+    return nodes
+
+
+def load_parent_edges_tsv(path):
+    """Load a child-to-parents mapping from a TSV edge list."""
+    parents = defaultdict(list)
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                raise ValueError(f"{path}:{line_number}: expected child<TAB>parent")
+            child = parts[0].strip()
+            parent = parts[1].strip()
+            if line_number == 1 and child.lower() == "child" and parent.lower() == "parent":
+                continue
+            if not child or not parent:
+                raise ValueError(f"{path}:{line_number}: child and parent must be non-empty")
+            parents[child].append(parent)
+    return {child: sorted(set(ps)) for child, ps in parents.items()}
+
+
 def build_cache(parents, precompute_depth, root=ROOT):
     cache = {}
     distance_memo = {}
