@@ -119,14 +119,79 @@ wam_clojure_lowerable(PI, WamCode, Reason) :-
     forall(member(I, C1), clojure_supported(I)),
     (   is_deterministic_pred_clojure(Instrs)
     ->  Reason = deterministic
+    ;   % T4: every clause is a clean supported deterministic body — lower them
+        % ALL inline (tried in order; immutability gives a free per-clause
+        % restore), so the predicate runs natively instead of stubbing out to
+        % the run-wam interpreter. Otherwise keep the multi_clause_1 stub.
+        clojure_all_clauses_lowerable(Instrs)
+    ->  Reason = multi_clause_n
     ;   Reason = multi_clause_1
     ),
     ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
 
+%% clojure_split_clauses(+Instrs, -Clauses) is semidet.
+%  Split a multi-clause predicate (opens with try_me_else) at the choice-point
+%  separators into per-clause instruction lists (T4 / multi_clause_n).
+clojure_split_clauses([try_me_else(_)|Rest], [Clause|More]) :-
+    clojure_collect_clause(Rest, Clause, After),
+    clojure_split_more(After, More).
+
+clojure_split_more([], []).
+clojure_split_more([retry_me_else(_)|Rest], [Clause|More]) :- !,
+    clojure_collect_clause(Rest, Clause, After),
+    clojure_split_more(After, More).
+clojure_split_more([trust_me|Rest], [Clause|More]) :- !,
+    clojure_collect_clause(Rest, Clause, After),
+    clojure_split_more(After, More).
+
+clojure_collect_clause([], [], []).
+clojure_collect_clause([retry_me_else(L)|Rest], [], [retry_me_else(L)|Rest]) :- !.
+clojure_collect_clause([trust_me|Rest], [], [trust_me|Rest]) :- !.
+clojure_collect_clause([I|Rest], [I|More], After) :-
+    clojure_collect_clause(Rest, More, After).
+
+%% clojure_all_clauses_lowerable(+Instrs) is semidet.
+%  True when EVERY clause is a clean supported deterministic body (no inner
+%  choice point or ITE marker, ends in a terminal) — the T4 condition.
+clojure_all_clauses_lowerable(Instrs0) :-
+    clojure_strip_switch_prefix(Instrs0, Instrs),
+    clojure_split_clauses(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( \+ member(try_me_else(_), Cl),
+             \+ member(cut_ite, Cl),
+             \+ member(jump(_), Cl),
+             % call / execute / call_foreign only set the pc to a sub-predicate
+             % and rely on run-wam to actually execute it; the inline threading
+             % would skip straight past to proceed and wrongly succeed. Keep
+             % such clauses on the multi_clause_1 (run-wam) path.
+             \+ member(call(_, _), Cl),
+             \+ member(execute(_), Cl),
+             \+ member(call_foreign(_, _), Cl),
+             forall(member(I, Cl), clojure_supported(I)),
+             last(Cl, Last), clojure_clause_terminal(Last) )).
+
+clojure_clause_terminal(proceed).
+clojure_clause_terminal(fail).
+
 clause1_instrs([], []).
+% Strip leading first-argument indexing instructions (switch_on_*) — they are
+% dispatch helpers ahead of try_me_else, not part of any clause body.
+clause1_instrs([switch_on_constant(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_constant_a2(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_structure(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
+clause1_instrs([switch_on_term(_)|Rest], C1) :- !, clause1_instrs(Rest, C1).
 clause1_instrs([try_me_else(_)|Rest], C1) :- !,
     take_to_terminal(Rest, C1).
 clause1_instrs(Instrs, Instrs).
+
+%% clojure_strip_switch_prefix(+Instrs, -Stripped) — drop a leading switch_on_*
+%  indexing prefix so the try_me_else/retry_me_else/trust_me chain is exposed.
+clojure_strip_switch_prefix([switch_on_constant(_)|Rest], S) :- !, clojure_strip_switch_prefix(Rest, S).
+clojure_strip_switch_prefix([switch_on_constant_a2(_)|Rest], S) :- !, clojure_strip_switch_prefix(Rest, S).
+clojure_strip_switch_prefix([switch_on_structure(_)|Rest], S) :- !, clojure_strip_switch_prefix(Rest, S).
+clojure_strip_switch_prefix([switch_on_term(_)|Rest], S) :- !, clojure_strip_switch_prefix(Rest, S).
+clojure_strip_switch_prefix(L, L).
 
 take_to_terminal([], []).
 take_to_terminal([proceed|_], [proceed]) :- !.
@@ -209,6 +274,11 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     (   is_deterministic_pred_clojure(Instrs)
     ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs),
         with_output_to(string(Body), emit_instrs(C1Instrs, "  "))
+    ;   clojure_all_clauses_lowerable(Instrs)
+    ->  % T4: lower every clause inline; try them in order on the same input
+        % state (immutable, so a free per-clause restore), taking the first
+        % whose threaded body reaches :succeeded. No run-wam interpretation.
+        with_output_to(string(Body), emit_multi_clause_n_clj(Instrs, "  "))
     ;   clojure_structured_clause1(WamCode, Structured)
     ->  % Single-clause if-then-else / negation / once: emit native
         % branching instead of the no-op stub (which delegated to run-wam).
@@ -222,6 +292,32 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
 (defn ~w [state]
 ~w)
 ', [FuncName, Pred, Arity, FuncName, Body]).
+
+%% emit_multi_clause_n_clj(+Instrs, +Indent)
+%  T4: emit every clause inline as a threaded (let [s0 state ...] sN) body and
+%  try them in order on the SAME input `state`, taking the first whose body
+%  reaches :succeeded. Immutability makes each clause start from the unchanged
+%  `state`, so no restore is needed; run-wam then short-circuits on the
+%  returned :succeeded / :failed status without interpreting any bytecode.
+emit_multi_clause_n_clj(Instrs0, Indent) :-
+    clojure_strip_switch_prefix(Instrs0, Instrs),
+    clojure_split_clauses(Instrs, Clauses),
+    format("~w;; T4 all-clauses inline (generated): try each clause on the same input~n", [Indent]),
+    format("~w;; state; first :succeeded wins (immutable state = free per-clause restore).~n", [Indent]),
+    emit_clj_cascade(Clauses, 1, Indent).
+
+emit_clj_cascade([Clause], _N, Indent) :- !,
+    emit_instrs(Clause, Indent).
+emit_clj_cascade([Clause|Rest], N, Indent) :-
+    N1 is N + 1,
+    atom_concat(Indent, "      ", Indent2),
+    format("~w(let [c~w~n", [Indent, N]),
+    emit_instrs(Clause, Indent2),
+    format("~w     ]~n", [Indent]),
+    format("~w  (if (= :succeeded (:status c~w))~n", [Indent, N]),
+    format("~w    c~w~n", [Indent, N]),
+    emit_clj_cascade(Rest, N1, Indent2),
+    format("~w))~n", [Indent]).
 
 emit_instrs([], Indent) :-
     format("~wstate~n", [Indent]).
