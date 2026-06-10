@@ -120,13 +120,37 @@ Conclusions (validated):
 
 ### Porting to other targets
 
-The gate + front-end are reusable; only the back-end emit differs. **String-atom
-targets** (cpp) get the same string-`match` decision tree. **Int-interned-atom
-targets** (go, llvm, haskell, scala, lua) get a *true* single-stage jump table on
-the interned id — a bigger win and simpler emit — but each must be re-benchmarked
-because, on ints, the compiler more readily converts even the T5 if-cascade into
-a switch (the "lost to the compiler" risk is highest there). Gate on clause
-count and verify per target.
+The gate + front-end are reusable; only the back-end emit differs.
+
+**String-atom targets (cpp — now done).** C++ has no native string `switch`, so
+the T6 back-end uses a `static std::unordered_map<std::string,int>` (built once)
+looked up by the deref'd first-arg atom via a no-copy `match_reg_atom_str`
+(returns a pointer to the cell's `std::string`, no allocation), then a `switch`
+(jump table) on the index. Measured on the *generated* code (g++ -O2, 5M
+dispatches, keys rotated over the whole key space):
+
+| N clauses | T5 cascade | T6 map+switch | speedup |
+|---:|---:|---:|:-:|
+| 4 (gate declines → T5) | 355 ms | 343 ms | 1.0× (tie) |
+| 8 (gate threshold) | 499 ms | 237 ms | **2.1×** |
+| 16 | 707 ms | 259 ms | **2.7×** |
+| 64 | 3096 ms | 266 ms | **11.6×** |
+| 256 | 12310 ms | 302 ms | **40.8×** |
+
+The win is *larger* than Rust's: the C++ T5 cascade is a fully linear chain of
+`match_reg_atom` calls (deref + `std::string` compare per guard, O(N)), while the
+map lookup is ~flat — so at 256 clauses T6 is ~41×. Same gate (default 8), same
+tie at few clauses. `match_reg_atom_str` + the gated emit are in
+`wam_cpp_target.pl` / `wam_cpp_lowered_emitter.pl`; `test_wam_cpp_lowered_t6`
+covers the gate and exec parity.
+
+**Int-interned-atom targets** (go, llvm, haskell, scala, lua) would get a *true*
+single-stage jump table on the interned id — simpler emit — but each must be
+re-benchmarked because, on ints, the compiler more readily converts even the T5
+if-cascade into a switch (the "lost to the compiler" risk is highest there; e.g.
+LLVM's SimplifyCFG turns an `icmp`/`br` chain on one value into a `switch`
+already, so T6 may compile to identical code and show no win). Gate on clause
+count and verify per target before shipping.
 
 ## A second bottleneck (noted for later): T4 `lo_restore_clause`
 
