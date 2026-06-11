@@ -27,7 +27,7 @@
 :- use_module('../src/unifyweaver/targets/wam_python_target').
 :- use_module('../src/unifyweaver/targets/wam_python_lowered_emitter').
 
-:- dynamic user:color/1, user:pq/1, user:classify/2.
+:- dynamic user:color/1, user:pq/1, user:classify/2, user:foo/1, user:bar/1.
 
 % facts (first-argument indexed)
 user:color(red).
@@ -40,8 +40,16 @@ user:pq(X) :- X = b.
 user:classify(0, zero).
 user:classify(N, pos) :- N > 0.
 user:classify(_, neg).
+% T3-FALLBACK predicate: clause 2 ends in `execute bar/1` (a tail call, not a
+% proceed), so T4 (py_multi_clause_n) DECLINES and the predicate genuinely
+% routes through T3 — clause 1 lowered to a fast path, clause 2 kept as
+% bytecode. color/pq/classify above now route through T4 (all clauses lowered);
+% foo/1 is what keeps the T3 path exercised.
+user:foo(a).
+user:foo(X) :- user:bar(X).
+user:bar(b).
 
-preds([user:color/1, user:pq/1, user:classify/2]).
+preds([user:color/1, user:pq/1, user:classify/2, user:foo/1, user:bar/1]).
 
 python3_available :-
     catch(( process_create(path(python3), ['--version'],
@@ -51,28 +59,36 @@ python3_available :-
 :- begin_tests(wam_python_lowered_t3, [condition(python3_available)]).
 
 % Each multi-clause predicate must be recognised as a T3 clause-1 candidate,
-% with clause 1 being a clean deterministic slice.
+% with clause 1 being a clean deterministic slice. (color/pq/classify are also
+% T4-eligible and route through T4 at compile time; they remain valid T3
+% candidates. foo/1 is the genuine T3 case: T4 declines it.)
 test(gate_picks_multi_clause_1) :-
-    forall(member(_:PI, [user:color/1, user:pq/1, user:classify/2]),
+    forall(member(_:PI, [user:color/1, user:pq/1, user:classify/2, user:foo/1]),
            ( wam_target:compile_predicate_to_wam(PI, [], W),
              ( py_multi_clause_1(W, C1)
              -> assertion(\+ member(try_me_else(_), C1)),
                 assertion(last(C1, proceed))
-             ;  throw(not_multi_clause_1(PI)) ) )).
+             ;  throw(not_multi_clause_1(PI)) ) )),
+    % foo/1 has a clause (clause 2 ends in execute) that T4 cannot lower, so it
+    % must fall back to T3 rather than being claimed by T4.
+    wam_target:compile_predicate_to_wam(foo/1, [], Wf),
+    assertion(\+ py_multi_clause_n(Wf, _)).
 
-% The emitted code: a lowered pred_* function, a call_lowered into clause 1,
-% and the clause-2+ bytecode retained (so the interpreter can run them).
+% The emitted T3 code (foo/1, which T4 declines): a single lowered clause-1
+% pred_* function, a call_lowered into clause 1, and the clause-2 bytecode
+% retained (so the interpreter runs it on backtracking).
 test(emits_call_lowered_and_retains_later_clauses) :-
-    wam_target:compile_predicate_to_wam(color/1, [], W),
-    wam_python_target:compile_lowered_wam_predicate_to_python(color/1, W, [emit_mode(lowered)], Code),
-    assertion(sub_string(Code, _, _, _, "def pred_color_1(state)")),
-    assertion(sub_string(Code, _, _, _, '("call_lowered", pred_color_1, 1)')),
+    wam_target:compile_predicate_to_wam(foo/1, [], W),
+    wam_python_target:compile_lowered_wam_predicate_to_python(foo/1, W, [emit_mode(lowered)], Code),
+    assertion(sub_string(Code, _, _, _, "def pred_foo_1(state)")),
+    assertion(sub_string(Code, _, _, _, '("call_lowered", pred_foo_1, 1)')),
     assertion(sub_string(Code, _, _, _, "try_me_else")),
-    % clause 2 / clause 3 bytecode retained (green & blue still matched in interp)
-    assertion(sub_string(Code, _, _, _, '("get_constant", Atom("green"), A1)')),
-    assertion(sub_string(Code, _, _, _, '("get_constant", Atom("blue"), A1)')),
-    % clause-1 body collapsed: red is matched by the lowered fn, not the bytecode
-    assertion(\+ sub_string(Code, _, _, _, '("get_constant", Atom("red")')).
+    % clause 2 bytecode retained (the tail call into bar/1 runs in the interpreter)
+    assertion(sub_string(Code, _, _, _, "bar/1")),
+    % clause-1 body collapsed: 'a' is matched by the lowered fn, not the bytecode
+    assertion(\+ sub_string(Code, _, _, _, '("get_constant", Atom("a")')),
+    % single clause-1 function, not the per-clause T4 functions
+    assertion(\+ sub_string(Code, _, _, _, "def pred_foo_1_c1(state)")).
 
 % Correctness through the interpreter (lowered mode): clause-1 fast path,
 % clause-2 fallback, clause-3 fallback, and no-match.
@@ -107,7 +123,11 @@ battery([
     'classify/2'-[reg(1, 'I(5)'), reg(2, 'A("pos")')]-true,
     'classify/2'-[reg(1, 'I(5)'), reg(2, 'A("neg")')]-true,
     'classify/2'-[reg(1, 'I(-2)'), reg(2, 'A("neg")')]-true,
-    'classify/2'-[reg(1, 'I(-2)'), reg(2, 'A("pos")')]-false
+    'classify/2'-[reg(1, 'I(-2)'), reg(2, 'A("pos")')]-false,
+    % foo/1 routes through T3 (clause 2 = execute bar/1 declines T4):
+    'foo/1'-[reg(1, 'A("a")')]-true,    % clause 1 lowered fast path
+    'foo/1'-[reg(1, 'A("b")')]-true,    % clause 1 fails -> clause 2 bytecode -> bar(b)
+    'foo/1'-[reg(1, 'A("z")')]-false
 ]).
 
 assert_expected(Results) :-

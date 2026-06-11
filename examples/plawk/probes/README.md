@@ -74,6 +74,6 @@ swipl -q -s examples/plawk/probes/generate_reader_probe.pl -t halt
 Result: emits `examples/plawk/generated/plawk_reader_probe.ll` and verifies
 with `llvm-as`. This probe uses the hybrid LLVM WAM builtins
 `stream_open/2`, `read_line/2`, and `stream_close/1`. The builtins are general
-runtime primitives, not PLAWK-specific code: handles are malloc-backed buffered
-readers, `read_line/2` unifies `end_of_file` at EOF, and line atoms exclude the
-record newline.
+runtime primitives, not PLAWK-specific code: handles are numeric IDs into a
+target-owned buffered-reader table, `read_line/2` unifies `end_of_file` at EOF,
+and line atoms exclude the record newline.
