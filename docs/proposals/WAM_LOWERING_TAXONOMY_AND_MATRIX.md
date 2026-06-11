@@ -104,10 +104,10 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | `~` gated | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
@@ -216,11 +216,11 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   argument-register + trail snapshot/restore between attempts, first-solution).
   So **every multi-clause column (T3/T4/T5) is now closed** across the targets
   that support each shape — no plain ✗ remains in T3/T4/T5.
-- **T6 (first-arg indexing)** — **Rust, C++, Go, F#, Haskell, Scala and Lua**
-  now have a *gated* T6 (`~`): all reuse the T5 `wam_clause_chain` front-end, but
-  when the discriminators are all atoms and there are ≥ `t6_min_clauses` of them
-  (default 8) the back-end replaces the if-cascade with a native indexed
-  dispatch. Two families:
+- **T6 (first-arg indexing)** — **Rust, C++, Go, F#, Haskell, Scala, Lua,
+  Python and WAT** now have a *gated* T6 (`~`); **LLVM declines on benchmark
+  evidence**. All reuse the T5 `wam_clause_chain` / first-arg-index front-end,
+  but when there are ≥ `t6_min_clauses` clauses (default 8) the back-end
+  replaces the if-cascade with a native indexed dispatch. Three families:
   - **Atom-keyed** (atoms compared as *strings* at dispatch, so a string switch
     is a real win the host compiler does not already perform): Rust a two-stage
     `match` (string switch → integer jump table); C++ a static
@@ -247,12 +247,30 @@ Reading down the columns (after the T5 and T4 sweeps landed):
     an int-equality if-chain into a `switch` (the if-chain and an explicit switch
     compile to identical assembly), so an explicit T6 there is redundant — the
     one genuine "lost to the compiler" case.
+  - **VM-dispatched** (the lowered path keeps a bytecode/data-table dispatch a
+    runtime instruction services, rather than a host `switch`): **Python** turns
+    the compiler's dropped first-arg index back into a real
+    `("switch_on_constant", {key: label})` instruction (the runtime already
+    jumps O(1) on it for a bound first arg, skips to the try/retry chain for an
+    unbound one, fails for a no-match) — emitter-only, with a fresh clause-1 body
+    label so every key resolves; benchmarked 1.8×/9.3×/35.6× (interpreted dict
+    vs linear `isinstance`+`name==`). **WAT** atoms are sparse i64 hashes (no
+    dense `br_table`), so its lowered function does a **binary search** on the
+    sorted clause hashes (each leaf still runs `do_get_constant` for
+    collision/tag safety); benchmarked in V8 1.16×/1.79×/6.72× — V8 does not
+    flatten the linear i64 chain. Both gated, both in
+    `docs/reports/wam_python_wat_t6_perf.md`.
 
   This is the natural next advancement after T5 (same clause-head analysis,
-  switch back-end): shared front-end, per-target back-end. The remaining targets
-  still drop the `switch_on_*` prefix and try clauses in order. The compiler
-  flattens the cascade for few clauses, hence the gate. So every T5 target now
-  either has a gated T6 or a measured reason not to.
+  switch back-end): shared front-end, per-target back-end. The compiler flattens
+  the cascade for few clauses, hence the gate. **The T6 column is now closed
+  out: every T5 target has a gated T6, except LLVM which declines on a measured
+  "the optimiser already does it" basis.** (A pre-existing, orthogonal bug
+  surfaced while testing Python T6: the T4 `emit_multi_clause_n_python` drops the
+  operand-setup instructions of an arithmetic rule body — e.g. `R is 1+0` lowers
+  to `+( , )` with unfilled args — so arithmetic-rule clauses give wrong results
+  under `emit_mode(lowered)`. It is independent of T6 dispatch and tracked
+  separately.)
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
@@ -326,12 +344,13 @@ Score each candidate gap on four axes, then sequence:
    could layer in front later). Remaining structurer-column hole: none — only
    **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
-   `switch` back-end instead of an `->` cascade. **DONE / closed out:** gated
-   T6 ships for every T5 target whose host dispatch benefits — the atom-keyed
-   set (rust/cpp/fsharp/go, string switch) and the int-interned set that wins
-   (haskell/scala/lua). **llvm declines** on benchmark evidence (its `-O2`
-   already converts the int if-chain to a switch). See
-   `docs/reports/wam_int_interned_t6_perf.md`.
+   `switch` back-end instead of an `->` cascade. **DONE / closed out for every
+   T5 target:** the atom-keyed set (rust/cpp/fsharp/go, string switch), the
+   int-interned set that wins (haskell/scala/lua), and the VM-dispatched set
+   (python's runtime `switch_on_constant`; wat's binary search on sparse atom
+   hashes). **llvm declines** on benchmark evidence (its `-O2` already converts
+   the int if-chain to a switch). See `docs/reports/wam_int_interned_t6_perf.md`
+   and `docs/reports/wam_python_wat_t6_perf.md`.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
 
