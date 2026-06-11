@@ -130,7 +130,52 @@ Var(K_n) = n * Var(Y)
 This is the more general form we should measure for enwiki. The binomial model
 is the special case where `Y_i` is Bernoulli.
 
-## 5. Gamma-style continuous approximation
+## 5. FFT convolution route
+
+If the planner needs the compound distribution rather than only its first two
+moments, the convolution can be evaluated in the frequency domain. For discrete
+probability vectors:
+
+```text
+P(K_n) = P(Y_1) * P(Y_2) * ... * P(Y_n)
+FFT(P(K_n)) = FFT(P(Y_1)) * FFT(P(Y_2)) * ... * FFT(P(Y_n))
+```
+
+where `*` on the first line is convolution and `*` on the second line is
+pointwise multiplication.
+
+If the per-layer excess-parent distribution is stationary inside a bucket, this
+becomes:
+
+```text
+P(K_n) = P(Y) convolved with itself n times
+FFT(P(K_n)) = FFT(P(Y))^n
+```
+
+For non-stationary buckets, the planner can multiply one transformed vector per
+root-distance layer:
+
+```text
+FFT(P(K_n)) = product_i FFT(P(Y_i))
+```
+
+Implementation notes:
+
+- zero-pad to at least the linear-convolution support length before applying the
+  FFT, otherwise circular convolution will wrap tail mass into low bins;
+- use direct convolution for tiny supports, since it is simpler and often faster;
+- use FFT convolution when support is wide, many layers are composed, or the same
+  distribution is repeatedly convolved;
+- after inverse FFT, clamp small negative numerical noise to zero and renormalise
+  if the result is used as a probability distribution;
+- keep exact integer or rational convolution for tiny validation fixtures.
+
+The FFT route is an implementation strategy for the compound model, not a claim
+about the final closed-form family. It should be validated against exact
+histograms on SimpleWiki and sampled enwiki subgraphs before being used for
+policy decisions.
+
+## 6. Gamma-style continuous approximation
 
 For larger branching, the discrete convolution may become expensive or too noisy
 to store directly. A continuous approximation can be useful as a planning model.
@@ -158,7 +203,7 @@ distributed. It is a candidate approximation for the high-branching regime when
 the per-layer branching cost is positive, moderately homogeneous, and repeatedly
 convolved.
 
-## 6. Histogram support versus path multiplicity
+## 7. Histogram support versus path multiplicity
 
 The main risk is mixing up two different growth processes:
 
@@ -182,7 +227,7 @@ support_width or support_cardinality
 path_mass or path_multiplicity_pressure
 ```
 
-## 7. Planner consequences
+## 8. Planner consequences
 
 The exact-histogram policy should combine three signals:
 
@@ -214,7 +259,7 @@ topical/admin filter. High `E[p^2]/E[p]`, wide support intervals, or high
 observed `max_p` should push the planner toward scalar bounds, scoped cached
 boundaries, or fitted/compound approximations.
 
-## 8. Validation plan
+## 9. Validation plan
 
 The next benchmark additions should measure:
 
@@ -223,6 +268,8 @@ parent_degree_distribution by L_min bucket
 excess_parent_distribution where Y = p - 1
 empirical convolution of Y for small n
 binomial approximation error when max_p <= 2 or 3
+direct convolution versus FFT convolution parity over the same empirical Y
+FFT zero-padding and numerical-noise error bounds for wider supports
 Gamma approximation error when branching is larger and positive
 correlation between support_width and parent branching moments
 correlation between path_mass and b_p^n
