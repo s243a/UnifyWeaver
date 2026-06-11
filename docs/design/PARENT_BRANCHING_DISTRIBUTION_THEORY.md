@@ -359,6 +359,11 @@ The next benchmark additions should measure:
 parent_degree_distribution by L_min bucket
 excess_parent_distribution where Y = p - 1
 empirical convolution of Y for small n
+depth-conditioned prior distributions from the size-biased excess-parent law
+expected support width and tail mass as a function of root-distance horizon
+exact path-length histograms versus fitted binomial vectors
+exact path-length histograms versus shifted-Gamma-style vectors
+accuracy/cost tradeoff between binomial and Gamma approximations
 binomial approximation error when max_p <= 2 or 3
 direct convolution versus FFT convolution parity over the same empirical Y
 FFT zero-padding and numerical-noise error bounds for wider supports
@@ -374,3 +379,17 @@ correlation between path_mass and b_p^n
 The pass/fail criterion is functional, not aesthetic: an approximation is useful
 only if it predicts the policy decision made by exact histograms on SimpleWiki
 and small enwiki samples.
+
+`scripts/distribution_fit_comparison.py` is the first executable version of
+that comparison. It intentionally separates two related ideas. A realized
+distribution fit approximates the statistics of a histogram that was actually
+computed for a node. A depth-conditioned prior distribution is a Bayesian prior:
+a forecast based on a root-distance horizon and the size-biased excess-parent
+law before observing the node's exact histogram. This is the object used to
+estimate whether future exact histograms are likely to be cheap enough to store.
+
+The planner should use the prior distribution for admission thresholds such
+as "carry exact histograms to depth `d` while the prior effective support is
+narrow." The realized fit is still needed as validation: if binomial or Gamma
+approximations do not match exact histograms on sampled nodes, then the prior
+depth policy is using the wrong family even if its mean looks plausible.

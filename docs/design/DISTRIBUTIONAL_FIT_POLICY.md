@@ -436,6 +436,16 @@ The next implementation-facing work is a parity harness:
 
 The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
 
+The first approximation harness is `scripts/distribution_fit_comparison.py`.
+It keeps two concepts separate:
+
+- realized distribution fits compare binomial and shifted-Gamma-style vectors
+  against exact histograms for already selected nodes;
+- depth-conditioned prior distributions use the size-biased excess-parent
+  distribution to estimate whether histograms at future depths are likely to
+  stay narrow enough to materialize cheaply before observing exact node
+  histograms.
+
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;
 3. fitted truncated-tail representation over the same nodes;
