@@ -1371,8 +1371,7 @@ WamRuntime$step <- function(program, state, instr) {
       # Lowered fast path (kernel / fact-table) wins over the WAM
       # array. The lowered fn pushes any iter CPs it needs and
       # returns TRUE/FALSE, so we just advance PC on success.
-      if (!is.null(program$lowered_dispatch) &&
-          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+      if (WamRuntime$lowered_path_ok(program, key)) {
         fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
         ok <- isTRUE(fn(program, state))
         if (!ok) return(FALSE)
@@ -1405,8 +1404,7 @@ WamRuntime$step <- function(program, state, instr) {
       # Lowered fast path (kernel / fact-table) wins over the WAM
       # array. Tail-call: hand control back to the caller's CP via
       # the same path the dynamic-store branch uses on success.
-      if (!is.null(program$lowered_dispatch) &&
-          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+      if (WamRuntime$lowered_path_ok(program, key)) {
         fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
         ok <- isTRUE(fn(program, state))
         if (!ok) return(FALSE)
@@ -4078,13 +4076,27 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
   WamRuntime$dispatch_call(program, state, pred, arity)
 }
 
+# M152: a lowered fast path (kernel / fact-table / multi_clause_n)
+# returns TRUE/FALSE definitively and never consults the dynamic
+# clause store -- so a predicate that was lowered at codegen AND
+# later receives assertz/1 clauses at runtime would have those
+# clauses silently shadowed. Skip the fast path the moment dynamic
+# clauses exist for the key; the interpreter path unions compiled
+# and dynamic clauses correctly.
+WamRuntime$lowered_path_ok <- function(program, key) {
+  if (is.null(program$lowered_dispatch)) return(FALSE)
+  if (!exists(key, envir = program$lowered_dispatch, inherits = FALSE)) return(FALSE)
+  if (!is.null(program$dynamic) &&
+      exists(key, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+  TRUE
+}
+
 WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   key <- paste0(pred, "/", arity)
   # Lowered fast path (kernel / fact-table) wins over the WAM
   # array; the lowered fn manages its own iter CPs and returns
   # TRUE/FALSE.
-  if (!is.null(program$lowered_dispatch) &&
-      exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+  if (WamRuntime$lowered_path_ok(program, key)) {
     fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
     return(isTRUE(fn(program, state)))
   }
