@@ -207,7 +207,7 @@ lower_predicate_to_haskell(PI, WamCode, Opts, lowered(PredName, FuncName, Code))
     offset_pcs(PCInstrs, Offset, GlobalPCInstrs),
     offset_labels(LabelMap, Offset, GlobalLabelMap),
     with_output_to(string(Code),
-        emit_func(FuncName, GlobalPCInstrs, GlobalLabelMap, ForeignPreds)).
+        emit_func(FuncName, GlobalPCInstrs, GlobalLabelMap, ForeignPreds, Opts)).
 
 offset_pcs([], _, []).
 offset_pcs([pc(PC, I)|Rest], Off, [pc(GPC, I)|Rest2]) :-
@@ -219,13 +219,13 @@ offset_labels([L-PC|Rest], Off, [L-GPC|Rest2]) :-
     GPC is PC + Off,
     offset_labels(Rest, Off, Rest2).
 
-emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
+emit_func(FN, PCInstrs, LabelMap, ForeignPreds, Opts) :-
     format("-- | Lowered: ~w~n", [FN]),
     format("~w :: WamContext -> WamState -> Maybe WamState~n", [FN]),
     % Skip switch_on_constant* prefixes before deciding multi/single-clause.
     strip_switch_prefixes(PCInstrs, PCInstrs1),
-    (   emit_func_t5(FN, PCInstrs1, LabelMap, ForeignPreds)
-    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    (   emit_func_t5(FN, PCInstrs1, LabelMap, ForeignPreds, Opts)
+    ->  true   % T5/T6 first-argument dispatch (all clauses lowered natively)
     ;   emit_func_t4(FN, PCInstrs1, LabelMap, ForeignPreds)
     ->  true   % T4 all-clauses inline (every clause native, no interpreter hop)
     ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
@@ -282,7 +282,7 @@ take_to_proceed_pc([H|T], [H|R]) :- take_to_proceed_pc(T, R).
 %  predicate is not a distinct-first-argument constant chain. All checks run
 %  before any output so a failure leaves the stream untouched for the caller's
 %  fallback emission.
-emit_func_t5(FN, PCInstrs1, LabelMap, FP) :-
+emit_func_t5(FN, PCInstrs1, LabelMap, FP, Opts) :-
     PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
     maplist(t5_strip_pc, PCInstrs1, PlainInstrs),
     clause_chain(PlainInstrs, chain(_Guards)),
@@ -290,16 +290,32 @@ emit_func_t5(FN, PCInstrs1, LabelMap, FP) :-
     Slices = [_, _ | _],
     forall(( member(Sl, Slices), member(pc(_, I), Sl) ), supported(I)),
     maplist(t5_slice_discriminator, Slices, Discrs),
+    maplist(t5_slice_discr_token, Slices, Tokens),
     % All checks passed — emit.
     atom_string(L2Atom, L2Str),
     ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
     format("~w !ctx s_init =~n", [FN]),
-    format("  case derefVar (wsBindings s_init) <$> IM.lookup 1 (wsRegs s_init) of~n"),
-    format("    Just (Unbound _) -> t5fallback~n"),
-    format("    Just v~n"),
-    t5_emit_dispatch_guards(Discrs, 1),
-    format("      | otherwise -> Nothing~n"),
-    format("    _ -> t5fallback~n"),
+    % T6 first-argument indexing: when the discriminators are all atoms and
+    % there are enough of them, dispatch with a `case` on the interned atom id
+    % (GHC compiles a dense Int case to a jump table) instead of the linear
+    % `v == Atom n` guard chain. Gated like Rust/C++/F#/Go.
+    (   hs_t6_applicable(Tokens, Opts)
+    ->  format("  -- T6 first-argument indexing (case on interned atom id)~n"),
+        format("  case derefVar (wsBindings s_init) <$> IM.lookup 1 (wsRegs s_init) of~n"),
+        format("    Just (Unbound _) -> t5fallback~n"),
+        format("    Just (Atom t6i) ->~n"),
+        format("      case t6i of~n"),
+        hs_emit_t6_arms(Tokens, 1),
+        format("        _ -> Nothing~n"),
+        format("    Just _ -> Nothing~n"),
+        format("    _ -> t5fallback~n")
+    ;   format("  case derefVar (wsBindings s_init) <$> IM.lookup 1 (wsRegs s_init) of~n"),
+        format("    Just (Unbound _) -> t5fallback~n"),
+        format("    Just v~n"),
+        t5_emit_dispatch_guards(Discrs, 1),
+        format("      | otherwise -> Nothing~n"),
+        format("    _ -> t5fallback~n")
+    ),
     format("  where~n"),
     % Interpreter fallback for the unbound/unset first-argument case: push a
     % choice point at clause 2's label, try clause 1 natively, and on failure
@@ -357,6 +373,37 @@ t5_emit_dispatch_guards([HC|Rest], N) :-
     format("      | v == (~w) -> t5clause_~w s_init~n", [HC, N]),
     N1 is N + 1,
     t5_emit_dispatch_guards(Rest, N1).
+
+%% t5_slice_discr_token(+Slice, -VStr) — the raw first-arg constant token.
+t5_slice_discr_token([pc(_, get_constant(VStr, _A1))|_], VStr).
+
+%% hs_t6_applicable(+Tokens, +Opts) is semidet.
+%  Every discriminator is an atom (val_hs renders it `Atom <id>`) and there are
+%  at least t6_min_clauses of them (default 8).
+hs_t6_applicable(Tokens, Opts) :-
+    hs_t6_min_clauses(Opts, Min),
+    length(Tokens, N), N >= Min,
+    forall(member(T, Tokens), hs_atom_id(T, _)).
+
+hs_t6_min_clauses(Opts, N) :-
+    ( member(t6_min_clauses(N), Opts) -> true ; N = 8 ).
+
+%% hs_atom_id(+VStr, -Id) is semidet.
+%  The interned integer atom id, recovered from val_hs's `Atom <id>` rendering
+%  (succeeds only for atoms — integers/floats render Integer/Float). Ties the
+%  T6 case key to the exact same id the T5 guard would compare against.
+hs_atom_id(VStr, Id) :-
+    val_hs(VStr, Hs),
+    atom_concat('Atom ', IdAtom, Hs),
+    atom_number(IdAtom, Id).
+
+%% hs_emit_t6_arms(+Tokens, +Index) — `<id> -> t5clause_N s_init` per clause.
+hs_emit_t6_arms([], _).
+hs_emit_t6_arms([T|Rest], N) :-
+    hs_atom_id(T, Id),
+    format("        ~w -> t5clause_~w s_init~n", [Id, N]),
+    N1 is N + 1,
+    hs_emit_t6_arms(Rest, N1).
 
 %% t5_emit_clause_defs(+Slices, +Index, +LabelMap, +FP)
 t5_emit_clause_defs([], _, _, _).
