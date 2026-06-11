@@ -107,7 +107,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | ✓ T2a | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
@@ -159,15 +159,19 @@ Verification notes:
 - elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
   R's closure-per-clause shape — counted ✓ but architecturally distinct.
 - **T4** (multi_clause_n) is now implemented across the hybrid targets:
-  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua (plus r and
-  elixir's prior CP-model versions). Every clause is lowered inline and tried
-  in order; the interpreter is never entered for the predicate's own clause
-  dispatch. Two families:
-  - **imperative** (scala/rust/cpp/go/lua/llvm): snapshot the registers +
+  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua, wat (plus r and
+  elixir's prior CP-model versions; python's `~` hybrid). Every clause is
+  lowered inline and tried in order; the interpreter is never entered for the
+  predicate's own clause dispatch. Two families:
+  - **imperative** (scala/rust/cpp/go/lua/llvm/wat): snapshot the registers +
     trail at entry, restore between clause attempts (e.g. `loRestoreClause`,
-    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR). These runtimes
-    take a predicate's first solution (deterministic-prefix), so — unlike
-    R/elixir — no retry/iter choice point is needed.
+    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR; wat snapshots each
+    argument-register cell + the trail top into locals and `val_store`s them
+    back between per-clause blocks). These runtimes take a predicate's first
+    solution (deterministic-prefix), so — unlike R/elixir — no retry/iter
+    choice point is needed. (wat was unblocked here by the unify
+    scalar-propagation fix, which a clause body threading a head variable into a
+    goal would otherwise hit.)
   - **functional** (haskell/fsharp): immutability gives a free per-clause
     restore — each clause runs against the unchanged input state, chained
     with `mplus` / `Option.orElseWith`; no runtime change.
@@ -208,8 +212,10 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   first-arg dispatch (T4 only); python now has T3, T4 (`~` hybrid: native
   clause bodies over a retained bytecode dispatch scaffold, to preserve its
   backtracking-runtime parity) and T5 `if/elif/else`; wat now has T5
-  (first-arg clause-chain dispatch) and still lacks T4. So T5 is ✓ for every
-  target with distinct-first-arg dispatch, and T4 ✗ remains only for wat.
+  (first-arg clause-chain dispatch) AND T4 (all clauses inline with
+  argument-register + trail snapshot/restore between attempts, first-solution).
+  So **every multi-clause column (T3/T4/T5) is now closed** across the targets
+  that support each shape — no plain ✗ remains in T3/T4/T5.
 - **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
   both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
   are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the

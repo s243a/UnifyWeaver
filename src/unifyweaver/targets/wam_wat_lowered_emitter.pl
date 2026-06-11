@@ -33,6 +33,14 @@ wam_wat_lowerable(_PI, WamCode, Reason) :-
         % try/retry/trust chain.
         wat_clause_chain_lowerable(Instrs, _Guards)
     ->  Reason = clause_chain
+    ;   % T4: multi-clause predicate (not first-arg-discriminable, so clause_chain
+        % declined) whose EVERY clause is deterministic + supported. Lower all
+        % clauses inline; between attempts snapshot/restore the argument
+        % registers + trail (WAT's lowered model is first-solution — the public
+        % entry replays the interpreter on failure). Tried before multi_clause_1
+        % (which lowers only clause 1).
+        wat_multi_clause_n_lowerable(Instrs, _Clauses)
+    ->  Reason = multi_clause_n
     ;   is_deterministic_pred_wat(C1),
         forall(member(I, C1), wat_supported(I))
     ->  ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause )
@@ -71,6 +79,36 @@ strip_switch_prefix_wat([I|Rest], Out) :-
     sub_atom(F, 0, _, _, switch), !,
     strip_switch_prefix_wat(Rest, Out).
 strip_switch_prefix_wat(Instrs, Instrs).
+
+%% wat_multi_clause_n_lowerable(+Instrs, -Clauses) is semidet.
+%  T4 gate: split the predicate's try/retry/trust chain into per-clause
+%  instruction slices (each ending in proceed) and require at least two clauses,
+%  every one deterministic and fully supported. ITE predicates are declined
+%  (their clause slices contain cut_ite/jump, not in wat_supported/1); single
+%  clauses fall through (no predicate-level try_me_else).
+wat_multi_clause_n_lowerable(Instrs, Clauses) :-
+    wat_split_clauses_n(Instrs, Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( is_deterministic_pred_wat(Cl),
+             forall(member(I, Cl), wat_supported(I)) )).
+
+%% wat_split_clauses_n(+Instrs, -Clauses)
+%  Strip the switch prefix and the predicate-level try_me_else, then cut the
+%  remaining stream into clauses at each retry_me_else / trust_me boundary. Each
+%  clause keeps its trailing proceed.
+wat_split_clauses_n(Instrs0, Clauses) :-
+    strip_switch_prefix_wat(Instrs0, [try_me_else(_)|Rest]),
+    wat_take_clauses(Rest, Clauses).
+
+wat_take_clauses(Instrs, [Clause|More]) :-
+    wat_take_one_clause(Instrs, Clause, Rest),
+    ( Rest == [] -> More = [] ; wat_take_clauses(Rest, More) ).
+
+wat_take_one_clause([], [], []).
+wat_take_one_clause([retry_me_else(_)|Rest], [], Rest) :- !.
+wat_take_one_clause([trust_me|Rest], [], Rest) :- !.
+wat_take_one_clause([I|Rest], [I|Cs], After) :- wat_take_one_clause(Rest, Cs, After).
 
 %% wat_structured_clause1(+WamCode, -Structured) is semidet.
 %  Re-parse keeping labels (reinserted from the label map), take clause 1, and
@@ -212,6 +250,10 @@ lower_predicate_to_wat(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     ->  parse_wam_text_wat(WamCode, ChainInstrs),
         wat_clause_chain_lowerable(ChainInstrs, Guards),
         with_output_to(atom(Code), emit_clause_chain_function_wat(FuncName, Guards))
+    ;   Reason == multi_clause_n
+    ->  parse_wam_text_wat(WamCode, NInstrs),
+        wat_multi_clause_n_lowerable(NInstrs, Clauses),
+        with_output_to(atom(Code), emit_multi_clause_n_function_wat(FuncName, Arity, Clauses))
     ;   Reason == ite_lowered
     ->  wat_structured_clause1(WamCode, Structured),
         with_output_to(atom(Code), emit_lowered_ite_function_wat(FuncName, Structured))
@@ -275,6 +317,75 @@ emit_chain_guard_wat(V, Rem) :-
     format('    (then~n'),
     emit_lowered_instrs_wat(Rem),
     format('    ))~n').
+
+% =====================================================================
+% T4: multi-clause, all clauses inline  (multi_clause_n)
+% =====================================================================
+%
+%  A multi-clause predicate that is NOT first-argument-discriminable (so the T5
+%  guard cascade declined) but whose every clause is deterministic + supported
+%  lowers to one function that tries each clause in order, committing to the
+%  first that succeeds (WAT's lowered model is first-solution; the public entry
+%  replays the interpreter on a 0 return).
+%
+%  Between clause attempts the argument registers A1..A_arity and the trail must
+%  be restored to their predicate-entry state, exactly as the bytecode
+%  interpreter's choice point does: a clause body can overwrite an argument
+%  register (e.g. put_constant 50, A2 for `N >= 50`) before failing, and trail
+%  unwinding alone does not undo a direct register overwrite. So we snapshot the
+%  argument-register cells (tag + payload) and the trail top on entry, and
+%  before each later clause unwind the trail and val_store the saved cells back.
+%
+%  Each clause runs in its own block; a failing instruction `br`s out of the
+%  block (to the restore-then-next-clause code), a proceed returns 1. After the
+%  last clause the function returns 0.
+emit_multi_clause_n_function_wat(FuncName, Arity, Clauses) :-
+    format('(func $~w (result i32)~n', [FuncName]),
+    format('  ;; WAM-WAT lowered T4 (all clauses inline, first-solution). On a 0~n'),
+    format('  ;; return the public entry replays via $run_loop.~n'),
+    % locals: per-arg snapshot (tag i32 + payload i64) and the trail mark
+    forall(between(1, Arity, I),
+           ( I0 is I - 1,
+             format('  (local $t~w i32) (local $p~w i64)~n', [I0, I0]) )),
+    format('  (local $mark i32)~n'),
+    % snapshot entry state
+    format('  (local.set $mark (call $get_trail_top))~n'),
+    forall(between(1, Arity, I),
+           ( I0 is I - 1,
+             format('  (local.set $t~w (call $val_tag (call $reg_offset (i32.const ~w))))~n', [I0, I0]),
+             format('  (local.set $p~w (call $val_payload (call $reg_offset (i32.const ~w))))~n', [I0, I0]) )),
+    emit_t4_clauses_wat(Clauses, Arity, 1),
+    format('  (i32.const 0)~n'),
+    format(')~n').
+
+%% emit_t4_clauses_wat(+Clauses, +Arity, +K)
+emit_t4_clauses_wat([], _Arity, _K).
+emit_t4_clauses_wat([Clause|Rest], Arity, K) :-
+    format('  (block $c~w~n', [K]),
+    emit_t4_clause_instrs_wat(Clause, K),
+    format('  )~n'),
+    ( Rest == [] -> true ; emit_t4_restore_wat(Arity) ),
+    K1 is K + 1,
+    emit_t4_clauses_wat(Rest, Arity, K1).
+
+%% emit_t4_clause_instrs_wat(+Instrs, +K) — proceed returns 1; a failing
+%  instruction brs out of the clause's block $cK.
+emit_t4_clause_instrs_wat([proceed|_], _K) :- !,
+    format('    (return (i32.const 1))~n').
+emit_t4_clause_instrs_wat([Instr|Rest], K) :-
+    wam_wat_target:wam_instruction_to_wat_operands(Instr, [], DoName, Op1, Op2),
+    format('    (if (i32.eqz (call $do_~w (i64.const ~w) (i64.const ~w))) (then (br $c~w)))~n',
+           [DoName, Op1, Op2, K]),
+    emit_t4_clause_instrs_wat(Rest, K).
+
+%% emit_t4_restore_wat(+Arity) — restore the trail and argument registers to
+%  the snapshotted predicate-entry state before the next clause attempt.
+emit_t4_restore_wat(Arity) :-
+    format('  (call $unwind_trail (local.get $mark))~n'),
+    forall(between(1, Arity, I),
+           ( I0 is I - 1,
+             format('  (call $val_store (call $reg_offset (i32.const ~w)) (local.get $t~w) (local.get $p~w))~n',
+                    [I0, I0, I0]) )).
 
 % =====================================================================
 % T2: if-then-else / negation / once  (structured ite/3)
