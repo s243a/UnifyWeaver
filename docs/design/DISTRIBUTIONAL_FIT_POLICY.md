@@ -79,10 +79,18 @@ Candidate families for later extension:
 | Family | Use when |
 |--------|----------|
 | `truncated_geometric` | Tail decays approximately exponentially after the exact prefix |
-| `truncated_discrete_normal` | Mass is concentrated around a mean with lower variance |
-| `beta_binomial` | Bounded support with measurable over/under-dispersion |
+| `truncated_discrete_normal` | Large-depth CLT regime after tail/error validation |
+| `binomial` | Bounded excess-event support where mean/variance recover compatible `n,p` |
+| `beta_binomial` | Bounded support with measurable over-dispersion beyond binomial variance |
 | `empirical_sketch` | No simple family fits but quantile/CDF accuracy is enough |
 | `mixture(Families)` | Topical and administrative regimes visibly mix |
+
+The normal family should be treated as a large-depth approximation, not as the
+default for rare excess-parent events. In near-chain SimpleWiki regimes,
+binomial or empirical discrete priors preserve the skewed finite support more
+directly. If measured parent degrees become scale-free rather than
+Poisson-like, the policy should favor empirical sketches, mixtures, or explicit
+hub handling instead of a single light-tailed count family.
 
 The family choice should be evidence-driven. Simplewiki is a calibration fixture: compute exact parent-only distributions there, fit candidate tails, and measure error. Enwiki is the stress case where the representation switch is expected to matter.
 
@@ -435,6 +443,22 @@ better treated as a compound/convolution model before fitting a closed form.
 The next implementation-facing work is a parity harness:
 
 The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
+
+The first approximation harness is `scripts/distribution_fit_comparison.py`.
+It keeps two concepts separate:
+
+- realized distribution fits compare binomial and shifted-Gamma-style vectors
+  against exact histograms for already selected nodes;
+- depth-conditioned prior distributions use the size-biased excess-parent
+  distribution to estimate whether histograms at future depths are likely to
+  stay narrow enough to materialize cheaply before observing exact node
+  histograms.
+
+The current prior is stationary within the selected calibration set. A later
+variant should allow layer-conditioned priors, where the excess-parent law
+changes with root-distance bucket. That would handle cases where the average
+parent branching signal declines as nodes move farther from the root, but it
+should wait for deeper SimpleWiki and enwiki measurements.
 
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;

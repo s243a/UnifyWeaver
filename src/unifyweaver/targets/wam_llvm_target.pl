@@ -3485,6 +3485,13 @@ wam_llvm_case('try_me_else',
   %tme.hs = load i32, i32* %tme.hs_ptr
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
+  ; Save stack_size so failed alternatives discard environment frames
+  ; allocated after this choice point. Without this, a called predicate
+  ; that fails after allocate leaves a stale EnvFrame on the stack.
+  %tme.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %tme.ss = load i32, i32* %tme.ss_ptr
+  %tme.sss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 13
+  store i32 %tme.ss, i32* %tme.sss_ptr
   ; M10: snapshot the CURRENT cut_barrier into saved_b so trust_me /
   ; retry_me_else can restore it on this CP''s removal. Pre-M10 we
   ; stored cpn here AND overwrote the global cb with cpn, which
@@ -3851,6 +3858,12 @@ restore:
   %saved_ht = load i32, i32* %saved_ht_ptr
   %ht_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   store i32 %saved_ht, i32* %ht_ptr
+  ; Restore stack_size so failed clauses cannot leave EnvFrames that
+  ; confuse the caller or the next alternative.
+  %saved_ss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 13
+  %saved_ss = load i32, i32* %saved_ss_ptr
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 %saved_ss, i32* %ss_ptr
 
   ; Restore registers
   %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0

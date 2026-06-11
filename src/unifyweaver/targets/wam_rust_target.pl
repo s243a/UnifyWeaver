@@ -2982,7 +2982,17 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
-    rust_safe_function_name(Pred/Arity, FuncName),
+    % Foreign-lowered kernel wrappers keep the bare predicate name: they are
+    % the project's public entry points (imported as `use crate::pred;` by
+    % consumers, e.g. tests/test_wam_rust_runtime.pl's integration test).
+    % Generic WAM wrappers keep the arity-suffixed name so same-name
+    % predicates of different arities (read_term_from_atom/2 vs /3 in
+    % runtime-parser mode) don't collide.
+    (   option(foreign_lowering(ForeignSpecForName), Options),
+        rust_foreign_spec(Pred/Arity, ForeignSpecForName, _, _)
+    ->  rust_safe_function_name(Pred, FuncName)
+    ;   rust_safe_function_name(Pred/Arity, FuncName)
+    ),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -3727,7 +3737,15 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     let (code, labels) = get_shared_wam();
     (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
-    ;   SharedCode = ""
+    ;   % No shared-WAM predicates in this project. Still emit
+        % shared_wam_program/0: templates/targets/rust_wam/main.rs.mustache
+        % (and materialisation_setup.rs.mustache) import and call it
+        % unconditionally, so omitting it breaks compilation of every
+        % all-native/all-kernel project.
+        SharedCode =
+'pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    (Vec::new(), HashMap::new())
+}'
     ),
     % Pass 3: generate code for each predicate
     generate_predicate_codes(Classified, WamEntries, PredCodes),
@@ -3778,7 +3796,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         KClauses \= [],
         detect_recursive_kernel(Pred, Arity, KClauses, Kernel)
     ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
-        Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
+        % Besides the CallForeign dispatch route, emit a public Rust wrapper
+        % function (bare predicate name) so library consumers can call the
+        % kernel directly: `use crate::pred; pred(&mut vm, args...)`.
+        % Without this, ffi_kernel predicates had no callable symbol at all.
+        (   catch(rust_target:rust_foreign_lowering_spec(Pred, Arity, KClauses,
+                                                          ForeignSpec),
+                  _, fail),
+            catch(compile_wam_predicate_to_rust(Pred/Arity, '',
+                      [foreign_lowering(ForeignSpec)|Options], WrapperCode),
+                  _, fail)
+        ->  Entry = classified(Module, Pred, Arity, ffi_kernel,
+                               kernel_with_wrapper(Kernel, WrapperCode))
+        ;   Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
+        )
     ;   % Try native Rust lowering (disable WAM fallback inside rust_target
         % so we can distinguish truly-native from WAM-needing predicates).
         % Decline native for backtracking control constructs (\+, ->, ;,
@@ -3863,6 +3894,15 @@ collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
 %% generate_predicate_codes(+Classified, +WamEntries, -PredCodes)
 %  Generates Rust code for each classified predicate.
 generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel,
+                                     kernel_with_wrapper(Kernel, WrapperCode))|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    !,
+    Kernel = recursive_kernel(Kind, _, _),
+    format(string(Code),
+        "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate\n~w",
+        [Kind, Pred, Arity, WrapperCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel, Kernel)|Rest],
                          WamEntries, [Code|RestCodes]) :-
     % FFI kernel — no WAM code needed; handled by setup_foreign_predicates
