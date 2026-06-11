@@ -221,7 +221,7 @@ lower_predicate_to_fsharp(PI, WamCode, Opts, lowered(PredName, FuncName, Code)) 
     offset_pcs_fs(PCInstrs, Offset, GlobalPCInstrs),
     offset_labels_fs(LabelMap, Offset, GlobalLabelMap),
     with_output_to(string(Code),
-        emit_func_fs(FuncName, GlobalPCInstrs, GlobalLabelMap, ForeignPreds)).
+        emit_func_fs(FuncName, GlobalPCInstrs, GlobalLabelMap, ForeignPreds, Opts)).
 
 offset_pcs_fs([], _, []).
 offset_pcs_fs([pc(PC, I)|Rest], Off, [pc(GPC, I)|Rest2]) :-
@@ -237,14 +237,14 @@ offset_labels_fs([L-PC|Rest], Off, [L-GPC|Rest2]) :-
 % Function emission
 % ============================================================================
 
-emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
+emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds, Opts) :-
     format("/// Lowered: ~w~n", [FN]),
     format("let ~w (ctx: WamContext) (s_init: WamState) : WamState option =~n", [FN]),
     % Skip all switch_on_constant* prefixes before deciding whether this is
     % a multi-clause or single-clause lowered body.
     strip_switch_prefixes_fs(PCInstrs, PCInstrs1),
-    (   emit_func_t5_fs(PCInstrs1, LabelMap, ForeignPreds)
-    ->  true   % T5 first-argument dispatch (all clauses lowered natively)
+    (   emit_func_t5_fs(PCInstrs1, LabelMap, ForeignPreds, Opts)
+    ->  true   % T5/T6 first-argument dispatch (all clauses lowered natively)
     ;   emit_func_t4_fs(PCInstrs1, LabelMap, ForeignPreds)
     ->  true   % T4 all-clauses inline (every clause native, no interpreter hop)
     ;   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
@@ -305,7 +305,7 @@ take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 %  the predicate is not a distinct-first-argument constant chain. All checks
 %  run before any output, so a failure leaves the stream untouched for the
 %  caller's ordinary multi/single-clause emission.
-emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
+emit_func_t5_fs(PCInstrs1, LabelMap, FP, Opts) :-
     PCInstrs1 = [pc(_, try_me_else(L2Str))|_],
     maplist(t5_strip_pc_fs, PCInstrs1, PlainInstrs),
     clause_chain(PlainInstrs, chain(_Guards)),
@@ -313,6 +313,7 @@ emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
     Slices = [_, _ | _],
     forall(( member(Sl, Slices), member(pc(_, In), Sl) ), supported_fs(In)),
     maplist(t5_slice_discriminator_fs, Slices, Discrs),
+    maplist(t5_slice_discr_token_fs, Slices, Tokens),
     % All checks passed — emit.
     atom_string(L2Atom, L2Str),
     ( member(L2Atom-AltPC, LabelMap) -> true ; AltPC = 0 ),
@@ -337,14 +338,74 @@ emit_func_t5_fs(PCInstrs1, LabelMap, FP) :-
     format("        | Some result -> Some result~n"),
     format("        | None ->~n"),
     format("            backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n"),
-    % Dispatch: deref the first argument once, then select.
-    format("    match (getReg 1 s_init |> Option.map (derefVar s_init.WsBindings)) with~n"),
-    format("    | Some (Unbound _) -> t5fallback ()~n"),
-    format("    | Some v ->~n"),
-    t5_emit_dispatch_arms_fs(Discrs, 1),
-    format("    | None -> t5fallback ()~n").
+    % Dispatch: deref the first argument once, then select. When the
+    % discriminators are all atoms and there are enough of them (the T6 gate),
+    % emit a native F# string `match` (which the F# compiler lowers to an
+    % efficient hash/jump dispatch) instead of the linear if/elif cascade.
+    (   fsharp_t6_applicable(Tokens, Opts)
+    ->  t6_emit_dispatch_fs(Tokens)
+    ;   format("    // T5 first-argument dispatch (if/elif cascade)~n"),
+        format("    match (getReg 1 s_init |> Option.map (derefVar s_init.WsBindings)) with~n"),
+        format("    | Some (Unbound _) -> t5fallback ()~n"),
+        format("    | Some v ->~n"),
+        t5_emit_dispatch_arms_fs(Discrs, 1),
+        format("    | None -> t5fallback ()~n")
+    ).
 
 t5_strip_pc_fs(pc(_, I), I).
+
+%% t5_slice_discr_token_fs(+Slice, -VStr) — the raw first-arg constant token.
+t5_slice_discr_token_fs([pc(_, get_constant(VStr, _A1))|_], VStr).
+
+% ============================================================================
+% T6: first-argument indexing (native string match), gated above T5
+%
+%  When every clause discriminates on a distinct ATOM and there are at least
+%  t6_min_clauses of them (default 8), the linear if/elif cascade is replaced by
+%  a native F# `match` on the atom's string. F# compiles a many-branch string
+%  match to a hash/jump dispatch, so this is O(1) where the cascade is O(n);
+%  below the threshold the compiler would just flatten the match back to a
+%  cascade, so it is gated. The gate ties its atom test to val_fs (the same
+%  detector the T5 cascade uses), so the two paths agree on what an atom is.
+% ============================================================================
+
+%% fsharp_t6_applicable(+Tokens, +Opts) is semidet.
+fsharp_t6_applicable(Tokens, Opts) :-
+    fsharp_t6_min_clauses(Opts, Min),
+    length(Tokens, N), N >= Min,
+    forall(member(T, Tokens), t6_atom_token_fs(T, _)).
+
+%% fsharp_t6_min_clauses(+Opts, -N) — threshold (default 8).
+fsharp_t6_min_clauses(Opts, N) :-
+    ( member(t6_min_clauses(N), Opts) -> true ; N = 8 ).
+
+%% t6_atom_token_fs(+VStr, -EscStr) is semidet.
+%  Succeeds only when VStr is an ATOM (val_fs renders it `Atom "EscStr"`), with
+%  EscStr the F#-escaped name used in the string match arm — exactly the literal
+%  the T5 cascade would compare against, so dispatch is identical.
+t6_atom_token_fs(VStr, EscStr) :-
+    val_fs(VStr, FS),
+    atom_concat('Atom "', Rest, FS),
+    atom_concat(EscStr, '"', Rest).
+
+%% t6_emit_dispatch_fs(+Tokens)
+t6_emit_dispatch_fs(Tokens) :-
+    format("    // T6 first-argument indexing (native string match)~n"),
+    format("    match (getReg 1 s_init |> Option.map (derefVar s_init.WsBindings)) with~n"),
+    format("    | Some (Unbound _) -> t5fallback ()~n"),
+    format("    | Some (Atom t6s) ->~n"),
+    format("        (match t6s with~n"),
+    t6_emit_match_arms_fs(Tokens, 1),
+    format("         | _ -> None)~n"),
+    format("    | Some _ -> None~n"),
+    format("    | None -> t5fallback ()~n").
+
+t6_emit_match_arms_fs([], _).
+t6_emit_match_arms_fs([T|Rest], N) :-
+    t6_atom_token_fs(T, EscStr),
+    format("         | \"~w\" -> t5clause_~w s_init~n", [EscStr, N]),
+    N1 is N + 1,
+    t6_emit_match_arms_fs(Rest, N1).
 
 % ============================================================================
 % T4: multi-clause, all clauses inline (multi_clause_n)

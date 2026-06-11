@@ -100,7 +100,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✗ | ✗ | ✗ |
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
@@ -216,39 +216,43 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   argument-register + trail snapshot/restore between attempts, first-solution).
   So **every multi-clause column (T3/T4/T5) is now closed** across the targets
   that support each shape — no plain ✗ remains in T3/T4/T5.
-- **T6 (first-arg indexing)** — **Rust, C++, Go, Haskell, Scala and Lua** now
-  have a *gated* T6 (`~`): all reuse the T5 `wam_clause_chain` front-end, but
+- **T6 (first-arg indexing)** — **Rust, C++, Go, F#, Haskell, Scala and Lua**
+  now have a *gated* T6 (`~`): all reuse the T5 `wam_clause_chain` front-end, but
   when the discriminators are all atoms and there are ≥ `t6_min_clauses` of them
   (default 8) the back-end replaces the if-cascade with a native indexed
-  dispatch — Rust a two-stage `match` (string switch → integer jump table);
-  C++ a static `std::unordered_map<std::string,int>` (no native string switch)
-  → `switch`; **Go a native `switch t6atom.Name` (string switch)**. These are
-  the **atom-keyed** targets — atoms are compared as strings at dispatch, so a
-  string switch is a real win the host compiler does not already perform. The
-  other targets still drop the `switch_on_*` prefix and try clauses in order.
+  dispatch. Two families:
+  - **Atom-keyed** (atoms compared as *strings* at dispatch, so a string switch
+    is a real win the host compiler does not already perform): Rust a two-stage
+    `match` (string switch → integer jump table); C++ a static
+    `std::unordered_map<std::string,int>` (no native string switch) → `switch`;
+    **Go a native `switch t6atom.Name`**; **F# a native many-branch `match` on
+    the atom's string** (`Atom of string`, lowered by the F# compiler to a
+    hash/jump dispatch). Measured on generated code (tie at 4 clauses; growing
+    with N): Rust 1.55×/5.7×/12.7×, C++ 2.1×/11.6×/40.8×
+    (`docs/reports/wam_rust_dispatch_alloc_perf.md`); **Go 4.8×/31.7×/58.8×**
+    (`docs/reports/wam_go_dispatch_t6_perf.md`) — Go's `valueEquals` cascade is
+    an interface-call chain the compiler does not rewrite, so the switch wins
+    big. (NOTE: Go was previously mislabelled int-interned — its atoms are
+    `&Atom{Name string}` interned by name, i.e. string-keyed; F# likewise keeps
+    atoms as strings, which is why both took the atom-keyed back-end cleanly.)
+  - **Int-interned** (atoms become integers at codegen, so the discriminator is
+    an integer-equality chain the host compiler *might* already switch-convert —
+    the "lost to the compiler" question): haskell/scala/lua/llvm, each
+    benchmarked (`docs/reports/wam_int_interned_t6_perf.md`). Verdict: **haskell,
+    scala and lua now have a gated T6 too** — a `case` on the interned id (GHC →
+    jump table), a `match` on it (scalac → JVM `tableswitch`), and a hash table
+    of per-clause closures built once (interpreted Lua). Measured wins: Lua
+    1.7×/8.2×/29.7×, Haskell 1.4×/2.5×/4.5×, Scala 1.3×/3.1×/≫ at N=8/64/256.
+    **LLVM declines on benchmark evidence**: at `-O2`, SimplifyCFG already turns
+    an int-equality if-chain into a `switch` (the if-chain and an explicit switch
+    compile to identical assembly), so an explicit T6 there is redundant — the
+    one genuine "lost to the compiler" case.
+
   This is the natural next advancement after T5 (same clause-head analysis,
-  switch back-end): shared front-end, per-target back-end — high leverage, and a
-  perf win that's sound behind a gate. Measured on generated code (tie at 4
-  clauses; then growing with N): Rust 1.55× at 8, 5.7× at 64, 12.7× at 256; C++
-  2.1× at 8, 11.6× at 64, 40.8× at 256 (`docs/reports/wam_rust_dispatch_alloc_perf.md`);
-  **Go 4.8× at 8, 31.7× at 64, 58.8× at 256**
-  (`docs/reports/wam_go_dispatch_t6_perf.md`) — Go's `valueEquals` cascade is an
-  interface-call chain the compiler does not rewrite, so the switch wins big.
-  The compiler flattens the cascade for few clauses, hence the gate. NOTE: Go
-  was previously mislabelled int-interned — its atoms are `&Atom{Name string}`
-  interned by name, i.e. string-keyed.
-  The genuinely **int-interned** targets (haskell/scala/lua/llvm — atoms become
-  integers at codegen) were the "lost to the compiler" question; each was
-  benchmarked (`docs/reports/wam_int_interned_t6_perf.md`). Verdict: **haskell,
-  scala and lua now have a gated T6 too** — a `case` on the interned id (GHC →
-  jump table), a `match` on it (scalac → JVM `tableswitch`), and a hash table of
-  per-clause closures built once (interpreted Lua). Measured wins: Lua 1.7×/8.2×/
-  29.7×, Haskell 1.4×/2.5×/4.5×, Scala 1.3×/3.1×/≫ at N=8/64/256. **LLVM
-  declines on benchmark evidence**: at `-O2`, SimplifyCFG already turns an
-  int-equality if-chain into a `switch` (the if-chain and an explicit switch
-  compile to identical assembly), so an explicit T6 there is redundant — the one
-  genuine "lost to the compiler" case. So every T5 target now either has a gated
-  T6 or a measured reason not to.
+  switch back-end): shared front-end, per-target back-end. The remaining targets
+  still drop the `switch_on_*` prefix and try clauses in order. The compiler
+  flattens the cascade for few clauses, hence the gate. So every T5 target now
+  either has a gated T6 or a measured reason not to.
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
