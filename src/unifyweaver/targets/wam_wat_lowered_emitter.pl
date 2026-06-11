@@ -241,7 +241,7 @@ wat_safe_code(C, C) :-
 wat_safe_code(_, 0'_).
 
 %% lower_predicate_to_wat(+PI, +WamCode, +Options, -lowered(PredName, FuncName, Code))
-lower_predicate_to_wat(PI, WamCode, _Options, lowered(PredName, FuncName, Code)) :-
+lower_predicate_to_wat(PI, WamCode, Options, lowered(PredName, FuncName, Code)) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     wat_lowered_func_name(Pred/Arity, FuncName),
@@ -249,7 +249,7 @@ lower_predicate_to_wat(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     (   Reason == clause_chain
     ->  parse_wam_text_wat(WamCode, ChainInstrs),
         wat_clause_chain_lowerable(ChainInstrs, Guards),
-        with_output_to(atom(Code), emit_clause_chain_function_wat(FuncName, Guards))
+        with_output_to(atom(Code), emit_clause_chain_function_wat(FuncName, Guards, Options))
     ;   Reason == multi_clause_n
     ->  parse_wam_text_wat(WamCode, NInstrs),
         wat_multi_clause_n_lowerable(NInstrs, Clauses),
@@ -296,7 +296,21 @@ emit_lowered_instrs_wat([Instr|Rest]) :-
 %  with the bytecode interpreter's (first-solution) result. A matched clause
 %  whose body fails returns 0 (correct: no other clause can match the bound A1);
 %  the entry then replays the interpreter, which fails the same way.
-emit_clause_chain_function_wat(FuncName, Guards) :-
+%% emit_clause_chain_function_wat(+FuncName, +Guards, +Options)
+%  T6 first-argument indexing when the predicate has >= t6_min_clauses clauses
+%  (default 8): dispatch with a binary search on the interned atom hash
+%  (O(log n)) instead of the linear do_get_constant cascade (O(n)). Benchmarked
+%  in V8 (wat2wasm + node): 1.16x at 8, 1.79x at 64, 6.72x at 256 — V8 does not
+%  flatten the linear i64.eq chain, so the search is a real (growing) win.
+%  Sparse atom hashes rule out a dense br_table, hence the search tree. Below
+%  the threshold the linear T5 cascade is kept (its small-N edge plus simplicity).
+emit_clause_chain_function_wat(FuncName, Guards, Options) :-
+    ( wat_t6_applicable(Guards, Options)
+    ->  emit_clause_chain_function_wat_t6(FuncName, Guards)
+    ;   emit_clause_chain_function_wat_t5(FuncName, Guards)
+    ).
+
+emit_clause_chain_function_wat_t5(FuncName, Guards) :-
     format('(func $~w (result i32)~n', [FuncName]),
     format('  ;; WAM-WAT lowered T5 first-argument dispatch. Unbound A1 (tag 6) or~n'),
     format('  ;; no matching clause returns 0 so the public entry replays via $run_loop.~n'),
@@ -305,6 +319,55 @@ emit_clause_chain_function_wat(FuncName, Guards) :-
     forall(member(guard(V, Rem), Guards), emit_chain_guard_wat(V, Rem)),
     format('  (i32.const 0)~n'),
     format(')~n').
+
+%% wat_t6_applicable(+Guards, +Options) is semidet.
+wat_t6_applicable(Guards, Options) :-
+    ( member(t6_min_clauses(Min), Options) -> true ; Min = 8 ),
+    length(Guards, N), N >= Min.
+
+%% emit_clause_chain_function_wat_t6(+FuncName, +Guards)
+%  Binary search on A1's atom hash (its val_payload, the same i64 the linear
+%  do_get_constant compares against). The tree only NAVIGATES; each matched leaf
+%  still runs do_get_constant before its body, so a hash collision or a non-atom
+%  A1 (whose payload happens to fall on a node) is verified and falls through to
+%  the 0 return — correctness is identical to the T5 cascade.
+emit_clause_chain_function_wat_t6(FuncName, Guards) :-
+    maplist(wat_guard_keyed, Guards, Keyed0),
+    keysort(Keyed0, Keyed),                 % ascending by hash (all in [0,2^31-1])
+    pairs_values(Keyed, Sorted),
+    format('(func $~w (result i32) (local $h i64)~n', [FuncName]),
+    format('  ;; WAM-WAT lowered T6 first-argument indexing (binary search on the~n'),
+    format('  ;; interned atom hash). Unbound A1 (tag 6) or no matching clause~n'),
+    format('  ;; returns 0 so the public entry replays via $run_loop.~n'),
+    format('  (if (i32.eq (call $val_tag (call $deref_reg_addr (i32.const 0))) (i32.const 6))~n'),
+    format('    (then (return (i32.const 0))))~n'),
+    format('  (local.set $h (call $val_payload (call $deref_reg_addr (i32.const 0))))~n'),
+    wat_emit_bsearch(Sorted),
+    format('  (i32.const 0)~n'),
+    format(')~n').
+
+%% wat_guard_keyed(+guard(V,Rem), -Hash-g(Hash,V,Rem))
+wat_guard_keyed(guard(V, Rem), Hash-g(Hash, V, Rem)) :-
+    wam_wat_target:wam_instruction_to_wat_operands(get_constant(V, 'A1'), [], _Do, Hash, _Op2).
+
+%% wat_emit_bsearch(+SortedGuards)  SortedGuards = [g(Hash,V,Rem), ...] by hash.
+wat_emit_bsearch([]).
+wat_emit_bsearch(List) :-
+    List = [_|_],
+    length(List, N), Mid is N // 2,
+    length(Lower, Mid),
+    append(Lower, [g(H, V, Rem)|Upper], List),
+    format('  (if (i64.eq (local.get $h) (i64.const ~w))~n', [H]),
+    format('    (then~n'),
+    emit_chain_guard_wat(V, Rem),
+    format('    )~n'),
+    format('    (else (if (i64.lt_u (local.get $h) (i64.const ~w))~n', [H]),
+    format('      (then~n'),
+    wat_emit_bsearch(Lower),
+    format('      )~n'),
+    format('      (else~n'),
+    wat_emit_bsearch(Upper),
+    format('      ))))~n').
 
 %% emit_chain_guard_wat(+Discriminator, +Remainder)
 %  Emit `(if <A1 == V> (then <body> ))`. The guard reuses do_get_constant on the
