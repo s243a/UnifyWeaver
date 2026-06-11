@@ -4123,18 +4123,30 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (if (i32.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
   (local.set $ta (call $val_tag (local.get $a)))
   (local.set $tb (call $val_tag (local.get $b)))
-  ;; Unbound on either side: bind it to the other cell via a Ref (tag 5).
+  ;; Bind an unbound cell to the other. A SCALAR (atom/int/float, tag < 3) is
+  ;; copied BY VALUE rather than bound as Ref(other): the other side may be a
+  ;; transient argument-register cell (e.g. put_constant 7, A2) that a later
+  ;; goal reuses, and a Ref into it would silently change the variable when the
+  ;; register is overwritten (the classic WAM "never bind a variable to a
+  ;; transient cell" rule). Compounds/cons/unbound cells live on the heap, so a
+  ;; Ref to them is stable and preserves structure sharing.
   (if (i32.eq (local.get $ta) (i32.const 6))
     (then
       (call $trail_binding_at (local.get $a))
-      (call $val_store (local.get $a) (i32.const 5)
-        (i64.extend_i32_u (local.get $b)))
+      (if (i32.lt_u (local.get $tb) (i32.const 3))
+        (then (call $val_store (local.get $a) (local.get $tb)
+                (call $val_payload (local.get $b))))
+        (else (call $val_store (local.get $a) (i32.const 5)
+                (i64.extend_i32_u (local.get $b)))))
       (return (i32.const 1))))
   (if (i32.eq (local.get $tb) (i32.const 6))
     (then
       (call $trail_binding_at (local.get $b))
-      (call $val_store (local.get $b) (i32.const 5)
-        (i64.extend_i32_u (local.get $a)))
+      (if (i32.lt_u (local.get $ta) (i32.const 3))
+        (then (call $val_store (local.get $b) (local.get $ta)
+                (call $val_payload (local.get $a))))
+        (else (call $val_store (local.get $b) (i32.const 5)
+                (i64.extend_i32_u (local.get $a)))))
       (return (i32.const 1))))
   ;; Both cons (in either spelling): unify head (+12) then tail (+24).
   (if (i32.and (call $is_cons_cell (local.get $a))
