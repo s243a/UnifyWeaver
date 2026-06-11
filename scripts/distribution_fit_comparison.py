@@ -29,6 +29,7 @@ from tools.distribution_cache_support import (  # noqa: E402
     FIXTURES,
     ROOT,
     exact_histogram,
+    histogram_bytes,
     load_parent_edges_tsv,
     reachable_nodes_by_parent_distance,
 )
@@ -70,6 +71,44 @@ def distribution_moments(probabilities: list[float]) -> tuple[float, float]:
     mean = sum(index * probability for index, probability in enumerate(probabilities))
     variance = sum(((index - mean) ** 2) * probability for index, probability in enumerate(probabilities))
     return mean, variance
+
+
+def distribution_skewness(probabilities: list[float]) -> float | None:
+    mean, variance = distribution_moments(probabilities)
+    if variance <= 0.0:
+        return None
+    stddev = math.sqrt(variance)
+    third = sum(((index - mean) ** 3) * probability for index, probability in enumerate(probabilities))
+    return third / (stddev**3)
+
+
+def ancestor_cone_size(node, parents) -> tuple[int, int]:
+    """Count the parent-reachable cone for a single target node."""
+    seen = set()
+    stack = [node]
+    edges = 0
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for parent in parents.get(current, []):
+            edges += 1
+            if parent not in seen:
+                stack.append(parent)
+    return len(seen), edges
+
+
+def parametric_state_bytes_estimate(params: dict[str, object]) -> int:
+    """Estimate stored family id, support, parameters, and error metadata."""
+    scalar_count = 4
+    scalar_count += sum(1 for value in params.values() if isinstance(value, (int, float)))
+    scalar_count += 2
+    return scalar_count * 8
+
+
+def dense_sample_bytes(sample_points: int) -> int:
+    return max(0, sample_points) * 8
 
 
 def binomial_pmf(trials: int, probability: float) -> list[float]:
@@ -277,7 +316,7 @@ def prior_model_builders(depth: int):
     ]
 
 
-def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo, tail_epsilon):
+def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo, tail_epsilon, continuous_sample_points):
     started = time.perf_counter_ns()
     hist = exact_histogram(target, parents, root, hist_memo)
     exact_time_ns = time.perf_counter_ns() - started
@@ -286,8 +325,12 @@ def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo
         return []
 
     mean, variance = distribution_moments(empirical)
+    exact_bytes = histogram_bytes(hist)
+    dense_sample_estimate = dense_sample_bytes(continuous_sample_points)
+    cone_nodes, cone_edges = ancestor_cone_size(target, parents)
     records = []
     for model_record in compare_models(empirical, realized_model_builders()):
+        parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
         records.append({
             "record_type": "distribution_fit",
             "distribution_role": "realized_fit",
@@ -303,14 +346,23 @@ def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo
             "path_count": sum(hist.values()),
             "mean_excess": mean,
             "variance_excess": variance,
+            "skewness_excess": distribution_skewness(empirical),
             "exact_histogram_time_ns": exact_time_ns,
+            "ancestor_cone_nodes": cone_nodes,
+            "ancestor_cone_edges": cone_edges,
+            "exact_histogram_bytes": exact_bytes,
+            "parametric_state_bytes_estimate": parametric_bytes,
+            "compression_ratio_estimate": 0.0 if parametric_bytes == 0 else exact_bytes / parametric_bytes,
+            "continuous_sample_points": continuous_sample_points,
+            "continuous_sample_bytes_estimate": dense_sample_estimate,
+            "sample_storage_ratio_estimate": 0.0 if dense_sample_estimate == 0 else exact_bytes / dense_sample_estimate,
             "parent_degree": len(parents.get(target, [])),
             **model_record,
         })
     return records
 
 
-def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_epsilon):
+def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_epsilon, continuous_sample_points):
     base = size_biased_excess_pmf(parent_degrees)
     base_mean, base_variance = distribution_moments(base)
     records = []
@@ -319,7 +371,10 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
         empirical = nfold_convolution(base, depth)
         exact_time_ns = time.perf_counter_ns() - started
         mean, variance = distribution_moments(empirical)
+        dense_sample_estimate = dense_sample_bytes(continuous_sample_points)
+        dense_prior_estimate = dense_sample_bytes(len(empirical))
         for model_record in compare_models(empirical, prior_model_builders(depth)):
+            parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
             records.append({
                 "record_type": "distribution_fit",
                 "distribution_role": "depth_prior",
@@ -331,21 +386,48 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
                 "effective_support_bins": effective_support_bins(empirical, tail_epsilon),
                 "mean_excess": mean,
                 "variance_excess": variance,
+                "skewness_excess": distribution_skewness(empirical),
                 "base_mean_excess": base_mean,
                 "base_variance_excess": base_variance,
                 "base_support_bins": len(base),
                 "exact_histogram_time_ns": exact_time_ns,
+                "dense_prior_bytes_estimate": dense_prior_estimate,
+                "parametric_state_bytes_estimate": parametric_bytes,
+                "compression_ratio_estimate": 0.0 if parametric_bytes == 0 else dense_prior_estimate / parametric_bytes,
+                "continuous_sample_points": continuous_sample_points,
+                "continuous_sample_bytes_estimate": dense_sample_estimate,
+                "sample_storage_ratio_estimate": 0.0 if dense_sample_estimate == 0 else dense_prior_estimate / dense_sample_estimate,
                 **model_record,
             })
     return records
 
 
-def run_graph_fit_comparison(graph_name, graph_label, parents, targets, root, depths=None, tail_epsilon=0.001):
+def run_graph_fit_comparison(
+    graph_name,
+    graph_label,
+    parents,
+    targets,
+    root,
+    depths=None,
+    tail_epsilon=0.001,
+    continuous_sample_points=100,
+):
     records = []
     hist_memo = {}
     for target in targets:
         try:
-            records.extend(target_fit_records(graph_name, graph_label, parents, root, target, hist_memo, tail_epsilon))
+            records.extend(
+                target_fit_records(
+                    graph_name,
+                    graph_label,
+                    parents,
+                    root,
+                    target,
+                    hist_memo,
+                    tail_epsilon,
+                    continuous_sample_points,
+                )
+            )
         except ValueError as exc:
             records.append({
                 "record_type": "distribution_fit_error",
@@ -356,7 +438,16 @@ def run_graph_fit_comparison(graph_name, graph_label, parents, targets, root, de
                 "error": str(exc),
             })
     parent_degrees = [len(parents.get(target, [])) for target in targets]
-    records.extend(depth_prior_records(graph_name, graph_label, parent_degrees, depths or DEFAULT_DEPTHS, tail_epsilon))
+    records.extend(
+        depth_prior_records(
+            graph_name,
+            graph_label,
+            parent_degrees,
+            depths or DEFAULT_DEPTHS,
+            tail_epsilon,
+            continuous_sample_points,
+        )
+    )
     return records
 
 
@@ -387,8 +478,8 @@ def summarize(records: list[dict[str, object]]) -> str:
         "",
         "## Realized Histogram Fits",
         "",
-        "| model | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf_error | mean_build_ns | mean_exact_hist_ns |",
-        "|-------|------|---------|--------|--------|----------------|---------------|--------------------|",
+        "| model | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf_error | mean_build_ns | mean_exact_hist_ns | mean_compression |",
+        "|-------|------|---------|--------|--------|----------------|---------------|--------------------|------------------|",
     ]
     append_model_table(lines, realized_records)
     if realized_records:
@@ -404,8 +495,8 @@ def summarize(records: list[dict[str, object]]) -> str:
         "",
         "## Depth-Conditioned Prior Distributions",
         "",
-        "| model | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf_error | mean_build_ns | mean_exact_hist_ns |",
-        "|-------|------|---------|--------|--------|----------------|---------------|--------------------|",
+        "| model | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf_error | mean_build_ns | mean_exact_hist_ns | mean_compression |",
+        "|-------|------|---------|--------|--------|----------------|---------------|--------------------|------------------|",
     ])
     append_model_table(lines, prior_records)
 
@@ -486,7 +577,7 @@ def append_model_table(lines: list[str], rows: list[dict[str, object]]) -> None:
         build_times = [int(row["build_time_ns"]) for row in model_rows]
         exact_times = [int(row["exact_histogram_time_ns"]) for row in model_rows]
         lines.append(
-            "| {model} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_build:.1f} | {mean_exact:.1f} |".format(
+            "| {model} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_build:.1f} | {mean_exact:.1f} | {mean_compression:.3f} |".format(
                 model=model,
                 rows=len(model_rows),
                 mean_l1=statistics.mean(l1_values) if l1_values else 0.0,
@@ -495,6 +586,7 @@ def append_model_table(lines: list[str], rows: list[dict[str, object]]) -> None:
                 mean_cdf=statistics.mean(cdf_values) if cdf_values else 0.0,
                 mean_build=statistics.mean(build_times) if build_times else 0.0,
                 mean_exact=statistics.mean(exact_times) if exact_times else 0.0,
+                mean_compression=statistics.mean(float(row.get("compression_ratio_estimate", 0.0)) for row in model_rows),
             )
         )
 
@@ -538,6 +630,12 @@ def main(argv=None):
     parser.add_argument("--target-limit", type=int, help="Limit selected edge-file targets after sorting/filtering.")
     parser.add_argument("--depths", default=",".join(map(str, DEFAULT_DEPTHS)), help="Depth horizons for prior distributions.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail mass allowed outside effective support.")
+    parser.add_argument(
+        "--continuous-sample-points",
+        type=int,
+        default=100,
+        help="Point count for estimating sampled-continuous representation cost.",
+    )
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     args = parser.parse_args(argv)
 
@@ -555,7 +653,18 @@ def main(argv=None):
             args.max_target_depth,
             args.target_limit,
         )
-        records.extend(run_graph_fit_comparison(graph_name, graph_name, parents, targets, root, depths, args.tail_epsilon))
+        records.extend(
+            run_graph_fit_comparison(
+                graph_name,
+                graph_name,
+                parents,
+                targets,
+                root,
+                depths,
+                args.tail_epsilon,
+                args.continuous_sample_points,
+            )
+        )
     else:
         root = args.root or ROOT
         if root != ROOT:
@@ -566,7 +675,18 @@ def main(argv=None):
             if fixture_name not in FIXTURES:
                 raise SystemExit(f"unknown fixture: {fixture_name}")
             fixture = FIXTURES[fixture_name]
-            records.extend(run_graph_fit_comparison(graph_name, fixture_name, fixture["parents"], fixture["targets"], root, depths, args.tail_epsilon))
+            records.extend(
+                run_graph_fit_comparison(
+                    graph_name,
+                    fixture_name,
+                    fixture["parents"],
+                    fixture["targets"],
+                    root,
+                    depths,
+                    args.tail_epsilon,
+                    args.continuous_sample_points,
+                )
+            )
 
     summary = summarize(records)
     print(summary, end="")

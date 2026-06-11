@@ -398,6 +398,22 @@ can carry min/max bounds through large parts of the graph, then materialise full
 distributions only where the query workload, error budget, or cache score makes
 the extra state worthwhile.
 
+Ancestor-cone size is a separate admission signal. A node can be fairly deep in
+root distance but still have a small target-scoped ancestor cone. In that case,
+exact histograms may remain cheap because the planner only materialises the
+distributions needed by the node of interest, not a global table. The first
+calibration pass should therefore record both support_width and ancestor_cone_nodes;
+a deep node with a small cone and narrow support is a
+good exact-histogram candidate even when a global depth rule would reject it.
+
+Continuous or sampled approximations should be charged as computation, not just
+as storage. For example, a Gamma-like continuous approximation can be sampled
+onto a finite grid before FFT convolution, but good accuracy may require tens or
+hundreds of sample points. If the exact ancestor-scoped histogram has only a few
+bins, sampling 100 points is unlikely to save compute. Its main value is then a
+compact reusable representation, not avoiding the initial exact or sampled
+construction.
+
 Support width should be paired with a parent-branching signal before choosing
 how deep to carry exact histograms. Let `p_v` be the number of parent choices for
 node `v` under the active graph/filter/root policy. Then:
