@@ -467,7 +467,7 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 `@value_is_unbound`, `@value_equals`), boxing/unboxing bridge
 (`@box_integer`, `@unbox_integer`, etc.).
 
-**`state.ll.mustache`:** `@wam_state_new`, `@wam_set_reg`,
+**`state.ll.mustache`:** `@wam_state_new`, `@wam_prepare_call`, `@wam_set_reg`,
 `@wam_get_reg`, `@wam_inc_pc`, `@wam_push_trail`, `@wam_push_cp`,
 `@wam_heap_alloc`.
 
@@ -478,6 +478,12 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 ## Interop Calling Convention
 
 ### Native calls WAM-compiled predicate:
+
+For repeated calls from a native deterministic loop, reuse the same `%WamState`
+and call `@wam_prepare_call(VM, StartPC)` before setting argument registers and
+entering `@run_loop` again. The helper clears `halted`, resets `CP` to zero,
+and installs the requested compiled predicate start PC.
+
 
 ```llvm
 define i1 @query_ancestor(i8* %a, i8* %b) {
