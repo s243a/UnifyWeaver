@@ -324,14 +324,14 @@ capitalize_first(Str, Cap) :-
 
 %% lower_predicate_to_go(+Pred/Arity, +WamCode, +Options, -GoLines)
 %  Emit a Go method on *WamState for the predicate.
-lower_predicate_to_go(PI, WamCode, _Options, GoLines) :-
+lower_predicate_to_go(PI, WamCode, Options, GoLines) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     go_func_name(Pred/Arity, FuncName),
     go_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1Instrs),
     (   % T5 first-argument-constant dispatch takes precedence.
         go_clause_chain_lowerable(Instrs, Guards)
-    ->  emit_clause_chain_go(FuncName, Pred, Arity, Guards, GoLines)
+    ->  emit_clause_chain_go(FuncName, Pred, Arity, Guards, Options, GoLines)
     ;   % T4: a multi-clause predicate whose clauses are all supported
         % deterministic bodies (but not a distinct-first-arg chain) — lower
         % every clause inline, tried in order with a restore between attempts.
@@ -386,16 +386,26 @@ emit_go_clauses([Cl | Rest]) :-
 %  clause's remainder (which self-terminates: its `proceed` emits
 %  `return true`). A bound value matching no clause returns false (the
 %  predicate fails; the wrapper's fresh re-run also fails — sound).
-emit_clause_chain_go(FuncName, Pred, Arity, Guards, GoLines) :-
+emit_clause_chain_go(FuncName, Pred, Arity, Guards, Options, GoLines) :-
     go_reg_idx("A1", A1Idx),
+    % T6 first-argument indexing: when every discriminator is an atom and there
+    % are enough of them, dispatch with a native Go `switch` on the atom's name
+    % (a string switch the Go compiler lowers to a hash/length jump) instead of
+    % the linear valueEquals if-cascade. Gated like Rust/C++: below the threshold
+    % the cascade is fine (and the switch would just be flattened back).
+    (   go_t6_applicable(Guards, Options)
+    ->  TagComment = 'T6 first-argument indexing (native string switch)',
+        with_output_to(string(Body), emit_go_t6_dispatch(A1Idx, Guards))
+    ;   TagComment = 'T5 first-argument dispatch',
+        with_output_to(string(Body),
+            ( format("    t5a1 := vm.deref(vm.Regs[~w])~n", [A1Idx]),
+              format("    if _, ok := t5a1.(*Unbound); ok { return false }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+              emit_go_guards(Guards),
+              format("    return false~n") ))
+    ),
     format(string(Header),
-'// ~w — lowered from ~w/~w (T5 first-argument dispatch)
-func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
-    with_output_to(string(Body),
-        ( format("    t5a1 := vm.deref(vm.Regs[~w])~n", [A1Idx]),
-          format("    if _, ok := t5a1.(*Unbound); ok { return false }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
-          emit_go_guards(Guards),
-          format("    return false~n") )),
+'// ~w — lowered from ~w/~w (~w)
+func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, TagComment, FuncName]),
     format(string(Footer), '}', []),
     GoLines = [Header, Body, Footer].
 
@@ -406,6 +416,37 @@ emit_go_guards([guard(V, Rem) | Rest]) :-
     emit_instrs(Rem, "        "),
     format("    }~n"),
     emit_go_guards(Rest).
+
+%% go_t6_applicable(+Guards, +Options) is semidet.
+%  T6 gate: every discriminator is an atom and there are at least
+%  t6_min_clauses of them (default 8, override via t6_min_clauses(N)).
+go_t6_applicable(Guards, Options) :-
+    go_t6_min_clauses(Options, Min),
+    length(Guards, N), N >= Min,
+    forall(member(guard(V, _), Guards), wam_classify_constant_token(V, atom(_))).
+
+go_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+%% emit_go_t6_dispatch(+A1Idx, +Guards) — deref A1 once, single type assertion
+%  to *Atom, then a native string switch on the atom name into the clause body.
+emit_go_t6_dispatch(A1Idx, Guards) :-
+    format("    t5a1 := vm.deref(vm.Regs[~w])~n", [A1Idx]),
+    format("    if _, ok := t5a1.(*Unbound); ok { return false }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+    format("    t6atom, t6ok := t5a1.(*Atom)~n"),
+    format("    if !t6ok { return false }  // bound non-atom: no clause matches~n"),
+    format("    switch t6atom.Name {~n"),
+    emit_go_t6_cases(Guards),
+    format("    }~n"),
+    format("    return false~n").
+
+emit_go_t6_cases([]).
+emit_go_t6_cases([guard(V, Rem) | Rest]) :-
+    wam_classify_constant_token(V, atom(Name)),
+    escape_go_string(Name, Esc),
+    format("    case \"~w\":~n", [Esc]),
+    emit_instrs(Rem, "        "),
+    emit_go_t6_cases(Rest).
 
 %% emit_instrs(+Instrs, +Indent)
 %  Emit Go code for a list of instructions. Detects the WAM if-then-else
