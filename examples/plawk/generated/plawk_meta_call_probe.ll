@@ -697,9 +697,22 @@ define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
 ; Prepare an existing VM for a reentrant call into compiled WAM code.
 ; Native outer loops use this before each @run_loop invocation when they
 ; dispatch repeatedly into WAM handlers from the same %WamState.
+; This intentionally preserves the heap so native code can thread WAM terms
+; between calls, but drops transient call/choice/trail state from the previous
+; deterministic invocation.
 define void @wam_prepare_call(%WamState* %vm, i32 %start_pc) alwaysinline nounwind {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 0, i32* %ss_ptr
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  store i32 0, i32* %ts_ptr
   call void @wam_set_halted(%WamState* %vm, i1 false)
   call void @wam_set_cp(%WamState* %vm, i32 0)
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  store i32 0, i32* %cpn_ptr
+  %cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 0, i32* %cb_ptr
+  %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 0, i32* %lcpn_ptr
   call void @wam_set_pc(%WamState* %vm, i32 %start_pc)
   ret void
 }
