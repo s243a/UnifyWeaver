@@ -11,6 +11,12 @@ The runtime should treat a node's path statistic as a representation choice:
 ```prolog
 distribution_state(exact_histogram(Bins)).
 
+distribution_state(tail_pruned_histogram(
+    ExactPrefix,
+    DroppedTailRange,
+    DroppedTailMass,
+    FunctionalErrorBounds)).
+
 distribution_state(hybrid_truncated(
     ExactPrefix,
     TailFamily,
@@ -72,6 +78,16 @@ else:
 
 `K = 10` is a reasonable first default because it keeps small hand-checkable histograms exact while preventing unbounded per-node vectors. It must be a configuration value, not a constant baked into generated code.
 
+A light-tail histogram can sometimes be shortened before fitting any parametric
+family. If the suffix mass after a candidate cut is below `epsilon_tail`, and
+the discarded contribution to the requested functional is below its error
+budget, store `tail_pruned_histogram` rather than a fitted tail. This keeps the
+observed prefix exact while recording enough metadata to make the dropped suffix
+visible in diagnostics. For binomial-like or extremely light tails, this can
+remove a large fraction of bins; for skewed or medium/heavy tails, the same rule
+will refuse to prune because the suffix mass or functional contribution remains
+too large.
+
 The first tail family should be `truncated_geometric` or equivalently a discrete exponential over finite support. It is simple, has closed-form CDF/survival functions, and matches the intuition that longer parent-only paths often decay after the high-signal prefix. Do not assume a Poisson family by default: parent path distributions are finite, graph-constrained, and driven by branching structure rather than independent arrival counts.
 
 Candidate families for later extension:
@@ -79,10 +95,18 @@ Candidate families for later extension:
 | Family | Use when |
 |--------|----------|
 | `truncated_geometric` | Tail decays approximately exponentially after the exact prefix |
-| `truncated_discrete_normal` | Mass is concentrated around a mean with lower variance |
-| `beta_binomial` | Bounded support with measurable over/under-dispersion |
+| `truncated_discrete_normal` | Large-depth CLT regime after tail/error validation |
+| `binomial` | Bounded excess-event support where mean/variance recover compatible `n,p` |
+| `beta_binomial` | Bounded support with measurable over-dispersion beyond binomial variance |
 | `empirical_sketch` | No simple family fits but quantile/CDF accuracy is enough |
 | `mixture(Families)` | Topical and administrative regimes visibly mix |
+
+The normal family should be treated as a large-depth approximation, not as the
+default for rare excess-parent events. In near-chain SimpleWiki regimes,
+binomial or empirical discrete priors preserve the skewed finite support more
+directly. If measured parent degrees become scale-free rather than
+Poisson-like, the policy should favor empirical sketches, mixtures, or explicit
+hub handling instead of a single light-tailed count family.
 
 The family choice should be evidence-driven. Simplewiki is a calibration fixture: compute exact parent-only distributions there, fit candidate tails, and measure error. Enwiki is the stress case where the representation switch is expected to matter.
 
@@ -226,6 +250,7 @@ and
 Diagnostics should be emitted into the recurrence strategy trace:
 
 - exact support size;
+- tail-pruning threshold, dropped range, dropped mass, and functional error;
 - chosen family;
 - fitted finite support range;
 - materialised cumulative bases;
@@ -390,11 +415,83 @@ can carry min/max bounds through large parts of the graph, then materialise full
 distributions only where the query workload, error budget, or cache score makes
 the extra state worthwhile.
 
+Ancestor-cone size is a separate admission signal. A node can be fairly deep in
+root distance but still have a small target-scoped ancestor cone. In that case,
+exact histograms may remain cheap because the planner only materialises the
+distributions needed by the node of interest, not a global table. The first
+calibration pass should therefore record both support_width and ancestor_cone_nodes;
+a deep node with a small cone and narrow support is a
+good exact-histogram candidate even when a global depth rule would reject it.
+
+Continuous or sampled approximations should be charged as computation, not just
+as storage. For example, a Gamma-like continuous approximation can be sampled
+onto a finite grid before FFT convolution, but good accuracy may require tens or
+hundreds of sample points. If the exact ancestor-scoped histogram has only a few
+bins, sampling 100 points is unlikely to save compute. Its main value is then a
+compact reusable representation, not avoiding the initial exact or sampled
+construction.
+
+Support width should be paired with a parent-branching signal before choosing
+how deep to carry exact histograms. Let `p_v` be the number of parent choices for
+node `v` under the active graph/filter/root policy. Then:
+
+```text
+mean_parent_degree = E[p]
+size_biased_parent_branching = E[p^2] / E[p]
+```
+
+The ratio is the parent-only analogue of a traversal-effective branch factor: it
+estimates the parent degree seen by a path that has already followed a parent
+edge. It is not a replacement for exact histogram validation, but it is a useful
+early warning signal. When `support_width` stays small and `E[p^2]/E[p]` stays
+near `1`, exact histograms can often be carried deeper because many states are
+one-point or nearly one-point distributions. When the ratio rises, especially in
+deeper root-distance buckets, parent paths are likely to multiply and exact
+histogram materialisation should require stronger evidence of reuse.
+
+A first planner rule should be shaped like:
+
+```text
+materialize_exact(node) when
+    support_width(node) <= exact_support_width_limit
+    or root_distance(node) <= D_pre
+    or expected_reuse(node) * saved_search_cost(node) > storage_cost(node)
+
+defer_full_distribution(node) when
+    support_width(node) is wide
+    and bucket_size_biased_parent_branching is high
+    and expected_reuse(node) is low
+```
+
+For SimpleWiki, the current measurements suggest the first condition dominates.
+For enwiki, the parent-branching moment should be measured by root-distance
+bucket before deciding how far exact histograms should be propagated.
+
+`PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
+small excess parent branching is binomial-like, while larger parent branching is
+better treated as a compound/convolution model before fitting a closed form.
+
 ## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
 
 The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
+
+The first approximation harness is `scripts/distribution_fit_comparison.py`.
+It keeps two concepts separate:
+
+- realized distribution fits compare binomial and shifted-Gamma-style vectors
+  against exact histograms for already selected nodes;
+- depth-conditioned prior distributions use the size-biased excess-parent
+  distribution to estimate whether histograms at future depths are likely to
+  stay narrow enough to materialize cheaply before observing exact node
+  histograms.
+
+The current prior is stationary within the selected calibration set. A later
+variant should allow layer-conditioned priors, where the excess-parent law
+changes with root-distance bucket. That would handle cases where the average
+parent branching signal declines as nodes move farther from the root, but it
+should wait for deeper SimpleWiki and enwiki measurements.
 
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;

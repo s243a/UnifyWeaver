@@ -435,7 +435,7 @@ lower_predicate_to_scala(PI, WamCode, Options, lowered(PredName, FuncName, Code)
     (   MultiClause == true,
         scala_clause_chain_lowerable(Instrs, Guards)
     ->  with_output_to(string(Code),
-            emit_clause_chain_scala(FuncName, Guards, ForeignKeys))
+            emit_clause_chain_scala(FuncName, Guards, ForeignKeys, Options))
     ;   MultiClause == true,
         is_deterministic_pred_scala(C1),
         forall(member(I, C1), scala_supported(I)),
@@ -503,18 +503,70 @@ emit_clause_dispatch_scala([_ | Rest], N) :-
 %  bound value against each clause's distinct discriminator and running that
 %  clause's remainder. A bound value matching no clause returns false (the
 %  predicate fails; the wrapper's fresh re-run also fails — sound).
-emit_clause_chain_scala(FuncName, Guards, FK) :-
+emit_clause_chain_scala(FuncName, Guards, FK, Options) :-
     nb_setval(scala_ite_ctr, 0),
-    format("  /** ~w — T5 first-argument dispatch (generated); entry wrapper handles the unbound-A1 fallback. */~n", [FuncName]),
+    % T6 first-argument indexing: when the discriminators are all atoms and there
+    % are enough of them, dispatch with a `match` on the interned atom id (which
+    % scalac compiles to a JVM `tableswitch`) instead of the linear `==` cascade.
+    ( scala_t6_applicable(Guards, Options)
+    ->  TagComment = 'T6 first-argument indexing (match on interned atom id)'
+    ;   TagComment = 'T5 first-argument dispatch' ),
+    format("  /** ~w — ~w (generated); entry wrapper handles the unbound-A1 fallback. */~n", [FuncName, TagComment]),
     format("  def ~w(s: WamState, program: WamProgram): Boolean = {~n", [FuncName]),
     format("    val t5a1 = WamRuntime.deref(s.bindings, WamRuntime.getReg(s, 1))~n", []),
     format("    t5a1 match {~n", []),
     format("      case Ref(_) => return false  // unbound first arg: defer to interpreter (enumerates all clauses)~n", []),
     format("      case _ => ()~n", []),
     format("    }~n", []),
-    emit_guards_scala(Guards, FK),
+    (   scala_t6_applicable(Guards, Options)
+    ->  emit_t6_match_scala(Guards, FK)
+    ;   emit_guards_scala(Guards, FK)
+    ),
     format("    false~n", []),
     format("  }~n", []).
+
+%% scala_t6_applicable(+Guards, +Options) is semidet.
+scala_t6_applicable(Guards, Options) :-
+    scala_t6_min_clauses(Options, Min),
+    length(Guards, N), N >= Min,
+    forall(member(guard(V, _), Guards), scala_t6_atom_id(V, _)).
+
+scala_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+%% scala_t6_atom_id(+V, -Id) is semidet.
+%  The interned atom id, recovered from scala_lowered_constant_term's `Atom(id)`
+%  rendering (succeeds only for atoms), so the T6 case key is exactly the id the
+%  T5 cascade would compare against.
+scala_t6_atom_id(V, Id) :-
+    scala_lowered_constant_term(V, Term),
+    ( atom(Term) -> TermA = Term ; atom_string(TermA, Term) ),
+    atom_concat('Atom(', Rest, TermA),
+    atom_concat(IdA, ')', Rest),
+    atom_number(IdA, Id).
+
+%% emit_t6_match_scala(+Guards, +FK) — nested match: extract the atom id, then a
+%  tableswitch over the per-clause ids into each clause's remainder.
+emit_t6_match_scala(Guards, FK) :-
+    format("    t5a1 match {~n", []),
+    format("      case Atom(t6i) => t6i match {~n", []),
+    emit_t6_cases_scala(Guards, FK),
+    format("        case _ => ()~n", []),
+    format("      }~n", []),
+    format("      case _ => ()~n", []),
+    format("    }~n", []).
+
+emit_t6_cases_scala([], _).
+emit_t6_cases_scala([guard(V, Rem) | Rest], FK) :-
+    scala_t6_atom_id(V, Id),
+    format("        case ~w => {~n", [Id]),
+    emit_body_scala(Rem, "          ", FK),
+    (   body_falls_through(Rem)
+    ->  format("          return true~n", [])
+    ;   true
+    ),
+    format("        }~n", []),
+    emit_t6_cases_scala(Rest, FK).
 
 emit_guards_scala([], _).
 emit_guards_scala([guard(V, Rem) | Rest], FK) :-

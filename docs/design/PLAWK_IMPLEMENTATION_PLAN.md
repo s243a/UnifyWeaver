@@ -161,9 +161,10 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 - **Compiled stream-core smoke:** `tests/test_plawk_compiled_stream_core.pl`
   builds a native LLVM binary that streams a text file, splits records with
   `atom_split/3`, runs a PLAWK-style handler over `record(text, Line, Fields)`,
-  counts records via `state/4`, and collects the two `ERROR` lines. It uses a
-  bounded output accumulator in the test; the generic `append_output/3` path is
-  still a separate compiled-list boundary.
+  counts records via `state/4`, and collects the two `ERROR` lines through the
+  normal `append_output/3` and `state_outputs/2` path. The smoke also exercises
+  the WAM/LLVM choice-point stack restore needed for else-branch control flow
+  after called predicates allocate and fail.
 
 ---
 
@@ -187,11 +188,14 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the first native smoke reads from a file path rather than
-stdin and uses a bounded output accumulator. The next Phase-1 work is to lower
-deterministic `state/4` threading and generic output/list accumulation more
-directly, then replace the bounded helper with the normal `append_output/3`
-path.
+**Current boundary:** the native smoke still reads from a file path rather than
+stdin, and `state/4` remains represented as ordinary WAM terms rather than a
+specialized LLVM aggregate. The bounded output helper has been retired from the
+compiled stream smoke; generic output accumulation now goes through
+`append_output/3` and `state_outputs/2`. WAM/LLVM now also has a
+`@wam_prepare_call` runtime helper plus a reentrant run-loop smoke, which is
+the first general bridge for native deterministic outer loops that call WAM
+handlers repeatedly.
 
 ---
 

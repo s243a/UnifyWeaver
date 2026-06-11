@@ -140,6 +140,18 @@ first_cache_hit_depth_from_target
 remaining_budget_at_hit
 histogram_bins_scanned
 cumulative_basis_lookups
+ancestor_cone_nodes
+ancestor_cone_edges
+exact_histogram_bytes
+parametric_state_bytes_estimate
+continuous_sample_points
+continuous_sample_bytes_estimate
+compression_ratio_estimate
+tail_pruning_thresholds
+tail_pruned_kept_bins
+tail_pruned_dropped_bins
+tail_pruned_dropped_mass
+tail_pruned_functional_error
 result_mass
 result_first_moment
 result_weighted_power
@@ -262,6 +274,41 @@ if L_max(v) - L_min(v) is large: prefer a cached boundary or fitted tail candida
 
 This lets deeper layers carry cheap min/max summaries while the planner decides
 where full histograms are still worth materialising.
+
+When the target-scoped ancestor cone is small, full histograms may remain cheap
+even for nodes that are deep by root distance. The benchmark should therefore
+separate global precompute depth from per-query ancestor-cone cost. A continuous
+fit sampled onto a fixed grid, such as 100 points before FFT convolution, should
+beat exact histograms only when the exact support or reuse pattern justifies
+that grid cost. Otherwise it is primarily a storage/compression option after an
+exact or sampled distribution has already been validated.
+
+For extremely light tails, also test exact-prefix tail pruning before switching
+to a parametric representation. The benchmark should sweep thresholds such as
+`1e-2`, `1e-3`, and `1e-4`, then report how many suffix bins are removed and
+how much mass, first moment, or weighted-power contribution is lost. This makes
+pruning a functional-level decision rather than a visual judgment about the
+shape of the histogram.
+
+The same run should report parent-degree moments over the selected reachable
+nodes:
+
+```text
+p(v) = number of parent choices for v
+E[p]
+E[p^2]
+E[p^2] / E[p]
+```
+
+`E[p^2]/E[p]` is the size-biased parent branching signal. Low values near `1`
+mean parent paths do not multiply much under the selected graph policy, which
+supports carrying exact histograms deeper. Higher values, especially in deeper
+root-distance buckets, indicate that exact histogram propagation should be gated
+by support width, cache reuse, or a fitted distribution policy.
+
+See `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` for the binomial
+small-branching approximation, FFT evaluation of compound convolutions, and the
+shifted exponential / shifted Gamma larger-branching approximation.
 
 Another future direction is approximation from bounds plus low-order statistics.
 The min/max interval gives finite support, while observed branching and second

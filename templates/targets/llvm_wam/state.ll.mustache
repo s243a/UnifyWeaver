@@ -299,6 +299,16 @@ define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
   ret void
 }
 
+; Prepare an existing VM for a reentrant call into compiled WAM code.
+; Native outer loops use this before each @run_loop invocation when they
+; dispatch repeatedly into WAM handlers from the same %WamState.
+define void @wam_prepare_call(%WamState* %vm, i32 %start_pc) alwaysinline nounwind {
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  call void @wam_set_cp(%WamState* %vm, i32 0)
+  call void @wam_set_pc(%WamState* %vm, i32 %start_pc)
+  ret void
+}
+
 ; M5: Doubling-realloc grow for the trail. Called by @wam_trail_binding
 ; (and @wam_trail_heap_binding) when the size hits the current cap.
 ; CPs hold trail indices, not pointers, so post-realloc indices remain

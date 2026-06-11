@@ -1638,7 +1638,7 @@ compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode
 	    stub_lowered_registrar(Pred/Arity, Registrar)
 	;   py_multi_clause_n(WamCode, Clauses)
 	->  emit_multi_clause_n_python(Pred/Arity, Clauses, Options, LoweredFn),
-	    multi_clause_n_registrar(Pred/Arity, WamCode, Registrar)
+	    multi_clause_n_registrar(Pred/Arity, WamCode, Options, Registrar)
 	;   py_multi_clause_1(WamCode, Clause1Instrs)
 	->  emit_lowered_python(Pred/Arity, Clause1Instrs, Options, LoweredFn),
 	    multi_clause_1_registrar(Pred/Arity, WamCode, Registrar)
@@ -1703,11 +1703,17 @@ multi_clause_1_registrar(Pred/Arity, WamCode, Registrar) :-
 %  calls fail(), popping to the next clause's retry_me_else / trust_me. Labels
 %  stay inline ("__label__", Name), so load_program recomputes PCs after the
 %  per-clause body collapse.
-multi_clause_n_registrar(Pred/Arity, WamCode, Registrar) :-
+multi_clause_n_registrar(Pred/Arity, WamCode, Options, Registrar) :-
 	wam_code_to_python_instructions(WamCode, Pred/Arity, FullInstrLiterals, _Labels),
 	split_string(FullInstrLiterals, "\n", "", Lines0),
 	python_func_name(Pred/Arity, FuncBase),
-	rewrite_clauses_to_call_lowered(Lines0, FuncBase, Arity, 0, Lines),
+	rewrite_clauses_to_call_lowered(Lines0, FuncBase, Arity, 0, Lines1),
+	% T6 first-argument indexing: if the predicate carries a switch index (left
+	% by the compiler as a "# SKIP: switch_on_constant ..." comment) and has
+	% enough distinct keys, turn it into a real ("switch_on_constant", {...})
+	% instruction so the runtime jumps O(1) to the matching clause body for a
+	% bound first arg (skipping to the try/retry chain for an unbound one).
+	python_t6_enable_switch(Lines1, FuncBase, Options, Lines),
 	atomic_list_concat(Lines, '\n', Body),
 	atom_string(Pred, PredStr),
 	atom_concat(register_, FuncBase, RegistrarName),
@@ -1719,6 +1725,73 @@ multi_clause_n_registrar(Pred/Arity, WamCode, Registrar) :-
 ~w
     )
 ', [RegistrarName, PredStr, Arity, LabelKey, Body]).
+
+%% python_t6_enable_switch(+Lines, +FuncBase, +Options, -Out)
+%  T6 first-argument indexing. The compiler emits the index as a comment
+%  ("# SKIP: switch_on_constant s01:default s02:L_..._2_body ..."). When it has
+%  >= t6_min_clauses entries (default 8) and a single "default" slot (clause 1),
+%  rewrite it into a real ("switch_on_constant", {key: label, ...}) instruction
+%  and insert a fresh clause-1 body label (the index's "default" slot) so EVERY
+%  key maps to a real label — required because the runtime's switch_on_constant
+%  fails (not falls through) on a bound key that is absent, and skips to the
+%  following try/retry chain only for an UNBOUND first argument. Below the
+%  threshold (or with no switch index) the predicate keeps the T4
+%  bytecode-dispatch behaviour and Lines is returned unchanged.
+python_t6_enable_switch(Lines, FuncBase, Options, Out) :-
+	( member(t6_min_clauses(Min), Options) -> true ; Min = 8 ),
+	once(( member(SkipLine, Lines),
+	       sub_string(SkipLine, _, _, _, "# SKIP: switch_on_constant") )),
+	python_parse_switch_skip(SkipLine, Entries),
+	length(Entries, NE), NE >= Min,
+	include([_-L]>>(L == "default"), Entries, Defaults),
+	Defaults = [_],          % exactly one default slot (clause 1)
+	!,
+	format(atom(C1Label), 'L_~w_clause1_body', [FuncBase]),
+	maplist(python_switch_entry_resolved(C1Label), Entries, EntryStrs),
+	atomic_list_concat(EntryStrs, ', ', DictBody),
+	format(string(SwitchLit), '        ("switch_on_constant", {~w}),', [DictBody]),
+	maplist(python_replace_line(SkipLine, SwitchLit), Lines, Lines1),
+	python_insert_c1_label(Lines1, C1Label, Out).
+python_t6_enable_switch(Lines, _FuncBase, _Options, Lines).
+
+%% python_parse_switch_skip(+SkipLine, -Entries)  Entries = [KeyStr-LabelStr, ...]
+python_parse_switch_skip(SkipLine, Entries) :-
+	split_string(SkipLine, " \t", " \t", Toks0),
+	exclude(==(""), Toks0, Toks),
+	append(_, ["switch_on_constant"|EntryToks], Toks),
+	!,
+	maplist(python_parse_switch_entry, EntryToks, Entries).
+
+python_parse_switch_entry(Tok, Key-Label) :-
+	sub_string(Tok, Bi, 1, _, ":"), !,
+	sub_string(Tok, 0, Bi, _, Key),
+	Ai is Bi + 1,
+	sub_string(Tok, Ai, _, 0, Label).
+
+%% python_switch_entry_resolved(+C1Label, +Key-Label0, -EntryStr)
+%  Resolve the "default" label to the inserted clause-1 body label; quote atom
+%  keys, leave integer keys bare (matching switch_entry_to_python).
+python_switch_entry_resolved(C1Label, Key-Label0, EntryStr) :-
+	( Label0 == "default" -> Label = C1Label ; Label = Label0 ),
+	( number_string(N, Key)
+	->  format(string(EntryStr), '~w: "~w"', [N, Label])
+	;   format(string(EntryStr), '"~w": "~w"', [Key, Label]) ).
+
+python_replace_line(Target, New, Line, Out) :-
+	( Line == Target -> Out = New ; Out = Line ).
+
+%% python_insert_c1_label(+Lines, +C1Label, -Out)
+%  Insert ("__label__", C1Label) right after the FIRST try_me_else literal, so a
+%  switch hit on the clause-1 key lands on clause 1's body (skipping the
+%  try_me_else, hence no choice point — the bound case is deterministic).
+python_insert_c1_label([L|Ls], C1Label, Out) :-
+	(   sub_string(L, _, _, _, "(\"try_me_else\"")
+	->  format(string(LabelLit), '        ("__label__", "~w"),', [C1Label]),
+	    Out = [L, LabelLit | Ls]
+	;   Out = [L|Rest],
+	    python_insert_c1_label(Ls, C1Label, Rest)
+	).
+python_insert_c1_label([], _C1Label, []).
 
 %% rewrite_clauses_to_call_lowered(+Lines, +FuncBase, +Arity, +K, -Out)
 %  Walk the predicate's instruction literals, replacing each clause body with a

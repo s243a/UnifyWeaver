@@ -95,19 +95,19 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
-| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
 | rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
-| go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
+| go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
+| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✗ | ✗ | ✗ |
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
-| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | `~` gated | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | ✓ T2a | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
@@ -159,15 +159,19 @@ Verification notes:
 - elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
   R's closure-per-clause shape — counted ✓ but architecturally distinct.
 - **T4** (multi_clause_n) is now implemented across the hybrid targets:
-  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua (plus r and
-  elixir's prior CP-model versions). Every clause is lowered inline and tried
-  in order; the interpreter is never entered for the predicate's own clause
-  dispatch. Two families:
-  - **imperative** (scala/rust/cpp/go/lua/llvm): snapshot the registers +
+  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua, wat (plus r and
+  elixir's prior CP-model versions; python's `~` hybrid). Every clause is
+  lowered inline and tried in order; the interpreter is never entered for the
+  predicate's own clause dispatch. Two families:
+  - **imperative** (scala/rust/cpp/go/lua/llvm/wat): snapshot the registers +
     trail at entry, restore between clause attempts (e.g. `loRestoreClause`,
-    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR). These runtimes
-    take a predicate's first solution (deterministic-prefix), so — unlike
-    R/elixir — no retry/iter choice point is needed.
+    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR; wat snapshots each
+    argument-register cell + the trail top into locals and `val_store`s them
+    back between per-clause blocks). These runtimes take a predicate's first
+    solution (deterministic-prefix), so — unlike R/elixir — no retry/iter
+    choice point is needed. (wat was unblocked here by the unify
+    scalar-propagation fix, which a clause body threading a head variable into a
+    goal would otherwise hit.)
   - **functional** (haskell/fsharp): immutability gives a free per-clause
     restore — each clause runs against the unchanged input state, chained
     with `mplus` / `Option.orElseWith`; no runtime change.
@@ -208,26 +212,73 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   first-arg dispatch (T4 only); python now has T3, T4 (`~` hybrid: native
   clause bodies over a retained bytecode dispatch scaffold, to preserve its
   backtracking-runtime parity) and T5 `if/elif/else`; wat now has T5
-  (first-arg clause-chain dispatch) and still lacks T4. So T5 is ✓ for every
-  target with distinct-first-arg dispatch, and T4 ✗ remains only for wat.
-- **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
-  both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
-  are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the
-  back-end replaces the if-cascade with a native indexed dispatch — Rust a
-  two-stage `match` (string switch → integer jump table); C++ a static
-  `std::unordered_map<std::string,int>` (no native string switch) → `switch`.
-  The other targets still drop the `switch_on_*` prefix and try clauses in
-  order. This is the natural next advancement after T5 (same clause-head
-  analysis, switch back-end): shared front-end, per-target back-end — high
-  leverage, and a perf win that's sound behind a gate. Measured on generated
-  code (tie at 4 clauses; then growing with N): Rust 1.55× at 8, 5.7× at 64,
-  12.7× at 256; C++ 2.1× at 8, 11.6× at 64, 40.8× at 256 (see
-  `docs/reports/wam_rust_dispatch_alloc_perf.md`). The compiler flattens the
-  cascade for few clauses (matching the prior Go array-dispatch result), hence
-  the gate. Int-interned targets (go/llvm/haskell/scala/lua) are the remaining
-  candidates but carry the highest "lost to the compiler" risk (an int
-  equality chain is already switch-converted), so each needs a per-target
-  benchmark before shipping.
+  (first-arg clause-chain dispatch) AND T4 (all clauses inline with
+  argument-register + trail snapshot/restore between attempts, first-solution).
+  So **every multi-clause column (T3/T4/T5) is now closed** across the targets
+  that support each shape — no plain ✗ remains in T3/T4/T5.
+- **T6 (first-arg indexing)** — **Rust, C++, Go, F#, Haskell, Scala, Lua,
+  Python and WAT** now have a *gated* T6 (`~`); **LLVM declines on benchmark
+  evidence**. All reuse the T5 `wam_clause_chain` / first-arg-index front-end,
+  but when there are ≥ `t6_min_clauses` clauses (default 8) the back-end
+  replaces the if-cascade with a native indexed dispatch. Three families:
+  - **Atom-keyed** (atoms compared as *strings* at dispatch, so a string switch
+    is a real win the host compiler does not already perform): Rust a two-stage
+    `match` (string switch → integer jump table); C++ a static
+    `std::unordered_map<std::string,int>` (no native string switch) → `switch`;
+    **Go a native `switch t6atom.Name`**; **F# a native many-branch `match` on
+    the atom's string** (`Atom of string`, lowered by the F# compiler to a
+    hash/jump dispatch). Measured on generated code (tie at 4 clauses; growing
+    with N): Rust 1.55×/5.7×/12.7×, C++ 2.1×/11.6×/40.8×
+    (`docs/reports/wam_rust_dispatch_alloc_perf.md`); **Go 4.8×/31.7×/58.8×**
+    (`docs/reports/wam_go_dispatch_t6_perf.md`) — Go's `valueEquals` cascade is
+    an interface-call chain the compiler does not rewrite, so the switch wins
+    big. (NOTE: Go was previously mislabelled int-interned — its atoms are
+    `&Atom{Name string}` interned by name, i.e. string-keyed; F# likewise keeps
+    atoms as strings, which is why both took the atom-keyed back-end cleanly.)
+  - **Int-interned** (atoms become integers at codegen, so the discriminator is
+    an integer-equality chain the host compiler *might* already switch-convert —
+    the "lost to the compiler" question): haskell/scala/lua/llvm, each
+    benchmarked (`docs/reports/wam_int_interned_t6_perf.md`). Verdict: **haskell,
+    scala and lua now have a gated T6 too** — a `case` on the interned id (GHC →
+    jump table), a `match` on it (scalac → JVM `tableswitch`), and a hash table
+    of per-clause closures built once (interpreted Lua). Measured wins: Lua
+    1.7×/8.2×/29.7×, Haskell 1.4×/2.5×/4.5×, Scala 1.3×/3.1×/≫ at N=8/64/256.
+    **LLVM declines on benchmark evidence**: at `-O2`, SimplifyCFG already turns
+    an int-equality if-chain into a `switch` (the if-chain and an explicit switch
+    compile to identical assembly), so an explicit T6 there is redundant — the
+    one genuine "lost to the compiler" case.
+  - **VM-dispatched** (the lowered path keeps a bytecode/data-table dispatch a
+    runtime instruction services, rather than a host `switch`): **Python** turns
+    the compiler's dropped first-arg index back into a real
+    `("switch_on_constant", {key: label})` instruction (the runtime already
+    jumps O(1) on it for a bound first arg, skips to the try/retry chain for an
+    unbound one, fails for a no-match) — emitter-only, with a fresh clause-1 body
+    label so every key resolves; benchmarked 1.8×/9.3×/35.6× (interpreted dict
+    vs linear `isinstance`+`name==`). **WAT** atoms are sparse i64 hashes (no
+    dense `br_table`), so its lowered function does a **binary search** on the
+    sorted clause hashes (each leaf still runs `do_get_constant` for
+    collision/tag safety); benchmarked in V8 1.16×/1.79×/6.72× — V8 does not
+    flatten the linear i64 chain. Both gated, both in
+    `docs/reports/wam_python_wat_t6_perf.md`.
+
+  This is the natural next advancement after T5 (same clause-head analysis,
+  switch back-end): shared front-end, per-target back-end. The compiler flattens
+  the cascade for few clauses, hence the gate. **The T6 column is now closed
+  out: every T5 target has a gated T6, except LLVM which declines on a measured
+  "the optimiser already does it" basis.** (Testing Python T6 surfaced a
+  deeper, T6-independent arithmetic bug, since **fixed for the interpreter**:
+  `put_structure`/`put_list` unconditionally bound the var the target register
+  previously held, so for `X is Expr` — where the compiler leaves the result var
+  aliased into A1 while A2 is overwritten with the expression structure — the
+  result target was clobbered and **every `X is Expr` with an unbound X failed**
+  in the bytecode interpreter. Fix: bind only X-register sub-term slots
+  (`reg > _A_MAX`, created by `set_variable`/`unify_variable` for nested terms
+  like `error(type_error(..),..)`); A-register call-output slots are overwritten
+  without binding. The *lowered* Python emit still mishandles in-clause structure
+  construction — `parse_wam_text_py` drops `set_*` and its write model is
+  heap-consecutive rather than the runtime's `.args`/write-ctx — so
+  arithmetic-rule clauses remain wrong under `emit_mode(lowered)`; that emit
+  needs a read/write-ctx reconciliation, tracked as a separate follow-up.)
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
@@ -301,7 +352,13 @@ Score each candidate gap on four axes, then sequence:
    could layer in front later). Remaining structurer-column hole: none — only
    **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
-   `switch` back-end instead of an `->` cascade.
+   `switch` back-end instead of an `->` cascade. **DONE / closed out for every
+   T5 target:** the atom-keyed set (rust/cpp/fsharp/go, string switch), the
+   int-interned set that wins (haskell/scala/lua), and the VM-dispatched set
+   (python's runtime `switch_on_constant`; wat's binary search on sparse atom
+   hashes). **llvm declines** on benchmark evidence (its `-O2` already converts
+   the int if-chain to a switch). See `docs/reports/wam_int_interned_t6_perf.md`
+   and `docs/reports/wam_python_wat_t6_perf.md`.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
 

@@ -263,7 +263,7 @@ lua_safe_code(C, C) :-
     (C >= 0'a, C =< 0'z ; C >= 0'A, C =< 0'Z ; C >= 0'0, C =< 0'9 ; C =:= 0'_), !.
 lua_safe_code(_, 0'_).
 
-lower_predicate_to_lua(PI, WamCode, _Options, lowered(PredName, FuncName, Code)) :-
+lower_predicate_to_lua(PI, WamCode, Options, lowered(PredName, FuncName, Code)) :-
     (PI = _M:Pred/Arity -> true ; PI = Pred/Arity),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     lua_lowered_func_name(Pred/Arity, FuncName),
@@ -274,7 +274,7 @@ lower_predicate_to_lua(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     ->  emit_ite_function(PredName, FuncName, Payload, Code)
     ;   Mode == clause_chain
     ->  Payload = chain_payload(Guards, Clause1Lines),
-        emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Code)
+        emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Options, Code)
     ;   Mode == multi_clause_n
     ->  emit_multi_clause_n_function(PredName, FuncName, Payload, Code)
     ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code)
@@ -390,7 +390,50 @@ end
 % nondeterministic, so it falls back to the multi_clause_1 path (clause 1
 % inline + array fallback from the clause-2 label), which enumerates every
 % clause exactly as before.
-emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Code) :-
+emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Options, Code) :-
+    lua_t6_applicable(Guards, Options), !,
+    % T6 first-argument indexing: dispatch a bound atom through a hash table keyed
+    % by the interned atom id (built ONCE at module load inside the `do` block,
+    % so there is no per-call allocation) instead of the linear if-cascade.
+    with_output_to(string(Table), lua_emit_t6_table(Guards, "    ")),
+    with_output_to(string(Clause1Body), emit_lines(Clause1Lines, "      ")),
+    wam_lua_target:lua_string_literal(AltLabel, AltQ),
+    format(string(Code),
+'-- Lowered: ~w (T6 first-argument indexing)
+local ~w
+do
+  local _t6 = {
+~w  }
+  ~w = function(program, state)
+    local t5a1 = Runtime.deref(state, Runtime.get_reg(state, 1))
+    if type(t5a1) == "table" and t5a1.tag == "atom" then
+      local _f = _t6[t5a1.id]
+      if _f ~~= nil then return _f(program, state) end
+      return false
+    end
+    if type(t5a1) == "table" and t5a1.tag ~~= "unbound" then return false end
+    -- unbound first argument: enumerate all clauses via the interpreter
+    local alt_pc = program.labels[~w]
+    if alt_pc == nil then return false end
+    table.insert(state.cps, {
+      next_pc = alt_pc,
+      regs = Runtime.copy_table(state.regs),
+      cp = state.cp,
+      trail_len = #state.trail,
+      var_counter = state.var_counter
+    })
+    local ok = (function()
+~w      return false
+    end)()
+    if ok == true then return true end
+    if Runtime.backtrack(state) ~~= true then return false end
+    state.pc = state.pc + 1
+    state.halt = false
+    return Runtime.run(program, state) == true
+  end
+end
+', [PredName, FuncName, Table, FuncName, AltQ, Clause1Body]).
+emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, _Options, Code) :-
     with_output_to(string(Dispatch), lua_emit_chain_guards(Guards, "    ")),
     with_output_to(string(Clause1Body), emit_lines(Clause1Lines, "    ")),
     wam_lua_target:lua_string_literal(AltLabel, AltQ),
@@ -421,6 +464,33 @@ local function ~w(program, state)
   return Runtime.run(program, state) == true
 end
 ', [PredName, FuncName, Dispatch, AltQ, Clause1Body]).
+
+%% lua_t6_applicable(+Guards, +Options) is semidet.
+lua_t6_applicable(Guards, Options) :-
+    lua_t6_min_clauses(Options, Min),
+    length(Guards, N), N >= Min,
+    forall(member(guard(V, _), Guards), lua_t6_atom_id(V, _)).
+
+lua_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+%% lua_t6_atom_id(+V, -Id) is semidet — the interned atom id (atoms only).
+lua_t6_atom_id(V, Id) :-
+    wam_classify_constant_token(V, atom(Name)),
+    wam_lua_target:intern_lua_atom(Name, Id).
+
+%% lua_emit_t6_table(+Guards, +Indent) — one `[id] = function(program, state) … end`
+%  per clause; the remainder self-terminates (proceed → return true, a failed
+%  head match → return false).
+lua_emit_t6_table([], _).
+lua_emit_t6_table([guard(V, Rem)|Rest], Ind) :-
+    lua_t6_atom_id(V, Id),
+    format("~w[~w] = function(program, state)~n", [Ind, Id]),
+    string_concat(Ind, "  ", Ind2),
+    lua_emit_chain_rem(Rem, Ind2),
+    format("~w  return false~n", [Ind]),
+    format("~wend,~n", [Ind]),
+    lua_emit_t6_table(Rest, Ind).
 
 lua_emit_chain_guards([], _).
 lua_emit_chain_guards([guard(V, Rem)|Rest], Ind) :-

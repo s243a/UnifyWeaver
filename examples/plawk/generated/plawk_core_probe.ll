@@ -74,7 +74,8 @@ target triple = "x86_64-pc-linux-gnu"
     i32,                                   ; 9: foreign_count (total results)
     i32,                                   ; 10: foreign_cursor (next to yield)
     i32,                                   ; 11: saved heap_top — rewound on backtrack
-    i32                                    ; 12: saved_b (backtrack level of caller)
+    i32,                                   ; 12: saved_b (backtrack level of caller)
+    i32                                    ; 13: saved_stack_size — restored on backtrack
 }
 
 ; === WAM State ===
@@ -693,6 +694,16 @@ define void @wam_set_pc(%WamState* %vm, i32 %pc) alwaysinline nounwind {
   ret void
 }
 
+; Prepare an existing VM for a reentrant call into compiled WAM code.
+; Native outer loops use this before each @run_loop invocation when they
+; dispatch repeatedly into WAM handlers from the same %WamState.
+define void @wam_prepare_call(%WamState* %vm, i32 %start_pc) alwaysinline nounwind {
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  call void @wam_set_cp(%WamState* %vm, i32 0)
+  call void @wam_set_pc(%WamState* %vm, i32 %start_pc)
+  ret void
+}
+
 ; M5: Doubling-realloc grow for the trail. Called by @wam_trail_binding
 ; (and @wam_trail_heap_binding) when the size hits the current cap.
 ; CPs hold trail indices, not pointers, so post-realloc indices remain
@@ -986,9 +997,37 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) alwaysinline nounwind
 ; Bind a register to a value. If the register currently holds a Ref
 ; (put_variable aliasing), write through to the referenced heap cell
 ; AND record a trail entry so a subsequent backtrack unwinds the
-; binding. No Ref-chain following — put_variable creates depth-1 Refs,
-; and more exotic chains would also require the structural-unify path
-; to produce them.
+; binding.
+; M140: follows the Ref CHAIN to its end before writing. =/2 var-var
+; aliasing stores Ref{cell2} into cell1, so a later binding arriving
+; via Ref{cell1} must land in cell2 -- the cell every alias of the
+; variable reads -- not in cell1 (which would leave the partner
+; variable unbound; broke ``X = Y, X = 42, Y =:= 42'').
+; @wam_last_ref returns the last Ref in the chain -- the one whose
+; cell holds a non-Ref (Unbound for fresh chains, or a bound value
+; for the rebinding case, where writing at the chain end matches the
+; old one-hop behavior for depth-1 Refs).
+define %Value @wam_last_ref(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %lr.loop
+lr.loop:
+  %lr.cur = phi %Value [ %v, %entry ], [ %lr.cell, %lr.follow ]
+  %lr.i = phi i32 [ 0, %entry ], [ %lr.i_next, %lr.follow ]
+  %lr.addr_i64 = extractvalue %Value %lr.cur, 1
+  %lr.addr = trunc i64 %lr.addr_i64 to i32
+  %lr.cell = call %Value @wam_heap_get(%WamState* %vm, i32 %lr.addr)
+  %lr.cell_tag = extractvalue %Value %lr.cell, 0
+  %lr.cell_is_ref = icmp eq i32 %lr.cell_tag, 5
+  %lr.hop_ok = icmp slt i32 %lr.i, 64
+  %lr.cont = and i1 %lr.cell_is_ref, %lr.hop_ok
+  br i1 %lr.cont, label %lr.follow, label %lr.done
+lr.follow:
+  %lr.i_next = add i32 %lr.i, 1
+  br label %lr.loop
+lr.done:
+  ret %Value %lr.cur
+}
+
 define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
@@ -996,7 +1035,8 @@ entry:
   %is_ref = icmp eq i32 %tag, 5
   br i1 %is_ref, label %heap_bind, label %reg_bind
 heap_bind:
-  %addr_i64 = extractvalue %Value %cur, 1
+  %last = call %Value @wam_last_ref(%WamState* %vm, %Value %cur)
+  %addr_i64 = extractvalue %Value %last, 1
   %addr = trunc i64 %addr_i64 to i32
   %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
   call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
@@ -1072,22 +1112,48 @@ bind_a:
   br i1 %a_is_ref, label %bind_a_through, label %fail_no_binding
 
 bind_a_through:
-  %a_addr_i64 = extractvalue %Value %a, 1
+  ; M140: bind at the END of a's Ref chain, not its first Ref. After
+  ; X = Y aliases cell1 -> Ref{cell2}, a later X = 42 arrives with
+  ; a = Ref{cell1}; writing 42 into cell1 would leave cell2 -- the
+  ; cell Y reads -- unbound. @wam_deref_keep_var returns the last
+  ; Ref in the chain (the one whose cell is actually Unbound), so
+  ; the write lands where every alias of the variable sees it.
+  %a_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %a_addr_i64 = extractvalue %Value %a_last, 1
   %a_addr = trunc i64 %a_addr_i64 to i32
-  %a_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
-  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %a_old)
-  ; M104: if b is also a Ref to an unbound heap cell, store the
-  ; ORIGINAL b (the Ref) into a's cell rather than the deref'd
-  ; Unbound sentinel. That way a now points at b's cell, and
-  ; subsequent var(a) / var(b) / a == b / etc. all see them as
-  ; the same variable. Previously bind_a_through stored db (=
-  ; Unbound) which left a and b as two distinct unbound cells.
+  ; M104: if b is also a Ref to an unbound heap cell, store b's
+  ; chain-end Ref into a's cell rather than the deref'd Unbound
+  ; sentinel. That way a now points at b's cell, and subsequent
+  ; var(a) / var(b) / a == b / etc. all see them as the same
+  ; variable. (M140: chain-end rather than original b, so chains
+  ; stay depth-bounded; and if both chains already end at the SAME
+  ; cell, the variables are already aliased -- writing would create
+  ; a self-referential cell, so succeed without binding.)
   %ba_b_tag = extractvalue %Value %b, 0
   %ba_b_is_ref = icmp eq i32 %ba_b_tag, 5
   %ba_db_unb = call i1 @value_is_unbound(%Value %db)
   %ba_alias = and i1 %ba_b_is_ref, %ba_db_unb
-  %ba_to_write = select i1 %ba_alias, %Value %b, %Value %db
-  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_to_write)
+  br i1 %ba_alias, label %bind_a_alias, label %bind_a_value
+
+bind_a_alias:
+  %ba_b_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %ba_b_addr_i64 = extractvalue %Value %ba_b_last, 1
+  %ba_same_cell = icmp eq i64 %ba_b_addr_i64, %a_addr_i64
+  br i1 %ba_same_cell, label %bind_a_done, label %bind_a_store_alias
+
+bind_a_store_alias:
+  %baa_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %baa_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %ba_b_last)
+  br label %bind_a_done
+
+bind_a_value:
+  %bav_old = call %Value @wam_heap_get(%WamState* %vm, i32 %a_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %a_addr, %Value %bav_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %a_addr, %Value %db)
+  br label %bind_a_done
+
+bind_a_done:
   ret i1 true
 
 check_b_unb:
@@ -1100,18 +1166,36 @@ bind_b:
   br i1 %b_is_ref, label %bind_b_through, label %fail_no_binding
 
 bind_b_through:
-  %b_addr_i64 = extractvalue %Value %b, 1
+  ; M140: symmetric to bind_a_through -- bind at the END of b's Ref
+  ; chain, alias to a's chain-end Ref, skip if already the same cell.
+  %b_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %b_addr_i64 = extractvalue %Value %b_last, 1
   %b_addr = trunc i64 %b_addr_i64 to i32
-  %b_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
-  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %b_old)
-  ; M104: symmetric to bind_a_through -- if a is also an unbound
-  ; Ref, store the original a so they alias.
   %bb_a_tag = extractvalue %Value %a, 0
   %bb_a_is_ref = icmp eq i32 %bb_a_tag, 5
   %bb_da_unb = call i1 @value_is_unbound(%Value %da)
   %bb_alias = and i1 %bb_a_is_ref, %bb_da_unb
-  %bb_to_write = select i1 %bb_alias, %Value %a, %Value %da
-  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_to_write)
+  br i1 %bb_alias, label %bind_b_alias, label %bind_b_value
+
+bind_b_alias:
+  %bb_a_last = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %bb_a_addr_i64 = extractvalue %Value %bb_a_last, 1
+  %bb_same_cell = icmp eq i64 %bb_a_addr_i64, %b_addr_i64
+  br i1 %bb_same_cell, label %bind_b_done, label %bind_b_store_alias
+
+bind_b_store_alias:
+  %bba_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %bba_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %bb_a_last)
+  br label %bind_b_done
+
+bind_b_value:
+  %bbv_old = call %Value @wam_heap_get(%WamState* %vm, i32 %b_addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %b_addr, %Value %bbv_old)
+  call void @wam_heap_set(%WamState* %vm, i32 %b_addr, %Value %da)
+  br label %bind_b_done
+
+bind_b_done:
   ret i1 true
 
 both_bound:
@@ -5168,13 +5252,31 @@ gs.check_unb:
   br i1 %gs.unb, label %gs.write, label %gs.fail
 
 gs.write:
-  ; Write mode: push functor marker on heap, bind Ai to Ref, push WriteCtx
-  %gs.marker = call %Value @value_atom(i8* null)
-  %gs.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gs.marker)
-  %gs.ref = call %Value @value_ref(i32 %gs.addr)
+  ; Write mode: allocate a Compound and bind Ai to it.
+  %gs.fn_ptr = inttoptr i64 %op1 to i8*
+  call void @wam_arena_ensure()
+  %gs.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %gs.cp_mem = call i8* @wam_arena_alloc(i64 %gs.cp_size)
+  %gs.wcp = bitcast i8* %gs.cp_mem to %Compound*
+  %gs.wfn_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 0
+  store i8* %gs.fn_ptr, i8** %gs.wfn_slot
+  %gs.war_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 1
+  store i32 %gs.arity, i32* %gs.war_slot
+  %gs.arity64 = zext i32 %gs.arity to i64
+  %gs.args_bytes = shl i64 %gs.arity64, 4
+  %gs.args_mem = call i8* @wam_arena_alloc(i64 %gs.args_bytes)
+  %gs.wargs = bitcast i8* %gs.args_mem to %Value*
+  %gs.wargs_slot = getelementptr %Compound, %Compound* %gs.wcp, i32 0, i32 2
+  store %Value* %gs.wargs, %Value** %gs.wargs_slot
+  %gs.wcp_i64 = ptrtoint %Compound* %gs.wcp to i64
+  %gs.wval0 = insertvalue %Value undef, i32 3, 0
+  %gs.wval = insertvalue %Value %gs.wval0, i64 %gs.wcp_i64, 1
+  %gs.old = call %Value @wam_get_reg(%WamState* %vm, i32 %gs.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %gs.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.ref)
+  call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.wval)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %gs.old, %Value %gs.wval)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %gs.arity)
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gs.wargs)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -5373,10 +5475,23 @@ put_constant:
   %pc.tag_i32 = lshr i32 %pc.op2_32, 16
   %pc.val = insertvalue %Value undef, i32 %pc.tag_i32, 0
   %pc.val2 = insertvalue %Value %pc.val, i64 %op1, 1
-  %pc.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pc.reg_idx)
+  ; M140: bind-through only for non-argument registers. Writing an
+  ; A register is pure staging for the next goal -- the old
+  ; bind-through bound any live unbound variable whose Ref remained
+  ; there (``var(X), atom(foo)' bound X to foo). X/Y registers can
+  ; hold set_variable placeholder Refs from top-down structure
+  ; chaining, where binding through IS the linking mechanism.
   call void @wam_trail_binding(%WamState* %vm, i32 %pc.reg_idx)
-  call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
+  %pc.is_areg = icmp ult i32 %pc.reg_idx, 16
+  br i1 %pc.is_areg, label %pc.store, label %pc.chain
+
+pc.chain:
+  %pc.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pc.old, %Value %pc.val2)
+  br label %pc.store
+
+pc.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 put_variable:
@@ -5450,10 +5565,25 @@ put_structure:
   %ps.cp_i64 = ptrtoint %Compound* %ps.cp to i64
   %ps.val0 = insertvalue %Value undef, i32 3, 0
   %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
-  %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
+  ; M140: bind-through only for non-argument registers (see
+  ; put_constant). A-reg writes are staging -- the old unconditional
+  ; bind-through bound a live variable left in Ai to the freshly
+  ; built compound (``var(X), compound(f(a))' bound X to f(a)).
+  ; X/Y-reg writes are top-down structure chaining: set_variable Xn
+  ; left a Ref to the parent's arg slot in Xn, and binding through
+  ; it links this new cell into the parent (e.g. the [33,11,22]
+  ; build in test_msort_head).
   call void @wam_trail_binding(%WamState* %vm, i32 %ps.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
+  %ps.is_areg = icmp ult i32 %ps.ai, 16
+  br i1 %ps.is_areg, label %ps.store, label %ps.chain
+
+ps.chain:
+  %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ps.old, %Value %ps.val)
+  br label %ps.store
+
+ps.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
@@ -5491,10 +5621,19 @@ put_list:
   %pl.cp_i64 = ptrtoint %Compound* %pl.cp to i64
   %pl.val0 = insertvalue %Value undef, i32 3, 0
   %pl.val = insertvalue %Value %pl.val0, i64 %pl.cp_i64, 1
-  %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
+  ; M140: bind-through only for non-argument registers (see
+  ; put_structure -- same staging-vs-chaining split).
   call void @wam_trail_binding(%WamState* %vm, i32 %pl.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
+  %pl.is_areg = icmp ult i32 %pl.ai, 16
+  br i1 %pl.is_areg, label %pl.store, label %pl.chain
+
+pl.chain:
+  %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.val)
+  br label %pl.store
+
+pl.store:
+  call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.val)
   ; WriteCtx writes into args[0..1] via set_constant/set_variable/set_value.
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
@@ -5795,6 +5934,13 @@ try_me_else:
   %tme.hs = load i32, i32* %tme.hs_ptr
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
+  ; Save stack_size so failed alternatives discard environment frames
+  ; allocated after this choice point. Without this, a called predicate
+  ; that fails after allocate leaves a stale EnvFrame on the stack.
+  %tme.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %tme.ss = load i32, i32* %tme.ss_ptr
+  %tme.sss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 13
+  store i32 %tme.ss, i32* %tme.sss_ptr
   ; M10: snapshot the CURRENT cut_barrier into saved_b so trust_me /
   ; retry_me_else can restore it on this CP's removal. Pre-M10 we
   ; stored cpn here AND overwrote the global cb with cpn, which
@@ -6149,6 +6295,12 @@ restore:
   %saved_ht = load i32, i32* %saved_ht_ptr
   %ht_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   store i32 %saved_ht, i32* %ht_ptr
+  ; Restore stack_size so failed clauses cannot leave EnvFrames that
+  ; confuse the caller or the next alternative.
+  %saved_ss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 13
+  %saved_ss = load i32, i32* %saved_ss_ptr
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 %saved_ss, i32* %ss_ptr
 
   ; Restore registers
   %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
@@ -6222,6 +6374,9 @@ done:
 }
 
 ; Execute builtin operations
+@wam_stream_handle_table = internal global [4096 x %WamLineReader*] zeroinitializer
+@wam_stream_handle_count = internal global i32 0
+
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
@@ -6627,11 +6782,62 @@ builtin_compound_check:
   ret i1 %cc.r
 
 builtin_is_list_check:
-  ; is_list/1: true if list (tag=4) or the empty list atom []
+  ; M141: proper ISO is_list/1. The engine builds lists as tag-3
+  ; Compounds with the [|]/2 functor and the empty list as the []
+  ; atom, but this check only accepted the legacy tag-4 List value,
+  ; so is_list/1 NEVER succeeded -- not even for [] -- on every
+  ; list the engine actually produces. Walk the cons chain: true at
+  ; the [] atom (or a legacy tag-4 List), step through [|]/2 tails,
+  ; false at anything else (unbound tail = partial list = false).
   %ilc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %ilc.tag = call i32 @value_tag(%Value %ilc.a1)
-  %ilc.r = icmp eq i32 %ilc.tag, 4
-  ret i1 %ilc.r
+  br label %ilc.loop
+
+ilc.loop:
+  %ilc.cur = phi %Value [ %ilc.a1, %builtin_is_list_check ], [ %ilc.next_d, %ilc.step ]
+  %ilc.tag = call i32 @value_tag(%Value %ilc.cur)
+  %ilc.is_listv = icmp eq i32 %ilc.tag, 4
+  br i1 %ilc.is_listv, label %ilc.true, label %ilc.chk_nil
+
+ilc.chk_nil:
+  %ilc.is_atom = icmp eq i32 %ilc.tag, 0
+  br i1 %ilc.is_atom, label %ilc.nil_test, label %ilc.chk_cons
+
+ilc.nil_test:
+  %ilc.pay = extractvalue %Value %ilc.cur, 1
+  %ilc.nil_id = load i64, i64* @wam_empty_list_atom_id
+  %ilc.is_nil = icmp eq i64 %ilc.pay, %ilc.nil_id
+  ret i1 %ilc.is_nil
+
+ilc.chk_cons:
+  %ilc.is_comp = icmp eq i32 %ilc.tag, 3
+  br i1 %ilc.is_comp, label %ilc.cons_test, label %ilc.false
+
+ilc.cons_test:
+  %ilc.pay2 = extractvalue %Value %ilc.cur, 1
+  %ilc.cp = inttoptr i64 %ilc.pay2 to %Compound*
+  %ilc.fn_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 0
+  %ilc.fn = load i8*, i8** %ilc.fn_slot
+  %ilc.cons_fn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %ilc.fn_eq = icmp eq i8* %ilc.fn, %ilc.cons_fn
+  %ilc.ar_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 1
+  %ilc.ar = load i32, i32* %ilc.ar_slot
+  %ilc.ar2 = icmp eq i32 %ilc.ar, 2
+  %ilc.is_cons = and i1 %ilc.fn_eq, %ilc.ar2
+  br i1 %ilc.is_cons, label %ilc.step, label %ilc.false
+
+ilc.step:
+  %ilc.args_slot = getelementptr %Compound, %Compound* %ilc.cp, i32 0, i32 2
+  %ilc.args = load %Value*, %Value** %ilc.args_slot
+  %ilc.tail_ptr = getelementptr %Value, %Value* %ilc.args, i32 1
+  %ilc.tail = load %Value, %Value* %ilc.tail_ptr
+  %ilc.next_d = call %Value @wam_deref_value(%WamState* %vm, %Value %ilc.tail)
+  br label %ilc.loop
+
+ilc.true:
+  ret i1 true
+
+ilc.false:
+  ret i1 false
 
 builtin_neq:
   ; Structurally not equal (op id 21). M137: route through
@@ -10114,10 +10320,10 @@ ats.close:
 
 builtin_stream_open:
   ; stream_open(+Path, -Handle) -- native buffered line-reader open.
-  ; The handle is an Integer payload containing a malloc-backed
-  ; %WamLineReader pointer. This keeps stream state outside the WAM
-  ; heap so deterministic loops can carry it across calls without
-  ; depending on heap lifetime or atom table internals.
+  ; The handle is a numeric ID into a target-owned reader table. This
+  ; keeps stream state outside the WAM heap without exposing raw malloc
+  ; pointers as duplicable WAM terms; close clears the table slot before
+  ; freeing the reader so copied handles cannot dereference freed memory.
   %so.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %so.t1 = call i32 @value_tag(%Value %so.a1)
   %so.is_atom = icmp eq i32 %so.t1, 0
@@ -10162,13 +10368,24 @@ so.init:
   store i64 0, i64* %so.len_slot
   %so.pos_slot = getelementptr %WamLineReader, %WamLineReader* %so.reader, i32 0, i32 4
   store i64 0, i64* %so.pos_slot
-  %so.handle = ptrtoint %WamLineReader* %so.reader to i64
+  %so.count = load i32, i32* @wam_stream_handle_count
+  %so.next = add i32 %so.count, 1
+  %so.cap_ok = icmp ult i32 %so.next, 4096
+  br i1 %so.cap_ok, label %so.store_handle, label %so.close_all_fail
+so.store_handle:
+  %so.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %so.next
+  store %WamLineReader* %so.reader, %WamLineReader** %so.slot
+  store i32 %so.next, i32* @wam_stream_handle_count
+  %so.handle = zext i32 %so.next to i64
   %so.v = call %Value @value_integer(i64 %so.handle)
   %so.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %so.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %so.raw2, %Value %so.v)
-  br i1 %so.ok, label %so.success, label %so.close_all_fail
+  br i1 %so.ok, label %so.success, label %so.close_stored_fail
 so.success:
   ret i1 true
+so.close_stored_fail:
+  store %WamLineReader* null, %WamLineReader** %so.slot
+  br label %so.close_all_fail
 so.close_all_fail:
   call i32 @close(i32 %so.fd)
   call void @free(i8* %so.buf)
@@ -10184,12 +10401,22 @@ builtin_read_line:
   %rln.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %rln.t1 = call i32 @value_tag(%Value %rln.a1)
   %rln.is_int = icmp eq i32 %rln.t1, 1
-  br i1 %rln.is_int, label %rln.have_handle, label %rln.fail
+  br i1 %rln.is_int, label %rln.lookup_handle, label %rln.fail
 rln.fail:
   ret i1 false
+rln.lookup_handle:
+  %rln.handle64 = call i64 @value_payload(%Value %rln.a1)
+  %rln.handle = trunc i64 %rln.handle64 to i32
+  %rln.handle_min = icmp sgt i32 %rln.handle, 0
+  %rln.handle_max = icmp ult i32 %rln.handle, 4096
+  %rln.handle_ok = and i1 %rln.handle_min, %rln.handle_max
+  br i1 %rln.handle_ok, label %rln.load_handle, label %rln.fail
+rln.load_handle:
+  %rln.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rln.handle
+  %rln.reader = load %WamLineReader*, %WamLineReader** %rln.slot
+  %rln.reader_null = icmp eq %WamLineReader* %rln.reader, null
+  br i1 %rln.reader_null, label %rln.fail, label %rln.have_handle
 rln.have_handle:
-  %rln.handle = call i64 @value_payload(%Value %rln.a1)
-  %rln.reader = inttoptr i64 %rln.handle to %WamLineReader*
   %rln.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rln.reader, i32 0, i32 0
   %rln.fd = load i32, i32* %rln.fd_slot
   %rln.fd_ok = icmp sge i32 %rln.fd, 0
@@ -10296,19 +10523,33 @@ rln.eof:
 
 builtin_stream_close:
   ; stream_close(+Handle) -- closes and frees a stream_open/2 handle.
+  ; Already-closed table slots succeed so copied handles and backtracking
+  ; cleanup paths cannot turn a cleared slot into a hard failure or use-after-free.
   %scl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %scl.t1 = call i32 @value_tag(%Value %scl.a1)
   %scl.is_int = icmp eq i32 %scl.t1, 1
-  br i1 %scl.is_int, label %scl.have_handle, label %scl.fail
+  br i1 %scl.is_int, label %scl.lookup_handle, label %scl.fail
 scl.fail:
   ret i1 false
+scl.lookup_handle:
+  %scl.handle64 = call i64 @value_payload(%Value %scl.a1)
+  %scl.handle = trunc i64 %scl.handle64 to i32
+  %scl.handle_min = icmp sgt i32 %scl.handle, 0
+  %scl.handle_max = icmp ult i32 %scl.handle, 4096
+  %scl.handle_ok = and i1 %scl.handle_min, %scl.handle_max
+  br i1 %scl.handle_ok, label %scl.load_handle, label %scl.fail
+scl.load_handle:
+  %scl.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %scl.handle
+  %scl.reader = load %WamLineReader*, %WamLineReader** %scl.slot
+  %scl.reader_null = icmp eq %WamLineReader* %scl.reader, null
+  br i1 %scl.reader_null, label %scl.already_closed, label %scl.have_handle
+scl.already_closed:
+  ret i1 true
 scl.have_handle:
-  %scl.handle = call i64 @value_payload(%Value %scl.a1)
-  %scl.reader = inttoptr i64 %scl.handle to %WamLineReader*
   %scl.fd_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 0
   %scl.fd = load i32, i32* %scl.fd_slot
   %scl.fd_ok = icmp sge i32 %scl.fd, 0
-  br i1 %scl.fd_ok, label %scl.close, label %scl.fail
+  br i1 %scl.fd_ok, label %scl.close, label %scl.already_closed
 scl.close:
   %scl.buf_slot = getelementptr %WamLineReader, %WamLineReader* %scl.reader, i32 0, i32 1
   %scl.buf = load i8*, i8** %scl.buf_slot
@@ -10317,6 +10558,7 @@ scl.close:
   call void @free(i8* %scl.buf)
   %scl.reader_i8 = bitcast %WamLineReader* %scl.reader to i8*
   call void @free(i8* %scl.reader_i8)
+  store %WamLineReader* null, %WamLineReader** %scl.slot
   %scl.ok = icmp eq i32 %scl.close_ret, 0
   ret i1 %scl.ok
 
@@ -17051,7 +17293,9 @@ do_intern:
 @.fn_date = private constant [5 x i8] c"date\00"
 @.fn_local = private constant [6 x i8] c"local\00"
 @.fn__24VAR = private constant [5 x i8] c"$VAR\00"
+@.fn_state = private constant [6 x i8] c"state\00"
 @.fn__2B = private constant [2 x i8] c"+\00"
+@.fn_record = private constant [7 x i8] c"record\00"
 @.fn_plawk_5Foptions = private constant [14 x i8] c"plawk_options\00"
 @.fn_outputs = private constant [8 x i8] c"outputs\00"
 @.fn_normalize_5Foutputs = private constant [18 x i8] c"normalize_outputs\00"
@@ -17474,19 +17718,19 @@ do_copy:
 ; === WAM-Compiled Predicates (boxed %Value) ===
 ; === Merged WAM code and labels (project-level) ===
 @module_code = private constant [245 x %Instruction] [
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262144 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 5, i64 17, i64 0 },
   %Instruction { i32 5, i64 18, i64 0 },
   %Instruction { i32 5, i64 19, i64 0 },
   %Instruction { i32 2, i64 18, i64 1 },
   %Instruction { i32 20, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262144 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 5, i64 17, i64 0 },
   %Instruction { i32 5, i64 18, i64 0 },
   %Instruction { i32 5, i64 19, i64 0 },
-  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262145 },
   %Instruction { i32 6, i64 16, i64 0 },
   %Instruction { i32 6, i64 17, i64 0 },
   %Instruction { i32 5, i64 20, i64 0 },
@@ -17499,7 +17743,7 @@ do_copy:
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 26, i64 0, i64 0 },
   %Instruction { i32 22, i64 3, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([7 x i8]* @.fn_record to i64), i64 196608 },
   %Instruction { i32 7, i64 97, i64 0 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 5, i64 17, i64 0 },
@@ -17509,7 +17753,7 @@ do_copy:
   %Instruction { i32 21, i64 31, i64 2 },
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 24, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([7 x i8]* @.fn_record to i64), i64 131072 },
   %Instruction { i32 7, i64 97, i64 0 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 1, i64 17, i64 1 },
@@ -17532,7 +17776,7 @@ do_copy:
   %Instruction { i32 17, i64 0, i64 0 },
   %Instruction { i32 19, i64 2, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262144 },
   %Instruction { i32 5, i64 20, i64 0 },
   %Instruction { i32 5, i64 21, i64 0 },
   %Instruction { i32 5, i64 22, i64 0 },
@@ -17557,7 +17801,7 @@ do_copy:
   %Instruction { i32 17, i64 0, i64 0 },
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262144 },
   %Instruction { i32 5, i64 20, i64 0 },
   %Instruction { i32 5, i64 21, i64 0 },
   %Instruction { i32 5, i64 22, i64 0 },
@@ -17583,12 +17827,12 @@ do_copy:
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
   %Instruction { i32 1, i64 49, i64 0 },
-  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262145 },
   %Instruction { i32 5, i64 20, i64 0 },
   %Instruction { i32 5, i64 21, i64 0 },
   %Instruction { i32 5, i64 22, i64 0 },
   %Instruction { i32 5, i64 23, i64 0 },
-  %Instruction { i32 3, i64 0, i64 2 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262146 },
   %Instruction { i32 6, i64 20, i64 0 },
   %Instruction { i32 5, i64 50, i64 0 },
   %Instruction { i32 6, i64 22, i64 0 },
@@ -17609,7 +17853,7 @@ do_copy:
   %Instruction { i32 17, i64 0, i64 0 },
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([6 x i8]* @.fn_state to i64), i64 262144 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 5, i64 17, i64 0 },
   %Instruction { i32 5, i64 18, i64 0 },
@@ -17655,7 +17899,7 @@ do_copy:
   %Instruction { i32 22, i64 18, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
   %Instruction { i32 0, i64 0, i64 65536 },
-  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 3, i64 ptrtoint ([7 x i8]* @.fn_record to i64), i64 196609 },
   %Instruction { i32 7, i64 97, i64 0 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 5, i64 17, i64 0 },
@@ -17666,7 +17910,7 @@ do_copy:
   %Instruction { i32 23, i64 20, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
   %Instruction { i32 1, i64 48, i64 0 },
-  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 3, i64 ptrtoint ([7 x i8]* @.fn_record to i64), i64 196609 },
   %Instruction { i32 7, i64 97, i64 0 },
   %Instruction { i32 5, i64 19, i64 0 },
   %Instruction { i32 5, i64 49, i64 0 },
@@ -17685,7 +17929,7 @@ do_copy:
   %Instruction { i32 24, i64 0, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
   %Instruction { i32 1, i64 48, i64 0 },
-  %Instruction { i32 3, i64 0, i64 1 },
+  %Instruction { i32 3, i64 ptrtoint ([7 x i8]* @.fn_record to i64), i64 131073 },
   %Instruction { i32 7, i64 97, i64 0 },
   %Instruction { i32 5, i64 49, i64 0 },
   %Instruction { i32 1, i64 50, i64 2 },
@@ -17702,7 +17946,7 @@ do_copy:
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 22, i64 23, i64 0 },
   %Instruction { i32 16, i64 0, i64 0 },
-  %Instruction { i32 3, i64 0, i64 0 },
+  %Instruction { i32 3, i64 ptrtoint ([8 x i8]* @.fn_outputs to i64), i64 65536 },
   %Instruction { i32 5, i64 16, i64 0 },
   %Instruction { i32 2, i64 16, i64 1 },
   %Instruction { i32 21, i64 10, i64 0 },

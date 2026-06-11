@@ -63,7 +63,7 @@ wat_tools_available :- tool_available(wat2wasm), tool_available(node).
 :- begin_tests(wam_wat_lowered_t5, [condition(wat_tools_available)]).
 
 % Distinct-first-arg predicates lower as clause_chain (T5); a variable-first-arg
-% predicate must decline T5 and stay multi_clause_1 (T3).
+% predicate declines T5 and lowers as multi_clause_n (T4, all clauses inline).
 test(gate_picks_clause_chain) :-
     forall(member(PI, [color/1, sz/2, op/2]),
            ( wam_target:compile_predicate_to_wam(PI, [], W),
@@ -71,7 +71,7 @@ test(gate_picks_clause_chain) :-
              assertion(Reason == clause_chain) )),
     wam_target:compile_predicate_to_wam(samearg/1, [], Ws),
     wam_wat_lowerable(samearg/1, Ws, RS),
-    assertion(RS == multi_clause_1).
+    assertion(RS == multi_clause_n).
 
 % The emitted WAT: an unbound-A1 guard, one do_get_constant guard per
 % discriminator, and the clause body inline under each.
