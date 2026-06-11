@@ -145,6 +145,13 @@ difference matters.
 
 ## Policy Implication
 
+The `Binomial(10, 0.1)` example is a useful warning case: it is clearly skewed
+even though the tail falls quickly. For this reason, symmetric approximations
+should wait for a skewness/tail-error gate. Binomial fits can still be useful
+before then as compression: they may reduce storage from many bins to `(n, p,
+error_metadata)`, but that is different from avoiding the initial exact or
+sampled computation needed to validate the fit.
+
 A reasonable first SimpleWiki policy is:
 
 ```text

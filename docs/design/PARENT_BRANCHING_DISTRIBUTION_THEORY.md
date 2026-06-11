@@ -155,6 +155,27 @@ Gaussian. In this sense the binomial approximation supplies a compact
 finite-support prior; it is not a claim that the exact node histogram is
 symmetric.
 
+A concrete skewed case is `Binomial(n=10, p=0.1)`. Its mean is `1`,
+variance is `0.9`, and skewness is about `0.843`; the largest masses are
+approximately `P(0)=0.349`, `P(1)=0.387`, `P(2)=0.194`, and `P(3)=0.057`.
+This is visibly right-skewed even though the tail drops quickly. The practical
+lesson is that visual symmetry depends on both `n` and `p`; a symmetric or
+normal approximation should be admitted by skewness and CDF/tail-error gates,
+not by the existence of a binomial fit alone.
+
+Solving the skewness gate gives a useful depth threshold:
+
+```text
+n >= (1 - 2p)^2 / (skew_tol^2 * p * (1 - p))
+```
+
+For example, with `p=0.1`, reaching skewness below `0.5` requires roughly
+`n >= 29`, while below `0.25` requires roughly `n >= 114`. For SimpleWiki-like
+`p ~= 0.028750`, the same thresholds require much larger effective depth.
+Until that point, a binomial fit can still be useful as a compact storage
+representation, but it should not be treated as an obviously symmetric
+approximation.
+
 For `epsilon = 0.028750`:
 
 ```text
@@ -420,6 +441,14 @@ elif b_p_bucket is high and expected_reuse is low:
 else:
     evaluate exact histogram, cached boundary, or fitted distribution by cost
 ```
+
+There are two separate uses for a fitted distribution. As an admission prior,
+the fit can sometimes avoid computing a full histogram, but only under an
+explicit approximation policy with measured error gates. As a compressed
+representation, the fit can save memory or storage after exact or sampled
+distribution data has already been computed. In the second case, a binomial
+record such as `(n, p, error_metadata)` can replace many histogram bins, but it
+does not remove the initial cost needed to validate that compression.
 
 For SimpleWiki, the measured sample has narrow support and `b_p` close to `1`,
 so exact histograms can probably be propagated deeper than a root-distance-only
