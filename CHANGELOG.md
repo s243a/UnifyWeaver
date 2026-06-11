@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Rust target (M151): all-native/kernel projects generated
+  uncompilable crates.** The long-standing `test_wam_rust_runtime`
+  e2e failure (last item of the campaign ledger's small fixes) was
+  not a wrong answer — the generated crate never compiled. Three
+  interacting generator defects: (1) `shared_wam_program()` was not
+  emitted when no predicate used the shared-WAM strategy, but the
+  main template imports/calls it unconditionally (now emits an empty
+  stub); (2) FFI-kernel predicates emitted only a `// dispatched via
+  CallForeign` comment with no public symbol for library consumers
+  (now also emit a self-registering wrapper); (3) the runtime-parser
+  era arity-suffix rename (`tc_descendant` → `tc_descendant_2`)
+  leaked into foreign-lowered entry points, breaking the documented
+  import contract (kernel wrappers now use the bare name; generic
+  WAM wrappers keep the suffix).
 - **WAM Scala target (M150): any format string containing a space
   wrong-failed its predicate.** `tokenize_wam_line`'s quote-aware
   tokenizer left a residual empty token when a quoted operand was
