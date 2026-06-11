@@ -147,6 +147,11 @@ parametric_state_bytes_estimate
 continuous_sample_points
 continuous_sample_bytes_estimate
 compression_ratio_estimate
+tail_pruning_thresholds
+tail_pruned_kept_bins
+tail_pruned_dropped_bins
+tail_pruned_dropped_mass
+tail_pruned_functional_error
 result_mass
 result_first_moment
 result_weighted_power
@@ -277,6 +282,13 @@ fit sampled onto a fixed grid, such as 100 points before FFT convolution, should
 beat exact histograms only when the exact support or reuse pattern justifies
 that grid cost. Otherwise it is primarily a storage/compression option after an
 exact or sampled distribution has already been validated.
+
+For extremely light tails, also test exact-prefix tail pruning before switching
+to a parametric representation. The benchmark should sweep thresholds such as
+`1e-2`, `1e-3`, and `1e-4`, then report how many suffix bins are removed and
+how much mass, first moment, or weighted-power contribution is lost. This makes
+pruning a functional-level decision rather than a visual judgment about the
+shape of the histogram.
 
 The same run should report parent-degree moments over the selected reachable
 nodes:

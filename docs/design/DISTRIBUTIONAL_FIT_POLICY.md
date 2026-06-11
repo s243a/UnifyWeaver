@@ -11,6 +11,12 @@ The runtime should treat a node's path statistic as a representation choice:
 ```prolog
 distribution_state(exact_histogram(Bins)).
 
+distribution_state(tail_pruned_histogram(
+    ExactPrefix,
+    DroppedTailRange,
+    DroppedTailMass,
+    FunctionalErrorBounds)).
+
 distribution_state(hybrid_truncated(
     ExactPrefix,
     TailFamily,
@@ -71,6 +77,16 @@ else:
 ```
 
 `K = 10` is a reasonable first default because it keeps small hand-checkable histograms exact while preventing unbounded per-node vectors. It must be a configuration value, not a constant baked into generated code.
+
+A light-tail histogram can sometimes be shortened before fitting any parametric
+family. If the suffix mass after a candidate cut is below `epsilon_tail`, and
+the discarded contribution to the requested functional is below its error
+budget, store `tail_pruned_histogram` rather than a fitted tail. This keeps the
+observed prefix exact while recording enough metadata to make the dropped suffix
+visible in diagnostics. For binomial-like or extremely light tails, this can
+remove a large fraction of bins; for skewed or medium/heavy tails, the same rule
+will refuse to prune because the suffix mass or functional contribution remains
+too large.
 
 The first tail family should be `truncated_geometric` or equivalently a discrete exponential over finite support. It is simple, has closed-form CDF/survival functions, and matches the intuition that longer parent-only paths often decay after the high-signal prefix. Do not assume a Poisson family by default: parent path distributions are finite, graph-constrained, and driven by branching structure rather than independent arrival counts.
 
@@ -234,6 +250,7 @@ and
 Diagnostics should be emitted into the recurrence strategy trace:
 
 - exact support size;
+- tail-pruning threshold, dropped range, dropped mass, and functional error;
 - chosen family;
 - fitted finite support range;
 - materialised cumulative bases;

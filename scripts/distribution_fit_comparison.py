@@ -26,6 +26,7 @@ from scripts.distribution_cache_support_bounds import (  # noqa: E402
     safe_graph_name,
 )
 from tools.distribution_cache_support import (  # noqa: E402
+    EXPONENT,
     FIXTURES,
     ROOT,
     exact_histogram,
@@ -36,6 +37,7 @@ from tools.distribution_cache_support import (  # noqa: E402
 
 
 DEFAULT_DEPTHS = [2, 4, 8, 16]
+DEFAULT_PRUNE_THRESHOLDS = [0.01, 0.001, 0.0001]
 
 
 def clamp_probability(value: float) -> float:
@@ -109,6 +111,49 @@ def parametric_state_bytes_estimate(params: dict[str, object]) -> int:
 
 def dense_sample_bytes(sample_points: int) -> int:
     return max(0, sample_points) * 8
+
+
+def parse_float_list(text: str) -> list[float]:
+    values = []
+    for part in text.split(","):
+        part = part.strip()
+        if part:
+            values.append(float(part))
+    return values
+
+
+def tail_pruning_summary(probabilities: list[float], thresholds: list[float], origin: int = 0) -> dict[str, dict[str, float | int | None]]:
+    summaries = {}
+    total_weighted_power = sum(((origin + index + 1) ** (-EXPONENT)) * probability for index, probability in enumerate(probabilities))
+    total_first_moment = sum((origin + index) * probability for index, probability in enumerate(probabilities))
+    for threshold in thresholds:
+        allowed_tail = max(0.0, threshold)
+        dropped_mass = 0.0
+        dropped_first_moment = 0.0
+        dropped_weighted_power = 0.0
+        dropped_bins = 0
+        for index in range(len(probabilities) - 1, -1, -1):
+            probability = probabilities[index]
+            if dropped_bins >= len(probabilities) - 1:
+                break
+            if dropped_mass + probability > allowed_tail:
+                break
+            dropped_mass += probability
+            dropped_first_moment += (origin + index) * probability
+            dropped_weighted_power += ((origin + index + 1) ** (-EXPONENT)) * probability
+            dropped_bins += 1
+        kept_bins = len(probabilities) - dropped_bins
+        summaries[str(threshold)] = {
+            "kept_bins": kept_bins,
+            "dropped_bins": dropped_bins,
+            "dropped_mass": dropped_mass,
+            "dropped_first_moment": dropped_first_moment,
+            "relative_first_moment_error": 0.0 if total_first_moment == 0.0 else dropped_first_moment / total_first_moment,
+            "dropped_weighted_power": dropped_weighted_power,
+            "relative_weighted_power_error": 0.0 if total_weighted_power == 0.0 else dropped_weighted_power / total_weighted_power,
+            "first_dropped_index": None if dropped_bins == 0 else origin + kept_bins,
+        }
+    return summaries
 
 
 def binomial_pmf(trials: int, probability: float) -> list[float]:
@@ -316,7 +361,17 @@ def prior_model_builders(depth: int):
     ]
 
 
-def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo, tail_epsilon, continuous_sample_points):
+def target_fit_records(
+    graph_name,
+    graph_label,
+    parents,
+    root,
+    target,
+    hist_memo,
+    tail_epsilon,
+    continuous_sample_points,
+    prune_thresholds,
+):
     started = time.perf_counter_ns()
     hist = exact_histogram(target, parents, root, hist_memo)
     exact_time_ns = time.perf_counter_ns() - started
@@ -343,6 +398,7 @@ def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo
             "support_width": len(empirical) - 1,
             "support_bins": len(empirical),
             "effective_support_bins": effective_support_bins(empirical, tail_epsilon),
+            "tail_pruning": tail_pruning_summary(empirical, prune_thresholds, origin),
             "path_count": sum(hist.values()),
             "mean_excess": mean,
             "variance_excess": variance,
@@ -362,7 +418,7 @@ def target_fit_records(graph_name, graph_label, parents, root, target, hist_memo
     return records
 
 
-def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_epsilon, continuous_sample_points):
+def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_epsilon, continuous_sample_points, prune_thresholds):
     base = size_biased_excess_pmf(parent_degrees)
     base_mean, base_variance = distribution_moments(base)
     records = []
@@ -384,6 +440,7 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
                 "support_width": len(empirical) - 1,
                 "support_bins": len(empirical),
                 "effective_support_bins": effective_support_bins(empirical, tail_epsilon),
+                "tail_pruning": tail_pruning_summary(empirical, prune_thresholds, 0),
                 "mean_excess": mean,
                 "variance_excess": variance,
                 "skewness_excess": distribution_skewness(empirical),
@@ -411,7 +468,9 @@ def run_graph_fit_comparison(
     depths=None,
     tail_epsilon=0.001,
     continuous_sample_points=100,
+    prune_thresholds=None,
 ):
+    prune_thresholds = prune_thresholds or DEFAULT_PRUNE_THRESHOLDS
     records = []
     hist_memo = {}
     for target in targets:
@@ -426,6 +485,7 @@ def run_graph_fit_comparison(
                     hist_memo,
                     tail_epsilon,
                     continuous_sample_points,
+                    prune_thresholds,
                 )
             )
         except ValueError as exc:
@@ -446,6 +506,7 @@ def run_graph_fit_comparison(
             depths or DEFAULT_DEPTHS,
             tail_epsilon,
             continuous_sample_points,
+            prune_thresholds,
         )
     )
     return records
@@ -491,6 +552,12 @@ def summarize(records: list[dict[str, object]]) -> str:
             "|-------|---------|-----------|----------|----------|---------------------|-----------------|--------------------|",
         ])
         append_realized_support_table(lines, realized_records)
+        lines.extend([
+            "",
+            "## Realized Tail-Pruned Support",
+            "",
+        ])
+        append_tail_pruning_table(lines, realized_records)
     lines.extend([
         "",
         "## Depth-Conditioned Prior Distributions",
@@ -523,12 +590,56 @@ def summarize(records: list[dict[str, object]]) -> str:
                     mean_excess=statistics.mean(float(row["mean_excess"]) for row in rows),
                 )
             )
+        lines.extend([
+            "",
+            "## Prior Tail-Pruned Support",
+            "",
+        ])
+        append_tail_pruning_table(lines, prior_records)
 
     if error_records:
         lines.extend(["", "## Errors", ""])
         for record in error_records[:10]:
             lines.append(f"- {record['target_node']}: {record['error']}")
     return "\n".join(lines) + "\n"
+
+
+def unique_distribution_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    by_key = {}
+    for record in rows:
+        if record.get("distribution_role") == "realized_fit":
+            key = (record.get("distribution_role"), record.get("fixture"), record.get("target_node"))
+        else:
+            key = (record.get("distribution_role"), record.get("fixture"), record.get("root_distance_horizon"))
+        if key not in by_key:
+            by_key[key] = record
+    return list(by_key.values())
+
+
+def append_tail_pruning_table(lines: list[str], rows: list[dict[str, object]]) -> None:
+    unique_rows = unique_distribution_records(rows)
+    thresholds = sorted({float(threshold) for row in unique_rows for threshold in row.get("tail_pruning", {})})
+    lines.extend([
+        "| tail_threshold | distributions | mean_original_bins | mean_kept_bins | mean_dropped_bins | mean_dropped_mass | mean_weighted_power_error |",
+        "|----------------|---------------|--------------------|----------------|-------------------|-------------------|---------------------------|",
+    ])
+    for threshold in thresholds:
+        key = str(threshold)
+        threshold_rows = [row for row in unique_rows if key in row.get("tail_pruning", {})]
+        if not threshold_rows:
+            continue
+        pruning_rows = [row["tail_pruning"][key] for row in threshold_rows]
+        lines.append(
+            "| {threshold:g} | {rows} | {mean_original:.3f} | {mean_kept:.3f} | {mean_dropped:.3f} | {mean_mass:.6f} | {mean_weighted:.6f} |".format(
+                threshold=threshold,
+                rows=len(threshold_rows),
+                mean_original=statistics.mean(int(row["support_bins"]) for row in threshold_rows),
+                mean_kept=statistics.mean(int(row["kept_bins"]) for row in pruning_rows),
+                mean_dropped=statistics.mean(int(row["dropped_bins"]) for row in pruning_rows),
+                mean_mass=statistics.mean(float(row["dropped_mass"]) for row in pruning_rows),
+                mean_weighted=statistics.mean(float(row["relative_weighted_power_error"]) for row in pruning_rows),
+            )
+        )
 
 
 def unique_realized_target_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -636,10 +747,16 @@ def main(argv=None):
         default=100,
         help="Point count for estimating sampled-continuous representation cost.",
     )
+    parser.add_argument(
+        "--prune-thresholds",
+        default=",".join(map(str, DEFAULT_PRUNE_THRESHOLDS)),
+        help="Comma-separated tail-mass thresholds for suffix-pruning estimates.",
+    )
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     args = parser.parse_args(argv)
 
     depths = parse_int_list(args.depths)
+    prune_thresholds = parse_float_list(args.prune_thresholds)
     records = []
     if args.edge_file:
         root = args.root or SIMPLEWIKI_ROOT
@@ -663,6 +780,7 @@ def main(argv=None):
                 depths,
                 args.tail_epsilon,
                 args.continuous_sample_points,
+                prune_thresholds,
             )
         )
     else:
@@ -685,6 +803,7 @@ def main(argv=None):
                     depths,
                     args.tail_epsilon,
                     args.continuous_sample_points,
+                    prune_thresholds,
                 )
             )
 

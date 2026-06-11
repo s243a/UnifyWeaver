@@ -176,6 +176,15 @@ Until that point, a binomial fit can still be useful as a compact storage
 representation, but it should not be treated as an obviously symmetric
 approximation.
 
+For very light binomial tails, exact histograms may also be compressed by
+discarding a suffix rather than by fitting a new family. The safe rule is not
+"drop half the bins" by position; it is "drop the largest suffix whose mass
+and functional contribution are below threshold". For reachability mass this
+is just dropped probability mass. For bounded averages or weighted-power
+metrics, the dropped first moment or weighted contribution must also be checked.
+This can preserve an exact prefix while avoiding storage for bins that are
+statistically present but operationally irrelevant under the active metric.
+
 For `epsilon = 0.028750`:
 
 ```text
