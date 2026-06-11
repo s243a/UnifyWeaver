@@ -124,6 +124,11 @@ shifted-Gamma approximation, and it is cheaper to build in the prior comparison.
 Gamma remains useful as a candidate for wider enwiki-style branching, not as
 the default for this SimpleWiki sample.
 
+The binomial result should be read as a sparse-event model, not as a symmetric
+Gaussian claim. In this sample, excess-parent probability is small, so the
+binomial prior is right-skewed and compact. A normal approximation would be a
+later large-depth approximation after checking tail error and finite support.
+
 The root-distance table shows the depth-varying signal that motivates a future
 non-stationary prior: mean parent degree declines from `1.014359` at `L_min=1`
 to `1.011918` at `L_min=2` and `1.000000` at `L_min=3`. The current stationary

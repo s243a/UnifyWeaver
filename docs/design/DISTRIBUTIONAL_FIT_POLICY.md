@@ -79,10 +79,18 @@ Candidate families for later extension:
 | Family | Use when |
 |--------|----------|
 | `truncated_geometric` | Tail decays approximately exponentially after the exact prefix |
-| `truncated_discrete_normal` | Mass is concentrated around a mean with lower variance |
-| `beta_binomial` | Bounded support with measurable over/under-dispersion |
+| `truncated_discrete_normal` | Large-depth CLT regime after tail/error validation |
+| `binomial` | Bounded excess-event support where mean/variance recover compatible `n,p` |
+| `beta_binomial` | Bounded support with measurable over-dispersion beyond binomial variance |
 | `empirical_sketch` | No simple family fits but quantile/CDF accuracy is enough |
 | `mixture(Families)` | Topical and administrative regimes visibly mix |
+
+The normal family should be treated as a large-depth approximation, not as the
+default for rare excess-parent events. In near-chain SimpleWiki regimes,
+binomial or empirical discrete priors preserve the skewed finite support more
+directly. If measured parent degrees become scale-free rather than
+Poisson-like, the policy should favor empirical sketches, mixtures, or explicit
+hub handling instead of a single light-tailed count family.
 
 The family choice should be evidence-driven. Simplewiki is a calibration fixture: compute exact parent-only distributions there, fit candidate tails, and measure error. Enwiki is the stress case where the representation switch is expected to matter.
 

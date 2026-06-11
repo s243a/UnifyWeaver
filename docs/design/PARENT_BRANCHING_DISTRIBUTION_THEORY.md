@@ -102,6 +102,29 @@ horizon: `L_min` gives a lower-bound estimate, `L_max` gives an upper-bound
 estimate, and narrow support makes the difference small. It is useful for
 SimpleWiki-like samples because `epsilon` is small and measured `max_p` is low.
 
+A binomial prior is compact because it is determined by two parameters,
+`n` and `p`, and therefore by compatible mean and variance:
+
+```text
+mu = n * p
+sigma^2 = n * p * (1 - p)
+p = 1 - sigma^2 / mu
+n = mu / p = mu^2 / (mu - sigma^2)
+```
+
+This moment recovery is valid only for binomial-like under-dispersed data where
+`0 < sigma^2 < mu` and the recovered `n` is meaningful for the depth horizon.
+If variance is inflated by topical correlation or mixed regimes, a
+beta-binomial or empirical compound prior is a better candidate than forcing a
+binomial fit.
+
+The binomial family is not generally symmetric. It is symmetric only near
+`p = 0.5`; in the SimpleWiki near-chain regime, `p` is small and the mass is
+right-skewed. A normal/Gaussian approximation becomes reasonable only in the
+large-depth central-limit regime where both `n*p` and `n*(1-p)` are large.
+For rare excess-parent events, the intermediate approximation is more
+Poisson-like than Gaussian.
+
 For `epsilon = 0.028750`:
 
 ```text
@@ -148,6 +171,12 @@ For non-stationary layers, replace the power by a product of per-layer PGFs and
 use `Var(K_n) = sum_i Var(Y_i)` under layer independence. This is the more
 general form we should measure for enwiki. The binomial model is the special
 case where `Y_i` is Bernoulli.
+
+When the per-layer excess variables are not Bernoulli but still have finite
+variance, central-limit reasoning applies to the convolved sum at large depth.
+That supports a continuous normal-like planning approximation only after
+checking support truncation and tail error; it does not replace the discrete
+histogram or compound convolution oracle for shallow or rare-event regimes.
 
 ## 5. FFT convolution route
 
@@ -291,6 +320,26 @@ A provisional regime map is:
 
 The thresholds should be calibrated by SimpleWiki and enwiki samples rather than
 hard-coded from this note.
+
+Tail family choice is a planner-risk decision:
+
+| Tail regime | Candidate prior | Planner meaning |
+|-------------|-----------------|-----------------|
+| Light tail | Poisson-like, binomial | Counts have a characteristic scale; hubs are unlikely |
+| Medium tail | Geometric, exponential, shifted Gamma | Tails decay steadily but allow more long paths than light-tail counts |
+| Heavy tail | Scale-free, power law | Hubs are expected; rare high-parent nodes can dominate cost |
+
+Although Gamma is related to Poisson processes, it is not the continuous form
+of a Poisson count. Poisson models event counts in a fixed interval; Gamma
+models waiting time or accumulated positive mass until repeated events, which
+is why it is a more flexible medium-tail approximation here.
+
+Poisson-like and binomial priors are appropriate only when measured parent
+degrees are concentrated around a characteristic scale. Exponential or
+geometric tails are a middle ground when mass decays quickly but not as tightly
+as a light-tailed count model. If enwiki or unfiltered container/admin
+categories show power-law tails, the planner should prefer empirical sketches,
+mixtures, or hub-aware cutoffs over Poisson/binomial families.
 
 ## 7. Histogram support versus path multiplicity
 
