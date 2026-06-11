@@ -265,12 +265,20 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   switch back-end): shared front-end, per-target back-end. The compiler flattens
   the cascade for few clauses, hence the gate. **The T6 column is now closed
   out: every T5 target has a gated T6, except LLVM which declines on a measured
-  "the optimiser already does it" basis.** (A pre-existing, orthogonal bug
-  surfaced while testing Python T6: the T4 `emit_multi_clause_n_python` drops the
-  operand-setup instructions of an arithmetic rule body — e.g. `R is 1+0` lowers
-  to `+( , )` with unfilled args — so arithmetic-rule clauses give wrong results
-  under `emit_mode(lowered)`. It is independent of T6 dispatch and tracked
-  separately.)
+  "the optimiser already does it" basis.** (Testing Python T6 surfaced a
+  deeper, T6-independent arithmetic bug, since **fixed for the interpreter**:
+  `put_structure`/`put_list` unconditionally bound the var the target register
+  previously held, so for `X is Expr` — where the compiler leaves the result var
+  aliased into A1 while A2 is overwritten with the expression structure — the
+  result target was clobbered and **every `X is Expr` with an unbound X failed**
+  in the bytecode interpreter. Fix: bind only X-register sub-term slots
+  (`reg > _A_MAX`, created by `set_variable`/`unify_variable` for nested terms
+  like `error(type_error(..),..)`); A-register call-output slots are overwritten
+  without binding. The *lowered* Python emit still mishandles in-clause structure
+  construction — `parse_wam_text_py` drops `set_*` and its write model is
+  heap-consecutive rather than the runtime's `.args`/write-ctx — so
+  arithmetic-rule clauses remain wrong under `emit_mode(lowered)`; that emit
+  needs a read/write-ctx reconciliation, tracked as a separate follow-up.)
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition

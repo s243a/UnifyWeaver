@@ -68,15 +68,40 @@ target** — atom-keyed, int-interned, and VM-dispatched — except LLVM, which
 declines on the measured "the optimiser already converts the chain to a switch"
 basis (`docs/reports/wam_int_interned_t6_perf.md`).
 
-## Note — unrelated pre-existing bug found while testing Python T6
+## Note — deeper arithmetic bug found while testing Python T6 (interpreter fixed)
 
-The Python T6 parity battery surfaced a bug **independent of T6 dispatch**: the
-T4 `emit_multi_clause_n_python` drops the operand-setup instructions of an
-arithmetic rule body. A clause like `grade(g01, R) :- R is 1 + 0` lowers to a
-`pred_*_cK` that builds `Compound("+", [None]*2)` and calls `is_lax/2` **without
-filling the `+` operands**, so it returns the wrong result under
-`emit_mode(lowered)` — reproducible with a 3-clause predicate that never reaches
-the T6 threshold (no switch involved). The T6 Python test therefore exercises
-fact predicates (`shade/1`) and 2-arg fact remainders (`tone/2`), which lower
-correctly, and avoids arithmetic rule bodies. The T4 arithmetic-body bug is
-tracked separately.
+The Python T6 parity battery surfaced a bug **independent of T6 dispatch**, whose
+root cause turned out to be in the **bytecode interpreter**, not just the lowered
+emit. `put_structure F, Ai` (and `put_list`) unconditionally bound whatever var
+the target register previously held. For `X is Expr` the compiler emits
+
+```
+get_variable X1, A2     % save the result var R (head arg) into X1
+put_value    X1, A1     % A1 = R   (is/2 arg 1, the result target)
+put_structure +/2, A2   % A2 = the expression structure
+set_constant ...        % fill it
+builtin_call is/2, 2
+```
+
+so A1 and A2 both point at R when `put_structure` runs; binding R to the freshly
+built expression clobbered A1, and **every `X is Expr` with an unbound X failed**
+in the interpreter (it only "worked" for a ground check like `3 is 1+2`).
+
+**Fix** (`WamRuntime.py`): bind the old var only for an **X (temporary) register**
+(`reg > _A_MAX`) — a nested sub-term slot created by an earlier
+`set_variable`/`unify_variable`, where the bind links the inner term into its
+parent (`error(type_error(..),..)`). An **A (argument) register** is a call-output
+slot whose prior contents are dead and may alias a live argument, so it is
+overwritten without binding. Regression test: `tests/test_wam_python_is_binding.pl`
+(unbound `is`, a list-recursive `is`-accumulator, `X = Term` unify, nested
+construction, ground check) — all green; the full `test_wam_python_target` suite
+is unchanged.
+
+**Still open (separate follow-up):** the *lowered* Python emit mishandles
+in-clause structure construction — `parse_wam_text_py` drops `set_*`, and its
+write-mode model is heap-consecutive rather than the runtime's `.args`/write-ctx —
+so arithmetic-rule clauses remain wrong under `emit_mode(lowered)`. The T6 Python
+test therefore exercises fact predicates (`shade/1`) and 2-arg fact remainders
+(`tone/2`), which lower correctly, and avoids arithmetic rule bodies. Reconciling
+the lowered emit with the runtime's read/write-ctx structure model is tracked
+separately.

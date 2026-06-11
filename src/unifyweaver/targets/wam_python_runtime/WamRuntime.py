@@ -2659,24 +2659,37 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'put_structure':
             _, functor, arity, reg = instr
             functor = _runtime_functor_name(functor, arity)
-            old = deref(get_reg(state, reg), state)
             c = Compound(functor, [None]*arity)
             addr = heap_put(state, c)
             ref = Ref(addr)
-            if isinstance(old, Var):
-                bind(old, ref, state)
+            # An X (temporary) register holding an unbound var is a sub-term SLOT
+            # of an enclosing structure (placed there by an earlier set_variable /
+            # unify_variable), so binding it links the nested term into its parent.
+            # An A (argument) register is a call-output slot being constructed: its
+            # prior contents are dead and must NOT be bound, because that var may
+            # still be aliased into a live lower argument register — e.g. `X is E`
+            # saves the result var into A1 (via put_value) while A2 still points at
+            # it before put_structure overwrites A2 with the expression structure;
+            # binding it there would clobber A1's result target.
+            if reg > _A_MAX:
+                old = deref(get_reg(state, reg), state)
+                if isinstance(old, Var):
+                    bind(old, ref, state)
             set_reg(state, reg, ref)
             state.s = addr
             _begin_write_ctx(state, c)
 
         elif op == 'put_list':
             _, reg = instr
-            old = deref(get_reg(state, reg), state)
             c = Compound('.', [None, None])
             addr = heap_put(state, c)
             ref = Ref(addr)
-            if isinstance(old, Var):
-                bind(old, ref, state)
+            # See put_structure: bind only an X-register slot var, never an
+            # A-register call-output slot (which may alias a live argument).
+            if reg > _A_MAX:
+                old = deref(get_reg(state, reg), state)
+                if isinstance(old, Var):
+                    bind(old, ref, state)
             set_reg(state, reg, ref)
             state.s = addr
             _begin_write_ctx(state, c)
@@ -3553,23 +3566,27 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             set_reg(sub, reg, Float(f))
         elif op == 'put_structure':
             _, functor, arity, reg = instr
-            old = deref(get_reg(sub, reg), sub)
             c = Compound(functor, [None]*arity)
             addr = heap_put(sub, c)
             ref = Ref(addr)
-            if isinstance(old, Var):
-                bind(old, ref, sub)
+            # Bind only an X-register sub-term slot var, never an A-register
+            # call-output slot (see the main step loop for the rationale).
+            if reg > _A_MAX:
+                old = deref(get_reg(sub, reg), sub)
+                if isinstance(old, Var):
+                    bind(old, ref, sub)
             set_reg(sub, reg, ref)
             sub.s = addr
             _begin_write_ctx(sub, c)
         elif op == 'put_list':
             _, reg = instr
-            old = deref(get_reg(sub, reg), sub)
             c = Compound('.', [None, None])
             addr = heap_put(sub, c)
             ref = Ref(addr)
-            if isinstance(old, Var):
-                bind(old, ref, sub)
+            if reg > _A_MAX:
+                old = deref(get_reg(sub, reg), sub)
+                if isinstance(old, Var):
+                    bind(old, ref, sub)
             set_reg(sub, reg, ref)
             sub.s = addr
             _begin_write_ctx(sub, c)
