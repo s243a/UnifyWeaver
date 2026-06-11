@@ -150,14 +150,20 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 - **Meta-call probe:** atom and compound closure meta-calls now emit IR and
   verify with `llvm-as` in `examples/plawk/generated/plawk_meta_call_probe.ll`.
 - **Reader probe:** the WAM/LLVM target now has general buffered stream builtins
-  `stream_open/2`, `read_line/2`, and `stream_close/1`. Handles are
-  malloc-backed `%WamLineReader` values carrying fd, buffer, length, and
-  position state; `read_line/2` reads through a 4 KB buffer, returns line atoms
-  without the trailing newline, and unifies `end_of_file` at EOF rather than
-  failing. The reader probe emits
+  `stream_open/2`, `read_line/2`, and `stream_close/1`. Handles are numeric
+  IDs into a target-owned `%WamLineReader` table carrying fd, buffer, length,
+  and position state; `read_line/2` reads through a 4 KB buffer, returns line
+  atoms without the trailing newline, and unifies `end_of_file` at EOF rather
+  than failing. The reader probe emits
   `examples/plawk/generated/plawk_reader_probe.ll` and verifies with `llvm-as`.
   Current limitation: line atoms are capped at 64 KiB until the output buffer is
   made growable.
+- **Compiled stream-core smoke:** `tests/test_plawk_compiled_stream_core.pl`
+  builds a native LLVM binary that streams a text file, splits records with
+  `atom_split/3`, runs a PLAWK-style handler over `record(text, Line, Fields)`,
+  counts records via `state/4`, and collects the two `ERROR` lines. It uses a
+  bounded output accumulator in the test; the generic `append_output/3` path is
+  still a separate compiled-list boundary.
 
 ---
 
@@ -180,6 +186,12 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
+
+**Current boundary:** the first native smoke reads from a file path rather than
+stdin and uses a bounded output accumulator. The next Phase-1 work is to lower
+deterministic `state/4` threading and generic output/list accumulation more
+directly, then replace the bounded helper with the normal `append_output/3`
+path.
 
 ---
 
