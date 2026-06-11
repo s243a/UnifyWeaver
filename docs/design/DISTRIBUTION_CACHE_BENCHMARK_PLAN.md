@@ -263,6 +263,26 @@ if L_max(v) - L_min(v) is large: prefer a cached boundary or fitted tail candida
 This lets deeper layers carry cheap min/max summaries while the planner decides
 where full histograms are still worth materialising.
 
+The same run should report parent-degree moments over the selected reachable
+nodes:
+
+```text
+p(v) = number of parent choices for v
+E[p]
+E[p^2]
+E[p^2] / E[p]
+```
+
+`E[p^2]/E[p]` is the size-biased parent branching signal. Low values near `1`
+mean parent paths do not multiply much under the selected graph policy, which
+supports carrying exact histograms deeper. Higher values, especially in deeper
+root-distance buckets, indicate that exact histogram propagation should be gated
+by support width, cache reuse, or a fitted distribution policy.
+
+See `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` for the binomial
+small-branching approximation, FFT evaluation of compound convolutions, and the
+shifted exponential / shifted Gamma larger-branching approximation.
+
 Another future direction is approximation from bounds plus low-order statistics.
 The min/max interval gives finite support, while observed branching and second
 moment estimates can help choose a candidate family. If real parent-path

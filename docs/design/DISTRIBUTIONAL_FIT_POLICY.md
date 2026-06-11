@@ -390,6 +390,46 @@ can carry min/max bounds through large parts of the graph, then materialise full
 distributions only where the query workload, error budget, or cache score makes
 the extra state worthwhile.
 
+Support width should be paired with a parent-branching signal before choosing
+how deep to carry exact histograms. Let `p_v` be the number of parent choices for
+node `v` under the active graph/filter/root policy. Then:
+
+```text
+mean_parent_degree = E[p]
+size_biased_parent_branching = E[p^2] / E[p]
+```
+
+The ratio is the parent-only analogue of a traversal-effective branch factor: it
+estimates the parent degree seen by a path that has already followed a parent
+edge. It is not a replacement for exact histogram validation, but it is a useful
+early warning signal. When `support_width` stays small and `E[p^2]/E[p]` stays
+near `1`, exact histograms can often be carried deeper because many states are
+one-point or nearly one-point distributions. When the ratio rises, especially in
+deeper root-distance buckets, parent paths are likely to multiply and exact
+histogram materialisation should require stronger evidence of reuse.
+
+A first planner rule should be shaped like:
+
+```text
+materialize_exact(node) when
+    support_width(node) <= exact_support_width_limit
+    or root_distance(node) <= D_pre
+    or expected_reuse(node) * saved_search_cost(node) > storage_cost(node)
+
+defer_full_distribution(node) when
+    support_width(node) is wide
+    and bucket_size_biased_parent_branching is high
+    and expected_reuse(node) is low
+```
+
+For SimpleWiki, the current measurements suggest the first condition dominates.
+For enwiki, the parent-branching moment should be measured by root-distance
+bucket before deciding how far exact histograms should be propagated.
+
+`PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
+small excess parent branching is binomial-like, while larger parent branching is
+better treated as a compound/convolution model before fitting a closed form.
+
 ## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
