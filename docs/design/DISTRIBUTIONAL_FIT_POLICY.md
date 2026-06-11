@@ -446,6 +446,12 @@ It keeps two concepts separate:
   stay narrow enough to materialize cheaply before observing exact node
   histograms.
 
+The current prior is stationary within the selected calibration set. A later
+variant should allow layer-conditioned priors, where the excess-parent law
+changes with root-distance bucket. That would handle cases where the average
+parent branching signal declines as nodes move farther from the root, but it
+should wait for deeper SimpleWiki and enwiki measurements.
+
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;
 3. fitted truncated-tail representation over the same nodes;

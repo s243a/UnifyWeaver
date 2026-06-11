@@ -391,6 +391,15 @@ def summarize(records: list[dict[str, object]]) -> str:
         "|-------|------|---------|--------|--------|----------------|---------------|--------------------|",
     ]
     append_model_table(lines, realized_records)
+    if realized_records:
+        lines.extend([
+            "",
+            "## Realized Support By Root Distance",
+            "",
+            "| L_min | targets | mean_bins | p95_bins | max_bins | mean_effective_bins | mean_path_count | mean_parent_degree |",
+            "|-------|---------|-----------|----------|----------|---------------------|-----------------|--------------------|",
+        ])
+        append_realized_support_table(lines, realized_records)
     lines.extend([
         "",
         "## Depth-Conditioned Prior Distributions",
@@ -429,6 +438,41 @@ def summarize(records: list[dict[str, object]]) -> str:
         for record in error_records[:10]:
             lines.append(f"- {record['target_node']}: {record['error']}")
     return "\n".join(lines) + "\n"
+
+
+def unique_realized_target_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    by_target = {}
+    for record in rows:
+        target = record.get("target_node")
+        if target is not None and target not in by_target:
+            by_target[target] = record
+    return list(by_target.values())
+
+
+def append_realized_support_table(lines: list[str], rows: list[dict[str, object]]) -> None:
+    by_distance = {}
+    for record in unique_realized_target_records(rows):
+        l_min = record.get("L_min")
+        if l_min is not None:
+            by_distance.setdefault(l_min, []).append(record)
+    for l_min in sorted(by_distance):
+        distance_rows = by_distance[l_min]
+        support_bins = [int(row["support_bins"]) for row in distance_rows]
+        effective_bins = [int(row["effective_support_bins"]) for row in distance_rows]
+        path_counts = [int(row["path_count"]) for row in distance_rows]
+        parent_degrees = [int(row["parent_degree"]) for row in distance_rows]
+        lines.append(
+            "| {l_min} | {targets} | {mean_bins:.3f} | {p95_bins:.3f} | {max_bins} | {mean_effective:.3f} | {mean_paths:.3f} | {mean_parent:.6f} |".format(
+                l_min=l_min,
+                targets=len(distance_rows),
+                mean_bins=statistics.mean(support_bins) if support_bins else 0.0,
+                p95_bins=percentile([float(value) for value in support_bins], 95),
+                max_bins=max(support_bins, default=0),
+                mean_effective=statistics.mean(effective_bins) if effective_bins else 0.0,
+                mean_paths=statistics.mean(path_counts) if path_counts else 0.0,
+                mean_parent=statistics.mean(parent_degrees) if parent_degrees else 0.0,
+            )
+        )
 
 
 def append_model_table(lines: list[str], rows: list[dict[str, object]]) -> None:
