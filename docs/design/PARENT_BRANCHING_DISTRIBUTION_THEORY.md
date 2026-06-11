@@ -277,6 +277,15 @@ about the final closed-form family. It should be validated against exact
 histograms on SimpleWiki and sampled enwiki subgraphs before being used for
 policy decisions.
 
+A continuous fit can also be sampled onto a discrete grid before FFT
+composition. That is sometimes useful when the fitted family is easier to store
+or compose analytically than the empirical histogram. It is not automatically a
+compute win: a 100-point sampled Gamma grid is more work than a three-bin exact
+ancestor-scoped histogram. The benchmark should therefore record sampled grid
+size, exact support bins, and ancestor-cone size separately. If the sample grid
+is larger than the exact histogram, the fit may still be useful as compression
+after validation, but not as evidence that exact construction can be skipped.
+
 ## 6. Shifted exponential / Gamma tail approximation
 
 For larger branching, the discrete convolution may become expensive or too noisy

@@ -140,6 +140,13 @@ first_cache_hit_depth_from_target
 remaining_budget_at_hit
 histogram_bins_scanned
 cumulative_basis_lookups
+ancestor_cone_nodes
+ancestor_cone_edges
+exact_histogram_bytes
+parametric_state_bytes_estimate
+continuous_sample_points
+continuous_sample_bytes_estimate
+compression_ratio_estimate
 result_mass
 result_first_moment
 result_weighted_power
@@ -262,6 +269,14 @@ if L_max(v) - L_min(v) is large: prefer a cached boundary or fitted tail candida
 
 This lets deeper layers carry cheap min/max summaries while the planner decides
 where full histograms are still worth materialising.
+
+When the target-scoped ancestor cone is small, full histograms may remain cheap
+even for nodes that are deep by root distance. The benchmark should therefore
+separate global precompute depth from per-query ancestor-cone cost. A continuous
+fit sampled onto a fixed grid, such as 100 points before FFT convolution, should
+beat exact histograms only when the exact support or reuse pattern justifies
+that grid cost. Otherwise it is primarily a storage/compression option after an
+exact or sampled distribution has already been validated.
 
 The same run should report parent-degree moments over the selected reachable
 nodes:
