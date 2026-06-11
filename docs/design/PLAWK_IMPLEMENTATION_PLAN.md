@@ -192,7 +192,10 @@ lines — identical behaviour to Phase 0, running as compiled LLVM.
 stdin, and `state/4` remains represented as ordinary WAM terms rather than a
 specialized LLVM aggregate. The bounded output helper has been retired from the
 compiled stream smoke; generic output accumulation now goes through
-`append_output/3` and `state_outputs/2`.
+`append_output/3` and `state_outputs/2`. WAM/LLVM now also has a
+`@wam_prepare_call` runtime helper plus a reentrant run-loop smoke, which is
+the first general bridge for native deterministic outer loops that call WAM
+handlers repeatedly.
 
 ---
 
