@@ -15,6 +15,7 @@ from scripts.distribution_fit_comparison import (
     l1_error,
     max_cdf_error,
     nfold_convolution,
+    append_realized_support_table,
     run_graph_fit_comparison,
     size_biased_excess_pmf,
     summarize,
@@ -75,6 +76,29 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertEqual(roles, {"depth_prior"})
         self.assertTrue(all(record["effective_support_bins"] >= 1 for record in records))
 
+    def test_realized_support_table_counts_targets_once(self):
+        lines = []
+        rows = [
+            {
+                "target_node": "A",
+                "L_min": 1,
+                "support_bins": 2,
+                "effective_support_bins": 2,
+                "path_count": 2,
+                "parent_degree": 1,
+            },
+            {
+                "target_node": "A",
+                "L_min": 1,
+                "support_bins": 2,
+                "effective_support_bins": 2,
+                "path_count": 2,
+                "parent_degree": 1,
+            },
+        ]
+        append_realized_support_table(lines, rows)
+        self.assertEqual(lines[0].split("|")[2].strip(), "1")
+
     def test_fixture_comparison_reports_both_roles(self):
         fixture = FIXTURES["shortcut_parent"]
         records = run_graph_fit_comparison(
@@ -94,6 +118,7 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertEqual(prior_models, {"binomial_prior", "shifted_gamma_prior"})
         self.assertIn("Realized Histogram Fits", summary)
         self.assertIn("Depth-Conditioned Prior Distributions", summary)
+        self.assertIn("Realized Support By Root Distance", summary)
         self.assertIn("Prior Support By Depth", summary)
 
 

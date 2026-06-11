@@ -393,3 +393,12 @@ as "carry exact histograms to depth `d` while the prior effective support is
 narrow." The realized fit is still needed as validation: if binomial or Gamma
 approximations do not match exact histograms on sampled nodes, then the prior
 depth policy is using the wrong family even if its mean looks plausible.
+
+The first prior model is stationary within the selected calibration set: the
+same excess-parent law is convolved at each depth. A future non-stationary
+variant can use a different law per root-distance layer,
+`P(Y_i | L_min = i)`, and compose those layer priors. This would account for
+the empirical pattern where the size-biased parent-branching signal can decline
+farther from the root. That refinement is planner-relevant, but should be held
+until deeper SimpleWiki and enwiki samples show that the stationary prior is
+materially miscalibrated.
