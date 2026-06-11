@@ -124,6 +124,18 @@ shifted-Gamma approximation, and it is cheaper to build in the prior comparison.
 Gamma remains useful as a candidate for wider enwiki-style branching, not as
 the default for this SimpleWiki sample.
 
+The report therefore suggests a cheap first prior: use scalar support bounds to
+set the candidate binomial support, and use the measured size-biased parent
+branching signal as the Bernoulli excess-parent proxy. In this run, that means
+`n ~= L_max - L_min` and `p ~= E[P^2]/E[P] - 1 = 0.028750` globally, with the
+understanding that the root-distance table already shows why a future
+layer-conditioned `p_i` may be better.
+
+The binomial result should be read as a sparse-event model, not as a symmetric
+Gaussian claim. In this sample, excess-parent probability is small, so the
+binomial prior is right-skewed and compact. A normal approximation would be a
+later large-depth approximation after checking tail error and finite support.
+
 The root-distance table shows the depth-varying signal that motivates a future
 non-stationary prior: mean parent degree declines from `1.014359` at `L_min=1`
 to `1.011918` at `L_min=2` and `1.000000` at `L_min=3`. The current stationary
@@ -132,6 +144,13 @@ layer-conditioned priors `P(Y_i | L_min=i)` once deeper samples show the
 difference matters.
 
 ## Policy Implication
+
+The `Binomial(10, 0.1)` example is a useful warning case: it is clearly skewed
+even though the tail falls quickly. For this reason, symmetric approximations
+should wait for a skewness/tail-error gate. Binomial fits can still be useful
+before then as compression: they may reduce storage from many bins to `(n, p,
+error_metadata)`, but that is different from avoiding the initial exact or
+sampled computation needed to validate the fit.
 
 A reasonable first SimpleWiki policy is:
 

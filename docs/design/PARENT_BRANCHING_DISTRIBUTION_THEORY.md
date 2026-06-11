@@ -102,6 +102,80 @@ horizon: `L_min` gives a lower-bound estimate, `L_max` gives an upper-bound
 estimate, and narrow support makes the difference small. It is useful for
 SimpleWiki-like samples because `epsilon` is small and measured `max_p` is low.
 
+For planner admission, the useful cheap approximation is:
+
+```text
+n_binomial ~= support_width = L_max - L_min
+p_binomial ~= epsilon = E[P^2] / E[P] - 1
+```
+
+The support width comes from scalar min/max difference equations, so it is cheap
+to compute and store without materialising the full histogram. The probability
+proxy comes from the global or bucketed size-biased parent branching statistic.
+This is strongest in the near-chain regime where excess parent count is mostly
+`0` or `1`; then `epsilon` is close to a Bernoulli probability. If parent count
+can jump by more than one, `epsilon` is only a mean excess and the compound
+convolution model is the safer prior. Because SimpleWiki shows the parent
+branching signal declining farther from the root, the global `epsilon` should
+be treated as a first calibration constant until depth-local priors are
+measured.
+
+A binomial prior is compact because it is determined by two parameters,
+`n` and `p`, and therefore by compatible mean and variance:
+
+```text
+mu = n * p
+sigma^2 = n * p * (1 - p)
+p = 1 - sigma^2 / mu
+n = mu / p = mu^2 / (mu - sigma^2)
+```
+
+This moment recovery is valid only for binomial-like under-dispersed data where
+`0 < sigma^2 < mu` and the recovered `n` is meaningful for the depth horizon.
+If variance is inflated by topical correlation or mixed regimes, a
+beta-binomial or empirical compound prior is a better candidate than forcing a
+binomial fit.
+
+The binomial family is not generally symmetric. It is exactly symmetric only
+near `p = 0.5`; in the SimpleWiki near-chain regime, `p` is small and the mass
+is right-skewed. The standardized skewness of a binomial is
+
+```text
+skewness = (1 - 2p) / sqrt(n * p * (1 - p))
+```
+
+so convolution does make the shape more symmetric as the effective number of
+independent layers grows, but only at the standardized-distribution level. A
+normal/Gaussian approximation becomes reasonable in the large-depth
+central-limit regime where both `n*p` and `n*(1-p)` are large. A single node or
+shallow subtree can still be strongly right-skewed, especially when `p` is small
+and the lower boundary at zero excess events is close to the mean. For rare
+excess-parent events, the intermediate approximation is more Poisson-like than
+Gaussian. In this sense the binomial approximation supplies a compact
+finite-support prior; it is not a claim that the exact node histogram is
+symmetric.
+
+A concrete skewed case is `Binomial(n=10, p=0.1)`. Its mean is `1`,
+variance is `0.9`, and skewness is about `0.843`; the largest masses are
+approximately `P(0)=0.349`, `P(1)=0.387`, `P(2)=0.194`, and `P(3)=0.057`.
+This is visibly right-skewed even though the tail drops quickly. The practical
+lesson is that visual symmetry depends on both `n` and `p`; a symmetric or
+normal approximation should be admitted by skewness and CDF/tail-error gates,
+not by the existence of a binomial fit alone.
+
+Solving the skewness gate gives a useful depth threshold:
+
+```text
+n >= (1 - 2p)^2 / (skew_tol^2 * p * (1 - p))
+```
+
+For example, with `p=0.1`, reaching skewness below `0.5` requires roughly
+`n >= 29`, while below `0.25` requires roughly `n >= 114`. For SimpleWiki-like
+`p ~= 0.028750`, the same thresholds require much larger effective depth.
+Until that point, a binomial fit can still be useful as a compact storage
+representation, but it should not be treated as an obviously symmetric
+approximation.
+
 For `epsilon = 0.028750`:
 
 ```text
@@ -148,6 +222,12 @@ For non-stationary layers, replace the power by a product of per-layer PGFs and
 use `Var(K_n) = sum_i Var(Y_i)` under layer independence. This is the more
 general form we should measure for enwiki. The binomial model is the special
 case where `Y_i` is Bernoulli.
+
+When the per-layer excess variables are not Bernoulli but still have finite
+variance, central-limit reasoning applies to the convolved sum at large depth.
+That supports a continuous normal-like planning approximation only after
+checking support truncation and tail error; it does not replace the discrete
+histogram or compound convolution oracle for shallow or rare-event regimes.
 
 ## 5. FFT convolution route
 
@@ -292,6 +372,26 @@ A provisional regime map is:
 The thresholds should be calibrated by SimpleWiki and enwiki samples rather than
 hard-coded from this note.
 
+Tail family choice is a planner-risk decision:
+
+| Tail regime | Candidate prior | Planner meaning |
+|-------------|-----------------|-----------------|
+| Light tail | Poisson-like, binomial | Counts have a characteristic scale; hubs are unlikely |
+| Medium tail | Geometric, exponential, shifted Gamma | Tails decay steadily but allow more long paths than light-tail counts |
+| Heavy tail | Scale-free, power law | Hubs are expected; rare high-parent nodes can dominate cost |
+
+Although Gamma is related to Poisson processes, it is not the continuous form
+of a Poisson count. Poisson models event counts in a fixed interval; Gamma
+models waiting time or accumulated positive mass until repeated events, which
+is why it is a more flexible medium-tail approximation here.
+
+Poisson-like and binomial priors are appropriate only when measured parent
+degrees are concentrated around a characteristic scale. Exponential or
+geometric tails are a middle ground when mass decays quickly but not as tightly
+as a light-tailed count model. If enwiki or unfiltered container/admin
+categories show power-law tails, the planner should prefer empirical sketches,
+mixtures, or hub-aware cutoffs over Poisson/binomial families.
+
 ## 7. Histogram support versus path multiplicity
 
 The main risk is mixing up two different growth processes:
@@ -341,6 +441,14 @@ elif b_p_bucket is high and expected_reuse is low:
 else:
     evaluate exact histogram, cached boundary, or fitted distribution by cost
 ```
+
+There are two separate uses for a fitted distribution. As an admission prior,
+the fit can sometimes avoid computing a full histogram, but only under an
+explicit approximation policy with measured error gates. As a compressed
+representation, the fit can save memory or storage after exact or sampled
+distribution data has already been computed. In the second case, a binomial
+record such as `(n, p, error_metadata)` can replace many histogram bins, but it
+does not remove the initial cost needed to validate that compression.
 
 For SimpleWiki, the measured sample has narrow support and `b_p` close to `1`,
 so exact histograms can probably be propagated deeper than a root-distance-only
