@@ -274,11 +274,15 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   in the bytecode interpreter. Fix: bind only X-register sub-term slots
   (`reg > _A_MAX`, created by `set_variable`/`unify_variable` for nested terms
   like `error(type_error(..),..)`); A-register call-output slots are overwritten
-  without binding. The *lowered* Python emit still mishandles in-clause structure
-  construction — `parse_wam_text_py` drops `set_*` and its write model is
-  heap-consecutive rather than the runtime's `.args`/write-ctx — so
-  arithmetic-rule clauses remain wrong under `emit_mode(lowered)`; that emit
-  needs a read/write-ctx reconciliation, tracked as a separate follow-up.)
+  without binding. The *lowered* Python emit was then reconciled with the same
+  model: `parse_wam_text_py` now parses `set_*` (previously dropped), the
+  structure read/write emit uses the runtime's read/write-ctx helpers instead of
+  the old heap-consecutive `state.s` model, and compounds are built/matched with
+  the runtime functor naming (`"+/2"`, not `"+"`), so inline native clause bodies
+  build and unify terms identically to the interpreter. `emit_mode(lowered)`
+  arithmetic-rule clauses (e.g. an `is`-accumulator) and term construction
+  (`X = f(g(1),h(2,3))`) now run correctly; covered by
+  `tests/test_wam_python_is_binding.pl` in both modes.)
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
@@ -349,8 +353,16 @@ Score each candidate gap on four axes, then sequence:
    T5). **python DONE** (`~` hybrid — native clause bodies over a retained
    bytecode dispatch scaffold, since python's backtracking runtime makes the
    first-solution imperative shape unsound; a full-native R-style dispatch
-   could layer in front later). Remaining structurer-column hole: none — only
-   **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
+   could layer in front later). **wat DONE** too: its lowered emitter splits the
+   try/retry/trust chain into per-clause WAT slices via
+   `wat_multi_clause_n_lowerable`, emits each as an inline block that snapshots
+   and restores the argument registers + trail between attempts (first-solution,
+   the public entry replays the interpreter on a 0 return). The **T4 column is
+   now complete across every target.** Verified through real `wat2wasm`+`node`
+   exec (`test_wam_wat_lowered_t4`), including arithmetic `is/2` *assignment*
+   bodies — WAT's `put_structure` does not have the aliased-result-register bug
+   that affected the Python interpreter, so an `is`-assignment that binds a local
+   or the head's own arg evaluates correctly in lowered code.
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
    `switch` back-end instead of an `->` cascade. **DONE / closed out for every
    T5 target:** the atom-keyed set (rust/cpp/fsharp/go, string switch), the

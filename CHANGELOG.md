@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM R target (M152): lowered fast path shadowed runtime-asserted
+  clauses.** Review finding from the Tn-lowering-vs-fact-sources
+  audit: `dispatch_call`/`Call`/`Execute` consulted
+  `program$lowered_dispatch` before the dynamic-clause tier, and a
+  lowered fn returns TRUE/FALSE definitively — so a predicate lowered
+  at codegen that later gained `assertz/1` clauses would have them
+  silently invisible. New `WamRuntime$lowered_path_ok` guard skips
+  the fast path whenever dynamic clauses exist for the key (the
+  interpreter path unions compiled + dynamic correctly). External
+  fact sources (LMDB/CSV) were audited SAFE by construction across
+  Scala/R/Rust: they compile to CallForeign stubs that fail lowering
+  gates (Scala), or the lowered path delegates foreign calls to step
+  (R), and runtime-built fact indexes are shared by both paths.
 - **WAM Rust target (M151): all-native/kernel projects generated
   uncompilable crates.** The long-standing `test_wam_rust_runtime`
   e2e failure (last item of the campaign ledger's small fixes) was

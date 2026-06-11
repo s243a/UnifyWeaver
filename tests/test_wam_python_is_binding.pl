@@ -44,11 +44,23 @@ python3_available :-
 
 :- begin_tests(wam_python_is_binding, [condition(python3_available)]).
 
-test(is_binding_and_construction) :-
+% The interpreter path: put_structure no longer clobbers an aliased arg register.
+test(is_binding_interpreter) :- run_is_battery(interpreter).
+
+% The lowered path (emit_mode(lowered)): set_* are parsed and the structure
+% read/write uses the runtime's read/write-ctx + functor naming, so the inline
+% native clause bodies build/match compounds identically to the interpreter.
+test(is_binding_lowered) :- run_is_battery(lowered).
+
+:- end_tests(wam_python_is_binding).
+
+run_is_battery(Mode) :-
     Preds = [user:gg/2, user:dbl/2, user:acc/3, user:mk/1, user:nest/1, user:gchk/0],
-    Dir = 'output/test_wam_python_is_binding',
+    format(atom(Dir), 'output/test_wam_python_is_binding_~w', [Mode]),
     ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
-    write_wam_python_project(Preds, [module_name(isproj)], Dir),
+    ( Mode == lowered -> Opts = [module_name(isproj), emit_mode(lowered)]
+    ;                    Opts = [module_name(isproj)] ),
+    write_wam_python_project(Preds, Opts, Dir),
     harness_source(Src),
     atomic_list_concat([Dir, '/h.py'], HPath),
     setup_call_cleanup(open(HPath, write, S, [encoding(utf8)]),
@@ -60,11 +72,9 @@ test(is_binding_and_construction) :-
     process_wait(Pid, Status),
     ( Status == exit(0), sub_string(OutStr, _, _, _, "ALL PASS")
     ->  true
-    ;   format(user_error, "~n[is-binding harness output]~n~w~n", [OutStr]),
-        throw(wam_python_is_binding_failed(Status)) ),
+    ;   format(user_error, "~n[is-binding ~w harness output]~n~w~n", [Mode, OutStr]),
+        throw(wam_python_is_binding_failed(Mode, Status)) ),
     ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ).
-
-:- end_tests(wam_python_is_binding).
 
 harness_source(
 "import sys

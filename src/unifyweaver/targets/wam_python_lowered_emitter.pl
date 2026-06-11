@@ -438,6 +438,15 @@ instr_from_parts_py(["unify_value", Xn], unify_value(Xn)).
 instr_from_parts_py(["unify_constant", C], unify_constant(C)).
 instr_from_parts_py(["unify_nil"], unify_nil).
 instr_from_parts_py(["unify_void", N], unify_void(N)).
+% set_* — write-mode structure args after put_structure/put_list. Previously
+% dropped (no parse clause), which silently lost arithmetic/structure operands.
+instr_from_parts_py(["set_variable", Xn], set_variable(Xn)).
+instr_from_parts_py(["set_value", Xn], set_value(Xn)).
+instr_from_parts_py(["set_local_value", Xn], set_local_value(Xn)).
+instr_from_parts_py(["set_constant", C], set_constant(C)).
+instr_from_parts_py(["set_integer", N], set_integer(N)).
+instr_from_parts_py(["set_nil"], set_nil).
+instr_from_parts_py(["set_void", N], set_void(N)).
 instr_from_parts_py(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
 instr_from_parts_py(["put_value", Xn, Ai], put_value(Xn, Ai)).
 instr_from_parts_py(["put_unsafe_value", Yn, Ai], put_unsafe_value(Yn, Ai)).
@@ -619,7 +628,7 @@ single_match_condition_py(get_nil(AiStr), Cond) :-
 		[Ai, Ai, Ai]).
 single_match_condition_py(get_structure(FStr, AiStr), Cond) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, FuncName, Arity),
 	format(string(Cond),
 		'isinstance(_a~w, Var) or (isinstance(_a~w, Compound) and _a~w.functor == "~w" and len(_a~w.args) == ~w)',
 		[Ai, Ai, Ai, FuncName, Ai, Arity]).
@@ -680,7 +689,7 @@ single_match_binding_py(get_nil(AiStr), Indent, Lines) :-
 	Lines = [DerefLine, BindLine].
 single_match_binding_py(get_structure(FStr, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, FuncName, Arity),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
 	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
@@ -853,40 +862,48 @@ emit_instr_py(get_float(FStr, AiStr), Code) :-
 
 emit_instr_py(get_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, RTName, Arity),
 	format(string(Code),
 '    _a~w = deref(state.regs[~w], state)
     if isinstance(_a~w, Var):
-        _addr = heap_put(state, Compound("~w", [None]*~w))
+        _c = Compound("~w", [None]*~w)
+        _addr = heap_put(state, _c)
         bind(_a~w, Ref(_addr), state)
-        state.mode = "write"; state.s = _addr
+        state.s = _addr
+        _begin_write_ctx(state, _c)
     elif isinstance(_a~w, Ref):
         _h = state.heap[_a~w.addr]
         if isinstance(_h, Compound) and _h.functor == "~w" and len(_h.args) == ~w:
-            state.mode = "read"; state.s = _a~w.addr
+            state.s = _a~w.addr
+            _begin_read_ctx(state, _h)
         else: return False
     elif isinstance(_a~w, Compound) and _a~w.functor == "~w" and len(_a~w.args) == ~w:
-        state.mode = "read"
+        _begin_read_ctx(state, _a~w)
     else: return False',
-		[Ai, Ai, Ai, FuncName, Arity, Ai,
-		 Ai, Ai, FuncName, Arity, Ai,
-		 Ai, Ai, FuncName, Ai, Arity]).
+		[Ai, Ai, Ai, RTName, Arity, Ai,
+		 Ai, Ai, RTName, Arity, Ai,
+		 Ai, Ai, RTName, Ai, Arity, Ai]).
 
 emit_instr_py(get_list(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
 '    _a~w = deref(state.regs[~w], state)
     if isinstance(_a~w, Var):
-        _addr = heap_put(state, Compound(".", [None, None]))
+        _c = Compound(".", [None, None])
+        _addr = heap_put(state, _c)
         bind(_a~w, Ref(_addr), state)
-        state.mode = "write"; state.s = _addr
+        state.s = _addr
+        _begin_write_ctx(state, _c)
     elif isinstance(_a~w, Ref):
         _h = state.heap[_a~w.addr]
-        if isinstance(_h, Compound) and _h.functor == "." and len(_h.args) == 2:
-            state.mode = "read"; state.s = _a~w.addr
+        if isinstance(_h, Compound) and _is_cons_functor(_h.functor) and len(_h.args) == 2:
+            state.s = _a~w.addr
+            _begin_read_ctx(state, _h)
         else: return False
+    elif isinstance(_a~w, Compound) and _is_cons_functor(_a~w.functor) and len(_a~w.args) == 2:
+        _begin_read_ctx(state, _a~w)
     else: return False',
-		[Ai, Ai, Ai, Ai, Ai, Ai, Ai]).
+		[Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai]).
 
 % --- Body construction (put_*) ---
 
@@ -937,18 +954,24 @@ emit_instr_py(put_float(FStr, AiStr), Code) :-
 
 emit_instr_py(put_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, RTName, Arity),
+	put_struct_bind_py(Ai, BindLine),
 	format(string(Code),
-'    _addr = heap_put(state, Compound("~w", [None]*~w))
-    state.regs[~w] = Ref(_addr)
-    state.mode = "write"; state.s = _addr', [FuncName, Arity, Ai]).
+'    _c = Compound("~w", [None]*~w)
+    _addr = heap_put(state, _c)
+~w    state.regs[~w] = Ref(_addr)
+    state.s = _addr
+    _begin_write_ctx(state, _c)', [RTName, Arity, BindLine, Ai]).
 
 emit_instr_py(put_list(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
+	put_struct_bind_py(Ai, BindLine),
 	format(string(Code),
-'    _addr = heap_put(state, Compound(".", [None, None]))
-    state.regs[~w] = Ref(_addr)
-    state.mode = "write"; state.s = _addr', [Ai]).
+'    _c = Compound(".", [None, None])
+    _addr = heap_put(state, _c)
+~w    state.regs[~w] = Ref(_addr)
+    state.s = _addr
+    _begin_write_ctx(state, _c)', [BindLine, Ai]).
 
 % --- Unify instructions ---
 
@@ -956,50 +979,84 @@ emit_instr_py(unify_variable(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = state.heap[state.s]
-        if isinstance(_h, Compound):
-            state.regs[~w] = _h.args[0]; state.s += 1
-        else:
-            state.regs[~w] = _h
+        state.regs[~w] = _read_ctx_get(state)
     else:
         _v = state.fresh_var()
         heap_put(state, _v)
-        state.regs[~w] = _v', [Xn, Xn, Xn]).
+        state.regs[~w] = _v
+        _write_ctx_put(state, _v)', [Xn, Xn]).
 
 emit_instr_py(unify_value(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = state.heap[state.s]
-        if not unify(state.regs[~w], _h, state): return False
+        _h = _read_ctx_get(state)
+        if not unify(state.regs[~w], deref(_h, state), state): return False
     else:
-        heap_put(state, state.regs[~w])', [Xn, Xn]).
+        _write_ctx_put(state, state.regs[~w])', [Xn, Xn]).
 
 emit_instr_py(unify_constant(C), Code) :-
 	constant_term_py(C, Term),
 	constant_match_condition_py(C, "_h", Cond),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = deref(state.heap[state.s], state)
+        _h = deref(_read_ctx_get(state), state)
         if isinstance(_h, Var): bind(_h, ~w, state)
         elif not (~w): return False
     else:
-        heap_put(state, ~w)', [Term, Cond, Term]).
+        _write_ctx_put(state, ~w)', [Term, Cond, Term]).
 
 emit_instr_py(unify_nil, Code) :-
 	Code = '    if state.mode == "read":
-        _h = deref(state.heap[state.s], state)
+        _h = deref(_read_ctx_get(state), state)
         if isinstance(_h, Var): bind(_h, Atom("[]"), state)
         elif not (isinstance(_h, Atom) and _h.name == "[]"): return False
     else:
-        heap_put(state, Atom("[]"))'.
+        _write_ctx_put(state, Atom("[]"))'.
 
 emit_instr_py(unify_void(NStr), Code) :-
 	format(string(Code),
-'    if state.mode == "write":
+'    if state.mode == "read":
+        _read_ctx_skip(state, ~w)
+    else:
         for _ in range(~w):
-            _v = state.fresh_var()
-            heap_put(state, _v)', [NStr]).
+            _write_ctx_put(state, state.fresh_var())', [NStr, NStr]).
+
+% --- set_* : always WRITE mode, fill the current structure context ---
+
+emit_instr_py(set_variable(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _v = state.fresh_var()
+    _write_ctx_put(state, _v)
+    state.regs[~w] = _v', [Xn]).
+
+emit_instr_py(set_value(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _write_ctx_put(state, state.regs[~w])', [Xn]).
+
+emit_instr_py(set_local_value(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _write_ctx_put(state, deref(state.regs[~w], state))', [Xn]).
+
+emit_instr_py(set_constant(C), Code) :-
+	constant_term_py(C, Term),
+	format(string(Code),
+'    _write_ctx_put(state, ~w)', [Term]).
+
+emit_instr_py(set_integer(NStr), Code) :-
+	format(string(Code),
+'    _write_ctx_put(state, Int(~w))', [NStr]).
+
+emit_instr_py(set_nil, Code) :-
+	Code = '    _write_ctx_put(state, Atom("[]"))'.
+
+emit_instr_py(set_void(NStr), Code) :-
+	format(string(Code),
+'    for _ in range(~w):
+        _write_ctx_put(state, state.fresh_var())', [NStr]).
 
 % --- Control instructions ---
 
@@ -1191,6 +1248,37 @@ parse_functor_arity_py(FStr, FuncName, Arity) :-
 		sub_atom(FA, B1, _, 0, AS),
 		atom_number(AS, Arity)
 	;   FuncName = FA, Arity = 0
+	).
+
+%% runtime_functor_py(+FStr, -RTName, -Arity)
+%  Compound functor name as the runtime stores it (see _runtime_functor_name in
+%  WamRuntime.py): cons cells normalise to ".", every other functor keeps its
+%  full "name/arity" form (e.g. "+/2"). The lowered emitter must build and match
+%  compounds with this exact string so they unify with interpreter-built terms
+%  and eval_arith (which strips the arity) sees the right operator.
+runtime_functor_py(FStr, RTName, Arity) :-
+	(   cons_functor_py(FStr)
+	->  RTName = ".", Arity = 2
+	;   parse_functor_arity_py(FStr, _F, Arity), RTName = FStr
+	).
+
+cons_functor_py(FStr) :- FStr == ".".
+cons_functor_py(FStr) :- FStr == "./2".
+cons_functor_py(FStr) :- FStr == "[|]/2".
+
+%% put_struct_bind_py(+Ai, -BindLine)
+%  put_structure into an X (temporary) register (index > 128, the A1..A128 cap)
+%  targets a nested sub-term SLOT placed there by an earlier set_variable /
+%  unify_variable, so the freshly built structure must be bound into that slot
+%  var to link it to its parent. Into an A (argument) register it is a call
+%  output: overwrite without binding (the prior var may alias a live argument —
+%  the `X is E` case). Mirrors put_structure in WamRuntime.py.
+put_struct_bind_py(Ai, BindLine) :-
+	(   Ai > 128
+	->  format(string(BindLine),
+		"    _old = deref(state.regs[~w], state)\n    if isinstance(_old, Var): bind(_old, Ref(_addr), state)\n",
+		[Ai])
+	;   BindLine = ""
 	).
 
 %% pred_to_func_name_py(+PredStr, -FuncName)
