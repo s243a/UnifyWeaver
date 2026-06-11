@@ -18,9 +18,12 @@ H_root(z) = 1
 H_v(z) = z * sum(H_parent(z) for parent in parents(v))
 ```
 
-The coefficient of `z^L` is the number or mass of admissible parent paths of
-length `L` from `v` to the root. This recurrence is exact under the active graph
-filter, root, edge direction, cycle policy, and path-admissibility rule.
+The coefficient of `z^L` is the count or mass of admissible parent paths of
+length `L` from `v` to the root. In the current benchmark `H_v[L]` stores counts;
+a probability-normalised variant would change the meaning of `path_mass` below.
+The recurrence form assumes admissibility has already been enforced by the
+active graph filter, root, edge direction, cycle policy, and path-admissibility
+rule.
 
 Two quantities matter for planning:
 
@@ -37,7 +40,9 @@ into one bin, so path mass can grow while histogram support remains narrow.
 ## 2. Parent branching signal
 
 Let `p_v` be the number of parent choices for node `v` under the same graph
-filter used by the benchmark. The measured parent-degree moments are:
+filter used by the benchmark. The benchmark moments are uniform over the
+selected reachable nodes, not edge-weighted. The measured parent-degree moments
+are:
 
 ```text
 E[p]
@@ -52,6 +57,11 @@ branching signal is:
 ```text
 epsilon = b_p - 1
 ```
+
+For buckets where every measured node has at least one parent, `epsilon >= 0`
+follows from the size-biased mean being at least the ordinary mean. Buckets with
+zero mean parent degree, such as a root-only bucket, should report this ratio as
+undefined rather than as a real branching factor.
 
 For the current SimpleWiki depth-3 Articles sample:
 
@@ -84,8 +94,13 @@ E[K_n] = n * epsilon
 Var(K_n) = n * epsilon * (1 - epsilon)
 ```
 
-This is the binomial framing. It is useful for SimpleWiki-like samples because
-`epsilon` is small and measured `max_p` is low.
+This is the binomial framing. It assumes approximately independent per-layer
+excess-branching events. Correlation inside topical graph regions can inflate
+variance, so the binomial model should be treated as a near-chain approximation,
+not an exact law. For a specific node, set `n` to the relevant root-distance
+horizon: `L_min` gives a lower-bound estimate, `L_max` gives an upper-bound
+estimate, and narrow support makes the difference small. It is useful for
+SimpleWiki-like samples because `epsilon` is small and measured `max_p` is low.
 
 For `epsilon = 0.028750`:
 
@@ -99,7 +114,7 @@ n = 100: E[K_n] = 2.8750
 This says exact histograms may remain cheap for substantial depth when support
 width also remains small. It does not say the histogram has `(1 + epsilon)^n`
 bins. `(1 + epsilon)^n` is path-multiplicity pressure, while bin count is still
-bounded by the observed finite support interval.
+bounded by the observed finite support interval; see section 7.
 
 ## 4. Compound branching approximation
 
@@ -118,8 +133,10 @@ The total excess branching pressure over `n` steps is:
 K_n = Y_1 + ... + Y_n
 ```
 
-This is an n-fold convolution. If `G_Y(t)` is the probability-generating function
-of the measured excess-parent distribution, then:
+This is an n-fold convolution. `G_Y(t)` is the probability-generating function
+of the excess distribution on `{0, 1, 2, ...}`, not the raw parent-degree
+PGF on `{1, 2, 3, ...}`; using the raw-degree PGF would shift the convolved
+support by `n`. In the stationary i.i.d. case:
 
 ```text
 G_K(t) = G_Y(t)^n
@@ -127,8 +144,10 @@ E[K_n] = n * E[Y]
 Var(K_n) = n * Var(Y)
 ```
 
-This is the more general form we should measure for enwiki. The binomial model
-is the special case where `Y_i` is Bernoulli.
+For non-stationary layers, replace the power by a product of per-layer PGFs and
+use `Var(K_n) = sum_i Var(Y_i)` under layer independence. This is the more
+general form we should measure for enwiki. The binomial model is the special
+case where `Y_i` is Bernoulli.
 
 ## 5. FFT convolution route
 
@@ -165,9 +184,12 @@ Implementation notes:
   FFT, otherwise circular convolution will wrap tail mass into low bins;
 - use direct convolution for tiny supports, since it is simpler and often faster;
 - use FFT convolution when support is wide, many layers are composed, or the same
-  distribution is repeatedly convolved;
-- after inverse FFT, clamp small negative numerical noise to zero and renormalise
-  if the result is used as a probability distribution;
+  distribution is repeatedly convolved; initial crossover thresholds such as
+  support greater than roughly `32` bins or more than roughly `8` repeated
+  self-convolutions are only profiling starting points;
+- after inverse FFT, clamp small negative numerical noise relative to the maximum
+  recovered value, then renormalise if the result is used as a probability
+  distribution;
 - keep exact integer or rational convolution for tiny validation fixtures.
 
 The FFT route is an implementation strategy for the compound model, not a claim
@@ -233,8 +255,11 @@ S_n ~ Gamma(shape = sum_i alpha_i, scale = theta)
 ```
 
 The planner-facing constraint is not merely matching the mean. The tail must
-fall off quickly after the useful exact-support budget. A fitted closed form is
-acceptable only when it satisfies a budgeted tail condition such as:
+fall off quickly after the useful exact-support budget. A natural budget is the
+extra support beyond the shortest admissible path that the planner is willing to
+keep exact, for example `exact_support_width_limit - 1` for hop-count support
+bins. A fitted closed form is acceptable only when it satisfies a budgeted tail
+condition such as:
 
 ```text
 Pr(S_n > excess_support_budget) <= epsilon_tail
@@ -256,12 +281,23 @@ distributed. It is a candidate approximation for the high-branching regime when
 the per-layer excess branching cost is non-negative, moderately homogeneous,
 fast-decaying, and repeatedly convolved.
 
+A provisional regime map is:
+
+| Regime | Signal | Recommended model |
+|--------|--------|-------------------|
+| Near-chain | `b_p` near `1`, low `max_p` | Binomial small-branching model |
+| Moderate branching | wider excess support or repeated composition | Empirical compound model, direct or FFT convolution |
+| High branching | wide support where exact convolution is too costly | Shifted exponential / Gamma fit, validated by tail error |
+
+The thresholds should be calibrated by SimpleWiki and enwiki samples rather than
+hard-coded from this note.
+
 ## 7. Histogram support versus path multiplicity
 
 The main risk is mixing up two different growth processes:
 
 ```text
-path_count_pressure(n) ~= b_p^n
+path_count_pressure(n) ~= b_p^n  (stationary order-of-magnitude estimate)
 extra_branch_events(n) ~= convolution of per-layer excess branching
 histogram_bins(v) <= L_max(v) - L_min(v) + 1
 ```
@@ -290,10 +326,13 @@ The exact-histogram policy should combine three signals:
 3. reuse value: expected saved search work from caching this node
 ```
 
-A practical first rule is:
+Here `b_p_bucket` means the size-biased parent branching ratio computed over the
+nodes in a given `L_min` root-distance bucket. A practical first rule is:
 
 ```text
-if support_width <= exact_support_width_limit:
+if exact_error is not None:
+    store min/max bounds first and emit a diagnostic
+elif support_width <= exact_support_width_limit:
     store exact histogram
 elif b_p_bucket is near 1 and expected_reuse is moderate:
     store exact histogram or exact sparse sketch
@@ -325,6 +364,9 @@ direct convolution versus FFT convolution parity over the same empirical Y
 FFT zero-padding and numerical-noise error bounds for wider supports
 shifted exponential / shifted Gamma approximation error for X = p - 1
 tail probability beyond the exact-support budget
+zero-parent and root-only buckets where size-biased branching is undefined
+cross-graph transferability of calibrated `b_p` thresholds
+sensitivity of `epsilon_tail` to increasing root distance
 correlation between support_width and parent branching moments
 correlation between path_mass and b_p^n
 ```

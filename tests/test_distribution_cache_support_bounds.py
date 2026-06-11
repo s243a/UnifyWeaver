@@ -51,6 +51,27 @@ class DistributionCacheSupportBoundsTests(unittest.TestCase):
         self.assertEqual(moments["max_parent_degree"], 2)
         self.assertAlmostEqual(moments["size_biased_parent_branching"], 1.5)
 
+
+    def test_parent_branching_moments_report_undefined_size_bias_for_zero_mean(self):
+        moments = parent_branching_moments([{"parent_degree": 0}])
+
+        self.assertEqual(moments["nodes"], 1)
+        self.assertEqual(moments["mean_parent_degree"], 0.0)
+        self.assertIsNone(moments["size_biased_parent_branching"])
+
+        summary = summarize([
+            {
+                "record_type": "target_bounds",
+                "exact_histogram_error": None,
+                "support_width": 0,
+                "path_count": 1,
+                "bounds_match_histogram": True,
+                "L_min": 0,
+                "parent_degree": 0,
+            }
+        ])
+        self.assertIn("| 1 | 0 | 0.000000 | 0.000000 | n/a | 0 |", summary)
+
     def test_support_bounds_runner_reports_budget_pruning_categories(self):
         records = run_graph_support_bounds(
             "tiny_fixture",

@@ -111,13 +111,13 @@ def target_bounds_record(graph_name, graph_label, root, target, hist, l_min, l_m
         "L_max": l_max,
         "support_width": width,
         "hist_support_min": hist_min,
-        "parent_degree": parent_degree,
         "hist_support_max": hist_max,
         "hist_support_width": hist_width,
         "path_count": sum(hist.values()),
         "support_bins": len(hist),
         "bounds_match_histogram": exact_error is None and (l_min, l_max) == (hist_min, hist_max),
         "exact_histogram_error": exact_error,
+        "parent_degree": parent_degree,
     }
 
 
@@ -203,6 +203,7 @@ def run_fixture_support_bounds(fixture_name, fixture, budgets, narrow_width=2, w
 
 
 def parent_branching_moments(rows):
+    # Keep this tolerant so callers can pass mixed record streams defensively.
     degrees = [r["parent_degree"] for r in rows if r.get("parent_degree") is not None]
     if not degrees:
         return {
@@ -210,19 +211,23 @@ def parent_branching_moments(rows):
             "nonzero_parent_nodes": 0,
             "mean_parent_degree": 0.0,
             "second_parent_degree_moment": 0.0,
-            "size_biased_parent_branching": 0.0,
+            "size_biased_parent_branching": None,
             "max_parent_degree": 0,
         }
-    mean = statistics.mean(degrees)
-    second = statistics.mean([degree * degree for degree in degrees])
+    mean = sum(degrees) / len(degrees)
+    second = sum(degree * degree for degree in degrees) / len(degrees)
     return {
         "nodes": len(degrees),
         "nonzero_parent_nodes": sum(1 for degree in degrees if degree > 0),
         "mean_parent_degree": mean,
         "second_parent_degree_moment": second,
-        "size_biased_parent_branching": 0.0 if mean == 0 else second / mean,
+        "size_biased_parent_branching": None if mean == 0 else second / mean,
         "max_parent_degree": max(degrees),
     }
+
+
+def format_optional_float(value):
+    return "n/a" if value is None else f"{value:.6f}"
 
 
 def summarize(records):
@@ -259,12 +264,12 @@ def summarize(records):
         "",
         "| nodes | nonzero_parent_nodes | E[p] | E[p^2] | E[p^2]/E[p] | max_p |",
         "|-------|----------------------|------|--------|-------------|-------|",
-        "| {nodes} | {nonzero} | {mean:.6f} | {second:.6f} | {size_biased:.6f} | {max_p} |".format(
+        "| {nodes} | {nonzero} | {mean:.6f} | {second:.6f} | {size_biased} | {max_p} |".format(
             nodes=global_parent_moments["nodes"],
             nonzero=global_parent_moments["nonzero_parent_nodes"],
             mean=global_parent_moments["mean_parent_degree"],
             second=global_parent_moments["second_parent_degree_moment"],
-            size_biased=global_parent_moments["size_biased_parent_branching"],
+            size_biased=format_optional_float(global_parent_moments["size_biased_parent_branching"]),
             max_p=global_parent_moments["max_parent_degree"],
         ),
         "",
@@ -309,14 +314,14 @@ def summarize(records):
         row_paths = [r["path_count"] for r in rows]
         row_moments = parent_branching_moments(rows)
         lines.append(
-            "| {l_min} | {targets} | {mean_width:.3f} | {max_width} | {mean_paths:.3f} | {mean_parent:.6f} | {size_biased:.6f} | {max_p} |".format(
+            "| {l_min} | {targets} | {mean_width:.3f} | {max_width} | {mean_paths:.3f} | {mean_parent:.6f} | {size_biased} | {max_p} |".format(
                 l_min=l_min,
                 targets=len(rows),
                 mean_width=statistics.mean(row_widths) if row_widths else 0.0,
                 max_width=max(row_widths, default=0),
                 mean_paths=statistics.mean(row_paths) if row_paths else 0.0,
                 mean_parent=row_moments["mean_parent_degree"],
-                size_biased=row_moments["size_biased_parent_branching"],
+                size_biased=format_optional_float(row_moments["size_biased_parent_branching"]),
                 max_p=row_moments["max_parent_degree"],
             )
         )
