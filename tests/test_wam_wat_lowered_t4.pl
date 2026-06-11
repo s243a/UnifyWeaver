@@ -32,7 +32,8 @@
 :- use_module('../src/unifyweaver/targets/wam_wat_target').
 :- use_module('../src/unifyweaver/targets/wam_wat_lowered_emitter').
 
-:- dynamic user:samearg/1, user:grade/2, user:qq/2, user:color/1.
+:- dynamic user:samearg/1, user:grade/2, user:qq/2, user:color/1,
+           user:dchk/1, user:ddv/2.
 
 % variable first argument -> NOT first-arg-discriminable -> T4, not T5
 user:samearg(X) :- X = a.
@@ -44,6 +45,16 @@ user:grade(N, fail) :- N < 50.
 % failing; clause 2 needs A2 restored to its entry value (50).
 user:qq(X, 50) :- X > 100.
 user:qq(_Y, 50) :- true.
+% Arithmetic is/2 ASSIGNMENT in a multi-clause body (not just comparison): it
+% builds an expression structure and binds an unbound target. dchk/1 binds a
+% LOCAL var M (the bug-prone unbound-target path) and folds the result into a
+% boolean via =:=; ddv/2 binds the head's 2nd arg — the A1=R / A2=structure
+% aliasing pattern that broke the Python interpreter (put_structure clobbering
+% the aliased result register). Both must stay correct through the lowered WAT.
+user:dchk(N) :- N >= 0, M is N + N, M =:= 10.
+user:dchk(N) :- N < 0,  M is 0 - N, M =:= 10.
+user:ddv(N, R) :- N >= 0, R is N + N.
+user:ddv(N, R) :- N < 0,  R is 0 - N.
 % distinct first-arg atoms -> T5 (clause_chain), NOT T4 (over-claim guard)
 user:color(red).
 user:color(green).
@@ -102,6 +113,28 @@ test(t4_exec) :-
     ->  true
     ;   format(user_error, "~n[wat t4 mismatches]~n~q~n", [Failures]),
         throw(wam_wat_t4_failed(Failures))
+    ).
+
+% is/2 ASSIGNMENT (structure construction + binding an unbound target) through
+% the lowered WAT — the case the comparison-only battery above never exercised,
+% and the exact pattern that broke the Python interpreter's put_structure.
+test(t4_exec_is_assignment) :-
+    Cases = [ tc_dchk_5-(dchk/1)-["5"]-1,        % M is 5+5=10, =:=10 -> 1
+              tc_dchk_3-(dchk/1)-["3"]-0,        % M=6, =:=10 -> 0
+              tc_dchk_m10-(dchk/1)-["-10"]-1,    % clause 2: M is 0-(-10)=10 -> 1
+              tc_ddv_5_10-(ddv/2)-["5","10"]-1,  % R is 5+5=10, unify bound 10 -> 1
+              tc_ddv_5_11-(ddv/2)-["5","11"]-0,  % 10 != 11 -> 0
+              tc_ddv_m3_3-(ddv/2)-["-3","3"]-1 ],% clause 2: R is 0-(-3)=3 -> 1
+    build_injected_module([dchk/1, ddv/2], Cases, Wasm, Harness),
+    findall(Name-Got-Want,
+            ( member(Name-_-_-Want, Cases),
+              run_export(Harness, Wasm, Name, Got),
+              Got =\= Want ),
+            Failures),
+    ( Failures == []
+    ->  true
+    ;   format(user_error, "~n[wat t4 is-assignment mismatches]~n~q~n", [Failures]),
+        throw(wam_wat_t4_is_failed(Failures))
     ).
 
 :- end_tests(wam_wat_lowered_t4).

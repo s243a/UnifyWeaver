@@ -353,8 +353,16 @@ Score each candidate gap on four axes, then sequence:
    T5). **python DONE** (`~` hybrid — native clause bodies over a retained
    bytecode dispatch scaffold, since python's backtracking runtime makes the
    first-solution imperative shape unsound; a full-native R-style dispatch
-   could layer in front later). Remaining structurer-column hole: none — only
-   **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
+   could layer in front later). **wat DONE** too: its lowered emitter splits the
+   try/retry/trust chain into per-clause WAT slices via
+   `wat_multi_clause_n_lowerable`, emits each as an inline block that snapshots
+   and restores the argument registers + trail between attempts (first-solution,
+   the public entry replays the interpreter on a 0 return). The **T4 column is
+   now complete across every target.** Verified through real `wat2wasm`+`node`
+   exec (`test_wam_wat_lowered_t4`), including arithmetic `is/2` *assignment*
+   bodies — WAT's `put_structure` does not have the aliased-result-register bug
+   that affected the Python interpreter, so an `is`-assignment that binds a local
+   or the head's own arg evaluates correctly in lowered code.
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
    `switch` back-end instead of an `->` cascade. **DONE / closed out for every
    T5 target:** the atom-keyed set (rust/cpp/fsharp/go, string switch), the
