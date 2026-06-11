@@ -95,15 +95,15 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
-| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
 | rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
-| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
 | fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
-| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
 | python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
@@ -216,9 +216,9 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   argument-register + trail snapshot/restore between attempts, first-solution).
   So **every multi-clause column (T3/T4/T5) is now closed** across the targets
   that support each shape — no plain ✗ remains in T3/T4/T5.
-- **T6 (first-arg indexing)** — **Rust, C++ and Go** now have a *gated* T6
-  (`~`): all reuse the T5 `wam_clause_chain` front-end, but when the
-  discriminators are all atoms and there are ≥ `t6_min_clauses` of them
+- **T6 (first-arg indexing)** — **Rust, C++, Go, Haskell, Scala and Lua** now
+  have a *gated* T6 (`~`): all reuse the T5 `wam_clause_chain` front-end, but
+  when the discriminators are all atoms and there are ≥ `t6_min_clauses` of them
   (default 8) the back-end replaces the if-cascade with a native indexed
   dispatch — Rust a two-stage `match` (string switch → integer jump table);
   C++ a static `std::unordered_map<std::string,int>` (no native string switch)
@@ -236,10 +236,19 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   interface-call chain the compiler does not rewrite, so the switch wins big.
   The compiler flattens the cascade for few clauses, hence the gate. NOTE: Go
   was previously mislabelled int-interned — its atoms are `&Atom{Name string}`
-  interned by name, i.e. string-keyed. The genuinely **int-interned** remaining
-  targets (llvm/haskell/scala/lua — atoms become integers at codegen) carry the
-  highest "lost to the compiler" risk (an int-equality chain the host compiler
-  switch-converts anyway), so each needs a per-target benchmark before shipping.
+  interned by name, i.e. string-keyed.
+  The genuinely **int-interned** targets (haskell/scala/lua/llvm — atoms become
+  integers at codegen) were the "lost to the compiler" question; each was
+  benchmarked (`docs/reports/wam_int_interned_t6_perf.md`). Verdict: **haskell,
+  scala and lua now have a gated T6 too** — a `case` on the interned id (GHC →
+  jump table), a `match` on it (scalac → JVM `tableswitch`), and a hash table of
+  per-clause closures built once (interpreted Lua). Measured wins: Lua 1.7×/8.2×/
+  29.7×, Haskell 1.4×/2.5×/4.5×, Scala 1.3×/3.1×/≫ at N=8/64/256. **LLVM
+  declines on benchmark evidence**: at `-O2`, SimplifyCFG already turns an
+  int-equality if-chain into a `switch` (the if-chain and an explicit switch
+  compile to identical assembly), so an explicit T6 there is redundant — the one
+  genuine "lost to the compiler" case. So every T5 target now either has a gated
+  T6 or a measured reason not to.
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
@@ -313,7 +322,12 @@ Score each candidate gap on four axes, then sequence:
    could layer in front later). Remaining structurer-column hole: none — only
    **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
-   `switch` back-end instead of an `->` cascade.
+   `switch` back-end instead of an `->` cascade. **DONE / closed out:** gated
+   T6 ships for every T5 target whose host dispatch benefits — the atom-keyed
+   set (rust/cpp/fsharp/go, string switch) and the int-interned set that wins
+   (haskell/scala/lua). **llvm declines** on benchmark evidence (its `-O2`
+   already converts the int if-chain to a switch). See
+   `docs/reports/wam_int_interned_t6_perf.md`.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
 
