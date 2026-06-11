@@ -107,7 +107,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
@@ -129,7 +129,17 @@ Verification notes:
   shared `wam_clause_chain` front-end: scala, rust, cpp, go, haskell, fsharp,
   llvm, lua, r (plus python's original `is_ite_block_py` `if/elif/else` form).
   clojure declines T5 (no distinct-first-arg dispatch; it has T4 instead);
-  elixir/wat = ✗. Each has a gated `*_lowered_t5` exec test.
+  elixir = ✗. **wat T5 = ✓** (now): the WAT lowered emitter strips the
+  switch_on_* indexing prefix, runs the same `wam_clause_chain` front-end, and
+  emits one WAT function with an unbound-A1 guard followed by a `do_get_constant`
+  test per discriminator (a pure test when A1 is bound) wrapping each clause
+  body inline — first-solution, matching WAT's lowered model (the exported entry
+  replays the interpreter on failure; an unbound A1 is deferred there too). Each
+  has a gated `*_lowered_t5` exec test; WAT's `test_wam_wat_lowered_t5` injects
+  test-only exports that bind argument registers via `do_put_constant` and call
+  the lowered function directly (WAT exports take no parameters), exercising
+  real per-discriminator dispatch including non-first clauses through wat2wasm +
+  node.
 - **T7**: elixir is the only real implementation (`Task.async_stream` +
   `par_wrap_segment`); clojure/python have `_branch` scaffolds (counted `~`).
   go's clause-parallel goroutines live in the *non-WAM* `go_target.pl` direct
@@ -197,8 +207,9 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   above). Remaining T4/T5 holes are intentional: clojure has no distinct
   first-arg dispatch (T4 only); python now has T3, T4 (`~` hybrid: native
   clause bodies over a retained bytecode dispatch scaffold, to preserve its
-  backtracking-runtime parity) and T5 `if/elif/else`; wat has neither T4 nor
-  T5 yet — the last all-✗ multi-clause column besides its own.
+  backtracking-runtime parity) and T5 `if/elif/else`; wat now has T5
+  (first-arg clause-chain dispatch) and still lacks T4. So T5 is ✓ for every
+  target with distinct-first-arg dispatch, and T4 ✗ remains only for wat.
 - **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
   both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
   are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the

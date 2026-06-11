@@ -18,12 +18,22 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
 %% wam_wat_lowerable(+PI, +WamCode, -Reason) is semidet.
 wam_wat_lowerable(_PI, WamCode, Reason) :-
     parse_wam_text_wat(WamCode, Instrs),
     clause1_instrs_wat(Instrs, C1, MultiClause),
-    (   is_deterministic_pred_wat(C1),
+    (   % T5: multi-clause predicate discriminating on a distinct first-argument
+        % constant lowers to a bound-checked if-cascade over ALL clauses (no
+        % interpreter hop for clauses 2+ when A1 is bound). Tried before
+        % multi_clause_1 since it covers every clause natively. The switch_on_*
+        % indexing prefix (which marks exactly these first-arg-indexable
+        % predicates) is stripped first so clause_chain sees a clean
+        % try/retry/trust chain.
+        wat_clause_chain_lowerable(Instrs, _Guards)
+    ->  Reason = clause_chain
+    ;   is_deterministic_pred_wat(C1),
         forall(member(I, C1), wat_supported(I))
     ->  ( MultiClause == true -> Reason = multi_clause_1 ; Reason = single_clause )
     ;   % Clause-1 has an inner choice point: lower only if it is a pure
@@ -38,6 +48,29 @@ wam_wat_lowerable(_PI, WamCode, Reason) :-
         forall(member(I, Structured), wat_supported_structured(I)),
         Reason = ite_lowered
     ).
+
+%% wat_clause_chain_lowerable(+Instrs, -Guards) is semidet.
+%  T5 gate: strip the switch_on_* indexing prefix, then ask the shared
+%  wam_clause_chain front-end whether the predicate is a clean distinct-first-arg
+%  constant dispatch. Each guard's remainder (clause body minus the leading
+%  first-arg get_constant) must be deterministic and fully supported. ITE
+%  predicates are declined here because their remainders contain cut_ite/jump,
+%  which are not in wat_supported/1.
+wat_clause_chain_lowerable(Instrs0, Guards) :-
+    strip_switch_prefix_wat(Instrs0, Instrs),
+    clause_chain(Instrs, chain(Guards)),
+    forall(member(guard(_, Rem), Guards),
+           ( is_deterministic_pred_wat(Rem),
+             forall(member(I, Rem), wat_supported(I)) )).
+
+%% strip_switch_prefix_wat(+Instrs, -Rest)
+%  Drop a leading run of switch_on_*/switch_entry instructions (first-argument
+%  indexing prefix) so the stream begins at the predicate-level try_me_else.
+strip_switch_prefix_wat([I|Rest], Out) :-
+    functor(I, F, _),
+    sub_atom(F, 0, _, _, switch), !,
+    strip_switch_prefix_wat(Rest, Out).
+strip_switch_prefix_wat(Instrs, Instrs).
 
 %% wat_structured_clause1(+WamCode, -Structured) is semidet.
 %  Re-parse keeping labels (reinserted from the label map), take clause 1, and
@@ -175,7 +208,11 @@ lower_predicate_to_wat(PI, WamCode, _Options, lowered(PredName, FuncName, Code))
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     wat_lowered_func_name(Pred/Arity, FuncName),
     wam_wat_lowerable(PI, WamCode, Reason),
-    (   Reason == ite_lowered
+    (   Reason == clause_chain
+    ->  parse_wam_text_wat(WamCode, ChainInstrs),
+        wat_clause_chain_lowerable(ChainInstrs, Guards),
+        with_output_to(atom(Code), emit_clause_chain_function_wat(FuncName, Guards))
+    ;   Reason == ite_lowered
     ->  wat_structured_clause1(WamCode, Structured),
         with_output_to(atom(Code), emit_lowered_ite_function_wat(FuncName, Structured))
     ;   parse_wam_text_wat(WamCode, Instrs),
@@ -198,6 +235,46 @@ emit_lowered_instrs_wat([Instr|Rest]) :-
     format('  (if (i32.eqz (call $do_~w (i64.const ~w) (i64.const ~w)))~n', [DoName, Op1, Op2]),
     format('    (then (return (i32.const 0))))~n'),
     emit_lowered_instrs_wat(Rest).
+
+% =====================================================================
+% T5: multi-clause first-argument dispatch  (clause_chain → guard cascade)
+% =====================================================================
+%
+%  Distinct-first-arg-constant predicates (color(red). color(green). … or
+%  sz(small,1). sz(medium,2). …) lower to one function that tests A1 against
+%  each clause's discriminator and runs that clause's body inline — every clause
+%  is native, no interpreter hop for clauses 2+ when A1 is bound.
+%
+%  do_get_constant is a *pure test* when A1 is bound (returns 1 on match, 0
+%  otherwise, no binding) and a *bind* when A1 is unbound — so the cascade is
+%  guarded by an unbound check up front: an unbound first argument cannot
+%  discriminate, so we return 0 and let the public entry replay through the
+%  interpreter (which enumerates clauses). Distinct discriminators mean at most
+%  one guard matches a bound A1, so the dispatch is deterministic and agrees
+%  with the bytecode interpreter's (first-solution) result. A matched clause
+%  whose body fails returns 0 (correct: no other clause can match the bound A1);
+%  the entry then replays the interpreter, which fails the same way.
+emit_clause_chain_function_wat(FuncName, Guards) :-
+    format('(func $~w (result i32)~n', [FuncName]),
+    format('  ;; WAM-WAT lowered T5 first-argument dispatch. Unbound A1 (tag 6) or~n'),
+    format('  ;; no matching clause returns 0 so the public entry replays via $run_loop.~n'),
+    format('  (if (i32.eq (call $val_tag (call $deref_reg_addr (i32.const 0))) (i32.const 6))~n'),
+    format('    (then (return (i32.const 0))))~n'),
+    forall(member(guard(V, Rem), Guards), emit_chain_guard_wat(V, Rem)),
+    format('  (i32.const 0)~n'),
+    format(')~n').
+
+%% emit_chain_guard_wat(+Discriminator, +Remainder)
+%  Emit `(if <A1 == V> (then <body> ))`. The guard reuses do_get_constant on the
+%  reconstructed first-arg head match (A1 is register 0); the remainder is the
+%  clause body, emitted exactly like a deterministic clause (proceed → return 1,
+%  a failed instruction → return 0).
+emit_chain_guard_wat(V, Rem) :-
+    wam_wat_target:wam_instruction_to_wat_operands(get_constant(V, 'A1'), [], _Do, Op1, Op2),
+    format('  (if (call $do_get_constant (i64.const ~w) (i64.const ~w))~n', [Op1, Op2]),
+    format('    (then~n'),
+    emit_lowered_instrs_wat(Rem),
+    format('    ))~n').
 
 % =====================================================================
 % T2: if-then-else / negation / once  (structured ite/3)
