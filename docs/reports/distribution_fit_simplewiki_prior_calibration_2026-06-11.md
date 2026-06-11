@@ -124,6 +124,13 @@ shifted-Gamma approximation, and it is cheaper to build in the prior comparison.
 Gamma remains useful as a candidate for wider enwiki-style branching, not as
 the default for this SimpleWiki sample.
 
+The report therefore suggests a cheap first prior: use scalar support bounds to
+set the candidate binomial support, and use the measured size-biased parent
+branching signal as the Bernoulli excess-parent proxy. In this run, that means
+`n ~= L_max - L_min` and `p ~= E[P^2]/E[P] - 1 = 0.028750` globally, with the
+understanding that the root-distance table already shows why a future
+layer-conditioned `p_i` may be better.
+
 The binomial result should be read as a sparse-event model, not as a symmetric
 Gaussian claim. In this sample, excess-parent probability is small, so the
 binomial prior is right-skewed and compact. A normal approximation would be a

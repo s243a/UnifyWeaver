@@ -102,6 +102,24 @@ horizon: `L_min` gives a lower-bound estimate, `L_max` gives an upper-bound
 estimate, and narrow support makes the difference small. It is useful for
 SimpleWiki-like samples because `epsilon` is small and measured `max_p` is low.
 
+For planner admission, the useful cheap approximation is:
+
+```text
+n_binomial ~= support_width = L_max - L_min
+p_binomial ~= epsilon = E[P^2] / E[P] - 1
+```
+
+The support width comes from scalar min/max difference equations, so it is cheap
+to compute and store without materialising the full histogram. The probability
+proxy comes from the global or bucketed size-biased parent branching statistic.
+This is strongest in the near-chain regime where excess parent count is mostly
+`0` or `1`; then `epsilon` is close to a Bernoulli probability. If parent count
+can jump by more than one, `epsilon` is only a mean excess and the compound
+convolution model is the safer prior. Because SimpleWiki shows the parent
+branching signal declining farther from the root, the global `epsilon` should
+be treated as a first calibration constant until depth-local priors are
+measured.
+
 A binomial prior is compact because it is determined by two parameters,
 `n` and `p`, and therefore by compatible mean and variance:
 
