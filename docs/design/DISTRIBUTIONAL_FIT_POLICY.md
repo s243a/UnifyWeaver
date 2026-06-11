@@ -426,6 +426,10 @@ For SimpleWiki, the current measurements suggest the first condition dominates.
 For enwiki, the parent-branching moment should be measured by root-distance
 bucket before deciding how far exact histograms should be propagated.
 
+`PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
+small excess parent branching is binomial-like, while larger parent branching is
+better treated as a compound/convolution model before fitting a closed form.
+
 ## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
