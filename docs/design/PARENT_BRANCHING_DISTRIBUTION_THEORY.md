@@ -136,12 +136,24 @@ If variance is inflated by topical correlation or mixed regimes, a
 beta-binomial or empirical compound prior is a better candidate than forcing a
 binomial fit.
 
-The binomial family is not generally symmetric. It is symmetric only near
-`p = 0.5`; in the SimpleWiki near-chain regime, `p` is small and the mass is
-right-skewed. A normal/Gaussian approximation becomes reasonable only in the
-large-depth central-limit regime where both `n*p` and `n*(1-p)` are large.
-For rare excess-parent events, the intermediate approximation is more
-Poisson-like than Gaussian.
+The binomial family is not generally symmetric. It is exactly symmetric only
+near `p = 0.5`; in the SimpleWiki near-chain regime, `p` is small and the mass
+is right-skewed. The standardized skewness of a binomial is
+
+```text
+skewness = (1 - 2p) / sqrt(n * p * (1 - p))
+```
+
+so convolution does make the shape more symmetric as the effective number of
+independent layers grows, but only at the standardized-distribution level. A
+normal/Gaussian approximation becomes reasonable in the large-depth
+central-limit regime where both `n*p` and `n*(1-p)` are large. A single node or
+shallow subtree can still be strongly right-skewed, especially when `p` is small
+and the lower boundary at zero excess events is close to the mean. For rare
+excess-parent events, the intermediate approximation is more Poisson-like than
+Gaussian. In this sense the binomial approximation supplies a compact
+finite-support prior; it is not a claim that the exact node histogram is
+symmetric.
 
 For `epsilon = 0.028750`:
 
