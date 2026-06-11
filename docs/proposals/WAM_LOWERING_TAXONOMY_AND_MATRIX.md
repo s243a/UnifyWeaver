@@ -234,10 +234,16 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   with a `br` on first failure, a saved trail mark, and `$unwind_trail` before
   the else). `test_wam_wat_lowered_t2` exec-tests branch selection / negation /
   once / sequential+nested ITE via wat2wasm+node, and asserts the lowered fast
-  path matches the bytecode interpreter on every case. (A pre-existing
-  WAT-runtime limitation — a condition's variable binding is not propagated
-  into the then-branch — is present in BOTH the lowered and interpreter paths,
-  so the lowering is faithful; that runtime fix is tracked separately.)
+  path matches the bytecode interpreter on every case. (A previously documented
+  WAT-runtime limitation — a condition's variable binding not propagating into
+  the then-branch — is now **FIXED**: `unify_addrs` bound a variable to a Ref
+  into a transient argument-register cell, so the variable silently changed when
+  a later goal reused that register, breaking *every* arithmetic comparison in
+  the `X = V, X <cmp> K` guard pattern, on both paths — some forms even spun a
+  Ref cycle and hung. The fix copies scalars by value into the variable's heap
+  cell (only compounds/cons/unbound cells, which live on the heap, are bound as
+  a Ref). `test_wam_wat_unify_propagation` guards it, and the `cond_bind` cases
+  in `test_wam_wat_lowered_t2` are now absolute-correctness assertions.)
 - **python T3** — **DONE.** Python now lowers a multi-clause predicate's
   clause 1 (fast path) with interpreter fallback for clauses 2+ (see the T3
   verification note above), so the T3 column is ✓ for every target that has a

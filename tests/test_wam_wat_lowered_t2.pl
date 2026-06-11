@@ -20,10 +20,15 @@
 %       the Prolog-correct 1/0.
 %   (2) PARITY: the lowered (emit_mode(functions)) result equals the bytecode
 %       interpreter (emit_mode(interpreter)) result for EVERY case — the core
-%       property of a faithful lowering. (A few ITE shapes that thread a
-%       variable binding from the condition into the then-branch / continuation
-%       expose a PRE-EXISTING WAT-runtime limitation present in BOTH paths;
-%       parity still holds and is what we assert there.)
+%       property of a faithful lowering.
+%
+% The cond_bind* cases thread a variable binding from the condition into the
+% then-branch ( ( X = 7 -> X > 5 ; … ) ). These previously exposed a WAT-runtime
+% bug — unify bound a variable to a Ref into a transient argument-register cell,
+% so the variable silently changed when a later goal reused that register — and
+% were asserted parity-only. That bug is now fixed in unify_addrs (scalars are
+% copied by value, never bound as a Ref to a register), so they are absolute
+% correctness cases and guard the fix against regression.
 %
 % Skipped automatically when wat2wasm or node is unavailable.
 
@@ -37,7 +42,7 @@
            user:neg_true/0, user:neg_false/0,
            user:once_true/0, user:once_false/0,
            user:multi_ite/0, user:nest_ite/0,
-           user:cond_bind/0.
+           user:cond_bind/0, user:cond_bind_false/0.
 
 % Branch selection by condition truth; branch body success/failure proves the
 % RIGHT branch ran (not just that some branch succeeded).
@@ -54,21 +59,23 @@ user:once_false :- once( 0 > 5 ).   % -> 0
 % emission that a nondeterministic structuring would cause).
 user:multi_ite  :- ( 5 > 0 -> true ; fail ), ( 0 > 5 -> fail ; true ).         % -> 1
 user:nest_ite   :- ( 5 > 0 -> ( 5 > 10 -> fail ; true ) ; fail ).             % -> 1
-% condition binds a variable used in the then-branch: parity-only (the WAT
-% runtime does not propagate the binding cond->then in EITHER path).
-user:cond_bind  :- ( X = 7 -> X > 5 ; fail ).
+% condition binds a variable used (compared) in the then-branch — regression
+% guard for the unify scalar-propagation fix. The then-branch must see X = 7.
+user:cond_bind        :- ( X = 7 -> X > 5 ; fail ).   % then: 7 > 5 -> 1
+user:cond_bind_false  :- ( X = 7 -> X > 9 ; fail ).   % then: 7 > 9 -> 0 (not stale)
 
 % Name-Expected for the absolute-correctness cases.
 correctness_cases([ ite_then_ok-1, ite_then_body_fail-0,
                     ite_else_ok-1, ite_else_body_fail-0,
                     neg_true-1, neg_false-0,
                     once_true-1, once_false-0,
-                    multi_ite-1, nest_ite-1 ]).
+                    multi_ite-1, nest_ite-1,
+                    cond_bind-1, cond_bind_false-0 ]).
 
-% All predicates (correctness + parity-only) for the gate and parity checks.
+% All predicates for the gate and parity checks.
 all_preds([ ite_then_ok, ite_then_body_fail, ite_else_ok, ite_else_body_fail,
             neg_true, neg_false, once_true, once_false,
-            multi_ite, nest_ite, cond_bind ]).
+            multi_ite, nest_ite, cond_bind, cond_bind_false ]).
 
 tool_available(Tool) :-
     catch(process_create(path(Tool), ['--version'], [stdout(null), stderr(null)]),
