@@ -66,7 +66,8 @@
     i32,                                   ; 9: foreign_count (total results)
     i32,                                   ; 10: foreign_cursor (next to yield)
     i32,                                   ; 11: saved heap_top — rewound on backtrack
-    i32                                    ; 12: saved_b (backtrack level of caller)
+    i32,                                   ; 12: saved_b (backtrack level of caller)
+    i32                                    ; 13: saved_stack_size — restored on backtrack
 }
 
 ; === WAM State ===

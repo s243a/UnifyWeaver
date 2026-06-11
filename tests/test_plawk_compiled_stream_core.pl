@@ -12,14 +12,13 @@
 :- dynamic user:plawk_stream_count_errors/4.
 :- dynamic user:plawk_stream_loop/3.
 :- dynamic user:plawk_stream_error_handler/4.
-:- dynamic user:plawk_add_error/3.
 
 user:plawk_stream_count_errors(Path, Count, FirstError, SecondError) :-
     stream_open(Path, Handle),
     plawk_stream_loop(Handle, state([], [], 0, none), StateN),
     stream_close(Handle),
     state_counter(StateN, Count),
-    StateN = state(_InputStreams, outputs([FirstError, SecondError]), _Counter, _UserFields).
+    state_outputs(StateN, [FirstError, SecondError]).
 
 user:plawk_stream_loop(Handle, State0, StateN) :-
     read_line(Handle, Line),
@@ -35,19 +34,10 @@ user:plawk_stream_error_handler(Item, State0, StateN, yes) :-
     increment_counter(State0, State1),
     (   item_field(1, Item, 'ERROR')
     ->  item_field(0, Item, Line),
-        plawk_add_error(Line, State1, StateN)
+        append_output(Line, State1, StateN)
     ;   StateN = State1
     ).
 
-user:plawk_add_error(Line,
-                     state(InputStreams, [], Counter, UserFields),
-                     state(InputStreams, outputs([Line]), Counter, UserFields)).
-
-user:plawk_add_error(Line,
-                     state(InputStreams, outputs([First]), Counter, UserFields),
-                     state(InputStreams, outputs([First, Line]), Counter, UserFields)).
-
-user:plawk_add_error(_Line, State, State).
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
@@ -71,7 +61,7 @@ test(compiled_stream_counts_and_collects_error_lines) :-
         [ user:plawk_stream_count_errors/4,
           user:plawk_stream_loop/3,
           user:plawk_stream_error_handler/4,
-          user:plawk_add_error/3
+          plawk_core:normalize_outputs/2
         ],
         [module_name('plawk_stream_core')], LLPath),
     wam_llvm_last_compile_counts(InstrCount, LabelCount),
