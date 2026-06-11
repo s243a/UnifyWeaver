@@ -301,7 +301,10 @@ test_fresh_sv_no_shadowing :-
 test_escape_dq_handles_both :-
     Test = 'Phase 4: escape_dq escapes both backslash and double-quote',
     wam_haskell_lowered_emitter:escape_dq("foo\\bar\"baz", Esc),
-    (   Esc == "foo\\\\bar\\\"baz"
+    % M150: escape_dq returns an ATOM (it ends in atomic_list_concat);
+    % the original string-literal == comparison could never succeed.
+    atom_string(Esc, EscS),
+    (   EscS == "foo\\\\bar\\\"baz"
     ->  pass(Test)
     ;   fail_test(Test, ['expected foo\\\\bar\\\"baz got ', Esc])
     ).
