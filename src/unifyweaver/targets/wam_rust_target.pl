@@ -1004,6 +1004,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_foreign_result_helpers_to_rust(ForeignResultHelpersCode),
     compile_parse_foreign_tuple_layout_to_rust(ForeignTupleLayoutCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
+    compile_collect_native_bidirectional_ancestor_to_rust(NativeBidirectionalCode),
     compile_compute_native_countdown_sum_to_rust(NativeCountdownSumCode),
     compile_collect_native_list_suffixes_to_rust(NativeListSuffixCode),
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
@@ -1028,6 +1029,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ForeignResultHelpersCode, '\n\n',
         ForeignTupleLayoutCode, '\n\n',
         NativeAncestorCode, '\n\n',
+        NativeBidirectionalCode, '\n\n',
         NativeCountdownSumCode, '\n\n',
         NativeListSuffixCode, '\n\n',
         NativeClosureCode, '\n\n',
@@ -1817,6 +1819,68 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
+            "bidirectional_ancestor" => {
+                // 5-ary interface: A1 cat (in), A2 root (in), A3 total
+                // hops, A4 parent hops, A5 child hops (out, streamed per
+                // budget-feasible path). Costs and budget come from f64
+                // configs with the F#-parity defaults 1.0 / 3.0 / 10.0.
+                let cat = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(cat)) => cat,
+                    _ => return false,
+                };
+                let root = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(root)) => root,
+                    _ => return false,
+                };
+                let total_reg = match self.get_reg_raw("A3") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let phops_reg = match self.get_reg_raw("A4") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let chops_reg = match self.get_reg_raw("A5") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let child_pred = self.foreign_string_config(&pred_key, "child_pred")
+                    .unwrap_or("category_child")
+                    .to_string();
+                let parent_cost = self.foreign_f64_config(&pred_key, "parent_step_cost").unwrap_or(1.0);
+                let child_cost = self.foreign_f64_config(&pred_key, "child_step_cost").unwrap_or(3.0);
+                let budget = self.foreign_f64_config(&pred_key, "cost_budget").unwrap_or(10.0);
+                let cat_id = self.intern_atom(&cat);
+                let root_id = self.intern_atom(&root);
+                // Derive the downward index from the parent edges when no
+                // child-direction source is registered.
+                self.ensure_reverse_edge_index(&edge_pred, &child_pred);
+                let mut hops: Vec<(i64, i64, i64)> = Vec::new();
+                {
+                    let parents = self.resolve_edge_accessor(&edge_pred);
+                    let children = self.resolve_edge_accessor(&child_pred);
+                    let (_dim, _branch_ratio, _branch_ratio_raw, _routing_correction, min_dist) =
+                        self.calibrate_bidirectional_graph(root_id, &parents, &children);
+                    self.collect_native_bidirectional_ancestor_hops(
+                        cat_id, root_id, parent_cost, child_cost, budget,
+                        &parents, &children, &min_dist, &mut hops);
+                }
+                if hops.is_empty() {
+                    return false;
+                }
+                let results: Vec<Value> = hops.into_iter().map(|(t, p, c)| {
+                    Value::Str("__tuple__".to_string(), vec![
+                        Value::Integer(t),
+                        Value::Integer(p),
+                        Value::Integer(c),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![total_reg, phops_reg, chops_reg], results)
+            }
             "countdown_sum2" => {
                 let n = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Integer(n)) => n,
@@ -2313,6 +2377,225 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
             visited.push(*parent_id);
             self.collect_native_category_ancestor_hops(*parent_id, root_id, visited, max_depth, acc, depth + 1, out);
             visited.pop();
+        }
+    }'.
+
+compile_collect_native_bidirectional_ancestor_to_rust(Code) :-
+    Code = '    /// Calibrate the bidirectional graph from root_id: BFS downward via
+    /// child edges computing the minimum parent-hop distance to root for
+    /// every reachable node (the A* lower bound), plus degree-moment
+    /// statistics for the direction-weighted distance metric. Returns
+    /// (dimensionality D, branch_ratio b, branch_ratio_raw,
+    ///  routing_correction, min_dist). Port of calibrateGraph in the
+    /// F# kernel template (kernel_bidirectional_ancestor.fs.mustache):
+    ///   D     = E[d_child]                 (average child fan-out)
+    ///   b_raw = E[d^2_child] / E[d^2_parent]  (second moment ratio)
+    ///   b     = b_raw * routing_correction
+    /// The routing correction (avg_min_dist / avg_path_hops over a probe
+    /// sample) accounts for hub correlation: where paths overlap through
+    /// shared hubs, the raw b overestimates the effective branching.
+    pub fn calibrate_bidirectional_graph(
+        &self,
+        root_id: u32,
+        parents: &EdgeAccessor,
+        children: &EdgeAccessor,
+    ) -> (f64, f64, f64, f64, FxMap<u32, i32>) {
+        let mut dist: FxMap<u32, i32> = FxMap::default();
+        dist.insert(root_id, 0);
+        let mut frontier: Vec<u32> = vec![root_id];
+        let mut depth: i32 = 0;
+        let mut sum_child_deg = 0.0f64;
+        let mut sum_child_deg2 = 0.0f64;
+        let mut child_nodes = 0usize;
+        let mut sum_parent_deg = 0.0f64;
+        let mut sum_parent_deg2 = 0.0f64;
+        let mut parent_nodes = 0usize;
+        while !frontier.is_empty() {
+            depth += 1;
+            let mut next: Vec<u32> = Vec::new();
+            for &nd in &frontier {
+                let ch = self.edge_parents_via(nd, children);
+                if !ch.is_empty() {
+                    let d = ch.len() as f64;
+                    sum_child_deg += d;
+                    sum_child_deg2 += d * d;
+                    child_nodes += 1;
+                }
+                let ps = self.edge_parents_via(nd, parents);
+                if !ps.is_empty() {
+                    let d = ps.len() as f64;
+                    sum_parent_deg += d;
+                    sum_parent_deg2 += d * d;
+                    parent_nodes += 1;
+                }
+                for c in ch {
+                    if !dist.contains_key(&c) {
+                        dist.insert(c, depth);
+                        next.push(c);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let dimensionality = if child_nodes > 0 {
+            (sum_child_deg / child_nodes as f64).max(1.5)
+        } else {
+            3.0
+        };
+        let branch_ratio_raw = if child_nodes > 0 && parent_nodes > 0 {
+            let ed2_child = sum_child_deg2 / child_nodes as f64;
+            let ed2_parent = sum_parent_deg2 / parent_nodes as f64;
+            if ed2_parent > 0.0 {
+                (ed2_child / ed2_parent).max(1.0)
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        // Routing correction: probe up to 20 sample nodes at depth 3..=6,
+        // enumerating budget-15 paths (parent cost 1, child cost 5,
+        // A*-pruned by dist) and measuring avg_min_dist / avg_path_hops.
+        // Constants mirror the F# probe exactly.
+        let mut seed_sample: Vec<u32> = Vec::new();
+        for (k, d) in dist.iter() {
+            if *d >= 3 && *d <= 6 {
+                seed_sample.push(*k);
+                if seed_sample.len() >= 20 {
+                    break;
+                }
+            }
+        }
+        let routing_correction = if !seed_sample.is_empty() {
+            let mut total_min_d = 0.0f64;
+            let mut total_hops = 0.0f64;
+            let mut total_paths = 0usize;
+            for &s in &seed_sample {
+                total_min_d += dist[&s] as f64;
+                let mut stack: Vec<(u32, f64, i64, Vec<u32>)> =
+                    vec![(s, 0.0, 0, vec![s])];
+                while let Some((nd, co, h, visited)) = stack.pop() {
+                    if nd == root_id {
+                        total_hops += h as f64;
+                        total_paths += 1;
+                    }
+                    let gcr = |x: u32| -> f64 {
+                        match dist.get(&x) {
+                            Some(&d) => d as f64,
+                            None => f64::INFINITY,
+                        }
+                    };
+                    if co + 1.0 <= 15.0 {
+                        for p in self.edge_parents_via(nd, parents) {
+                            if visited.contains(&p) {
+                                continue;
+                            }
+                            let nc = co + 1.0;
+                            if nc + gcr(p) > 15.0 {
+                                continue;
+                            }
+                            let mut v2 = visited.clone();
+                            v2.push(p);
+                            stack.push((p, nc, h + 1, v2));
+                        }
+                    }
+                    if co + 5.0 <= 15.0 {
+                        for c in self.edge_parents_via(nd, children) {
+                            if visited.contains(&c) {
+                                continue;
+                            }
+                            let nc = co + 5.0;
+                            if nc + gcr(c) > 15.0 {
+                                continue;
+                            }
+                            let mut v2 = visited.clone();
+                            v2.push(c);
+                            stack.push((c, nc, h + 1, v2));
+                        }
+                    }
+                }
+            }
+            let avg_min_d = total_min_d / seed_sample.len() as f64;
+            let avg_hops = if total_paths > 0 {
+                total_hops / total_paths as f64
+            } else {
+                avg_min_d
+            };
+            if avg_hops > 0.0 {
+                (avg_min_d / avg_hops).min(1.0)
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        let branch_ratio = branch_ratio_raw * routing_correction;
+        (dimensionality, branch_ratio, branch_ratio_raw, routing_correction, dist)
+    }
+
+    /// Bidirectional effective-distance kernel with path-cost pruning and
+    /// A*-style lower-bound elimination. Explores parent hops (cost
+    /// parent_cost) and child hops (cost child_cost) from cat_id, pruning
+    /// any frontier entry whose cumulative cost plus
+    /// min_dist[node] * parent_cost exceeds the budget — it cannot reach
+    /// root within budget even using only parent hops (the cheapest
+    /// direction). Pushes (total_hops, parent_hops, child_hops) for every
+    /// path that reaches root_id within budget; the caller applies the
+    /// direction-weighted distance metric. With child_cost above the
+    /// budget this degenerates to upward-only search. Port of
+    /// nativeKernel_bidirectional_ancestor from the F# template.
+    pub fn collect_native_bidirectional_ancestor_hops(
+        &self,
+        cat_id: u32,
+        root_id: u32,
+        parent_cost: f64,
+        child_cost: f64,
+        budget: f64,
+        parents: &EdgeAccessor,
+        children: &EdgeAccessor,
+        min_dist: &FxMap<u32, i32>,
+        out: &mut Vec<(i64, i64, i64)>,
+    ) {
+        let min_cost_to_root = |nd: u32| -> f64 {
+            match min_dist.get(&nd) {
+                Some(&d) => d as f64 * parent_cost,
+                None => f64::INFINITY,
+            }
+        };
+        let mut stack: Vec<(u32, f64, i64, i64, i64, Vec<u32>)> =
+            vec![(cat_id, 0.0, 0, 0, 0, vec![cat_id])];
+        while let Some((node, cost, hops, p_hops, c_hops, visited)) = stack.pop() {
+            if node == root_id && hops > 0 {
+                out.push((hops, p_hops, c_hops));
+            }
+            if cost + parent_cost <= budget {
+                for p in self.edge_parents_via(node, parents) {
+                    if visited.contains(&p) {
+                        continue;
+                    }
+                    let nc = cost + parent_cost;
+                    if nc + min_cost_to_root(p) > budget {
+                        continue;
+                    }
+                    let mut v2 = visited.clone();
+                    v2.push(p);
+                    stack.push((p, nc, hops + 1, p_hops + 1, c_hops, v2));
+                }
+            }
+            if cost + child_cost <= budget {
+                for c in self.edge_parents_via(node, children) {
+                    if visited.contains(&c) {
+                        continue;
+                    }
+                    let nc = cost + child_cost;
+                    if nc + min_cost_to_root(c) > budget {
+                        continue;
+                    }
+                    let mut v2 = visited.clone();
+                    v2.push(c);
+                    stack.push((c, nc, hops + 1, p_hops, c_hops + 1, v2));
+                }
+            }
         }
     }'.
 
@@ -3433,6 +3716,83 @@ detect_kernels([PI|Rest], Kernels) :-
     ),
     detect_kernels(Rest, RestKernels).
 
+%% rust_maybe_upgrade_bidirectional(+Options, +Kernel0, -Kernel)
+%  kernel_mode(bidirectional) upgrades a detected category_ancestor
+%  kernel to bidirectional_ancestor. Mirrors the Haskell/F# targets
+%  (maybe_upgrade_bidirectional) — explicit opt-in, never default.
+%  The upgraded kernel has a 5-ary interface:
+%      Pred(Cat, Root, TotalHops, ParentHops, ChildHops)
+%  streaming one solution per budget-feasible path between Cat and
+%  Root (parent hops cost parent_step_cost, child hops cost
+%  child_step_cost, pruned at cost_budget with an A* lower bound).
+%  Cost overrides and the child edge predicate may be passed as
+%  project options: parent_step_cost/1, child_step_cost/1,
+%  cost_budget/1 (floats), child_pred/1 (atom; default
+%  category_child — when absent at runtime the index is derived by
+%  reversing the eager parent table).
+rust_maybe_upgrade_bidirectional(Options,
+        recursive_kernel(category_ancestor, Pred/4, Config0),
+        recursive_kernel(bidirectional_ancestor, Pred/5, Config)) :-
+    option(kernel_mode(bidirectional), Options),
+    !,
+    rust_bidirectional_config_extras(Options, Extras),
+    append(Config0, Extras, Config).
+rust_maybe_upgrade_bidirectional(_, Kernel, Kernel).
+
+rust_bidirectional_config_extras(Options, Extras) :-
+    findall(Term,
+        ( member(Key, [parent_step_cost, child_step_cost, cost_budget,
+                       child_pred]),
+          Term =.. [Key, _],
+          option(Term, Options) ),
+        Extras).
+
+%% rust_upgrade_kernel_pair(+Options, +Key0-Kernel0, -Key-Kernel)
+%  Apply the bidirectional upgrade to a detected Key-Kernel pair,
+%  rewriting the key to the upgraded predicate indicator (Pred/5) so
+%  registration, dispatch, and the public wrapper stay consistent.
+rust_upgrade_kernel_pair(Options, Key0-Kernel0, Key-Kernel) :-
+    rust_maybe_upgrade_bidirectional(Options, Kernel0, Kernel),
+    (   Kernel0 == Kernel
+    ->  Key = Key0
+    ;   Kernel = recursive_kernel(Kind, Pred/Arity, _),
+        format(atom(Key), '~w/~w', [Pred, Arity]),
+        format(user_error, '[WAM-Rust] kernel upgraded: ~w -> ~w (~w)~n',
+               [Key0, Kind, Key])
+    ).
+
+%% rust_bidirectional_wrapper_code(+Pred, +Kernel, -Code)
+%  Public 5-ary wrapper for an upgraded bidirectional_ancestor kernel:
+%  Pred(Cat, Root, TotalHops, ParentHops, ChildHops). Self-registers
+%  the kernel metadata + configs (like the other kernel wrappers) and
+%  dispatches through execute_foreign_predicate. Parent edge facts must
+%  be registered on the VM beforehand (register_ffi_fact_pairs or a
+%  lazy lookup source); the child-direction index is derived on first
+%  call when absent.
+rust_bidirectional_wrapper_code(Pred, Kernel, Code) :-
+    Kernel = recursive_kernel(bidirectional_ancestor, Pred/5, _),
+    rust_safe_function_name(Pred, FuncName),
+    format(atom(Key), '~w/5', [Pred]),
+    with_output_to(string(RegLines), emit_kernel_registration(Key-Kernel)),
+    format(string(Code),
+'/// Bidirectional ancestor kernel wrapper (5-ary):
+/// ~w(Cat, Root, TotalHops, ParentHops, ChildHops).
+/// Upgraded from a detected category_ancestor kernel by
+/// kernel_mode(bidirectional). Register parent edges on the VM first
+/// (register_ffi_fact_pairs or a lazy lookup source); the
+/// child-direction index is derived on first call when absent.
+pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value, a5: Value) -> bool {
+    vm.code = Vec::new();
+    vm.labels = std::collections::HashMap::new();
+    vm.pc = 1;
+~w    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.set_reg("A4", a4);
+    vm.set_reg("A5", a5);
+    vm.execute_foreign_predicate("~w", 5)
+}', [Pred, FuncName, RegLines, Pred]).
+
 %% generate_setup_foreign_predicates_rust(+DetectedKernels, -RustCode)
 %  Generates a Rust function that registers all detected FFI kernels with
 %  the WamState at startup. Uses kernel_metadata/4 and kernel_config/2 to
@@ -3480,7 +3840,7 @@ emit_kernel_config_ops(Key, [Op|Rest]) :-
         format('    vm.register_foreign_usize_config("~w", "~w", ~w);~n',
                [Key, ConfigKey, RawValue])
     ;   float(RawValue) ->
-        format('    vm.register_foreign_string_config("~w", "~w", "~w");~n',
+        format('    vm.register_foreign_f64_config("~w", "~w", ~w);~n',
                [Key, ConfigKey, RawValue])
     ;   atom(RawValue) ->
         format('    vm.register_foreign_string_config("~w", "~w", "~w");~n',
@@ -3511,6 +3871,9 @@ emit_kernel_config_ops(Key, [Op|Rest]) :-
 %    include_runtime(Bool) — include transpiled WAM runtime (default: true)
 %    emit_mode(Mode)     — interpreter | functions (default: interpreter)
 %    parallel(Bool)      — enable Rayon parallel execution (default: false)
+%    kernel_mode(bidirectional) — upgrade detected category_ancestor
+%                          kernels to the 5-ary bidirectional_ancestor
+%                          kernel (see rust_maybe_upgrade_bidirectional/3)
 write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
@@ -3526,7 +3889,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Rust] kernel detection suppressed~n', [])
-    ;   detect_kernels(ProjectPredicates, DetectedKernels),
+    ;   detect_kernels(ProjectPredicates, DetectedKernels0),
+        maplist(rust_upgrade_kernel_pair(Options), DetectedKernels0, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
@@ -3794,13 +4158,21 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         functor(KHead, Pred, Arity),
         findall(KHead-KBody, Module:clause(KHead, KBody), KClauses),
         KClauses \= [],
-        detect_recursive_kernel(Pred, Arity, KClauses, Kernel)
-    ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
+        detect_recursive_kernel(Pred, Arity, KClauses, Kernel0)
+    ->  rust_maybe_upgrade_bidirectional(Options, Kernel0, Kernel),
+        format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         % Besides the CallForeign dispatch route, emit a public Rust wrapper
         % function (bare predicate name) so library consumers can call the
         % kernel directly: `use crate::pred; pred(&mut vm, args...)`.
         % Without this, ffi_kernel predicates had no callable symbol at all.
-        (   catch(rust_target:rust_foreign_lowering_spec(Pred, Arity, KClauses,
+        (   Kernel = recursive_kernel(bidirectional_ancestor, _, _)
+        ->  % Upgraded kernel: the public interface widens to 5 args
+            % (Cat, Root, TotalHops, ParentHops, ChildHops), so the
+            % legacy 4-ary spec wrapper does not apply.
+            rust_bidirectional_wrapper_code(Pred, Kernel, WrapperCode),
+            Entry = classified(Module, Pred, Arity, ffi_kernel,
+                               kernel_with_wrapper(Kernel, WrapperCode))
+        ;   catch(rust_target:rust_foreign_lowering_spec(Pred, Arity, KClauses,
                                                           ForeignSpec),
                   _, fail),
             catch(compile_wam_predicate_to_rust(Pred/Arity, '',
