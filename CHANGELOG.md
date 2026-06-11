@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **WAM Scala target (M150): any format string containing a space
+  wrong-failed its predicate.** `tokenize_wam_line`'s quote-aware
+  tokenizer left a residual empty token when a quoted operand was
+  followed by the operand comma (`put_constant '~a is ~w!', A1`), so
+  the parts list never matched the 3-arg `put_constant` clause and
+  the instruction fell to the failing fallback. Empty tokens are now
+  filtered. Fixes the pre-existing `builtin_format` failure in the
+  runtime smoke (`wam_format_combo/2`).
+- **WAM Haskell target (M150): silent lowering failure on an
+  uninitialized intern table.** `intern_atom/2` failed silently
+  (failed `retract`) when called before `init_atom_intern_table` —
+  standalone callers of the exported `lower_predicate_to_haskell`
+  API (e.g. the phase-4 suite's `put_structure` test) failed without
+  a message for months. Now self-initializing. Also fixed the
+  phase-4 `escape_dq` test, whose atom-vs-string `==` comparison
+  could never have succeeded. `test_wam_haskell_lowered_phase4` now
+  exits 0 with all tests passing (the last ledger "exits false
+  despite all-PASS output" mystery).
 - **WAM ILasm target (M149): full repair campaign — the target now
   assembles, runs, and executes correctly end-to-end.** All 13
   structural defects documented by the sweep are fixed in the

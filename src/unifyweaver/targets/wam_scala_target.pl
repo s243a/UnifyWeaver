@@ -144,7 +144,14 @@ wam_line_to_scala_literal(Line, Literal) :-
 %  would shred into multiple tokens.
 tokenize_wam_line(Line, Tokens) :-
     string_chars(Line, Chars),
-    tokenize_wam_chars(Chars, [], [], outside, Tokens).
+    tokenize_wam_chars(Chars, [], [], outside, Tokens0),
+    % M150: a quoted operand followed by an operand comma (e.g.
+    % put_constant '~a is ~w!', A1) left a residual empty token after
+    % comma-stripping, so the parts list never matched the 3-arg
+    % put_constant clause and the instruction fell to the failing
+    % fallback - any format string containing a space wrong-failed
+    % its whole predicate.
+    exclude(==(""), Tokens0, Tokens).
 
 % tokenize_wam_chars(+Chars, +CurReversed, +TokensReversedAcc, +State, -Tokens)
 tokenize_wam_chars([], [], Acc, _, Tokens) :- !,

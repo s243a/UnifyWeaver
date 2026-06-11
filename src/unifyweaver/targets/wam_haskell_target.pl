@@ -135,6 +135,13 @@ init_atom_intern_table :-
 %% intern_atom(+AtomStr, -Id) is det.
 %  Assigns a stable integer ID to the given atom string. Idempotent.
 intern_atom(AtomStr, Id) :-
+    % M150: self-initialize. Standalone callers of the exported
+    % lowering API (e.g. tests calling lower_predicate_to_haskell
+    % without a full project generation) hit an empty intern table;
+    % the retract below then fails SILENTLY and the whole lowering
+    % fails with it -- the phase-4 suite's put_structure test failed
+    % this way for months without a message.
+    (   atom_intern_next(_) -> true ; init_atom_intern_table ),
     atom_string(AtomStr, Str),
     (   atom_intern_id(Str, Id0)
     ->  Id = Id0
