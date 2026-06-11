@@ -175,33 +175,86 @@ about the final closed-form family. It should be validated against exact
 histograms on SimpleWiki and sampled enwiki subgraphs before being used for
 policy decisions.
 
-## 6. Gamma-style continuous approximation
+## 6. Shifted exponential / Gamma tail approximation
 
 For larger branching, the discrete convolution may become expensive or too noisy
-to store directly. A continuous approximation can be useful as a planning model.
-If each layer contributes a positive, narrow branching-cost distribution with
-mean near `b_p`, then repeated convolution tends toward a smooth family. A Gamma
-approximation is a plausible first candidate because sums of positive variables
-with similar scale parameters remain Gamma-shaped:
+to store directly. A continuous approximation can be useful as a planning model,
+but it should be placed on the excess-parent variable rather than on raw parent
+degree:
 
 ```text
-LayerBranch_i ~ Gamma(shape = alpha, scale = theta)
-E[LayerBranch_i] = alpha * theta ~= b_p
-Var(LayerBranch_i) = alpha * theta^2
-
-Sum_n = LayerBranch_1 + ... + LayerBranch_n
-Sum_n ~ Gamma(shape = n * alpha, scale = theta)
+p >= 1
+Pr(p < 1) = 0
+X = p - 1
+X >= 0
+E[X] = b_p - 1
 ```
 
-If the standard deviation is very narrow, `alpha` is large and the sum becomes
-concentrated around `n * b_p`. In that regime, a closed-form approximation may
-be good enough for planning thresholds, but the exact histogram or empirical
-convolution should remain the validation oracle.
+For the current SimpleWiki sample:
 
-This Gamma framing is not a claim that Wikipedia parent paths are Gamma
+```text
+E[X] = 1.028750 - 1 = 0.028750
+```
+
+This support constraint makes a shifted exponential or shifted Gamma more
+appropriate than an unshifted exponential over raw parent degree. In raw
+parent-degree terms:
+
+```text
+p = 1 + X
+X ~ Exponential(lambda)
+```
+
+or, more generally:
+
+```text
+p = 1 + X
+X ~ Gamma(shape = alpha, scale = theta)
+E[X] = alpha * theta ~= b_p - 1
+Var(X) = alpha * theta^2
+```
+
+The convolved excess process over depth `n` is:
+
+```text
+S_n = X_1 + ... + X_n
+```
+
+If the `X_i` are exponential with a common scale, the sum is Gamma:
+
+```text
+S_n ~ Gamma(shape = n, scale = theta)
+```
+
+If the `X_i` are Gamma with a common scale, their sum is also Gamma:
+
+```text
+S_n ~ Gamma(shape = sum_i alpha_i, scale = theta)
+```
+
+The planner-facing constraint is not merely matching the mean. The tail must
+fall off quickly after the useful exact-support budget. A fitted closed form is
+acceptable only when it satisfies a budgeted tail condition such as:
+
+```text
+Pr(S_n > excess_support_budget) <= epsilon_tail
+```
+
+or an equivalent condition around the expected excess support:
+
+```text
+Pr(S_n > E[S_n] + slack) <= epsilon_tail
+```
+
+If the standard deviation is very narrow, `alpha` is large and the sum remains
+concentrated near `E[S_n]`. In that regime, a shifted closed-form approximation
+may be good enough for planning thresholds, but the exact histogram, direct
+convolution, or FFT convolution should remain the validation oracle.
+
+This shifted Gamma framing is not a claim that Wikipedia parent paths are Gamma
 distributed. It is a candidate approximation for the high-branching regime when
-the per-layer branching cost is positive, moderately homogeneous, and repeatedly
-convolved.
+the per-layer excess branching cost is non-negative, moderately homogeneous,
+fast-decaying, and repeatedly convolved.
 
 ## 7. Histogram support versus path multiplicity
 
@@ -270,7 +323,8 @@ empirical convolution of Y for small n
 binomial approximation error when max_p <= 2 or 3
 direct convolution versus FFT convolution parity over the same empirical Y
 FFT zero-padding and numerical-noise error bounds for wider supports
-Gamma approximation error when branching is larger and positive
+shifted exponential / shifted Gamma approximation error for X = p - 1
+tail probability beyond the exact-support budget
 correlation between support_width and parent branching moments
 correlation between path_mass and b_p^n
 ```

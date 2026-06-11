@@ -281,7 +281,7 @@ by support width, cache reuse, or a fitted distribution policy.
 
 See `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` for the binomial
 small-branching approximation, FFT evaluation of compound convolutions, and the
-Gamma-style larger-branching approximation.
+shifted exponential / shifted Gamma larger-branching approximation.
 
 Another future direction is approximation from bounds plus low-order statistics.
 The min/max interval gives finite support, while observed branching and second
