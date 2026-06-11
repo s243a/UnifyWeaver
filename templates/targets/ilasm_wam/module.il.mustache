@@ -5,13 +5,13 @@
 .assembly extern mscorlib {}
 .assembly {{module_name}} {}
 
+// === Value / Instruction / WAM state types (top-level classes) ===
+// These are defined at top level (not nested in {{class_name}}) so the
+// simple-name references emitted by the runtime (class Value, WamState, ...)
+// resolve. WamState's management methods live inside WamState itself.
+{{type_definitions}}
+
 .class public auto ansi {{class_name}} extends [mscorlib]System.Object {
-
-    // === Value Type Hierarchy (nested classes) ===
-    {{type_definitions}}
-
-    // === WAM State Management ===
-    {{state_methods}}
 
     // === WAM Runtime (step + run_loop + helpers) ===
     {{runtime_methods}}

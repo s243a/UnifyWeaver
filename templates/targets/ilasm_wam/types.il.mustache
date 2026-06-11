@@ -133,6 +133,11 @@
 
 .class public auto ansi UnboundValue extends Value {
     .field public string Name
+    // Forwarding pointer: null while unbound; set by WamState::BindVar.
+    // Var-var unification ALIASES two cells by forwarding one to the
+    // other (M143 bug class: copying one unbound marker over the other
+    // loses the link). WamState::Deref follows the chain.
+    .field public class Value Ref
     .method public instance void .ctor(string name) cil managed {
         ldarg.0
         call instance void Value::.ctor()
@@ -142,6 +147,16 @@
         ret
     }
     .method public virtual instance bool IsUnbound() cil managed {
+        .maxstack 2
+        // Unbound iff the forwarding chain ends in a null Ref
+        ldarg.0
+        ldfld class Value UnboundValue::Ref
+        dup
+        brfalse L_ub_yes
+        callvirt instance bool Value::IsUnbound()
+        ret
+    L_ub_yes:
+        pop
         ldc.i4.1
         ret
     }
@@ -176,13 +191,30 @@
     .field public int32 Type
     .field public int32 Aux
     .field public class Value[] Data
+    // IL has no implicit ctors: newobj StackEntry::.ctor() call sites
+    // require an explicit parameterless ctor.
+    .method public hidebysig specialname rtspecialname instance void .ctor() cil managed {
+        .maxstack 1
+        ldarg.0
+        call instance void [mscorlib]System.Object::.ctor()
+        ret
+    }
 }
 
 // === Trail Entry ===
+// RegIndex >= 0: register binding (restore OldValue into Regs[RegIndex]).
+// RegIndex = -1: cell binding made by BindVar (reset BoundVar.Ref to null).
 
 .class public auto ansi TrailEntry extends [mscorlib]System.Object {
     .field public int32 RegIndex
     .field public class Value OldValue
+    .field public class Value BoundVar
+    .method public hidebysig specialname rtspecialname instance void .ctor() cil managed {
+        .maxstack 1
+        ldarg.0
+        call instance void [mscorlib]System.Object::.ctor()
+        ret
+    }
 }
 
 // === Choice Point ===
@@ -192,6 +224,12 @@
     .field public class Value[] SavedRegs
     .field public int32 TrailMark
     .field public int32 SavedCP
+    .method public hidebysig specialname rtspecialname instance void .ctor() cil managed {
+        .maxstack 1
+        ldarg.0
+        call instance void [mscorlib]System.Object::.ctor()
+        ret
+    }
 }
 
 // === WAM State ===
@@ -210,4 +248,7 @@
     .field public int32[] Labels
     .field public int32 LabelCount
     .field public bool Halted
+
+    // === WAM State Management (rendered from state.il.mustache) ===
+{{state_methods}}
 }

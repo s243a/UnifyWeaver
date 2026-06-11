@@ -4,9 +4,12 @@
 // Step: execute a single WAM instruction via CIL switch dispatch
 {{step_method}}
 
-// Run loop: uses .tail call for constant-stack execution
+// Run loop: uses tail. call for constant-stack execution
 // Dispatch cycle: check halted → fetch → step → backtrack → loop
 // Choice point saves/restores are handled within step() and backtrack().
+// Note: L_failure pops the fetched-null instruction still on the stack;
+// the backtrack-failed path arrives with an EMPTY stack and must branch
+// to L_failure_nopop instead (merge-point stack imbalance otherwise).
 .method public static bool run_loop(class WamState vm) cil managed {
     .maxstack 4
     // Check halted
@@ -27,10 +30,10 @@
     // Step failed: try backtrack
     ldarg.0
     call bool {{class_name}}::backtrack(class WamState)
-    brfalse L_failure
+    brfalse L_failure_nopop
 L_continue:
     ldarg.0
-    .tail
+    tail.
     call bool {{class_name}}::run_loop(class WamState)
     ret
 L_success:
@@ -38,6 +41,7 @@ L_success:
     ret
 L_failure:
     pop
+L_failure_nopop:
     ldc.i4.0
     ret
     .locals init (class Instruction instr)
