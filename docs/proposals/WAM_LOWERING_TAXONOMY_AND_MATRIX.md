@@ -100,7 +100,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✗ | ✗ | ✗ |
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
@@ -216,24 +216,31 @@ Reading down the columns (after the T5 and T4 sweeps landed):
   argument-register + trail snapshot/restore between attempts, first-solution).
   So **every multi-clause column (T3/T4/T5) is now closed** across the targets
   that support each shape — no plain ✗ remains in T3/T4/T5.
-- **T6 (first-arg indexing)** — **Rust and C++** now have a *gated* T6 (`~`):
-  both reuse the T5 `wam_clause_chain` front-end, but when the discriminators
-  are all atoms and there are ≥ `t6_min_clauses` of them (default 8) the
-  back-end replaces the if-cascade with a native indexed dispatch — Rust a
-  two-stage `match` (string switch → integer jump table); C++ a static
-  `std::unordered_map<std::string,int>` (no native string switch) → `switch`.
-  The other targets still drop the `switch_on_*` prefix and try clauses in
-  order. This is the natural next advancement after T5 (same clause-head
-  analysis, switch back-end): shared front-end, per-target back-end — high
-  leverage, and a perf win that's sound behind a gate. Measured on generated
-  code (tie at 4 clauses; then growing with N): Rust 1.55× at 8, 5.7× at 64,
-  12.7× at 256; C++ 2.1× at 8, 11.6× at 64, 40.8× at 256 (see
+- **T6 (first-arg indexing)** — **Rust, C++ and F#** now have a *gated* T6
+  (`~`): all reuse the T5 `wam_clause_chain` front-end, but when the
+  discriminators are all atoms and there are ≥ `t6_min_clauses` of them
+  (default 8) the back-end replaces the if-cascade with a native indexed
+  dispatch — Rust a two-stage `match` (string switch → integer jump table); C++
+  a static `std::unordered_map<std::string,int>` (no native string switch) →
+  `switch`; **F# a native many-branch `match` on the atom's string** (`Atom of
+  string`, so the discriminator is already a string — the F# compiler lowers a
+  many-case string match to a hash/jump dispatch). These three are the
+  **atom-keyed** targets — atoms are compared as strings at dispatch, so a
+  string switch is a real win. The other targets still drop the `switch_on_*`
+  prefix and try clauses in order. This is the natural next advancement after
+  T5 (same clause-head analysis, switch back-end): shared front-end, per-target
+  back-end — high leverage, and a perf win that's sound behind a gate. Measured
+  on generated code (tie at 4 clauses; then growing with N): Rust 1.55× at 8,
+  5.7× at 64, 12.7× at 256; C++ 2.1× at 8, 11.6× at 64, 40.8× at 256 (see
   `docs/reports/wam_rust_dispatch_alloc_perf.md`). The compiler flattens the
   cascade for few clauses (matching the prior Go array-dispatch result), hence
-  the gate. Int-interned targets (go/llvm/haskell/scala/lua) are the remaining
-  candidates but carry the highest "lost to the compiler" risk (an int
-  equality chain is already switch-converted), so each needs a per-target
-  benchmark before shipping.
+  the gate. The remaining T5 targets (go/llvm/haskell/scala/lua) are
+  **int-interned** — atoms become integers at codegen, so the first-arg
+  comparison is already an integer-equality chain the host compiler
+  switch-converts; T6 there carries the highest "lost to the compiler" risk and
+  needs a per-target benchmark before shipping. (F# is excluded from that group:
+  it keeps atoms as strings, which is why it took the atom-keyed back-end
+  cleanly.)
 - **T2 (ITE)** — now **complete across every target**, including WAT: the
   lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
   and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
@@ -307,7 +314,11 @@ Score each candidate gap on four axes, then sequence:
    could layer in front later). Remaining structurer-column hole: none — only
    **wat** lacks T4 now (its runtime has no lowered multi-clause path yet).
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
-   `switch` back-end instead of an `->` cascade.
+   `switch` back-end instead of an `->` cascade. Done for the atom-keyed
+   targets: rust, cpp, **fsharp** (native string `match`). The int-interned
+   targets (go/llvm/haskell/scala/lua) still need a per-target benchmark first
+   (their atom-as-int comparison is already switch-converted by the host
+   compiler).
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
 
