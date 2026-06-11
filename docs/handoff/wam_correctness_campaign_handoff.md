@@ -101,10 +101,11 @@ modes separately. Generation generally needs `LC_ALL=C.UTF-8`.
    differ (heap-marker vs Compound) — `is_list([a])` standalone was
    fixed in M141, but `L = [11,22,33], L = [H|_]` cross-representation
    unification remains the known limitation from the M104-era notes.
-5. **Pre-existing failures verified unrelated to this campaign:**
-   `test_wam_rust_runtime` e2e (output mismatch), Scala runtime
-   smoke `builtin_format` (`wam_format_combo/2`), Haskell
-   `lowered_phase4` exits false despite all-PASS output.
+5. ~~Pre-existing failures verified unrelated to this campaign~~ —
+   all three fixed: `test_wam_rust_runtime` e2e (M151: uncompilable
+   generated crate), Scala `builtin_format` (M150: tokenizer
+   empty-token), Haskell `lowered_phase4` (M150: silent intern
+   failure + never-passing test comparison).
 6. **LLVM `@value_equals` call-site audit follow-on:** sort dedup and
    strict-eq now deep-compare, but `==`-style var identity for bare
    (non-Ref) register sentinels remains identity-less (degenerate
