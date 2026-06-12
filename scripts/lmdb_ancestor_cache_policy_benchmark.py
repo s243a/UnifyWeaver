@@ -172,6 +172,13 @@ def query_record(graph_name, root, target, child_depth, space, candidates, cache
     }
 
 
+def action_rates(action_counts):
+    total = sum(action_counts.values())
+    if total == 0:
+        return {}
+    return {key: value / total for key, value in sorted(action_counts.items())}
+
+
 def summarize(records, args, target_counts):
     query_rows = [row for row in records if row["record_type"] == "ancestor_cache_policy_query"]
     action_counts = Counter()
@@ -180,6 +187,12 @@ def summarize(records, args, target_counts):
     ancestor_nodes = [row["ancestor_nodes"] for row in query_rows]
     candidates = [row["admission_candidates"] for row in query_rows]
     hits = [row["cache_hits_before"] for row in query_rows]
+    hit_rates = [
+        0.0 if row["admission_candidates"] == 0 else row["cache_hits_before"] / row["admission_candidates"]
+        for row in query_rows
+    ]
+    capped_queries = sum(1 for row in query_rows if row["ancestor_collection_capped"])
+    final_cache_entries = len([row for row in records if row["record_type"] == "ancestor_cache_final_entry"])
     return {
         "record_type": "ancestor_cache_policy_summary",
         "graph": args.graph_name,
@@ -191,15 +204,19 @@ def summarize(records, args, target_counts):
         "cache_slots": args.cache_slots,
         "admit_l_min": args.admit_l_min,
         "admit_l_max": args.admit_l_max,
-        "final_cache_entries": len([row for row in records if row["record_type"] == "ancestor_cache_final_entry"]),
-        "capped_queries": sum(1 for row in query_rows if row["ancestor_collection_capped"]),
+        "final_cache_entries": final_cache_entries,
+        "cache_occupancy_rate": 0.0 if args.cache_slots == 0 else final_cache_entries / args.cache_slots,
+        "capped_queries": capped_queries,
+        "capped_query_rate": 0.0 if not query_rows else capped_queries / len(query_rows),
         "mean_ancestor_nodes": mean(ancestor_nodes),
         "p95_ancestor_nodes": percentile(ancestor_nodes, 95),
         "mean_admission_candidates": mean(candidates),
         "p95_admission_candidates": percentile(candidates, 95),
         "mean_cache_hits_before": mean(hits),
         "p95_cache_hits_before": percentile(hits, 95),
+        "mean_cache_hits_before_per_candidate": mean(hit_rates),
         "cache_actions": dict(action_counts),
+        "cache_action_rates": action_rates(action_counts),
     }
 
 
@@ -277,14 +294,16 @@ def run_benchmark(args):
         graph.close()
 
 
-def write_records(records, output_dir, graph_name):
+def write_records(records, output_dir, graph_name, write_jsonl=False):
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = "{}_ancestor_cache_policy".format(safe_graph_name(graph_name))
-    jsonl_path = output_dir / "{}.jsonl".format(stem)
+    jsonl_path = None
     summary_path = output_dir / "{}_summary.json".format(stem)
-    with jsonl_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    if write_jsonl:
+        jsonl_path = output_dir / "{}.jsonl".format(stem)
+        with jsonl_path.open("w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
     summary = records[-1]
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
@@ -298,15 +317,17 @@ def parse_args():
     parser.add_argument("--root", type=int, required=True)
     parser.add_argument("--graph-name", default="lmdb_category_graph")
     parser.add_argument("--target-depths", default="3,4")
-    parser.add_argument("--children-per-node", type=int, default=128)
-    parser.add_argument("--frontier-limit", type=int, default=2000)
-    parser.add_argument("--targets-per-depth", type=int, default=40)
-    parser.add_argument("--max-ancestor-nodes", type=int, default=5000)
-    parser.add_argument("--max-ancestor-edges", type=int, default=25000)
-    parser.add_argument("--root-distance-cap", type=int, default=48)
-    parser.add_argument("--cache-slots", type=int, default=512)
+    parser.add_argument("--children-per-node", type=int, default=64)
+    parser.add_argument("--frontier-limit", type=int, default=800)
+    parser.add_argument("--targets-per-depth", type=int, default=12)
+    parser.add_argument("--max-ancestor-nodes", type=int, default=1500)
+    parser.add_argument("--max-ancestor-edges", type=int, default=8000)
+    parser.add_argument("--root-distance-cap", type=int, default=32)
+    parser.add_argument("--cache-slots", type=int, default=256)
     parser.add_argument("--admit-l-min", type=int, default=6)
     parser.add_argument("--admit-l-max", type=int, default=12)
+    parser.add_argument("--write-jsonl", action="store_true", help="write the full per-query/per-entry JSONL trace")
+    parser.add_argument("--summary-only", action="store_true", help="accepted for clarity; summaries are the default output")
     parser.add_argument("--seed", default="ancestor-cache-policy-v1")
     parser.add_argument("--output-dir", type=Path, default=Path("docs/reports"))
     return parser.parse_args()
@@ -315,9 +336,10 @@ def parse_args():
 def main():
     args = parse_args()
     records = run_benchmark(args)
-    jsonl_path, summary_path = write_records(records, args.output_dir, args.graph_name)
+    jsonl_path, summary_path = write_records(records, args.output_dir, args.graph_name, write_jsonl=args.write_jsonl)
     print(json.dumps(records[-1], indent=2, sort_keys=True))
-    print("wrote {}".format(jsonl_path))
+    if jsonl_path is not None:
+        print("wrote {}".format(jsonl_path))
     print("wrote {}".format(summary_path))
 
 
