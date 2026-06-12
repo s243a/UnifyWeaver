@@ -25,6 +25,7 @@
     aggregate_parallel_decision/3,   % +Goal, +Model, -Decision   (parallel|sequential)
     goal_parallel_decision/3,        % +Generator, +Model, -Decision
     split_aggregate_generator/5,     % +InnerGoal, +Model, -Enum, -Body, -Frontier
+    parallel_aggregate_transform/5,  % +AggGoal, +Model, +Seed, -Helpers, -Plan
     parallel_worthy_tier/1           % ?Tier   (multifile, overridable policy)
 ]).
 
@@ -161,3 +162,60 @@ shared_vars(As, Bs, Shared) :-
     include(memberchk_eq(Bs), As, Shared).
 memberchk_eq([X|_], V) :- X == V, !.
 memberchk_eq([_|T], V) :- memberchk_eq(T, V).
+
+% ============================================================================
+% Route-1 source transform: aggregate -> (enum helper, body helper) + plan
+% ============================================================================
+%
+% Rewrite a splittable, parallel-eligible aggregate into two ordinary helper
+% predicates plus a parallel plan the runtime executes:
+%
+%     __enum_Seed(Input)         :- Enum.    % yields each branch's input tuple
+%     __body_Seed(Input, Value)  :- Body.    % per branch, yields collected value
+%
+%     plan = par_aggregate(AggType, EnumName/1, BodyName/2, Result)
+%
+% The runtime then does: collect Inputs via __enum (sequential, cheap), then
+% gated_collect-map __body over the Inputs on cloned machines, and reduce the
+% collected Values by AggType into Result. Because __enum and __body are normal
+% compiled predicates, this reuses the existing call/aggregate machinery and
+% needs no choice-point surgery.
+%
+% `Input` packs exactly the variables the body (or the collected value) needs
+% from the enumerator: vars(Enum) ∩ (vars(Body) ∪ vars(Value)). This is a
+% superset of split's Enum∩Body frontier — it also carries value vars the
+% enumerator binds — which is what makes the decomposition result-preserving.
+%
+% Fails (caller keeps the sequential aggregate) unless the aggregate is forkable,
+% the gate says parallel, and the inner goal splits soundly.
+
+parallel_aggregate_transform(AggGoal, Model, Seed, Helpers, Plan) :-
+    forkable_aggregate(AggGoal, _Template, InnerGoal),
+    agg_value_type(AggGoal, AggType, Value),
+    aggregate_result(AggGoal, Result),
+    goal_parallel_decision(InnerGoal, Model, parallel),
+    split_aggregate_generator(InnerGoal, Model, Enum, Body, _Frontier),
+    % Input = enum-bound vars that the body or the collected value reads.
+    term_variables(Enum, EnumVars),
+    term_variables(Body, BodyVars),
+    term_variables(Value, ValueVars),
+    append(BodyVars, ValueVars, Downstream),
+    shared_vars(EnumVars, Downstream, Input),
+    InputTuple =.. [ti | Input],
+    format(atom(EnumName), '__par_enum_~w', [Seed]),
+    format(atom(BodyName), '__par_body_~w', [Seed]),
+    EnumHead =.. [EnumName, InputTuple],
+    BodyHead =.. [BodyName, InputTuple, Value],
+    Helpers = [ (EnumHead :- Enum), (BodyHead :- Body) ],
+    Plan = par_aggregate(AggType, EnumName/1, BodyName/2, Result).
+
+% The per-solution value collected, and how it is reduced.
+agg_value_type(findall(Tmpl, _, _),          collect, Tmpl) :- !.
+agg_value_type(aggregate_all(count, _, _),    count, _Anon) :- !.
+agg_value_type(aggregate_all(sum(V), _, _),   sum, V) :- !.
+agg_value_type(aggregate_all(max(V), _, _),   max, V) :- !.
+agg_value_type(aggregate_all(min(V), _, _),   min, V) :- !.
+agg_value_type(aggregate_all(bag(V), _, _),   collect, V) :- !.
+
+aggregate_result(findall(_, _, R), R) :- !.
+aggregate_result(aggregate_all(_, _, R), R).
