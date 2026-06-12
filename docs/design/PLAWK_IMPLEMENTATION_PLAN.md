@@ -256,6 +256,8 @@ the native streaming loop.
 Scalar counters and the current static associative-count surface now lower
 through an explicit codegen state plan, keeping source-level state recognition
 separate from LLVM slot numbering ahead of a real native hash-table backend.
+The WAM/LLVM runtime now exposes a reusable interned-atom-keyed `i64` counter
+table primitive (`wam_assoc_i64_*`) for that future dynamic associative path.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
