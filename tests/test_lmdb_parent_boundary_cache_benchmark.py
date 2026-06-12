@@ -8,6 +8,7 @@ import unittest
 from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
     cached_parent_histogram,
+    estimate_parametric_total_count,
     histogram_distribution_error,
     scaled_distribution_histogram,
 )
@@ -112,6 +113,43 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
         self.assertFalse(rows[0]["cached"])
         self.assertTrue(rows[0]["parametric_cached"])
+
+    def test_parametric_unit_mass_model_records_mass_error(self):
+        graph = DictGraph({"A": ["R"], "B": ["A", "R"]})
+
+        cache, parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["B"],
+            2,
+            None,
+            None,
+            admission_policy="depth-prior",
+            safety_factor=2.0,
+            max_histogram_bytes=24,
+            parametric_bytes=8,
+            parametric_mass_model="unit",
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertEqual(sum(parametric_cache["B"].values()), 1)
+        self.assertEqual(rows[0]["path_count"], 2)
+        self.assertEqual(rows[0]["parametric_path_count"], 1)
+        self.assertEqual(rows[0]["parametric_mass_model"], "unit")
+        self.assertEqual(rows[0]["parametric_mass_delta"], -1)
+        self.assertAlmostEqual(rows[0]["parametric_mass_ratio"], 0.5)
+
+    def test_depth_prior_mass_model_caps_branching_pressure(self):
+        estimate = estimate_parametric_total_count(
+            {"path_count": 2, "histogram_L_max": 5},
+            {"base_mean_excess": 3.0},
+            "depth-prior",
+            mass_cap=10,
+        )
+
+        self.assertEqual(estimate["estimated_path_count"], 10)
+        self.assertTrue(estimate["mass_capped"])
 
     def test_scaled_distribution_histogram_preserves_total_count(self):
         hist = scaled_distribution_histogram([0.2, 0.3, 0.5], 4, 11)
