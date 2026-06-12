@@ -196,6 +196,13 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')).
 
+test(atom_prefix_guard_emitter) :-
+    llvm_emit_atom_prefix_guard(prefix_guard_test, '%line', 'ERROR', '%ok', GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.prefix_5Fguard_5Ftest = private constant [6 x i8] c"ERROR\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%prefix_5Fguard_5Ftest_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_prefix_value(%Value %line')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 5')).
+
 % ============================================================================
 % Builtin op ID mapping
 % ============================================================================

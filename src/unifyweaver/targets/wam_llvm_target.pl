@@ -44,7 +44,8 @@
     % Shared helpers (used by wam_llvm_lowered_emitter)
     sanitize_functor_for_llvm/2,         % +Name, -SaneName (bijective hex escape)
     register_functor_string/1,           % +NameStr (assert into functor_string_global table)
-    split_functor_arity/3                % +Str, -Name, -Arity (handles `/` in name)
+    split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
+    llvm_emit_atom_prefix_guard/5        % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -15609,6 +15610,25 @@ escape_llvm_string(Name, Escaped, ByteLen) :-
     length(Codes, ByteLen),
     escape_llvm_codes(Codes, EscCodes),
     string_codes(Escaped, EscCodes).
+
+%% llvm_emit_atom_prefix_guard(+GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a reusable native prefix guard for deterministic
+%  sub_atom(Value, 0, Len, _, Prefix)-style lowering. ValueIR and
+%  ResultIR are LLVM SSA expressions such as `%line` and `%is_match`.
+%  GlobalIR is top-level module IR; CallIR belongs inside a function body and
+%  calls the general @wam_atom_prefix_value runtime helper.
+llvm_emit_atom_prefix_guard(GlobalBase, ValueIR, Prefix, ResultIR, GlobalIR-CallIR) :-
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Prefix, EscapedPrefix, PrefixLen),
+    ArrLen is PrefixLen + 1,
+    format(atom(GlobalIR),
+        '@.~w = private constant [~w x i8] c"~w\\00"',
+        [SafeBase, ArrLen, EscapedPrefix]),
+    format(atom(CallIR),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_prefix_value(%Value ~w, i8* %~w_ptr, i64 ~w)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, SafeBase, PrefixLen]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-

@@ -62,12 +62,14 @@ plawk_native_lowered_handler_stream_loop_driver_ir(InputPath, DriverIR) :-
     length(PathCodes, PathLen),
     BytesLen is PathLen + 1,
     llvm_c_bytes(PathCodes, PathBytes),
+    llvm_emit_atom_prefix_guard(plawk_lowered_prefix, '%line', 'ERROR',
+        '%is_match', PrefixGuardGlobalIR-PrefixGuardCallIR),
     format(atom(DriverIR),
 '@.plawk_lowered_path = private constant [~w x i8] c"~w\\00"
 @.plawk_lowered_eof = private constant [12 x i8] c"end_of_file\\00"
-@.plawk_lowered_prefix = private constant [6 x i8] c"ERROR\\00"
 @.plawk_expect_first = private constant [16 x i8] c"ERROR disk full\\00"
 @.plawk_expect_second = private constant [15 x i8] c"ERROR net down\\00"
+~w
 
 define i32 @main() {
 entry:
@@ -109,8 +111,7 @@ check_eof:
   br i1 %is_eof, label %close_stream, label %lowered_match
 
 lowered_match:
-  %prefix = getelementptr [6 x i8], [6 x i8]* @.plawk_lowered_prefix, i32 0, i32 0
-  %is_match = call i1 @wam_atom_prefix_value(%Value %line, i8* %prefix, i64 5)
+~w
   %record_count_inc = add i64 %record_count, 1
   br i1 %is_match, label %append_output, label %no_output
 
@@ -211,7 +212,8 @@ fail_output_strings:
 }
 ',
         [BytesLen, PathBytes,
-         BytesLen, BytesLen, PathLen]).
+         PrefixGuardGlobalIR,
+         BytesLen, BytesLen, PathLen, PrefixGuardCallIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
