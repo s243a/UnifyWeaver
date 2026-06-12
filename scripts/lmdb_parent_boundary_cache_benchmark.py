@@ -31,7 +31,13 @@ from scripts.distribution_fit_comparison import exact_excess_distribution, l1_er
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
     parse_int_list,
+    root_distances,
     select_targets_by_child_depth,
+)
+from scripts.lmdb_depth_planning_prior_probe import (
+    cache_admission_policy,
+    histogram_storage_bytes,
+    planning_prior_for_bucket,
 )
 from scripts.lmdb_parent_histogram_benchmark import (
     HistogramStats,
@@ -117,22 +123,51 @@ def histogram_distribution_error(full_hist, cached_hist):
     return l1_error(full_dist, cached_dist), max_cdf_error(full_dist, cached_dist)
 
 
-def build_boundary_cache(graph, root, boundary_nodes, boundary_budget, path_cap, expansion_cap):
+def root_reaching_parent_degree(graph, root, node, max_parent_depth, distance_memo):
+    def distances(candidate):
+        return root_distances(candidate, root, graph.parents, max_parent_depth, distance_memo)
+
+    return sum(1 for parent in graph.parents(node) if distances(parent)["L_min"] is not None)
+
+
+def build_boundary_cache(
+    graph,
+    root,
+    boundary_nodes,
+    boundary_budget,
+    path_cap,
+    expansion_cap,
+    admission_policy="baseline",
+    safety_factor=1.25,
+    max_histogram_bytes=1024,
+    parametric_bytes=64,
+    tail_epsilon=0.001,
+    max_parent_depth=24,
+):
     cache = {}
     rows = []
+    distance_memo = {}
     for node in boundary_nodes:
         started = time.perf_counter_ns()
         hist, stats = bounded_parent_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap)
         elapsed = time.perf_counter_ns() - started
-        if hist and not stats.path_cap_hit and not stats.expansion_cap_hit:
-            cache[node] = hist
         rows.append({
             "record_type": "boundary_cache_entry",
             "node": node,
-            "cached": node in cache,
+            "cached": False,
             "histogram": hist,
             "path_count": sum(hist.values()),
             "support_bins": len(hist),
+            "histogram_L_min": min(hist) if hist else None,
+            "histogram_L_max": max(hist) if hist else None,
+            "histogram_bytes": histogram_storage_bytes(hist),
+            "root_reaching_parent_degree": root_reaching_parent_degree(
+                graph,
+                root,
+                node,
+                max_parent_depth,
+                distance_memo,
+            ),
             "nodes_expanded": stats.nodes_expanded,
             "edges_examined": stats.edges_examined,
             "cycle_skips": stats.cycle_skips,
@@ -140,6 +175,74 @@ def build_boundary_cache(graph, root, boundary_nodes, boundary_budget, path_cap,
             "expansion_cap_hit": stats.expansion_cap_hit,
             "histogram_time_ns": elapsed,
         })
+
+    priors = {}
+    if admission_policy == "depth-prior":
+        degrees_by_lmax = {}
+        for row in rows:
+            lmax = row["histogram_L_max"]
+            degree = row["root_reaching_parent_degree"]
+            if lmax is not None and degree > 0:
+                degrees_by_lmax.setdefault(int(lmax), []).append(int(degree))
+        for lmax, degrees in degrees_by_lmax.items():
+            priors[lmax] = planning_prior_for_bucket(degrees, lmax, tail_epsilon)
+
+    for row in rows:
+        hist = row["histogram"]
+        lmax = row["histogram_L_max"]
+        if admission_policy == "baseline":
+            cached = bool(hist) and not row["path_cap_hit"] and not row["expansion_cap_hit"]
+            action = "materialize_exact" if cached else "skip_cache"
+            reason = "baseline_uncapped_histogram" if cached else "baseline_empty_or_capped"
+            policy = {
+                "action": action,
+                "reason": reason,
+                "safety_prediction_bytes": None,
+                "observed_or_predicted_bytes": row["histogram_bytes"],
+                "max_histogram_bytes": None,
+                "parametric_bytes": None,
+            }
+            predicted_prior_bytes = None
+            prior_effective_bins = None
+        elif lmax in priors and hist:
+            prior = priors[lmax]
+            predicted_prior_bytes = int(prior["prior_pruned_histogram_bytes"])
+            prior_effective_bins = int(prior["prior_effective_bins"])
+            policy = cache_admission_policy(
+                predicted_prior_bytes,
+                safety_factor,
+                max_histogram_bytes,
+                recurrence_capped=row["path_cap_hit"] or row["expansion_cap_hit"],
+                recurrence_cycle_approximation=row["cycle_skips"] > 0,
+                realized_histogram_bytes=row["histogram_bytes"],
+                parametric_bytes=parametric_bytes,
+            )
+            cached = policy["action"] in {"materialize_exact", "materialize_capped"}
+        else:
+            predicted_prior_bytes = None
+            prior_effective_bins = None
+            policy = {
+                "action": "skip_cache",
+                "reason": "no_planning_prior_or_histogram",
+                "safety_prediction_bytes": None,
+                "observed_or_predicted_bytes": row["histogram_bytes"],
+                "max_histogram_bytes": max_histogram_bytes,
+                "parametric_bytes": parametric_bytes,
+            }
+            cached = False
+
+        row["admission_policy"] = admission_policy
+        row["predicted_prior_bytes"] = predicted_prior_bytes
+        row["prior_effective_bins"] = prior_effective_bins
+        row["cache_admission_action"] = policy["action"]
+        row["cache_admission_reason"] = policy["reason"]
+        row["cache_admission_safety_prediction_bytes"] = policy["safety_prediction_bytes"]
+        row["cache_admission_observed_or_predicted_bytes"] = policy["observed_or_predicted_bytes"]
+        row["cache_admission_max_histogram_bytes"] = policy["max_histogram_bytes"]
+        row["cache_admission_parametric_bytes"] = policy["parametric_bytes"]
+        row["cached"] = cached
+        if cached:
+            cache[row["node"]] = hist
     return cache, rows
 
 
@@ -214,6 +317,12 @@ def run_benchmark(args):
             args.boundary_budget,
             args.path_cap,
             args.expansion_cap,
+            args.admission_policy,
+            args.safety_factor,
+            args.max_histogram_bytes,
+            args.parametric_bytes,
+            args.tail_epsilon,
+            args.max_parent_depth,
         )
         records = [{
             "record_type": "boundary_cache_selection",
@@ -226,6 +335,10 @@ def run_benchmark(args):
             "targets": len(targets),
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
+            "admission_policy": args.admission_policy,
+            "safety_factor": args.safety_factor,
+            "max_histogram_bytes": args.max_histogram_bytes,
+            "parametric_bytes": args.parametric_bytes,
         }]
         records.extend(cache_rows)
         for target in targets:
@@ -301,6 +414,46 @@ def summarize(records):
             selection.get("targets", 0),
             selection.get("boundary_budget", 0),
         ),
+        "",
+        "## Admission Policy",
+        "",
+        "| policy | safety_factor | max_histogram_bytes | parametric_bytes |",
+        "|--------|--------------:|--------------------:|-----------------:|",
+        "| {} | {} | {} | {} |".format(
+            selection.get("admission_policy", "baseline"),
+            selection.get("safety_factor", "n/a"),
+            selection.get("max_histogram_bytes", "n/a"),
+            selection.get("parametric_bytes", "n/a"),
+        ),
+        "",
+        "## Boundary Admission Outcomes",
+        "",
+        "| action | rows | cached |",
+        "|--------|-----:|-------:|",
+    ])
+    action_counts = {}
+    cached_by_action = {}
+    for row in cache_rows:
+        action = row.get("cache_admission_action", "unknown")
+        action_counts[action] = action_counts.get(action, 0) + 1
+        if row.get("cached"):
+            cached_by_action[action] = cached_by_action.get(action, 0) + 1
+    for action in sorted(action_counts):
+        lines.append("| {} | {} | {} |".format(action, action_counts[action], cached_by_action.get(action, 0)))
+    lines.extend([
+        "",
+        "## Boundary Admission Reasons",
+        "",
+        "| reason | rows |",
+        "|--------|-----:|",
+    ])
+    reason_counts = {}
+    for row in cache_rows:
+        reason = row.get("cache_admission_reason", "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    for reason in sorted(reason_counts):
+        lines.append("| {} | {} |".format(reason, reason_counts[reason]))
+    lines.extend([
         "",
         "## Boundary Cache Build",
         "",
@@ -385,6 +538,12 @@ def main(argv=None):
     parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
     parser.add_argument("--budgets", default=",".join(map(str, DEFAULT_BUDGETS)), help="Comma-separated target path budgets.")
+    parser.add_argument("--admission-policy", choices=["baseline", "depth-prior"], default="baseline", help="Policy used to decide whether measured boundary histograms enter the cache.")
+    parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for depth-prior predicted histogram bytes.")
+    parser.add_argument("--max-histogram-bytes", type=int, default=1024, help="Maximum bytes allowed for exact or capped boundary histograms under depth-prior admission.")
+    parser.add_argument("--parametric-bytes", type=int, default=64, help="Estimated bytes for a parametric prior state.")
+    parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
+    parser.add_argument("--max-parent-depth", type=int, default=24, help="Parent depth cap for root-reaching parent degree signals.")
     parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root paths.")
     parser.add_argument("--expansion-cap", type=int, default=250000, help="Stop a row after this many expanded nodes.")
     parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
