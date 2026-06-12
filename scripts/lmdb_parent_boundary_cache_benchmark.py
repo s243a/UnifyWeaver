@@ -127,22 +127,52 @@ def estimate_parametric_total_count(row, prior, mass_model, mass_cap=None):
     }
 
 
-def parametric_shape_distribution(row, prior, shape_model):
+def support_binomial_mean(width, prior_mean_excess, mean_model, mean_blend):
+    """Choose a bounded binomial mean over a finite support width."""
+    width = max(0, int(width))
+    prior_mean = max(0.0, float(prior_mean_excess))
+    midpoint = width / 2.0
+    if mean_model == "prior-clipped":
+        mean = prior_mean
+    elif mean_model == "midpoint":
+        mean = midpoint
+    elif mean_model == "blend":
+        alpha = max(0.0, min(1.0, float(mean_blend)))
+        mean = alpha * prior_mean + (1.0 - alpha) * midpoint
+    else:
+        raise ValueError("unknown parametric mean model: {}".format(mean_model))
+    return max(0.0, min(float(width), mean))
+
+
+def parametric_shape_distribution(row, prior, shape_model, mean_model="prior-clipped", mean_blend=0.5):
     """Return a compact probability vector and origin for a boundary state."""
     origin = row.get("histogram_L_min")
     if origin is None:
-        return [], None
+        return [], None, {}
     if shape_model == "empirical-prior":
-        return prior["prior_distribution"], int(origin)
+        return prior["prior_distribution"], int(origin), {
+            "shape_model": shape_model,
+            "mean_model": None,
+            "support_width": len(prior["prior_distribution"]) - 1,
+            "mean_excess": prior.get("prior_mean_excess"),
+            "probability": None,
+        }
     if shape_model in {"support-binomial", "support-binomial-midpoint"}:
         lmax = row.get("histogram_L_max")
         width = 0 if lmax is None else max(0, int(lmax) - int(origin))
+        selected_mean_model = "midpoint" if shape_model == "support-binomial-midpoint" else mean_model
         if shape_model == "support-binomial-midpoint":
-            mean_excess = width / 2.0
+            mean_excess = support_binomial_mean(width, prior.get("prior_mean_excess", 0.0), "midpoint", mean_blend)
         else:
-            mean_excess = max(0.0, float(prior.get("prior_mean_excess", 0.0)))
+            mean_excess = support_binomial_mean(width, prior.get("prior_mean_excess", 0.0), mean_model, mean_blend)
         probability = 0.0 if width <= 0 else max(0.0, min(1.0, mean_excess / width))
-        return binomial_pmf(width, probability), int(origin)
+        return binomial_pmf(width, probability), int(origin), {
+            "shape_model": shape_model,
+            "mean_model": selected_mean_model,
+            "support_width": width,
+            "mean_excess": mean_excess,
+            "probability": probability,
+        }
     raise ValueError("unknown parametric shape model: {}".format(shape_model))
 
 
@@ -248,6 +278,8 @@ def build_boundary_cache(
     max_histogram_bytes=1024,
     parametric_bytes=64,
     parametric_shape_model="empirical-prior",
+    parametric_mean_model="prior-clipped",
+    parametric_mean_blend=0.5,
     parametric_mass_model="oracle",
     parametric_mass_cap=1000000,
     tail_epsilon=0.001,
@@ -356,6 +388,10 @@ def build_boundary_cache(
         row["parametric_path_count"] = 0
         row["parametric_oracle_path_count"] = row["path_count"]
         row["parametric_shape_model"] = parametric_shape_model
+        row["parametric_mean_model"] = parametric_mean_model
+        row["parametric_mean_blend"] = parametric_mean_blend
+        row["parametric_shape_mean_excess"] = None
+        row["parametric_shape_probability"] = None
         row["parametric_mass_model"] = parametric_mass_model
         row["parametric_mass_delta"] = None
         row["parametric_mass_ratio"] = None
@@ -372,10 +408,12 @@ def build_boundary_cache(
                 parametric_mass_model,
                 parametric_mass_cap,
             )
-            probabilities, origin = parametric_shape_distribution(
+            probabilities, origin, shape_params = parametric_shape_distribution(
                 row,
                 priors[lmax],
                 parametric_shape_model,
+                parametric_mean_model,
+                parametric_mean_blend,
             )
             approx_hist = scaled_distribution_histogram(
                 probabilities,
@@ -388,6 +426,9 @@ def build_boundary_cache(
                 row["parametric_histogram"] = approx_hist
                 row["parametric_path_count"] = sum(approx_hist.values())
                 row["parametric_oracle_path_count"] = mass_estimate["oracle_path_count"]
+                row["parametric_mean_model"] = shape_params["mean_model"]
+                row["parametric_shape_mean_excess"] = shape_params["mean_excess"]
+                row["parametric_shape_probability"] = shape_params["probability"]
                 row["parametric_mass_delta"] = mass_estimate["mass_delta"]
                 row["parametric_mass_ratio"] = mass_estimate["mass_ratio"]
                 row["parametric_mass_capped"] = mass_estimate["mass_capped"]
@@ -479,6 +520,8 @@ def run_benchmark(args):
             args.max_histogram_bytes,
             args.parametric_bytes,
             args.parametric_shape_model,
+            args.parametric_mean_model,
+            args.parametric_mean_blend,
             args.parametric_mass_model,
             args.parametric_mass_cap,
             args.tail_epsilon,
@@ -501,6 +544,8 @@ def run_benchmark(args):
             "max_histogram_bytes": args.max_histogram_bytes,
             "parametric_bytes": args.parametric_bytes,
             "parametric_shape_model": args.parametric_shape_model,
+            "parametric_mean_model": args.parametric_mean_model,
+            "parametric_mean_blend": args.parametric_mean_blend,
             "parametric_mass_model": args.parametric_mass_model,
             "parametric_mass_cap": args.parametric_mass_cap,
         }]
@@ -583,14 +628,16 @@ def summarize(records):
         "",
         "## Admission Policy",
         "",
-        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_shape_model | parametric_mass_model | parametric_mass_cap |",
-        "|--------|--------------:|--------------------:|-----------------:|------------------------|-----------------------|--------------------:|",
-        "| {} | {} | {} | {} | {} | {} | {} |".format(
+        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_shape_model | parametric_mean_model | parametric_mean_blend | parametric_mass_model | parametric_mass_cap |",
+        "|--------|--------------:|--------------------:|-----------------:|------------------------|-----------------------|----------------------:|-----------------------|--------------------:|",
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             selection.get("admission_policy", "baseline"),
             selection.get("safety_factor", "n/a"),
             selection.get("max_histogram_bytes", "n/a"),
             selection.get("parametric_bytes", "n/a"),
             selection.get("parametric_shape_model", "empirical-prior"),
+            selection.get("parametric_mean_model", "prior-clipped"),
+            selection.get("parametric_mean_blend", "n/a"),
             selection.get("parametric_mass_model", "oracle"),
             selection.get("parametric_mass_cap", "n/a"),
         ),
@@ -735,6 +782,8 @@ def main(argv=None):
     parser.add_argument("--max-histogram-bytes", type=int, default=1024, help="Maximum bytes allowed for exact or capped boundary histograms under depth-prior admission.")
     parser.add_argument("--parametric-bytes", type=int, default=64, help="Estimated bytes for a parametric prior state.")
     parser.add_argument("--parametric-shape-model", choices=["empirical-prior", "support-binomial", "support-binomial-midpoint"], default="empirical-prior", help="Shape used for parametric boundary states.")
+    parser.add_argument("--parametric-mean-model", choices=["prior-clipped", "midpoint", "blend"], default="prior-clipped", help="Mean rule for support-binomial parametric shape states.")
+    parser.add_argument("--parametric-mean-blend", type=float, default=0.5, help="Prior weight for --parametric-mean-model blend; midpoint gets the remaining weight.")
     parser.add_argument("--parametric-mass-model", choices=["oracle", "unit", "depth-prior"], default="oracle", help="Mass used to unnormalize parametric boundary states.")
     parser.add_argument("--parametric-mass-cap", type=int, default=1000000, help="Maximum estimated path mass for non-oracle parametric states; non-positive disables the cap.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
