@@ -28,6 +28,9 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+% T7 compile-time parallel-aggregate gate (consumer of the cost machinery).
+:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3]).
+:- use_module('../core/cost_analysis', [build_cost_model/2, goal_cost_tier/3]).
 :- use_module('../targets/wam_text_parser', [
     wam_classify_constant_token/2,
     wam_tokenize_line/2
@@ -2996,16 +2999,79 @@ compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
+    % T7: consult the compile-time parallel-aggregate gate (cost machinery).
+    % Gated behind parallel_aggregates(true); otherwise AggAnno = '' and output
+    % is byte-identical to before.
+    rust_predicate_parallel_decision(Pred/Arity, Options, ParDecision),
+    rust_parallel_annotation(ParDecision, AggAnno),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
-pub fn ~w(~w) -> bool {
+~wpub fn ~w(~w) -> bool {
     use std::collections::HashMap;
 ~w
 ~w
 ~w
     ~w
-}', [PredStr, Arity, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+}', [PredStr, Arity, AggAnno, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+
+% --- T7 compile-time parallel-aggregate gate --------------------------------
+%
+% First codegen consumer of the cost machinery: decide, per predicate, whether
+% any forkable aggregate (findall/aggregate_all/bagof/setof) in its clause
+% bodies is worth parallelising, and annotate the generated function so the
+% phase-2 runtime can dispatch on it. Decision-only here — no semantics change.
+% Feature-gated by parallel_aggregates(true) (default off → no output change).
+% Fully defensive: any failure (module not loaded, no source, no aggregate)
+% degrades to `sequential` and emits nothing.
+
+rust_predicate_parallel_decision(Pred/Arity, Options, Decision) :-
+    (   option(parallel_aggregates(true), Options),
+        catch(rust_pred_par_decision(Pred/Arity, Options, D), _, fail)
+    ->  Decision = D
+    ;   Decision = sequential
+    ).
+
+rust_pred_par_decision(Pred/Arity, Options, Decision) :-
+    option(module_name(Mod0), Options, user),
+    ( atom(Mod0) -> Module = Mod0 ; Module = user ),
+    functor(Head, Pred, Arity),
+    findall(Body, clause(Module:Head, Body), Bodies),
+    Bodies \== [],
+    collect_forkable_generators(Bodies, Gens),
+    Gens \== [],
+    build_cost_model(Module, Model),
+    (   member(Gen, Gens),
+        goal_parallel_decision(Gen, Model, parallel)
+    ->  goal_cost_tier(Gen, Model, Tier),
+        Decision = parallel(Tier)
+    ;   Decision = sequential
+    ).
+
+% Collect the generator goals of every forkable aggregate appearing anywhere in
+% the given clause bodies.
+collect_forkable_generators(Bodies, Gens) :-
+    findall(Gen,
+            ( member(B, Bodies),
+              body_subgoal(B, G),
+              nonvar(G),
+              forkable_aggregate(G, _Tmpl, Gen) ),
+            Gens0),
+    sort(Gens0, Gens).
+
+% Enumerate sub-goals of a body, descending through control constructs.
+body_subgoal(G, _) :- var(G), !, fail.
+body_subgoal((A, B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A ; B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A -> B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A *-> B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal(\+ A, S) :- !, body_subgoal(A, S).
+body_subgoal(G, G).
+
+rust_parallel_annotation(parallel(Tier), Anno) :- !,
+    format(atom(Anno),
+           '/// T7: parallel-eligible aggregate (cost gate tier: ~w)~n', [Tier]).
+rust_parallel_annotation(_, '').
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),

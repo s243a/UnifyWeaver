@@ -66,7 +66,8 @@ builtin_cost/2, cost_tier_threshold/2          % overridable tuning
 
 ## How the gates consume it
 
-- **T7 (parallel aggregate) — built (`parallel_gate.pl`).**
+- **T7 (parallel aggregate) — gate built (`parallel_gate.pl`) AND wired into Rust
+  codegen (slice 2a).**
   `aggregate_parallel_decision(+Goal, +Model, -Decision)` recognises a forkable
   aggregate (`findall`/`aggregate_all`/`bagof`/`setof`) and returns `parallel`
   vs `sequential` from the generator's cost tier. Key simplification: an
@@ -79,6 +80,17 @@ builtin_cost/2, cost_tier_threshold/2          % overridable tuning
   that never regresses. This is the *compile-time* decision the
   `par_aggregate.rs` substrate's `ParConfig` was built pluggable for — the
   runtime probe becomes a cheap confirmation rather than the decision.
+  **Slice 2a (`wam_rust_target.pl`):** `compile_wam_predicate_to_rust` now
+  consults this gate (per predicate, over its clause bodies' forkable
+  aggregates) and annotates the generated function — `/// T7: parallel-eligible
+  aggregate (cost gate tier: …)` — when a generator is parallel-worthy. This is
+  the first time the cost machinery drives real codegen. Decision-only, no
+  semantics change; gated behind `parallel_aggregates(true)` so default output
+  is byte-identical. Tested end-to-end (`test_wam_rust_parallel_aggregate_gate.pl`):
+  recursive/heavy generators get the annotation, cheap/no-aggregate/feature-off
+  do not. **Slice 2b (next):** make `WamMachine: Clone + Send` and have the
+  annotated path actually call `gated_collect`, with an exec harness proving
+  parallel result-set == sequential + speedup.
 - **T6 — *not* a fit (deliberately not wired).** `t6_min_clauses` gates on
   clause **count**, not body cost; first-argument indexing helps regardless of
   per-clause work, so cost analysis adds nothing there. Documented so the
