@@ -46,6 +46,7 @@ from scripts.lmdb_parent_histogram_benchmark import (
     percentile,
     safe_graph_name,
 )
+from scripts.parent_histogram_recurrence import recurrence_parent_histogram
 
 
 DEFAULT_BUDGETS = [6, 8]
@@ -65,6 +66,47 @@ class CachedSearchStats:
     parametric_bins_spliced: int = 0
     path_cap_hit: bool = False
     expansion_cap_hit: bool = False
+
+
+@dataclass
+class BoundaryBuildResult:
+    histogram: dict
+    nodes_expanded: int
+    edges_examined: int
+    cycle_skips: int
+    path_cap_hit: bool
+    expansion_cap_hit: bool
+    recurrence_cycle_approximation: bool = False
+    recurrence_states_evaluated: int | None = None
+    recurrence_memo_hits: int | None = None
+
+
+def build_boundary_histogram(parents_func, node, root, budget, path_cap, expansion_cap, boundary_builder):
+    """Build one boundary histogram by search or shifted parent recurrence."""
+    if boundary_builder == "search":
+        hist, stats = bounded_parent_histogram(parents_func, node, root, budget, path_cap, expansion_cap)
+        return BoundaryBuildResult(
+            histogram=hist,
+            nodes_expanded=stats.nodes_expanded,
+            edges_examined=stats.edges_examined,
+            cycle_skips=stats.cycle_skips,
+            path_cap_hit=stats.path_cap_hit,
+            expansion_cap_hit=stats.expansion_cap_hit,
+        )
+    if boundary_builder == "recurrence":
+        hist, stats = recurrence_parent_histogram(parents_func, node, root, budget, path_cap, expansion_cap)
+        return BoundaryBuildResult(
+            histogram=hist,
+            nodes_expanded=stats.states_evaluated,
+            edges_examined=stats.edges_examined,
+            cycle_skips=stats.cycle_edges,
+            path_cap_hit=stats.path_cap_hit,
+            expansion_cap_hit=stats.expansion_cap_hit,
+            recurrence_cycle_approximation=stats.cycle_approximation,
+            recurrence_states_evaluated=stats.states_evaluated,
+            recurrence_memo_hits=stats.memo_hits,
+        )
+    raise ValueError("unknown boundary builder: {}".format(boundary_builder))
 
 
 def scaled_distribution_histogram(probabilities, origin, total_count):
@@ -343,6 +385,7 @@ def build_boundary_cache(
     parametric_mass_cap=1000000,
     tail_epsilon=0.001,
     max_parent_depth=24,
+    boundary_builder="search",
 ):
     cache = {}
     parametric_cache = {}
@@ -350,8 +393,9 @@ def build_boundary_cache(
     distance_memo = {}
     for node in boundary_nodes:
         started = time.perf_counter_ns()
-        hist, stats = bounded_parent_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap)
+        built = build_boundary_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap, boundary_builder)
         elapsed = time.perf_counter_ns() - started
+        hist = built.histogram
         distances = root_distances(node, root, graph.parents, max_parent_depth, distance_memo)
         rows.append({
             "record_type": "boundary_cache_entry",
@@ -374,12 +418,16 @@ def build_boundary_cache(
                 max_parent_depth,
                 distance_memo,
             ),
-            "nodes_expanded": stats.nodes_expanded,
-            "edges_examined": stats.edges_examined,
-            "cycle_skips": stats.cycle_skips,
-            "path_cap_hit": stats.path_cap_hit,
-            "expansion_cap_hit": stats.expansion_cap_hit,
+            "boundary_builder": boundary_builder,
+            "nodes_expanded": built.nodes_expanded,
+            "edges_examined": built.edges_examined,
+            "cycle_skips": built.cycle_skips,
+            "path_cap_hit": built.path_cap_hit,
+            "expansion_cap_hit": built.expansion_cap_hit,
             "histogram_time_ns": elapsed,
+            "recurrence_cycle_approximation": built.recurrence_cycle_approximation,
+            "recurrence_states_evaluated": built.recurrence_states_evaluated,
+            "recurrence_memo_hits": built.recurrence_memo_hits,
         })
 
     priors = {}
@@ -398,8 +446,12 @@ def build_boundary_cache(
         lmax = row["histogram_L_max"]
         if admission_policy == "baseline":
             cached = bool(hist) and not row["path_cap_hit"] and not row["expansion_cap_hit"]
-            action = "materialize_exact" if cached else "skip_cache"
-            reason = "baseline_uncapped_histogram" if cached else "baseline_empty_or_capped"
+            if cached and row["recurrence_cycle_approximation"]:
+                action = "materialize_capped"
+                reason = "baseline_recurrence_cycle_approximation"
+            else:
+                action = "materialize_exact" if cached else "skip_cache"
+                reason = "baseline_uncapped_histogram" if cached else "baseline_empty_or_capped"
             policy = {
                 "action": action,
                 "reason": reason,
@@ -419,7 +471,7 @@ def build_boundary_cache(
                 safety_factor,
                 max_histogram_bytes,
                 recurrence_capped=row["path_cap_hit"] or row["expansion_cap_hit"],
-                recurrence_cycle_approximation=row["cycle_skips"] > 0,
+                recurrence_cycle_approximation=row["recurrence_cycle_approximation"],
                 realized_histogram_bytes=row["histogram_bytes"],
                 parametric_bytes=parametric_bytes,
             )
@@ -618,6 +670,7 @@ def run_benchmark(args):
             args.parametric_mass_cap,
             args.tail_epsilon,
             args.max_parent_depth,
+            args.boundary_builder,
         )
         records = [{
             "record_type": "boundary_cache_selection",
@@ -632,6 +685,7 @@ def run_benchmark(args):
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
             "admission_policy": args.admission_policy,
+            "boundary_builder": args.boundary_builder,
             "safety_factor": args.safety_factor,
             "max_histogram_bytes": args.max_histogram_bytes,
             "parametric_bytes": args.parametric_bytes,
@@ -709,14 +763,15 @@ def summarize(records):
         lines.append("| target | {} | {} |".format(depth, count))
     lines.extend([
         "",
-        "| boundary_nodes | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget |",
-        "|----------------|-----------------------|---------------------------|---------|-----------------|",
-        "| {} | {} | {} | {} | {} |".format(
+        "| boundary_nodes | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget | boundary_builder |",
+        "|----------------|-----------------------|---------------------------|---------|-----------------|------------------|",
+        "| {} | {} | {} | {} | {} | {} |".format(
             selection.get("boundary_nodes", 0),
             selection.get("cached_boundary_nodes", 0),
             selection.get("parametric_boundary_nodes", 0),
             selection.get("targets", 0),
             selection.get("boundary_budget", 0),
+            selection.get("boundary_builder", "search"),
         ),
         "",
         "## Admission Policy",
@@ -797,6 +852,27 @@ def summarize(records):
                 statistics.mean(max_delta) if max_delta else 0.0,
                 sum(1 for row in rows if row.get("parametric_support_truncated")),
                 sum(1 for row in rows if row.get("parametric_support_cycle_skipped")),
+            ))
+    builder_rows = {}
+    for row in cache_rows:
+        builder_rows.setdefault(row.get("boundary_builder", "search"), []).append(row)
+    if builder_rows:
+        lines.extend([
+            "",
+            "## Boundary Builders",
+            "",
+            "| builder | rows | mean_nodes_or_states | mean_edges_examined | cycle_approximation | capped |",
+            "|---------|-----:|---------------------:|--------------------:|--------------------:|-------:|",
+        ])
+        for builder in sorted(builder_rows):
+            rows = builder_rows[builder]
+            lines.append("| {} | {} | {:.3f} | {:.3f} | {} | {} |".format(
+                builder,
+                len(rows),
+                statistics.mean(int(row["nodes_expanded"]) for row in rows) if rows else 0.0,
+                statistics.mean(int(row["edges_examined"]) for row in rows) if rows else 0.0,
+                sum(1 for row in rows if row.get("recurrence_cycle_approximation")),
+                sum(1 for row in rows if row.get("path_cap_hit") or row.get("expansion_cap_hit")),
             ))
     lines.extend([
         "",
@@ -897,6 +973,7 @@ def main(argv=None):
     parser.add_argument("--boundaries-per-depth", type=int, default=100, help="Boundary cache candidates per requested boundary depth.")
     parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
+    parser.add_argument("--boundary-builder", choices=["search", "recurrence"], default="search", help="Method used to build boundary histograms before admission.")
     parser.add_argument("--budgets", default=",".join(map(str, DEFAULT_BUDGETS)), help="Comma-separated target path budgets.")
     parser.add_argument("--admission-policy", choices=["baseline", "depth-prior"], default="baseline", help="Policy used to decide whether measured boundary histograms enter the cache.")
     parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for depth-prior predicted histogram bytes.")
