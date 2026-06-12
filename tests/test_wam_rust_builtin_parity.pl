@@ -77,6 +77,44 @@ t_succ_fwd(Y) :- succ(2, Y).
 :- dynamic t_succ_rev/1.
 t_succ_rev(X) :- succ(X, 3).
 
+%% maplist family (P5): user-defined goals called per element through
+%% the call_goal_value meta-call machinery.
+:- dynamic double/2.
+double(X, Y) :- Y is X * 2.
+
+:- dynamic pos/1.
+pos(X) :- X > 0.
+
+:- dynamic acc_add/3.
+acc_add(X, A0, A) :- A is A0 + X.
+
+:- dynamic t_maplist/1.
+t_maplist(L) :- maplist(double, [1, 2, 3], L).
+
+:- dynamic t_maplist_check/0.
+t_maplist_check :- maplist(pos, [1, 2, 3]).
+
+:- dynamic t_maplist_fail/0.
+t_maplist_fail :- maplist(pos, [1, -2, 3]).
+
+:- dynamic t_include/1.
+t_include(I) :- include(pos, [1, -2, 3], I).
+
+:- dynamic t_exclude/1.
+t_exclude(E) :- exclude(pos, [1, -2, 3], E).
+
+:- dynamic t_partition/2.
+t_partition(I, E) :- partition(pos, [1, -2, 3], I, E).
+
+:- dynamic t_foldl/1.
+t_foldl(S) :- foldl(acc_add, [1, 2, 3], 0, S).
+
+:- dynamic t_alc_join/1.
+t_alc_join(A) :- atomic_list_concat([a, b, c], '-', A).
+
+:- dynamic t_alc_split/1.
+t_alc_split(L) :- atomic_list_concat(L, '-', 'x-y-z').
+
 cargo_available :-
     catch(
         (process_create(path(cargo), ['--version'],
@@ -98,7 +136,11 @@ test_builtin_parity_execution :-
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
              user:t_catch_failgoal/0, user:t_catch_nested/1,
-             user:t_succ_fwd/1, user:t_succ_rev/1],
+             user:t_succ_fwd/1, user:t_succ_rev/1,
+             user:double/2, user:pos/1, user:acc_add/3,
+             user:t_maplist/1, user:t_maplist_check/0, user:t_maplist_fail/0,
+             user:t_include/1, user:t_exclude/1, user:t_partition/2,
+             user:t_foldl/1, user:t_alc_join/1, user:t_alc_split/1],
             [module_name('builtin_parity_test'), wam_fallback(true)],
             TmpDir),
         directory_file_path(TmpDir, 'tests', TestsDir),
@@ -109,7 +151,9 @@ use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
 use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
-    t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1};
+    t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
+    t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
+    t_partition_2, t_foldl_1, t_alc_join_1, t_alc_split_1};
 use std::collections::HashMap;
 
 fn vmnew() -> WamState {
@@ -268,6 +312,94 @@ fn test_succ_direct_edge_cases() {
     assert!(!call2("succ/2", i(-1), ub("Y")).0, "negative X fails");
     assert!(call2("succ/2", i(2), i(3)).0);
     assert!(!call2("succ/2", i(2), i(4)).0);
+}
+
+#[test]
+fn test_maplist_transform_compiled() {
+    let mut vm = vmnew();
+    assert!(t_maplist_1(&mut vm, ub("L")),
+        "maplist(double, [1,2,3], L) must succeed");
+    assert_eq!(read_var(&vm, "L"), Value::List(vec![i(2), i(4), i(6)]));
+}
+
+#[test]
+fn test_maplist_check_and_fail_compiled() {
+    let mut vm = vmnew();
+    assert!(t_maplist_check_0(&mut vm), "all elements positive");
+    let mut vm2 = vmnew();
+    assert!(!t_maplist_fail_0(&mut vm2), "one negative element fails maplist");
+}
+
+#[test]
+fn test_include_exclude_partition_compiled() {
+    let mut vm = vmnew();
+    assert!(t_include_1(&mut vm, ub("I")));
+    assert_eq!(read_var(&vm, "I"), Value::List(vec![i(1), i(3)]));
+    let mut vm2 = vmnew();
+    assert!(t_exclude_1(&mut vm2, ub("E")));
+    assert_eq!(read_var(&vm2, "E"), Value::List(vec![i(-2)]));
+    let mut vm3 = vmnew();
+    assert!(t_partition_2(&mut vm3, ub("I"), ub("E")));
+    assert_eq!(read_var(&vm3, "I"), Value::List(vec![i(1), i(3)]));
+    assert_eq!(read_var(&vm3, "E"), Value::List(vec![i(-2)]));
+}
+
+#[test]
+fn test_foldl_compiled() {
+    let mut vm = vmnew();
+    assert!(t_foldl_1(&mut vm, ub("S")),
+        "foldl(acc_add, [1,2,3], 0, S) must succeed");
+    assert_eq!(read_var(&vm, "S"), i(6));
+}
+
+#[test]
+fn test_atomic_list_concat_compiled() {
+    let mut vm = vmnew();
+    assert!(t_alc_join_1(&mut vm, ub("A")));
+    assert_eq!(read_var(&vm, "A"), a("a-b-c"));
+    let mut vm2 = vmnew();
+    assert!(t_alc_split_1(&mut vm2, ub("L")));
+    assert_eq!(read_var(&vm2, "L"), Value::List(vec![a("x"), a("y"), a("z")]));
+}
+
+#[test]
+fn test_atomic_list_concat_direct() {
+    let (ok, vm) = call2("atomic_list_concat/2",
+        Value::List(vec![a("foo"), i(7), a("bar")]), ub("A"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "A"), a("foo7bar"));
+    assert!(call3("atomic_list_concat/3",
+        Value::List(vec![a("x"), a("y")]), a(","), a("x,y")).0);
+    assert!(!call3("atomic_list_concat/3",
+        Value::List(vec![a("x"), a("y")]), a(","), a("x;y")).0);
+    // Split with empty separator must fail (would not terminate).
+    assert!(!call3("atomic_list_concat/3", ub("L"), a(""), a("xyz")).0);
+}
+
+#[test]
+fn test_char_type_direct() {
+    assert!(call2("char_type/2", a("x"), a("alpha")).0);
+    assert!(!call2("char_type/2", a("1"), a("alpha")).0);
+    assert!(call2("char_type/2", a("1"), a("alnum")).0);
+    assert!(call2("char_type/2", a("_"), a("csym")).0);
+    assert!(call2("char_type/2", a(" "), a("space")).0);
+    assert!(call2("char_type/2", a("!"), a("punct")).0);
+    assert!(call2("char_type/2", a("A"), a("upper")).0);
+    assert!(!call2("char_type/2", a("a"), a("upper")).0);
+    let (ok, vm) = call2("char_type/2", a("7"),
+        Value::Str("digit/1".to_string(), vec![ub("W")]));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "W"), i(7));
+    let (ok2, vm2) = call2("char_type/2", a("B"),
+        Value::Str("to_lower/1".to_string(), vec![ub("L")]));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "L"), a("b"));
+    let (ok3, vm3) = call2("char_type/2", a("Q"),
+        Value::Str("upper/1".to_string(), vec![ub("L")]));
+    assert!(ok3);
+    assert_eq!(read_var(&vm3, "L"), a("q"));
+    assert!(!call2("char_type/2", a("q"),
+        Value::Str("upper/1".to_string(), vec![ub("L")])).0);
 }
 
 // ---- layer 2: direct execute_builtin coverage ------------------------

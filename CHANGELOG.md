@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Rust target: maplist family, atomic_list_concat, char_type
+  (parity P5 — closes the builtin ledger).** Built on the P4
+  meta-call machinery (`call_goal_value` + per-element first-solution
+  commit): `maplist/2..5` (unbound list arguments unified with
+  fresh-variable lists), `include/3`, `exclude/3` (trial calls,
+  bindings unwound per element), `partition/4`, `foldl/4`, `foldl/5`
+  (accumulator threaded through fresh variables). Plus
+  `atomic_list_concat/2`, `atomic_list_concat/3` (join + split modes;
+  empty-separator split rejected), and `char_type/2` (+Char mode:
+  alpha/alnum/csym/csymf/space/white/punct/graph/ascii/upper/lower/
+  end_of_line/newline, parameterized digit(W)/to_lower/to_upper/
+  upper(L)/lower(U)). 7 new cargo-built tests (28 total), incl.
+  compiled-predicate paths calling user-defined goals per element
+  through label sub-runs.
+
+### Fixed
+- **WAM Rust target: put_list never completed lists with non-atom
+  heads (latent).** `set_heap_or_list` keyed list-completion on the
+  head cell being a non-placeholder *atom*, so a literal list whose
+  first element was an integer/float/compound (e.g.
+  `maplist(double, [1,2,3], L)`) never materialised — the second
+  value fell through to a plain heap push and the register kept the
+  put_list scratch marker (`Integer(0)`). All earlier list tests
+  happened to use atom heads. List mode is now identified by the
+  tail sentinel at marker+1, independent of the head value. Exposed
+  by the P5 maplist tests; all existing suites pass unchanged.
 - **WAM Rust target: ISO catch/3, throw/1 and succ/2 (parity P4).**
   Completes the F#-parity control-flow milestone. Mechanism (mutable
   WamState in place of F#'s exception + immutable-snapshot design): a

@@ -1036,48 +1036,54 @@ impl WamState {
     /// and pops the WriteCtx.
     pub fn set_heap_or_list(&mut self, val: Value) {
         if let Some(StackEntry::WriteCtx(marker)) = self.stack.last().cloned() {
-            // Find the next unfilled slot after the header at heap[marker]
-            let header = self.heap[marker].clone();
-            match &header {
-                Value::Atom(s) if s == "__list_head__" => {
-                    // PutList mode: heap[marker]=head, heap[marker+1]=tail
+            // PutList mode is identified by the TAIL SENTINEL at
+            // marker+1 — not by the head cell type. Keying list mode on
+            // "head is a non-placeholder atom" meant a list whose head
+            // was an integer/float/compound never completed: the second
+            // value fell through to the plain heap push and the register
+            // kept the put_list scratch marker (maplist over [1,2,3] saw
+            // Integer(0) where the list should be).
+            let list_tail_pending = matches!(
+                self.heap.get(marker + 1),
+                Some(Value::Atom(t)) if t == "__list_tail__"
+            );
+            if list_tail_pending {
+                if matches!(&self.heap[marker], Value::Atom(h) if h == "__list_head__") {
+                    // First value: fill the head slot.
                     self.heap[marker] = val;
                     return;
                 }
-                Value::Atom(s) if s != "__list_head__" && s != "__list_tail__" && s != "__struct_arg__" => {
-                    // Head already filled (not a placeholder) -- fill tail
-                    if let Value::Atom(ref ts) = self.heap[marker + 1] {
-                        if ts == "__list_tail__" {
-                            self.heap[marker + 1] = val;
-                            let head = self.heap[marker].clone();
-                            let tail = self.heap[marker + 1].clone();
-                            let list = match tail {
-                                Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                                Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
-                                // Partial list: the tail is still an unbound
-                                // variable (or a ref/cons) that a later
-                                // put_structure will fill — e.g. building
-                                // [a|X2] then X2=[b|X3]. Materialising this as
-                                // Value::List([head, tail]) would treat the
-                                // tail var as a SECOND ELEMENT (so [a|X] looked
-                                // like the 2-list [a,X]); get_list then peeled
-                                // a wrong tail and member(z,...) bound the var
-                                // and wrongly succeeded. Keep it as a cons cell
-                                // so the tail var derefs to the rest of the
-                                // list. get_list/unify already alias [|]/2.
-                                _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
-                            };
-                            // Update the register holding Ref(marker) or Integer(marker)
-                            let ref_val = Value::Ref(marker);
-                            let int_val = Value::Integer(marker as i64);
-                            if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
-                                self.regs[idx] = list;
-                            }
-                            self.smut().pop();
-                            return;
-                        }
-                    }
+                // Second value: fill the tail and build the list.
+                self.heap[marker + 1] = val;
+                let head = self.heap[marker].clone();
+                let tail = self.heap[marker + 1].clone();
+                let list = match tail {
+                    Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                    Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
+                    // Partial list: the tail is still an unbound
+                    // variable (or a ref/cons) that a later
+                    // put_structure will fill — e.g. building
+                    // [a|X2] then X2=[b|X3]. Materialising this as
+                    // Value::List([head, tail]) would treat the
+                    // tail var as a SECOND ELEMENT (so [a|X] looked
+                    // like the 2-list [a,X]); get_list then peeled
+                    // a wrong tail and member(z,...) bound the var
+                    // and wrongly succeeded. Keep it as a cons cell
+                    // so the tail var derefs to the rest of the
+                    // list. get_list/unify already alias [|]/2.
+                    _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
+                };
+                // Update the register holding Ref(marker) or Integer(marker)
+                let ref_val = Value::Ref(marker);
+                let int_val = Value::Integer(marker as i64);
+                if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
+                    self.regs[idx] = list;
                 }
+                self.smut().pop();
+                return;
+            }
+            let header = self.heap[marker].clone();
+            match &header {
                 Value::Str(functor, _) => {
                     // PutStructure mode: fill next __struct_arg__ slot
                     let arity: usize = functor.split('/').last()
