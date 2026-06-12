@@ -3874,6 +3874,10 @@ emit_kernel_config_ops(Key, [Op|Rest]) :-
 %    kernel_mode(bidirectional) — upgrade detected category_ancestor
 %                          kernels to the 5-ary bidirectional_ancestor
 %                          kernel (see rust_maybe_upgrade_bidirectional/3)
+%    csr_child_index(Bool) — emit src/csr_fact_source.rs, a LookupSource
+%                          over the reverse-CSR artifact for the
+%                          bidirectional kernel child direction
+%                          (default: false)
 write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
@@ -3955,6 +3959,20 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     ;   true
     ),
 
+    % Generate src/csr_fact_source.rs when the CSR child index is
+    % requested: a LookupSource over the reverse-CSR artifact
+    % (build_reverse_csr_artifact.py), typically registered under
+    % "category_child/2" for the bidirectional kernel child direction.
+    option(csr_child_index(UseCsr), Options, false),
+    (   UseCsr == true
+    ->  read_template_file('templates/targets/rust_wam/csr_fact_source.rs.mustache',
+                           CsrTemplate),
+        render_template(CsrTemplate, [date=Date], CsrCode),
+        directory_file_path(SrcDir, 'csr_fact_source.rs', CsrPath),
+        write_file(CsrPath, CsrCode)
+    ;   true
+    ),
+
     % Write value.rs from template file
     read_template_file('templates/targets/rust_wam/value.rs.mustache', ValueTemplate),
     render_template(ValueTemplate, [date=Date], ValueCode),
@@ -3989,7 +4007,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
          use_lmdb_zero=UseLmdbZero,
-         use_heed=UseHeed],
+         use_heed=UseHeed,
+         use_csr=UseCsr],
         LibContent),
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),

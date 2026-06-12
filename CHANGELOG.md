@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Rust target: reverse-CSR child index reader (parity campaign
+  P2).** New `csr_child_index(true)` project option emits
+  `src/csr_fact_source.rs`: a `CsrLookupSource` over the binary
+  reverse-CSR artifact built by `build_reverse_csr_artifact.py`
+  (format `unifyweaver.reverse_csr.v1`: key-sorted 16-byte index
+  records binary-searched in memory + positioned reads on the values
+  file — the F# `csr_reader.fs.mustache` shape). It implements the
+  existing `LookupSource` trait, so registering it under
+  `"category_child/2"` makes the bidirectional kernel's child
+  accessor use it automatically (`resolve_edge_accessor` prefers a
+  lazy source over the eager reverse-derived table), with intern↔raw
+  id translation via the same `build_lazy_int_maps` machinery as the
+  LMDB lazy path. No new crate dependencies (minimal manifest field
+  extraction; the manifest is machine-written). `sorted_array` index
+  backend only — `lmdb_offset` is rejected explicitly (port from the
+  C target's `wam_reverse_csr_load_lmdb_offset*` if needed). E2E test
+  writes a struct-packed artifact containing an asymmetric child edge
+  absent from the parent table and asserts a path that exists only
+  via that edge — decisive proof the kernel consults the CSR source
+  rather than the derived reverse index.
 - **WAM Rust target: bidirectional ancestor kernel (F# parity port,
   P1 of the Rust-F# parity campaign).** `kernel_mode(bidirectional)`
   upgrades a detected `category_ancestor` kernel to the 5-ary
