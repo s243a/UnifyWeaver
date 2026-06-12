@@ -115,8 +115,27 @@ widening T7's applicable range well past expensive-only workloads.
 
 ## Status
 
-Design + cost model + gate are benchmark-validated and the hook points exist.
-The implementation is a substantial, semantics-changing runtime change
-(machine-fork + worker pool + gate + forkable-independence analysis + a
-concurrency exec harness proving parallel result-set == sequential and showing
-speedup) — the next concrete step, not yet built.
+Design + cost model + gate are benchmark-validated, and **phase 1 (the runtime
+substrate) is now built and tested**:
+`src/unifyweaver/targets/rust_runtime/par_aggregate.rs` — a generic, gated,
+chunked, machine-forking parallel collector (`gated_collect`) with the
+model-based probe (`measure_pool_overhead` + the `est_seq`/`est_par` decision).
+Its `#[cfg(test)]` battery (driven from the Prolog suite by
+`tests/test_wam_rust_par_aggregate.pl`) proves:
+
+- **correctness** — forced-parallel result-set equals the sequential one
+  *exactly*, in generator order, for n = 1, 7, 64, 257, 1000;
+- **the gate** — stays sequential for cheap branches (no regression), fans out
+  for expensive ones, both still correct;
+- **a real speedup** — the parallel path is faster than sequential on an
+  expensive workload (guards against an accidentally-serial substrate).
+
+The collector is generic over the machine `M` and the per-branch runner, so it
+is exactly what the interpreter supplies closures to.
+
+**Remaining (phase 2): the interpreter wiring.** Make `WamMachine: Clone + Send`,
+and at `BeginAggregate` for a `findall`/`aggregate_all` whose outer choice point
+enumerates independent branches (the forkable-independence gate), call
+`gated_collect` with a runner that clones the machine at the fork choice point
+and runs branch `k` to its `EndAggregate`s — merging into `aggregate_acc`. This
+is the semantics-changing runtime step; the substrate it calls is done.
