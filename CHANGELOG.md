@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Cross-target sweep: PutStructure A-register bind-through
+  (M139/M140 class) fixed in Go, Scala, Kotlin, Haskell, C, and WAT.**
+  After the Rust P4 fix, behavioral probes through every other
+  target's real project writer and toolchain found the same ancestral
+  defect in six runtimes: put_structure (and sometimes put_list)
+  bound the target register's old occupant to the freshly built term,
+  so any clause shaped `p(X, ...) :- q(f(X), ...), use(X)` created a
+  cyclic term `X = f(X)` and wrong-failed (in C the bind was also
+  UNTRAILED — a backtracking corruption hazard). The fix everywhere:
+  condition the bind-through on the register class (A registers are
+  argument staging and never bind; X/Y keep the top-down
+  structure-chaining placeholder bind). Kotlin additionally had a
+  put-as-get defect (put_structure/put_list routed through the
+  get-style `beginStructure`, wrong-failing on any stale constant
+  occupant — fixed with a write-mode `beginStructurePut`) and gained
+  `==/2`/`\==/2` builtin arms. C++, LLVM (M140 regression-verified),
+  F# (cycle-check-guarded), and Rust are clean; class 2 (non-atom
+  list heads, the Rust P5 put_list bug) is clean on all probed
+  targets; ILasm is blocked by a newly pinned structural defect
+  (cross-predicate calls resolve against the local label table and
+  self-loop); Python/Lua/R/Clojure/Elixir probes are pending (agent
+  quota). Full verdicts, per-target evidence, verification
+  methodology, and side findings (missing `==/2` in C/Haskell, the
+  Kotlin env-restore defect, an F# theoretical aliasing divergence)
+  in `docs/reports/wam_bindthrough_cross_target_sweep.md`. New
+  regression test `tests/test_wam_go_bindthrough.pl`; gated by the
+  cross-target conformance suite (go/scala/haskell/c/wat) plus
+  per-target suites.
+
 ### Added
 - **WAM Rust target: maplist family, atomic_list_concat, char_type
   (parity P5 — closes the builtin ledger).** Built on the P4

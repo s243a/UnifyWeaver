@@ -2389,10 +2389,24 @@ compile_step_wam_to_c(_Options, CCode) :-
                    +(+(A,B),C)), bind that cell to the new structure as well —
                    otherwise the enclosing structure keeps pointing at the
                    still-unbound placeholder and eval/unify never see this
-                   subterm. */
-                WamValue *placeholder = wam_deref_ptr(state, cell);
-                if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
-                    *placeholder = s;
+                   subterm.
+
+                   A-REGISTER EXCEPTION (M139/M140 bind-through class): A
+                   registers (is_y_reg == 0; X == 2, Y == 1) are argument
+                   STAGING — their old occupant is an unrelated variable
+                   (often a clause-head argument), and writing the new
+                   structure into its heap cell creates a cyclic term
+                   (X = f(X)) — and did so UNTRAILED, a backtracking
+                   corruption hazard on top of the wrong-fail. set_variable
+                   placeholders only ever live in X/Y registers, so the
+                   bind-through is conditioned on the register class — the
+                   same fix the Rust, Go, Scala, Kotlin, Haskell and LLVM
+                   targets carry. */
+                if (instr->as.functor.is_y_reg != 0) {
+                    WamValue *placeholder = wam_deref_ptr(state, cell);
+                    if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
+                        *placeholder = s;
+                    }
                 }
                 *cell = s;
 

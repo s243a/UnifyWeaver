@@ -1852,8 +1852,18 @@ wam_wat_case(put_structure,
   ;; set_variable), bind through the Ref chain so the heap cell is
   ;; updated — this links nested compounds correctly (e.g. +(*(1000,3),7)).
   ;; Otherwise, just overwrite the register directly.
+  ;;
+  ;; A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+  ;; (index < 32; X = 32+, Y = 64+) are argument STAGING — their old
+  ;; occupant is an unrelated variable (often a clause-head argument),
+  ;; and binding it to the new compound creates a cyclic term
+  ;; (X = f(X)), wrong-failing a later X = 1. set_variable placeholders
+  ;; only ever live in X/Y registers, so the bind-through is gated on
+  ;; the register class — the same fix the Rust, Go, Scala, Kotlin,
+  ;; Haskell, C and LLVM targets carry.
   (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
-  (if (i32.eq (call $val_tag (local.get $d_addr)) (i32.const 6))
+  (if (i32.and (i32.ge_u (local.get $ai) (i32.const 32))
+               (i32.eq (call $val_tag (local.get $d_addr)) (i32.const 6)))
     (then
       (call $trail_binding_at (local.get $d_addr))
       (call $val_store (local.get $d_addr) (i32.const 5) (i64.extend_i32_u (local.get $addr))))
@@ -1867,8 +1877,11 @@ wam_wat_case(put_list,
 '  (local $ai i32) (local $addr i32) (local $d_addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op1)))
   (local.set $addr (call $heap_push_val (i32.const 4) (i64.const 0)))
+  ;; Same A-register bind-through exception as put_structure
+  ;; (M139/M140 class): only X/Y registers keep the placeholder bind.
   (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
-  (if (i32.eq (call $val_tag (local.get $d_addr)) (i32.const 6))
+  (if (i32.and (i32.ge_u (local.get $ai) (i32.const 32))
+               (i32.eq (call $val_tag (local.get $d_addr)) (i32.const 6)))
     (then
       (call $trail_binding_at (local.get $d_addr))
       (call $val_store (local.get $d_addr) (i32.const 5) (i64.extend_i32_u (local.get $addr))))
