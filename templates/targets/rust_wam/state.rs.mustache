@@ -437,15 +437,21 @@ pub struct WamState {
 }
 
 /// T7 prerequisite: the WAM machine must be `Clone` (fork a machine per parallel
-/// worker) and `Send` (move clones to worker threads). Compile-time assertion —
-/// if a future field breaks either, the generated project fails to compile here
-/// with a clear pointer rather than deep inside the parallel substrate.
+/// worker) and `Send + Sync` (move clones to, and share the base across, worker
+/// threads). `Value` must likewise be `Send + Sync` (solutions cross threads).
+/// Compile-time assertion — if a future field breaks any of these, the generated
+/// project fails to compile here with a clear pointer rather than deep inside the
+/// parallel substrate.
 const _: () = {
     fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
     fn _assert_clone<T: Clone>() {}
     fn _wam_state_is_forkable() {
         _assert_send::<WamState>();
+        _assert_sync::<WamState>();
         _assert_clone::<WamState>();
+        _assert_send::<crate::value::Value>();
+        _assert_sync::<crate::value::Value>();
     }
 };
 

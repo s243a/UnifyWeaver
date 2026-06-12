@@ -5205,6 +5205,12 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'state.rs', StatePath),
     write_file(StatePath, StateCode),
 
+    % Write par_aggregate.rs (T7 parallel-aggregate runtime) from template file
+    read_template_file('templates/targets/rust_wam/par_aggregate.rs.mustache', ParAggTemplate),
+    render_template(ParAggTemplate, [date=Date], ParAggCode),
+    directory_file_path(SrcDir, 'par_aggregate.rs', ParAggPath),
+    write_file(ParAggPath, ParAggCode),
+
     % Generate setup_foreign_predicates function for detected kernels
     generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
 
