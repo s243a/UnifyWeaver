@@ -51,6 +51,12 @@ test(parses_multi_rule_scalar_end_print_rule) :-
          rule(field_eq(1, "WARN"), [inc(var(warnings))])],
         [end([print([var(errors), var(warnings)])])])).
 
+test(parses_assoc_count_end_print_rule) :-
+    plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
+    assertion(Program == program([], [rule(always, [inc_assoc(var(counts), field(1))])],
+        [end([print([assoc(var(counts), string("ERROR")),
+                     assoc(var(counts), string("WARN"))])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -85,6 +91,11 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
     run_surface_print_smoke("$1 == \"ERROR\" { hits++ } /^ERROR/ { hits++ } END { print hits }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4\n").
+
+test(surface_assoc_counts_requested_keys) :-
+    run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "2 1\n").
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),
