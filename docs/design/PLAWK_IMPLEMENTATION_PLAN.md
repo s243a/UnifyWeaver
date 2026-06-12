@@ -204,7 +204,12 @@ piece of hot-loop state into LLVM: native code owns the reader, record counter,
 output counter, and fixed output slots, while WAM only returns the deterministic
 handler decision (`yes`/`no`) for each record. The next boundary is lowering
 more deterministic handler logic itself into native code without making the
-target PLAWK-specific.
+target PLAWK-specific. The first general helper for that boundary is now
+`@wam_atom_prefix_value`, which lets native LLVM lower deterministic
+`sub_atom(Line, 0, Len, _, Prefix)` guards without allocating a substring or
+entering `run_loop` for each record. The
+`tests/test_plawk_native_lowered_handler_stream_loop_driver.pl` smoke proves
+that shape in a native stream loop.
 
 **Compiler note:** WAM/LLVM now normalizes quoted atom tokens before interning.
 Atoms such as `'ERROR disk full'` and `'it\'s bad'` compile to raw runtime

@@ -4189,6 +4189,44 @@ sch.close:
   ret i1 %sch.ok
 }
 
+define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
+entry:
+  %ap.t = call i32 @value_tag(%Value %atom_value)
+  %ap.is_atom = icmp eq i32 %ap.t, 0
+  br i1 %ap.is_atom, label %ap.lookup, label %ap.no
+
+ap.lookup:
+  %ap.aid = call i64 @value_payload(%Value %atom_value)
+  %ap.str = call i8* @wam_atom_to_string(i64 %ap.aid)
+  %ap.null = icmp eq i8* %ap.str, null
+  br i1 %ap.null, label %ap.no, label %ap.loop
+
+ap.loop:
+  %ap.i = phi i64 [ 0, %ap.lookup ], [ %ap.next, %ap.step_ok ]
+  %ap.done = icmp uge i64 %ap.i, %prefix_len
+  br i1 %ap.done, label %ap.yes, label %ap.step
+
+ap.step:
+  %ap.sp = getelementptr i8, i8* %ap.str, i64 %ap.i
+  %ap.pp = getelementptr i8, i8* %prefix, i64 %ap.i
+  %ap.sc = load i8, i8* %ap.sp
+  %ap.pc = load i8, i8* %ap.pp
+  %ap.nonzero = icmp ne i8 %ap.sc, 0
+  %ap.eq = icmp eq i8 %ap.sc, %ap.pc
+  %ap.match = and i1 %ap.nonzero, %ap.eq
+  br i1 %ap.match, label %ap.step_ok, label %ap.no
+
+ap.step_ok:
+  %ap.next = add i64 %ap.i, 1
+  br label %ap.loop
+
+ap.yes:
+  ret i1 true
+
+ap.no:
+  ret i1 false
+}
+
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0

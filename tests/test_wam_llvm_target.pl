@@ -193,7 +193,8 @@ test(full_runtime_generation) :-
     % Step function
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @step')),
     % Helpers
-    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')).
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')).
 
 % ============================================================================
 % Builtin op ID mapping
