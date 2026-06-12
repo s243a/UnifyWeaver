@@ -78,6 +78,9 @@ def binomial_support_prior(entry, hist, boundary_budget):
         "trials": trials,
         "probability": probability,
         "storage_scalars": 5,
+        "distribution_normalized": True,
+        "normalization_count": sum(hist.values()) if hist else None,
+        "normalization_count_source": "partial_histogram_lower_bound" if hist else "unknown",
         "storage_bytes_estimate": 40,
     }
 

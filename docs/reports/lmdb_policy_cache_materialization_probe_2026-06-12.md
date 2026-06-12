@@ -79,6 +79,11 @@ they are candidates for compact closed-form state.  The current probe records a
 `binomial_support_prior` with support from `(L_min, min(L_max, boundary_budget))`
 and either a partial-histogram estimate of `p` or a support-midpoint default.
 
+The closed-form fallback is stored as a normalized distribution family plus an
+explicit `normalization_count` field when a partial count is available.  That
+keeps the compact distribution reusable while still allowing an unnormalized
+histogram estimate to be reconstructed as `N * P(k)`.
+
 ## Next Step
 
 Use this probe to choose a mixed materialization policy:

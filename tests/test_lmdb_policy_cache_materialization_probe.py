@@ -51,6 +51,9 @@ class PolicyCacheMaterializationProbeTests(unittest.TestCase):
 
         self.assertEqual(fallback["source"], "partial_histogram")
         self.assertEqual(fallback["probability"], 0.5)
+        self.assertTrue(fallback["distribution_normalized"])
+        self.assertEqual(fallback["normalization_count"], 2)
+        self.assertEqual(fallback["normalization_count_source"], "partial_histogram_lower_bound")
 
     def test_probe_entry_reports_classification(self):
         entry = CacheEntry(node=1, l_min=1, l_max=1)
