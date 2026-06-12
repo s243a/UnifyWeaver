@@ -199,9 +199,12 @@ compiled PLAWK handler once per record, and thread PLAWK state through WAM.
 The `tests/test_plawk_native_counter_stream_loop_driver.pl` smoke then lowers
 the hot record counter to a native `i64` loop variable while keeping output
 accumulation as ordinary WAM terms via `append_output/3` and `state_outputs/2`.
-The remaining hot-loop boundary is native output accumulation: keep WAM handler
-calls only for logic that still needs WAM, while native reader/counter/output
-state stay in LLVM-owned data.
+The `tests/test_plawk_native_output_stream_loop_driver.pl` smoke moves the next
+piece of hot-loop state into LLVM: native code owns the reader, record counter,
+output counter, and fixed output slots, while WAM only returns the deterministic
+handler decision (`yes`/`no`) for each record. The next boundary is lowering
+more deterministic handler logic itself into native code without making the
+target PLAWK-specific.
 
 **Compiler note:** WAM/LLVM now normalizes quoted atom tokens before interning.
 Atoms such as `'ERROR disk full'` and `'it\'s bad'` compile to raw runtime
@@ -241,6 +244,13 @@ produces correct output on standard awk test cases.
 3. Compile the DCG through UnifyWeaver to LLVM.
 4. Extend `item_field/3` and `select_writer/2` for `record(binary, Type, Payload)`.
 5. Map `State` stream handles to OS file descriptors.
+
+**Associative-array note:** typed/native associative arrays are a high-value
+later feature. AWK associative arrays are string keyed; PLAWK can eventually
+lower common table shapes to binary hash tables keyed by typed values or
+interned IDs. That should preserve awk-like ergonomics while creating a
+plausible performance win over string-centric AWK loops once the basic compiled
+reader/handler/output path is stable.
 
 > **Perf caveat:** DCGs over difference-lists of bytes are correct but can be
 > slow in WAM without first-argument indexing on the byte / partial evaluation.
