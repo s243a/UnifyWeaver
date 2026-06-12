@@ -9,8 +9,19 @@ This is still a benchmark feature, not production runtime behavior.
 
 ## Approximation Used
 
-The first parametric family is the empirical depth-conditioned prior already used
-by the admission policy.  For each `L_max` bucket:
+The first parametric boundary state uses the empirical depth-conditioned
+path-length prior already used by the admission policy.  This keeps three
+related but different distributions separate:
+
+- the **parent-count distribution** measures how many root-reaching parents a
+  node has;
+- the **path-length distribution** measures how many root-reaching parent paths
+  land in each finite length bin; and
+- the **planning prior** forecasts a path-length distribution from parent-count
+  statistics so the cache can decide whether exact histogram materialization is
+  worth attempting.
+
+For each `L_max` bucket:
 
 1. estimate the depth-prior distribution from root-reaching parent-degree
    signals;
@@ -22,6 +33,15 @@ by the admission policy.  For each `L_max` bucket:
 The scaling step uses measured boundary mass because this benchmark is isolating
 shape/storage effects first.  A later production-oriented pass should replace
 that with an estimated mass model.
+
+Gamma-like fits are plausible for the parent-count or branching variation
+itself, especially in enwiki where `E[P^2]/E[P]` can be several times larger
+than one.  They should not be treated as the default path-length histogram
+family.  The path-length histogram is produced by repeated shifted sums of
+parent states; when enough finite-variance layers mix, binomial or normal-like
+approximations become the natural first candidates.  A binomial approximation
+can still retain visible skew for small trial counts such as `n=10`, so it is
+not only a symmetric large-`n` approximation.
 
 ## Smoke Commands
 

@@ -68,6 +68,8 @@ class DistributionFitComparisonTests(unittest.TestCase):
             parent_degrees=[1, 1, 2],
             depths=[2],
             tail_epsilon=0.001,
+            continuous_sample_points=32,
+            prune_thresholds=[0.001],
         )
         models = {record["model"] for record in records}
         roles = {record["distribution_role"] for record in records}

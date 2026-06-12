@@ -26,6 +26,25 @@ their own table.
 
 The default safety factor is `1.25`.
 
+The calibration uses three distinct statistical objects:
+
+- **parent-count distribution**: the distribution of root-reaching parent counts
+  for nodes in an `L_max` bucket;
+- **path-length distribution**: the node-local histogram of root-reaching parent
+  paths by finite length; and
+- **planning prior**: a depth-conditioned forecast of path-length support and
+  storage cost derived from parent-count statistics.
+
+This distinction matters for enwiki.  Gamma-like or heavier-tailed families may
+be useful for parent-count variation, because the size-biased branching signal
+`E[P^2]/E[P]` can be far above one.  The path-length histogram is a different
+object: it is built by repeated shifted mixtures of parent states, so
+finite-variance cases should drift toward binomial/normal-like behavior as more
+layers are composed.  Skew can persist for shallow depth, dependent parent cones,
+or heavy parent-count tails.  A binomial approximation is still useful in the
+small-`n` regime because it can represent skew, for example at `n=10` with
+small `p`.
+
 ## Smoke Command
 
 ```bash
@@ -99,8 +118,10 @@ gave mean storage ratios of `7.812`, `1.818`, and `4.027` for `L_max` buckets
 The binomial prior remained the cheapest storage predictor in these buckets, but
 its `p` parameter saturated at `1.0` everywhere.  That makes it useful as a
 compact planning proxy, not as evidence that a binomial family captures the
-underlying shape.  The Gamma prior tracked the empirical support more closely in
-the `L_max=24` bucket.
+measured path-length shape in this capped sample.  The Gamma prior tracked the
+empirical support more closely in the `L_max=24` bucket, but that should be read
+as a storage-width diagnostic, not as a claim that Gamma is the right
+path-length family.
 
 All comparable rows were marked `risky_try_capped_or_approx` because all rows
 were cycle-approximate, and five of the fourteen `L_max=24` rows still hit the
