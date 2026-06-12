@@ -81,10 +81,12 @@ The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `$1 == "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. The first
-associative-count surface, `{ counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }`,
-now uses the WAM/LLVM runtime's interned-atom-keyed `i64` table rather than
-specializing the `END` keys to fixed slots; the table grows and rehashes as
-needed, and the native stream reader grows its line buffer without consuming WAM
+associative-count surface now supports multiple source arrays, e.g.
+`{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
+Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per
+source array rather than specializing the `END` keys to fixed slots; each table
+grows and rehashes as needed, and the native stream reader grows its line buffer
+without consuming WAM
 arena space per record.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
