@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.distribution_fit_comparison import exact_excess_distribution, l1_error, max_cdf_error
+from scripts.distribution_fit_comparison import binomial_pmf, exact_excess_distribution, l1_error, max_cdf_error
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
     parse_int_list,
@@ -125,6 +125,25 @@ def estimate_parametric_total_count(row, prior, mass_model, mass_cap=None):
         "mass_ratio": None if oracle_count <= 0 else estimated / oracle_count,
         "mass_capped": capped,
     }
+
+
+def parametric_shape_distribution(row, prior, shape_model):
+    """Return a compact probability vector and origin for a boundary state."""
+    origin = row.get("histogram_L_min")
+    if origin is None:
+        return [], None
+    if shape_model == "empirical-prior":
+        return prior["prior_distribution"], int(origin)
+    if shape_model in {"support-binomial", "support-binomial-midpoint"}:
+        lmax = row.get("histogram_L_max")
+        width = 0 if lmax is None else max(0, int(lmax) - int(origin))
+        if shape_model == "support-binomial-midpoint":
+            mean_excess = width / 2.0
+        else:
+            mean_excess = max(0.0, float(prior.get("prior_mean_excess", 0.0)))
+        probability = 0.0 if width <= 0 else max(0.0, min(1.0, mean_excess / width))
+        return binomial_pmf(width, probability), int(origin)
+    raise ValueError("unknown parametric shape model: {}".format(shape_model))
 
 
 def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
@@ -228,6 +247,7 @@ def build_boundary_cache(
     safety_factor=1.25,
     max_histogram_bytes=1024,
     parametric_bytes=64,
+    parametric_shape_model="empirical-prior",
     parametric_mass_model="oracle",
     parametric_mass_cap=1000000,
     tail_epsilon=0.001,
@@ -335,11 +355,14 @@ def build_boundary_cache(
         row["parametric_histogram"] = {}
         row["parametric_path_count"] = 0
         row["parametric_oracle_path_count"] = row["path_count"]
+        row["parametric_shape_model"] = parametric_shape_model
         row["parametric_mass_model"] = parametric_mass_model
         row["parametric_mass_delta"] = None
         row["parametric_mass_ratio"] = None
         row["parametric_mass_capped"] = False
         row["parametric_support_bins"] = 0
+        row["parametric_support_min"] = None
+        row["parametric_support_max"] = None
         if cached:
             cache[row["node"]] = hist
         elif policy["action"] == "use_parametric_prior" and lmax in priors and hist:
@@ -349,9 +372,14 @@ def build_boundary_cache(
                 parametric_mass_model,
                 parametric_mass_cap,
             )
+            probabilities, origin = parametric_shape_distribution(
+                row,
+                priors[lmax],
+                parametric_shape_model,
+            )
             approx_hist = scaled_distribution_histogram(
-                priors[lmax]["prior_distribution"],
-                row["histogram_L_min"],
+                probabilities,
+                origin,
                 mass_estimate["estimated_path_count"],
             )
             if approx_hist:
@@ -364,6 +392,8 @@ def build_boundary_cache(
                 row["parametric_mass_ratio"] = mass_estimate["mass_ratio"]
                 row["parametric_mass_capped"] = mass_estimate["mass_capped"]
                 row["parametric_support_bins"] = len(approx_hist)
+                row["parametric_support_min"] = min(approx_hist)
+                row["parametric_support_max"] = max(approx_hist)
     return cache, parametric_cache, rows
 
 
@@ -448,6 +478,7 @@ def run_benchmark(args):
             args.safety_factor,
             args.max_histogram_bytes,
             args.parametric_bytes,
+            args.parametric_shape_model,
             args.parametric_mass_model,
             args.parametric_mass_cap,
             args.tail_epsilon,
@@ -469,6 +500,7 @@ def run_benchmark(args):
             "safety_factor": args.safety_factor,
             "max_histogram_bytes": args.max_histogram_bytes,
             "parametric_bytes": args.parametric_bytes,
+            "parametric_shape_model": args.parametric_shape_model,
             "parametric_mass_model": args.parametric_mass_model,
             "parametric_mass_cap": args.parametric_mass_cap,
         }]
@@ -551,13 +583,14 @@ def summarize(records):
         "",
         "## Admission Policy",
         "",
-        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_mass_model | parametric_mass_cap |",
-        "|--------|--------------:|--------------------:|-----------------:|-----------------------|--------------------:|",
-        "| {} | {} | {} | {} | {} | {} |".format(
+        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_shape_model | parametric_mass_model | parametric_mass_cap |",
+        "|--------|--------------:|--------------------:|-----------------:|------------------------|-----------------------|--------------------:|",
+        "| {} | {} | {} | {} | {} | {} | {} |".format(
             selection.get("admission_policy", "baseline"),
             selection.get("safety_factor", "n/a"),
             selection.get("max_histogram_bytes", "n/a"),
             selection.get("parametric_bytes", "n/a"),
+            selection.get("parametric_shape_model", "empirical-prior"),
             selection.get("parametric_mass_model", "oracle"),
             selection.get("parametric_mass_cap", "n/a"),
         ),
@@ -701,6 +734,7 @@ def main(argv=None):
     parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for depth-prior predicted histogram bytes.")
     parser.add_argument("--max-histogram-bytes", type=int, default=1024, help="Maximum bytes allowed for exact or capped boundary histograms under depth-prior admission.")
     parser.add_argument("--parametric-bytes", type=int, default=64, help="Estimated bytes for a parametric prior state.")
+    parser.add_argument("--parametric-shape-model", choices=["empirical-prior", "support-binomial", "support-binomial-midpoint"], default="empirical-prior", help="Shape used for parametric boundary states.")
     parser.add_argument("--parametric-mass-model", choices=["oracle", "unit", "depth-prior"], default="oracle", help="Mass used to unnormalize parametric boundary states.")
     parser.add_argument("--parametric-mass-cap", type=int, default=1000000, help="Maximum estimated path mass for non-oracle parametric states; non-positive disables the cap.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
