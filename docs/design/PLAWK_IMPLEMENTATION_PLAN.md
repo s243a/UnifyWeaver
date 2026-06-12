@@ -157,8 +157,8 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
   than failing. The reader probe emits
   `examples/plawk/generated/plawk_reader_probe.ll` and verifies with `llvm-as`.
   `read_line/2` builds each output line in a malloc-owned temporary buffer before
-  interning, so long streams do not consume WAM arena space per record. Current
-  limitation: line atoms are capped at 64 KiB until the output buffer is growable.
+  interning, growing the buffer as needed, so long streams do not consume WAM
+  arena space per record and individual line atoms are not capped at 64 KiB.
 - **Compiled stream-core smoke:** `tests/test_plawk_compiled_stream_core.pl`
   builds a native LLVM binary that streams a text file, splits records with
   `atom_split/3`, runs a PLAWK-style handler over `record(text, Line, Fields)`,

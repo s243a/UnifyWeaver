@@ -84,7 +84,8 @@ guarded rules can update shared scalar slots before an `END` print. The first
 associative-count surface, `{ counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }`,
 now uses the WAM/LLVM runtime's interned-atom-keyed `i64` table rather than
 specializing the `END` keys to fixed slots; the table grows and rehashes as
-needed, and the native stream reader no longer consumes WAM arena space per line.
+needed, and the native stream reader grows its line buffer without consuming WAM
+arena space per record.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see

@@ -4388,12 +4388,14 @@ rhv.have_handle:
   br i1 %rhv.fd_ok, label %rhv.alloc_out, label %rhv.fail
 
 rhv.alloc_out:
-  %rhv.out = call i8* @malloc(i64 65537)
+  %rhv.out = call i8* @malloc(i64 4096)
   %rhv.out_null = icmp eq i8* %rhv.out, null
   br i1 %rhv.out_null, label %rhv.fail, label %rhv.loop
 
 rhv.loop:
   %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.append_store ]
+  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.append_store ]
+  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.append_store ]
   %rhv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 1
   %rhv.buf = load i8*, i8** %rhv.buf_slot
   %rhv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 3
@@ -4432,11 +4434,24 @@ rhv.consume:
   br i1 %rhv.is_lf, label %rhv.finalize, label %rhv.append
 
 rhv.append:
-  %rhv.has_room = icmp ult i64 %rhv.out_len, 65536
-  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.free_out_fail
+  %rhv.next_out_len_pre = add i64 %rhv.out_len, 1
+  %rhv.has_room = icmp ult i64 %rhv.next_out_len_pre, %rhv.out_cap
+  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.grow_out
+
+rhv.grow_out:
+  %rhv.new_out_cap = shl i64 %rhv.out_cap, 1
+  %rhv.cap_grew = icmp ugt i64 %rhv.new_out_cap, %rhv.out_cap
+  br i1 %rhv.cap_grew, label %rhv.grow_alloc, label %rhv.free_out_fail
+
+rhv.grow_alloc:
+  %rhv.grown_out = call i8* @realloc(i8* %rhv.out_cur, i64 %rhv.new_out_cap)
+  %rhv.grown_null = icmp eq i8* %rhv.grown_out, null
+  br i1 %rhv.grown_null, label %rhv.free_out_fail, label %rhv.append_store
 
 rhv.append_store:
-  %rhv.out_ptr = getelementptr i8, i8* %rhv.out, i64 %rhv.out_len
+  %rhv.append_out = phi i8* [ %rhv.out_cur, %rhv.append ], [ %rhv.grown_out, %rhv.grow_alloc ]
+  %rhv.append_cap = phi i64 [ %rhv.out_cap, %rhv.append ], [ %rhv.new_out_cap, %rhv.grow_alloc ]
+  %rhv.out_ptr = getelementptr i8, i8* %rhv.append_out, i64 %rhv.out_len
   store i8 %rhv.ch, i8* %rhv.out_ptr
   %rhv.next_out_len = add i64 %rhv.out_len, 1
   br label %rhv.loop
@@ -4447,7 +4462,7 @@ rhv.finalize:
 
 rhv.check_cr:
   %rhv.last_idx = sub i64 %rhv.out_len, 1
-  %rhv.last_ptr = getelementptr i8, i8* %rhv.out, i64 %rhv.last_idx
+  %rhv.last_ptr = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.last_idx
   %rhv.last = load i8, i8* %rhv.last_ptr
   %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
   %rhv.trim_len = select i1 %rhv.last_is_cr, i64 %rhv.last_idx, i64 %rhv.out_len
@@ -4458,16 +4473,16 @@ rhv.intern_empty:
 
 rhv.intern:
   %rhv.final_len = phi i64 [ %rhv.trim_len, %rhv.check_cr ], [ 0, %rhv.intern_empty ]
-  %rhv.term = getelementptr i8, i8* %rhv.out, i64 %rhv.final_len
+  %rhv.term = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.final_len
   store i8 0, i8* %rhv.term
-  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.out, i64 %rhv.final_len)
+  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.out_cur, i64 %rhv.final_len)
   %rhv.v0 = insertvalue %Value undef, i32 0, 0
   %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
-  call void @free(i8* %rhv.out)
+  call void @free(i8* %rhv.out_cur)
   ret %Value %rhv.v
 
 rhv.eof:
-  call void @free(i8* %rhv.out)
+  call void @free(i8* %rhv.out_cur)
   %rhv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
   %rhv.eof_aid = call i64 @wam_intern_atom(i8* %rhv.eof_ptr, i64 11)
   %rhv.eof_v0 = insertvalue %Value undef, i32 0, 0
@@ -4475,7 +4490,8 @@ rhv.eof:
   ret %Value %rhv.eof_v
 
 rhv.free_out_fail:
-  call void @free(i8* %rhv.out)
+  %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ]
+  call void @free(i8* %rhv.fail_out)
   br label %rhv.fail
 }
 
