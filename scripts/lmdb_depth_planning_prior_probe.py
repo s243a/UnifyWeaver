@@ -131,16 +131,83 @@ def planning_ratios(predicted_bytes, realized_bytes):
     }
 
 
-def admission_decision(row, prior, comparison, safety_factor):
+def cache_admission_policy(
+    predicted_prior_bytes,
+    safety_factor,
+    max_histogram_bytes,
+    recurrence_capped=False,
+    recurrence_cycle_approximation=False,
+    realized_histogram_bytes=None,
+    parametric_bytes=None,
+):
+    """Choose how aggressively to materialize a cached distribution."""
+    predicted_prior_bytes = max(0, int(predicted_prior_bytes))
+    max_histogram_bytes = max(0, int(max_histogram_bytes))
+    parametric_bytes = parametric_distribution_bytes() if parametric_bytes is None else max(0, int(parametric_bytes))
+    safety_prediction_bytes = int(math.ceil(float(safety_factor) * predicted_prior_bytes))
+    observed_or_predicted_bytes = safety_prediction_bytes
+    if realized_histogram_bytes is not None:
+        observed_or_predicted_bytes = max(safety_prediction_bytes, max(0, int(realized_histogram_bytes)))
+
+    if max_histogram_bytes <= 0:
+        return {
+            "action": "skip_cache",
+            "reason": "histogram_budget_disabled",
+            "safety_prediction_bytes": safety_prediction_bytes,
+            "observed_or_predicted_bytes": observed_or_predicted_bytes,
+            "max_histogram_bytes": max_histogram_bytes,
+            "parametric_bytes": parametric_bytes,
+        }
+
+    if recurrence_capped or recurrence_cycle_approximation:
+        if observed_or_predicted_bytes <= max_histogram_bytes:
+            action = "materialize_capped"
+            reason = "recurrence_not_exact_but_within_budget"
+        elif parametric_bytes <= max_histogram_bytes:
+            action = "use_parametric_prior"
+            reason = "recurrence_not_exact_and_histogram_over_budget"
+        else:
+            action = "skip_cache"
+            reason = "recurrence_not_exact_and_all_representations_over_budget"
+    elif observed_or_predicted_bytes <= max_histogram_bytes:
+        action = "materialize_exact"
+        reason = "exact_histogram_within_budget"
+    elif parametric_bytes <= max_histogram_bytes:
+        action = "use_parametric_prior"
+        reason = "exact_histogram_over_budget"
+    else:
+        action = "skip_cache"
+        reason = "all_representations_over_budget"
+
+    return {
+        "action": action,
+        "reason": reason,
+        "safety_prediction_bytes": safety_prediction_bytes,
+        "observed_or_predicted_bytes": observed_or_predicted_bytes,
+        "max_histogram_bytes": max_histogram_bytes,
+        "parametric_bytes": parametric_bytes,
+    }
+
+
+def admission_decision(row, prior, comparison, safety_factor, max_histogram_bytes, parametric_bytes):
     if not comparison.get("comparable"):
-        return "skip_no_recurrence"
-    if row.get("recurrence_capped") or row.get("recurrence_cycle_approximation"):
-        return "risky_try_capped_or_approx"
-    if comparison["safety_storage_prediction_ratio"] is not None and comparison["safety_storage_prediction_ratio"] <= 2.0:
-        return "exact_recurrence_likely_cheap"
-    if int(prior["prior_effective_bins"]) <= 32:
-        return "exact_recurrence_likely_cheap"
-    return "approximation_first"
+        return {
+            "action": "skip_cache",
+            "reason": "no_recurrence_histogram",
+            "safety_prediction_bytes": None,
+            "observed_or_predicted_bytes": None,
+            "max_histogram_bytes": max_histogram_bytes,
+            "parametric_bytes": parametric_bytes,
+        }
+    return cache_admission_policy(
+        prior["prior_pruned_histogram_bytes"],
+        safety_factor,
+        max_histogram_bytes,
+        recurrence_capped=row.get("recurrence_capped", False),
+        recurrence_cycle_approximation=row.get("recurrence_cycle_approximation", False),
+        realized_histogram_bytes=comparison.get("histogram_bytes"),
+        parametric_bytes=parametric_bytes,
+    )
 
 
 def compare_prior_to_hist(hist, prior, tail_epsilon, safety_factor=1.0):
@@ -261,6 +328,8 @@ def build_records(args, target_rows, selection_counts):
         "tail_epsilon": args.tail_epsilon,
         "max_prior_depth": args.max_prior_depth,
         "safety_factor": args.safety_factor,
+        "max_histogram_bytes": args.max_histogram_bytes,
+        "parametric_bytes": args.parametric_bytes,
     }]
     buckets = {}
     for row in target_rows:
@@ -319,7 +388,21 @@ def build_records(args, target_rows, selection_counts):
                 args.safety_factor,
             )
             record.update(comparison)
-            record["admission_decision"] = admission_decision(row, priors[key], comparison, args.safety_factor)
+            policy = admission_decision(
+                row,
+                priors[key],
+                comparison,
+                args.safety_factor,
+                args.max_histogram_bytes,
+                args.parametric_bytes,
+            )
+            record["cache_admission_action"] = policy["action"]
+            record["cache_admission_reason"] = policy["reason"]
+            record["cache_admission_safety_prediction_bytes"] = policy["safety_prediction_bytes"]
+            record["cache_admission_observed_or_predicted_bytes"] = policy["observed_or_predicted_bytes"]
+            record["cache_admission_max_histogram_bytes"] = policy["max_histogram_bytes"]
+            record["cache_admission_parametric_bytes"] = policy["parametric_bytes"]
+            record["admission_decision"] = policy["action"]
         records.append(record)
     return records
 
@@ -426,16 +509,31 @@ def summarize(records):
 
     lines.extend([
         "",
-        "## Admission Decisions",
+        "## Cache Admission Policy",
         "",
-        "| decision | rows |",
-        "|----------|-----:|",
+        "| action | rows |",
+        "|--------|-----:|",
     ])
     decision_counts = {}
     for row in comparable:
-        decision_counts[row.get("admission_decision", "unknown")] = decision_counts.get(row.get("admission_decision", "unknown"), 0) + 1
+        action = row.get("cache_admission_action", row.get("admission_decision", "unknown"))
+        decision_counts[action] = decision_counts.get(action, 0) + 1
     for decision in sorted(decision_counts):
         lines.append("| {} | {} |".format(decision, decision_counts[decision]))
+
+    lines.extend([
+        "",
+        "## Cache Admission Reasons",
+        "",
+        "| reason | rows |",
+        "|--------|-----:|",
+    ])
+    reason_counts = {}
+    for row in comparable:
+        reason = row.get("cache_admission_reason", "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    for reason in sorted(reason_counts):
+        lines.append("| {} | {} |".format(reason, reason_counts[reason]))
 
     skipped = [row for row in target_rows if not row.get("comparable")]
     lines.extend([
@@ -497,6 +595,8 @@ def parse_args(argv=None):
     parser.add_argument("--max-prior-depth", type=int, default=8)
     parser.add_argument("--tail-epsilon", type=float, default=0.001)
     parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for empirical prior bytes in admission planning.")
+    parser.add_argument("--max-histogram-bytes", type=int, default=1024, help="Maximum cache bytes allowed for exact or capped histogram materialization.")
+    parser.add_argument("--parametric-bytes", type=int, default=64, help="Estimated cache bytes for a closed-form/parametric prior state.")
     parser.add_argument("--path-cap", type=int, default=10000)
     parser.add_argument("--expansion-cap", type=int, default=50000)
     parser.add_argument("--write-jsonl", action="store_true")
