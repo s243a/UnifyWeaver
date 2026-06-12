@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **WAM Rust target: reverse-CSR child index reader (parity campaign
+  P2).** New `csr_child_index(true)` project option emits
+  `src/csr_fact_source.rs`: a `CsrLookupSource` over the binary
+  reverse-CSR artifact built by `build_reverse_csr_artifact.py`
+  (format `unifyweaver.reverse_csr.v1`: key-sorted 16-byte index
+  records binary-searched in memory + positioned reads on the values
+  file — the F# `csr_reader.fs.mustache` shape). It implements the
+  existing `LookupSource` trait, so registering it under
+  `"category_child/2"` makes the bidirectional kernel's child
+  accessor use it automatically (`resolve_edge_accessor` prefers a
+  lazy source over the eager reverse-derived table), with intern↔raw
+  id translation via the same `build_lazy_int_maps` machinery as the
+  LMDB lazy path. No new crate dependencies (minimal manifest field
+  extraction; the manifest is machine-written). `sorted_array` index
+  backend only — `lmdb_offset` is rejected explicitly (port from the
+  C target's `wam_reverse_csr_load_lmdb_offset*` if needed). E2E test
+  writes a struct-packed artifact containing an asymmetric child edge
+  absent from the parent table and asserts a path that exists only
+  via that edge — decisive proof the kernel consults the CSR source
+  rather than the derived reverse index.
+- **WAM Rust target: bidirectional ancestor kernel (F# parity port,
+  P1 of the Rust-F# parity campaign).** `kernel_mode(bidirectional)`
+  upgrades a detected `category_ancestor` kernel to the 5-ary
+  `bidirectional_ancestor` interface
+  (`Pred(Cat, Root, TotalHops, ParentHops, ChildHops)`), streaming one
+  solution per budget-feasible path. Faithful port of the F# kernel
+  template (`kernel_bidirectional_ancestor.fs.mustache`): graph
+  calibration (dimensionality `D = E[d_child]`, branch ratio
+  `b = (E[d²_child]/E[d²_parent]) · routing_correction`, BFS
+  `min_dist` from root via child edges) and direction-cost path
+  exploration with A*-style lower-bound elimination
+  (`cost + min_dist[n]·parent_cost > budget` prunes the branch).
+  Costs/budget are f64 configs (`parent_step_cost`/`child_step_cost`/
+  `cost_budget`, defaults 1.0/3.0/10.0 matching F# and C); the
+  child-direction index is read from a registered `child_pred` source
+  (default `category_child`, e.g. the LMDB DUPSORT sub-db) or derived
+  once by reversing the eager parent table
+  (`ensure_reverse_edge_index`). Runtime additions:
+  `register_foreign_f64_config`/`foreign_f64_config`,
+  `register_ffi_fact_pairs`. Mirrors the Haskell/F# opt-in upgrade
+  shape (`maybe_upgrade_bidirectional`); default emission is
+  unchanged (regression-guarded). New
+  `tests/test_wam_rust_bidirectional_e2e.pl`: codegen assertions,
+  default-mode guard, and a cargo-built execution test with
+  hand-checked path enumerations (two pure-parent paths; a mixed
+  child+parent route that exists only because the A* bound prunes the
+  upward detour; unreachable-root failure). The benchmark harness
+  (`main.rs.mustache`) gained a `{{#bidirectional_kernel}}` branch:
+  calibration hoisted out of the seed loop, per-seed direction-weighted
+  power mean (F# `effectiveDistanceWeighted`); first numbers in
+  `docs/reports/wam_rust_bidirectional_kernel_synthetic_bench.md`
+  (tuple_count parity with the upward-only kernel at 1k/10k; ~6.5×
+  query cost at 10k — the price of enumerating both directions).
+
 ### Fixed
 - **WAM R target (M152): lowered fast path shadowed runtime-asserted
   clauses.** Review finding from the Tn-lowering-vs-fact-sources

@@ -709,7 +709,8 @@ pub mod instructions;
 pub mod state;
 {{#use_lmdb_zero}}pub mod lmdb_fact_source;
 {{/use_lmdb_zero}}{{#use_heed}}pub mod lmdb_fact_source;
-{{/use_heed}}
+{{/use_heed}}{{#use_csr}}pub mod csr_fact_source;
+{{/use_csr}}
 use std::collections::{HashMap, HashSet};
 use value::Value;
 use instructions::Instruction;

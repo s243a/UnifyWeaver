@@ -135,9 +135,9 @@ fn main() {
 
     let t2 = Instant::now();
 
-    let has_ca_foreign = vm.foreign_predicates.contains("category_ancestor/4");
-
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
+{{^bidirectional_kernel}}
+    let has_ca_foreign = vm.foreign_predicates.contains("category_ancestor/4");
 
     if has_ca_foreign {
         let root_id = vm.intern_atom(&root);
@@ -163,6 +163,56 @@ fn main() {
             }
         }
     }
+{{/bidirectional_kernel}}
+{{#bidirectional_kernel}}
+    let has_bidir_foreign = vm.foreign_predicates.contains("category_ancestor/5");
+    let mut calibration_dim = 0.0f64;
+    let mut calibration_b = 0.0f64;
+
+    if has_bidir_foreign {
+        let root_id = vm.intern_atom(&root);
+        let parent_cost = vm.foreign_f64_config("category_ancestor/5", "parent_step_cost").unwrap_or(1.0);
+        let child_cost = vm.foreign_f64_config("category_ancestor/5", "child_step_cost").unwrap_or(3.0);
+        let budget = vm.foreign_f64_config("category_ancestor/5", "cost_budget").unwrap_or(10.0);
+        vm.ensure_reverse_edge_index("category_parent", "category_child");
+        // Calibration is hoisted out of the seed loop: graph and root are
+        // loop constants, so the BFS + degree-moment pass runs once. The
+        // dispatch-arm path (WAM-routed queries) still calibrates per call.
+        let (dim, branch_ratio, _b_raw, _rc, min_dist) = {
+            let parents = vm.resolve_edge_accessor("category_parent");
+            let children = vm.resolve_edge_accessor("category_child");
+            vm.calibrate_bidirectional_graph(root_id, &parents, &children)
+        };
+        calibration_dim = dim;
+        calibration_b = branch_ratio;
+        let parent_w = 1.0 / dim;
+        let child_w = 1.0 / (branch_ratio * dim);
+        for cat in &seed_cats {
+            let cat_id = vm.intern_atom(cat);
+            let mut hops: Vec<(i64, i64, i64)> = Vec::new();
+            {
+                let parents = vm.resolve_edge_accessor("category_parent");
+                let children = vm.resolve_edge_accessor("category_child");
+                vm.collect_native_bidirectional_ancestor_hops(
+                    cat_id, root_id, parent_cost, child_cost, budget,
+                    &parents, &children, &min_dist, &mut hops);
+            }
+            // Direction-weighted power mean (F# effectiveDistanceWeighted):
+            // w = (1/D)^parentHops * (1/(b*D))^childHops; per-seed weight
+            // is sum(w * (total+1)^-n) / sum(w).
+            let mut sum_wf = 0.0f64;
+            let mut sum_w = 0.0f64;
+            for (total, p_hops, c_hops) in &hops {
+                let w = parent_w.powf(*p_hops as f64) * child_w.powf(*c_hops as f64);
+                sum_wf += w * ((*total as f64) + 1.0).powf(neg_n);
+                sum_w += w;
+            }
+            if sum_w > 0.0 && sum_wf > 0.0 {
+                seed_weight_sums.insert(cat.clone(), sum_wf / sum_w);
+            }
+        }
+    }
+{{/bidirectional_kernel}}
 
     let query_ms = t2.elapsed().as_millis();
 
@@ -196,6 +246,11 @@ fn main() {
     let stderr = io::stderr();
     let mut err = stderr.lock();
     writeln!(err, "mode=wam_rust_bench").unwrap();
+{{#bidirectional_kernel}}
+    writeln!(err, "kernel=bidirectional_ancestor").unwrap();
+    writeln!(err, "calibration_dimensionality={:.4}", calibration_dim).unwrap();
+    writeln!(err, "calibration_branch_ratio={:.4}", calibration_b).unwrap();
+{{/bidirectional_kernel}}
     writeln!(err, "load_ms={}", load_ms).unwrap();
     writeln!(err, "query_ms={}", query_ms).unwrap();
     writeln!(err, "aggregation_ms={}", agg_ms).unwrap();

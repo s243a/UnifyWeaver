@@ -359,6 +359,9 @@ pub struct WamState {
     pub foreign_string_configs: HashMap<String, String>,
     /// Foreign predicate usize configs keyed by "name/arity#config".
     pub foreign_usize_configs: HashMap<String, usize>,
+    /// Foreign predicate f64 configs keyed by "name/arity#config"
+    /// (e.g. the bidirectional kernel step costs and budget).
+    pub foreign_f64_configs: HashMap<String, f64>,
     /// Foreign predicate result layouts keyed by "name/arity".
     /// Layouts are encoded as "tuple:N".
     pub foreign_result_layouts: HashMap<String, String>,
@@ -457,6 +460,7 @@ impl WamState {
             foreign_native_kinds: HashMap::new(),
             foreign_string_configs: HashMap::new(),
             foreign_usize_configs: HashMap::new(),
+            foreign_f64_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
             lazy_lookups: HashMap::new(),
@@ -609,6 +613,18 @@ impl WamState {
             .copied()
     }
 
+    /// Register an f64 configuration entry for a foreign predicate.
+    pub fn register_foreign_f64_config(&mut self, pred: &str, key: &str, value: f64) {
+        self.foreign_f64_configs.insert(format!("{}#{}", pred, key), value);
+    }
+
+    /// Fetch an f64 configuration entry for a foreign predicate.
+    pub fn foreign_f64_config(&self, pred: &str, key: &str) -> Option<f64> {
+        self.foreign_f64_configs
+            .get(&format!("{}#{}", pred, key))
+            .copied()
+    }
+
     /// Register a tuple layout for a foreign predicate.
     pub fn register_foreign_result_layout(&mut self, pred: &str, layout: &str) {
         self.foreign_result_layouts.insert(pred.to_string(), layout.to_string());
@@ -746,6 +762,44 @@ impl WamState {
     pub fn edge_parents(&self, cat_id: u32, edge_pred: &str) -> Vec<u32> {
         let acc = self.resolve_edge_accessor(edge_pred);
         self.edge_parents_via(cat_id, &acc)
+    }
+
+    /// Register interned binary facts directly into `ffi_facts` from
+    /// string pairs. This is the eager fact path the category/bidirectional
+    /// ancestor kernels read via `resolve_edge_accessor`; harnesses and
+    /// tests use it to load small graphs without an LMDB fixture.
+    pub fn register_ffi_fact_pairs(&mut self, pred: &str, pairs: &[(&str, &str)]) {
+        let mut table: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (left, right) in pairs {
+            let lid = self.intern_atom(left);
+            let rid = self.intern_atom(right);
+            table.entry(lid).or_insert_with(Vec::new).push(rid);
+        }
+        self.ffi_facts.insert(pred.to_string(), table);
+    }
+
+    /// Ensure a child-direction (reverse) eager index exists for
+    /// `edge_pred` under the `child_pred` key. No-op when a lazy lookup
+    /// or eager table is already registered for `child_pred`; otherwise
+    /// reverses the eager `edge_pred` table once. Used by the
+    /// bidirectional ancestor kernel so projects with only parent edges
+    /// registered still get a downward direction.
+    pub fn ensure_reverse_edge_index(&mut self, edge_pred: &str, child_pred: &str) {
+        let lazy_key = format!("{}/2", child_pred);
+        if self.lazy_lookups.contains_key(&lazy_key)
+            || self.ffi_facts.contains_key(child_pred)
+        {
+            return;
+        }
+        let mut rev: HashMap<u32, Vec<u32>> = HashMap::new();
+        if let Some(fwd) = self.ffi_facts.get(edge_pred) {
+            for (&child, parents) in fwd {
+                for &p in parents {
+                    rev.entry(p).or_insert_with(Vec::new).push(child);
+                }
+            }
+        }
+        self.ffi_facts.insert(child_pred.to_string(), rev);
     }
 
     /// True if a structure functor string is one of the interchangeable
