@@ -12,6 +12,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     histogram_distribution_error,
     parametric_shape_distribution,
     scaled_distribution_histogram,
+    support_binomial_mean,
 )
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
 
@@ -142,7 +143,7 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["parametric_mass_ratio"], 0.5)
 
     def test_support_binomial_shape_stays_inside_boundary_support(self):
-        probabilities, origin = parametric_shape_distribution(
+        probabilities, origin, params = parametric_shape_distribution(
             {"histogram_L_min": 2, "histogram_L_max": 5},
             {"prior_mean_excess": 1.5},
             "support-binomial",
@@ -151,8 +152,10 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(origin, 2)
         self.assertEqual(len(probabilities), 4)
         self.assertAlmostEqual(sum(probabilities), 1.0)
+        self.assertEqual(params["mean_model"], "prior-clipped")
+        self.assertAlmostEqual(params["mean_excess"], 1.5)
 
-        midpoint, midpoint_origin = parametric_shape_distribution(
+        midpoint, midpoint_origin, midpoint_params = parametric_shape_distribution(
             {"histogram_L_min": 2, "histogram_L_max": 5},
             {"prior_mean_excess": 99.0},
             "support-binomial-midpoint",
@@ -160,6 +163,12 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(midpoint_origin, 2)
         self.assertEqual(len(midpoint), 4)
         self.assertGreater(midpoint[1], 0.0)
+        self.assertEqual(midpoint_params["mean_model"], "midpoint")
+
+    def test_support_binomial_mean_blends_prior_and_midpoint(self):
+        self.assertEqual(support_binomial_mean(4, 99.0, "prior-clipped", 0.5), 4.0)
+        self.assertEqual(support_binomial_mean(4, 99.0, "midpoint", 0.5), 2.0)
+        self.assertEqual(support_binomial_mean(4, 4.0, "blend", 0.25), 2.5)
 
     def test_support_binomial_boundary_cache_records_support_interval(self):
         graph = DictGraph({"A": ["R"], "B": ["A", "R"]})
@@ -176,6 +185,8 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             max_histogram_bytes=24,
             parametric_bytes=8,
             parametric_shape_model="support-binomial",
+            parametric_mean_model="blend",
+            parametric_mean_blend=0.25,
             parametric_mass_model="oracle",
             max_parent_depth=4,
         )
@@ -183,6 +194,8 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(cache, {})
         self.assertTrue(rows[0]["parametric_cached"])
         self.assertEqual(rows[0]["parametric_shape_model"], "support-binomial")
+        self.assertEqual(rows[0]["parametric_mean_model"], "blend")
+        self.assertEqual(rows[0]["parametric_mean_blend"], 0.25)
         self.assertGreaterEqual(rows[0]["parametric_support_min"], rows[0]["histogram_L_min"])
         self.assertLessEqual(rows[0]["parametric_support_max"], rows[0]["histogram_L_max"])
         self.assertEqual(sum(parametric_cache["B"].values()), rows[0]["path_count"])
