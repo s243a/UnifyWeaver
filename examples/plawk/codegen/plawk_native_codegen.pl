@@ -7,7 +7,8 @@
 
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
-     llvm_emit_atom_field_eq_guard/7]).
+     llvm_emit_atom_field_eq_guard/7,
+     llvm_emit_atom_field_slice/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
 %
@@ -15,12 +16,13 @@
 %
 %      /^PREFIX/ { print $0 }
 %      $N == "VALUE" { print $0 }
+%      $N == "VALUE" { print $M, $K }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
 %  the deterministic guard, and prints matching records.
 plawk_program_native_driver_ir(
-    program([], [rule(Pattern, [print(field(0))])], []),
+    program([], [rule(Pattern, [print(Fields)])], []),
     InputPath,
     DriverIR
 ) :-
@@ -29,10 +31,14 @@ plawk_program_native_driver_ir(
     BytesLen is PathLen + 1,
     llvm_c_bytes(PathCodes, PathBytes),
     plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
+    plawk_print_action_ir(Fields, PrintActionIR),
     format(atom(DriverIR),
 '@.plawk_surface_path = private constant [~w x i8] c"~w\\00"
 @.plawk_surface_eof = private constant [12 x i8] c"end_of_file\\00"
 @.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
+@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
+@.plawk_surface_print_space = private constant [2 x i8] c" \\00"
+@.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 ~w
 
 define i32 @main() {
@@ -76,8 +82,7 @@ lowered_match:
   br i1 %is_match, label %print_line, label %continue_loop
 
 print_line:
-  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
-  %printed = call i32 (i8*, ...) @printf(i8* %fmt, i8* %line_s)
+~w
   br label %continue_loop
 
 continue_loop:
@@ -107,7 +112,7 @@ fail_close:
 ',
         [BytesLen, PathBytes,
          GuardGlobalIR,
-         BytesLen, BytesLen, PathLen, GuardCallIR]).
+         BytesLen, BytesLen, PathLen, GuardCallIR, PrintActionIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -125,3 +130,61 @@ plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
 plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         32, '%is_match', GuardIR).
+
+plawk_print_action_ir([field(0)], IR) :-
+    !,
+    IR = '  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
+  %printed = call i32 (i8*, ...) @printf(i8* %fmt, i8* %line_s)'.
+plawk_print_action_ir(Fields, IR) :-
+    phrase(plawk_print_fields_ir(Fields, 0), Parts),
+    atomic_list_concat(Parts, '\n', IR).
+
+plawk_print_fields_ir([], _) -->
+    ['  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+     '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'].
+plawk_print_fields_ir([Field | Rest], Index) -->
+    plawk_print_separator_ir(Index),
+    plawk_print_field_ir(Field, Index),
+    { NextIndex is Index + 1 },
+    plawk_print_fields_ir(Rest, NextIndex).
+
+plawk_print_separator_ir(0) -->
+    !,
+    [].
+plawk_print_separator_ir(Index) -->
+    { format(atom(SpacePtr),
+          '  %space_fmt_~w = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_space, i32 0, i32 0',
+          [Index]),
+      format(atom(SpaceCall),
+          '  %printed_space_~w = call i32 (i8*, ...) @printf(i8* %space_fmt_~w)',
+          [Index, Index])
+    },
+    [SpacePtr, SpaceCall].
+
+plawk_print_field_ir(field(0), Index) -->
+    { format(atom(LineLen64),
+          '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
+          [Index]),
+      format(atom(LineLen),
+          '  %line_len_~w = trunc i64 %line_len64_~w to i32',
+          [Index, Index]),
+      format(atom(FmtPtr),
+          '  %line_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_line_~w = call i32 (i8*, ...) @printf(i8* %line_fmt_~w, i32 %line_len_~w, i8* %line_s)',
+          [Index, Index, Index])
+    },
+    [LineLen64, LineLen, FmtPtr, PrintCall].
+plawk_print_field_ir(field(FieldIndex), Index) -->
+    { FieldIndex > 0,
+      format(atom(Base), 'plawk_field_~w', [Index]),
+      llvm_emit_atom_field_slice('%line', FieldIndex, 32, Base, SliceIR),
+      format(atom(FmtPtr),
+          '  %slice_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_slice_~w = call i32 (i8*, ...) @printf(i8* %slice_fmt_~w, i32 %~w_len, i8* %~w_ptr)',
+          [Index, Index, Base, Base])
+    },
+    [SliceIR, FmtPtr, PrintCall].

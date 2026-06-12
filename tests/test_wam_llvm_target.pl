@@ -195,6 +195,7 @@ test(full_runtime_generation) :-
     % Helpers
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_eq_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_slice_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')).
 
 test(atom_prefix_guard_emitter) :-
@@ -210,6 +211,12 @@ test(atom_field_eq_guard_emitter) :-
     assertion(sub_atom(CallIR, _, _, _, '%field_5Feq_5Fguard_5Ftest_ptr = getelementptr')),
     assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_field_eq_value(%Value %line, i64 1')),
     assertion(sub_atom(CallIR, _, _, _, 'i64 5, i8 32')).
+
+test(atom_field_slice_emitter) :-
+    llvm_emit_atom_field_slice('%line', 2, 32, plawk_f2, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_ptr = extractvalue %WamSlice %plawk_f2, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_len = trunc i64 %plawk_f2_len64 to i32')).
 
 % ============================================================================
 % Builtin op ID mapping
