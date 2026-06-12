@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.distribution_fit_comparison import (  # noqa: E402
+    binomial_pmf,
     exact_excess_distribution,
     effective_support_bins,
     gamma_midpoint_pmf,
@@ -40,13 +41,17 @@ from scripts.lmdb_parent_branching_diagnostic import (  # noqa: E402
     select_targets_by_child_depth,
     size_biased_branching,
 )
-from scripts.lmdb_parent_histogram_benchmark import percentile, safe_graph_name  # noqa: E402
+from scripts.lmdb_parent_histogram_benchmark import safe_graph_name  # noqa: E402
 from scripts.parent_histogram_recurrence import recurrence_parent_histogram  # noqa: E402
 
 
 def mean(values):
     values = list(values)
     return 0.0 if not values else statistics.fmean(values)
+
+
+def mean_present(values):
+    return mean(value for value in values if value is not None)
 
 
 def histogram_storage_bytes(hist):
@@ -59,6 +64,10 @@ def dense_distribution_bytes(probabilities):
 
 def pruned_histogram_bytes(probabilities, tail_epsilon):
     return effective_support_bins(probabilities, tail_epsilon) * 16
+
+
+def parametric_distribution_bytes():
+    return 64
 
 
 def gamma_parameters(mean_value, variance):
@@ -79,9 +88,15 @@ def planning_prior_for_bucket(parent_degrees, depth, tail_epsilon):
     base_mean, base_variance = distribution_moments(base)
     prior_mean, prior_variance = distribution_moments(prior)
     binomial_probability = 0.0 if depth <= 0 else max(0.0, min(1.0, prior_mean / depth))
+    binomial_prior = binomial_pmf(depth, binomial_probability)
+    gamma_prior, gamma_params = gamma_midpoint_pmf(prior_mean, prior_variance, len(prior))
+    gamma_params = dict(gamma_params)
+    gamma_params.update(gamma_parameters(prior_mean, prior_variance))
     return {
         "base_distribution": base,
         "prior_distribution": prior,
+        "binomial_distribution": binomial_prior,
+        "gamma_distribution": gamma_prior,
         "base_mean_excess": base_mean,
         "base_variance_excess": base_variance,
         "prior_mean_excess": prior_mean,
@@ -90,13 +105,45 @@ def planning_prior_for_bucket(parent_degrees, depth, tail_epsilon):
         "prior_effective_bins": effective_support_bins(prior, tail_epsilon),
         "prior_dense_bytes": dense_distribution_bytes(prior),
         "prior_pruned_histogram_bytes": pruned_histogram_bytes(prior, tail_epsilon),
+        "binomial_effective_bins": effective_support_bins(binomial_prior, tail_epsilon),
+        "binomial_pruned_histogram_bytes": pruned_histogram_bytes(binomial_prior, tail_epsilon),
+        "gamma_effective_bins": effective_support_bins(gamma_prior, tail_epsilon),
+        "gamma_pruned_histogram_bytes": pruned_histogram_bytes(gamma_prior, tail_epsilon),
+        "parametric_bytes": parametric_distribution_bytes(),
         "binomial_trials": depth,
         "binomial_probability": binomial_probability,
-        "gamma_parameters": gamma_parameters(prior_mean, prior_variance),
+        "gamma_parameters": gamma_params,
     }
 
 
-def compare_prior_to_hist(hist, prior, tail_epsilon):
+def planning_ratios(predicted_bytes, realized_bytes):
+    if realized_bytes <= 0:
+        return {
+            "ratio": None,
+            "underpredicts": False,
+            "overpredicts": False,
+        }
+    ratio = predicted_bytes / realized_bytes
+    return {
+        "ratio": ratio,
+        "underpredicts": ratio < 1.0,
+        "overpredicts": ratio > 1.0,
+    }
+
+
+def admission_decision(row, prior, comparison, safety_factor):
+    if not comparison.get("comparable"):
+        return "skip_no_recurrence"
+    if row.get("recurrence_capped") or row.get("recurrence_cycle_approximation"):
+        return "risky_try_capped_or_approx"
+    if comparison["safety_storage_prediction_ratio"] is not None and comparison["safety_storage_prediction_ratio"] <= 2.0:
+        return "exact_recurrence_likely_cheap"
+    if int(prior["prior_effective_bins"]) <= 32:
+        return "exact_recurrence_likely_cheap"
+    return "approximation_first"
+
+
+def compare_prior_to_hist(hist, prior, tail_epsilon, safety_factor=1.0):
     empirical, origin = exact_excess_distribution(hist)
     if not empirical or origin is None:
         return {
@@ -109,10 +156,19 @@ def compare_prior_to_hist(hist, prior, tail_epsilon):
             "max_cdf_error": None,
             "histogram_bytes": 0,
             "effective_histogram_bytes": 0,
-            "storage_prediction_ratio": None,
+            "empirical_storage_prediction_ratio": None,
+            "binomial_storage_prediction_ratio": None,
+            "gamma_storage_prediction_ratio": None,
+            "parametric_storage_prediction_ratio": None,
+            "safety_storage_prediction_ratio": None,
         }
-    predicted_bytes = int(prior["prior_pruned_histogram_bytes"])
     realized_bytes = histogram_storage_bytes(hist)
+    empirical_ratio = planning_ratios(int(prior["prior_pruned_histogram_bytes"]), realized_bytes)
+    safety_bytes = int(math.ceil(float(safety_factor) * int(prior["prior_pruned_histogram_bytes"])))
+    safety_ratio = planning_ratios(safety_bytes, realized_bytes)
+    binomial_ratio = planning_ratios(int(prior["binomial_pruned_histogram_bytes"]), realized_bytes)
+    gamma_ratio = planning_ratios(int(prior["gamma_pruned_histogram_bytes"]), realized_bytes)
+    parametric_ratio = planning_ratios(int(prior["parametric_bytes"]), realized_bytes)
     return {
         "comparable": True,
         "histogram_L_min": origin,
@@ -121,9 +177,27 @@ def compare_prior_to_hist(hist, prior, tail_epsilon):
         "effective_bins": effective_support_bins(empirical, tail_epsilon),
         "l1_error": l1_error(empirical, prior["prior_distribution"]),
         "max_cdf_error": max_cdf_error(empirical, prior["prior_distribution"]),
+        "binomial_l1_error": l1_error(empirical, prior["binomial_distribution"]),
+        "binomial_max_cdf_error": max_cdf_error(empirical, prior["binomial_distribution"]),
+        "gamma_l1_error": l1_error(empirical, prior["gamma_distribution"]),
+        "gamma_max_cdf_error": max_cdf_error(empirical, prior["gamma_distribution"]),
         "histogram_bytes": realized_bytes,
         "effective_histogram_bytes": pruned_histogram_bytes(empirical, tail_epsilon),
-        "storage_prediction_ratio": None if realized_bytes == 0 else predicted_bytes / realized_bytes,
+        "empirical_storage_prediction_ratio": empirical_ratio["ratio"],
+        "empirical_storage_underpredicts": empirical_ratio["underpredicts"],
+        "empirical_storage_overpredicts": empirical_ratio["overpredicts"],
+        "safety_factor": float(safety_factor),
+        "safety_prediction_bytes": safety_bytes,
+        "safety_storage_prediction_ratio": safety_ratio["ratio"],
+        "safety_storage_underpredicts": safety_ratio["underpredicts"],
+        "safety_storage_overpredicts": safety_ratio["overpredicts"],
+        "binomial_storage_prediction_ratio": binomial_ratio["ratio"],
+        "binomial_storage_underpredicts": binomial_ratio["underpredicts"],
+        "binomial_storage_overpredicts": binomial_ratio["overpredicts"],
+        "gamma_storage_prediction_ratio": gamma_ratio["ratio"],
+        "gamma_storage_underpredicts": gamma_ratio["underpredicts"],
+        "gamma_storage_overpredicts": gamma_ratio["overpredicts"],
+        "parametric_storage_prediction_ratio": parametric_ratio["ratio"],
     }
 
 
@@ -186,6 +260,7 @@ def build_records(args, target_rows, selection_counts):
         "targets": len(target_rows),
         "tail_epsilon": args.tail_epsilon,
         "max_prior_depth": args.max_prior_depth,
+        "safety_factor": args.safety_factor,
     }]
     buckets = {}
     for row in target_rows:
@@ -217,6 +292,11 @@ def build_records(args, target_rows, selection_counts):
             "prior_variance_excess": prior["prior_variance_excess"],
             "prior_dense_bytes": prior["prior_dense_bytes"],
             "prior_pruned_histogram_bytes": prior["prior_pruned_histogram_bytes"],
+            "binomial_effective_bins": prior["binomial_effective_bins"],
+            "binomial_pruned_histogram_bytes": prior["binomial_pruned_histogram_bytes"],
+            "gamma_effective_bins": prior["gamma_effective_bins"],
+            "gamma_pruned_histogram_bytes": prior["gamma_pruned_histogram_bytes"],
+            "parametric_bytes": prior["parametric_bytes"],
             "binomial_trials": prior["binomial_trials"],
             "binomial_probability": prior["binomial_probability"],
             "gamma_parameters": prior["gamma_parameters"],
@@ -232,7 +312,14 @@ def build_records(args, target_rows, selection_counts):
             "has_planning_prior": key in priors,
         }
         if key in priors and row["recurrence_histogram"]:
-            record.update(compare_prior_to_hist(row["recurrence_histogram"], priors[key], args.tail_epsilon))
+            comparison = compare_prior_to_hist(
+                row["recurrence_histogram"],
+                priors[key],
+                args.tail_epsilon,
+                args.safety_factor,
+            )
+            record.update(comparison)
+            record["admission_decision"] = admission_decision(row, priors[key], comparison, args.safety_factor)
         records.append(record)
     return records
 
@@ -262,34 +349,36 @@ def summarize(records):
         "",
         "## Prior Buckets",
         "",
-        "| L_max | targets | mean_root_p | b_root | mean_excess | prior_bins | prior_eff_bins | binom_p | gamma_shape | gamma_scale | prior_pruned_bytes |",
-        "|------:|--------:|------------:|-------:|------------:|-----------:|---------------:|--------:|------------:|------------:|-------------------:|",
+        "| L_max | targets | mean_root_p | b_root | mean_excess | empirical_eff_bins | binomial_eff_bins | gamma_eff_bins | binom_p | gamma_shape | empirical_bytes | binomial_bytes | gamma_bytes |",
+        "|------:|--------:|------------:|-------:|------------:|-------------------:|------------------:|---------------:|--------:|------------:|----------------:|---------------:|------------:|",
     ])
     for row in sorted(bucket_rows, key=lambda item: item["L_max_bucket"]):
         parent = row["root_reaching_parent_degree"]
         gamma = row["gamma_parameters"]
         lines.append(
-            "| {bucket} | {targets} | {mean_p:.3f} | {branching:.6f} | {excess:.6f} | {prior_bins} | {prior_eff} | {binom_p:.6f} | {gamma_shape} | {gamma_scale} | {bytes} |".format(
+            "| {bucket} | {targets} | {mean_p:.3f} | {branching:.6f} | {excess:.6f} | {emp_eff} | {binom_eff} | {gamma_eff} | {binom_p:.6f} | {gamma_shape} | {emp_bytes} | {binom_bytes} | {gamma_bytes} |".format(
                 bucket=row["L_max_bucket"],
                 targets=row["targets"],
                 mean_p=parent["mean_parent_degree"],
                 branching=0.0 if parent["size_biased_parent_branching"] is None else parent["size_biased_parent_branching"],
                 excess=0.0 if parent["mean_excess"] is None else parent["mean_excess"],
-                prior_bins=row["prior_support_bins"],
-                prior_eff=row["prior_effective_bins"],
+                emp_eff=row["prior_effective_bins"],
+                binom_eff=row["binomial_effective_bins"],
+                gamma_eff=row["gamma_effective_bins"],
                 binom_p=row["binomial_probability"],
                 gamma_shape="n/a" if gamma["shape"] is None else "{:.6f}".format(gamma["shape"]),
-                gamma_scale="n/a" if gamma["scale"] is None else "{:.6f}".format(gamma["scale"]),
-                bytes=row["prior_pruned_histogram_bytes"],
+                emp_bytes=row["prior_pruned_histogram_bytes"],
+                binom_bytes=row["binomial_pruned_histogram_bytes"],
+                gamma_bytes=row["gamma_pruned_histogram_bytes"],
             )
         )
 
     lines.extend([
         "",
-        "## Prior vs Recurrence Histograms",
+        "## Planning Calibration",
         "",
-        "| L_max | rows | mean_l1 | p95_l1 | mean_cdf | mean_realized_bins | mean_pred_eff_bins | mean_storage_ratio | capped | cycle_approx |",
-        "|------:|-----:|--------:|-------:|---------:|-------------------:|-------------------:|-------------------:|-------:|-------------:|",
+        "| L_max | rows | mean_realized_bins | empirical_eff_bins | mean_emp_ratio | mean_safety_ratio | safety_under | mean_binom_ratio | binom_under | mean_gamma_ratio | gamma_under | capped | cycle_approx |",
+        "|------:|-----:|-------------------:|-------------------:|---------------:|------------------:|-------------:|-----------------:|------------:|-----------------:|------------:|-------:|-------------:|",
     ])
     by_bucket = {}
     for row in comparable:
@@ -298,19 +387,55 @@ def summarize(records):
         rows = by_bucket[key]
         prior = next(bucket for bucket in bucket_rows if bucket["L_max_bucket"] == key)
         lines.append(
-            "| {bucket} | {rows} | {l1:.6f} | {p95_l1:.6f} | {cdf:.6f} | {bins:.3f} | {pred_bins:.3f} | {ratio:.3f} | {capped} | {cycle} |".format(
+            "| {bucket} | {rows} | {bins:.3f} | {pred_bins:.3f} | {emp_ratio:.3f} | {safety_ratio:.3f} | {safety_under} | {binom_ratio:.3f} | {binom_under} | {gamma_ratio:.3f} | {gamma_under} | {capped} | {cycle} |".format(
                 bucket=key,
                 rows=len(rows),
-                l1=mean(row["l1_error"] for row in rows),
-                p95_l1=percentile([row["l1_error"] for row in rows], 95),
-                cdf=mean(row["max_cdf_error"] for row in rows),
                 bins=mean(row["support_bins"] for row in rows),
                 pred_bins=float(prior["prior_effective_bins"]),
-                ratio=mean(row["storage_prediction_ratio"] for row in rows if row["storage_prediction_ratio"] is not None),
+                emp_ratio=mean_present(row["empirical_storage_prediction_ratio"] for row in rows),
+                safety_ratio=mean_present(row["safety_storage_prediction_ratio"] for row in rows),
+                safety_under=sum(1 for row in rows if row["safety_storage_underpredicts"]),
+                binom_ratio=mean_present(row["binomial_storage_prediction_ratio"] for row in rows),
+                binom_under=sum(1 for row in rows if row["binomial_storage_underpredicts"]),
+                gamma_ratio=mean_present(row["gamma_storage_prediction_ratio"] for row in rows),
+                gamma_under=sum(1 for row in rows if row["gamma_storage_underpredicts"]),
                 capped=sum(1 for row in rows if row["recurrence_capped"]),
                 cycle=sum(1 for row in rows if row["recurrence_cycle_approximation"]),
             )
         )
+
+    lines.extend([
+        "",
+        "## Shape Diagnostics",
+        "",
+        "| L_max | rows | empirical_l1 | empirical_cdf | binomial_l1 | gamma_l1 |",
+        "|------:|-----:|-------------:|--------------:|------------:|---------:|",
+    ])
+    for key in sorted(by_bucket):
+        rows = by_bucket[key]
+        lines.append(
+            "| {bucket} | {rows} | {emp_l1:.6f} | {emp_cdf:.6f} | {binom_l1:.6f} | {gamma_l1:.6f} |".format(
+                bucket=key,
+                rows=len(rows),
+                emp_l1=mean(row["l1_error"] for row in rows),
+                emp_cdf=mean(row["max_cdf_error"] for row in rows),
+                binom_l1=mean(row["binomial_l1_error"] for row in rows),
+                gamma_l1=mean(row["gamma_l1_error"] for row in rows),
+            )
+        )
+
+    lines.extend([
+        "",
+        "## Admission Decisions",
+        "",
+        "| decision | rows |",
+        "|----------|-----:|",
+    ])
+    decision_counts = {}
+    for row in comparable:
+        decision_counts[row.get("admission_decision", "unknown")] = decision_counts.get(row.get("admission_decision", "unknown"), 0) + 1
+    for decision in sorted(decision_counts):
+        lines.append("| {} | {} |".format(decision, decision_counts[decision]))
 
     skipped = [row for row in target_rows if not row.get("comparable")]
     lines.extend([
@@ -371,6 +496,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-parent-depth", type=int, default=24)
     parser.add_argument("--max-prior-depth", type=int, default=8)
     parser.add_argument("--tail-epsilon", type=float, default=0.001)
+    parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for empirical prior bytes in admission planning.")
     parser.add_argument("--path-cap", type=int, default=10000)
     parser.add_argument("--expansion-cap", type=int, default=50000)
     parser.add_argument("--write-jsonl", action="store_true")
