@@ -5,8 +5,20 @@
 
 import unittest
 
-from scripts.lmdb_parent_boundary_cache_benchmark import cached_parent_histogram, histogram_distribution_error
+from scripts.lmdb_parent_boundary_cache_benchmark import (
+    build_boundary_cache,
+    cached_parent_histogram,
+    histogram_distribution_error,
+)
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
+
+
+class DictGraph:
+    def __init__(self, parents):
+        self._parents = parents
+
+    def parents(self, node):
+        return self._parents.get(node, [])
 
 
 class BoundaryCacheBenchmarkTests(unittest.TestCase):
@@ -44,6 +56,57 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         l1, cdf = histogram_distribution_error(full, cached)
         self.assertGreater(l1, 0.0)
         self.assertGreater(cdf, 0.0)
+
+    def test_baseline_boundary_cache_materializes_uncapped_histogram(self):
+        graph = DictGraph({"A": ["R"]})
+
+        cache, rows = build_boundary_cache(graph, "R", ["A"], 1, None, None)
+
+        self.assertEqual(cache, {"A": {1: 1}})
+        self.assertEqual(rows[0]["cache_admission_action"], "materialize_exact")
+        self.assertEqual(rows[0]["cache_admission_reason"], "baseline_uncapped_histogram")
+
+    def test_depth_prior_boundary_policy_materializes_within_budget(self):
+        graph = DictGraph({"A": ["R"]})
+
+        cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["A"],
+            1,
+            None,
+            None,
+            admission_policy="depth-prior",
+            safety_factor=1.25,
+            max_histogram_bytes=1024,
+            parametric_bytes=64,
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(cache, {"A": {1: 1}})
+        self.assertEqual(rows[0]["cache_admission_action"], "materialize_exact")
+        self.assertEqual(rows[0]["predicted_prior_bytes"], 16)
+
+    def test_depth_prior_boundary_policy_records_parametric_without_cache_hit(self):
+        graph = DictGraph({"A": ["R"]})
+
+        cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["A"],
+            1,
+            None,
+            None,
+            admission_policy="depth-prior",
+            safety_factor=2.0,
+            max_histogram_bytes=24,
+            parametric_bytes=8,
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
+        self.assertFalse(rows[0]["cached"])
 
 
 if __name__ == "__main__":
