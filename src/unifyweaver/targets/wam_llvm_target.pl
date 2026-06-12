@@ -15836,13 +15836,20 @@ target_struct_tm_gmtoff_offset(_, 40).
 
 % --- Value packing helpers ---
 
-llvm_pack_value(atom(A), Packed) :- !,
+llvm_pack_value(atom(A0), Packed) :- !,
+    llvm_normalize_atom_token(A0, A),
     intern_atom(A, Packed).
 llvm_pack_value(integer(I), I) :- !.
 llvm_pack_value(N, N) :- integer(N), !.
 llvm_pack_value(N, Packed) :- float(N), !, Packed is truncate(N).
-llvm_pack_value(A, Packed) :- atom(A), !, intern_atom(A, Packed).
+llvm_pack_value(A0, Packed) :- atom(A0), !,
+    llvm_normalize_atom_token(A0, A),
+    intern_atom(A, Packed).
 llvm_pack_value(_, 0).
+llvm_normalize_atom_token(A0, A) :-
+    atom_string(A0, S0),
+    strip_quoted_atom(S0, S),
+    atom_string(A, S).
 
 % --- Builtin op name → integer ID mapping ---
 
@@ -16308,6 +16315,10 @@ qa_quoted([Q|Cs], AccIn, AccOut, RestOut) :-
     Q = 0'',
     qa_quoted_body(Cs, [Q|AccIn], AccOut, RestOut).
 
+qa_quoted_body([92, 39 | Cs], Acc, AccOut, RestOut) :- !,
+    qa_quoted_body(Cs, [39, 92 | Acc], AccOut, RestOut).
+qa_quoted_body([92, 92 | Cs], Acc, AccOut, RestOut) :- !,
+    qa_quoted_body(Cs, [92, 92 | Acc], AccOut, RestOut).
 qa_quoted_body([], Acc, Acc, []).
 qa_quoted_body([0'', 0''|Cs], Acc, AccOut, RestOut) :- !,
     % Escaped apostrophe: keep both in the accumulator.
@@ -16781,9 +16792,8 @@ llvm_pack_value_str(Str, Packed) :-
 
 %% strip_quoted_atom(+S, -Inner)
 %
-%  If S is a single-quoted atom representation `'...'`, return the
-%  inner string with `''` un-escaped to `'`. Otherwise return S
-%  unchanged.
+%  If S is a single-quoted atom representation, return the inner string
+%  with WAM quote escapes un-escaped. Otherwise return S unchanged.
 strip_quoted_atom(Str, Inner) :-
     string_length(Str, L),
     ( L >= 2,
@@ -16791,20 +16801,22 @@ strip_quoted_atom(Str, Inner) :-
       sub_string(Str, _, 1, 0, "'")
     -> InnerLen is L - 2,
        sub_string(Str, 1, InnerLen, 1, Body),
-       % Un-escape `''` (Prolog''s quoted-atom escape for `'`).
-       % Most format strings don''t contain `'`, so this is a no-op
-       % in the common path.
+       % WAM quoting uses backslash escapes; accept doubled apostrophes
+       % as a legacy tokenizer convention too.
        string_codes(Body, BodyCodes),
-       unescape_quotes(BodyCodes, UnescCodes),
+       unescape_wam_quoted_codes(BodyCodes, UnescCodes),
        string_codes(Inner, UnescCodes)
     ;  Inner = Str
     ).
-
-unescape_quotes([], []).
-unescape_quotes([0'', 0''|Cs], [0''|Rest]) :- !,
-    unescape_quotes(Cs, Rest).
-unescape_quotes([C|Cs], [C|Rest]) :-
-    unescape_quotes(Cs, Rest).
+unescape_wam_quoted_codes([], []).
+unescape_wam_quoted_codes([92, 92 | Cs], [92 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([92, 39 | Cs], [39 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([39, 39 | Cs], [39 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([C | Cs], [C | Rest]) :-
+    unescape_wam_quoted_codes(Cs, Rest).
 
 % NOTE: we don't take a %WamState param — the function creates its own vm
 % via wam_state_new() in the entry block. Taking %vm as a param conflicted
