@@ -39,7 +39,11 @@ see side findings.)
 | F# | clean (cycle-check-guarded bind-through) | clean | see theoretical divergence below |
 | Rust | fixed in P4/P5 (origin of the sweep) | fixed in P5 | — |
 | ILasm | BLOCKED | BLOCKED | newly pinned structural defect: cross-predicate `call` self-loops (below) |
-| Python, Lua, R, Clojure, Elixir | **PENDING** | **PENDING** | probe agents hit the session quota; re-run the sweep prompt for these five |
+| Python | clean (A-reg guard already present, both interpreter loops) | clean | — |
+| Lua | **BUGGY** (worst variant: no guard AND no deref — clobbered already-BOUND variables too) → fixed | clean | guard `top.target >= 101` + deref in `push_built_term` (`runtime.lua.mustache`); controls verified flipped; gates: lua generator suite (37/37) + lowered ite/t4/t5 |
+| R | clean (F#-style cycle-check guard) | clean | inherits the F# theoretical divergence (side finding 4) |
+| Clojure | clean (`a-slot?` register-class guard already present) | clean | side defect found in the opportunistic-lowering path (side finding 7) |
+| Elixir | BLOCKED (interpreter mode) / clean (lowered mode) | BLOCKED / clean | interpreter mode structurally cannot cross-call (side finding 5) |
 
 Verification: every fixed target re-probed through the same harness
 (the bug-shape probe flips to the ISO answer; all controls — including
@@ -90,4 +94,32 @@ register class.
    A NON-cyclic variant — building a goal structure that does not
    contain X into an A register whose occupant is the live head var X
    — would still alias X to that structure. Not exercised by these
-   probes; worth one targeted probe in the F# stream.
+   probes; worth one targeted probe in the F# stream. **R shares this
+   exact shape** (`wam_term_contains_var` cycle check in
+   `runtime.R.mustache:426-443`).
+5. **Elixir interpreter mode structurally cannot cross-call**: each
+   predicate module embeds only its own code/labels, and the
+   call/execute fallbacks resolve against the module-local map and
+   fail on miss (`wam_elixir_target.pl:296/:322`). Any clause calling
+   another predicate wrong-fails; only lowered mode (WamDispatcher) is
+   multi-predicate-capable. ILasm-family finding (clean fail rather
+   than self-loop).
+6. **Lua Y registers are not environment-local**: `get_reg`/`put_reg`
+   index a single flat `state.regs` while `Allocate` pushes a `locals`
+   table nothing uses — a callee's Y1 clobbers the caller's Y1. This
+   keeps Lua's cross-call probes (p_bind/p_bind2) failing even after
+   the class-1 fix; the fix's verification rests on the single-call
+   controls (p_bindctl2 flipped false→true). Kotlin-finding-#2 family;
+   needs its own campaign.
+7. **Clojure: numeric literals interned as atoms in the
+   opportunistically-lowered path** — default mode silently lowers
+   eligible (incl. all zero-arity) predicates, and the lowered
+   `put-constant` routes literals through `normalize-literal-atom`,
+   which interns numerals as atoms; a subsequent `R is 1` compares
+   atom-"1" to integer 1 and wrong-fails. The interpreter path is
+   correct. (`wam_clojure_target.pl:208-210`,
+   `wam_clojure_lowered_emitter.pl:1284`,
+   `runtime.clj.mustache:52-54`.)
+8. **Elixir lowered mode: `==/2` fails closed** — same class-7 gap
+   fixed for C and Haskell in this sweep; Rust-P3-style builtin parity
+   sweep applies.

@@ -4235,6 +4235,15 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         return wam_unify(state, &state->A[0], &state->A[1]);
     }
 
+    /* Strict (in)equality: previously missing from the table entirely,
+       so the shared compiler emitted builtin_call ==/2 and it failed
+       closed (even X = a, X == a was false) -- the class-7 gap found
+       by the bind-through probe sweep. */
+    if ((strcmp(op, "==/2") == 0 || strcmp(op, "\\\\==/2") == 0) && arity == 2) {
+        bool eq = wam_term_strict_equal(state, &state->A[0], &state->A[1]);
+        return (strcmp(op, "==/2") == 0) ? eq : !eq;
+    }
+
     if (arity == 1) {
         WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
         if (strcmp(op, "atom/1") == 0) return a1->tag == VAL_ATOM;
