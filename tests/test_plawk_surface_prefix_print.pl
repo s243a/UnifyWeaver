@@ -106,6 +106,12 @@ test(surface_assoc_counts_resize_runtime_table) :-
     run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"K0\"], counts[\"K2050\"], counts[\"MISSING\"] }\n",
         Input, "2 1 0\n").
 
+test(surface_assoc_counts_long_record_first_field) :-
+    plawk_long_payload_string(70000, Payload),
+    format(string(Input), 'KEY ~w~n', [Payload]),
+    run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"KEY\"] }\n",
+        Input, "1\n").
+
 test(surface_assoc_counts_use_runtime_table) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
@@ -153,5 +159,10 @@ run_surface_print_smoke(Source, Input, ExpectedOutput) :-
        throw(plawk_surface_prefix_print_failed(Status))
     ),
     !.
+
+plawk_long_payload_string(Length, String) :-
+    length(Codes, Length),
+    maplist(=(0'a), Codes),
+    string_codes(String, Codes).
 
 :- end_tests(plawk_surface_prefix_print).

@@ -62,7 +62,47 @@ test(stream_open_read_line_close_executes) :-
     ),
     !.
 
+test(stream_read_line_value_grows_output_buffer) :-
+    tmp_root(Root),
+    directory_file_path(Root, 'uw_wam_llvm_stream_runtime_long_line', Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    directory_file_path(Dir, 'input.txt', InputPath),
+    long_line_string(70000, LongLine),
+    setup_call_cleanup(
+        open(InputPath, write, In, [type(binary)]),
+        format(In, '~s\n', [LongLine]),
+        close(In)),
+    directory_file_path(Dir, 'stream_long_line.ll', LLPath),
+    write_wam_llvm_project(
+        [user:llvm_stream_reader_probe/4],
+        [module_name('stream_long_line')], LLPath),
+    stream_long_line_driver_ir(InputPath, 70000, DriverIR),
+    setup_call_cleanup(
+        open(LLPath, append, Out, [encoding(utf8)]),
+        ( nl(Out), write(Out, DriverIR) ),
+        close(Out)),
+    directory_file_path(Dir, 'stream_long_line_bin', BinPath),
+    format(atom(Cmd), 'clang -w ~w -o ~w -lm 2>&1 && ~w',
+        [LLPath, BinPath, BinPath]),
+    process_create(path(sh), ['-c', Cmd],
+                   [stdout(pipe(Stdout)), stderr(std), process(Pid)]),
+    read_string(Stdout, _, OutStr),
+    close(Stdout),
+    process_wait(Pid, Status),
+    ( Status == exit(0)
+    -> true
+    ;  format(user_error, "~n[llvm stream long-line output]~n~w~n", [OutStr]),
+       throw(llvm_stream_long_line_failed(Status))
+    ),
+    !.
+
 :- end_tests(wam_llvm_stream_runtime).
+
+long_line_string(Length, String) :-
+    length(Codes, Length),
+    maplist(=(0'a), Codes),
+    string_codes(String, Codes).
 
 stream_driver_ir(InputPath, DriverIR) :-
     atom_codes(InputPath, PathCodes),
@@ -167,6 +207,76 @@ fail_eof:
 ',
         [BytesLen, PathBytes,
          BytesLen, BytesLen, PathLen]).
+
+stream_long_line_driver_ir(InputPath, ExpectedLen, DriverIR) :-
+    atom_codes(InputPath, PathCodes),
+    length(PathCodes, PathLen),
+    BytesLen is PathLen + 1,
+    llvm_c_bytes(PathCodes, PathBytes),
+    format(atom(DriverIR),
+'@.stream_long_line_path = private constant [~w x i8] c"~w\\00"
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.stream_long_line_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %read_line, label %fail_open
+
+read_line:
+  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line_tag = extractvalue %Value %line, 0
+  %line_is_atom = icmp eq i32 %line_tag, 0
+  br i1 %line_is_atom, label %check_length, label %fail_line_tag
+
+check_length:
+  %line_payload = extractvalue %Value %line, 1
+  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %fail_line_null, label %strlen_line
+
+strlen_line:
+  %line_len = call i64 @strlen(i8* %line_s)
+  %len_ok = icmp eq i64 %line_len, ~w
+  br i1 %len_ok, label %close_stream, label %fail_length
+
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %success, label %fail_close
+
+success:
+  ret i32 0
+
+fail_open:
+  ret i32 10
+
+fail_line_tag:
+  %close_ignore_line_tag = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_line_null:
+  %close_ignore_line_null = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 12
+
+fail_length:
+  %close_ignore_length = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 13
+
+fail_close:
+  ret i32 14
+}
+',
+        [BytesLen, PathBytes,
+         BytesLen, BytesLen, PathLen, ExpectedLen]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
