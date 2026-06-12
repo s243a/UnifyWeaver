@@ -118,6 +118,23 @@ state(InputStreams, OutputStreams, Counter, UserFields)
 The Phase 0 examples use the counter as `NR`, collect printed lines in
 `OutputStreams`, and store `FS`/`OFS` in `UserFields` as `plawk_options(FS, OFS)`.
 
+## Current surface example: count matching records
+
+The native Phase 2 surface can now compile a scalar counter and an `END` action:
+
+```awk
+$1 == "ERROR" { count++ } END { print count }
+```
+
+For the sample input above, it prints:
+
+```text
+2
+```
+
+This path lowers the field comparison and the counter to native LLVM code. The
+WAM runtime still supplies the streaming reader and atom helpers.
+
 ## Another example: count and print matching lines
 
 The demo in `examples/plawk/demo/count_errors.pl` is equivalent to:

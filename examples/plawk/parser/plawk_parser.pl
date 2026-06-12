@@ -12,6 +12,7 @@
 %      /^PREFIX/ { print $0 }
 %      $N == "VALUE" { print $0 }
 %      $N == "VALUE" { print $M, $K }
+%      $N == "VALUE" { count++ } END { print count }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -20,16 +21,17 @@ plawk_parse_string(Source, Program) :-
     string_codes(Source, Codes),
     phrase(plawk_program(Program), Codes).
 
-plawk_program(program([], [rule(Pattern, [PrintAction])], [])) -->
+plawk_program(program([], [rule(Pattern, [Action])], EndClauses)) -->
     ws,
     pattern(Pattern),
     ws,
     "{",
     ws,
-    print_action(PrintAction),
+    action(Action),
     ws,
     "}",
     ws,
+    end_clauses(EndClauses),
     eos.
 
 pattern(Pattern) -->
@@ -105,6 +107,29 @@ quoted_string_codes([Code | Codes]) -->
 quoted_string_codes([]) -->
     [].
 
+end_clauses([end([PrintAction])]) -->
+    "END",
+    ws,
+    "{",
+    ws,
+    print_action(PrintAction),
+    ws,
+    "}",
+    ws,
+    !.
+end_clauses([]) -->
+    [].
+
+action(Action) -->
+    print_action(Action),
+    !.
+action(Action) -->
+    increment_action(Action).
+
+increment_action(inc(var(Name))) -->
+    identifier(Name),
+    "++".
+
 print_action(print(Fields)) -->
     "print",
     required_ws,
@@ -131,6 +156,25 @@ field_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+field_expr(var(Name)) -->
+    identifier(Name).
+
+identifier(Name) -->
+    identifier_start(Start),
+    identifier_rest(Rest),
+    { atom_codes(Name, [Start | Rest]) }.
+
+identifier_start(Code) -->
+    [Code],
+    { code_type(Code, alpha) -> true ; Code =:= 0'_ }.
+
+identifier_rest([Code | Codes]) -->
+    [Code],
+    { code_type(Code, alnum) -> true ; Code =:= 0'_ },
+    !,
+    identifier_rest(Codes).
+identifier_rest([]) -->
+    [].
 
 required_ws -->
     [Code],
