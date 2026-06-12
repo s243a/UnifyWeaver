@@ -5227,9 +5227,21 @@ addToBuilder val s = case wsBuilder s of
                 -- must ALSO bind the var ai currently holds, or the outer
                 -- term keeps an unbound tail -- the multi-element list bug
                 -- that made reverse/append wrong on lists of length >= 2.
-                sBound = case IM.lookup ai (wsRegs s) of
-                  Just (Unbound vid) -> bindUnbound vid term s
-                  _ -> s
+                --
+                -- A-REGISTER EXCEPTION (M139/M140 bind-through class):
+                -- A registers (ai < 100; X = 101+, Y = 201+) are argument
+                -- STAGING -- their old occupant is an unrelated variable
+                -- (often a clause-head argument), and binding it to the
+                -- freshly built term creates a cyclic term (X = f(X)),
+                -- wrong-failing a later X = 1. The set_variable
+                -- placeholders only ever live in X/Y registers, so the
+                -- bind-through is conditioned on the register class --
+                -- the same fix the Rust, Go, Scala and Kotlin targets carry.
+                sBound = if ai >= 100
+                  then case IM.lookup ai (wsRegs s) of
+                    Just (Unbound vid) -> bindUnbound vid term s
+                    _ -> s
+                  else s
             in Just (sBound { wsPC = wsPC s + 1
                             , wsRegs = IM.insert ai term (wsRegs sBound)
                             , wsBuilder = NoBuilder
@@ -5253,10 +5265,13 @@ addToBuilder val s = case wsBuilder s of
                   _           -> Str atomDot [hd, tl]
                 -- Same placeholder-var binding as BuildStruct: a list built
                 -- into a register that holds a set_variable placeholder must
-                -- bind that var so an enclosing term sees the list.
-                sBound = case IM.lookup ai (wsRegs s) of
-                  Just (Unbound vid) -> bindUnbound vid list s
-                  _ -> s
+                -- bind that var so an enclosing term sees the list. Same
+                -- A-register exception as BuildStruct (M139/M140 class).
+                sBound = if ai >= 100
+                  then case IM.lookup ai (wsRegs s) of
+                    Just (Unbound vid) -> bindUnbound vid list s
+                    _ -> s
+                  else s
             in Just (sBound { wsPC = wsPC s + 1
                        , wsRegs = IM.insert ai list (wsRegs sBound)
                        , wsBuilder = NoBuilder

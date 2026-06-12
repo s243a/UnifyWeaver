@@ -3780,6 +3780,124 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                 }
             }
+            "atomic_list_concat/2" => {
+                let items = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut text = String::new();
+                for item in &items {
+                    match Self::value_atomic_text(&self.deref_var(item)) {
+                        Some(t) => text.push_str(&t),
+                        None => return false,
+                    }
+                }
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::Atom(text)) { self.pc += 1; true } else { false }
+            }
+            "atomic_list_concat/3" => {
+                // Join mode (+List, +Sep, ?Atom) or split mode
+                // (?List, +Sep nonempty, +Atom).
+                let sep = match self.get_reg_raw("A2").map(|v| self.deref_var(&v))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))).unwrap_or(Value::Uninit);
+                match v1 {
+                    Value::List(items) => {
+                        let mut parts: Vec<String> = Vec::with_capacity(items.len());
+                        for item in &items {
+                            match Self::value_atomic_text(&self.deref_var(item)) {
+                                Some(t) => parts.push(t),
+                                None => return false,
+                            }
+                        }
+                        let joined = Value::Atom(parts.join(&sep));
+                        let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                        if self.unify(&a3, &joined) { self.pc += 1; true } else { false }
+                    }
+                    Value::Unbound(_) => {
+                        if sep.is_empty() { return false; }
+                        let whole = match self.get_reg_raw("A3").map(|v| self.deref_var(&v))
+                            .as_ref().and_then(Self::value_atomic_text) {
+                            Some(t) => t,
+                            None => return false,
+                        };
+                        let parts: Vec<Value> = whole.split(&sep as &str)
+                            .map(|p| Value::Atom(p.to_string()))
+                            .collect();
+                        let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                        if self.unify(&a1, &Value::List(parts)) { self.pc += 1; true } else { false }
+                    }
+                    _ => false,
+                }
+            }
+            "char_type/2" => {
+                // +Char mode only; the common type terms. Parameterized
+                // forms unify their argument (digit weight, case pairs).
+                let ch = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(s)) if s.chars().count() == 1 => s.chars().next().unwrap(),
+                    _ => return false,
+                };
+                let ty = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))).unwrap_or(Value::Uninit);
+                match &ty {
+                    Value::Atom(t) => {
+                        let ok = match t.as_str() {
+                            "alpha" => ch.is_alphabetic(),
+                            "alnum" => ch.is_alphanumeric(),
+                            "csym" => ch.is_alphanumeric() || ch == ''_'',
+                            "csymf" => ch.is_alphabetic() || ch == ''_'',
+                            "space" | "white" => ch.is_whitespace(),
+                            "punct" => ch.is_ascii_punctuation(),
+                            "graph" => !ch.is_whitespace() && !ch.is_control(),
+                            "ascii" => ch.is_ascii(),
+                            "upper" => ch.is_uppercase(),
+                            "lower" => ch.is_lowercase(),
+                            "end_of_line" => (ch as u32) == 10 || (ch as u32) == 13,
+                            "newline" => (ch as u32) == 10,
+                            _ => return false,
+                        };
+                        if ok { self.pc += 1; true } else { false }
+                    }
+                    Value::Str(f, args) if args.len() == 1 => {
+                        let name = Self::display_functor_name(f, 1);
+                        let arg = args[0].clone();
+                        match name.as_str() {
+                            "digit" => {
+                                match ch.to_digit(10) {
+                                    Some(w) => {
+                                        if self.unify(&arg, &Value::Integer(w as i64)) {
+                                            self.pc += 1; true
+                                        } else { false }
+                                    }
+                                    None => false,
+                                }
+                            }
+                            "to_lower" => {
+                                let lo = ch.to_lowercase().next().unwrap_or(ch);
+                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                            }
+                            "to_upper" => {
+                                let up = ch.to_uppercase().next().unwrap_or(ch);
+                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                            }
+                            "upper" => {
+                                if !ch.is_uppercase() { return false; }
+                                let lo = ch.to_lowercase().next().unwrap_or(ch);
+                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                            }
+                            "lower" => {
+                                if !ch.is_lowercase() { return false; }
+                                let up = ch.to_uppercase().next().unwrap_or(ch);
+                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
+                }
+            }
             "ground/1" => {
                 let v = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 if self.value_is_ground(&v) { self.pc += 1; true } else { false }
@@ -3958,8 +4076,188 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     }
                 }
             }
+            "maplist/2" | "maplist/3" | "maplist/4" | "maplist/5" => {
+                // maplist(Goal, L1, ..., Lk): call Goal extended with the
+                // i-th element of every list, for every i. Unbound list
+                // arguments are unified with fresh-variable lists of the
+                // length determined by the first bound list. Each element
+                // call commits to its first solution.
+                let nlists = _arity - 1;
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let raw_lists: Vec<Value> = (0..nlists)
+                    .map(|j| self.get_reg_raw(&format!("A{}", j + 2)).unwrap_or(Value::Uninit))
+                    .collect();
+                let mut elems: Vec<Option<Vec<Value>>> = Vec::with_capacity(nlists);
+                let mut n: Option<usize> = None;
+                for raw in &raw_lists {
+                    match self.deref_heap(&self.deref_var(raw)) {
+                        Value::List(items) => {
+                            match n {
+                                Some(len) if len != items.len() => return false,
+                                _ => n = Some(items.len()),
+                            }
+                            elems.push(Some(items));
+                        }
+                        Value::Unbound(_) => elems.push(None),
+                        _ => return false,
+                    }
+                }
+                let n = match n {
+                    Some(n) => n,
+                    None => return false, // all lists unbound: unbounded
+                };
+                for j in 0..nlists {
+                    if elems[j].is_none() {
+                        let fresh: Vec<Value> = (0..n).map(|_| self.fresh_meta_var()).collect();
+                        if !self.unify(&raw_lists[j], &Value::List(fresh.clone())) {
+                            return false;
+                        }
+                        elems[j] = Some(fresh);
+                    }
+                }
+                for i in 0..n {
+                    let extra: Vec<Value> = (0..nlists)
+                        .map(|j| self.deref_var(&elems[j].as_ref().unwrap()[i]))
+                        .collect();
+                    let g = match self.extend_goal(&goal, &extra) {
+                        Some(g) => g,
+                        None => return false,
+                    };
+                    if !self.call_goal_once(&g) { return false; }
+                }
+                self.pc += 1; true
+            }
+            "include/3" | "exclude/3" => {
+                // Filter: keep elements for which the test call succeeds
+                // (include) or fails (exclude). Test-call bindings are
+                // trial-only and unwound after each element.
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let keep_on = op == "include/3";
+                let mut kept: Vec<Value> = Vec::new();
+                for item in &items {
+                    let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
+                        Some(g) => g,
+                        None => return false,
+                    };
+                    let mark = self.trail.len();
+                    let ok = self.call_goal_once(&g);
+                    self.unwind_trail_to(mark);
+                    if !ok && self.thrown_ball.is_some() { return false; }
+                    if ok == keep_on { kept.push(item.clone()); }
+                }
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
+            "partition/4" => {
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut incl: Vec<Value> = Vec::new();
+                let mut excl: Vec<Value> = Vec::new();
+                for item in &items {
+                    let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
+                        Some(g) => g,
+                        None => return false,
+                    };
+                    let mark = self.trail.len();
+                    let ok = self.call_goal_once(&g);
+                    self.unwind_trail_to(mark);
+                    if !ok && self.thrown_ball.is_some() { return false; }
+                    if ok { incl.push(item.clone()); } else { excl.push(item.clone()); }
+                }
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(incl)) && self.unify(&a4, &Value::List(excl)) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            "foldl/4" | "foldl/5" => {
+                // foldl(Goal, L1[, L2], V0, V): thread an accumulator
+                // through per-element calls Goal(X1[, X2], Acc0, Acc1).
+                let two_lists = op == "foldl/5";
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let l1 = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let l2: Option<Vec<Value>> = if two_lists {
+                    match self.get_reg_raw("A3").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                        Some(Value::List(items)) if items.len() == l1.len() => Some(items),
+                        _ => return false,
+                    }
+                } else { None };
+                let acc0_reg = if two_lists { "A4" } else { "A3" };
+                let out_reg = if two_lists { "A5" } else { "A4" };
+                let mut acc = self.get_reg_raw(acc0_reg)
+                    .map(|v| self.deref_var(&v))
+                    .unwrap_or(Value::Uninit);
+                for i in 0..l1.len() {
+                    let next = self.fresh_meta_var();
+                    let mut extra: Vec<Value> = vec![self.deref_var(&l1[i])];
+                    if let Some(ref l2v) = l2 {
+                        extra.push(self.deref_var(&l2v[i]));
+                    }
+                    extra.push(acc.clone());
+                    extra.push(next.clone());
+                    let g = match self.extend_goal(&goal, &extra) {
+                        Some(g) => g,
+                        None => return false,
+                    };
+                    if !self.call_goal_once(&g) { return false; }
+                    acc = self.deref_var(&next);
+                }
+                let out = self.get_reg_raw(out_reg).unwrap_or(Value::Uninit);
+                if self.unify(&out, &acc) { self.pc += 1; true } else { false }
+            }
             _ => false,
         }
+    }
+
+    /// Append arguments to a callable (call/N semantics for the
+    /// maplist/include/foldl family). Atoms become compounds; compound
+    /// goals get the extra arguments appended after their own.
+    fn extend_goal(&self, base: &Value, extra: &[Value]) -> Option<Value> {
+        match base {
+            Value::Atom(name) => Some(Value::Str(name.clone(), extra.to_vec())),
+            Value::Str(f, args) => {
+                let name = Self::display_functor_name(f, args.len());
+                let mut all = args.clone();
+                all.extend_from_slice(extra);
+                Some(Value::Str(name, all))
+            }
+            _ => None,
+        }
+    }
+
+    fn fresh_meta_var(&mut self) -> Value {
+        self.var_counter += 1;
+        Value::Unbound(format!("_M{}", self.var_counter))
+    }
+
+    /// First-solution meta-call used by the maplist family: any choice
+    /// points the sub-call leaves behind are discarded (deterministic
+    /// commit per element).
+    fn call_goal_once(&mut self, goal: &Value) -> bool {
+        let cp_depth = self.choice_points.len();
+        let ok = self.call_goal_value(goal);
+        if self.choice_points.len() > cp_depth {
+            self.choice_points.truncate(cp_depth);
+        }
+        ok
     }
 
     /// Predicates the shared WAM compiler emits as Call/Execute (no

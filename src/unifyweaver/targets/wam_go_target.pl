@@ -1894,9 +1894,20 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         // list tail cell [|]/2 — leaving a placeholder in the arg slot that
         // a later put_structure into the same register must fill. Trailing
         // via bindUnbound keeps it backtrack-safe.
-        if cur := vm.Regs[i.Ai]; cur != nil {
-            if u, ok := vm.deref(cur).(*Unbound); ok {
-                vm.bindUnbound(u, ref)
+        //
+        // A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+        // (index < 100) are argument STAGING — their old occupant is an
+        // unrelated variable (often a clause-head argument), and binding it
+        // to the new cell creates a cyclic term (X = f(X)), making a later
+        // X = 1 wrong-fail. Top-down chaining placeholders only ever live
+        // in X/Y registers (set_variable Xn), so the bind-through is
+        // conditioned on the register class — the same fix the Rust and
+        // LLVM targets carry.
+        if i.Ai >= 100 {
+            if cur := vm.Regs[i.Ai]; cur != nil {
+                if u, ok := vm.deref(cur).(*Unbound); ok {
+                    vm.bindUnbound(u, ref)
+                }
             }
         }
         vm.Regs[i.Ai] = ref

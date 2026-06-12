@@ -138,9 +138,19 @@ class WamState(
     }
 
     fun bindTarget(register: String, value: Value?) {
-        val current = deref(readRegister(register))
-        if (current is Value.Var) {
-            bind(current.name, value)
+        // A-REGISTER EXCEPTION (M139/M140 bind-through class): A
+        // registers are argument staging — their old occupant is an
+        // unrelated variable (often a clause-head argument), and
+        // binding it to the freshly built term creates a cyclic term
+        // (X = f(X)), wrong-failing a later X = 1. Top-down
+        // structure-chaining placeholders only ever live in X/Y
+        // registers, so the bind-through is conditioned on the register
+        // class — the same fix the Rust, Go, Scala and LLVM targets carry.
+        if (!register.startsWith("A")) {
+            val current = deref(readRegister(register))
+            if (current is Value.Var) {
+                bind(current.name, value)
+            }
         }
         bind(register, value)
     }
@@ -185,6 +195,18 @@ class WamState(
             return true
         }
         return false
+    }
+
+    fun beginStructurePut(functor: String, register: String): Boolean {
+        // put-family structure start: WRITE mode unconditionally. The
+        // target register is being OVERWRITTEN, so its stale occupant
+        // must not be consulted — routing put_structure/put_list through
+        // beginStructure (get-style dispatch) wrong-failed them whenever
+        // the register still held a constant, e.g. a clause-head
+        // argument about to be replaced by the goal argument.
+        val arity = functorArity(functor) ?: return false
+        context = WamContext.Write(register, functor, arity)
+        return true
     }
 
     fun pushWriteArg(value: Value?): Boolean {
@@ -449,13 +471,13 @@ class WamRuntime(private val program: WamProgram) {
             "put_structure" -> {
                 val functor = instruction.args.getOrNull(0) as? String ?: return false
                 val register = instruction.args.getOrNull(1) as? String ?: return false
-                if (!state.beginStructure(functor, register)) return false
+                if (!state.beginStructurePut(functor, register)) return false
                 state.pc += 1
                 return true
             }
             "put_list" -> {
                 val register = instruction.args.getOrNull(0) as? String ?: return false
-                if (!state.beginStructure("[|]/2", register)) return false
+                if (!state.beginStructurePut("[|]/2", register)) return false
                 state.pc += 1
                 return true
             }
@@ -595,6 +617,14 @@ class WamRuntime(private val program: WamProgram) {
                 // closed, so no type check or arithmetic ever ran.
                 when (op) {
                     "true/0" -> { state.pc += 1; return true }
+                    "==/2" -> {
+                        if (state.resolve(state.readRegister("A1")) != state.resolve(state.readRegister("A2"))) return false
+                        state.pc += 1; return true
+                    }
+                    "\\==/2" -> {
+                        if (state.resolve(state.readRegister("A1")) == state.resolve(state.readRegister("A2"))) return false
+                        state.pc += 1; return true
+                    }
                     "var/1" -> {
                         if (state.deref(state.readRegister("A1")) !is Value.Var) return false
                         state.pc += 1; return true

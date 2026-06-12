@@ -917,13 +917,24 @@ object WamRuntime {
       // arithmetic), bind that Ref so any other build frame that
       // captured the same Ref as one of its args sees the new struct
       // through deref.
-      val current = s.regs(top.targetReg)
-      val derefedRef = if (current == null) None
-                       else deref(s.bindings, current) match {
-                         case r: Ref => Some(r)
-                         case _      => None
-                       }
-      derefedRef.foreach(r => bindVar(s, r, built))
+      //
+      // A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+      // (index < 100; X = +100, Y = +200) are argument STAGING — their
+      // old occupant is an unrelated variable (often a clause-head
+      // argument), and binding it to the freshly built term creates a
+      // cyclic term (X = f(X)), wrong-failing a later X = 1. The
+      // set_variable threading placeholders only ever live in X/Y
+      // registers, so the bind-through is conditioned on the register
+      // class — the same fix the Rust, Go, and LLVM targets carry.
+      if (top.targetReg >= 100) {
+        val current = s.regs(top.targetReg)
+        val derefedRef = if (current == null) None
+                         else deref(s.bindings, current) match {
+                           case r: Ref => Some(r)
+                           case _      => None
+                         }
+        derefedRef.foreach(r => bindVar(s, r, built))
+      }
       setReg(s, top.targetReg, built)
       if (s.buildStack.nonEmpty && s.buildStack.head.args.length == s.buildStack.head.sArity)
         finalizeBuild(s)
