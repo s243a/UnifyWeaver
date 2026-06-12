@@ -112,7 +112,11 @@ register class.
    controls (p_bindctl2 flipped false→true). Kotlin-finding-#2 family;
    needs its own campaign.
 7. **Clojure: numeric literals interned as atoms in the
-   opportunistically-lowered path** — default mode silently lowers
+   opportunistically-lowered path** — FIXED in the follow-up commit
+   (`clj_lowered_literal` now emits bare numeric tokens as numbers;
+   the WAM compiler quotes-and-marks atoms that merely look numeric,
+   so an unquoted numeral is a real number; all 12 previously
+   wrong-failing zero-arity probe wrappers verified correct) — default mode silently lowers
    eligible (incl. all zero-arity) predicates, and the lowered
    `put-constant` routes literals through `normalize-literal-atom`,
    which interns numerals as atoms; a subsequent `R is 1` compares
@@ -120,6 +124,13 @@ register class.
    correct. (`wam_clojure_target.pl:208-210`,
    `wam_clojure_lowered_emitter.pl:1284`,
    `runtime.clj.mustache:52-54`.)
-8. **Elixir lowered mode: `==/2` fails closed** — same class-7 gap
-   fixed for C and Haskell in this sweep; Rust-P3-style builtin parity
-   sweep applies.
+8. **Elixir lowered mode: `==/2` fails closed** — FIXED in the
+   follow-up commit (`==/2`/`\==/2` arms via `deep_copy_value`
+   structural comparison; the previously confounded probe battery now
+   passes in full). The broader Rust-P3-style builtin parity sweep
+   still applies to Elixir.
+9. **Elixir target suite: 6 pre-existing failures on main**
+   (unify/3 compound-clause check, LMDB e2e via :elmdb, three
+   atom-interning literal checks, cons-tag aliasing) — verified
+   identical on the unmodified parent tree; flag to the Elixir
+   stream.

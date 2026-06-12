@@ -1329,9 +1329,28 @@ emit_lowered_expr(_Instr, S, Expr) :-
 clj_lowered_literal(Value, Literal) :-
     (   number(Value)
     ->  format(atom(Literal), '~w', [Value])
+    ;   clj_lowered_unquoted_number(Value, Num)
+    ->  % Bare numeric TOKEN from the WAM text. The compiler quotes
+        % atoms that merely look numeric (and marks them with the
+        % \x01 prefix), so an unquoted numeral is a real number.
+        % Previously this fell to the string branch and
+        % normalize-literal-term interned it as an ATOM, so the
+        % opportunistically-lowered path compared atom-"1" against
+        % integer 1 and wrong-failed (every zero-arity wrapper ending
+        % in `R is 1` — found by the bind-through probe sweep).
+        format(atom(Literal), '~w', [Num])
     ;   clj_lowered_atom_text(Value, Text),
         clj_lowered_string_literal(Text, Literal)
     ).
+
+clj_lowered_unquoted_number(Value, Num) :-
+    (   string(Value) -> S = Value
+    ;   atom(Value) -> atom_string(Value, S)
+    ;   fail
+    ),
+    \+ sub_string(S, 0, 1, _, "'"),
+    \+ string_codes(S, [1|_]),
+    catch(number_string(Num, S), _, fail).
 
 clj_lowered_atom_text(Value, Text) :-
     (   string(Value) -> S0 = Value ; atom_string(Value, S0) ),
