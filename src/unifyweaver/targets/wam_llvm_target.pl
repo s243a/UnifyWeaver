@@ -4388,9 +4388,9 @@ rhv.have_handle:
   br i1 %rhv.fd_ok, label %rhv.alloc_out, label %rhv.fail
 
 rhv.alloc_out:
-  call void @wam_arena_ensure()
-  %rhv.out = call i8* @wam_arena_alloc(i64 65537)
-  br label %rhv.loop
+  %rhv.out = call i8* @malloc(i64 65537)
+  %rhv.out_null = icmp eq i8* %rhv.out, null
+  br i1 %rhv.out_null, label %rhv.fail, label %rhv.loop
 
 rhv.loop:
   %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.append_store ]
@@ -4408,7 +4408,7 @@ rhv.fill:
   %rhv.cap = load i64, i64* %rhv.cap_slot
   %rhv.n = call i64 @read(i32 %rhv.fd, i8* %rhv.buf, i64 %rhv.cap)
   %rhv.n_neg = icmp slt i64 %rhv.n, 0
-  br i1 %rhv.n_neg, label %rhv.fail, label %rhv.check_eof
+  br i1 %rhv.n_neg, label %rhv.free_out_fail, label %rhv.check_eof
 
 rhv.check_eof:
   %rhv.n_zero = icmp eq i64 %rhv.n, 0
@@ -4433,7 +4433,7 @@ rhv.consume:
 
 rhv.append:
   %rhv.has_room = icmp ult i64 %rhv.out_len, 65536
-  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.fail
+  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.free_out_fail
 
 rhv.append_store:
   %rhv.out_ptr = getelementptr i8, i8* %rhv.out, i64 %rhv.out_len
@@ -4463,14 +4463,20 @@ rhv.intern:
   %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.out, i64 %rhv.final_len)
   %rhv.v0 = insertvalue %Value undef, i32 0, 0
   %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
+  call void @free(i8* %rhv.out)
   ret %Value %rhv.v
 
 rhv.eof:
+  call void @free(i8* %rhv.out)
   %rhv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
   %rhv.eof_aid = call i64 @wam_intern_atom(i8* %rhv.eof_ptr, i64 11)
   %rhv.eof_v0 = insertvalue %Value undef, i32 0, 0
   %rhv.eof_v = insertvalue %Value %rhv.eof_v0, i64 %rhv.eof_aid, 1
   ret %Value %rhv.eof_v
+
+rhv.free_out_fail:
+  call void @free(i8* %rhv.out)
+  br label %rhv.fail
 }
 
 define i1 @wam_stream_close_value(%Value %handle_value) {

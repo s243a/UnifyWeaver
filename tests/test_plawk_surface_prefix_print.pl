@@ -97,6 +97,15 @@ test(surface_assoc_counts_requested_keys) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2 1\n").
 
+test(surface_assoc_counts_resize_runtime_table) :-
+    findall(Line,
+        ( between(0, 2050, Index), format(atom(Line), 'K~w payload\n', [Index]) ),
+        Lines),
+    atomic_list_concat(Lines, '', Input0),
+    format(string(Input), '~wK0 duplicate~n', [Input0]),
+    run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"K0\"], counts[\"K2050\"], counts[\"MISSING\"] }\n",
+        Input, "2 1 0\n").
+
 test(surface_assoc_counts_use_runtime_table) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
