@@ -4006,6 +4006,120 @@ new.fail:
   ret %WamAssocI64Table* null
 }
 
+define i1 @wam_assoc_i64_resize(%WamAssocI64Table* %table) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %resize.fail, label %resize.load
+
+resize.load:
+  %old_cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %old_cap = load i64, i64* %old_cap_slot
+  %old_cap_zero = icmp eq i64 %old_cap, 0
+  br i1 %old_cap_zero, label %resize.fail, label %resize.load_entries
+
+resize.load_entries:
+  %old_entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %old_entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %old_entries_slot
+  %old_entries_null = icmp eq %WamAssocI64Entry* %old_entries, null
+  br i1 %old_entries_null, label %resize.fail, label %resize.calc_cap
+
+resize.calc_cap:
+  %new_cap = mul i64 %old_cap, 2
+  %cap_grew = icmp ugt i64 %new_cap, %old_cap
+  br i1 %cap_grew, label %resize.alloc, label %resize.fail
+
+resize.alloc:
+  %entry_size = ptrtoint %WamAssocI64Entry* getelementptr (%WamAssocI64Entry, %WamAssocI64Entry* null, i32 1) to i64
+  %new_entries_size = mul i64 %new_cap, %entry_size
+  %new_entries_mem = call i8* @malloc(i64 %new_entries_size)
+  %new_entries_null = icmp eq i8* %new_entries_mem, null
+  br i1 %new_entries_null, label %resize.fail, label %resize.init
+
+resize.init:
+  %new_entries = bitcast i8* %new_entries_mem to %WamAssocI64Entry*
+  br label %resize.zero_loop
+
+resize.zero_loop:
+  %zi = phi i64 [ 0, %resize.init ], [ %zi.next, %resize.zero_body ]
+  %zi.done = icmp uge i64 %zi, %new_cap
+  br i1 %zi.done, label %resize.rehash_loop, label %resize.zero_body
+
+resize.zero_body:
+  %zero_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %new_entries, i64 %zi
+  %zero_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %zero_entry, i32 0, i32 0
+  store i64 0, i64* %zero_key_slot
+  %zero_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %zero_entry, i32 0, i32 1
+  store i64 0, i64* %zero_value_slot
+  %zero_occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %zero_entry, i32 0, i32 2
+  store i1 false, i1* %zero_occupied_slot
+  %zi.next = add i64 %zi, 1
+  br label %resize.zero_loop
+
+resize.rehash_loop:
+  %ri = phi i64 [ 0, %resize.zero_loop ], [ %ri.next, %resize.rehash_next ]
+  %ri.done = icmp uge i64 %ri, %old_cap
+  br i1 %ri.done, label %resize.install, label %resize.rehash_check
+
+resize.rehash_check:
+  %old_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %old_entries, i64 %ri
+  %old_occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %old_entry, i32 0, i32 2
+  %old_occupied = load i1, i1* %old_occupied_slot
+  br i1 %old_occupied, label %resize.rehash_key, label %resize.rehash_next
+
+resize.rehash_key:
+  %old_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %old_entry, i32 0, i32 0
+  %old_key = load i64, i64* %old_key_slot
+  %old_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %old_entry, i32 0, i32 1
+  %old_value = load i64, i64* %old_value_slot
+  %rehash_start = urem i64 %old_key, %new_cap
+  br label %resize.probe
+
+resize.probe:
+  %probe_idx = phi i64 [ %rehash_start, %resize.rehash_key ], [ %probe_next_idx, %resize.probe_next ]
+  %probe_count = phi i64 [ 0, %resize.rehash_key ], [ %probe_next_count, %resize.probe_next ]
+  %new_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %new_entries, i64 %probe_idx
+  %new_occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %new_entry, i32 0, i32 2
+  %new_occupied = load i1, i1* %new_occupied_slot
+  br i1 %new_occupied, label %resize.probe_check, label %resize.rehash_store
+
+resize.rehash_store:
+  %new_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %new_entry, i32 0, i32 0
+  store i64 %old_key, i64* %new_key_slot
+  %new_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %new_entry, i32 0, i32 1
+  store i64 %old_value, i64* %new_value_slot
+  store i1 true, i1* %new_occupied_slot
+  br label %resize.rehash_next
+
+resize.probe_check:
+  %probe_next_count = add i64 %probe_count, 1
+  %probe_full = icmp uge i64 %probe_next_count, %new_cap
+  br i1 %probe_full, label %resize.free_new_fail, label %resize.probe_next
+
+resize.probe_next:
+  %probe_idx_plus = add i64 %probe_idx, 1
+  %probe_wrap = icmp uge i64 %probe_idx_plus, %new_cap
+  %probe_next_idx = select i1 %probe_wrap, i64 0, i64 %probe_idx_plus
+  br label %resize.probe
+
+resize.rehash_next:
+  %ri.next = add i64 %ri, 1
+  br label %resize.rehash_loop
+
+resize.install:
+  store i64 %new_cap, i64* %old_cap_slot
+  store %WamAssocI64Entry* %new_entries, %WamAssocI64Entry** %old_entries_slot
+  %old_entries_i8 = bitcast %WamAssocI64Entry* %old_entries to i8*
+  call void @free(i8* %old_entries_i8)
+  ret i1 true
+
+resize.free_new_fail:
+  call void @free(i8* %new_entries_mem)
+  ret i1 false
+
+resize.fail:
+  ret i1 false
+}
+
 define i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
@@ -4104,14 +4218,23 @@ inc.update:
   ret i64 %new_value
 
 inc.insert:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %old_count = load i64, i64* %count_slot
+  %new_count = add i64 %old_count, 1
+  %half_cap = lshr i64 %cap, 1
+  %needs_grow = icmp ugt i64 %new_count, %half_cap
+  br i1 %needs_grow, label %inc.grow, label %inc.insert_store
+
+inc.grow:
+  %grew = call i1 @wam_assoc_i64_resize(%WamAssocI64Table* %table)
+  br i1 %grew, label %inc.load, label %inc.insert_store
+
+inc.insert_store:
   %insert_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
   store i64 %key, i64* %insert_key_slot
   %insert_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
   store i64 %delta, i64* %insert_value_slot
   store i1 true, i1* %occupied_slot
-  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
-  %old_count = load i64, i64* %count_slot
-  %new_count = add i64 %old_count, 1
   store i64 %new_count, i64* %count_slot
   ret i64 %delta
 

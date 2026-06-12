@@ -198,6 +198,7 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_slice_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamAssocI64Table* @wam_assoc_i64_new')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_assoc_i64_resize')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_assoc_i64_inc')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_assoc_i64_get')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define void @wam_assoc_i64_free')).

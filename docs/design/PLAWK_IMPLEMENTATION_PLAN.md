@@ -256,8 +256,9 @@ the native streaming loop.
 Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The current
 associative-count surface now allocates the reusable WAM/LLVM
-interned-atom-keyed `i64` table primitive (`wam_assoc_i64_*`), increments it in
-the native streaming loop, and performs `END` lookups through the same table.
+interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`),
+increments it in the native streaming loop, and performs `END` lookups through
+the same table.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
