@@ -44,6 +44,39 @@ t_concat_split(A, B) :- atom_concat(A, B, abc).
 :- dynamic t_select/2.
 t_select(X, R) :- select(X, [a, b, c], R).
 
+%% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
+:- dynamic t_thrower/0.
+t_thrower :- throw(oops(42)).
+
+:- dynamic t_deep/0.
+:- dynamic t_mid/0.
+t_deep :- t_mid.
+t_mid :- t_thrower.
+
+:- dynamic t_catch_match/1.
+t_catch_match(R) :- catch(t_thrower, oops(X), R = caught(X)).
+
+:- dynamic t_catch_deep/1.
+t_catch_deep(R) :- catch(t_deep, oops(X), R = X).
+
+:- dynamic t_catch_nomatch/0.
+t_catch_nomatch :- catch(t_thrower, other(_), true).
+
+:- dynamic t_catch_nothrow/1.
+t_catch_nothrow(X) :- catch(member(X, [a]), _Any, fail).
+
+:- dynamic t_catch_failgoal/0.
+t_catch_failgoal :- catch(fail, _Any, true).
+
+:- dynamic t_catch_nested/1.
+t_catch_nested(R) :- catch(catch(t_thrower, nomatch(_), fail), oops(X), R = X).
+
+:- dynamic t_succ_fwd/1.
+t_succ_fwd(Y) :- succ(2, Y).
+
+:- dynamic t_succ_rev/1.
+t_succ_rev(X) :- succ(X, 3).
+
 cargo_available :-
     catch(
         (process_create(path(cargo), ['--version'],
@@ -60,7 +93,12 @@ test_builtin_parity_execution :-
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         write_wam_rust_project(
             [user:t_between/1, user:t_msort/1, user:t_sort/1,
-             user:t_concat_split/2, user:t_select/2],
+             user:t_concat_split/2, user:t_select/2,
+             user:t_thrower/0, user:t_deep/0, user:t_mid/0,
+             user:t_catch_match/1, user:t_catch_deep/1,
+             user:t_catch_nomatch/0, user:t_catch_nothrow/1,
+             user:t_catch_failgoal/0, user:t_catch_nested/1,
+             user:t_succ_fwd/1, user:t_succ_rev/1],
             [module_name('builtin_parity_test'), wam_fallback(true)],
             TmpDir),
         directory_file_path(TmpDir, 'tests', TestsDir),
@@ -69,7 +107,9 @@ test_builtin_parity_execution :-
         TestContent = '
 use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
-use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2};
+use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
+    t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
+    t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1};
 use std::collections::HashMap;
 
 fn vmnew() -> WamState {
@@ -157,6 +197,77 @@ fn test_select_enumeration_compiled() {
         ("b".to_string(), "a,c".to_string()),
         ("c".to_string(), "a,b".to_string()),
     ]);
+}
+
+#[test]
+fn test_catch_matching_catcher_runs_recovery() {
+    let mut vm = vmnew();
+    assert!(t_catch_match_1(&mut vm, ub("R")),
+        "catch(throw(oops(42)), oops(X), R = caught(X)) must succeed");
+    assert_eq!(read_var(&vm, "R"),
+        Value::Str("caught".to_string(), vec![i(42)]));
+    assert!(vm.thrown_ball.is_none(), "ball consumed");
+}
+
+#[test]
+fn test_catch_propagates_through_calls() {
+    let mut vm = vmnew();
+    assert!(t_catch_deep_1(&mut vm, ub("R")),
+        "throw two predicate calls deep must reach the catcher");
+    assert_eq!(read_var(&vm, "R"), i(42));
+}
+
+#[test]
+fn test_catch_nonmatching_catcher_rethrows() {
+    let mut vm = vmnew();
+    assert!(!t_catch_nomatch_0(&mut vm),
+        "non-unifying catcher must rethrow (uncaught at top = failure)");
+    assert!(vm.thrown_ball.is_some(), "ball still in flight after rethrow");
+}
+
+#[test]
+fn test_catch_transparent_when_no_throw() {
+    let mut vm = vmnew();
+    assert!(t_catch_nothrow_1(&mut vm, ub("X")));
+    assert_eq!(read_var(&vm, "X"), a("a"));
+    assert!(vm.thrown_ball.is_none());
+}
+
+#[test]
+fn test_catch_plain_goal_failure_fails() {
+    let mut vm = vmnew();
+    assert!(!t_catch_failgoal_0(&mut vm),
+        "catch(fail, _, true) fails — recovery only runs on throw");
+    assert!(vm.thrown_ball.is_none());
+}
+
+#[test]
+fn test_catch_nested_inner_rethrows_outer_catches() {
+    let mut vm = vmnew();
+    assert!(t_catch_nested_1(&mut vm, ub("R")));
+    assert_eq!(read_var(&vm, "R"), i(42));
+    assert!(vm.thrown_ball.is_none());
+}
+
+#[test]
+fn test_succ_both_modes_compiled() {
+    let mut vm = vmnew();
+    assert!(t_succ_fwd_1(&mut vm, ub("Y")));
+    assert_eq!(read_var(&vm, "Y"), i(3));
+    let mut vm2 = vmnew();
+    assert!(t_succ_rev_1(&mut vm2, ub("X")));
+    assert_eq!(read_var(&vm2, "X"), i(2));
+}
+
+#[test]
+fn test_succ_direct_edge_cases() {
+    let (ok, vm) = call2("succ/2", i(0), ub("Y"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Y"), i(1));
+    assert!(!call2("succ/2", ub("X"), i(0)).0, "succ(X, 0) has no natural X");
+    assert!(!call2("succ/2", i(-1), ub("Y")).0, "negative X fails");
+    assert!(call2("succ/2", i(2), i(3)).0);
+    assert!(!call2("succ/2", i(2), i(4)).0);
 }
 
 // ---- layer 2: direct execute_builtin coverage ------------------------

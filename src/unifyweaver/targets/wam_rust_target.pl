@@ -337,9 +337,21 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 // new structure so the embedded copy resolves here. The compiler
                 // builds nested terms outer-first — +(+(A,B),C), or a list tail
                 // cell — leaving a placeholder a later put_structure must fill.
-                if let Some(cur) = self.get_reg_raw(ai) {
-                    if let Value::Unbound(name) = self.deref_var(&cur) {
-                        self.bind_var(&name, Value::Ref(addr));
+                //
+                // A-REGISTER EXCEPTION (M139/M140 bind-through class): A
+                // registers are argument STAGING — their old occupant is an
+                // unrelated variable (often a clause-head argument), and
+                // binding it to the new cell creates a cyclic term
+                // (X = f(X), then deref_heap recurses forever). Top-down
+                // chaining placeholders only ever live in X/Y registers
+                // (set_variable Xn), so the bind-through is conditioned on
+                // the register class — the same design the LLVM target
+                // adopted in M140 after the identical bug.
+                if ai.as_bytes().first() != Some(&b''A'') {
+                    if let Some(cur) = self.get_reg_raw(ai) {
+                        if let Value::Unbound(name) = self.deref_var(&cur) {
+                            self.bind_var(&name, Value::Ref(addr));
+                        }
                     }
                 }
                 self.set_reg_str(ai, Value::Ref(addr));
@@ -660,6 +672,12 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                         self.pc = self.cp;
                         true
                     } else { false }
+                } else if Self::is_iso_meta_builtin(p) {
+                    // ISO meta-builtins (catch/3, throw/1, succ/2) are
+                    // emitted by the shared WAM compiler as Call rather
+                    // than BuiltinCall; route them through the builtin
+                    // dispatch (mirrors the F# isIsoMetaBuiltin arm).
+                    self.execute_builtin(p, *_arity)
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
@@ -712,6 +730,15 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     true
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
+                } else if Self::is_iso_meta_builtin(p) {
+                    // Tail-position ISO meta-builtin: dispatch, then honor
+                    // return semantics by jumping to the continuation.
+                    let arity: usize = p.rsplit(\'/\').next()
+                        .and_then(|a| a.parse().ok()).unwrap_or(0);
+                    if self.execute_builtin(p, arity) {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
                 } else { false }'.
 
 wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
@@ -1056,6 +1083,10 @@ compile_run_loop_to_rust(Code) :-
             }
             if let Some(instr) = self.fetch().cloned() {
                 if !self.step(&instr) {
+                    // ISO throw in flight: abort instead of backtracking —
+                    // alternatives are discarded until a catch/3 frame
+                    // (in a caller) consumes the ball.
+                    if self.thrown_ball.is_some() { return false; }
                     if !self.backtrack() { return false; }
                 }
                 self.step_count += 1;
@@ -3549,6 +3580,25 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => false,
                 }
             }
+            "succ/2" => {
+                // Bidirectional natural-number successor: succ(X, Y) iff
+                // Y = X + 1, X >= 0, Y >= 1. Reached via the ISO
+                // meta-builtin Call fallback (the shared compiler emits
+                // call succ/2, not builtin_call).
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                match (&v1, &v2) {
+                    (Value::Integer(x), _) if *x >= 0 => {
+                        let y = Value::Integer(x + 1);
+                        if self.unify(&v2, &y) { self.pc += 1; true } else { false }
+                    }
+                    (Value::Unbound(_), Value::Integer(y)) if *y >= 1 => {
+                        let x = Value::Integer(y - 1);
+                        if self.unify(&v1, &x) { self.pc += 1; true } else { false }
+                    }
+                    _ => false,
+                }
+            }
             "plus/3" => {
                 let vals: Vec<Value> = ["A1", "A2", "A3"].iter()
                     .map(|r| self.get_reg_raw(r).map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit))
@@ -3826,8 +3876,146 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     _ => false,
                 }
             }
+            "throw/1" => {
+                // ISO throw/1: deep-deref the ball and put it in flight.
+                // The run loop sees the failing step with a pending ball
+                // and aborts instead of backtracking; the nearest catch/3
+                // whose catcher unifies consumes it.
+                let ball = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Atom("instantiation_error".to_string()));
+                self.thrown_ball = Some(ball);
+                false
+            }
+            "catch/3" => {
+                // ISO catch/3 (first-solution semantics, like the F# port):
+                // snapshot, meta-call the goal; on a thrown ball restore
+                // the snapshot, unify the catcher, and run recovery —
+                // rethrowing when the catcher does not unify. Mirrors the
+                // F# CatcherFrame shape with mutable-state restoration in
+                // place of immutable snapshots.
+                let catch_pc = self.pc;
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let catcher_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let recovery_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let saved_regs = self.save_regs();
+                let trail_mark = self.trail.len();
+                let heap_mark = self.heap.len();
+                let stack_snapshot = self.stack.clone();
+                let cp_depth = self.choice_points.len();
+                let saved_cp = self.cp;
+                let saved_cut = self.cut_barrier;
+                if self.call_goal_value(&goal) {
+                    // Goal succeeded: commit to its first solution
+                    // (bindings carry forward) and advance past catch/3.
+                    self.choice_points.truncate(cp_depth);
+                    self.cp = saved_cp;
+                    self.cut_barrier = saved_cut;
+                    self.pc = catch_pc + 1;
+                    return true;
+                }
+                match self.thrown_ball.take() {
+                    None => {
+                        // Plain goal failure: catch/3 fails. Restore the
+                        // pre-goal view so partial bindings do not leak.
+                        if self.choice_points.len() > cp_depth {
+                            self.choice_points.truncate(cp_depth);
+                        }
+                        self.unwind_trail_to(trail_mark);
+                        self.heap.truncate(heap_mark);
+                        self.stack = stack_snapshot;
+                        self.restore_regs(&saved_regs);
+                        self.cp = saved_cp;
+                        self.cut_barrier = saved_cut;
+                        false
+                    }
+                    Some(ball) => {
+                        if self.choice_points.len() > cp_depth {
+                            self.choice_points.truncate(cp_depth);
+                        }
+                        self.unwind_trail_to(trail_mark);
+                        self.heap.truncate(heap_mark);
+                        self.stack = stack_snapshot;
+                        self.restore_regs(&saved_regs);
+                        self.cp = saved_cp;
+                        self.cut_barrier = saved_cut;
+                        let mark2 = self.trail.len();
+                        if self.unify(&catcher_raw, &ball) {
+                            let recovery = self.deref_heap(&self.deref_var(&recovery_raw));
+                            if self.call_goal_value(&recovery) {
+                                self.pc = catch_pc + 1;
+                                true
+                            } else { false }
+                        } else {
+                            // Catcher does not unify: rethrow for an
+                            // outer catch frame.
+                            self.unwind_trail_to(mark2);
+                            self.thrown_ball = Some(ball);
+                            false
+                        }
+                    }
+                }
+            }
             _ => false,
         }
+    }
+
+    /// Predicates the shared WAM compiler emits as Call/Execute (no
+    /// is_builtin_pred entry) but that this runtime implements as
+    /// builtins. Mirrors the F# isIsoMetaBuiltin routing.
+    fn is_iso_meta_builtin(pred: &str) -> bool {
+        matches!(pred, "catch/3" | "throw/1" | "succ/2")
+    }
+
+    /// Meta-call a goal VALUE (catch/3 goal and recovery, callable
+    /// terms). Atoms true/fail are inlined; other goals dispatch to the
+    /// builtin table first, then to a labelled predicate via a sub-run
+    /// (the same architecture as the general negation path). Returns
+    /// the first solution; on a thrown ball it returns false with the
+    /// ball left in flight for the caller to inspect.
+    fn call_goal_value(&mut self, goal: &Value) -> bool {
+        match goal {
+            Value::Atom(name) if name == "true" => true,
+            Value::Atom(name) if name == "fail" || name == "false" => false,
+            Value::Atom(name) => {
+                let key = format!("{}/0", name);
+                self.call_goal_key(&key, 0, &[])
+            }
+            Value::Str(functor, args) => {
+                let arity = args.len();
+                let name = Self::display_functor_name(functor, arity);
+                let key = format!("{}/{}", name, arity);
+                let dargs: Vec<Value> = args.iter().map(|a| self.deref_var(a)).collect();
+                self.call_goal_key(&key, arity, &dargs)
+            }
+            _ => false,
+        }
+    }
+
+    fn call_goal_key(&mut self, key: &str, arity: usize, args: &[Value]) -> bool {
+        for (i, arg) in args.iter().enumerate() {
+            self.set_reg(&format!("A{}", i + 1), arg.clone());
+        }
+        let saved_pc = self.pc;
+        if self.execute_builtin(key, arity) {
+            self.pc = saved_pc;
+            return true;
+        }
+        if self.thrown_ball.is_some() {
+            return false;
+        }
+        if let Some(&target_pc) = self.labels.get(key) {
+            let saved_cp = self.cp;
+            self.pc = target_pc;
+            self.cp = 0; // halt sentinel for the sub-run
+            let ok = self.run();
+            self.cp = saved_cp;
+            self.pc = saved_pc;
+            return ok;
+        }
+        false
     }'.
 
 compile_resume_naf_to_rust(Code) :-
