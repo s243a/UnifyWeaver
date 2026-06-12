@@ -236,6 +236,15 @@ atom names without the outer WAM token quotes.
 
 Parser/codegen land in `examples/plawk/{parser,codegen}/`.
 
+**Current slice:** `examples/plawk/parser/plawk_parser.pl` parses the first
+surface form, `/^PREFIX/ { print $0 }`, to
+`program([], [rule(prefix(Prefix), [print(field(0))])], [])`.
+`examples/plawk/codegen/plawk_native_codegen.pl` lowers that AST to a native
+streaming WAM/LLVM driver using `llvm_emit_atom_prefix_guard/5`, and
+`tests/test_plawk_surface_prefix_print.pl` proves that the generated binary
+prints matching records from a text file without calling `run_loop` in the hot
+record loop.
+
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
 
