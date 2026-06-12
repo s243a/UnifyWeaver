@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 John William Creighton (s243a)
+"""Compare bounded parent-path search with a histogram boundary cache.
+
+The cache mode precomputes histograms for selected lower-depth boundary nodes.
+During a later target search, it stops at those boundary nodes and splices the
+cached histogram into the current path length.  This is exact on acyclic cones.
+On cyclic cones with simple-path semantics it is an approximation, because the
+cached suffix histogram does not know the current visited set.  The benchmark
+therefore reports histogram error against the full simple-path search.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import statistics
+import sys
+import time
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.distribution_fit_comparison import exact_excess_distribution, l1_error, max_cdf_error
+from scripts.lmdb_parent_branching_diagnostic import (
+    LmdbCategoryGraph,
+    parse_int_list,
+    select_targets_by_child_depth,
+)
+from scripts.lmdb_parent_histogram_benchmark import (
+    HistogramStats,
+    bounded_parent_histogram,
+    percentile,
+    safe_graph_name,
+)
+
+
+DEFAULT_BUDGETS = [6, 8]
+
+
+@dataclass
+class CachedSearchStats:
+    nodes_expanded: int = 0
+    edges_examined: int = 0
+    cycle_skips: int = 0
+    budget_cutoffs: int = 0
+    cache_hits: int = 0
+    cache_bins_spliced: int = 0
+    path_cap_hit: bool = False
+    expansion_cap_hit: bool = False
+
+
+def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
+    added = 0
+    for suffix_length, count in suffix_hist.items():
+        if suffix_length <= remaining:
+            out[prefix_depth + suffix_length] += count
+            added += 1
+    return added
+
+
+def cached_parent_histogram(parents_func, target, root, budget, boundary_cache, path_cap=None, expansion_cap=None):
+    hist = Counter()
+    stats = CachedSearchStats()
+
+    def dfs(node, remaining, depth, visited):
+        if expansion_cap is not None and stats.nodes_expanded >= expansion_cap:
+            stats.expansion_cap_hit = True
+            return
+        stats.nodes_expanded += 1
+        if node == root:
+            hist[depth] += 1
+            if path_cap is not None and sum(hist.values()) >= path_cap:
+                stats.path_cap_hit = True
+            return
+        if node in boundary_cache:
+            stats.cache_hits += 1
+            stats.cache_bins_spliced += add_shifted_hist(hist, boundary_cache[node], depth, remaining)
+            if path_cap is not None and sum(hist.values()) >= path_cap:
+                stats.path_cap_hit = True
+            return
+        if remaining <= 0:
+            stats.budget_cutoffs += 1
+            return
+        for parent in parents_func(node):
+            stats.edges_examined += 1
+            if parent in visited:
+                stats.cycle_skips += 1
+                continue
+            if stats.path_cap_hit or stats.expansion_cap_hit:
+                return
+            visited.add(parent)
+            dfs(parent, remaining - 1, depth + 1, visited)
+            visited.remove(parent)
+            if stats.path_cap_hit or stats.expansion_cap_hit:
+                return
+
+    dfs(target, budget, 0, {target})
+    return dict(sorted(hist.items())), stats
+
+
+def histogram_distribution_error(full_hist, cached_hist):
+    full_dist, _full_origin = exact_excess_distribution(full_hist)
+    cached_dist, _cached_origin = exact_excess_distribution(cached_hist)
+    if not full_dist and not cached_dist:
+        return 0.0, 0.0
+    if not full_dist or not cached_dist:
+        return 1.0, 1.0
+    # The distributions are compared after shifting to their own minimum path
+    # length.  A separate L_min mismatch is reported in each row.
+    return l1_error(full_dist, cached_dist), max_cdf_error(full_dist, cached_dist)
+
+
+def build_boundary_cache(graph, root, boundary_nodes, boundary_budget, path_cap, expansion_cap):
+    cache = {}
+    rows = []
+    for node in boundary_nodes:
+        started = time.perf_counter_ns()
+        hist, stats = bounded_parent_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap)
+        elapsed = time.perf_counter_ns() - started
+        if hist and not stats.path_cap_hit and not stats.expansion_cap_hit:
+            cache[node] = hist
+        rows.append({
+            "record_type": "boundary_cache_entry",
+            "node": node,
+            "cached": node in cache,
+            "histogram": hist,
+            "path_count": sum(hist.values()),
+            "support_bins": len(hist),
+            "nodes_expanded": stats.nodes_expanded,
+            "edges_examined": stats.edges_examined,
+            "cycle_skips": stats.cycle_skips,
+            "path_cap_hit": stats.path_cap_hit,
+            "expansion_cap_hit": stats.expansion_cap_hit,
+            "histogram_time_ns": elapsed,
+        })
+    return cache, rows
+
+
+def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time):
+    l1, cdf = histogram_distribution_error(full_hist, cached_hist)
+    full_paths = sum(full_hist.values())
+    cached_paths = sum(cached_hist.values())
+    return {
+        "record_type": "boundary_cache_comparison",
+        "graph": graph_name,
+        "root": root,
+        "target_node": target,
+        "child_sample_depth": child_depth,
+        "budget": budget,
+        "full_histogram": full_hist,
+        "cached_histogram": cached_hist,
+        "full_path_count": full_paths,
+        "cached_path_count": cached_paths,
+        "path_count_delta": cached_paths - full_paths,
+        "full_L_min": min(full_hist) if full_hist else None,
+        "cached_L_min": min(cached_hist) if cached_hist else None,
+        "full_L_max": max(full_hist) if full_hist else None,
+        "cached_L_max": max(cached_hist) if cached_hist else None,
+        "l1_error": l1,
+        "max_cdf_error": cdf,
+        "full_nodes_expanded": full_stats.nodes_expanded,
+        "cached_nodes_expanded": cached_stats.nodes_expanded,
+        "node_expansion_ratio": 0.0 if full_stats.nodes_expanded == 0 else cached_stats.nodes_expanded / full_stats.nodes_expanded,
+        "full_edges_examined": full_stats.edges_examined,
+        "cached_edges_examined": cached_stats.edges_examined,
+        "full_cycle_skips": full_stats.cycle_skips,
+        "cached_cycle_skips": cached_stats.cycle_skips,
+        "cache_hits": cached_stats.cache_hits,
+        "cache_bins_spliced": cached_stats.cache_bins_spliced,
+        "full_path_cap_hit": full_stats.path_cap_hit,
+        "full_expansion_cap_hit": full_stats.expansion_cap_hit,
+        "cached_path_cap_hit": cached_stats.path_cap_hit,
+        "cached_expansion_cap_hit": cached_stats.expansion_cap_hit,
+        "full_time_ns": full_time,
+        "cached_time_ns": cached_time,
+    }
+
+
+def run_benchmark(args):
+    graph = LmdbCategoryGraph(args.lmdb_dir)
+    try:
+        budgets = parse_int_list(args.budgets)
+        boundary_depths = parse_int_list(args.boundary_depths)
+        target_depths = parse_int_list(args.target_depths)
+        boundary_nodes, _boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
+            graph,
+            args.root,
+            boundary_depths,
+            args.children_per_node,
+            args.frontier_limit,
+            args.boundaries_per_depth,
+            args.seed + ":boundary",
+        )
+        targets, target_depth_by_node, target_counts = select_targets_by_child_depth(
+            graph,
+            args.root,
+            target_depths,
+            args.children_per_node,
+            args.frontier_limit,
+            args.targets_per_depth,
+            args.seed + ":target",
+        )
+        cache, cache_rows = build_boundary_cache(
+            graph,
+            args.root,
+            boundary_nodes,
+            args.boundary_budget,
+            args.path_cap,
+            args.expansion_cap,
+        )
+        records = [{
+            "record_type": "boundary_cache_selection",
+            "graph": args.graph_name,
+            "root": args.root,
+            "boundary_counts": boundary_counts,
+            "target_counts": target_counts,
+            "boundary_nodes": len(boundary_nodes),
+            "cached_boundary_nodes": len(cache),
+            "targets": len(targets),
+            "budgets": budgets,
+            "boundary_budget": args.boundary_budget,
+        }]
+        records.extend(cache_rows)
+        for target in targets:
+            for budget in budgets:
+                full_started = time.perf_counter_ns()
+                full_hist, full_stats = bounded_parent_histogram(
+                    graph.parents,
+                    target,
+                    args.root,
+                    budget,
+                    args.path_cap,
+                    args.expansion_cap,
+                )
+                full_time = time.perf_counter_ns() - full_started
+                cached_started = time.perf_counter_ns()
+                cached_hist, cached_stats = cached_parent_histogram(
+                    graph.parents,
+                    target,
+                    args.root,
+                    budget,
+                    cache,
+                    args.path_cap,
+                    args.expansion_cap,
+                )
+                cached_time = time.perf_counter_ns() - cached_started
+                records.append(
+                    comparison_record(
+                        args.graph_name,
+                        args.root,
+                        target,
+                        target_depth_by_node[target],
+                        budget,
+                        full_hist,
+                        full_stats,
+                        full_time,
+                        cached_hist,
+                        cached_stats,
+                        cached_time,
+                    )
+                )
+        return records, summarize(records)
+    finally:
+        graph.close()
+
+
+def summarize(records):
+    selection = next((row for row in records if row.get("record_type") == "boundary_cache_selection"), {})
+    cache_rows = [row for row in records if row.get("record_type") == "boundary_cache_entry"]
+    comparison_rows = [row for row in records if row.get("record_type") == "boundary_cache_comparison"]
+    lines = [
+        "# LMDB Boundary Cache Benchmark",
+        "",
+        "Graph: `{}`".format(selection.get("graph", "")),
+        "",
+        "Root: `{}`".format(selection.get("root", "")),
+        "",
+        "## Selection",
+        "",
+        "| role | child_depth | sampled_frontier_nodes |",
+        "|------|-------------|------------------------|",
+    ]
+    for depth, count in sorted(selection.get("boundary_counts", {}).items()):
+        lines.append("| boundary | {} | {} |".format(depth, count))
+    for depth, count in sorted(selection.get("target_counts", {}).items()):
+        lines.append("| target | {} | {} |".format(depth, count))
+    lines.extend([
+        "",
+        "| boundary_nodes | cached_boundary_nodes | targets | boundary_budget |",
+        "|----------------|-----------------------|---------|-----------------|",
+        "| {} | {} | {} | {} |".format(
+            selection.get("boundary_nodes", 0),
+            selection.get("cached_boundary_nodes", 0),
+            selection.get("targets", 0),
+            selection.get("boundary_budget", 0),
+        ),
+        "",
+        "## Boundary Cache Build",
+        "",
+        "| entries | cached | mean_paths | mean_bins | mean_nodes_expanded | capped_entries |",
+        "|---------|--------|------------|-----------|---------------------|----------------|",
+    ])
+    cached_entries = [row for row in cache_rows if row.get("cached")]
+    lines.append(
+        "| {entries} | {cached} | {mean_paths:.3f} | {mean_bins:.3f} | {mean_expanded:.1f} | {capped} |".format(
+            entries=len(cache_rows),
+            cached=len(cached_entries),
+            mean_paths=statistics.mean(int(row["path_count"]) for row in cached_entries) if cached_entries else 0.0,
+            mean_bins=statistics.mean(int(row["support_bins"]) for row in cached_entries) if cached_entries else 0.0,
+            mean_expanded=statistics.mean(int(row["nodes_expanded"]) for row in cache_rows) if cache_rows else 0.0,
+            capped=sum(1 for row in cache_rows if row.get("path_cap_hit") or row.get("expansion_cap_hit")),
+        )
+    )
+    lines.extend([
+        "",
+        "## Full Search Versus Boundary Cache",
+        "",
+        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_node_ratio | mean_cache_hits | full_capped | cached_capped |",
+        "|--------|------|---------|--------|--------|----------|-----------------|-----------------|-------------|---------------|",
+    ])
+    by_budget = {}
+    for row in comparison_rows:
+        by_budget.setdefault(row["budget"], []).append(row)
+    for budget in sorted(by_budget):
+        rows = by_budget[budget]
+        l1 = [float(row["l1_error"]) for row in rows]
+        cdf = [float(row["max_cdf_error"]) for row in rows]
+        ratios = [float(row["node_expansion_ratio"]) for row in rows]
+        hits = [int(row["cache_hits"]) for row in rows]
+        lines.append(
+            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_ratio:.3f} | {mean_hits:.3f} | {full_capped} | {cached_capped} |".format(
+                budget=budget,
+                rows=len(rows),
+                mean_l1=statistics.mean(l1) if l1 else 0.0,
+                p95_l1=percentile(l1, 95),
+                max_l1=max(l1, default=0.0),
+                mean_cdf=statistics.mean(cdf) if cdf else 0.0,
+                mean_ratio=statistics.mean(ratios) if ratios else 0.0,
+                mean_hits=statistics.mean(hits) if hits else 0.0,
+                full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
+                cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def percentile(values, pct):
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, round((pct / 100.0) * (len(ordered) - 1))))
+    return float(ordered[index])
+
+
+def write_outputs(records, summary, output_dir, graph_name):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_name = safe_graph_name(graph_name)
+    jsonl_path = output_dir / "lmdb_parent_boundary_cache_benchmark_{}_{}.jsonl".format(safe_name, timestamp)
+    summary_path = output_dir / "lmdb_parent_boundary_cache_benchmark_summary_{}_{}.md".format(safe_name, timestamp)
+    with jsonl_path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    summary_path.write_text(summary, encoding="utf-8")
+    return jsonl_path, summary_path
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lmdb-dir", required=True, type=Path, help="Numeric-keyed category LMDB directory.")
+    parser.add_argument("--root", required=True, type=int, help="Numeric root id.")
+    parser.add_argument("--graph-name", default="lmdb_boundary_cache", help="Graph label used in output filenames.")
+    parser.add_argument("--boundary-depths", default="2", help="Child depths used as cache boundary candidates.")
+    parser.add_argument("--target-depths", default="3", help="Child depths used as target candidates.")
+    parser.add_argument("--children-per-node", type=int, default=128, help="Deterministic child sample cap per frontier node.")
+    parser.add_argument("--frontier-limit", type=int, default=2000, help="Deterministic cap for each sampled child-depth frontier.")
+    parser.add_argument("--boundaries-per-depth", type=int, default=100, help="Boundary cache candidates per requested boundary depth.")
+    parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
+    parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
+    parser.add_argument("--budgets", default=",".join(map(str, DEFAULT_BUDGETS)), help="Comma-separated target path budgets.")
+    parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root paths.")
+    parser.add_argument("--expansion-cap", type=int, default=250000, help="Stop a row after this many expanded nodes.")
+    parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
+    parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
+    args = parser.parse_args(argv)
+
+    records, summary = run_benchmark(args)
+    if args.output_dir:
+        jsonl_path, summary_path = write_outputs(records, summary, args.output_dir, args.graph_name)
+        print(summary, end="")
+        print("jsonl={}".format(jsonl_path))
+        print("summary={}".format(summary_path))
+    else:
+        print(summary, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
