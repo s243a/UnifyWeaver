@@ -46,7 +46,8 @@
     register_functor_string/1,           % +NameStr (assert into functor_string_global table)
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
-    llvm_emit_atom_field_eq_guard/7      % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_atom_field_slice/5         % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -4307,6 +4308,76 @@ fe.yes:
 
 fe.no:
   ret i1 false
+}
+
+define %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fs.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %fs.empty = insertvalue %WamSlice %fs.empty0, i64 0, 1
+  %fs.t = call i32 @value_tag(%Value %atom_value)
+  %fs.is_atom = icmp eq i32 %fs.t, 0
+  br i1 %fs.is_atom, label %fs.check_index, label %fs.no
+
+fs.check_index:
+  %fs.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fs.index_ok, label %fs.lookup, label %fs.no
+
+fs.lookup:
+  %fs.aid = call i64 @value_payload(%Value %atom_value)
+  %fs.str = call i8* @wam_atom_to_string(i64 %fs.aid)
+  %fs.null = icmp eq i8* %fs.str, null
+  br i1 %fs.null, label %fs.no, label %fs.find_loop
+
+fs.find_loop:
+  %fs.cur_index = phi i64 [ 1, %fs.lookup ], [ %fs.next_index, %fs.after_sep ]
+  %fs.start_pos = phi i64 [ 0, %fs.lookup ], [ %fs.after_sep_pos, %fs.after_sep ]
+  %fs.index_match = icmp eq i64 %fs.cur_index, %field_index
+  br i1 %fs.index_match, label %fs.end_loop, label %fs.skip_loop
+
+fs.skip_loop:
+  %fs.skip_pos = phi i64 [ %fs.start_pos, %fs.find_loop ], [ %fs.skip_next_pos, %fs.skip_next ]
+  %fs.skip_ptr = getelementptr i8, i8* %fs.str, i64 %fs.skip_pos
+  %fs.skip_ch = load i8, i8* %fs.skip_ptr
+  %fs.skip_nul = icmp eq i8 %fs.skip_ch, 0
+  br i1 %fs.skip_nul, label %fs.no, label %fs.skip_check_sep
+
+fs.skip_check_sep:
+  %fs.skip_is_sep = icmp eq i8 %fs.skip_ch, %sep
+  br i1 %fs.skip_is_sep, label %fs.after_sep, label %fs.skip_next
+
+fs.skip_next:
+  %fs.skip_next_pos = add i64 %fs.skip_pos, 1
+  br label %fs.skip_loop
+
+fs.after_sep:
+  %fs.after_sep_pos = add i64 %fs.skip_pos, 1
+  %fs.next_index = add i64 %fs.cur_index, 1
+  br label %fs.find_loop
+
+fs.end_loop:
+  %fs.end_pos = phi i64 [ %fs.start_pos, %fs.find_loop ], [ %fs.end_next_pos, %fs.end_next ]
+  %fs.end_ptr = getelementptr i8, i8* %fs.str, i64 %fs.end_pos
+  %fs.end_ch = load i8, i8* %fs.end_ptr
+  %fs.end_nul = icmp eq i8 %fs.end_ch, 0
+  br i1 %fs.end_nul, label %fs.yes, label %fs.end_check_sep
+
+fs.end_check_sep:
+  %fs.end_is_sep = icmp eq i8 %fs.end_ch, %sep
+  br i1 %fs.end_is_sep, label %fs.yes, label %fs.end_next
+
+fs.end_next:
+  %fs.end_next_pos = add i64 %fs.end_pos, 1
+  br label %fs.end_loop
+
+fs.yes:
+  %fs.ptr = getelementptr i8, i8* %fs.str, i64 %fs.start_pos
+  %fs.len = sub i64 %fs.end_pos, %fs.start_pos
+  %fs.slice0 = insertvalue %WamSlice undef, i8* %fs.ptr, 0
+  %fs.slice = insertvalue %WamSlice %fs.slice0, i64 %fs.len, 1
+  ret %WamSlice %fs.slice
+
+fs.no:
+  ret %WamSlice %fs.empty
 }
 
 ; Dispatches on integer op codes:
@@ -15729,6 +15800,19 @@ llvm_emit_atom_field_eq_guard(GlobalBase, ValueIR, FieldIndex, Expected, SepCode
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_eq_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w)',
         [SafeBase, ArrLen, ArrLen, SafeBase,
          ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode]).
+
+%% llvm_emit_atom_field_slice(+ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR)
+%
+%  Emit a native field projection over an atom-backed text record. The runtime
+%  returns a %WamSlice without allocating a field substring; CallIR defines
+%  %SliceBase, %SliceBase_ptr, and %SliceBase_len.
+llvm_emit_atom_field_slice(ValueIR, FieldIndex, SepCode, SliceBase, CallIR) :-
+    format(atom(CallIR),
+        '  %~w = call %WamSlice @wam_atom_field_slice_value(%Value ~w, i64 ~w, i8 ~w)~n  %~w_ptr = extractvalue %WamSlice %~w, 0~n  %~w_len64 = extractvalue %WamSlice %~w, 1~n  %~w_len = trunc i64 %~w_len64 to i32',
+        [SliceBase, ValueIR, FieldIndex, SepCode,
+         SliceBase, SliceBase,
+         SliceBase, SliceBase,
+         SliceBase, SliceBase]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-

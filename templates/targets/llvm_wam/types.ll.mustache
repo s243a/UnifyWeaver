@@ -6,6 +6,9 @@
 ; Tag: 0=Atom, 1=Integer, 2=Float, 3=Compound, 4=List, 5=Ref, 6=Unbound, 7=Bool
 %Value = type { i32, i64 }
 
+; === Byte slice ===
+%WamSlice = type { i8*, i64 }             ; pointer, length
+
 ; === Compound and List (heap-allocated) ===
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args
 %List = type { i32, %Value* }             ; length, elements

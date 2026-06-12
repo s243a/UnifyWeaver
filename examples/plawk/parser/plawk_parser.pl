@@ -11,6 +11,7 @@
 %
 %      /^PREFIX/ { print $0 }
 %      $N == "VALUE" { print $0 }
+%      $N == "VALUE" { print $M, $K }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -19,13 +20,13 @@ plawk_parse_string(Source, Program) :-
     string_codes(Source, Codes),
     phrase(plawk_program(Program), Codes).
 
-plawk_program(program([], [rule(Pattern, [print(field(0))])], [])) -->
+plawk_program(program([], [rule(Pattern, [PrintAction])], [])) -->
     ws,
     pattern(Pattern),
     ws,
     "{",
     ws,
-    print_field_zero,
+    print_action(PrintAction),
     ws,
     "}",
     ws,
@@ -104,10 +105,32 @@ quoted_string_codes([Code | Codes]) -->
 quoted_string_codes([]) -->
     [].
 
-print_field_zero -->
+print_action(print(Fields)) -->
     "print",
     required_ws,
-    "$0".
+    print_fields(Fields).
+
+print_fields([Field | Fields]) -->
+    field_expr(Field),
+    print_fields_rest(Fields).
+
+print_fields_rest([Field | Fields]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    field_expr(Field),
+    print_fields_rest(Fields).
+print_fields_rest([]) -->
+    [].
+
+field_expr(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
 
 required_ws -->
     [Code],
