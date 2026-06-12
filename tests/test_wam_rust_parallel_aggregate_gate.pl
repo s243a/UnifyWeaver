@@ -11,7 +11,9 @@
 % (parallel_gate.aggregate_parallel_decision via the cost model) reaches codegen.
 
 :- use_module('../src/unifyweaver/targets/wam_target', [compile_predicate_to_wam/3]).
-:- use_module('../src/unifyweaver/targets/wam_rust_target', [compile_wam_predicate_to_rust/4]).
+:- use_module('../src/unifyweaver/targets/wam_rust_target',
+              [compile_wam_predicate_to_rust/4, write_wam_rust_project/3]).
+:- use_module(library(readutil), [read_file_to_string/3]).
 
 % ---- fixture program (asserted into user) ----------------------------------
 :- dynamic tpa_fact/1.
@@ -76,5 +78,21 @@ test(annotated_code_still_well_formed) :-
     rust_of(tpa_rec_agg/1, R),
     assertion(sub_string(R, _, _, _, "pub fn")),
     assertion(sub_string(R, _, _, _, "-> bool")).
+
+% Project mode goes through the *shared-table* wrapper path (a different code
+% path than the standalone compile above); the annotation must reach it too,
+% else real generated projects miss it.
+test(project_mode_shared_path_annotated, [cleanup(safe_rmdir('output/test_t7_gate_project'))]) :-
+    Dir = 'output/test_t7_gate_project',
+    safe_rmdir(Dir),
+    once(write_wam_rust_project([user:tpa_rec_agg/1, user:tpa_rec/1, user:tpa_fact/1],
+        [module_name(user), parallel_aggregates(true)], Dir)),
+    atom_concat(Dir, '/src/lib.rs', LibRs),
+    read_file_to_string(LibRs, S, []),
+    assertion(sub_string(S, _, _, _, "parallel-eligible")),
+    assertion(sub_string(S, _, _, _, "pub fn tpa_rec_agg_1")).
+
+safe_rmdir(Dir) :-
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ).
 
 :- end_tests(wam_rust_parallel_aggregate_gate).

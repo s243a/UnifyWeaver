@@ -3814,7 +3814,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
 }'
     ),
     % Pass 3: generate code for each predicate
-    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
     % Combine shared table + predicate code
     (   SharedCode == ""
     ->  atomic_list_concat(PredCodes, '\n\n', Code)
@@ -3957,69 +3957,75 @@ collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode
 collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
 
-%% generate_predicate_codes(+Classified, +WamEntries, -PredCodes)
-%  Generates Rust code for each classified predicate.
-generate_predicate_codes([], _, []).
+%% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
+%  Generates Rust code for each classified predicate. Options is threaded so the
+%  shared-table WAM path can consult the T7 parallel-aggregate gate.
+generate_predicate_codes([], _, _, []).
 generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel,
                                      kernel_with_wrapper(Kernel, WrapperCode))|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     !,
     Kernel = recursive_kernel(Kind, _, _),
     format(string(Code),
         "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate\n~w",
         [Kind, Pred, Arity, WrapperCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel, Kernel)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     % FFI kernel — no WAM code needed; handled by setup_foreign_predicates
     % and execute_foreign_predicate at runtime via CallForeign dispatch.
     Kernel = recursive_kernel(Kind, _, _),
     format(string(Code),
         "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate",
         [Kind, Pred, Arity]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: native\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     % Look up this predicate's start PC in the shared table
     member(wam_entry(Pred, Arity, StartPC), WamEntries),
-    compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Code),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Options, Code),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: failed\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 
-%% compile_wam_predicate_to_rust_shared(+Pred/Arity, +StartPC, -RustCode)
+%% compile_wam_predicate_to_rust_shared(+Pred/Arity, +StartPC, +Options, -RustCode)
 %  Generates a thin WAM predicate wrapper that references the shared code table.
-compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
+%  Consults the T7 parallel-aggregate gate (cost machinery) so project-mode
+%  codegen carries the same parallel-eligibility annotation as the standalone
+%  path; gated behind parallel_aggregates(true), so default output is unchanged.
+compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Options, RustCode) :-
     atom_string(Pred, PredStr),
     rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
+    rust_predicate_parallel_decision(Pred/Arity, Options, ParDecision),
+    rust_parallel_annotation(ParDecision, AggAnno),
     format(string(RustCode),
 '// Strategy: wam
 /// WAM-compiled predicate: ~w/~w (shared table, pc=~w)
 /// Compiled via WAM for predicates that resist native lowering.
-pub fn ~w(~w) -> bool {
+~wpub fn ~w(~w) -> bool {
     let (code, labels) = get_shared_wam();
     vm.code = code.clone();
     vm.labels = labels.clone();
     vm.pc = ~w;
 ~w
     vm.run()
-}', [PredStr, Arity, StartPC, FuncName, ArgList, StartPC, ArgSetup]).
+}', [PredStr, Arity, StartPC, AggAnno, FuncName, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-
