@@ -55,8 +55,8 @@ are complementary.
 plawk/
   README.md          this file
   core/              process_all/4, reader/handler/writer, item_field/3   (Phase 0)
-  parser/            awk-like surface -> AST -> Prolog core               (Phase 2)
-  codegen/           AST -> Prolog-core source emission                   (Phase 2)
+  parser/            awk-like surface -> AST                              (Phase 2)
+  codegen/           AST -> native WAM/LLVM driver fragments              (Phase 2)
 ```
 
 ## Run the Phase 0 prototype
@@ -71,9 +71,12 @@ swipl -q -s tests/test_plawk_native_stream_loop_driver.pl -g "setenv('UW_SMOKE_T
 swipl -q -s tests/test_plawk_native_counter_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_native_output_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_native_lowered_handler_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
+The first Phase 2 surface smoke parses `/^ERROR/ { print $0 }`, emits a native
+streaming WAM/LLVM driver, and prints matching records from a text file.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
@@ -86,6 +89,7 @@ concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
 - [`docs/design/PLAWK_IMPLEMENTATION_PLAN.md`](../../docs/design/PLAWK_IMPLEMENTATION_PLAN.md)
 
 The implementation plan's **Codebase reconciliation** section captures the
-three audit findings: modes are already consumed by codegen, `:- det` is not,
-and a buffered streaming reader is the one builtin that must be added before the
-awk loop is real.
+original audit findings and the current compiled-stream boundary. The buffered
+streaming reader now exists in the WAM/LLVM target; the remaining work is to
+grow the surface parser/codegen until ordinary awk-like programs lower through
+the same native streaming path.

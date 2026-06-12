@@ -114,12 +114,11 @@ Reader variants:
   `record(term, Term)`; the compiled equivalent of `read/1`.
 - **DCG-based reader** — applies a DCG grammar to the stream.
 
-> **Implementation note (gap).** The LLVM target currently has **no streaming
-> input builtin** — only whole-file `read_file_to_atom/2`. The text line reader
-> therefore requires a new buffered builtin (`stream_open`/`read_line`/
-> `stream_close`). See Implementation Plan § Codebase reconciliation for the
-> sketch. A Phase-0 shortcut is to slurp the whole input and `split_string/4` on
-> newlines, iterating in Prolog (correct, but not unbounded-stream-safe).
+> **Implementation note.** The LLVM target now exposes buffered stream builtins
+> (`stream_open`/`read_line`/`stream_close`) plus native helper calls for stream
+> loops. The original Phase-0 whole-file `read_file_to_atom/2` shortcut remains
+> useful for simple Prolog-core tests, but compiled PLAWK smokes should prefer
+> the target-side streaming path.
 
 ---
 
