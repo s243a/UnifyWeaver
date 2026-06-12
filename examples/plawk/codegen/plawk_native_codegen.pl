@@ -18,6 +18,7 @@
 %      $N == "VALUE" { print $0 }
 %      $N == "VALUE" { print $M, $K }
 %      $N == "VALUE" { count++ } END { print count }
+%      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -116,19 +117,26 @@ fail_close:
          BytesLen, BytesLen, PathLen, GuardCallIR, PrintActionIR]).
 
 plawk_program_native_driver_ir(
-    program([], [rule(Pattern, [inc(var(Name))])], [end([print([var(Name)])])]),
+    program([], [rule(Pattern, Actions)], [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
+    plawk_scalar_state_slots(Actions, PrintFields, Slots, ActionVars),
     atom_codes(InputPath, PathCodes),
     length(PathCodes, PathLen),
     BytesLen is PathLen + 1,
     llvm_c_bytes(PathCodes, PathBytes),
     plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
+    plawk_scalar_loop_phi_ir(Slots, LoopPhiIR),
+    plawk_scalar_match_update_ir(Slots, ActionVars, MatchUpdateIR),
+    plawk_scalar_next_phi_ir(Slots, NextPhiIR),
+    plawk_scalar_end_print_ir(PrintFields, Slots, EndPrintIR),
     format(atom(DriverIR),
 '@.plawk_surface_path = private constant [~w x i8] c"~w\\00"
 @.plawk_surface_eof = private constant [12 x i8] c"end_of_file\\00"
-@.plawk_surface_print_i64 = private constant [5 x i8] c"%ld\\0A\\00"
+@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+@.plawk_surface_print_space = private constant [2 x i8] c" \\00"
+@.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 ~w
 
 define i32 @main() {
@@ -148,7 +156,7 @@ check_handle_value:
   br i1 %handle_ok, label %loop, label %fail_open
 
 loop:
-  %count = phi i64 [0, %check_handle_value], [%next_count, %continue_loop]
+~w
   %line = call %Value @wam_stream_read_line_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
@@ -170,17 +178,17 @@ check_eof:
 
 lowered_match:
 ~w
-  br i1 %is_match, label %increment_counter, label %keep_counter
+  br i1 %is_match, label %apply_actions, label %keep_state
 
-increment_counter:
-  %incremented_count = add i64 %count, 1
+apply_actions:
+~w
   br label %continue_loop
 
-keep_counter:
+keep_state:
   br label %continue_loop
 
 continue_loop:
-  %next_count = phi i64 [%incremented_count, %increment_counter], [%count, %keep_counter]
+~w
   br label %loop
 
 close_stream:
@@ -188,8 +196,7 @@ close_stream:
   br i1 %close_ok, label %end_print, label %fail_close
 
 end_print:
-  %count_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
-  %printed_count = call i32 (i8*, ...) @printf(i8* %count_fmt, i64 %count)
+~w
   ret i32 0
 
 fail_open:
@@ -209,7 +216,8 @@ fail_close:
 ',
         [BytesLen, PathBytes,
          GuardGlobalIR,
-         BytesLen, BytesLen, PathLen, GuardCallIR]).
+         BytesLen, BytesLen, PathLen, LoopPhiIR, GuardCallIR,
+         MatchUpdateIR, NextPhiIR, EndPrintIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -219,6 +227,101 @@ llvm_c_bytes([Code | Rest], Bytes) :-
 
 llvm_c_byte(Code, Byte) :-
     format(atom(Byte), '\\~|~`0t~16r~2+', [Code]).
+
+plawk_scalar_state_slots(Actions, PrintFields, Slots, ActionVars) :-
+    maplist(plawk_scalar_increment_action, Actions, ActionVars),
+    ActionVars \== [],
+    maplist(plawk_scalar_print_expr, PrintFields, PrintVars),
+    append(ActionVars, PrintVars, Names0),
+    sort(Names0, Slots).
+
+plawk_scalar_increment_action(inc(var(Name)), Name).
+
+plawk_scalar_print_expr(var(Name), Name).
+
+plawk_scalar_loop_phi_ir(Slots, IR) :-
+    phrase(plawk_scalar_loop_phi_lines(Slots, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_scalar_loop_phi_lines([], _) -->
+    [].
+plawk_scalar_loop_phi_lines([_Name | Rest], Index) -->
+    { format(atom(Line),
+          '  %slot_~w = phi i64 [0, %check_handle_value], [%next_slot_~w, %continue_loop]',
+          [Index, Index]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_scalar_loop_phi_lines(Rest, NextIndex).
+
+plawk_scalar_match_update_ir(Slots, ActionVars, IR) :-
+    phrase(plawk_scalar_match_update_lines(Slots, ActionVars, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_scalar_match_update_lines([], _ActionVars, _) -->
+    [].
+plawk_scalar_match_update_lines([Name | Rest], ActionVars, Index) -->
+    { plawk_scalar_increment_count(Name, ActionVars, Count),
+      format(atom(Line),
+          '  %match_slot_~w = add i64 %slot_~w, ~w',
+          [Index, Index, Count]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_scalar_match_update_lines(Rest, ActionVars, NextIndex).
+
+plawk_scalar_increment_count(Name, ActionVars, Count) :-
+    include(==(Name), ActionVars, Matches),
+    length(Matches, Count).
+
+plawk_scalar_next_phi_ir(Slots, IR) :-
+    phrase(plawk_scalar_next_phi_lines(Slots, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_scalar_next_phi_lines([], _) -->
+    [].
+plawk_scalar_next_phi_lines([_Name | Rest], Index) -->
+    { format(atom(Line),
+          '  %next_slot_~w = phi i64 [%match_slot_~w, %apply_actions], [%slot_~w, %keep_state]',
+          [Index, Index, Index]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_scalar_next_phi_lines(Rest, NextIndex).
+
+plawk_scalar_end_print_ir(PrintFields, Slots, IR) :-
+    phrase(plawk_scalar_end_print_lines(PrintFields, Slots, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_scalar_end_print_lines([], _Slots, _) -->
+    ['  %end_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+     '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)'].
+plawk_scalar_end_print_lines([var(Name) | Rest], Slots, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex),
+    { nth0(SlotIndex, Slots, Name),
+      format(atom(FmtPtr),
+          '  %end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [PrintIndex]),
+      format(atom(PrintCall),
+          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %slot_~w)',
+          [PrintIndex, PrintIndex, SlotIndex]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_scalar_end_print_lines(Rest, Slots, NextPrintIndex).
+
+plawk_scalar_end_separator_lines(0) -->
+    !,
+    [].
+plawk_scalar_end_separator_lines(PrintIndex) -->
+    { format(atom(SpacePtr),
+          '  %end_space_fmt_~w = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_space, i32 0, i32 0',
+          [PrintIndex]),
+      format(atom(SpaceCall),
+          '  %printed_end_space_~w = call i32 (i8*, ...) @printf(i8* %end_space_fmt_~w)',
+          [PrintIndex, PrintIndex])
+    },
+    [SpacePtr, SpaceCall].
 
 plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
     llvm_emit_atom_prefix_guard(plawk_surface_prefix, '%line', Prefix,

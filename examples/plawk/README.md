@@ -78,7 +78,8 @@ The demo prints the record count and the lines whose first field is `ERROR`.
 The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `$1 == "ERROR" { print $0 }`, plus selected-field actions such as
 `$1 == "ERROR" { print $2, $3 }` and scalar state with
-`$1 == "ERROR" { count++ } END { print count }`.
+`$1 == "ERROR" { count++ } END { print count }`. Multiple scalar increments
+compile to indexed native slots, e.g. `{ errors++; matches++ }`.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
