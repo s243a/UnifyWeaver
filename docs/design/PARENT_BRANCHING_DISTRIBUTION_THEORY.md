@@ -528,3 +528,47 @@ the empirical pattern where the size-biased parent-branching signal can decline
 farther from the root. That refinement is planner-relevant, but should be held
 until deeper SimpleWiki and enwiki samples show that the stationary prior is
 materially miscalibrated.
+
+For LMDB exports, a sampled TSV is not enough to estimate parent branching.
+If the TSV was produced by a capped rooted child traversal, then `parents(v)`
+inside that TSV means "parents retained in the sample", not "parents of `v` in
+the full category graph". That can make a category with three, five, or more
+real parent categories look like a one-parent node simply because the other
+parents were outside the sampled subtree.
+
+The prior calibration therefore needs two parent-degree statistics:
+
+```text
+full_parent_degree(v)          = number of category_parent entries in LMDB
+root_reaching_parent_degree(v) = number of those parents with a parent-only
+                                 path back to the chosen root under the active
+                                 filter and depth/cycle policy
+```
+
+The first statistic measures raw Wikipedia category branching. The second is
+the admissible degree for a root-anchored parent-path histogram, because parents
+that cannot reach the root do not contribute to `H_v`. Both are useful: the
+full degree tells us how much branching the graph contains, while the
+root-reaching degree tells us how much of that branching is relevant to a
+specific root and category filter.
+
+The useful prior bucket is also not the child-BFS sampling depth. It is the
+scalar support upper bound:
+
+```text
+L_max(v) = maximum parent-only traversal distance from v back to root
+```
+
+`L_max` is the conservative horizon for the binomial or compound prior. In a
+near-chain region, `L_min` and `L_max` are close and either horizon gives a
+similar estimate. In enwiki, shortcut parents and side paths can make them
+diverge, so `L_max` is the safer admission signal for deciding how large the
+exact histogram might become before materialising it.
+
+`scripts/lmdb_parent_branching_diagnostic.py` is the corresponding full-graph
+diagnostic for numeric-keyed LMDB artifacts. It samples targets from the LMDB
+child index, measures parent degrees from the full LMDB parent index, computes
+bounded `L_min/L_max` by parent traversal, and reports size-biased parent
+branching by `L_max` bucket. The next enwiki run should use this diagnostic to
+decide whether a distribution-fit run needs a deeper ancestor-cone export
+rather than another capped subtree TSV.
