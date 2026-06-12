@@ -1,8 +1,9 @@
 # Static cost-analysis machinery
 
-**Status:** phase 1 built + tested (`src/unifyweaver/core/cost_analysis.pl`,
-`tests/test_cost_analysis.pl`, 16 tests green). Foundational analysis; consumers
-are wired incrementally.
+**Status:** built + tested. The machinery (`src/unifyweaver/core/cost_analysis.pl`,
+16 tests) **plus its first real consumer** — the T7 parallel-profitability gate
+(`src/unifyweaver/core/parallel_gate.pl`, 10 tests) — are green. Further consumers
+wired incrementally.
 
 ## Why
 
@@ -63,17 +64,28 @@ recursive_predicate(+PI, +Model)
 builtin_cost/2, cost_tier_threshold/2          % overridable tuning
 ```
 
-## How the gates consume it (next)
+## How the gates consume it
 
-- **T7 (parallel aggregate).** For a forkable `findall(Tmpl, Generator, _)`,
-  estimate the **per-branch body** cost (`goal_cost` of the generator's work
-  goal). `recursive`/`expensive` ⇒ parallelise-eligible; `trivial`/`cheap` ⇒
-  stay sequential. This replaces the runtime probe's *decision* (the probe can
-  remain as a cheap confirmation, or be dropped). The `par_aggregate.rs`
-  `ParConfig` was deliberately built pluggable for exactly this.
-- **T6 / T4 / T5.** Replace the magic-number thresholds with cost-tier checks on
-  the candidate clauses' bodies (e.g. only bother lowering when bodies aren't
-  `trivial`).
+- **T7 (parallel aggregate) — built (`parallel_gate.pl`).**
+  `aggregate_parallel_decision(+Goal, +Model, -Decision)` recognises a forkable
+  aggregate (`findall`/`aggregate_all`/`bagof`/`setof`) and returns `parallel`
+  vs `sequential` from the generator's cost tier. Key simplification: an
+  aggregate generator's own boundedness/weight *already* reflects per-branch
+  work — a pure enumerator (`member/2`, fact lookups) is cheap+bounded, a
+  generator calling a recursive predicate is unbounded, heavy per-solution work
+  has a high weight — so the decision needs no fragile "enumerator vs body"
+  split. Default policy: only `expensive`/`recursive` fan out (overridable via
+  `parallel_worthy_tier/1`); everything else stays sequential, the safe default
+  that never regresses. This is the *compile-time* decision the
+  `par_aggregate.rs` substrate's `ParConfig` was built pluggable for — the
+  runtime probe becomes a cheap confirmation rather than the decision.
+- **T6 — *not* a fit (deliberately not wired).** `t6_min_clauses` gates on
+  clause **count**, not body cost; first-argument indexing helps regardless of
+  per-clause work, so cost analysis adds nothing there. Documented so the
+  threshold isn't "fixed" with the wrong tool.
+- **T4 / T5 — candidate.** Could use a cost-tier check on candidate clause
+  bodies (e.g. prefer lowering all clauses when later clauses carry heavy
+  bodies), but this is multi-target and behaviour-changing — a separate step.
 
 ## Limitations (honest)
 
