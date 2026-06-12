@@ -38,6 +38,12 @@ test(parses_field_eq_increment_end_print_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [inc(var(count))])],
         [end([print([var(count)])])])).
 
+test(parses_field_eq_multi_increment_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { errors++; matches++ } END { print errors, matches }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [inc(var(errors)), inc(var(matches))])],
+        [end([print([var(errors), var(matches)])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -57,6 +63,11 @@ test(surface_field_eq_counts_matching_records) :-
     run_surface_print_smoke("$1 == \"ERROR\" { count++ } END { print count }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2\n").
+
+test(surface_field_eq_counts_multiple_scalar_slots) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { errors++; matches++ } END { print errors, matches }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "2 2\n").
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),

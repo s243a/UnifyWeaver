@@ -126,14 +126,21 @@ The native Phase 2 surface can now compile a scalar counter and an `END` action:
 $1 == "ERROR" { count++ } END { print count }
 ```
 
-For the sample input above, it prints:
+It can also compile multiple scalar increments in one action list:
+
+```awk
+$1 == "ERROR" { errors++; matches++ } END { print errors, matches }
+```
+
+For the sample input above, both forms count two matching records.
 
 ```text
 2
 ```
 
-This path lowers the field comparison and the counter to native LLVM code. The
-WAM runtime still supplies the streaming reader and atom helpers.
+This path lowers the field comparison and scalar counters to native LLVM code.
+Each scalar variable is an indexed `i64` slot in the streaming loop. The WAM
+runtime still supplies the streaming reader and atom helpers.
 
 ## Another example: count and print matching lines
 

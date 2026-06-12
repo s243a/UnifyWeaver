@@ -13,6 +13,7 @@
 %      $N == "VALUE" { print $0 }
 %      $N == "VALUE" { print $M, $K }
 %      $N == "VALUE" { count++ } END { print count }
+%      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -21,13 +22,13 @@ plawk_parse_string(Source, Program) :-
     string_codes(Source, Codes),
     phrase(plawk_program(Program), Codes).
 
-plawk_program(program([], [rule(Pattern, [Action])], EndClauses)) -->
+plawk_program(program([], [rule(Pattern, Actions)], EndClauses)) -->
     ws,
     pattern(Pattern),
     ws,
     "{",
     ws,
-    action(Action),
+    actions(Actions),
     ws,
     "}",
     ws,
@@ -118,6 +119,20 @@ end_clauses([end([PrintAction])]) -->
     ws,
     !.
 end_clauses([]) -->
+    [].
+
+actions([Action | Actions]) -->
+    action(Action),
+    actions_rest(Actions).
+
+actions_rest([Action | Actions]) -->
+    ws,
+    ";",
+    ws,
+    !,
+    action(Action),
+    actions_rest(Actions).
+actions_rest([]) -->
     [].
 
 action(Action) -->
