@@ -77,7 +77,8 @@ swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR
 The demo prints the record count and the lines whose first field is `ERROR`.
 The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `$1 == "ERROR" { print $0 }`, plus selected-field actions such as
-`$1 == "ERROR" { print $2, $3 }`.
+`$1 == "ERROR" { print $2, $3 }` and scalar state with
+`$1 == "ERROR" { count++ } END { print count }`.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
