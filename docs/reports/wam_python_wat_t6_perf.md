@@ -97,11 +97,17 @@ overwritten without binding. Regression test: `tests/test_wam_python_is_binding.
 construction, ground check) — all green; the full `test_wam_python_target` suite
 is unchanged.
 
-**Still open (separate follow-up):** the *lowered* Python emit mishandles
-in-clause structure construction — `parse_wam_text_py` drops `set_*`, and its
-write-mode model is heap-consecutive rather than the runtime's `.args`/write-ctx —
-so arithmetic-rule clauses remain wrong under `emit_mode(lowered)`. The T6 Python
-test therefore exercises fact predicates (`shade/1`) and 2-arg fact remainders
-(`tone/2`), which lower correctly, and avoids arithmetic rule bodies. Reconciling
-the lowered emit with the runtime's read/write-ctx structure model is tracked
-separately.
+**Lowered path — also fixed.** The *lowered* emit mishandled in-clause structure
+construction on the same theme: `parse_wam_text_py` dropped `set_*` entirely, its
+write model was heap-consecutive (`heap_put` + `state.s`) rather than the
+runtime's `.args`/write-ctx, and it built compounds with a stripped functor
+(`"+"` vs the runtime's `"+/2"`). Reconciled: `set_*` are parsed and emitted as
+`_write_ctx_put`, `put_structure`/`put_list`/`get_structure`/`get_list` use
+`_begin_write_ctx`/`_begin_read_ctx`, `unify_*` use `_read_ctx_get`/
+`_write_ctx_put`, and functors use the runtime naming — so inline native clause
+bodies build and unify terms identically to the interpreter. `emit_mode(lowered)`
+arithmetic and term construction now run correctly;
+`tests/test_wam_python_is_binding.pl` runs the same battery (unbound `is`, an
+`is`-accumulator, `X = Term`, nested construction, ground check) in **both**
+interpreter and lowered modes. The T6 Python test still uses fact predicates,
+which keeps its dispatch assertions independent of arithmetic.

@@ -3947,6 +3947,286 @@ compile_execute_builtin_to_llvm(Options, Code) :-
 @wam_stream_handle_table = internal global [4096 x %WamLineReader*] zeroinitializer
 @wam_stream_handle_count = internal global i32 0
 
+@.wam_stream_eof_atom = private constant [12 x i8] c"end_of_file\00"
+
+define %Value @wam_stream_fail_value() alwaysinline nounwind {
+entry:
+  %bad = call %Value @value_integer(i64 -1)
+  ret %Value %bad
+}
+
+define %Value @wam_stream_open_value(%Value %path_value) {
+entry:
+  %soh.t = call i32 @value_tag(%Value %path_value)
+  %soh.is_atom = icmp eq i32 %soh.t, 0
+  br i1 %soh.is_atom, label %soh.have_path, label %soh.fail
+
+soh.fail:
+  %soh.bad = call %Value @wam_stream_fail_value()
+  ret %Value %soh.bad
+
+soh.have_path:
+  %soh.aid = call i64 @value_payload(%Value %path_value)
+  %soh.path = call i8* @wam_atom_to_string(i64 %soh.aid)
+  %soh.path_null = icmp eq i8* %soh.path, null
+  br i1 %soh.path_null, label %soh.fail, label %soh.open
+
+soh.open:
+  %soh.fd = call i32 @open(i8* %soh.path, i32 0, i32 0)
+  %soh.open_ok = icmp sge i32 %soh.fd, 0
+  br i1 %soh.open_ok, label %soh.alloc_reader, label %soh.fail
+
+soh.alloc_reader:
+  %soh.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %soh.reader_mem = call i8* @malloc(i64 %soh.reader_size)
+  %soh.reader_null = icmp eq i8* %soh.reader_mem, null
+  br i1 %soh.reader_null, label %soh.close_fd_fail, label %soh.alloc_buf
+
+soh.close_fd_fail:
+  call i32 @close(i32 %soh.fd)
+  br label %soh.fail
+
+soh.alloc_buf:
+  %soh.buf = call i8* @malloc(i64 4096)
+  %soh.buf_null = icmp eq i8* %soh.buf, null
+  br i1 %soh.buf_null, label %soh.free_reader_fail, label %soh.init
+
+soh.free_reader_fail:
+  call void @free(i8* %soh.reader_mem)
+  call i32 @close(i32 %soh.fd)
+  br label %soh.fail
+
+soh.init:
+  %soh.reader = bitcast i8* %soh.reader_mem to %WamLineReader*
+  %soh.fd_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 0
+  store i32 %soh.fd, i32* %soh.fd_slot
+  %soh.buf_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 1
+  store i8* %soh.buf, i8** %soh.buf_slot
+  %soh.cap_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 2
+  store i64 4096, i64* %soh.cap_slot
+  %soh.len_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 3
+  store i64 0, i64* %soh.len_slot
+  %soh.pos_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 4
+  store i64 0, i64* %soh.pos_slot
+  %soh.count = load i32, i32* @wam_stream_handle_count
+  %soh.next = add i32 %soh.count, 1
+  %soh.cap_ok = icmp ult i32 %soh.next, 4096
+  br i1 %soh.cap_ok, label %soh.store_handle, label %soh.close_all_fail
+
+soh.store_handle:
+  %soh.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %soh.next
+  store %WamLineReader* %soh.reader, %WamLineReader** %soh.slot
+  store i32 %soh.next, i32* @wam_stream_handle_count
+  %soh.handle = zext i32 %soh.next to i64
+  %soh.v = call %Value @value_integer(i64 %soh.handle)
+  ret %Value %soh.v
+
+soh.close_all_fail:
+  call i32 @close(i32 %soh.fd)
+  call void @free(i8* %soh.buf)
+  call void @free(i8* %soh.reader_mem)
+  br label %soh.fail
+}
+
+define %Value @wam_stream_read_line_value(%Value %handle_value) {
+entry:
+  %rhv.t = call i32 @value_tag(%Value %handle_value)
+  %rhv.is_int = icmp eq i32 %rhv.t, 1
+  br i1 %rhv.is_int, label %rhv.lookup_handle, label %rhv.fail
+
+rhv.fail:
+  %rhv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rhv.bad
+
+rhv.lookup_handle:
+  %rhv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rhv.handle = trunc i64 %rhv.handle64 to i32
+  %rhv.handle_min = icmp sgt i32 %rhv.handle, 0
+  %rhv.handle_max = icmp ult i32 %rhv.handle, 4096
+  %rhv.handle_ok = and i1 %rhv.handle_min, %rhv.handle_max
+  br i1 %rhv.handle_ok, label %rhv.load_handle, label %rhv.fail
+
+rhv.load_handle:
+  %rhv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rhv.handle
+  %rhv.reader = load %WamLineReader*, %WamLineReader** %rhv.slot
+  %rhv.reader_null = icmp eq %WamLineReader* %rhv.reader, null
+  br i1 %rhv.reader_null, label %rhv.fail, label %rhv.have_handle
+
+rhv.have_handle:
+  %rhv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 0
+  %rhv.fd = load i32, i32* %rhv.fd_slot
+  %rhv.fd_ok = icmp sge i32 %rhv.fd, 0
+  br i1 %rhv.fd_ok, label %rhv.alloc_out, label %rhv.fail
+
+rhv.alloc_out:
+  call void @wam_arena_ensure()
+  %rhv.out = call i8* @wam_arena_alloc(i64 65537)
+  br label %rhv.loop
+
+rhv.loop:
+  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.append_store ]
+  %rhv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 1
+  %rhv.buf = load i8*, i8** %rhv.buf_slot
+  %rhv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 3
+  %rhv.len = load i64, i64* %rhv.len_slot
+  %rhv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 4
+  %rhv.pos = load i64, i64* %rhv.pos_slot
+  %rhv.have_byte = icmp slt i64 %rhv.pos, %rhv.len
+  br i1 %rhv.have_byte, label %rhv.consume, label %rhv.fill
+
+rhv.fill:
+  %rhv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 2
+  %rhv.cap = load i64, i64* %rhv.cap_slot
+  %rhv.n = call i64 @read(i32 %rhv.fd, i8* %rhv.buf, i64 %rhv.cap)
+  %rhv.n_neg = icmp slt i64 %rhv.n, 0
+  br i1 %rhv.n_neg, label %rhv.fail, label %rhv.check_eof
+
+rhv.check_eof:
+  %rhv.n_zero = icmp eq i64 %rhv.n, 0
+  br i1 %rhv.n_zero, label %rhv.eof_or_partial, label %rhv.after_read
+
+rhv.after_read:
+  store i64 %rhv.n, i64* %rhv.len_slot
+  store i64 0, i64* %rhv.pos_slot
+  br label %rhv.loop
+
+rhv.eof_or_partial:
+  %rhv.empty_line = icmp eq i64 %rhv.out_len, 0
+  br i1 %rhv.empty_line, label %rhv.eof, label %rhv.finalize
+
+rhv.consume:
+  %rhv.char_ptr = getelementptr i8, i8* %rhv.buf, i64 %rhv.pos
+  %rhv.ch = load i8, i8* %rhv.char_ptr
+  %rhv.pos_next = add i64 %rhv.pos, 1
+  store i64 %rhv.pos_next, i64* %rhv.pos_slot
+  %rhv.is_lf = icmp eq i8 %rhv.ch, 10
+  br i1 %rhv.is_lf, label %rhv.finalize, label %rhv.append
+
+rhv.append:
+  %rhv.has_room = icmp ult i64 %rhv.out_len, 65536
+  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.fail
+
+rhv.append_store:
+  %rhv.out_ptr = getelementptr i8, i8* %rhv.out, i64 %rhv.out_len
+  store i8 %rhv.ch, i8* %rhv.out_ptr
+  %rhv.next_out_len = add i64 %rhv.out_len, 1
+  br label %rhv.loop
+
+rhv.finalize:
+  %rhv.has_chars = icmp sgt i64 %rhv.out_len, 0
+  br i1 %rhv.has_chars, label %rhv.check_cr, label %rhv.intern_empty
+
+rhv.check_cr:
+  %rhv.last_idx = sub i64 %rhv.out_len, 1
+  %rhv.last_ptr = getelementptr i8, i8* %rhv.out, i64 %rhv.last_idx
+  %rhv.last = load i8, i8* %rhv.last_ptr
+  %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
+  %rhv.trim_len = select i1 %rhv.last_is_cr, i64 %rhv.last_idx, i64 %rhv.out_len
+  br label %rhv.intern
+
+rhv.intern_empty:
+  br label %rhv.intern
+
+rhv.intern:
+  %rhv.final_len = phi i64 [ %rhv.trim_len, %rhv.check_cr ], [ 0, %rhv.intern_empty ]
+  %rhv.term = getelementptr i8, i8* %rhv.out, i64 %rhv.final_len
+  store i8 0, i8* %rhv.term
+  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.out, i64 %rhv.final_len)
+  %rhv.v0 = insertvalue %Value undef, i32 0, 0
+  %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
+  ret %Value %rhv.v
+
+rhv.eof:
+  %rhv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rhv.eof_aid = call i64 @wam_intern_atom(i8* %rhv.eof_ptr, i64 11)
+  %rhv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rhv.eof_v = insertvalue %Value %rhv.eof_v0, i64 %rhv.eof_aid, 1
+  ret %Value %rhv.eof_v
+}
+
+define i1 @wam_stream_close_value(%Value %handle_value) {
+entry:
+  %sch.t = call i32 @value_tag(%Value %handle_value)
+  %sch.is_int = icmp eq i32 %sch.t, 1
+  br i1 %sch.is_int, label %sch.lookup_handle, label %sch.fail
+
+sch.fail:
+  ret i1 false
+
+sch.lookup_handle:
+  %sch.handle64 = call i64 @value_payload(%Value %handle_value)
+  %sch.handle = trunc i64 %sch.handle64 to i32
+  %sch.handle_min = icmp sgt i32 %sch.handle, 0
+  %sch.handle_max = icmp ult i32 %sch.handle, 4096
+  %sch.handle_ok = and i1 %sch.handle_min, %sch.handle_max
+  br i1 %sch.handle_ok, label %sch.load_handle, label %sch.fail
+
+sch.load_handle:
+  %sch.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %sch.handle
+  %sch.reader = load %WamLineReader*, %WamLineReader** %sch.slot
+  %sch.reader_null = icmp eq %WamLineReader* %sch.reader, null
+  br i1 %sch.reader_null, label %sch.already_closed, label %sch.have_handle
+
+sch.already_closed:
+  ret i1 true
+
+sch.have_handle:
+  %sch.fd_slot = getelementptr %WamLineReader, %WamLineReader* %sch.reader, i32 0, i32 0
+  %sch.fd = load i32, i32* %sch.fd_slot
+  %sch.fd_ok = icmp sge i32 %sch.fd, 0
+  br i1 %sch.fd_ok, label %sch.close, label %sch.already_closed
+
+sch.close:
+  %sch.buf_slot = getelementptr %WamLineReader, %WamLineReader* %sch.reader, i32 0, i32 1
+  %sch.buf = load i8*, i8** %sch.buf_slot
+  %sch.close_ret = call i32 @close(i32 %sch.fd)
+  store i32 -1, i32* %sch.fd_slot
+  call void @free(i8* %sch.buf)
+  %sch.reader_i8 = bitcast %WamLineReader* %sch.reader to i8*
+  call void @free(i8* %sch.reader_i8)
+  store %WamLineReader* null, %WamLineReader** %sch.slot
+  %sch.ok = icmp eq i32 %sch.close_ret, 0
+  ret i1 %sch.ok
+}
+
+define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
+entry:
+  %ap.t = call i32 @value_tag(%Value %atom_value)
+  %ap.is_atom = icmp eq i32 %ap.t, 0
+  br i1 %ap.is_atom, label %ap.lookup, label %ap.no
+
+ap.lookup:
+  %ap.aid = call i64 @value_payload(%Value %atom_value)
+  %ap.str = call i8* @wam_atom_to_string(i64 %ap.aid)
+  %ap.null = icmp eq i8* %ap.str, null
+  br i1 %ap.null, label %ap.no, label %ap.loop
+
+ap.loop:
+  %ap.i = phi i64 [ 0, %ap.lookup ], [ %ap.next, %ap.step_ok ]
+  %ap.done = icmp uge i64 %ap.i, %prefix_len
+  br i1 %ap.done, label %ap.yes, label %ap.step
+
+ap.step:
+  %ap.sp = getelementptr i8, i8* %ap.str, i64 %ap.i
+  %ap.pp = getelementptr i8, i8* %prefix, i64 %ap.i
+  %ap.sc = load i8, i8* %ap.sp
+  %ap.pc = load i8, i8* %ap.pp
+  %ap.nonzero = icmp ne i8 %ap.sc, 0
+  %ap.eq = icmp eq i8 %ap.sc, %ap.pc
+  %ap.match = and i1 %ap.nonzero, %ap.eq
+  br i1 %ap.match, label %ap.step_ok, label %ap.no
+
+ap.step_ok:
+  %ap.next = add i64 %ap.i, 1
+  br label %ap.loop
+
+ap.yes:
+  ret i1 true
+
+ap.no:
+  ret i1 false
+}
+
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
@@ -15594,13 +15874,20 @@ target_struct_tm_gmtoff_offset(_, 40).
 
 % --- Value packing helpers ---
 
-llvm_pack_value(atom(A), Packed) :- !,
+llvm_pack_value(atom(A0), Packed) :- !,
+    llvm_normalize_atom_token(A0, A),
     intern_atom(A, Packed).
 llvm_pack_value(integer(I), I) :- !.
 llvm_pack_value(N, N) :- integer(N), !.
 llvm_pack_value(N, Packed) :- float(N), !, Packed is truncate(N).
-llvm_pack_value(A, Packed) :- atom(A), !, intern_atom(A, Packed).
+llvm_pack_value(A0, Packed) :- atom(A0), !,
+    llvm_normalize_atom_token(A0, A),
+    intern_atom(A, Packed).
 llvm_pack_value(_, 0).
+llvm_normalize_atom_token(A0, A) :-
+    atom_string(A0, S0),
+    strip_quoted_atom(S0, S),
+    atom_string(A, S).
 
 % --- Builtin op name → integer ID mapping ---
 
@@ -16066,6 +16353,10 @@ qa_quoted([Q|Cs], AccIn, AccOut, RestOut) :-
     Q = 0'',
     qa_quoted_body(Cs, [Q|AccIn], AccOut, RestOut).
 
+qa_quoted_body([92, 39 | Cs], Acc, AccOut, RestOut) :- !,
+    qa_quoted_body(Cs, [39, 92 | Acc], AccOut, RestOut).
+qa_quoted_body([92, 92 | Cs], Acc, AccOut, RestOut) :- !,
+    qa_quoted_body(Cs, [92, 92 | Acc], AccOut, RestOut).
 qa_quoted_body([], Acc, Acc, []).
 qa_quoted_body([0'', 0''|Cs], Acc, AccOut, RestOut) :- !,
     % Escaped apostrophe: keep both in the accumulator.
@@ -16539,9 +16830,8 @@ llvm_pack_value_str(Str, Packed) :-
 
 %% strip_quoted_atom(+S, -Inner)
 %
-%  If S is a single-quoted atom representation `'...'`, return the
-%  inner string with `''` un-escaped to `'`. Otherwise return S
-%  unchanged.
+%  If S is a single-quoted atom representation, return the inner string
+%  with WAM quote escapes un-escaped. Otherwise return S unchanged.
 strip_quoted_atom(Str, Inner) :-
     string_length(Str, L),
     ( L >= 2,
@@ -16549,20 +16839,22 @@ strip_quoted_atom(Str, Inner) :-
       sub_string(Str, _, 1, 0, "'")
     -> InnerLen is L - 2,
        sub_string(Str, 1, InnerLen, 1, Body),
-       % Un-escape `''` (Prolog''s quoted-atom escape for `'`).
-       % Most format strings don''t contain `'`, so this is a no-op
-       % in the common path.
+       % WAM quoting uses backslash escapes; accept doubled apostrophes
+       % as a legacy tokenizer convention too.
        string_codes(Body, BodyCodes),
-       unescape_quotes(BodyCodes, UnescCodes),
+       unescape_wam_quoted_codes(BodyCodes, UnescCodes),
        string_codes(Inner, UnescCodes)
     ;  Inner = Str
     ).
-
-unescape_quotes([], []).
-unescape_quotes([0'', 0''|Cs], [0''|Rest]) :- !,
-    unescape_quotes(Cs, Rest).
-unescape_quotes([C|Cs], [C|Rest]) :-
-    unescape_quotes(Cs, Rest).
+unescape_wam_quoted_codes([], []).
+unescape_wam_quoted_codes([92, 92 | Cs], [92 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([92, 39 | Cs], [39 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([39, 39 | Cs], [39 | Rest]) :- !,
+    unescape_wam_quoted_codes(Cs, Rest).
+unescape_wam_quoted_codes([C | Cs], [C | Rest]) :-
+    unescape_wam_quoted_codes(Cs, Rest).
 
 % NOTE: we don't take a %WamState param — the function creates its own vm
 % via wam_state_new() in the entry block. Taking %vm as a param conflicted

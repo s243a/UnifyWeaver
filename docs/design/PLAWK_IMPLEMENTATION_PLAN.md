@@ -188,14 +188,33 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the native smoke still reads from a file path rather than
-stdin, and `state/4` remains represented as ordinary WAM terms rather than a
-specialized LLVM aggregate. The bounded output helper has been retired from the
-compiled stream smoke; generic output accumulation now goes through
-`append_output/3` and `state_outputs/2`. WAM/LLVM now also has a
-`@wam_prepare_call` runtime helper plus a reentrant run-loop smoke, which is
-the first general bridge for native deterministic outer loops that call WAM
-handlers repeatedly.
+**Current boundary:** the compiled and native stream smokes still read from file
+paths rather than stdin. WAM/LLVM exposes general stream helpers
+(`@wam_stream_open_value`, `@wam_stream_read_line_value`, and
+`@wam_stream_close_value`) that native LLVM code can call directly, alongside
+the existing `stream_open/2`, `read_line/2`, and `stream_close/1` builtins.
+The `tests/test_plawk_native_stream_loop_driver.pl` smoke proves a native LLVM
+loop can open a runtime file path, read lines until `end_of_file`, call a
+compiled PLAWK handler once per record, and thread PLAWK state through WAM.
+The `tests/test_plawk_native_counter_stream_loop_driver.pl` smoke then lowers
+the hot record counter to a native `i64` loop variable while keeping output
+accumulation as ordinary WAM terms via `append_output/3` and `state_outputs/2`.
+The `tests/test_plawk_native_output_stream_loop_driver.pl` smoke moves the next
+piece of hot-loop state into LLVM: native code owns the reader, record counter,
+output counter, and fixed output slots, while WAM only returns the deterministic
+handler decision (`yes`/`no`) for each record. The next boundary is lowering
+more deterministic handler logic itself into native code without making the
+target PLAWK-specific. The first general helper for that boundary is now
+`@wam_atom_prefix_value`, which lets native LLVM lower deterministic
+`sub_atom(Line, 0, Len, _, Prefix)` guards without allocating a substring or
+entering `run_loop` for each record. The
+`tests/test_plawk_native_lowered_handler_stream_loop_driver.pl` smoke proves
+that shape in a native stream loop.
+
+**Compiler note:** WAM/LLVM now normalizes quoted atom tokens before interning.
+Atoms such as `'ERROR disk full'` and `'it\'s bad'` compile to raw runtime
+atom names without the outer WAM token quotes.
+`tests/test_wam_llvm_quoted_atom_literals.pl` covers that regression.
 
 ---
 
@@ -230,6 +249,13 @@ produces correct output on standard awk test cases.
 3. Compile the DCG through UnifyWeaver to LLVM.
 4. Extend `item_field/3` and `select_writer/2` for `record(binary, Type, Payload)`.
 5. Map `State` stream handles to OS file descriptors.
+
+**Associative-array note:** typed/native associative arrays are a high-value
+later feature. AWK associative arrays are string keyed; PLAWK can eventually
+lower common table shapes to binary hash tables keyed by typed values or
+interned IDs. That should preserve awk-like ergonomics while creating a
+plausible performance win over string-centric AWK loops once the basic compiled
+reader/handler/output path is stable.
 
 > **Perf caveat:** DCGs over difference-lists of bytes are correct but can be
 > slow in WAM without first-argument indexing on the byte / partial evaluation.
