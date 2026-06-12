@@ -4002,7 +4002,13 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     maplist([C, U]>>(C == '-' -> U = '_' ; U = C), ModuleChars, UnderscoreChars),
     string_chars(CrateName, UnderscoreChars),
     read_template_file('templates/targets/rust_wam/main.rs.mustache', MainTemplate),
-    render_template(MainTemplate, [date=Date, crate_name=CrateName], MainContent),
+    (   memberchk(_-recursive_kernel(bidirectional_ancestor, _, _), DetectedKernels)
+    ->  HasBidirectional = true
+    ;   HasBidirectional = false
+    ),
+    render_template(MainTemplate,
+        [date=Date, crate_name=CrateName, bidirectional_kernel=HasBidirectional],
+        MainContent),
     directory_file_path(SrcDir, 'main.rs', MainRsPath),
     write_file(MainRsPath, MainContent),
 

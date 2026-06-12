@@ -34,7 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default-mode guard, and a cargo-built execution test with
   hand-checked path enumerations (two pure-parent paths; a mixed
   child+parent route that exists only because the A* bound prunes the
-  upward detour; unreachable-root failure).
+  upward detour; unreachable-root failure). The benchmark harness
+  (`main.rs.mustache`) gained a `{{#bidirectional_kernel}}` branch:
+  calibration hoisted out of the seed loop, per-seed direction-weighted
+  power mean (F# `effectiveDistanceWeighted`); first numbers in
+  `docs/reports/wam_rust_bidirectional_kernel_synthetic_bench.md`
+  (tuple_count parity with the upward-only kernel at 1k/10k; ~6.5×
+  query cost at 10k — the price of enumerating both directions).
 
 ### Fixed
 - **WAM R target (M152): lowered fast path shadowed runtime-asserted
