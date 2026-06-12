@@ -429,6 +429,11 @@ pub struct WamState {
     pub aggregate_acc: Vec<Value>,
     /// Return PC stored by end_aggregate for aggregate-frame finalization.
     pub aggregate_return_pc: usize,
+    /// ISO exception ball: set by throw/1, propagated by the run loop
+    /// (a failing step with a ball pending aborts instead of
+    /// backtracking), consumed by the nearest catch/3 whose catcher
+    /// unifies. None = no exception in flight.
+    pub thrown_ball: Option<Value>,
 }
 
 /// T7 prerequisite: the WAM machine must be `Clone` (fork a machine per parallel
@@ -499,6 +504,7 @@ impl WamState {
             backtrack_count: 0,
             aggregate_acc: Vec::new(),
             aggregate_return_pc: 0,
+            thrown_ball: None,
         }
     }
 
@@ -987,6 +993,7 @@ impl WamState {
         self.backtrack_count = 0;
         self.aggregate_acc.clear();
         self.aggregate_return_pc = 0;
+        self.thrown_ball = None;
     }
 
     /// Get a register value. Yi registers are read from the environment frame.

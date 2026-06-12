@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Rust target: ISO catch/3, throw/1 and succ/2 (parity P4).**
+  Completes the F#-parity control-flow milestone. Mechanism (mutable
+  WamState in place of F#'s exception + immutable-snapshot design): a
+  `thrown_ball: Option<Value>` field set by `throw/1`; the run loop
+  treats a failing step with a ball in flight as an abort (no
+  backtracking — alternatives are discarded until a catch consumes the
+  ball); `catch/3` snapshots regs/trail/heap/stack/choice-point depth,
+  meta-calls the goal (builtin dispatch first, then labelled-predicate
+  sub-run — the negation architecture), and on a ball restores the
+  snapshot, unifies the catcher (rethrowing on mismatch for an outer
+  catch), and runs the recovery goal. First-solution semantics, like
+  the F# port. Since the shared WAM compiler emits these as
+  Call/Execute (no `is_builtin_pred` entry), the Call and Execute arms
+  gained an ISO meta-builtin fallback (`is_iso_meta_builtin`,
+  mirroring F#'s `isIsoMetaBuiltin` routing) — which also delivers the
+  previously deferred bidirectional `succ/2`. 8 new cargo-built tests:
+  matching/non-matching catchers, propagation through nested predicate
+  calls, nested catch rethrow, transparency without a throw,
+  plain-goal-failure, and succ both modes + edge cases.
+
+### Fixed
+- **WAM Rust target: PutStructure bound A-register old occupants
+  through to the new cell (M139/M140 bind-through class, latent).**
+  Building a goal structure into an A register whose old occupant was
+  a still-live variable (e.g. `p(X) :- catch(member(X, L), ...)` —
+  X in A1, then the goal structure built into A1 with X as an
+  argument) bound X to the structure's own heap cell, creating a
+  cyclic term (`X = member(X, L)`) on which `deref_heap` recursed to
+  stack overflow. Same defect class the LLVM target fixed in M140;
+  same fix: the bind-through (needed for top-down structure chaining
+  placeholders, which only live in X/Y registers) is now conditioned
+  on the register class — A registers are argument staging and never
+  bind. Exposed by the catch/3 tests; all existing suites pass
+  unchanged.
 - **WAM Rust target: builtin parity sweep (F# parity campaign P3).**
   New `execute_ext_builtin` dispatch tier closes the largest
   builtin-coverage gap vs the F# target — every op below was already
