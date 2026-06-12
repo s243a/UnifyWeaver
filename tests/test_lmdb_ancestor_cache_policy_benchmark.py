@@ -11,6 +11,12 @@ from scripts.lmdb_ancestor_cache_policy_benchmark import (
     slot_for,
     update_cache,
 )
+from scripts.lmdb_ancestor_cache_policy_sweep import (
+    CacheConfig,
+    QueryInput,
+    parse_grid,
+    simulate_config,
+)
 
 
 class AncestorCachePolicyBenchmarkTests(unittest.TestCase):
@@ -65,6 +71,31 @@ class AncestorCachePolicyBenchmarkTests(unittest.TestCase):
         self.assertEqual(space.nodes, {"A", "B", "C"})
         self.assertEqual(space.cycle_edges, 1)
         self.assertTrue(space.capped)
+
+    def test_parse_grid_defaults_or_expands_ranges(self):
+        self.assertEqual(parse_grid(None, 7), [7])
+        self.assertEqual(parse_grid("2,4-6", 7), [2, 4, 5, 6])
+
+    def test_sweep_simulates_config_without_trace_records(self):
+        class Args:
+            graph_name = "tiny"
+            root = 0
+            target_depths = "1"
+
+        space = collect_ancestor_space(lambda node: {3: [1, 2], 2: [0], 1: [0]}.get(node, []), 3, 10, 20)
+        distances = {
+            0: {"L_min": 0, "L_max": 0, "truncated": False},
+            1: {"L_min": 1, "L_max": 1, "truncated": False},
+            2: {"L_min": 1, "L_max": 1, "truncated": False},
+            3: {"L_min": 2, "L_max": 2, "truncated": False},
+        }
+
+        summary = simulate_config(Args(), {0: 1, 1: 1}, [QueryInput(3, 1, space)], distances, CacheConfig(8, 2, 2))
+
+        self.assertEqual(summary["record_type"], "ancestor_cache_policy_sweep_summary")
+        self.assertEqual(summary["targets"], 1)
+        self.assertEqual(summary["final_cache_entries"], 4)
+        self.assertEqual(summary["cache_actions"]["insert"], 4)
 
 
 if __name__ == "__main__":
