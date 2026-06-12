@@ -1,0 +1,380 @@
+:- encoding(utf8).
+% SPDX-License-Identifier: MIT OR Apache-2.0
+%
+% test_wam_rust_builtin_parity.pl - Execution tests for the Rust WAM
+% builtin parity sweep (F# parity campaign): term ordering, list
+% utilities, atom/string text ops, integer relations, and the
+% nondeterministic builtins (between/3, select/3, nth0/nth1 with
+% unbound index, atom_concat/3 split mode).
+%
+% Two layers:
+%   1. Compiled-predicate paths (Prolog clause -> WAM -> Rust ->
+%      cargo test) for the nondeterministic builtins, verifying
+%      builtin_call emission + choice-point/backtrack integration.
+%   2. Direct execute_builtin unit coverage for the deterministic
+%      families (register protocol, no WAM program needed).
+%
+% Usage: swipl -g run_tests -t halt tests/test_wam_rust_builtin_parity.pl
+
+:- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module(library(process)).
+:- use_module(library(filesex)).
+
+:- dynamic test_failed/0.
+
+pass(Test) :- format('[PASS] ~w~n', [Test]).
+
+fail_test(Test, Reason) :-
+    format('[FAIL] ~w: ~w~n', [Test, Reason]),
+    (   test_failed -> true ; assert(test_failed) ).
+
+%% Predicates exercising builtins through the full compile pipeline.
+:- dynamic t_between/1.
+t_between(X) :- between(1, 3, X).
+
+:- dynamic t_msort/1.
+t_msort(S) :- msort([banana, apple, cherry, apple], S).
+
+:- dynamic t_sort/1.
+t_sort(S) :- sort([b, a, b], S).
+
+:- dynamic t_concat_split/2.
+t_concat_split(A, B) :- atom_concat(A, B, abc).
+
+:- dynamic t_select/2.
+t_select(X, R) :- select(X, [a, b, c], R).
+
+cargo_available :-
+    catch(
+        (process_create(path(cargo), ['--version'],
+                        [stdout(null), stderr(null), process(Pid)]),
+         process_wait(Pid, exit(0))),
+        _, fail).
+
+test_builtin_parity_execution :-
+    Test = 'WAM-Rust builtin parity: end-to-end execution (cargo test)',
+    TmpDir = 'output/test_wam_rust_builtin_parity',
+    (   \+ cargo_available
+    ->  format('[SKIP] ~w (cargo not found)~n', [Test]),
+        pass(Test)
+    ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
+        write_wam_rust_project(
+            [user:t_between/1, user:t_msort/1, user:t_sort/1,
+             user:t_concat_split/2, user:t_select/2],
+            [module_name('builtin_parity_test'), wam_fallback(true)],
+            TmpDir),
+        directory_file_path(TmpDir, 'tests', TestsDir),
+        make_directory_path(TestsDir),
+        directory_file_path(TestsDir, 'integration_test.rs', TestPath),
+        TestContent = '
+use builtin_parity_test::state::WamState;
+use builtin_parity_test::value::Value;
+use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2};
+use std::collections::HashMap;
+
+fn vmnew() -> WamState {
+    WamState::new(vec![], HashMap::new())
+}
+
+fn a(s: &str) -> Value { Value::Atom(s.to_string()) }
+fn i(n: i64) -> Value { Value::Integer(n) }
+fn ub(n: &str) -> Value { Value::Unbound(n.to_string()) }
+
+fn read_var(vm: &WamState, name: &str) -> Value {
+    match vm.bindings.get(name) {
+        Some(v) => vm.deref_heap(&vm.deref_var(v)),
+        None => Value::Unbound(name.to_string()),
+    }
+}
+
+// ---- layer 1: compiled-predicate paths -------------------------------
+
+#[test]
+fn test_between_enumeration_compiled() {
+    let mut vm = vmnew();
+    assert!(t_between_1(&mut vm, ub("X")), "between(1,3,X) first solution");
+    let mut got = Vec::new();
+    loop {
+        match read_var(&vm, "X") {
+            Value::Integer(n) => got.push(n),
+            other => panic!("expected integer, got {:?}", other),
+        }
+        if !vm.backtrack() { break; }
+    }
+    assert_eq!(got, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_msort_sort_compiled() {
+    let mut vm = vmnew();
+    assert!(t_msort_1(&mut vm, ub("S")));
+    assert_eq!(read_var(&vm, "S"),
+        Value::List(vec![a("apple"), a("apple"), a("banana"), a("cherry")]),
+        "msort keeps duplicates in standard order");
+    let mut vm2 = vmnew();
+    assert!(t_sort_1(&mut vm2, ub("S")));
+    assert_eq!(read_var(&vm2, "S"), Value::List(vec![a("a"), a("b")]),
+        "sort dedupes");
+}
+
+#[test]
+fn test_atom_concat_split_compiled() {
+    let mut vm = vmnew();
+    assert!(t_concat_split_2(&mut vm, ub("A"), ub("B")));
+    let mut got = Vec::new();
+    loop {
+        let pa = match read_var(&vm, "A") { Value::Atom(s) => s, o => panic!("A: {:?}", o) };
+        let pb = match read_var(&vm, "B") { Value::Atom(s) => s, o => panic!("B: {:?}", o) };
+        got.push((pa, pb));
+        if !vm.backtrack() { break; }
+    }
+    got.sort();
+    assert_eq!(got, vec![
+        ("".to_string(), "abc".to_string()),
+        ("a".to_string(), "bc".to_string()),
+        ("ab".to_string(), "c".to_string()),
+        ("abc".to_string(), "".to_string()),
+    ]);
+}
+
+#[test]
+fn test_select_enumeration_compiled() {
+    let mut vm = vmnew();
+    assert!(t_select_2(&mut vm, ub("X"), ub("R")));
+    let mut got = Vec::new();
+    loop {
+        let x = match read_var(&vm, "X") { Value::Atom(s) => s, o => panic!("X: {:?}", o) };
+        let r = match read_var(&vm, "R") {
+            Value::List(items) => items.iter().map(|v| format!("{}", v)).collect::<Vec<_>>().join(","),
+            o => panic!("R: {:?}", o),
+        };
+        got.push((x, r));
+        if !vm.backtrack() { break; }
+    }
+    got.sort();
+    assert_eq!(got, vec![
+        ("a".to_string(), "b,c".to_string()),
+        ("b".to_string(), "a,c".to_string()),
+        ("c".to_string(), "a,b".to_string()),
+    ]);
+}
+
+// ---- layer 2: direct execute_builtin coverage ------------------------
+
+fn call1(op: &str, a1: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    let ok = vm.execute_builtin(op, 1);
+    (ok, vm)
+}
+
+fn call2(op: &str, a1: Value, a2: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    let ok = vm.execute_builtin(op, 2);
+    (ok, vm)
+}
+
+fn call3(op: &str, a1: Value, a2: Value, a3: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    let ok = vm.execute_builtin(op, 3);
+    (ok, vm)
+}
+
+#[test]
+fn test_not_unify_and_not_equal() {
+    assert!(call2("\\\\=/2", a("x"), a("y")).0);
+    assert!(!call2("\\\\=/2", a("x"), a("x")).0);
+    assert!(!call2("\\\\=/2", ub("V"), a("x")).0, "var unifies with anything");
+    assert!(call2("\\\\==/2", a("x"), a("y")).0);
+    assert!(!call2("\\\\==/2", i(7), i(7)).0);
+    assert!(call2("\\\\==/2", ub("V"), a("x")).0, "unbound var differs from atom");
+}
+
+#[test]
+fn test_standard_order() {
+    assert!(call2("@</2", a("a"), a("b")).0);
+    assert!(!call2("@</2", a("b"), a("a")).0);
+    assert!(call2("@</2", i(99), a("a")).0, "numbers precede atoms");
+    assert!(call2("@</2", a("zzz"), Value::Str("f/1".to_string(), vec![i(1)])).0,
+        "atoms precede compounds");
+    assert!(call2("@=</2", a("a"), a("a")).0);
+    assert!(call2("@>/2", Value::List(vec![i(1), i(2)]), Value::List(vec![i(1), i(1)])).0);
+    assert!(call2("@>=/2", a("b"), a("b")).0);
+    let (ok, vm) = call3("compare/3", ub("O"), i(1), i(2));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "O"), a("<"));
+    let (ok2, vm2) = call3("compare/3", ub("O"), a("x"), a("x"));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "O"), a("="));
+}
+
+#[test]
+fn test_keysort() {
+    let pair = |k: Value, v: Value| Value::Str("-/2".to_string(), vec![k, v]);
+    // read_var goes through deref_heap, which normalizes the functor
+    // spelling "-/2" to the display name "-" — compare against that.
+    let dpair = |k: Value, v: Value| Value::Str("-".to_string(), vec![k, v]);
+    let (ok, vm) = call2("keysort/2",
+        Value::List(vec![pair(a("b"), i(1)), pair(a("a"), i(2)), pair(a("b"), i(0))]),
+        ub("S"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "S"), Value::List(vec![
+        dpair(a("a"), i(2)), dpair(a("b"), i(1)), dpair(a("b"), i(0)),
+    ]), "stable by key, payload order preserved");
+}
+
+#[test]
+fn test_list_utilities() {
+    assert!(call2("memberchk/2", a("b"), Value::List(vec![a("a"), a("b")])).0);
+    assert!(!call2("memberchk/2", a("z"), Value::List(vec![a("a"), a("b")])).0);
+    let (ok, vm) = call2("last/2", Value::List(vec![i(1), i(2), i(3)]), ub("L"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "L"), i(3));
+    let (ok2, vm2) = call3("nth0/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "E"), a("y"));
+    let (ok3, vm3) = call3("nth1/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    assert!(ok3);
+    assert_eq!(read_var(&vm3, "E"), a("x"));
+    assert!(!call3("nth0/3", i(5), Value::List(vec![a("x")]), ub("E")).0);
+    let (ok4, vm4) = call3("numlist/3", i(2), i(5), ub("L"));
+    assert!(ok4);
+    assert_eq!(read_var(&vm4, "L"), Value::List(vec![i(2), i(3), i(4), i(5)]));
+    assert!(!call3("numlist/3", i(5), i(2), ub("L")).0);
+    let (ok5, vm5) = call3("delete/3",
+        Value::List(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
+    assert!(ok5);
+    assert_eq!(read_var(&vm5, "R"), Value::List(vec![a("b"), a("c")]));
+}
+
+#[test]
+fn test_nth_unbound_index_enumerates() {
+    let mut vm = vmnew();
+    vm.set_reg("A1", ub("N"));
+    vm.set_reg("A2", Value::List(vec![a("x"), a("y")]));
+    vm.set_reg("A3", ub("E"));
+    assert!(vm.execute_builtin("nth1/3", 3));
+    let mut got = Vec::new();
+    loop {
+        let n = match read_var(&vm, "N") { Value::Integer(n) => n, o => panic!("N: {:?}", o) };
+        let e = match read_var(&vm, "E") { Value::Atom(s) => s, o => panic!("E: {:?}", o) };
+        got.push((n, e));
+        if !vm.backtrack() { break; }
+    }
+    assert_eq!(got, vec![(1, "x".to_string()), (2, "y".to_string())]);
+}
+
+#[test]
+fn test_between_check_and_plus() {
+    assert!(call3("between/3", i(1), i(5), i(3)).0);
+    assert!(!call3("between/3", i(1), i(5), i(9)).0);
+    let (ok, vm) = call3("plus/3", i(2), i(3), ub("Z"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Z"), i(5));
+    let (ok2, vm2) = call3("plus/3", i(2), ub("Y"), i(7));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "Y"), i(5));
+    let (ok3, vm3) = call3("plus/3", ub("X"), i(3), i(7));
+    assert!(ok3);
+    assert_eq!(read_var(&vm3, "X"), i(4));
+    assert!(call3("plus/3", i(2), i(3), i(5)).0);
+    assert!(!call3("plus/3", i(2), i(3), i(6)).0);
+}
+
+#[test]
+fn test_numeric_list_folds() {
+    let nums = Value::List(vec![i(3), i(1), i(2)]);
+    let (ok, vm) = call2("sum_list/2", nums.clone(), ub("S"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "S"), i(6));
+    let (ok2, vm2) = call2("max_list/2", nums.clone(), ub("M"));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "M"), i(3));
+    let (ok3, vm3) = call2("min_list/2", nums, ub("M"));
+    assert!(ok3);
+    assert_eq!(read_var(&vm3, "M"), i(1));
+    assert!(!call2("max_list/2", Value::List(vec![]), ub("M")).0);
+}
+
+#[test]
+fn test_atom_text_ops() {
+    let (ok, vm) = call2("atom_length/2", a("hello"), ub("L"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "L"), i(5));
+    let (ok2, vm2) = call3("atom_concat/3", a("foo"), a("bar"), ub("C"));
+    assert!(ok2);
+    assert_eq!(read_var(&vm2, "C"), a("foobar"));
+    assert!(call3("atom_concat/3", a("foo"), a("bar"), a("foobar")).0);
+    assert!(!call3("atom_concat/3", a("foo"), a("bar"), a("foobaz")).0);
+    let (ok3, vm3) = call2("char_code/2", a("A"), ub("C"));
+    assert!(ok3);
+    assert_eq!(read_var(&vm3, "C"), i(65));
+    let (ok4, vm4) = call2("char_code/2", ub("Ch"), i(98));
+    assert!(ok4);
+    assert_eq!(read_var(&vm4, "Ch"), a("b"));
+    let (ok5, vm5) = call2("atom_chars/2", a("hi"), ub("Cs"));
+    assert!(ok5);
+    assert_eq!(read_var(&vm5, "Cs"), Value::List(vec![a("h"), a("i")]));
+    let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::List(vec![a("h"), a("i")]));
+    assert!(ok6);
+    assert_eq!(read_var(&vm6, "A"), a("hi"));
+    let (ok7, vm7) = call2("upcase_atom/2", a("aBc"), ub("U"));
+    assert!(ok7);
+    assert_eq!(read_var(&vm7, "U"), a("ABC"));
+    let (ok8, vm8) = call2("downcase_atom/2", a("aBc"), ub("D"));
+    assert!(ok8);
+    assert_eq!(read_var(&vm8, "D"), a("abc"));
+    let (ok9, vm9) = call2("atom_number/2", a("42"), ub("N"));
+    assert!(ok9);
+    assert_eq!(read_var(&vm9, "N"), i(42));
+    let (ok10, vm10) = call2("atom_number/2", ub("A"), i(7));
+    assert!(ok10);
+    assert_eq!(read_var(&vm10, "A"), a("7"));
+    assert!(!call2("atom_number/2", a("notanum"), ub("N")).0);
+    let (ok11, vm11) = call2("atom_string/2", a("x"), ub("S"));
+    assert!(ok11);
+    assert_eq!(read_var(&vm11, "S"), a("x"));
+    let (ok12, vm12) = call2("string_to_atom/2", a("y"), ub("A"));
+    assert!(ok12);
+    assert_eq!(read_var(&vm12, "A"), a("y"));
+}
+
+#[test]
+fn test_ground() {
+    assert!(call1("ground/1", a("x")).0);
+    assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
+    assert!(!call1("ground/1", ub("V")).0);
+    assert!(!call1("ground/1", Value::List(vec![i(1), ub("V")])).0);
+    assert!(!call1("ground/1", Value::Str("f/1".to_string(), vec![ub("V")])).0);
+}
+',
+        setup_call_cleanup(
+            open(TestPath, write, Out, [encoding(utf8)]),
+            write(Out, TestContent),
+            close(Out)),
+        format(atom(Cmd), 'cd "~w" && cargo test -- --nocapture 2>&1', [TmpDir]),
+        process_create(path(sh), ['-c', Cmd],
+                       [stdout(pipe(Stream)), process(Pid)]),
+        read_string(Stream, _, Output),
+        close(Stream),
+        process_wait(Pid, exit(ExitCode)),
+        (   ExitCode == 0,
+            sub_string(Output, _, _, _, "test result: ok")
+        ->  pass(Test)
+        ;   format('--- cargo test output ---~n~w~n--- end ---~n', [Output]),
+            fail_test(Test, 'cargo test failed')
+        )
+    ).
+
+run_tests :-
+    format('=== WAM-Rust builtin parity tests ===~n'),
+    test_builtin_parity_execution,
+    (   test_failed
+    ->  format('~n=== SOME TESTS FAILED ===~n'), halt(1)
+    ;   format('~n=== ALL TESTS PASSED ===~n')
+    ).

@@ -998,6 +998,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_io_builtin_to_rust(IoBuiltinCode),
     compile_execute_type_builtin_to_rust(TypeBuiltinCode),
     compile_execute_term_builtin_to_rust(TermBuiltinCode),
+    compile_execute_ext_builtin_to_rust(ExtBuiltinCode),
     compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
@@ -1023,6 +1024,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         IoBuiltinCode, '\n\n',
         TypeBuiltinCode, '\n\n',
         TermBuiltinCode, '\n\n',
+        ExtBuiltinCode, '\n\n',
         MetaBuiltinCode, '\n\n',
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
@@ -1117,6 +1119,7 @@ compile_execute_builtin_to_rust(Code) :-
         if self.execute_io_builtin(op, arity) { return true; }
         if self.execute_type_builtin(op, arity) { return true; }
         if self.execute_term_builtin(op, arity) { return true; }
+        if self.execute_ext_builtin(op, arity) { return true; }
         if self.execute_meta_builtin(op, arity) { return true; }
 
         match op {
@@ -3003,6 +3006,55 @@ compile_resume_builtin_to_rust(Code) :-
                     } else { false }
                 } else { false }
             }
+            "between/3" => {
+                let x_raw = state.args[0].clone();
+                let (n, high) = match (&state.data[0], &state.data[1]) {
+                    (Value::Integer(n), Value::Integer(h)) => (*n, *h),
+                    _ => return false,
+                };
+                self.builtin_between_attempt(&x_raw, n, high)
+            }
+            "select/3" => {
+                let x_raw = state.args[0].clone();
+                let items = match &state.args[1] {
+                    Value::List(items) => items.clone(),
+                    _ => return false,
+                };
+                let rest_raw = state.args[2].clone();
+                let idx = match state.data[0] {
+                    Value::Integer(n) => n as usize,
+                    _ => return false,
+                };
+                self.builtin_select_attempt(&x_raw, &items, &rest_raw, idx)
+            }
+            "nth0/3" | "nth1/3" => {
+                let base: i64 = if state.name == "nth1/3" { 1 } else { 0 };
+                let n_raw = state.args[0].clone();
+                let items = match &state.args[1] {
+                    Value::List(items) => items.clone(),
+                    _ => return false,
+                };
+                let elem_raw = state.args[2].clone();
+                let idx = match state.data[0] {
+                    Value::Integer(n) => n as usize,
+                    _ => return false,
+                };
+                let name = state.name.clone();
+                self.builtin_nth_attempt(&name, base, &n_raw, &items, &elem_raw, idx)
+            }
+            "atom_concat/3" => {
+                let a1_raw = state.args[0].clone();
+                let a2_raw = state.args[1].clone();
+                let chars: Vec<char> = match &state.args[2] {
+                    Value::Atom(s) => s.chars().collect(),
+                    _ => return false,
+                };
+                let split = match state.data[0] {
+                    Value::Integer(n) => n as usize,
+                    _ => return false,
+                };
+                self.builtin_atom_concat_attempt(&a1_raw, &a2_raw, &chars, split)
+            }
             "indexed_atom_fact2" => {
                 let pred = match state.args.get(0) {
                     Some(Value::Atom(pred)) => pred.clone(),
@@ -3078,6 +3130,610 @@ compile_resume_builtin_to_rust(Code) :-
         }
     }'.
 
+
+compile_execute_ext_builtin_to_rust(Code) :-
+    Code = '    /// Standard order class: Var < Number < Atom < Compound.
+    /// Bool orders as its atom name; the empty list as the atom [].
+    fn term_order_class(v: &Value) -> u8 {
+        match v {
+            Value::Unbound(_) | Value::Ref(_) | Value::Uninit => 0,
+            Value::Integer(_) | Value::Float(_) => 1,
+            Value::Atom(_) | Value::Bool(_) => 2,
+            Value::Str(_, _) => 3,
+            Value::List(items) => if items.is_empty() { 2 } else { 3 },
+        }
+    }
+
+    fn value_atom_name(v: &Value) -> Option<String> {
+        match v {
+            Value::Atom(s) => Some(s.clone()),
+            Value::Bool(true) => Some("true".to_string()),
+            Value::Bool(false) => Some("false".to_string()),
+            Value::List(items) if items.is_empty() => Some("[]".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Atomic-to-text for atom_concat/atom_length style builtins
+    /// (atoms, numbers, booleans; not compounds or variables).
+    fn value_atomic_text(v: &Value) -> Option<String> {
+        match v {
+            Value::Integer(n) => Some(n.to_string()),
+            Value::Float(f) => Some(format!("{}", f)),
+            other => Self::value_atom_name(other),
+        }
+    }
+
+    /// Standard order of terms (pragmatic subset shared with sort/2,
+    /// msort/2, compare/3 and the @-comparison family). Numbers compare
+    /// by value with Float preceding an equal Integer; atoms textually;
+    /// lists cons-wise (a strict prefix precedes its extension); other
+    /// compounds by arity, then functor name, then args left to right.
+    /// Unbound variables order by internal name — stable within a query.
+    pub fn term_compare(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let da = self.deref_heap(&self.deref_var(a));
+        let db = self.deref_heap(&self.deref_var(b));
+        let ca = Self::term_order_class(&da);
+        let cb = Self::term_order_class(&db);
+        if ca != cb {
+            return ca.cmp(&cb);
+        }
+        match ca {
+            0 => {
+                let na = match &da { Value::Unbound(n) => n.clone(), _ => String::new() };
+                let nb = match &db { Value::Unbound(n) => n.clone(), _ => String::new() };
+                na.cmp(&nb)
+            }
+            1 => {
+                let fa = match &da { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                let fb = match &db { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                match fa.partial_cmp(&fb).unwrap_or(Ordering::Equal) {
+                    Ordering::Equal => {
+                        let ka = matches!(da, Value::Integer(_)) as u8;
+                        let kb = matches!(db, Value::Integer(_)) as u8;
+                        ka.cmp(&kb)
+                    }
+                    o => o,
+                }
+            }
+            2 => {
+                let na = Self::value_atom_name(&da).unwrap_or_default();
+                let nb = Self::value_atom_name(&db).unwrap_or_default();
+                na.cmp(&nb)
+            }
+            _ => match (&da, &db) {
+                (Value::List(l1), Value::List(l2)) => {
+                    let n = l1.len().min(l2.len());
+                    for i in 0..n {
+                        let o = self.term_compare(&l1[i], &l2[i]);
+                        if o != Ordering::Equal { return o; }
+                    }
+                    l1.len().cmp(&l2.len())
+                }
+                (Value::List(l), Value::Str(f, args))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare(&l[0], &args[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare(&Value::List(l[1..].to_vec()), &args[1])
+                }
+                (Value::Str(f, args), Value::List(l))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare(&args[0], &l[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare(&args[1], &Value::List(l[1..].to_vec()))
+                }
+                (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                    match a1.len().cmp(&a2.len()) {
+                        Ordering::Equal => {
+                            let n1 = Self::display_functor_name(f1, a1.len());
+                            let n2 = Self::display_functor_name(f2, a2.len());
+                            match n1.cmp(&n2) {
+                                Ordering::Equal => {
+                                    for i in 0..a1.len() {
+                                        let o = self.term_compare(&a1[i], &a2[i]);
+                                        if o != Ordering::Equal { return o; }
+                                    }
+                                    Ordering::Equal
+                                }
+                                o => o,
+                            }
+                        }
+                        o => o,
+                    }
+                }
+                // List vs Str non-cons compound: lists are ./2, lowest arity 2
+                (Value::List(_), Value::Str(_, args)) => 2usize.cmp(&args.len()),
+                (Value::Str(_, args), Value::List(_)) => args.len().cmp(&2usize),
+                _ => Ordering::Equal,
+            },
+        }
+    }
+
+    fn value_is_ground(&self, v: &Value) -> bool {
+        match self.deref_heap(&self.deref_var(v)) {
+            Value::Unbound(_) => false,
+            Value::List(items) => items.iter().all(|i| self.value_is_ground(i)),
+            Value::Str(_, args) => args.iter().all(|a| self.value_is_ground(a)),
+            _ => true,
+        }
+    }
+
+    /// One alternative of between/3 enumeration: bind X to N, leaving a
+    /// choice point for N+1..High. Called from the first builtin
+    /// dispatch and from resume_builtin on backtrack.
+    fn builtin_between_attempt(&mut self, x_raw: &Value, n: i64, high: i64) -> bool {
+        if n > high { return false; }
+        if n < high {
+            self.choice_points.push(ChoicePoint {
+                next_pc: self.pc,
+                saved_args: self.save_regs(),
+                stack: self.stack.clone(),
+                cp: self.cp,
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: Some(BuiltinState {
+                    name: "between/3".to_string(),
+                    args: vec![x_raw.clone()],
+                    data: vec![Value::Integer(n + 1), Value::Integer(high)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+        }
+        if self.unify(x_raw, &Value::Integer(n)) { self.pc += 1; true } else { false }
+    }
+
+    /// One alternative of select/3 over a bound list: unify X with item
+    /// idx and Rest with the list minus that item.
+    fn builtin_select_attempt(&mut self, x_raw: &Value, items: &[Value], rest_raw: &Value, idx: usize) -> bool {
+        if idx >= items.len() { return false; }
+        if idx + 1 < items.len() {
+            self.choice_points.push(ChoicePoint {
+                next_pc: self.pc,
+                saved_args: self.save_regs(),
+                stack: self.stack.clone(),
+                cp: self.cp,
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: Some(BuiltinState {
+                    name: "select/3".to_string(),
+                    args: vec![x_raw.clone(), Value::List(items.to_vec()), rest_raw.clone()],
+                    data: vec![Value::Integer((idx + 1) as i64)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+        }
+        let mut rest: Vec<Value> = items.to_vec();
+        rest.remove(idx);
+        if self.unify(x_raw, &items[idx]) && self.unify(rest_raw, &Value::List(rest)) {
+            self.pc += 1; true
+        } else { false }
+    }
+
+    /// One alternative of nth0/nth1 enumeration with an unbound index.
+    /// base is 0 for nth0, 1 for nth1; name carries it through resume.
+    fn builtin_nth_attempt(&mut self, name: &str, base: i64, n_raw: &Value, items: &[Value], elem_raw: &Value, idx: usize) -> bool {
+        if idx >= items.len() { return false; }
+        if idx + 1 < items.len() {
+            self.choice_points.push(ChoicePoint {
+                next_pc: self.pc,
+                saved_args: self.save_regs(),
+                stack: self.stack.clone(),
+                cp: self.cp,
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: Some(BuiltinState {
+                    name: name.to_string(),
+                    args: vec![n_raw.clone(), Value::List(items.to_vec()), elem_raw.clone()],
+                    data: vec![Value::Integer((idx + 1) as i64)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+        }
+        if self.unify(n_raw, &Value::Integer(idx as i64 + base))
+            && self.unify(elem_raw, &items[idx]) {
+            self.pc += 1; true
+        } else { false }
+    }
+
+    /// One alternative of atom_concat/3 split enumeration over a bound
+    /// third argument (chars is its full character vector).
+    fn builtin_atom_concat_attempt(&mut self, a1_raw: &Value, a2_raw: &Value, chars: &[char], split: usize) -> bool {
+        if split > chars.len() { return false; }
+        if split < chars.len() {
+            let whole: String = chars.iter().collect();
+            self.choice_points.push(ChoicePoint {
+                next_pc: self.pc,
+                saved_args: self.save_regs(),
+                stack: self.stack.clone(),
+                cp: self.cp,
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: Some(BuiltinState {
+                    name: "atom_concat/3".to_string(),
+                    args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole)],
+                    data: vec![Value::Integer((split + 1) as i64)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+        }
+        let prefix: String = chars[..split].iter().collect();
+        let suffix: String = chars[split..].iter().collect();
+        if self.unify(a1_raw, &Value::Atom(prefix)) && self.unify(a2_raw, &Value::Atom(suffix)) {
+            self.pc += 1; true
+        } else { false }
+    }
+
+    /// Extended builtin dispatch: term ordering, list utilities, atom
+    /// and string text operations, integer relations. F#-parity sweep —
+    /// every op here is already emitted as builtin_call by the shared
+    /// WAM compiler (is_builtin_pred), so missing arms previously failed
+    /// closed at runtime.
+    fn execute_ext_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        use std::cmp::Ordering;
+        match op {
+            "\\\\=/2" => {
+                // Not unifiable: trial-unify, then unwind any bindings.
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                let unified = self.unify(&a1, &a2);
+                self.unwind_trail_to(mark);
+                if unified { false } else { self.pc += 1; true }
+            }
+            "\\\\==/2" => {
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v)));
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v)));
+                if v1 != v2 { self.pc += 1; true } else { false }
+            }
+            "@</2" | "@=</2" | "@>/2" | "@>=/2" => {
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let o = self.term_compare(&a1, &a2);
+                let ok = match op {
+                    "@</2" => o == Ordering::Less,
+                    "@=</2" => o != Ordering::Greater,
+                    "@>/2" => o == Ordering::Greater,
+                    "@>=/2" => o != Ordering::Less,
+                    _ => false,
+                };
+                if ok { self.pc += 1; true } else { false }
+            }
+            "compare/3" => {
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let sym = match self.term_compare(&a2, &a3) {
+                    Ordering::Less => "<",
+                    Ordering::Equal => "=",
+                    Ordering::Greater => ">",
+                };
+                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                if self.unify(&a1, &Value::Atom(sym.to_string())) { self.pc += 1; true } else { false }
+            }
+            "msort/2" | "sort/2" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut sorted: Vec<Value> = list.iter()
+                    .map(|v| self.deref_heap(&self.deref_var(v)))
+                    .collect();
+                sorted.sort_by(|a, b| self.term_compare(a, b));
+                if op == "sort/2" {
+                    sorted.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
+                }
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+            }
+            "keysort/2" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
+                for item in &list {
+                    match self.deref_heap(&self.deref_var(item)) {
+                        Value::Str(f, args)
+                            if args.len() == 2 && Self::display_functor_name(&f, 2) == "-" =>
+                            keyed.push((args[0].clone(), Value::Str(f, args))),
+                        _ => return false,
+                    }
+                }
+                keyed.sort_by(|a, b| self.term_compare(&a.0, &b.0));
+                let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+            }
+            "memberchk/2" => {
+                // First element that unifies wins, deterministically;
+                // failed attempts are unwound, the winning binding kept.
+                let x = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                for item in &list {
+                    let mark = self.trail.len();
+                    if self.unify(&x, item) { self.pc += 1; return true; }
+                    self.unwind_trail_to(mark);
+                }
+                false
+            }
+            "last/2" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) if !items.is_empty() => items,
+                    _ => return false,
+                };
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let last = list[list.len() - 1].clone();
+                if self.unify(&a2, &last) { self.pc += 1; true } else { false }
+            }
+            "nth0/3" | "nth1/3" => {
+                let base: i64 = if op == "nth1/3" { 1 } else { 0 };
+                let n_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let elem_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                match self.deref_var(&n_raw) {
+                    Value::Integer(n) => {
+                        let idx = n - base;
+                        if idx < 0 || idx as usize >= list.len() { return false; }
+                        let item = list[idx as usize].clone();
+                        if self.unify(&elem_raw, &item) { self.pc += 1; true } else { false }
+                    }
+                    Value::Unbound(_) => self.builtin_nth_attempt(op, base, &n_raw, &list, &elem_raw, 0),
+                    _ => false,
+                }
+            }
+            "numlist/3" => {
+                let low = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let high = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                if low > high { return false; }
+                let items: Vec<Value> = (low..=high).map(Value::Integer).collect();
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(items)) { self.pc += 1; true } else { false }
+            }
+            "delete/3" => {
+                // Keep elements that do NOT unify with A2 (trial-unify,
+                // always unwound — matches the no-residual-bindings use).
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let pat = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mut kept: Vec<Value> = Vec::new();
+                for item in &list {
+                    let mark = self.trail.len();
+                    let matched = self.unify(&pat, item);
+                    self.unwind_trail_to(mark);
+                    if !matched { kept.push(item.clone()); }
+                }
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
+            "select/3" => {
+                let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) if !items.is_empty() => items,
+                    _ => return false,
+                };
+                let rest_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                self.builtin_select_attempt(&x_raw, &list, &rest_raw, 0)
+            }
+            "between/3" => {
+                let low = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let high = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let x_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                match self.deref_var(&x_raw) {
+                    Value::Integer(x) => {
+                        if low <= x && x <= high { self.pc += 1; true } else { false }
+                    }
+                    Value::Unbound(_) => self.builtin_between_attempt(&x_raw, low, high),
+                    _ => false,
+                }
+            }
+            "plus/3" => {
+                let vals: Vec<Value> = ["A1", "A2", "A3"].iter()
+                    .map(|r| self.get_reg_raw(r).map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit))
+                    .collect();
+                let ints: Vec<Option<i64>> = vals.iter().map(|v| match v {
+                    Value::Integer(n) => Some(*n),
+                    _ => None,
+                }).collect();
+                match (ints[0], ints[1], ints[2]) {
+                    (Some(a), Some(b), Some(c)) => {
+                        if a + b == c { self.pc += 1; true } else { false }
+                    }
+                    (Some(a), Some(b), None) => {
+                        if self.unify(&vals[2], &Value::Integer(a + b)) { self.pc += 1; true } else { false }
+                    }
+                    (Some(a), None, Some(c)) => {
+                        if self.unify(&vals[1], &Value::Integer(c - a)) { self.pc += 1; true } else { false }
+                    }
+                    (None, Some(b), Some(c)) => {
+                        if self.unify(&vals[0], &Value::Integer(c - b)) { self.pc += 1; true } else { false }
+                    }
+                    _ => false,
+                }
+            }
+            "sum_list/2" | "sumlist/2" | "max_list/2" | "min_list/2" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut nums: Vec<f64> = Vec::with_capacity(list.len());
+                let mut all_int = true;
+                let mut ints: Vec<i64> = Vec::with_capacity(list.len());
+                for item in &list {
+                    match self.deref_var(item) {
+                        Value::Integer(n) => { nums.push(n as f64); ints.push(n); }
+                        Value::Float(f) => { nums.push(f); all_int = false; }
+                        _ => return false,
+                    }
+                }
+                let result = match op {
+                    "sum_list/2" | "sumlist/2" => {
+                        if all_int { Value::Integer(ints.iter().sum()) }
+                        else { Value::Float(nums.iter().sum()) }
+                    }
+                    "max_list/2" => {
+                        if nums.is_empty() { return false; }
+                        if all_int { Value::Integer(*ints.iter().max().unwrap()) }
+                        else { Value::Float(nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max)) }
+                    }
+                    _ => {
+                        if nums.is_empty() { return false; }
+                        if all_int { Value::Integer(*ints.iter().min().unwrap()) }
+                        else { Value::Float(nums.iter().cloned().fold(f64::INFINITY, f64::min)) }
+                    }
+                };
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &result) { self.pc += 1; true } else { false }
+            }
+            "atom_length/2" | "string_length/2" => {
+                let text = match self.get_reg_raw("A1").map(|v| self.deref_var(&v))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let len = Value::Integer(text.chars().count() as i64);
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &len) { self.pc += 1; true } else { false }
+            }
+            "atom_concat/3" | "string_concat/3" => {
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                let t1 = Self::value_atomic_text(&v1);
+                let t2 = Self::value_atomic_text(&v2);
+                if let (Some(t1), Some(t2)) = (&t1, &t2) {
+                    let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                    let whole = Value::Atom(format!("{}{}", t1, t2));
+                    return if self.unify(&a3, &whole) { self.pc += 1; true } else { false };
+                }
+                // Split mode: enumerate prefix/suffix pairs of a bound A3.
+                let whole = match self.get_reg_raw("A3").map(|v| self.deref_var(&v))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let chars: Vec<char> = whole.chars().collect();
+                let a1_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                self.builtin_atom_concat_attempt(&a1_raw, &a2_raw, &chars, 0)
+            }
+            "char_code/2" => {
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                match &v1 {
+                    Value::Atom(s) if s.chars().count() == 1 => {
+                        let code = Value::Integer(s.chars().next().unwrap() as i64);
+                        let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                        if self.unify(&a2, &code) { self.pc += 1; true } else { false }
+                    }
+                    _ => {
+                        let code = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                            Some(Value::Integer(n)) => n,
+                            _ => return false,
+                        };
+                        let ch = match char::from_u32(code as u32) {
+                            Some(c) => c,
+                            None => return false,
+                        };
+                        if self.unify(&v1, &Value::Atom(ch.to_string())) { self.pc += 1; true } else { false }
+                    }
+                }
+            }
+            "atom_chars/2" => {
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                if let Some(text) = Self::value_atomic_text(&v1) {
+                    let chars: Vec<Value> = text.chars()
+                        .map(|c| Value::Atom(c.to_string()))
+                        .collect();
+                    let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                    return if self.unify(&a2, &Value::List(chars)) { self.pc += 1; true } else { false };
+                }
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut text = String::new();
+                for item in &list {
+                    match self.deref_var(item) {
+                        Value::Atom(s) => text.push_str(&s),
+                        _ => return false,
+                    }
+                }
+                if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+            }
+            "atom_string/2" | "string_to_atom/2" => {
+                // Atoms double as strings in this runtime; both are
+                // text-identity conversions in either direction.
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                if let Some(t) = Self::value_atomic_text(&v1) {
+                    let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                    return if self.unify(&a2, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                }
+                if let Some(t) = Self::value_atomic_text(&v2) {
+                    let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                    return if self.unify(&a1, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                }
+                false
+            }
+            "upcase_atom/2" | "downcase_atom/2" => {
+                let text = match self.get_reg_raw("A1").map(|v| self.deref_var(&v))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let cased = if op == "upcase_atom/2" { text.to_uppercase() } else { text.to_lowercase() };
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::Atom(cased)) { self.pc += 1; true } else { false }
+            }
+            "atom_number/2" => {
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
+                match &v1 {
+                    Value::Atom(s) => {
+                        let num = if let Ok(n) = s.parse::<i64>() {
+                            Value::Integer(n)
+                        } else if let Ok(f) = s.parse::<f64>() {
+                            Value::Float(f)
+                        } else {
+                            return false;
+                        };
+                        let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                        if self.unify(&a2, &num) { self.pc += 1; true } else { false }
+                    }
+                    _ => {
+                        let text = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                            Some(Value::Integer(n)) => n.to_string(),
+                            Some(Value::Float(f)) => format!("{}", f),
+                            _ => return false,
+                        };
+                        if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                    }
+                }
+            }
+            "ground/1" => {
+                let v = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                if self.value_is_ground(&v) { self.pc += 1; true } else { false }
+            }
+            _ => false,
+        }
+    }'.
 
 compile_execute_meta_builtin_to_rust(Code) :-
     Code = '    /// Execute meta-predicates that require goal evaluation.
