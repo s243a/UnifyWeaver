@@ -19,6 +19,7 @@
 %      $N == "VALUE" { print $M, $K }
 %      $N == "VALUE" { count++ } END { print count }
 %      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
+%      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -117,19 +118,18 @@ fail_close:
          BytesLen, BytesLen, PathLen, GuardCallIR, PrintActionIR]).
 
 plawk_program_native_driver_ir(
-    program([], [rule(Pattern, Actions)], [end([print(PrintFields)])]),
+    program([], Rules, [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
-    plawk_scalar_state_slots(Actions, PrintFields, Slots, ActionVars),
+    plawk_scalar_state_slots(Rules, PrintFields, Slots),
     atom_codes(InputPath, PathCodes),
     length(PathCodes, PathLen),
     BytesLen is PathLen + 1,
     llvm_c_bytes(PathCodes, PathBytes),
-    plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
+    plawk_scalar_rule_chain_ir(Rules, Slots, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_scalar_loop_phi_ir(Slots, LoopPhiIR),
-    plawk_scalar_match_update_ir(Slots, ActionVars, MatchUpdateIR),
-    plawk_scalar_next_phi_ir(Slots, NextPhiIR),
+    plawk_scalar_next_phi_ir(Slots, RuleCount, NextPhiIR),
     plawk_scalar_end_print_ir(PrintFields, Slots, EndPrintIR),
     format(atom(DriverIR),
 '@.plawk_surface_path = private constant [~w x i8] c"~w\\00"
@@ -178,14 +178,6 @@ check_eof:
 
 lowered_match:
 ~w
-  br i1 %is_match, label %apply_actions, label %keep_state
-
-apply_actions:
-~w
-  br label %continue_loop
-
-keep_state:
-  br label %continue_loop
 
 continue_loop:
 ~w
@@ -215,9 +207,9 @@ fail_close:
 }
 ',
         [BytesLen, PathBytes,
-         GuardGlobalIR,
-         BytesLen, BytesLen, PathLen, LoopPhiIR, GuardCallIR,
-         MatchUpdateIR, NextPhiIR, EndPrintIR]).
+         RuleGlobalIR,
+         BytesLen, BytesLen, PathLen, LoopPhiIR, RuleChainIR,
+         NextPhiIR, EndPrintIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -228,8 +220,13 @@ llvm_c_bytes([Code | Rest], Bytes) :-
 llvm_c_byte(Code, Byte) :-
     format(atom(Byte), '\\~|~`0t~16r~2+', [Code]).
 
-plawk_scalar_state_slots(Actions, PrintFields, Slots, ActionVars) :-
-    maplist(plawk_scalar_increment_action, Actions, ActionVars),
+plawk_scalar_state_slots(Rules, PrintFields, Slots) :-
+    findall(Name,
+        ( member(rule(_Pattern, Actions), Rules),
+          member(Action, Actions),
+          plawk_scalar_increment_action(Action, Name)
+        ),
+        ActionVars),
     ActionVars \== [],
     maplist(plawk_scalar_print_expr, PrintFields, PrintVars),
     append(ActionVars, PrintVars, Names0),
@@ -238,6 +235,84 @@ plawk_scalar_state_slots(Actions, PrintFields, Slots, ActionVars) :-
 plawk_scalar_increment_action(inc(var(Name)), Name).
 
 plawk_scalar_print_expr(var(Name), Name).
+
+plawk_scalar_rule_chain_ir(Rules, Slots, GlobalIR, ChainIR, RuleCount) :-
+    length(Rules, RuleCount),
+    RuleCount > 0,
+    phrase(plawk_scalar_rule_chain_lines(Rules, Slots, 0), Pairs),
+    pairs_keys_values(Pairs, GlobalParts, ChainParts),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR),
+    atomic_list_concat(ChainParts, '\n', ChainIR).
+
+plawk_scalar_rule_chain_lines([], _Slots, _) -->
+    [].
+plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], Slots, Index) -->
+    { NextIndex is Index + 1,
+      ( Rest == []
+      -> NextLabel = 'continue_loop'
+      ;  format(atom(NextLabel), 'rule_~w_match', [NextIndex])
+      ),
+      format(atom(RuleLabel), 'rule_~w_match', [Index]),
+      format(atom(ApplyLabel), 'rule_~w_apply', [Index]),
+      format(atom(MatchVar), 'rule_~w_is_match', [Index]),
+      format(atom(GlobalBase), 'plawk_surface_rule_~w', [Index]),
+      format(atom(MatchValue), '%~w', [MatchVar]),
+      plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+          GuardGlobalIR-GuardCallIR),
+      maplist(plawk_scalar_increment_action, Actions, ActionVars),
+      plawk_scalar_rule_input_phi_ir(Slots, Index, InputPhiIR),
+      plawk_scalar_match_update_ir(Slots, ActionVars, Index, MatchUpdateIR),
+      ( Index =:= 0
+      -> EntryIR = '  br label %rule_0_match\n\n'
+      ;  EntryIR = ''
+      ),
+      format(atom(BranchIR),
+'~w~w:
+~w~w
+  br i1 %~w, label %~w, label %~w
+
+~w:
+~w
+  br label %~w',
+          [EntryIR, RuleLabel, InputPhiIR, GuardCallIR, MatchVar,
+           ApplyLabel, NextLabel, ApplyLabel, MatchUpdateIR, NextLabel]),
+      Pair = GuardGlobalIR-BranchIR
+    },
+    [Pair],
+    plawk_scalar_rule_chain_lines(Rest, Slots, NextIndex).
+
+plawk_scalar_rule_input_phi_ir(_Slots, 0, '') :-
+    !.
+plawk_scalar_rule_input_phi_ir(Slots, RuleIndex, IR) :-
+    phrase(plawk_scalar_rule_input_phi_lines(Slots, RuleIndex, 0), Lines),
+    atomic_list_concat(Lines, '\n', LinesIR),
+    format(atom(IR), '~w~n', [LinesIR]).
+
+plawk_scalar_rule_input_phi_lines([], _RuleIndex, _) -->
+    [].
+plawk_scalar_rule_input_phi_lines([_Name | Rest], RuleIndex, SlotIndex) -->
+    { PrevRuleIndex is RuleIndex - 1,
+      plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
+      format(atom(Line),
+          '  %rule_~w_in_slot_~w = phi i64 [~w, %rule_~w_match], [%rule_~w_slot_~w, %rule_~w_apply]',
+          [RuleIndex, SlotIndex, PrevFalseValue, PrevRuleIndex,
+           PrevRuleIndex, SlotIndex, PrevRuleIndex]),
+      NextSlotIndex is SlotIndex + 1
+    },
+    [Line],
+    plawk_scalar_rule_input_phi_lines(Rest, RuleIndex, NextSlotIndex).
+
+plawk_scalar_rule_input_value(0, SlotIndex, Value) :-
+    !,
+    format(atom(Value), '%slot_~w', [SlotIndex]).
+plawk_scalar_rule_input_value(RuleIndex, SlotIndex, Value) :-
+    format(atom(Value), '%rule_~w_in_slot_~w', [RuleIndex, SlotIndex]).
+
+plawk_scalar_rule_slot_input(0, SlotIndex, Value) :-
+    !,
+    format(atom(Value), '%slot_~w', [SlotIndex]).
+plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, Value) :-
+    format(atom(Value), '%rule_~w_in_slot_~w', [RuleIndex, SlotIndex]).
 
 plawk_scalar_loop_phi_ir(Slots, IR) :-
     phrase(plawk_scalar_loop_phi_lines(Slots, 0), Lines),
@@ -254,40 +329,43 @@ plawk_scalar_loop_phi_lines([_Name | Rest], Index) -->
     [Line],
     plawk_scalar_loop_phi_lines(Rest, NextIndex).
 
-plawk_scalar_match_update_ir(Slots, ActionVars, IR) :-
-    phrase(plawk_scalar_match_update_lines(Slots, ActionVars, 0), Lines),
+plawk_scalar_match_update_ir(Slots, ActionVars, RuleIndex, IR) :-
+    phrase(plawk_scalar_match_update_lines(Slots, ActionVars, RuleIndex, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_scalar_match_update_lines([], _ActionVars, _) -->
+plawk_scalar_match_update_lines([], _ActionVars, _RuleIndex, _) -->
     [].
-plawk_scalar_match_update_lines([Name | Rest], ActionVars, Index) -->
+plawk_scalar_match_update_lines([Name | Rest], ActionVars, RuleIndex, SlotIndex) -->
     { plawk_scalar_increment_count(Name, ActionVars, Count),
+      plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, InputValue),
       format(atom(Line),
-          '  %match_slot_~w = add i64 %slot_~w, ~w',
-          [Index, Index, Count]),
-      NextIndex is Index + 1
+          '  %rule_~w_slot_~w = add i64 ~w, ~w',
+          [RuleIndex, SlotIndex, InputValue, Count]),
+      NextIndex is SlotIndex + 1
     },
     [Line],
-    plawk_scalar_match_update_lines(Rest, ActionVars, NextIndex).
+    plawk_scalar_match_update_lines(Rest, ActionVars, RuleIndex, NextIndex).
 
 plawk_scalar_increment_count(Name, ActionVars, Count) :-
     include(==(Name), ActionVars, Matches),
     length(Matches, Count).
 
-plawk_scalar_next_phi_ir(Slots, IR) :-
-    phrase(plawk_scalar_next_phi_lines(Slots, 0), Lines),
+plawk_scalar_next_phi_ir(Slots, RuleCount, IR) :-
+    phrase(plawk_scalar_next_phi_lines(Slots, RuleCount, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_scalar_next_phi_lines([], _) -->
+plawk_scalar_next_phi_lines([], _RuleCount, _) -->
     [].
-plawk_scalar_next_phi_lines([_Name | Rest], Index) -->
-    { format(atom(Line),
-          '  %next_slot_~w = phi i64 [%match_slot_~w, %apply_actions], [%slot_~w, %keep_state]',
-          [Index, Index, Index]),
+plawk_scalar_next_phi_lines([_Name | Rest], RuleCount, Index) -->
+    { LastRuleIndex is RuleCount - 1,
+      plawk_scalar_rule_input_value(LastRuleIndex, Index, FalseValue),
+      format(atom(Line),
+          '  %next_slot_~w = phi i64 [~w, %rule_~w_match], [%rule_~w_slot_~w, %rule_~w_apply]',
+          [Index, FalseValue, LastRuleIndex, LastRuleIndex, Index, LastRuleIndex]),
       NextIndex is Index + 1
     },
     [Line],
-    plawk_scalar_next_phi_lines(Rest, NextIndex).
+    plawk_scalar_next_phi_lines(Rest, RuleCount, NextIndex).
 
 plawk_scalar_end_print_ir(PrintFields, Slots, IR) :-
     phrase(plawk_scalar_end_print_lines(PrintFields, Slots, 0), Lines),
@@ -330,6 +408,14 @@ plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
 plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         32, '%is_match', GuardIR).
+
+plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR) :-
+    llvm_emit_atom_prefix_guard(GlobalBase, '%line', Prefix, MatchValue,
+        GuardIR).
+
+plawk_pattern_guard_ir(field_eq(Index, Value), GlobalBase, MatchValue, GuardIR) :-
+    llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, 32,
+        MatchValue, GuardIR).
 
 plawk_print_action_ir([field(0)], IR) :-
     !,
