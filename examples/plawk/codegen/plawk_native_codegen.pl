@@ -58,11 +58,11 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_scalar_state_slots(Rules, PrintFields, Slots),
-    plawk_scalar_rule_chain_ir(Rules, Slots, RuleGlobalIR, RuleChainIR, RuleCount),
-    plawk_scalar_loop_phi_ir(Slots, LoopPhiIR),
-    plawk_scalar_next_phi_ir(Slots, RuleCount, NextPhiIR),
-    plawk_scalar_end_print_ir(PrintFields, Slots, EndPrintIR),
+    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, NextPhiIR),
+    plawk_scalar_end_print_ir(PrintFields, StatePlan, EndPrintIR),
     plawk_i64_end_print_globals(RuleGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -79,11 +79,11 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_assoc_static_count_spec(Rules, PrintFields, KeyIndex, PrintKeys, Slots),
-    plawk_assoc_count_chain_ir(KeyIndex, Slots, AssocGlobalIR, AssocChainIR),
-    plawk_scalar_loop_phi_ir(Slots, LoopPhiIR),
-    plawk_assoc_next_phi_ir(Slots, NextPhiIR),
-    plawk_assoc_end_print_ir(PrintKeys, Slots, EndPrintIR),
+    plawk_assoc_static_count_plan(Rules, PrintFields, KeyIndex, StatePlan),
+    plawk_assoc_count_chain_ir(KeyIndex, StatePlan, AssocGlobalIR, AssocChainIR),
+    plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
+    plawk_assoc_next_phi_ir(StatePlan, NextPhiIR),
+    plawk_assoc_end_print_ir(PrintFields, StatePlan, EndPrintIR),
     plawk_i64_end_print_globals(AssocGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -201,22 +201,52 @@ llvm_c_bytes([Code | Rest], Bytes) :-
 llvm_c_byte(Code, Byte) :-
     format(atom(Byte), '\\~|~`0t~16r~2+', [Code]).
 
-plawk_assoc_static_count_spec(
+% State plans keep recognized PLAWK state separate from the LLVM slot numbering.
+% Later dynamic associative-array lowerings can replace assoc_count/2 slots with
+% native table state without changing the streaming driver contract.
+plawk_state_plan_slots(state_plan(Slots), Slots).
+
+plawk_state_slot_count(StatePlan, Count) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    length(Slots, Count).
+
+plawk_state_slot_index(StatePlan, Slot, Index) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    nth0(Index, Slots, Slot).
+
+plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
+    findall(Name,
+        ( member(rule(_Pattern, Actions), Rules),
+          member(Action, Actions),
+          plawk_scalar_increment_action(Action, Name)
+        ),
+        ActionVars),
+    ActionVars \== [],
+    maplist(plawk_scalar_print_expr, PrintFields, PrintVars),
+    append(ActionVars, PrintVars, Names0),
+    sort(Names0, Names),
+    maplist(plawk_scalar_state_slot, Names, Slots).
+
+plawk_scalar_state_slot(Name, scalar_counter(Name)).
+
+plawk_assoc_static_count_plan(
     [rule(always, [inc_assoc(var(ArrayName), field(KeyIndex))])],
     PrintFields,
     KeyIndex,
-    PrintKeys,
-    Slots
+    state_plan(Slots)
 ) :-
     KeyIndex > 0,
     maplist(plawk_assoc_print_key(ArrayName), PrintFields, PrintKeys),
     PrintKeys \== [],
-    sort(PrintKeys, Slots).
+    sort(PrintKeys, SlotKeys),
+    maplist(plawk_assoc_state_slot(ArrayName), SlotKeys, Slots).
 
 plawk_assoc_print_key(ArrayName, assoc(var(ArrayName), string(Key)), Key).
 
-plawk_assoc_count_chain_ir(KeyIndex, Slots, GlobalIR, ChainIR) :-
-    Slots \== [],
+plawk_assoc_state_slot(ArrayName, Key, assoc_count(ArrayName, Key)).
+
+plawk_assoc_count_chain_ir(KeyIndex, StatePlan, GlobalIR, ChainIR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_assoc_count_key_pairs(KeyIndex, Slots, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
@@ -232,7 +262,7 @@ assoc_no_match:
 
 plawk_assoc_count_key_pairs(_KeyIndex, [], _) -->
     [].
-plawk_assoc_count_key_pairs(KeyIndex, [Key | Rest], SlotIndex) -->
+plawk_assoc_count_key_pairs(KeyIndex, [assoc_count(_ArrayName, Key) | Rest], SlotIndex) -->
     { NextSlotIndex is SlotIndex + 1,
       ( Rest == []
       -> NextLabel = 'assoc_no_match'
@@ -260,8 +290,8 @@ plawk_assoc_count_key_pairs(KeyIndex, [Key | Rest], SlotIndex) -->
     [Pair],
     plawk_assoc_count_key_pairs(KeyIndex, Rest, NextSlotIndex).
 
-plawk_assoc_next_phi_ir(Slots, IR) :-
-    length(Slots, SlotCount),
+plawk_assoc_next_phi_ir(StatePlan, IR) :-
+    plawk_state_slot_count(StatePlan, SlotCount),
     phrase(plawk_assoc_next_phi_lines(SlotCount, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
@@ -296,16 +326,16 @@ plawk_assoc_slot_incoming_value(SlotIndex, SlotIndex, Value) :-
 plawk_assoc_slot_incoming_value(SlotIndex, _IncIndex, Value) :-
     format(atom(Value), '%slot_~w', [SlotIndex]).
 
-plawk_assoc_end_print_ir(PrintKeys, Slots, IR) :-
-    phrase(plawk_assoc_end_print_lines(PrintKeys, Slots, 0), Lines),
+plawk_assoc_end_print_ir(PrintFields, StatePlan, IR) :-
+    phrase(plawk_assoc_end_print_lines(PrintFields, StatePlan, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_assoc_end_print_lines([], _Slots, _) -->
+plawk_assoc_end_print_lines([], _StatePlan, _) -->
     ['  %end_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
      '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)'].
-plawk_assoc_end_print_lines([Key | Rest], Slots, PrintIndex) -->
+plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], StatePlan, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex),
-    { nth0(SlotIndex, Slots, Key),
+    { plawk_state_slot_index(StatePlan, assoc_count(ArrayName, Key), SlotIndex),
       format(atom(FmtPtr),
           '  %assoc_end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
           [PrintIndex]),
@@ -315,35 +345,23 @@ plawk_assoc_end_print_lines([Key | Rest], Slots, PrintIndex) -->
       NextPrintIndex is PrintIndex + 1
     },
     [FmtPtr, PrintCall],
-    plawk_assoc_end_print_lines(Rest, Slots, NextPrintIndex).
-
-plawk_scalar_state_slots(Rules, PrintFields, Slots) :-
-    findall(Name,
-        ( member(rule(_Pattern, Actions), Rules),
-          member(Action, Actions),
-          plawk_scalar_increment_action(Action, Name)
-        ),
-        ActionVars),
-    ActionVars \== [],
-    maplist(plawk_scalar_print_expr, PrintFields, PrintVars),
-    append(ActionVars, PrintVars, Names0),
-    sort(Names0, Slots).
+    plawk_assoc_end_print_lines(Rest, StatePlan, NextPrintIndex).
 
 plawk_scalar_increment_action(inc(var(Name)), Name).
 
 plawk_scalar_print_expr(var(Name), Name).
 
-plawk_scalar_rule_chain_ir(Rules, Slots, GlobalIR, ChainIR, RuleCount) :-
+plawk_scalar_rule_chain_ir(Rules, StatePlan, GlobalIR, ChainIR, RuleCount) :-
     length(Rules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_scalar_rule_chain_lines(Rules, Slots, 0), Pairs),
+    phrase(plawk_scalar_rule_chain_lines(Rules, StatePlan, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_scalar_rule_chain_lines([], _Slots, _) -->
+plawk_scalar_rule_chain_lines([], _StatePlan, _) -->
     [].
-plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], Slots, Index) -->
+plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], StatePlan, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -357,8 +375,8 @@ plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], Slots, Index) -->
       plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       maplist(plawk_scalar_increment_action, Actions, ActionVars),
-      plawk_scalar_rule_input_phi_ir(Slots, Index, InputPhiIR),
-      plawk_scalar_match_update_ir(Slots, ActionVars, Index, MatchUpdateIR),
+      plawk_scalar_rule_input_phi_ir(StatePlan, Index, InputPhiIR),
+      plawk_scalar_match_update_ir(StatePlan, ActionVars, Index, MatchUpdateIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
       ;  EntryIR = ''
@@ -376,11 +394,12 @@ plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], Slots, Index) -->
       Pair = GuardGlobalIR-BranchIR
     },
     [Pair],
-    plawk_scalar_rule_chain_lines(Rest, Slots, NextIndex).
+    plawk_scalar_rule_chain_lines(Rest, StatePlan, NextIndex).
 
-plawk_scalar_rule_input_phi_ir(_Slots, 0, '') :-
+plawk_scalar_rule_input_phi_ir(_StatePlan, 0, '') :-
     !.
-plawk_scalar_rule_input_phi_ir(Slots, RuleIndex, IR) :-
+plawk_scalar_rule_input_phi_ir(StatePlan, RuleIndex, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_rule_input_phi_lines(Slots, RuleIndex, 0), Lines),
     atomic_list_concat(Lines, '\n', LinesIR),
     format(atom(IR), '~w~n', [LinesIR]).
@@ -411,13 +430,14 @@ plawk_scalar_rule_slot_input(0, SlotIndex, Value) :-
 plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, Value) :-
     format(atom(Value), '%rule_~w_in_slot_~w', [RuleIndex, SlotIndex]).
 
-plawk_scalar_loop_phi_ir(Slots, IR) :-
+plawk_state_loop_phi_ir(StatePlan, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_loop_phi_lines(Slots, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_scalar_loop_phi_lines([], _) -->
     [].
-plawk_scalar_loop_phi_lines([_Name | Rest], Index) -->
+plawk_scalar_loop_phi_lines([_Slot | Rest], Index) -->
     { format(atom(Line),
           '  %slot_~w = phi i64 [0, %check_handle_value], [%next_slot_~w, %continue_loop]',
           [Index, Index]),
@@ -426,13 +446,14 @@ plawk_scalar_loop_phi_lines([_Name | Rest], Index) -->
     [Line],
     plawk_scalar_loop_phi_lines(Rest, NextIndex).
 
-plawk_scalar_match_update_ir(Slots, ActionVars, RuleIndex, IR) :-
+plawk_scalar_match_update_ir(StatePlan, ActionVars, RuleIndex, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_match_update_lines(Slots, ActionVars, RuleIndex, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_scalar_match_update_lines([], _ActionVars, _RuleIndex, _) -->
     [].
-plawk_scalar_match_update_lines([Name | Rest], ActionVars, RuleIndex, SlotIndex) -->
+plawk_scalar_match_update_lines([scalar_counter(Name) | Rest], ActionVars, RuleIndex, SlotIndex) -->
     { plawk_scalar_increment_count(Name, ActionVars, Count),
       plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, InputValue),
       format(atom(Line),
@@ -447,13 +468,14 @@ plawk_scalar_increment_count(Name, ActionVars, Count) :-
     include(==(Name), ActionVars, Matches),
     length(Matches, Count).
 
-plawk_scalar_next_phi_ir(Slots, RuleCount, IR) :-
+plawk_scalar_next_phi_ir(StatePlan, RuleCount, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_next_phi_lines(Slots, RuleCount, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_scalar_next_phi_lines([], _RuleCount, _) -->
     [].
-plawk_scalar_next_phi_lines([_Name | Rest], RuleCount, Index) -->
+plawk_scalar_next_phi_lines([_Slot | Rest], RuleCount, Index) -->
     { LastRuleIndex is RuleCount - 1,
       plawk_scalar_rule_input_value(LastRuleIndex, Index, FalseValue),
       format(atom(Line),
@@ -464,16 +486,16 @@ plawk_scalar_next_phi_lines([_Name | Rest], RuleCount, Index) -->
     [Line],
     plawk_scalar_next_phi_lines(Rest, RuleCount, NextIndex).
 
-plawk_scalar_end_print_ir(PrintFields, Slots, IR) :-
-    phrase(plawk_scalar_end_print_lines(PrintFields, Slots, 0), Lines),
+plawk_scalar_end_print_ir(PrintFields, StatePlan, IR) :-
+    phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_scalar_end_print_lines([], _Slots, _) -->
+plawk_scalar_end_print_lines([], _StatePlan, _) -->
     ['  %end_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
      '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)'].
-plawk_scalar_end_print_lines([var(Name) | Rest], Slots, PrintIndex) -->
+plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex),
-    { nth0(SlotIndex, Slots, Name),
+    { plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
       format(atom(FmtPtr),
           '  %end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
           [PrintIndex]),
@@ -483,7 +505,7 @@ plawk_scalar_end_print_lines([var(Name) | Rest], Slots, PrintIndex) -->
       NextPrintIndex is PrintIndex + 1
     },
     [FmtPtr, PrintCall],
-    plawk_scalar_end_print_lines(Rest, Slots, NextPrintIndex).
+    plawk_scalar_end_print_lines(Rest, StatePlan, NextPrintIndex).
 
 plawk_scalar_end_separator_lines(0) -->
     !,
