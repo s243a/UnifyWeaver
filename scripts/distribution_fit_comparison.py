@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (s243a)
-"""Compare exact histograms with realized fits and depth-conditioned priors."""
+"""Compare path-length histograms with fits and depth-conditioned priors."""
 
 from __future__ import annotations
 

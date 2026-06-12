@@ -7,6 +7,12 @@ The planning prior is a global or bucketed estimate.  It is not a boundary
 condition for a concrete node.  This probe checks whether the prior predicts the
 shape and storage cost of node-local recurrence histograms well enough to guide
 materialization decisions.
+
+Terminology used here:
+
+- parent-count distribution: counts root-reaching parents per node;
+- path-length distribution: counts root-reaching parent paths by finite length;
+- planning prior: a depth-conditioned forecast used for storage/admission.
 """
 
 from __future__ import annotations
@@ -81,7 +87,7 @@ def gamma_parameters(mean_value, variance):
 
 
 def planning_prior_for_bucket(parent_degrees, depth, tail_epsilon):
-    """Build a depth-conditioned prior from root-reaching parent degrees."""
+    """Build a depth-conditioned path-length prior from parent-count signals."""
     depth = max(0, int(depth))
     base = size_biased_excess_pmf(parent_degrees)
     prior = nfold_convolution(base, depth)
