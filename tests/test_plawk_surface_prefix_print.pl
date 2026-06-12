@@ -57,6 +57,14 @@ test(parses_assoc_count_end_print_rule) :-
         [end([print([assoc(var(counts), string("ERROR")),
                      assoc(var(counts), string("WARN"))])])])).
 
+test(parses_multi_assoc_count_end_print_rule) :-
+    plawk_parse_string("{ counts[$1]++; by_component[$2]++ } END { print counts[\"ERROR\"], by_component[\"disk\"] }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [inc_assoc(var(counts), field(1)),
+         inc_assoc(var(by_component), field(2))])],
+        [end([print([assoc(var(counts), string("ERROR")),
+                     assoc(var(by_component), string("disk"))])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -97,6 +105,11 @@ test(surface_assoc_counts_requested_keys) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2 1\n").
 
+test(surface_assoc_counts_multiple_arrays) :-
+    run_surface_print_smoke("{ counts[$1]++; by_component[$2]++ } END { print counts[\"ERROR\"], by_component[\"disk\"], by_component[\"cpu\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "2 1 1\n").
+
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
         ( between(0, 2050, Index), format(atom(Line), 'K~w payload\n', [Index]) ),
@@ -122,6 +135,18 @@ test(surface_assoc_counts_use_runtime_table) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_check_0')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%assoc_inc_slot_')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%slot_0 = phi')).
+
+test(surface_assoc_counts_multiple_arrays_use_distinct_runtime_tables) :-
+    plawk_parse_string("{ counts[$1]++; by_component[$2]++ } END { print counts[\"ERROR\"], by_component[\"disk\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_0 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_1 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_action_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_action_1:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%plawk_assoc_table = call')),
+    !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),

@@ -160,11 +160,24 @@ END { print counts["ERROR"], counts["WARN"] }
 ```
 
 PLAWK interns the `$1` slice for each record and updates a native WAM/LLVM
-growable `i64` table keyed by that atom id. The `END` action looks up the
-printed keys:
+growable `i64` table keyed by that atom id. The `END` action looks up the printed
+keys:
 
 ```text
 2 1
+```
+
+Multiple associative arrays in one always-rule get separate runtime tables:
+
+```awk
+{ counts[$1]++; by_component[$2]++ }
+END { print counts["ERROR"], by_component["disk"], by_component["cpu"] }
+```
+
+For the sample input above, that prints:
+
+```text
+2 1 1
 ```
 
 This path keeps the streaming loop native while the WAM runtime supplies the

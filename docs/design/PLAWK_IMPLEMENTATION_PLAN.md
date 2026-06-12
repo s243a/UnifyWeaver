@@ -256,10 +256,12 @@ the `END` action. Multiple scalar counters become parallel `i64` phi slots in
 the native streaming loop.
 Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The current
-associative-count surface now allocates the reusable WAM/LLVM
-interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`),
-increments it in the native streaming loop, and performs `END` lookups through
-the same table.
+associative-count surface allocates one reusable WAM/LLVM
+interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
+array, increments those tables in the native streaming loop, and performs `END`
+lookups through the matching source-array table. Multiple associative increments
+in one always-rule are planned as sequential native action blocks, so no WAM
+dispatch is needed per record for those count updates.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
