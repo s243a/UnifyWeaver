@@ -1138,6 +1138,30 @@ compile_utility_helpers_to_elixir(Code) :-
             new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
             %{state | pc: new_pc}
         end
+      {"==/2", 2} ->
+        # Strict equality. Previously missing -- the shared compiler
+        # emits builtin_call ==/2 and it failed closed (the class-7 gap
+        # found by the bind-through probe sweep; same fix as C and
+        # Haskell). deep_copy_value resolves both sides to
+        # self-contained terms through the heap and bindings; distinct
+        # unbound variables stay unequal, matching ISO ==/2.
+        v1 = deep_copy_value(state, get_reg(state, 1))
+        v2 = deep_copy_value(state, get_reg(state, 2))
+        if v1 == v2 do
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          %{state | pc: new_pc}
+        else
+          :fail
+        end
+      {"\\\\==/2", 2} ->
+        v1 = deep_copy_value(state, get_reg(state, 1))
+        v2 = deep_copy_value(state, get_reg(state, 2))
+        if v1 == v2 do
+          :fail
+        else
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          %{state | pc: new_pc}
+        end
       {"fail/0", 0} ->
         # Explicit Prolog fail. The default-arm hardening below throws
         # {:unknown_builtin, ...} for un-handled ops; without an
