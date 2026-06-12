@@ -15,6 +15,7 @@
 %      $N == "VALUE" { count++ } END { print count }
 %      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
+%      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -43,7 +44,13 @@ rules_rest([]) -->
 
 rule(rule(Pattern, Actions)) -->
     pattern(Pattern),
+    !,
     ws,
+    action_block(Actions).
+rule(rule(always, Actions)) -->
+    action_block(Actions).
+
+action_block(Actions) -->
     "{",
     ws,
     actions(Actions),
@@ -155,8 +162,19 @@ action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
-    increment_action(Action).
+    increment_action(Action),
+    !.
 
+increment_action(inc_assoc(var(Name), KeyExpr)) -->
+    identifier(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !,
+    "++".
 increment_action(inc(var(Name))) -->
     identifier(Name),
     "++".
@@ -180,6 +198,15 @@ print_fields_rest([Field | Fields]) -->
 print_fields_rest([]) -->
     [].
 
+field_expr(assoc(var(Name), KeyExpr)) -->
+    identifier(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !.
 field_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -188,6 +215,21 @@ field_expr(field(Index)) -->
       Index >= 0
     }.
 field_expr(var(Name)) -->
+    identifier(Name).
+
+assoc_key_expr(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
+assoc_key_expr(string(Value)) -->
+    quoted_string(ValueCodes),
+    { ValueCodes \== [],
+      string_codes(Value, ValueCodes)
+    }.
+assoc_key_expr(var(Name)) -->
     identifier(Name).
 
 identifier(Name) -->

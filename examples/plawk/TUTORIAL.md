@@ -152,6 +152,20 @@ The single-counter forms count two matching records:
 2
 ```
 
+The first associative-count surface uses familiar AWK syntax:
+
+```awk
+{ counts[$1]++ }
+END { print counts["ERROR"], counts["WARN"] }
+```
+
+For now, PLAWK specializes the keys requested by `END` to native slots, so this
+prints the same grouped counts without allocating a general hash table:
+
+```text
+2 1
+```
+
 This path lowers the field comparison and scalar counters to native LLVM code.
 Each scalar variable is an indexed `i64` slot in the streaming loop. The WAM
 runtime still supplies the streaming reader and atom helpers.
