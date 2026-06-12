@@ -762,20 +762,20 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
-                // A-REGISTER EXCEPTION (M139/M140 bind-through class):
-                // the cycle check alone is NOT sufficient.  A registers
-                // (reg < 100; X = 101+, Y = 201+) are argument staging:
-                // their old occupant is an unrelated live variable
-                // (often a clause-head argument), and binding it to a
-                // structure that does NOT contain it silently aliases
-                // the variable to that term (the non-cyclic variant the
-                // cross-target sweep probe aliasfree/1 exposed:
-                // `p(X) :- q(g(7)), var(X)` wrong-failed).  Both probe
-                // patterns above only ever stage placeholders in X/Y
-                // registers, so the bind is additionally gated on the
-                // register class — the same fix the Rust, Go, Scala,
-                // Kotlin, Haskell, C, WAT and Lua targets carry.
-                | Unbound vid when vid >= 0 && reg >= 100 && not (containsVid str) ->
+                // KNOWN OPEN BUG (bind-through sweep, side finding 4):
+                // the cycle check alone is NOT sufficient — a goal
+                // structure that does NOT contain the A-register
+                // occupant still aliases it (probe:
+                // `p(X) :- q(g(7)), var(X)` wrong-fails; see
+                // docs/reports/wam_bindthrough_cross_target_sweep.md).
+                // The register-class guard the other 8 targets carry
+                // CANNOT be applied here: unlike their compilers, the
+                // F# pipeline stages legitimate build placeholders in
+                // A registers too (gating on reg >= 100 regressed the
+                // compiled parser smoke from 42/42 to 1/42). Fixing
+                // this needs F#-specific occupant provenance — left
+                // open for the F# stream with the probe attached.
+                | Unbound vid when vid >= 0 && not (containsVid str) ->
                     { s0 with
                          WsBindings= Map.add vid str s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
@@ -829,10 +829,10 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
-                // Same A-register exception as BuildStruct above
-                // (M139/M140 class): placeholders only live in X/Y
-                // registers, so the bind is gated on reg >= 100.
-                | Unbound vid when vid >= 0 && reg >= 100 && not (containsVid listVal) ->
+                // Same KNOWN OPEN BUG as BuildStruct above (sweep
+                // side finding 4): cycle check only; the register
+                // guard is not applicable to the F# pipeline.
+                | Unbound vid when vid >= 0 && not (containsVid listVal) ->
                     { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
