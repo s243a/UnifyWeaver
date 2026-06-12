@@ -318,6 +318,14 @@ pub enum StackEntry {
 /// WAM virtual machine state.
 /// Mirrors wam_state(PC, Regs, Stack, Heap, Trail, CP, ChoicePoints, Code, Labels)
 /// from wam_runtime.pl.
+///
+/// `Clone` (every field is Clone: Arc/Vec/HashMap/FxMap/Option/scalars) enables
+/// the T7 parallel-aggregate substrate to fork an independent machine per worker
+/// — a WAM machine is mutable shared state, so each branch must run on its own
+/// clone (see rust_runtime/par_aggregate.rs). The static assertion below pins
+/// both `Clone` and `Send` (the `stack: Arc<…>` field, not `Rc`, is what keeps
+/// the machine `Send`).
+#[derive(Clone)]
 pub struct WamState {
     /// Program counter (1-indexed, 0 = halt).
     pub pc: usize,
@@ -422,6 +430,19 @@ pub struct WamState {
     /// Return PC stored by end_aggregate for aggregate-frame finalization.
     pub aggregate_return_pc: usize,
 }
+
+/// T7 prerequisite: the WAM machine must be `Clone` (fork a machine per parallel
+/// worker) and `Send` (move clones to worker threads). Compile-time assertion —
+/// if a future field breaks either, the generated project fails to compile here
+/// with a clear pointer rather than deep inside the parallel substrate.
+const _: () = {
+    fn _assert_send<T: Send>() {}
+    fn _assert_clone<T: Clone>() {}
+    fn _wam_state_is_forkable() {
+        _assert_send::<WamState>();
+        _assert_clone::<WamState>();
+    }
+};
 
 /// Resolved edge accessor. The category-edge predicate is a CONSTANT for a
 /// whole query, so it is resolved ONCE (`resolve_edge_accessor`) and the
