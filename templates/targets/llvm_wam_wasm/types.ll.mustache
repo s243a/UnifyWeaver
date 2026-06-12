@@ -8,6 +8,9 @@
 ; Note: payload is i64 even on wasm32 — WASM supports i64 natively
 %Value = type { i32, i64 }
 
+; === Byte slice ===
+%WamSlice = type { i8*, i64 }             ; pointer, length
+
 ; === Compound and List (linear memory offsets) ===
 ; On wasm32, pointers are i32 offsets into linear memory
 %Compound = type { i32, i32, i32 }        ; functor offset, arity, args offset

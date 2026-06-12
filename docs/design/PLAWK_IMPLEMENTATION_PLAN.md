@@ -238,14 +238,21 @@ Parser/codegen land in `examples/plawk/{parser,codegen}/`.
 
 **Current slice:** `examples/plawk/parser/plawk_parser.pl` parses the first
 surface forms, `/^PREFIX/ { print $0 }` and
-`$N == "VALUE" { print $0 }`, to explicit pattern/action ASTs.
+`$N == "VALUE" { print $0 }`, plus selected-field actions such as
+`$N == "VALUE" { print $M, $K }`, and the first scalar state form,
+`$N == "VALUE" { count++ } END { print count }`, to explicit pattern/action
+ASTs. Rule bodies now carry semicolon-separated action lists, and scalar
+variables lower through indexed native slots.
 `examples/plawk/codegen/plawk_native_codegen.pl` lowers that AST to a native
 streaming WAM/LLVM driver using `llvm_emit_atom_prefix_guard/5` or
 `llvm_emit_atom_field_eq_guard/7`, and
 `tests/test_plawk_surface_prefix_print.pl` proves that the generated binary
 prints matching records from a text file without calling `run_loop` in the hot
 record loop. The field-equality path scans fields in native code without
-allocating substrings.
+allocating substrings; selected-field printing projects byte slices directly;
+the scalar counter path threads a native `i64` loop variable and prints it from
+the `END` action. Multiple scalar counters become parallel `i64` phi slots in
+the native streaming loop.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

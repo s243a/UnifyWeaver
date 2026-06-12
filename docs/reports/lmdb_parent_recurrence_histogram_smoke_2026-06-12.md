@@ -74,9 +74,23 @@ The recurrence should become the first materialization path for cached boundary
 distributions.  DFS enumeration should remain as a validator for small cones and
 as a residual source for calibration.
 
-A later refinement can treat recurrence histograms as priors and use sampled or
-bounded path enumeration residuals to adjust them.  That could be framed as a
-Monte Carlo correction or gradient-style optimization: compare enumerated path
-mass to predicted mass, then adjust local distributions where the residual is
-large.  This is not cheap, but it is a plausible way to improve recurrence
-states without enumerating all paths.
+There are two different prior layers:
+
+1. **Node-local recurrence priors.**  These are the histograms produced by the
+   difference equation on the ancestor cone of a concrete target.  They are
+   fairly exact when the cone is DAG-like and the recurrence state carries the
+   active path constraints.  They are the right boundary conditions for a later
+   path-aggregate search.
+2. **Global or depth-conditioned planning priors.**  These are approximate
+   distributions predicted from graph-level statistics such as the
+   depth-conditioned parent branching profile, expected support width, tail
+   decay, or fitted binomial/Gamma family.  They are not boundary conditions for
+   a specific node.  They estimate whether carrying exact histograms to a given
+   depth is likely to be worth the memory and materialization cost.
+
+A later refinement can treat node-local recurrence histograms as priors and use
+sampled or bounded path enumeration residuals to adjust them.  That could be
+framed as a Monte Carlo correction or gradient-style optimization: compare
+enumerated path mass to predicted mass, then adjust local distributions where
+the residual is large.  This is not cheap, but it is a plausible way to improve
+recurrence states without enumerating all paths.
