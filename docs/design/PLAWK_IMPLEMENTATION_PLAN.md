@@ -188,14 +188,25 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the native smoke still reads from a file path rather than
-stdin, and `state/4` remains represented as ordinary WAM terms rather than a
-specialized LLVM aggregate. The bounded output helper has been retired from the
-compiled stream smoke; generic output accumulation now goes through
-`append_output/3` and `state_outputs/2`. WAM/LLVM now also has a
-`@wam_prepare_call` runtime helper plus a reentrant run-loop smoke, which is
-the first general bridge for native deterministic outer loops that call WAM
-handlers repeatedly.
+**Current boundary:** the compiled stream smoke still reads from a file path
+rather than stdin, and `state/4` remains represented as ordinary WAM terms
+rather than a specialized LLVM aggregate. Generic output accumulation now goes
+through `append_output/3` and `state_outputs/2`. WAM/LLVM also has a
+`@wam_prepare_call` runtime helper for native deterministic outer loops; it
+preserves heap terms that carry state between calls while clearing transient
+stack, trail, choicepoint, and cut bookkeeping at each call boundary. The
+`tests/test_plawk_native_outer_loop_driver.pl` smoke proves the next step:
+a native LLVM loop over static line atoms can call a compiled PLAWK handler once
+per record, thread PLAWK state across those calls, and read the final count and
+outputs back through WAM. The remaining loop boundary is replacing the static
+record atoms with a runtime file/stdin reader loop and then lowering hot state
+fields such as `state/4` to native aggregates.
+
+**Compiler note:** this smoke detects matching lines by `sub_atom(Line, 0, 5, _, 'ERROR')`
+instead of full-line facts such as `'ERROR disk full'`. The current WAM/LLVM
+atom-literal path serializes quoted atoms with spaces including their quote
+characters, while native/runtime-created line atoms are raw text. That is a
+separate atom-literal normalization issue, not a native-loop requirement.
 
 ---
 
