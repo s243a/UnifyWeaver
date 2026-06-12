@@ -160,7 +160,8 @@ END { print counts["ERROR"], counts["WARN"] }
 ```
 
 PLAWK interns the `$1` slice for each record and updates a native WAM/LLVM
-`i64` table keyed by that atom id. The `END` action looks up the printed keys:
+growable `i64` table keyed by that atom id. The `END` action looks up the
+printed keys:
 
 ```text
 2 1

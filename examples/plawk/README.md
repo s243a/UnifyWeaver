@@ -83,7 +83,7 @@ compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. The first
 associative-count surface, `{ counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }`,
 now uses the WAM/LLVM runtime's interned-atom-keyed `i64` table rather than
-specializing the `END` keys to fixed slots.
+specializing the `END` keys to fixed slots; the table grows and rehashes as needed.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
