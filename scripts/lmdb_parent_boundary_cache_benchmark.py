@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -82,6 +83,48 @@ def scaled_distribution_histogram(probabilities, origin, total_count):
         for index, _value in ranked[:remainder]:
             floors[origin + index] = floors.get(origin + index, 0) + 1
     return dict(sorted((length, count) for length, count in floors.items() if count > 0))
+
+
+def estimate_parametric_total_count(row, prior, mass_model, mass_cap=None):
+    """Estimate unnormalized mass for a parametric boundary histogram."""
+    oracle_count = int(row.get("path_count", 0))
+    mass_cap = None if mass_cap is None or int(mass_cap) <= 0 else int(mass_cap)
+    capped = False
+
+    if mass_model == "oracle":
+        estimated = oracle_count
+    elif mass_model == "unit":
+        estimated = 1 if oracle_count > 0 else 0
+    elif mass_model == "depth-prior":
+        lmax = row.get("histogram_L_max")
+        depth = 0 if lmax is None else max(0, int(lmax))
+        branching_pressure = max(0.0, 1.0 + float(prior.get("base_mean_excess", 0.0)))
+        if oracle_count <= 0:
+            estimated = 0
+        elif branching_pressure <= 1.0 or depth == 0:
+            estimated = 1
+        else:
+            log_estimate = depth * math.log(branching_pressure)
+            if mass_cap is not None and log_estimate >= math.log(mass_cap):
+                estimated = mass_cap
+                capped = True
+            else:
+                estimated = max(1, int(round(math.exp(log_estimate))))
+    else:
+        raise ValueError("unknown parametric mass model: {}".format(mass_model))
+
+    if mass_cap is not None and estimated > mass_cap:
+        estimated = mass_cap
+        capped = True
+
+    return {
+        "mass_model": mass_model,
+        "estimated_path_count": estimated,
+        "oracle_path_count": oracle_count,
+        "mass_delta": estimated - oracle_count,
+        "mass_ratio": None if oracle_count <= 0 else estimated / oracle_count,
+        "mass_capped": capped,
+    }
 
 
 def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
@@ -185,6 +228,8 @@ def build_boundary_cache(
     safety_factor=1.25,
     max_histogram_bytes=1024,
     parametric_bytes=64,
+    parametric_mass_model="oracle",
+    parametric_mass_cap=1000000,
     tail_epsilon=0.001,
     max_parent_depth=24,
 ):
@@ -289,20 +334,35 @@ def build_boundary_cache(
         row["parametric_cached"] = False
         row["parametric_histogram"] = {}
         row["parametric_path_count"] = 0
+        row["parametric_oracle_path_count"] = row["path_count"]
+        row["parametric_mass_model"] = parametric_mass_model
+        row["parametric_mass_delta"] = None
+        row["parametric_mass_ratio"] = None
+        row["parametric_mass_capped"] = False
         row["parametric_support_bins"] = 0
         if cached:
             cache[row["node"]] = hist
         elif policy["action"] == "use_parametric_prior" and lmax in priors and hist:
+            mass_estimate = estimate_parametric_total_count(
+                row,
+                priors[lmax],
+                parametric_mass_model,
+                parametric_mass_cap,
+            )
             approx_hist = scaled_distribution_histogram(
                 priors[lmax]["prior_distribution"],
                 row["histogram_L_min"],
-                row["path_count"],
+                mass_estimate["estimated_path_count"],
             )
             if approx_hist:
                 parametric_cache[row["node"]] = approx_hist
                 row["parametric_cached"] = True
                 row["parametric_histogram"] = approx_hist
                 row["parametric_path_count"] = sum(approx_hist.values())
+                row["parametric_oracle_path_count"] = mass_estimate["oracle_path_count"]
+                row["parametric_mass_delta"] = mass_estimate["mass_delta"]
+                row["parametric_mass_ratio"] = mass_estimate["mass_ratio"]
+                row["parametric_mass_capped"] = mass_estimate["mass_capped"]
                 row["parametric_support_bins"] = len(approx_hist)
     return cache, parametric_cache, rows
 
@@ -323,6 +383,8 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "full_path_count": full_paths,
         "cached_path_count": cached_paths,
         "path_count_delta": cached_paths - full_paths,
+        "abs_path_count_delta": abs(cached_paths - full_paths),
+        "path_count_relative_error": 0.0 if full_paths == 0 else abs(cached_paths - full_paths) / full_paths,
         "full_L_min": min(full_hist) if full_hist else None,
         "cached_L_min": min(cached_hist) if cached_hist else None,
         "full_L_max": max(full_hist) if full_hist else None,
@@ -386,6 +448,8 @@ def run_benchmark(args):
             args.safety_factor,
             args.max_histogram_bytes,
             args.parametric_bytes,
+            args.parametric_mass_model,
+            args.parametric_mass_cap,
             args.tail_epsilon,
             args.max_parent_depth,
         )
@@ -405,6 +469,8 @@ def run_benchmark(args):
             "safety_factor": args.safety_factor,
             "max_histogram_bytes": args.max_histogram_bytes,
             "parametric_bytes": args.parametric_bytes,
+            "parametric_mass_model": args.parametric_mass_model,
+            "parametric_mass_cap": args.parametric_mass_cap,
         }]
         records.extend(cache_rows)
         for target in targets:
@@ -485,13 +551,15 @@ def summarize(records):
         "",
         "## Admission Policy",
         "",
-        "| policy | safety_factor | max_histogram_bytes | parametric_bytes |",
-        "|--------|--------------:|--------------------:|-----------------:|",
-        "| {} | {} | {} | {} |".format(
+        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_mass_model | parametric_mass_cap |",
+        "|--------|--------------:|--------------------:|-----------------:|-----------------------|--------------------:|",
+        "| {} | {} | {} | {} | {} | {} |".format(
             selection.get("admission_policy", "baseline"),
             selection.get("safety_factor", "n/a"),
             selection.get("max_histogram_bytes", "n/a"),
             selection.get("parametric_bytes", "n/a"),
+            selection.get("parametric_mass_model", "oracle"),
+            selection.get("parametric_mass_cap", "n/a"),
         ),
         "",
         "## Boundary Admission Outcomes",
@@ -533,18 +601,20 @@ def summarize(records):
         "",
         "## Boundary Cache Build",
         "",
-        "| entries | histogram_cached | parametric_cached | mean_hist_paths | mean_hist_bins | mean_parametric_bins | mean_nodes_expanded | capped_entries |",
-        "|---------|-----------------:|------------------:|----------------:|---------------:|---------------------:|--------------------:|---------------:|",
+        "| entries | histogram_cached | parametric_cached | mean_hist_paths | mean_hist_bins | mean_parametric_paths | mean_parametric_mass_ratio | mean_parametric_bins | mean_nodes_expanded | capped_entries |",
+        "|---------|-----------------:|------------------:|----------------:|---------------:|----------------------:|----------------------------:|---------------------:|--------------------:|---------------:|",
     ])
     cached_entries = [row for row in cache_rows if row.get("cached")]
     parametric_entries = [row for row in cache_rows if row.get("parametric_cached")]
     lines.append(
-        "| {entries} | {cached} | {parametric} | {mean_paths:.3f} | {mean_bins:.3f} | {mean_parametric_bins:.3f} | {mean_expanded:.1f} | {capped} |".format(
+        "| {entries} | {cached} | {parametric} | {mean_paths:.3f} | {mean_bins:.3f} | {mean_parametric_paths:.3f} | {mean_parametric_mass_ratio:.3f} | {mean_parametric_bins:.3f} | {mean_expanded:.1f} | {capped} |".format(
             entries=len(cache_rows),
             cached=len(cached_entries),
             parametric=len(parametric_entries),
             mean_paths=statistics.mean(int(row["path_count"]) for row in cached_entries) if cached_entries else 0.0,
             mean_bins=statistics.mean(int(row["support_bins"]) for row in cached_entries) if cached_entries else 0.0,
+            mean_parametric_paths=statistics.mean(int(row["parametric_path_count"]) for row in parametric_entries) if parametric_entries else 0.0,
+            mean_parametric_mass_ratio=statistics.mean(float(row["parametric_mass_ratio"]) for row in parametric_entries if row.get("parametric_mass_ratio") is not None) if any(row.get("parametric_mass_ratio") is not None for row in parametric_entries) else 0.0,
             mean_parametric_bins=statistics.mean(int(row["parametric_support_bins"]) for row in parametric_entries) if parametric_entries else 0.0,
             mean_expanded=statistics.mean(int(row["nodes_expanded"]) for row in cache_rows) if cache_rows else 0.0,
             capped=sum(1 for row in cache_rows if row.get("path_cap_hit") or row.get("expansion_cap_hit")),
@@ -554,8 +624,8 @@ def summarize(records):
         "",
         "## Full Search Versus Boundary Cache",
         "",
-        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_node_ratio | mean_hist_hits | mean_param_hits | full_capped | cached_capped |",
-        "|--------|------|---------|--------|--------|----------|-----------------|---------------:|----------------:|-------------|---------------|",
+        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | full_capped | cached_capped |",
+        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|---------------:|----------------:|-----------------------:|------------------------:|-------------|---------------|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -564,20 +634,28 @@ def summarize(records):
         rows = by_budget[budget]
         l1 = [float(row["l1_error"]) for row in rows]
         cdf = [float(row["max_cdf_error"]) for row in rows]
+        path_relative = [float(row["path_count_relative_error"]) for row in rows]
+        path_delta = [int(row["abs_path_count_delta"]) for row in rows]
         ratios = [float(row["node_expansion_ratio"]) for row in rows]
         histogram_hits = [int(row["histogram_cache_hits"]) for row in rows]
         parametric_hits = [int(row["parametric_cache_hits"]) for row in rows]
+        histogram_bins_spliced = [int(row["histogram_bins_spliced"]) for row in rows]
+        parametric_bins_spliced = [int(row["parametric_bins_spliced"]) for row in rows]
         lines.append(
-            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {full_capped} | {cached_capped} |".format(
+            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {full_capped} | {cached_capped} |".format(
                 budget=budget,
                 rows=len(rows),
                 mean_l1=statistics.mean(l1) if l1 else 0.0,
                 p95_l1=percentile(l1, 95),
                 max_l1=max(l1, default=0.0),
                 mean_cdf=statistics.mean(cdf) if cdf else 0.0,
+                mean_path_relative=statistics.mean(path_relative) if path_relative else 0.0,
+                mean_path_delta=statistics.mean(path_delta) if path_delta else 0.0,
                 mean_ratio=statistics.mean(ratios) if ratios else 0.0,
                 mean_hist_hits=statistics.mean(histogram_hits) if histogram_hits else 0.0,
                 mean_param_hits=statistics.mean(parametric_hits) if parametric_hits else 0.0,
+                mean_hist_bins=statistics.mean(histogram_bins_spliced) if histogram_bins_spliced else 0.0,
+                mean_param_bins=statistics.mean(parametric_bins_spliced) if parametric_bins_spliced else 0.0,
                 full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
                 cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
             )
@@ -623,6 +701,8 @@ def main(argv=None):
     parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for depth-prior predicted histogram bytes.")
     parser.add_argument("--max-histogram-bytes", type=int, default=1024, help="Maximum bytes allowed for exact or capped boundary histograms under depth-prior admission.")
     parser.add_argument("--parametric-bytes", type=int, default=64, help="Estimated bytes for a parametric prior state.")
+    parser.add_argument("--parametric-mass-model", choices=["oracle", "unit", "depth-prior"], default="oracle", help="Mass used to unnormalize parametric boundary states.")
+    parser.add_argument("--parametric-mass-cap", type=int, default=1000000, help="Maximum estimated path mass for non-oracle parametric states; non-positive disables the cap.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
     parser.add_argument("--max-parent-depth", type=int, default=24, help="Parent depth cap for root-reaching parent degree signals.")
     parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root paths.")
