@@ -2369,6 +2369,28 @@ step !ctx s (BuiltinCall "=/2" _) =
       unifyVal (derefVar (wsBindings s) a) (derefVar (wsBindings s) b) s
     _ -> Nothing
 
+-- Strict (in)equality. Previously missing from the table entirely, so
+-- the shared compiler emitted BuiltinCall ==/2 and it fell through to
+-- the catch-all Nothing (even X = a, X == a failed) -- the class-7 gap
+-- found by the bind-through probe sweep. derefDeep makes the compare
+-- structural through the binding table; distinct unbound vids stay
+-- unequal, matching ISO ==/2. (Cons-spelling caveat: a VList and an
+-- equivalent Str cons chain do not compare equal -- same limitation as
+-- unifyVal had before its aliasing arms; acceptable for the guard use.)
+step !ctx s (BuiltinCall "==/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b)
+      | derefDeep (wsBindings s) a == derefDeep (wsBindings s) b ->
+          Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+step !ctx s (BuiltinCall "\\\\==/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b)
+      | derefDeep (wsBindings s) a /= derefDeep (wsBindings s) b ->
+          Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 step !ctx s (BuiltinCall "length/2" _) =
   let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 1 (wsRegs s))
   in case listVal of
