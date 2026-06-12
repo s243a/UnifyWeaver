@@ -6632,6 +6632,124 @@ sch.close:
   ret i1 %sch.ok
 }
 
+define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
+entry:
+  %ap.t = call i32 @value_tag(%Value %atom_value)
+  %ap.is_atom = icmp eq i32 %ap.t, 0
+  br i1 %ap.is_atom, label %ap.lookup, label %ap.no
+
+ap.lookup:
+  %ap.aid = call i64 @value_payload(%Value %atom_value)
+  %ap.str = call i8* @wam_atom_to_string(i64 %ap.aid)
+  %ap.null = icmp eq i8* %ap.str, null
+  br i1 %ap.null, label %ap.no, label %ap.loop
+
+ap.loop:
+  %ap.i = phi i64 [ 0, %ap.lookup ], [ %ap.next, %ap.step_ok ]
+  %ap.done = icmp uge i64 %ap.i, %prefix_len
+  br i1 %ap.done, label %ap.yes, label %ap.step
+
+ap.step:
+  %ap.sp = getelementptr i8, i8* %ap.str, i64 %ap.i
+  %ap.pp = getelementptr i8, i8* %prefix, i64 %ap.i
+  %ap.sc = load i8, i8* %ap.sp
+  %ap.pc = load i8, i8* %ap.pp
+  %ap.nonzero = icmp ne i8 %ap.sc, 0
+  %ap.eq = icmp eq i8 %ap.sc, %ap.pc
+  %ap.match = and i1 %ap.nonzero, %ap.eq
+  br i1 %ap.match, label %ap.step_ok, label %ap.no
+
+ap.step_ok:
+  %ap.next = add i64 %ap.i, 1
+  br label %ap.loop
+
+ap.yes:
+  ret i1 true
+
+ap.no:
+  ret i1 false
+}
+
+define i1 @wam_atom_field_eq_value(%Value %atom_value, i64 %field_index, i8* %expected, i64 %expected_len, i8 %sep) {
+entry:
+  %fe.t = call i32 @value_tag(%Value %atom_value)
+  %fe.is_atom = icmp eq i32 %fe.t, 0
+  br i1 %fe.is_atom, label %fe.check_index, label %fe.no
+
+fe.check_index:
+  %fe.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fe.index_ok, label %fe.lookup, label %fe.no
+
+fe.lookup:
+  %fe.aid = call i64 @value_payload(%Value %atom_value)
+  %fe.str = call i8* @wam_atom_to_string(i64 %fe.aid)
+  %fe.null = icmp eq i8* %fe.str, null
+  br i1 %fe.null, label %fe.no, label %fe.find_loop
+
+fe.find_loop:
+  %fe.cur_index = phi i64 [ 1, %fe.lookup ], [ %fe.next_index, %fe.after_sep ]
+  %fe.start_pos = phi i64 [ 0, %fe.lookup ], [ %fe.after_sep_pos, %fe.after_sep ]
+  %fe.index_match = icmp eq i64 %fe.cur_index, %field_index
+  br i1 %fe.index_match, label %fe.compare_loop, label %fe.skip_loop
+
+fe.skip_loop:
+  %fe.skip_pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.skip_next_pos, %fe.skip_next ]
+  %fe.skip_ptr = getelementptr i8, i8* %fe.str, i64 %fe.skip_pos
+  %fe.skip_ch = load i8, i8* %fe.skip_ptr
+  %fe.skip_nul = icmp eq i8 %fe.skip_ch, 0
+  br i1 %fe.skip_nul, label %fe.no, label %fe.skip_check_sep
+
+fe.skip_check_sep:
+  %fe.skip_is_sep = icmp eq i8 %fe.skip_ch, %sep
+  br i1 %fe.skip_is_sep, label %fe.after_sep, label %fe.skip_next
+
+fe.skip_next:
+  %fe.skip_next_pos = add i64 %fe.skip_pos, 1
+  br label %fe.skip_loop
+
+fe.after_sep:
+  %fe.after_sep_pos = add i64 %fe.skip_pos, 1
+  %fe.next_index = add i64 %fe.cur_index, 1
+  br label %fe.find_loop
+
+fe.compare_loop:
+  %fe.i = phi i64 [ 0, %fe.find_loop ], [ %fe.next_i, %fe.compare_step ]
+  %fe.pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.next_pos, %fe.compare_step ]
+  %fe.done = icmp uge i64 %fe.i, %expected_len
+  br i1 %fe.done, label %fe.check_end, label %fe.compare_char
+
+fe.compare_char:
+  %fe.line_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.exp_ptr = getelementptr i8, i8* %expected, i64 %fe.i
+  %fe.line_ch = load i8, i8* %fe.line_ptr
+  %fe.exp_ch = load i8, i8* %fe.exp_ptr
+  %fe.line_nonzero = icmp ne i8 %fe.line_ch, 0
+  %fe.line_not_sep = icmp ne i8 %fe.line_ch, %sep
+  %fe.eq = icmp eq i8 %fe.line_ch, %fe.exp_ch
+  %fe.live = and i1 %fe.line_nonzero, %fe.line_not_sep
+  %fe.match = and i1 %fe.live, %fe.eq
+  br i1 %fe.match, label %fe.compare_step, label %fe.no
+
+fe.compare_step:
+  %fe.next_i = add i64 %fe.i, 1
+  %fe.next_pos = add i64 %fe.pos, 1
+  br label %fe.compare_loop
+
+fe.check_end:
+  %fe.end_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.end_ch = load i8, i8* %fe.end_ptr
+  %fe.end_nul = icmp eq i8 %fe.end_ch, 0
+  %fe.end_sep = icmp eq i8 %fe.end_ch, %sep
+  %fe.end_ok = or i1 %fe.end_nul, %fe.end_sep
+  br i1 %fe.end_ok, label %fe.yes, label %fe.no
+
+fe.yes:
+  ret i1 true
+
+fe.no:
+  ret i1 false
+}
+
 ; Dispatches on integer op codes:
 ;   0 = is/2, 1 = >/2, 2 = </2, 3 = >=/2, 4 = =</2
 ;   5 = =:=/2, 6 = =\=/2, 7 = ==/2, 8 = true/0, 9 = fail/0
