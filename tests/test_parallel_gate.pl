@@ -26,6 +26,10 @@ pg_heavy(X, R) :-
     atom_codes(A, S2), atom_concat(A, A, B), sub_atom(B, 0, 3, _, R),
     length(Cs, _), msort(S2, _), reverse(S2, _).
 
+% recursive per-branch work that takes an input from the enumerator
+pg_down(0, []).
+pg_down(N, [N|T]) :- N > 0, M is N - 1, pg_down(M, T).
+
 :- begin_tests(parallel_gate).
 
 build(M) :- build_cost_model(user, M).
@@ -88,5 +92,69 @@ test(policy_override_widens_to_moderate) :-
     % and with the override removed it is sequential again
     aggregate_parallel_decision(findall(Y, (pg_fact(X), pg_cheap(X, Y)), _), M, D2),
     assertion(D2 == sequential).
+
+% --- route-1 split analysis: enumerator | body -----------------------------
+
+% cheap enumerator (fact), heavy body; frontier = the shared var X
+test(split_cheap_enum_heavy_body) :-
+    build(M),
+    I = (pg_fact(X), pg_heavy(X, _R)),
+    split_aggregate_generator(I, M, Enum, Body, Frontier),
+    assertion(Enum =@= pg_fact(_)),
+    assertion(Body =@= pg_heavy(_, _)),
+    assertion(Frontier == [X]).
+
+% cheap enumerator, recursive body taking an input from the enumerator
+test(split_cheap_enum_recursive_body) :-
+    build(M),
+    I = (pg_fact(X), pg_down(X, _L)),
+    split_aggregate_generator(I, M, Enum, Body, Frontier),
+    assertion(Enum =@= pg_fact(_)),
+    assertion(Body =@= pg_down(_, _)),
+    assertion(Frontier == [X]).
+
+% multi-goal cheap prefix; frontier is only the var the body actually reads (Z)
+test(split_multi_goal_prefix_frontier_is_minimal) :-
+    build(M),
+    I = (pg_fact(X), pg_cheap(X, Z), pg_heavy(Z, _R)),
+    split_aggregate_generator(I, M, Enum, Body, Frontier),
+    assertion(Enum =@= (pg_fact(A), pg_cheap(A, _))),   % shared first arg preserved
+    assertion(Body =@= pg_heavy(_, _)),
+    assertion(Frontier == [Z]).         % X stays in Enum only, R in Body only
+
+% a single recursive goal has no cheap fan-out prefix -> no split
+test(no_split_single_recursive_goal) :-
+    build(M),
+    assertion(\+ split_aggregate_generator(pg_down(5, _L), M, _, _, _)).
+
+% all-cheap inner goal has no body carrying work -> no split
+test(no_split_all_cheap) :-
+    build(M),
+    assertion(\+ split_aggregate_generator((pg_fact(X), pg_cheap(X, _Y)), M, _, _, _)).
+
+% soundness: cut, side effects, and disjunction block the split
+test(no_split_with_cut) :-
+    build(M),
+    assertion(\+ split_aggregate_generator((pg_fact(X), !, pg_heavy(X, _R)), M, _, _, _)).
+
+test(no_split_with_side_effect) :-
+    build(M),
+    assertion(\+ split_aggregate_generator((pg_fact(X), writeln(X), pg_heavy(X, _R)), M, _, _, _)).
+
+test(no_split_disjunction) :-
+    build(M),
+    assertion(\+ split_aggregate_generator((pg_fact(X) ; pg_heavy(X, _R)), M, _, _, _)).
+
+% the split round-trips: Enum then Body is exactly the original goal sequence
+test(split_preserves_goals) :-
+    build(M),
+    I = (pg_fact(X), pg_cheap(X, Z), pg_heavy(Z, _R)),
+    split_aggregate_generator(I, M, Enum, Body, _),
+    flatten_conj(Enum, EG), flatten_conj(Body, BG), append(EG, BG, Got),
+    flatten_conj(I, Want),
+    assertion(Got == Want).
+
+flatten_conj((A, B), L) :- !, flatten_conj(A, LA), flatten_conj(B, LB), append(LA, LB, L).
+flatten_conj(G, [G]).
 
 :- end_tests(parallel_gate).
