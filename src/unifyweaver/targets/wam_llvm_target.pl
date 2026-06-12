@@ -45,7 +45,8 @@
     sanitize_functor_for_llvm/2,         % +Name, -SaneName (bijective hex escape)
     register_functor_string/1,           % +NameStr (assert into functor_string_global table)
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
-    llvm_emit_atom_prefix_guard/5        % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_atom_field_eq_guard/7      % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -4225,6 +4226,86 @@ ap.yes:
   ret i1 true
 
 ap.no:
+  ret i1 false
+}
+
+define i1 @wam_atom_field_eq_value(%Value %atom_value, i64 %field_index, i8* %expected, i64 %expected_len, i8 %sep) {
+entry:
+  %fe.t = call i32 @value_tag(%Value %atom_value)
+  %fe.is_atom = icmp eq i32 %fe.t, 0
+  br i1 %fe.is_atom, label %fe.check_index, label %fe.no
+
+fe.check_index:
+  %fe.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fe.index_ok, label %fe.lookup, label %fe.no
+
+fe.lookup:
+  %fe.aid = call i64 @value_payload(%Value %atom_value)
+  %fe.str = call i8* @wam_atom_to_string(i64 %fe.aid)
+  %fe.null = icmp eq i8* %fe.str, null
+  br i1 %fe.null, label %fe.no, label %fe.find_loop
+
+fe.find_loop:
+  %fe.cur_index = phi i64 [ 1, %fe.lookup ], [ %fe.next_index, %fe.after_sep ]
+  %fe.start_pos = phi i64 [ 0, %fe.lookup ], [ %fe.after_sep_pos, %fe.after_sep ]
+  %fe.index_match = icmp eq i64 %fe.cur_index, %field_index
+  br i1 %fe.index_match, label %fe.compare_loop, label %fe.skip_loop
+
+fe.skip_loop:
+  %fe.skip_pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.skip_next_pos, %fe.skip_next ]
+  %fe.skip_ptr = getelementptr i8, i8* %fe.str, i64 %fe.skip_pos
+  %fe.skip_ch = load i8, i8* %fe.skip_ptr
+  %fe.skip_nul = icmp eq i8 %fe.skip_ch, 0
+  br i1 %fe.skip_nul, label %fe.no, label %fe.skip_check_sep
+
+fe.skip_check_sep:
+  %fe.skip_is_sep = icmp eq i8 %fe.skip_ch, %sep
+  br i1 %fe.skip_is_sep, label %fe.after_sep, label %fe.skip_next
+
+fe.skip_next:
+  %fe.skip_next_pos = add i64 %fe.skip_pos, 1
+  br label %fe.skip_loop
+
+fe.after_sep:
+  %fe.after_sep_pos = add i64 %fe.skip_pos, 1
+  %fe.next_index = add i64 %fe.cur_index, 1
+  br label %fe.find_loop
+
+fe.compare_loop:
+  %fe.i = phi i64 [ 0, %fe.find_loop ], [ %fe.next_i, %fe.compare_step ]
+  %fe.pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.next_pos, %fe.compare_step ]
+  %fe.done = icmp uge i64 %fe.i, %expected_len
+  br i1 %fe.done, label %fe.check_end, label %fe.compare_char
+
+fe.compare_char:
+  %fe.line_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.exp_ptr = getelementptr i8, i8* %expected, i64 %fe.i
+  %fe.line_ch = load i8, i8* %fe.line_ptr
+  %fe.exp_ch = load i8, i8* %fe.exp_ptr
+  %fe.line_nonzero = icmp ne i8 %fe.line_ch, 0
+  %fe.line_not_sep = icmp ne i8 %fe.line_ch, %sep
+  %fe.eq = icmp eq i8 %fe.line_ch, %fe.exp_ch
+  %fe.live = and i1 %fe.line_nonzero, %fe.line_not_sep
+  %fe.match = and i1 %fe.live, %fe.eq
+  br i1 %fe.match, label %fe.compare_step, label %fe.no
+
+fe.compare_step:
+  %fe.next_i = add i64 %fe.i, 1
+  %fe.next_pos = add i64 %fe.pos, 1
+  br label %fe.compare_loop
+
+fe.check_end:
+  %fe.end_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.end_ch = load i8, i8* %fe.end_ptr
+  %fe.end_nul = icmp eq i8 %fe.end_ch, 0
+  %fe.end_sep = icmp eq i8 %fe.end_ch, %sep
+  %fe.end_ok = or i1 %fe.end_nul, %fe.end_sep
+  br i1 %fe.end_ok, label %fe.yes, label %fe.no
+
+fe.yes:
+  ret i1 true
+
+fe.no:
   ret i1 false
 }
 
@@ -15629,6 +15710,25 @@ llvm_emit_atom_prefix_guard(GlobalBase, ValueIR, Prefix, ResultIR, GlobalIR-Call
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_prefix_value(%Value ~w, i8* %~w_ptr, i64 ~w)',
         [SafeBase, ArrLen, ArrLen, SafeBase,
          ResultIR, ValueIR, SafeBase, PrefixLen]).
+
+%% llvm_emit_atom_field_eq_guard(+GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a reusable native field-equality guard for deterministic
+%  item_field(Index, Item, Expected)-style lowering over atom-backed text
+%  records. FieldIndex is one-based, SepCode is the single-byte field
+%  separator, and Expected is emitted as an LLVM constant without allocating
+%  substrings in the hot loop.
+llvm_emit_atom_field_eq_guard(GlobalBase, ValueIR, FieldIndex, Expected, SepCode, ResultIR, GlobalIR-CallIR) :-
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Expected, EscapedExpected, ExpectedLen),
+    ArrLen is ExpectedLen + 1,
+    format(atom(GlobalIR),
+        '@.~w = private constant [~w x i8] c"~w\\00"',
+        [SafeBase, ArrLen, EscapedExpected]),
+    format(atom(CallIR),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_eq_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-

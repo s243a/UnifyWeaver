@@ -25,7 +25,21 @@ test(parses_prefix_print_rule) :-
     plawk_parse_string("/^ERROR/ { print $0 }\n", Program),
     assertion(Program == program([], [rule(prefix("ERROR"), [print(field(0))])], [])).
 
+test(parses_field_eq_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { print $0 }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"), [print(field(0))])], [])).
+
 test(surface_prefix_prints_matching_records) :-
+    run_surface_print_smoke("/^ERROR/ { print $0 }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "ERROR disk full\nERROR net down\n").
+
+test(surface_field_eq_prints_matching_records) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { print $0 }\n",
+        "INFO boot ok\nNOTERROR misleading\nWARN cpu hot\nERROR net down\n",
+        "ERROR net down\n").
+
+run_surface_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),
     directory_file_path(Root, 'uw_plawk_surface_prefix_print', Dir),
     clean_dir(Dir),
@@ -33,9 +47,9 @@ test(surface_prefix_prints_matching_records) :-
     directory_file_path(Dir, 'input.txt', InputPath),
     setup_call_cleanup(
         open(InputPath, write, In, [type(binary)]),
-        format(In, 'INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n', []),
+        format(In, '~s', [Input]),
         close(In)),
-    plawk_parse_string("/^ERROR/ { print $0 }\n", Program),
+    plawk_parse_string(Source, Program),
     plawk_program_native_driver_ir(Program, InputPath, DriverIR),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     directory_file_path(Dir, 'plawk_surface_prefix_print.ll', LLPath),
@@ -55,7 +69,7 @@ test(surface_prefix_prints_matching_records) :-
     close(Stdout),
     process_wait(Pid, Status),
     ( Status == exit(0)
-    -> assertion(OutStr == "ERROR disk full\nERROR net down\n")
+    -> assertion(OutStr == ExpectedOutput)
     ;  format(user_error, "~n[plawk surface prefix print output]~n~w~n",
               [OutStr]),
        throw(plawk_surface_prefix_print_failed(Status))

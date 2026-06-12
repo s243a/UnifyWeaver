@@ -194,6 +194,7 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @step')),
     % Helpers
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_eq_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')).
 
 test(atom_prefix_guard_emitter) :-
@@ -202,6 +203,13 @@ test(atom_prefix_guard_emitter) :-
     assertion(sub_atom(CallIR, _, _, _, '%prefix_5Fguard_5Ftest_ptr = getelementptr')),
     assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_prefix_value(%Value %line')),
     assertion(sub_atom(CallIR, _, _, _, 'i64 5')).
+
+test(atom_field_eq_guard_emitter) :-
+    llvm_emit_atom_field_eq_guard(field_eq_guard_test, '%line', 1, 'ERROR', 32, '%ok', GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.field_5Feq_5Fguard_5Ftest = private constant [6 x i8] c"ERROR\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%field_5Feq_5Fguard_5Ftest_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_field_eq_value(%Value %line, i64 1')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 5, i8 32')).
 
 % ============================================================================
 % Builtin op ID mapping

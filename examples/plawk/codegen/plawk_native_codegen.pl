@@ -6,19 +6,21 @@
 ]).
 
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
-    [llvm_emit_atom_prefix_guard/5]).
+    [llvm_emit_atom_prefix_guard/5,
+     llvm_emit_atom_field_eq_guard/7]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
 %
 %  Emit the first native Phase-2 PLAWK driver shape:
 %
 %      /^PREFIX/ { print $0 }
+%      $N == "VALUE" { print $0 }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
-%  the deterministic prefix guard, and prints matching records.
+%  the deterministic guard, and prints matching records.
 plawk_program_native_driver_ir(
-    program([], [rule(prefix(Prefix), [print(field(0))])], []),
+    program([], [rule(Pattern, [print(field(0))])], []),
     InputPath,
     DriverIR
 ) :-
@@ -26,8 +28,7 @@ plawk_program_native_driver_ir(
     length(PathCodes, PathLen),
     BytesLen is PathLen + 1,
     llvm_c_bytes(PathCodes, PathBytes),
-    llvm_emit_atom_prefix_guard(plawk_surface_prefix, '%line', Prefix,
-        '%is_match', PrefixGuardGlobalIR-PrefixGuardCallIR),
+    plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
     format(atom(DriverIR),
 '@.plawk_surface_path = private constant [~w x i8] c"~w\\00"
 @.plawk_surface_eof = private constant [12 x i8] c"end_of_file\\00"
@@ -105,8 +106,8 @@ fail_close:
 }
 ',
         [BytesLen, PathBytes,
-         PrefixGuardGlobalIR,
-         BytesLen, BytesLen, PathLen, PrefixGuardCallIR]).
+         GuardGlobalIR,
+         BytesLen, BytesLen, PathLen, GuardCallIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -116,3 +117,11 @@ llvm_c_bytes([Code | Rest], Bytes) :-
 
 llvm_c_byte(Code, Byte) :-
     format(atom(Byte), '\\~|~`0t~16r~2+', [Code]).
+
+plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
+    llvm_emit_atom_prefix_guard(plawk_surface_prefix, '%line', Prefix,
+        '%is_match', GuardIR).
+
+plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
+    llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
+        32, '%is_match', GuardIR).
