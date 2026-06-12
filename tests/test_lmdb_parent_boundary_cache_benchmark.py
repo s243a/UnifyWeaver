@@ -9,6 +9,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
     cached_parent_histogram,
     histogram_distribution_error,
+    scaled_distribution_histogram,
 )
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
 
@@ -60,16 +61,17 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
     def test_baseline_boundary_cache_materializes_uncapped_histogram(self):
         graph = DictGraph({"A": ["R"]})
 
-        cache, rows = build_boundary_cache(graph, "R", ["A"], 1, None, None)
+        cache, parametric_cache, rows = build_boundary_cache(graph, "R", ["A"], 1, None, None)
 
         self.assertEqual(cache, {"A": {1: 1}})
+        self.assertEqual(parametric_cache, {})
         self.assertEqual(rows[0]["cache_admission_action"], "materialize_exact")
         self.assertEqual(rows[0]["cache_admission_reason"], "baseline_uncapped_histogram")
 
     def test_depth_prior_boundary_policy_materializes_within_budget(self):
         graph = DictGraph({"A": ["R"]})
 
-        cache, rows = build_boundary_cache(
+        cache, parametric_cache, rows = build_boundary_cache(
             graph,
             "R",
             ["A"],
@@ -84,13 +86,14 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         )
 
         self.assertEqual(cache, {"A": {1: 1}})
+        self.assertEqual(parametric_cache, {})
         self.assertEqual(rows[0]["cache_admission_action"], "materialize_exact")
         self.assertEqual(rows[0]["predicted_prior_bytes"], 16)
 
     def test_depth_prior_boundary_policy_records_parametric_without_cache_hit(self):
         graph = DictGraph({"A": ["R"]})
 
-        cache, rows = build_boundary_cache(
+        cache, parametric_cache, rows = build_boundary_cache(
             graph,
             "R",
             ["A"],
@@ -105,8 +108,37 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         )
 
         self.assertEqual(cache, {})
+        self.assertEqual(parametric_cache, {"A": {1: 1}})
         self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
         self.assertFalse(rows[0]["cached"])
+        self.assertTrue(rows[0]["parametric_cached"])
+
+    def test_scaled_distribution_histogram_preserves_total_count(self):
+        hist = scaled_distribution_histogram([0.2, 0.3, 0.5], 4, 11)
+
+        self.assertEqual(sum(hist.values()), 11)
+        self.assertEqual(min(hist), 4)
+
+    def test_parametric_cache_hit_splices_approximate_histogram(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        }
+
+        hist, stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            {},
+            parametric_boundary_cache={"B": {2: 3}},
+        )
+
+        self.assertEqual(hist, {3: 3})
+        self.assertEqual(stats.cache_hits, 1)
+        self.assertEqual(stats.histogram_cache_hits, 0)
+        self.assertEqual(stats.parametric_cache_hits, 1)
 
 
 if __name__ == "__main__":

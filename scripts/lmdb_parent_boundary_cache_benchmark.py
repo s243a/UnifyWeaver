@@ -57,9 +57,31 @@ class CachedSearchStats:
     cycle_skips: int = 0
     budget_cutoffs: int = 0
     cache_hits: int = 0
+    histogram_cache_hits: int = 0
+    parametric_cache_hits: int = 0
     cache_bins_spliced: int = 0
+    histogram_bins_spliced: int = 0
+    parametric_bins_spliced: int = 0
     path_cap_hit: bool = False
     expansion_cap_hit: bool = False
+
+
+def scaled_distribution_histogram(probabilities, origin, total_count):
+    """Convert a compact probability vector into deterministic integer mass."""
+    if origin is None or total_count <= 0:
+        return {}
+    weighted = [(index, max(0.0, float(probability)) * int(total_count)) for index, probability in enumerate(probabilities)]
+    floors = {origin + index: int(value) for index, value in weighted if int(value) > 0}
+    remainder = int(total_count) - sum(floors.values())
+    if remainder > 0 and weighted:
+        ranked = sorted(
+            weighted,
+            key=lambda item: (item[1] - int(item[1]), item[1], -item[0]),
+            reverse=True,
+        )
+        for index, _value in ranked[:remainder]:
+            floors[origin + index] = floors.get(origin + index, 0) + 1
+    return dict(sorted((length, count) for length, count in floors.items() if count > 0))
 
 
 def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
@@ -71,7 +93,17 @@ def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
     return added
 
 
-def cached_parent_histogram(parents_func, target, root, budget, boundary_cache, path_cap=None, expansion_cap=None):
+def cached_parent_histogram(
+    parents_func,
+    target,
+    root,
+    budget,
+    boundary_cache,
+    path_cap=None,
+    expansion_cap=None,
+    parametric_boundary_cache=None,
+):
+    parametric_boundary_cache = parametric_boundary_cache or {}
     hist = Counter()
     stats = CachedSearchStats()
 
@@ -87,7 +119,19 @@ def cached_parent_histogram(parents_func, target, root, budget, boundary_cache, 
             return
         if node in boundary_cache:
             stats.cache_hits += 1
-            stats.cache_bins_spliced += add_shifted_hist(hist, boundary_cache[node], depth, remaining)
+            stats.histogram_cache_hits += 1
+            added = add_shifted_hist(hist, boundary_cache[node], depth, remaining)
+            stats.cache_bins_spliced += added
+            stats.histogram_bins_spliced += added
+            if path_cap is not None and sum(hist.values()) >= path_cap:
+                stats.path_cap_hit = True
+            return
+        if node in parametric_boundary_cache:
+            stats.cache_hits += 1
+            stats.parametric_cache_hits += 1
+            added = add_shifted_hist(hist, parametric_boundary_cache[node], depth, remaining)
+            stats.cache_bins_spliced += added
+            stats.parametric_bins_spliced += added
             if path_cap is not None and sum(hist.values()) >= path_cap:
                 stats.path_cap_hit = True
             return
@@ -145,6 +189,7 @@ def build_boundary_cache(
     max_parent_depth=24,
 ):
     cache = {}
+    parametric_cache = {}
     rows = []
     distance_memo = {}
     for node in boundary_nodes:
@@ -241,9 +286,25 @@ def build_boundary_cache(
         row["cache_admission_max_histogram_bytes"] = policy["max_histogram_bytes"]
         row["cache_admission_parametric_bytes"] = policy["parametric_bytes"]
         row["cached"] = cached
+        row["parametric_cached"] = False
+        row["parametric_histogram"] = {}
+        row["parametric_path_count"] = 0
+        row["parametric_support_bins"] = 0
         if cached:
             cache[row["node"]] = hist
-    return cache, rows
+        elif policy["action"] == "use_parametric_prior" and lmax in priors and hist:
+            approx_hist = scaled_distribution_histogram(
+                priors[lmax]["prior_distribution"],
+                row["histogram_L_min"],
+                row["path_count"],
+            )
+            if approx_hist:
+                parametric_cache[row["node"]] = approx_hist
+                row["parametric_cached"] = True
+                row["parametric_histogram"] = approx_hist
+                row["parametric_path_count"] = sum(approx_hist.values())
+                row["parametric_support_bins"] = len(approx_hist)
+    return cache, parametric_cache, rows
 
 
 def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time):
@@ -276,7 +337,11 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "full_cycle_skips": full_stats.cycle_skips,
         "cached_cycle_skips": cached_stats.cycle_skips,
         "cache_hits": cached_stats.cache_hits,
+        "histogram_cache_hits": cached_stats.histogram_cache_hits,
+        "parametric_cache_hits": cached_stats.parametric_cache_hits,
         "cache_bins_spliced": cached_stats.cache_bins_spliced,
+        "histogram_bins_spliced": cached_stats.histogram_bins_spliced,
+        "parametric_bins_spliced": cached_stats.parametric_bins_spliced,
         "full_path_cap_hit": full_stats.path_cap_hit,
         "full_expansion_cap_hit": full_stats.expansion_cap_hit,
         "cached_path_cap_hit": cached_stats.path_cap_hit,
@@ -310,7 +375,7 @@ def run_benchmark(args):
             args.targets_per_depth,
             args.seed + ":target",
         )
-        cache, cache_rows = build_boundary_cache(
+        cache, parametric_cache, cache_rows = build_boundary_cache(
             graph,
             args.root,
             boundary_nodes,
@@ -332,6 +397,7 @@ def run_benchmark(args):
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
             "cached_boundary_nodes": len(cache),
+            "parametric_boundary_nodes": len(parametric_cache),
             "targets": len(targets),
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
@@ -362,6 +428,7 @@ def run_benchmark(args):
                     cache,
                     args.path_cap,
                     args.expansion_cap,
+                    parametric_cache,
                 )
                 cached_time = time.perf_counter_ns() - cached_started
                 records.append(
@@ -406,11 +473,12 @@ def summarize(records):
         lines.append("| target | {} | {} |".format(depth, count))
     lines.extend([
         "",
-        "| boundary_nodes | cached_boundary_nodes | targets | boundary_budget |",
-        "|----------------|-----------------------|---------|-----------------|",
-        "| {} | {} | {} | {} |".format(
+        "| boundary_nodes | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget |",
+        "|----------------|-----------------------|---------------------------|---------|-----------------|",
+        "| {} | {} | {} | {} | {} |".format(
             selection.get("boundary_nodes", 0),
             selection.get("cached_boundary_nodes", 0),
+            selection.get("parametric_boundary_nodes", 0),
             selection.get("targets", 0),
             selection.get("boundary_budget", 0),
         ),
@@ -428,18 +496,26 @@ def summarize(records):
         "",
         "## Boundary Admission Outcomes",
         "",
-        "| action | rows | cached |",
-        "|--------|-----:|-------:|",
+        "| action | rows | histogram_cached | parametric_cached |",
+        "|--------|-----:|-----------------:|------------------:|",
     ])
     action_counts = {}
     cached_by_action = {}
+    parametric_by_action = {}
     for row in cache_rows:
         action = row.get("cache_admission_action", "unknown")
         action_counts[action] = action_counts.get(action, 0) + 1
         if row.get("cached"):
             cached_by_action[action] = cached_by_action.get(action, 0) + 1
+        if row.get("parametric_cached"):
+            parametric_by_action[action] = parametric_by_action.get(action, 0) + 1
     for action in sorted(action_counts):
-        lines.append("| {} | {} | {} |".format(action, action_counts[action], cached_by_action.get(action, 0)))
+        lines.append("| {} | {} | {} | {} |".format(
+            action,
+            action_counts[action],
+            cached_by_action.get(action, 0),
+            parametric_by_action.get(action, 0),
+        ))
     lines.extend([
         "",
         "## Boundary Admission Reasons",
@@ -457,16 +533,19 @@ def summarize(records):
         "",
         "## Boundary Cache Build",
         "",
-        "| entries | cached | mean_paths | mean_bins | mean_nodes_expanded | capped_entries |",
-        "|---------|--------|------------|-----------|---------------------|----------------|",
+        "| entries | histogram_cached | parametric_cached | mean_hist_paths | mean_hist_bins | mean_parametric_bins | mean_nodes_expanded | capped_entries |",
+        "|---------|-----------------:|------------------:|----------------:|---------------:|---------------------:|--------------------:|---------------:|",
     ])
     cached_entries = [row for row in cache_rows if row.get("cached")]
+    parametric_entries = [row for row in cache_rows if row.get("parametric_cached")]
     lines.append(
-        "| {entries} | {cached} | {mean_paths:.3f} | {mean_bins:.3f} | {mean_expanded:.1f} | {capped} |".format(
+        "| {entries} | {cached} | {parametric} | {mean_paths:.3f} | {mean_bins:.3f} | {mean_parametric_bins:.3f} | {mean_expanded:.1f} | {capped} |".format(
             entries=len(cache_rows),
             cached=len(cached_entries),
+            parametric=len(parametric_entries),
             mean_paths=statistics.mean(int(row["path_count"]) for row in cached_entries) if cached_entries else 0.0,
             mean_bins=statistics.mean(int(row["support_bins"]) for row in cached_entries) if cached_entries else 0.0,
+            mean_parametric_bins=statistics.mean(int(row["parametric_support_bins"]) for row in parametric_entries) if parametric_entries else 0.0,
             mean_expanded=statistics.mean(int(row["nodes_expanded"]) for row in cache_rows) if cache_rows else 0.0,
             capped=sum(1 for row in cache_rows if row.get("path_cap_hit") or row.get("expansion_cap_hit")),
         )
@@ -475,8 +554,8 @@ def summarize(records):
         "",
         "## Full Search Versus Boundary Cache",
         "",
-        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_node_ratio | mean_cache_hits | full_capped | cached_capped |",
-        "|--------|------|---------|--------|--------|----------|-----------------|-----------------|-------------|---------------|",
+        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_node_ratio | mean_hist_hits | mean_param_hits | full_capped | cached_capped |",
+        "|--------|------|---------|--------|--------|----------|-----------------|---------------:|----------------:|-------------|---------------|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -486,9 +565,10 @@ def summarize(records):
         l1 = [float(row["l1_error"]) for row in rows]
         cdf = [float(row["max_cdf_error"]) for row in rows]
         ratios = [float(row["node_expansion_ratio"]) for row in rows]
-        hits = [int(row["cache_hits"]) for row in rows]
+        histogram_hits = [int(row["histogram_cache_hits"]) for row in rows]
+        parametric_hits = [int(row["parametric_cache_hits"]) for row in rows]
         lines.append(
-            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_ratio:.3f} | {mean_hits:.3f} | {full_capped} | {cached_capped} |".format(
+            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {full_capped} | {cached_capped} |".format(
                 budget=budget,
                 rows=len(rows),
                 mean_l1=statistics.mean(l1) if l1 else 0.0,
@@ -496,7 +576,8 @@ def summarize(records):
                 max_l1=max(l1, default=0.0),
                 mean_cdf=statistics.mean(cdf) if cdf else 0.0,
                 mean_ratio=statistics.mean(ratios) if ratios else 0.0,
-                mean_hits=statistics.mean(hits) if hits else 0.0,
+                mean_hist_hits=statistics.mean(histogram_hits) if histogram_hits else 0.0,
+                mean_param_hits=statistics.mean(parametric_hits) if parametric_hits else 0.0,
                 full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
                 cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
             )
