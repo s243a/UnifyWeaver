@@ -10,6 +10,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     cached_parent_histogram,
     estimate_parametric_total_count,
     histogram_distribution_error,
+    parametric_shape_distribution,
     scaled_distribution_histogram,
 )
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
@@ -139,6 +140,52 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["parametric_mass_model"], "unit")
         self.assertEqual(rows[0]["parametric_mass_delta"], -1)
         self.assertAlmostEqual(rows[0]["parametric_mass_ratio"], 0.5)
+
+    def test_support_binomial_shape_stays_inside_boundary_support(self):
+        probabilities, origin = parametric_shape_distribution(
+            {"histogram_L_min": 2, "histogram_L_max": 5},
+            {"prior_mean_excess": 1.5},
+            "support-binomial",
+        )
+
+        self.assertEqual(origin, 2)
+        self.assertEqual(len(probabilities), 4)
+        self.assertAlmostEqual(sum(probabilities), 1.0)
+
+        midpoint, midpoint_origin = parametric_shape_distribution(
+            {"histogram_L_min": 2, "histogram_L_max": 5},
+            {"prior_mean_excess": 99.0},
+            "support-binomial-midpoint",
+        )
+        self.assertEqual(midpoint_origin, 2)
+        self.assertEqual(len(midpoint), 4)
+        self.assertGreater(midpoint[1], 0.0)
+
+    def test_support_binomial_boundary_cache_records_support_interval(self):
+        graph = DictGraph({"A": ["R"], "B": ["A", "R"]})
+
+        cache, parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["B"],
+            2,
+            None,
+            None,
+            admission_policy="depth-prior",
+            safety_factor=2.0,
+            max_histogram_bytes=24,
+            parametric_bytes=8,
+            parametric_shape_model="support-binomial",
+            parametric_mass_model="oracle",
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertTrue(rows[0]["parametric_cached"])
+        self.assertEqual(rows[0]["parametric_shape_model"], "support-binomial")
+        self.assertGreaterEqual(rows[0]["parametric_support_min"], rows[0]["histogram_L_min"])
+        self.assertLessEqual(rows[0]["parametric_support_max"], rows[0]["histogram_L_max"])
+        self.assertEqual(sum(parametric_cache["B"].values()), rows[0]["path_count"])
 
     def test_depth_prior_mass_model_caps_branching_pressure(self):
         estimate = estimate_parametric_total_count(
