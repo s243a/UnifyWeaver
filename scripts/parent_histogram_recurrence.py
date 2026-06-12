@@ -8,6 +8,11 @@ For a parent-only DAG the recurrence is exact:
     H_root[0] = 1
     H_v[d] = sum(H_parent[d - 1] for parent in parents(v))
 
+The helpers use unnormalized histograms: every bin stores path-count mass.  If
+callers store normalized parent distributions instead, each shifted parent
+distribution must be multiplied by its path count N_p before the sum, and N_v
+must be stored separately.
+
 This avoids enumerating every path from a target to root.  In cyclic graphs a
 per-node histogram cannot enforce a unique-node visited set, so cycle encounters
 are reported through `cycle_approximation`.

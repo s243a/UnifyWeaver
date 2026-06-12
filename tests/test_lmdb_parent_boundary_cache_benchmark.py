@@ -7,6 +7,7 @@ import unittest
 
 from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
+    build_boundary_histogram,
     cached_parent_histogram,
     estimate_parametric_total_count,
     histogram_distribution_error,
@@ -291,6 +292,60 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(stats.cache_hits, 1)
         self.assertEqual(stats.histogram_cache_hits, 0)
         self.assertEqual(stats.parametric_cache_hits, 1)
+
+    def test_recurrence_boundary_builder_matches_search_on_dag(self):
+        parents = {
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+            "D": ["C", "A"],
+        }
+        graph = DictGraph(parents)
+
+        search = build_boundary_histogram(graph.parents, "D", "R", 4, None, None, "search")
+        recurrence = build_boundary_histogram(graph.parents, "D", "R", 4, None, None, "recurrence")
+        cache, _parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["D"],
+            4,
+            None,
+            None,
+            boundary_builder="recurrence",
+        )
+
+        self.assertEqual(search.histogram, {2: 1, 3: 2})
+        self.assertEqual(recurrence.histogram, search.histogram)
+        self.assertEqual(sum(recurrence.histogram.values()), 3)
+        self.assertEqual(cache["D"], {2: 1, 3: 2})
+        self.assertEqual(rows[0]["boundary_builder"], "recurrence")
+        self.assertEqual(rows[0]["path_count"], 3)
+        self.assertFalse(rows[0]["recurrence_cycle_approximation"])
+
+    def test_recurrence_boundary_builder_records_cycle_approximation(self):
+        parents = {
+            "A": ["R", "C"],
+            "B": ["A"],
+            "C": ["B"],
+        }
+        graph = DictGraph(parents)
+
+        cache, _parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["C"],
+            4,
+            None,
+            None,
+            boundary_builder="recurrence",
+        )
+
+        self.assertEqual(cache["C"], {3: 1})
+        self.assertEqual(rows[0]["boundary_builder"], "recurrence")
+        self.assertTrue(rows[0]["recurrence_cycle_approximation"])
+        self.assertEqual(rows[0]["cycle_skips"], 1)
+        self.assertEqual(rows[0]["cache_admission_action"], "materialize_capped")
+        self.assertEqual(rows[0]["cache_admission_reason"], "baseline_recurrence_cycle_approximation")
 
 
 if __name__ == "__main__":
