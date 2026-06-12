@@ -79,7 +79,8 @@ The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `$1 == "ERROR" { print $0 }`, plus selected-field actions such as
 `$1 == "ERROR" { print $2, $3 }` and scalar state with
 `$1 == "ERROR" { count++ } END { print count }`. Multiple scalar increments
-compile to indexed native slots, e.g. `{ errors++; matches++ }`.
+compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
+guarded rules can update shared scalar slots before an `END` print.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see

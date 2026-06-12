@@ -132,7 +132,21 @@ It can also compile multiple scalar increments in one action list:
 $1 == "ERROR" { errors++; matches++ } END { print errors, matches }
 ```
 
-For the sample input above, both forms count two matching records.
+Separate guarded rules can update shared scalar state too:
+
+```awk
+$1 == "ERROR" { errors++ }
+$1 == "WARN"  { warnings++ }
+END { print errors, warnings }
+```
+
+For the sample input above, that prints:
+
+```text
+2 1
+```
+
+The single-counter forms count two matching records:
 
 ```text
 2
