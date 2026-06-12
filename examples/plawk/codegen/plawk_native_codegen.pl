@@ -79,20 +79,20 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_assoc_static_count_plan(Rules, PrintFields, KeyIndex, StatePlan),
-    plawk_assoc_count_chain_ir(KeyIndex, StatePlan, AssocGlobalIR, AssocChainIR),
-    plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
-    plawk_assoc_next_phi_ir(StatePlan, NextPhiIR),
-    plawk_assoc_end_print_ir(PrintFields, StatePlan, EndPrintIR),
+    plawk_assoc_runtime_count_plan(Rules, PrintFields, KeyIndex),
+    plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
+    plawk_assoc_count_chain_ir(KeyIndex, AssocChainIR),
+    plawk_assoc_end_print_ir(PrintFields, EndPrintIR),
     plawk_i64_end_print_globals(AssocGlobalIR, RuntimeGlobals),
+    EntrySetupIR = '  %plawk_assoc_table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 4096)',
     format(atom(CloseOkIR),
 'end_print:
 ~w
   ret i32 0',
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, LoopPhiIR, lowered_assoc, AssocChainIR,
-            NextPhiIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, EntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', end_print, CloseOkIR),
         DriverIR).
 
 plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
@@ -114,6 +114,17 @@ plawk_stream_driver_ir(
         ContinueIR, CloseOkLabel, CloseOkIR),
     DriverIR
 ) :-
+    plawk_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+plawk_stream_driver_ir(
+    InputPath,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
     atom_codes(InputPath, PathCodes),
     length(PathCodes, PathLen),
     BytesLen is PathLen + 1,
@@ -129,6 +140,7 @@ entry:
   %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
   %path0 = insertvalue %Value undef, i32 0, 0
   %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
   %handle = call %Value @wam_stream_open_value(%Value %path)
   %handle_tag = extractvalue %Value %handle, 0
   %handle_is_int = icmp eq i32 %handle_tag, 1
@@ -189,8 +201,8 @@ fail_close:
 }
 ',
         [BytesLen, PathBytes, RuntimeGlobals,
-         BytesLen, BytesLen, PathLen, LoopPhiIR, LoweredLabel, LoweredLabel,
-         RecordIR, ContinueIR, CloseOkLabel, CloseOkIR]).
+         BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
+         LoweredLabel, RecordIR, ContinueIR, CloseOkLabel, CloseOkIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -229,123 +241,89 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
 
 plawk_scalar_state_slot(Name, scalar_counter(Name)).
 
-plawk_assoc_static_count_plan(
+plawk_assoc_runtime_count_plan(
     [rule(always, [inc_assoc(var(ArrayName), field(KeyIndex))])],
     PrintFields,
-    KeyIndex,
-    state_plan(Slots)
+    KeyIndex
 ) :-
     KeyIndex > 0,
     maplist(plawk_assoc_print_key(ArrayName), PrintFields, PrintKeys),
-    PrintKeys \== [],
-    sort(PrintKeys, SlotKeys),
-    maplist(plawk_assoc_state_slot(ArrayName), SlotKeys, Slots).
+    PrintKeys \== [].
 
 plawk_assoc_print_key(ArrayName, assoc(var(ArrayName), string(Key)), Key).
 
-plawk_assoc_state_slot(ArrayName, Key, assoc_count(ArrayName, Key)).
-
-plawk_assoc_count_chain_ir(KeyIndex, StatePlan, GlobalIR, ChainIR) :-
-    plawk_state_plan_slots(StatePlan, Slots),
-    phrase(plawk_assoc_count_key_pairs(KeyIndex, Slots, 0), Pairs),
-    pairs_keys_values(Pairs, GlobalParts, ChainParts),
-    atomic_list_concat(GlobalParts, '\n', GlobalIR),
-    atomic_list_concat(ChainParts, '\n\n', KeyChainIR),
+plawk_assoc_count_chain_ir(KeyIndex, ChainIR) :-
     format(atom(ChainIR),
-'  br label %assoc_check_0
+'  %plawk_assoc_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 32)
+  %plawk_assoc_key_ptr = extractvalue %WamSlice %plawk_assoc_key_slice, 0
+  %plawk_assoc_key_len = extractvalue %WamSlice %plawk_assoc_key_slice, 1
+  %plawk_assoc_key_missing = icmp eq i8* %plawk_assoc_key_ptr, null
+  br i1 %plawk_assoc_key_missing, label %continue_loop, label %assoc_have_key
 
-~w
-
-assoc_no_match:
+assoc_have_key:
+  %plawk_assoc_key_id = call i64 @wam_intern_atom(i8* %plawk_assoc_key_ptr, i64 %plawk_assoc_key_len)
+  %plawk_assoc_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table, i64 %plawk_assoc_key_id, i64 1)
   br label %continue_loop',
-        [KeyChainIR]).
+        [KeyIndex]).
 
-plawk_assoc_count_key_pairs(_KeyIndex, [], _) -->
+plawk_assoc_print_key_globals(PrintFields, GlobalIR) :-
+    phrase(plawk_assoc_print_key_global_lines(PrintFields, 0), Lines),
+    atomic_list_concat(Lines, '\n', GlobalIR).
+
+plawk_assoc_print_key_global_lines([], _) -->
     [].
-plawk_assoc_count_key_pairs(KeyIndex, [assoc_count(_ArrayName, Key) | Rest], SlotIndex) -->
-    { NextSlotIndex is SlotIndex + 1,
-      ( Rest == []
-      -> NextLabel = 'assoc_no_match'
-      ;  format(atom(NextLabel), 'assoc_check_~w', [NextSlotIndex])
-      ),
-      format(atom(CheckLabel), 'assoc_check_~w', [SlotIndex]),
-      format(atom(IncLabel), 'assoc_inc_~w', [SlotIndex]),
-      format(atom(MatchVar), 'assoc_key_~w_is_match', [SlotIndex]),
-      format(atom(GlobalBase), 'plawk_assoc_key_~w', [SlotIndex]),
-      format(atom(MatchValue), '%~w', [MatchVar]),
-      plawk_pattern_guard_ir(field_eq(KeyIndex, Key), GlobalBase, MatchValue,
-          GuardGlobalIR-GuardCallIR),
-      format(atom(BranchIR),
-'~w:
-~w
-  br i1 %~w, label %~w, label %~w
-
-~w:
-  %assoc_inc_slot_~w = add i64 %slot_~w, 1
-  br label %continue_loop',
-          [CheckLabel, GuardCallIR, MatchVar, IncLabel, NextLabel,
-           IncLabel, SlotIndex, SlotIndex]),
-      Pair = GuardGlobalIR-BranchIR
-    },
-    [Pair],
-    plawk_assoc_count_key_pairs(KeyIndex, Rest, NextSlotIndex).
-
-plawk_assoc_next_phi_ir(StatePlan, IR) :-
-    plawk_state_slot_count(StatePlan, SlotCount),
-    phrase(plawk_assoc_next_phi_lines(SlotCount, 0), Lines),
-    atomic_list_concat(Lines, '\n', IR).
-
-plawk_assoc_next_phi_lines(SlotCount, SlotIndex) -->
-    { SlotIndex >= SlotCount },
-    !,
-    [].
-plawk_assoc_next_phi_lines(SlotCount, SlotIndex) -->
-    { plawk_assoc_slot_incomings(SlotIndex, SlotCount, Incoming),
-      format(atom(Line), '  %next_slot_~w = phi i64 ~w',
-          [SlotIndex, Incoming]),
-      NextSlotIndex is SlotIndex + 1
+plawk_assoc_print_key_global_lines([assoc(var(_ArrayName), string(Key)) | Rest], Index) -->
+    { plawk_assoc_key_codes(Key, Codes),
+      length(Codes, KeyLen),
+      BytesLen is KeyLen + 1,
+      llvm_c_bytes(Codes, Bytes),
+      format(atom(Line),
+          '@.plawk_assoc_print_key_~w = private constant [~w x i8] c"~w\\00"',
+          [Index, BytesLen, Bytes]),
+      NextIndex is Index + 1
     },
     [Line],
-    plawk_assoc_next_phi_lines(SlotCount, NextSlotIndex).
+    plawk_assoc_print_key_global_lines(Rest, NextIndex).
 
-plawk_assoc_slot_incomings(SlotIndex, SlotCount, Incoming) :-
-    MaxSlotIndex is SlotCount - 1,
-    findall(IncomingPart,
-        ( between(0, MaxSlotIndex, IncIndex),
-          plawk_assoc_slot_incoming_value(SlotIndex, IncIndex, Value),
-          format(atom(IncomingPart), '[~w, %assoc_inc_~w]', [Value, IncIndex])
-        ),
-        IncIncomings),
-    format(atom(NoMatchIncoming), '[%slot_~w, %assoc_no_match]', [SlotIndex]),
-    append(IncIncomings, [NoMatchIncoming], Incomings),
-    atomic_list_concat(Incomings, ', ', Incoming).
-
-plawk_assoc_slot_incoming_value(SlotIndex, SlotIndex, Value) :-
+plawk_assoc_key_codes(Key, Codes) :-
+    string(Key),
     !,
-    format(atom(Value), '%assoc_inc_slot_~w', [SlotIndex]).
-plawk_assoc_slot_incoming_value(SlotIndex, _IncIndex, Value) :-
-    format(atom(Value), '%slot_~w', [SlotIndex]).
+    string_codes(Key, Codes).
+plawk_assoc_key_codes(Key, Codes) :-
+    atom_codes(Key, Codes).
 
-plawk_assoc_end_print_ir(PrintFields, StatePlan, IR) :-
-    phrase(plawk_assoc_end_print_lines(PrintFields, StatePlan, 0), Lines),
+plawk_assoc_end_print_ir(PrintFields, IR) :-
+    phrase(plawk_assoc_end_print_lines(PrintFields, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_assoc_end_print_lines([], _StatePlan, _) -->
+plawk_assoc_end_print_lines([], _) -->
     ['  %end_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
-     '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)'].
-plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], StatePlan, PrintIndex) -->
+     '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)',
+     '  call void @wam_assoc_i64_free(%WamAssocI64Table* %plawk_assoc_table)'].
+plawk_assoc_end_print_lines([assoc(var(_ArrayName), string(Key)) | Rest], PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex),
-    { plawk_state_slot_index(StatePlan, assoc_count(ArrayName, Key), SlotIndex),
+    { plawk_assoc_key_codes(Key, Codes),
+      length(Codes, KeyLen),
+      BytesLen is KeyLen + 1,
+      format(atom(KeyPtr),
+          '  %assoc_end_key_~w_ptr = getelementptr [~w x i8], [~w x i8]* @.plawk_assoc_print_key_~w, i32 0, i32 0',
+          [PrintIndex, BytesLen, BytesLen, PrintIndex]),
+      format(atom(KeyId),
+          '  %assoc_end_key_~w_id = call i64 @wam_intern_atom(i8* %assoc_end_key_~w_ptr, i64 ~w)',
+          [PrintIndex, PrintIndex, KeyLen]),
+      format(atom(Value),
+          '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table, i64 %assoc_end_key_~w_id)',
+          [PrintIndex, PrintIndex]),
       format(atom(FmtPtr),
           '  %assoc_end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
           [PrintIndex]),
       format(atom(PrintCall),
-          '  %printed_assoc_end_i64_~w = call i32 (i8*, ...) @printf(i8* %assoc_end_i64_fmt_~w, i64 %slot_~w)',
-          [PrintIndex, PrintIndex, SlotIndex]),
+          '  %printed_assoc_end_i64_~w = call i32 (i8*, ...) @printf(i8* %assoc_end_i64_fmt_~w, i64 %assoc_end_value_~w)',
+          [PrintIndex, PrintIndex, PrintIndex]),
       NextPrintIndex is PrintIndex + 1
     },
-    [FmtPtr, PrintCall],
-    plawk_assoc_end_print_lines(Rest, StatePlan, NextPrintIndex).
+    [KeyPtr, KeyId, Value, FmtPtr, PrintCall],
+    plawk_assoc_end_print_lines(Rest, NextPrintIndex).
 
 plawk_scalar_increment_action(inc(var(Name)), Name).
 

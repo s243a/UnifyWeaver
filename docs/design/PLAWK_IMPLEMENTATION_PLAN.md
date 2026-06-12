@@ -253,11 +253,11 @@ allocating substrings; selected-field printing projects byte slices directly;
 the scalar counter path threads a native `i64` loop variable and prints it from
 the `END` action. Multiple scalar counters become parallel `i64` phi slots in
 the native streaming loop.
-Scalar counters and the current static associative-count surface now lower
-through an explicit codegen state plan, keeping source-level state recognition
-separate from LLVM slot numbering ahead of a real native hash-table backend.
-The WAM/LLVM runtime now exposes a reusable interned-atom-keyed `i64` counter
-table primitive (`wam_assoc_i64_*`) for that future dynamic associative path.
+Scalar counters lower through an explicit codegen state plan that keeps
+source-level state recognition separate from LLVM slot numbering. The current
+associative-count surface now allocates the reusable WAM/LLVM
+interned-atom-keyed `i64` table primitive (`wam_assoc_i64_*`), increments it in
+the native streaming loop, and performs `END` lookups through the same table.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

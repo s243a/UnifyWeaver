@@ -159,16 +159,15 @@ The first associative-count surface uses familiar AWK syntax:
 END { print counts["ERROR"], counts["WARN"] }
 ```
 
-For now, PLAWK specializes the keys requested by `END` to native slots, so this
-prints the same grouped counts without allocating a general hash table:
+PLAWK interns the `$1` slice for each record and updates a native WAM/LLVM
+`i64` table keyed by that atom id. The `END` action looks up the printed keys:
 
 ```text
 2 1
 ```
 
-This path lowers the field comparison and scalar counters to native LLVM code.
-Each scalar variable is an indexed `i64` slot in the streaming loop. The WAM
-runtime still supplies the streaming reader and atom helpers.
+This path keeps the streaming loop native while the WAM runtime supplies the
+reader, atom helpers, and reusable associative table primitive.
 
 ## Another example: count and print matching lines
 

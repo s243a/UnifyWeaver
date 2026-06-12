@@ -97,6 +97,17 @@ test(surface_assoc_counts_requested_keys) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2 1\n").
 
+test(surface_assoc_counts_use_runtime_table) :-
+    plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_new')),
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc')),
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get')),
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_free')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_check_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%assoc_inc_slot_')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%slot_0 = phi')).
+
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),
     directory_file_path(Root, 'uw_plawk_surface_prefix_print', Dir),
