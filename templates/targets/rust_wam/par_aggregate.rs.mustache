@@ -29,10 +29,14 @@ fn collect_inputs(base: &WamState, enum_fn: fn(&mut WamState, Value) -> bool) ->
     let mut out = Vec::new();
     if enum_fn(&mut vm, Value::Unbound(IN_VAR.to_string())) {
         loop {
-            if let Some(v) = vm.bindings.get(IN_VAR).cloned() {
-                out.push(v);
+            if let Some(raw) = vm.bindings.get(IN_VAR).cloned() {
+                // resolve heap refs / nested terms, as EndAggregate does
+                out.push(vm.deref_var(&vm.deref_heap(&raw)));
             }
-            if !vm.backtrack() {
+            // A WAM predicate yields the next solution only by backtracking to a
+            // choice point (reposition) AND re-running (which pops exhausted CPs
+            // via trust_me). backtrack() alone never makes progress.
+            if !vm.backtrack() || !vm.run() {
                 break;
             }
         }
@@ -52,10 +56,10 @@ fn run_body(
     let mut vals = Vec::new();
     if body_fn(m, input, Value::Unbound(VAL_VAR.to_string())) {
         loop {
-            if let Some(v) = m.bindings.get(VAL_VAR).cloned() {
-                vals.push(v);
+            if let Some(raw) = m.bindings.get(VAL_VAR).cloned() {
+                vals.push(m.deref_var(&m.deref_heap(&raw)));
             }
-            if !m.backtrack() {
+            if !m.backtrack() || !m.run() {
                 break;
             }
         }
