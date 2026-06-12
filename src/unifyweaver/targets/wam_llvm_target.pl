@@ -3952,6 +3952,209 @@ compile_execute_builtin_to_llvm(Options, Code) :-
 
 @.wam_stream_eof_atom = private constant [12 x i8] c"end_of_file\00"
 
+define %WamAssocI64Table* @wam_assoc_i64_new(i64 %requested_cap) {
+entry:
+  %cap_positive = icmp sgt i64 %requested_cap, 0
+  %cap = select i1 %cap_positive, i64 %requested_cap, i64 64
+  %table_size = ptrtoint %WamAssocI64Table* getelementptr (%WamAssocI64Table, %WamAssocI64Table* null, i32 1) to i64
+  %table_mem = call i8* @malloc(i64 %table_size)
+  %table_null = icmp eq i8* %table_mem, null
+  br i1 %table_null, label %new.fail, label %new.alloc_entries
+
+new.alloc_entries:
+  %entry_size = ptrtoint %WamAssocI64Entry* getelementptr (%WamAssocI64Entry, %WamAssocI64Entry* null, i32 1) to i64
+  %entries_size = mul i64 %cap, %entry_size
+  %entries_mem = call i8* @malloc(i64 %entries_size)
+  %entries_null = icmp eq i8* %entries_mem, null
+  br i1 %entries_null, label %new.free_table_fail, label %new.init_table
+
+new.free_table_fail:
+  call void @free(i8* %table_mem)
+  ret %WamAssocI64Table* null
+
+new.init_table:
+  %table = bitcast i8* %table_mem to %WamAssocI64Table*
+  %entries = bitcast i8* %entries_mem to %WamAssocI64Entry*
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  store i64 0, i64* %count_slot
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  store i64 %cap, i64* %cap_slot
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  store %WamAssocI64Entry* %entries, %WamAssocI64Entry** %entries_slot
+  br label %new.zero_loop
+
+new.zero_loop:
+  %zi = phi i64 [ 0, %new.init_table ], [ %zi.next, %new.zero_body ]
+  %zi.done = icmp uge i64 %zi, %cap
+  br i1 %zi.done, label %new.done, label %new.zero_body
+
+new.zero_body:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %zi
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  store i64 0, i64* %key_slot
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  store i64 0, i64* %value_slot
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  store i1 false, i1* %occupied_slot
+  %zi.next = add i64 %zi, 1
+  br label %new.zero_loop
+
+new.done:
+  ret %WamAssocI64Table* %table
+
+new.fail:
+  ret %WamAssocI64Table* null
+}
+
+define i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %get.miss, label %get.load
+
+get.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %cap_zero = icmp eq i64 %cap, 0
+  br i1 %cap_zero, label %get.miss, label %get.start
+
+get.start:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %get.miss, label %get.hash
+
+get.hash:
+  %start = urem i64 %key, %cap
+  br label %get.loop
+
+get.loop:
+  %idx = phi i64 [ %start, %get.hash ], [ %next_idx, %get.next ]
+  %probes = phi i64 [ 0, %get.hash ], [ %next_probes, %get.next ]
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %get.check_key, label %get.miss
+
+get.check_key:
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %found_key = load i64, i64* %key_slot
+  %key_match = icmp eq i64 %found_key, %key
+  br i1 %key_match, label %get.hit, label %get.next_check
+
+get.hit:
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  %value = load i64, i64* %value_slot
+  ret i64 %value
+
+get.next_check:
+  %next_probes = add i64 %probes, 1
+  %full = icmp uge i64 %next_probes, %cap
+  br i1 %full, label %get.miss, label %get.next
+
+get.next:
+  %idx_plus = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx_plus, %cap
+  %next_idx = select i1 %wrap, i64 0, i64 %idx_plus
+  br label %get.loop
+
+get.miss:
+  ret i64 0
+}
+
+define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %inc.fail, label %inc.load
+
+inc.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %cap_zero = icmp eq i64 %cap, 0
+  br i1 %cap_zero, label %inc.fail, label %inc.start
+
+inc.start:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %inc.fail, label %inc.hash
+
+inc.hash:
+  %start = urem i64 %key, %cap
+  br label %inc.loop
+
+inc.loop:
+  %idx = phi i64 [ %start, %inc.hash ], [ %next_idx, %inc.next ]
+  %probes = phi i64 [ 0, %inc.hash ], [ %next_probes, %inc.next ]
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %inc.check_key, label %inc.insert
+
+inc.check_key:
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %found_key = load i64, i64* %key_slot
+  %key_match = icmp eq i64 %found_key, %key
+  br i1 %key_match, label %inc.update, label %inc.next_check
+
+inc.update:
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  %old_value = load i64, i64* %value_slot
+  %new_value = add i64 %old_value, %delta
+  store i64 %new_value, i64* %value_slot
+  ret i64 %new_value
+
+inc.insert:
+  %insert_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  store i64 %key, i64* %insert_key_slot
+  %insert_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  store i64 %delta, i64* %insert_value_slot
+  store i1 true, i1* %occupied_slot
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %old_count = load i64, i64* %count_slot
+  %new_count = add i64 %old_count, 1
+  store i64 %new_count, i64* %count_slot
+  ret i64 %delta
+
+inc.next_check:
+  %next_probes = add i64 %probes, 1
+  %full = icmp uge i64 %next_probes, %cap
+  br i1 %full, label %inc.fail, label %inc.next
+
+inc.next:
+  %idx_plus = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx_plus, %cap
+  %next_idx = select i1 %wrap, i64 0, i64 %idx_plus
+  br label %inc.loop
+
+inc.fail:
+  ret i64 0
+}
+
+define void @wam_assoc_i64_free(%WamAssocI64Table* %table) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %done, label %free.entries
+
+free.entries:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %free.table, label %free.entries_mem
+
+free.entries_mem:
+  %entries_i8 = bitcast %WamAssocI64Entry* %entries to i8*
+  call void @free(i8* %entries_i8)
+  br label %free.table
+
+free.table:
+  %table_i8 = bitcast %WamAssocI64Table* %table to i8*
+  call void @free(i8* %table_i8)
+  br label %done
+
+done:
+  ret void
+}
+
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
 entry:
   %bad = call %Value @value_integer(i64 -1)

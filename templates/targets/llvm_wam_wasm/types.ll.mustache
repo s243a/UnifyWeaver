@@ -19,6 +19,11 @@
 ; === Buffered line reader handle ===
 %WamLineReader = type { i32, i8*, i64, i64, i64 } ; fd, buffer, cap, len, pos
 
+; === Native associative i64 counter table ===
+; Used by streaming/native lowerings for interned-atom keyed counters.
+%WamAssocI64Entry = type { i64, i64, i1 } ; key atom id, count, occupied
+%WamAssocI64Table = type { i64, i64, %WamAssocI64Entry* } ; count, cap, entries
+
 ; === Instruction Tagged Union ===
 %Instruction = type { i32, i64, i64 }     ; tag, operand1, operand2
 
