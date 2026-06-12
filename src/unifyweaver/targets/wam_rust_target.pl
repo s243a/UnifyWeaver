@@ -28,6 +28,9 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+% T7 compile-time parallel-aggregate gate (consumer of the cost machinery).
+:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3]).
+:- use_module('../core/cost_analysis', [build_cost_model/2, goal_cost_tier/3]).
 :- use_module('../targets/wam_text_parser', [
     wam_classify_constant_token/2,
     wam_tokenize_line/2
@@ -3935,16 +3938,79 @@ compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
+    % T7: consult the compile-time parallel-aggregate gate (cost machinery).
+    % Gated behind parallel_aggregates(true); otherwise AggAnno = '' and output
+    % is byte-identical to before.
+    rust_predicate_parallel_decision(Pred/Arity, Options, ParDecision),
+    rust_parallel_annotation(ParDecision, AggAnno),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
-pub fn ~w(~w) -> bool {
+~wpub fn ~w(~w) -> bool {
     use std::collections::HashMap;
 ~w
 ~w
 ~w
     ~w
-}', [PredStr, Arity, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+}', [PredStr, Arity, AggAnno, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+
+% --- T7 compile-time parallel-aggregate gate --------------------------------
+%
+% First codegen consumer of the cost machinery: decide, per predicate, whether
+% any forkable aggregate (findall/aggregate_all/bagof/setof) in its clause
+% bodies is worth parallelising, and annotate the generated function so the
+% phase-2 runtime can dispatch on it. Decision-only here — no semantics change.
+% Feature-gated by parallel_aggregates(true) (default off → no output change).
+% Fully defensive: any failure (module not loaded, no source, no aggregate)
+% degrades to `sequential` and emits nothing.
+
+rust_predicate_parallel_decision(Pred/Arity, Options, Decision) :-
+    (   option(parallel_aggregates(true), Options),
+        catch(rust_pred_par_decision(Pred/Arity, Options, D), _, fail)
+    ->  Decision = D
+    ;   Decision = sequential
+    ).
+
+rust_pred_par_decision(Pred/Arity, Options, Decision) :-
+    option(module_name(Mod0), Options, user),
+    ( atom(Mod0) -> Module = Mod0 ; Module = user ),
+    functor(Head, Pred, Arity),
+    findall(Body, clause(Module:Head, Body), Bodies),
+    Bodies \== [],
+    collect_forkable_generators(Bodies, Gens),
+    Gens \== [],
+    build_cost_model(Module, Model),
+    (   member(Gen, Gens),
+        goal_parallel_decision(Gen, Model, parallel)
+    ->  goal_cost_tier(Gen, Model, Tier),
+        Decision = parallel(Tier)
+    ;   Decision = sequential
+    ).
+
+% Collect the generator goals of every forkable aggregate appearing anywhere in
+% the given clause bodies.
+collect_forkable_generators(Bodies, Gens) :-
+    findall(Gen,
+            ( member(B, Bodies),
+              body_subgoal(B, G),
+              nonvar(G),
+              forkable_aggregate(G, _Tmpl, Gen) ),
+            Gens0),
+    sort(Gens0, Gens).
+
+% Enumerate sub-goals of a body, descending through control constructs.
+body_subgoal(G, _) :- var(G), !, fail.
+body_subgoal((A, B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A ; B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A -> B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal((A *-> B), S) :- !, ( body_subgoal(A, S) ; body_subgoal(B, S) ).
+body_subgoal(\+ A, S) :- !, body_subgoal(A, S).
+body_subgoal(G, G).
+
+rust_parallel_annotation(parallel(Tier), Anno) :- !,
+    format(atom(Anno),
+           '/// T7: parallel-eligible aggregate (cost gate tier: ~w)~n', [Tier]).
+rust_parallel_annotation(_, '').
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
@@ -4793,7 +4859,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
 }'
     ),
     % Pass 3: generate code for each predicate
-    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
     % Combine shared table + predicate code
     (   SharedCode == ""
     ->  atomic_list_concat(PredCodes, '\n\n', Code)
@@ -4944,69 +5010,75 @@ collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode
 collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
 
-%% generate_predicate_codes(+Classified, +WamEntries, -PredCodes)
-%  Generates Rust code for each classified predicate.
-generate_predicate_codes([], _, []).
+%% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
+%  Generates Rust code for each classified predicate. Options is threaded so the
+%  shared-table WAM path can consult the T7 parallel-aggregate gate.
+generate_predicate_codes([], _, _, []).
 generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel,
                                      kernel_with_wrapper(Kernel, WrapperCode))|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     !,
     Kernel = recursive_kernel(Kind, _, _),
     format(string(Code),
         "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate\n~w",
         [Kind, Pred, Arity, WrapperCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel, Kernel)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     % FFI kernel — no WAM code needed; handled by setup_foreign_predicates
     % and execute_foreign_predicate at runtime via CallForeign dispatch.
     Kernel = recursive_kernel(Kind, _, _),
     format(string(Code),
         "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate",
         [Kind, Pred, Arity]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: native\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     % Look up this predicate's start PC in the shared table
     member(wam_entry(Pred, Arity, StartPC), WamEntries),
-    compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Code),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Options, Code),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
-                         WamEntries, [Code|RestCodes]) :-
+                         WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: failed\n~w", [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 
-%% compile_wam_predicate_to_rust_shared(+Pred/Arity, +StartPC, -RustCode)
+%% compile_wam_predicate_to_rust_shared(+Pred/Arity, +StartPC, +Options, -RustCode)
 %  Generates a thin WAM predicate wrapper that references the shared code table.
-compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
+%  Consults the T7 parallel-aggregate gate (cost machinery) so project-mode
+%  codegen carries the same parallel-eligibility annotation as the standalone
+%  path; gated behind parallel_aggregates(true), so default output is unchanged.
+compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Options, RustCode) :-
     atom_string(Pred, PredStr),
     rust_safe_function_name(Pred/Arity, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
+    rust_predicate_parallel_decision(Pred/Arity, Options, ParDecision),
+    rust_parallel_annotation(ParDecision, AggAnno),
     format(string(RustCode),
 '// Strategy: wam
 /// WAM-compiled predicate: ~w/~w (shared table, pc=~w)
 /// Compiled via WAM for predicates that resist native lowering.
-pub fn ~w(~w) -> bool {
+~wpub fn ~w(~w) -> bool {
     let (code, labels) = get_shared_wam();
     vm.code = code.clone();
     vm.labels = labels.clone();
     vm.pc = ~w;
 ~w
     vm.run()
-}', [PredStr, Arity, StartPC, FuncName, ArgList, StartPC, ArgSetup]).
+}', [PredStr, Arity, StartPC, AggAnno, FuncName, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-
