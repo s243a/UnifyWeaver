@@ -11,6 +11,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     estimate_parametric_total_count,
     histogram_distribution_error,
     parametric_shape_distribution,
+    parametric_support_interval,
     scaled_distribution_histogram,
     support_binomial_mean,
 )
@@ -165,6 +166,29 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertGreater(midpoint[1], 0.0)
         self.assertEqual(midpoint_params["mean_model"], "midpoint")
 
+    def test_parametric_support_interval_can_use_distance_bounds(self):
+        row = {
+            "histogram_L_min": 2,
+            "histogram_L_max": 5,
+            "distance_L_min": 1,
+            "distance_L_max": 4,
+        }
+
+        support = parametric_support_interval(row, "distance-bounds", boundary_budget=3)
+        probabilities, origin, params = parametric_shape_distribution(
+            row,
+            {"prior_mean_excess": 1.0},
+            "support-binomial",
+            support_source="distance-bounds",
+            boundary_budget=3,
+        )
+
+        self.assertEqual(support["support_min"], 1)
+        self.assertEqual(support["support_max"], 3)
+        self.assertEqual(origin, 1)
+        self.assertEqual(len(probabilities), 3)
+        self.assertEqual(params["support_source"], "distance-bounds")
+
     def test_support_binomial_mean_blends_prior_and_midpoint(self):
         self.assertEqual(support_binomial_mean(4, 99.0, "prior-clipped", 0.5), 4.0)
         self.assertEqual(support_binomial_mean(4, 99.0, "midpoint", 0.5), 2.0)
@@ -198,6 +222,36 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["parametric_mean_blend"], 0.25)
         self.assertGreaterEqual(rows[0]["parametric_support_min"], rows[0]["histogram_L_min"])
         self.assertLessEqual(rows[0]["parametric_support_max"], rows[0]["histogram_L_max"])
+        self.assertEqual(sum(parametric_cache["B"].values()), rows[0]["path_count"])
+
+    def test_support_binomial_boundary_cache_can_use_distance_support_bounds(self):
+        graph = DictGraph({"A": ["R"], "B": ["A", "R"]})
+
+        cache, parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["B"],
+            2,
+            None,
+            None,
+            admission_policy="depth-prior",
+            safety_factor=2.0,
+            max_histogram_bytes=24,
+            parametric_bytes=8,
+            parametric_shape_model="support-binomial",
+            parametric_support_source="distance-bounds",
+            parametric_mass_model="oracle",
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertTrue(rows[0]["parametric_cached"])
+        self.assertEqual(rows[0]["distance_L_min"], 1)
+        self.assertEqual(rows[0]["distance_L_max"], 2)
+        self.assertEqual(rows[0]["parametric_support_source"], "distance-bounds")
+        self.assertEqual(rows[0]["parametric_support_bound_min"], 1)
+        self.assertEqual(rows[0]["parametric_support_bound_max"], 2)
+        self.assertEqual(rows[0]["parametric_support_width_delta"], 0)
         self.assertEqual(sum(parametric_cache["B"].values()), rows[0]["path_count"])
 
     def test_depth_prior_mass_model_caps_branching_pressure(self):

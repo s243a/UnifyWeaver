@@ -144,22 +144,76 @@ def support_binomial_mean(width, prior_mean_excess, mean_model, mean_blend):
     return max(0.0, min(float(width), mean))
 
 
-def parametric_shape_distribution(row, prior, shape_model, mean_model="prior-clipped", mean_blend=0.5):
+def parametric_support_interval(row, support_source="measured", boundary_budget=None):
+    """Select the support interval used by a parametric boundary state."""
+    if support_source == "measured":
+        lower = row.get("histogram_L_min")
+        upper = row.get("histogram_L_max")
+    elif support_source == "distance-bounds":
+        lower = row.get("distance_L_min")
+        upper = row.get("distance_L_max")
+        if upper is not None and boundary_budget is not None:
+            upper = min(int(upper), int(boundary_budget))
+    else:
+        raise ValueError("unknown parametric support source: {}".format(support_source))
+
+    if lower is None or upper is None:
+        return {
+            "support_source": support_source,
+            "support_min": None,
+            "support_max": None,
+            "support_width": None,
+            "support_valid": False,
+        }
+
+    lower = int(lower)
+    upper = int(upper)
+    if upper < lower:
+        return {
+            "support_source": support_source,
+            "support_min": lower,
+            "support_max": upper,
+            "support_width": None,
+            "support_valid": False,
+        }
+
+    return {
+        "support_source": support_source,
+        "support_min": lower,
+        "support_max": upper,
+        "support_width": upper - lower,
+        "support_valid": True,
+    }
+
+
+def parametric_shape_distribution(
+    row,
+    prior,
+    shape_model,
+    mean_model="prior-clipped",
+    mean_blend=0.5,
+    support_source="measured",
+    boundary_budget=None,
+):
     """Return a compact probability vector and origin for a boundary state."""
-    origin = row.get("histogram_L_min")
-    if origin is None:
+    support = parametric_support_interval(row, support_source, boundary_budget)
+    origin = support["support_min"]
+    if not support["support_valid"]:
         return [], None, {}
     if shape_model == "empirical-prior":
         return prior["prior_distribution"], int(origin), {
             "shape_model": shape_model,
             "mean_model": None,
             "support_width": len(prior["prior_distribution"]) - 1,
+            "support_source": support_source,
+            "support_min": support["support_min"],
+            "support_max": support["support_max"],
+            "support_bound_width": support["support_width"],
             "mean_excess": prior.get("prior_mean_excess"),
             "probability": None,
         }
     if shape_model in {"support-binomial", "support-binomial-midpoint"}:
-        lmax = row.get("histogram_L_max")
-        width = 0 if lmax is None else max(0, int(lmax) - int(origin))
+        width = int(support["support_width"])
         selected_mean_model = "midpoint" if shape_model == "support-binomial-midpoint" else mean_model
         if shape_model == "support-binomial-midpoint":
             mean_excess = support_binomial_mean(width, prior.get("prior_mean_excess", 0.0), "midpoint", mean_blend)
@@ -170,6 +224,10 @@ def parametric_shape_distribution(row, prior, shape_model, mean_model="prior-cli
             "shape_model": shape_model,
             "mean_model": selected_mean_model,
             "support_width": width,
+            "support_source": support_source,
+            "support_min": support["support_min"],
+            "support_max": support["support_max"],
+            "support_bound_width": support["support_width"],
             "mean_excess": mean_excess,
             "probability": probability,
         }
@@ -280,6 +338,7 @@ def build_boundary_cache(
     parametric_shape_model="empirical-prior",
     parametric_mean_model="prior-clipped",
     parametric_mean_blend=0.5,
+    parametric_support_source="measured",
     parametric_mass_model="oracle",
     parametric_mass_cap=1000000,
     tail_epsilon=0.001,
@@ -293,6 +352,7 @@ def build_boundary_cache(
         started = time.perf_counter_ns()
         hist, stats = bounded_parent_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap)
         elapsed = time.perf_counter_ns() - started
+        distances = root_distances(node, root, graph.parents, max_parent_depth, distance_memo)
         rows.append({
             "record_type": "boundary_cache_entry",
             "node": node,
@@ -303,6 +363,10 @@ def build_boundary_cache(
             "histogram_L_min": min(hist) if hist else None,
             "histogram_L_max": max(hist) if hist else None,
             "histogram_bytes": histogram_storage_bytes(hist),
+            "distance_L_min": distances["L_min"],
+            "distance_L_max": distances["L_max"],
+            "distance_truncated": distances["truncated"],
+            "distance_cycle_skipped": distances["cycle_skipped"],
             "root_reaching_parent_degree": root_reaching_parent_degree(
                 graph,
                 root,
@@ -391,6 +455,15 @@ def build_boundary_cache(
         row["parametric_mean_model"] = parametric_mean_model
         row["parametric_mean_blend"] = parametric_mean_blend
         row["parametric_shape_mean_excess"] = None
+        row["parametric_support_source"] = parametric_support_source
+        row["parametric_support_bound_min"] = None
+        row["parametric_support_bound_max"] = None
+        row["parametric_support_bound_width"] = None
+        row["parametric_support_min_delta"] = None
+        row["parametric_support_max_delta"] = None
+        row["parametric_support_width_delta"] = None
+        row["parametric_support_truncated"] = False
+        row["parametric_support_cycle_skipped"] = False
         row["parametric_shape_probability"] = None
         row["parametric_mass_model"] = parametric_mass_model
         row["parametric_mass_delta"] = None
@@ -414,13 +487,31 @@ def build_boundary_cache(
                 parametric_shape_model,
                 parametric_mean_model,
                 parametric_mean_blend,
+                parametric_support_source,
+                boundary_budget,
             )
+            if shape_params:
+                support_min = shape_params.get("support_min")
+                support_max = shape_params.get("support_max")
+                support_width = shape_params.get("support_bound_width")
+                measured_min = row.get("histogram_L_min")
+                measured_max = row.get("histogram_L_max")
+                measured_width = None if measured_min is None or measured_max is None else int(measured_max) - int(measured_min)
+                row["parametric_support_bound_min"] = support_min
+                row["parametric_support_bound_max"] = support_max
+                row["parametric_support_bound_width"] = support_width
+                row["parametric_support_min_delta"] = None if measured_min is None or support_min is None else int(support_min) - int(measured_min)
+                row["parametric_support_max_delta"] = None if measured_max is None or support_max is None else int(support_max) - int(measured_max)
+                row["parametric_support_width_delta"] = None if measured_width is None or support_width is None else int(support_width) - int(measured_width)
+                if parametric_support_source == "distance-bounds":
+                    row["parametric_support_truncated"] = row["distance_truncated"]
+                    row["parametric_support_cycle_skipped"] = row["distance_cycle_skipped"]
             approx_hist = scaled_distribution_histogram(
                 probabilities,
                 origin,
                 mass_estimate["estimated_path_count"],
             )
-            if approx_hist:
+            if approx_hist and shape_params:
                 parametric_cache[row["node"]] = approx_hist
                 row["parametric_cached"] = True
                 row["parametric_histogram"] = approx_hist
@@ -522,6 +613,7 @@ def run_benchmark(args):
             args.parametric_shape_model,
             args.parametric_mean_model,
             args.parametric_mean_blend,
+            args.parametric_support_source,
             args.parametric_mass_model,
             args.parametric_mass_cap,
             args.tail_epsilon,
@@ -546,6 +638,7 @@ def run_benchmark(args):
             "parametric_shape_model": args.parametric_shape_model,
             "parametric_mean_model": args.parametric_mean_model,
             "parametric_mean_blend": args.parametric_mean_blend,
+            "parametric_support_source": args.parametric_support_source,
             "parametric_mass_model": args.parametric_mass_model,
             "parametric_mass_cap": args.parametric_mass_cap,
         }]
@@ -628,9 +721,9 @@ def summarize(records):
         "",
         "## Admission Policy",
         "",
-        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_shape_model | parametric_mean_model | parametric_mean_blend | parametric_mass_model | parametric_mass_cap |",
-        "|--------|--------------:|--------------------:|-----------------:|------------------------|-----------------------|----------------------:|-----------------------|--------------------:|",
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        "| policy | safety_factor | max_histogram_bytes | parametric_bytes | parametric_shape_model | parametric_mean_model | parametric_mean_blend | parametric_support_source | parametric_mass_model | parametric_mass_cap |",
+        "|--------|--------------:|--------------------:|-----------------:|------------------------|-----------------------|----------------------:|---------------------------|-----------------------|--------------------:|",
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             selection.get("admission_policy", "baseline"),
             selection.get("safety_factor", "n/a"),
             selection.get("max_histogram_bytes", "n/a"),
@@ -638,6 +731,7 @@ def summarize(records):
             selection.get("parametric_shape_model", "empirical-prior"),
             selection.get("parametric_mean_model", "prior-clipped"),
             selection.get("parametric_mean_blend", "n/a"),
+            selection.get("parametric_support_source", "measured"),
             selection.get("parametric_mass_model", "oracle"),
             selection.get("parametric_mass_cap", "n/a"),
         ),
@@ -677,6 +771,33 @@ def summarize(records):
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
     for reason in sorted(reason_counts):
         lines.append("| {} | {} |".format(reason, reason_counts[reason]))
+    support_rows = [row for row in cache_rows if row.get("parametric_support_bound_width") is not None]
+    if support_rows:
+        lines.extend([
+            "",
+            "## Parametric Support Bounds",
+            "",
+            "| support_source | rows | mean_bound_width | mean_width_delta | mean_min_delta | mean_max_delta | truncated | cycle_skipped |",
+            "|----------------|-----:|-----------------:|-----------------:|---------------:|---------------:|----------:|--------------:|",
+        ])
+        support_by_source = {}
+        for row in support_rows:
+            support_by_source.setdefault(row.get("parametric_support_source", "unknown"), []).append(row)
+        for source in sorted(support_by_source):
+            rows = support_by_source[source]
+            width_delta = [int(row["parametric_support_width_delta"]) for row in rows if row.get("parametric_support_width_delta") is not None]
+            min_delta = [int(row["parametric_support_min_delta"]) for row in rows if row.get("parametric_support_min_delta") is not None]
+            max_delta = [int(row["parametric_support_max_delta"]) for row in rows if row.get("parametric_support_max_delta") is not None]
+            lines.append("| {} | {} | {:.3f} | {:.3f} | {:.3f} | {:.3f} | {} | {} |".format(
+                source,
+                len(rows),
+                statistics.mean(int(row["parametric_support_bound_width"]) for row in rows),
+                statistics.mean(width_delta) if width_delta else 0.0,
+                statistics.mean(min_delta) if min_delta else 0.0,
+                statistics.mean(max_delta) if max_delta else 0.0,
+                sum(1 for row in rows if row.get("parametric_support_truncated")),
+                sum(1 for row in rows if row.get("parametric_support_cycle_skipped")),
+            ))
     lines.extend([
         "",
         "## Boundary Cache Build",
@@ -784,6 +905,7 @@ def main(argv=None):
     parser.add_argument("--parametric-shape-model", choices=["empirical-prior", "support-binomial", "support-binomial-midpoint"], default="empirical-prior", help="Shape used for parametric boundary states.")
     parser.add_argument("--parametric-mean-model", choices=["prior-clipped", "midpoint", "blend"], default="prior-clipped", help="Mean rule for support-binomial parametric shape states.")
     parser.add_argument("--parametric-mean-blend", type=float, default=0.5, help="Prior weight for --parametric-mean-model blend; midpoint gets the remaining weight.")
+    parser.add_argument("--parametric-support-source", choices=["measured", "distance-bounds"], default="measured", help="Support interval source for parametric boundary states.")
     parser.add_argument("--parametric-mass-model", choices=["oracle", "unit", "depth-prior"], default="oracle", help="Mass used to unnormalize parametric boundary states.")
     parser.add_argument("--parametric-mass-cap", type=int, default=1000000, help="Maximum estimated path mass for non-oracle parametric states; non-positive disables the cap.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
