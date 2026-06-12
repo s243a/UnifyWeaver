@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WAM Rust target: builtin parity sweep (F# parity campaign P3).**
+  New `execute_ext_builtin` dispatch tier closes the largest
+  builtin-coverage gap vs the F# target — every op below was already
+  emitted as `builtin_call` by the shared WAM compiler and previously
+  failed closed at runtime:
+  - **Term ordering**: standard order of terms (`term_compare`:
+    Var < Number < Atom < Compound; numbers by value, lists cons-wise,
+    compounds by arity/name/args) shared by `@</2 @=</2 @>/2 @>=/2`,
+    `compare/3`, `sort/2` (dedup), `msort/2`, `keysort/2` (stable).
+  - **Unification tests**: `\=/2` (trial-unify + unwind), `\==/2`.
+  - **List utilities**: `memberchk/2`, `last/2`, `nth0/3`/`nth1/3`
+    (bound-index deterministic + unbound-index enumeration),
+    `numlist/3`, `delete/3`, `select/3` (full enumeration),
+    `sum_list/2`/`sumlist/2`, `max_list/2`, `min_list/2`.
+  - **Integer relations**: `between/3` (bound check + enumeration),
+    `plus/3` (all three modes).
+  - **Atom/string text ops**: `atom_length/2`, `string_length/2`,
+    `atom_concat/3`/`string_concat/3` (concat + split-mode
+    enumeration over a bound third argument), `char_code/2`,
+    `atom_chars/2` (both directions), `atom_string/2`,
+    `string_to_atom/2`, `upcase_atom/2`, `downcase_atom/2`,
+    `atom_number/2` (both directions), `ground/1`.
+  The nondeterministic builtins use the established
+  ChoicePoint/BuiltinState resume protocol (shared attempt methods
+  called from both first dispatch and `resume_builtin`). New
+  `tests/test_wam_rust_builtin_parity.pl`: 13 cargo-built tests —
+  four compiled-predicate paths (between/select/nth enumeration and
+  atom_concat split through real WAM emission + backtracking) plus
+  direct dispatch coverage for the deterministic families. Deferred,
+  noted for the campaign ledger: `succ/2` (not emitted as a builtin
+  by the shared compiler; needs a shared-table entry or a Call-arm
+  builtin fallback), `catch/3`/`throw/1` (own milestone — needs
+  catcher-frame machinery like F#), `char_type/2`,
+  `atomic_list_concat`, `maplist` family.
 - **WAM Rust target: reverse-CSR child index reader (parity campaign
   P2).** New `csr_child_index(true)` project option emits
   `src/csr_fact_source.rs`: a `CsrLookupSource` over the binary
