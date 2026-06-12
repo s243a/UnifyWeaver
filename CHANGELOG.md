@@ -35,7 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `docs/reports/wam_bindthrough_cross_target_sweep.md`. New
   regression test `tests/test_wam_go_bindthrough.pl`; gated by the
   cross-target conformance suite (go/scala/haskell/c/wat) plus
-  per-target suites.
+  per-target suites. SWEEP COMPLETION: the five pending script
+  targets are now probed — Python, R, Clojure clean (guards already
+  present; R uses the F#-style cycle check), **Lua BUGGY and fixed**
+  (the worst variant: no register-class guard AND no deref, so the
+  bind-through clobbered already-bound variables too; fixed in
+  `push_built_term` with guard + deref, gated by the Lua generator
+  suite 37/37 + lowered ite/t4/t5), Elixir interpreter mode BLOCKED
+  (structurally cannot cross-call — module-local label maps; lowered
+  mode clean on both classes). Also fixed from the side findings:
+  **missing `==/2`/`\==/2` in the C and Haskell runtimes**
+  (fail-closed class-7 gap; C gains a read-only
+  `wam_term_strict_equal` traversal, Haskell `derefDeep`-based
+  BuiltinCall arms — both verified against the previously confounded
+  probe batteries and the conformance gate). Newly filed: Lua
+  Y-registers not frame-local, Elixir interpreter cross-call defect,
+  Clojure lowered numeric-literals-as-atoms defect, Elixir lowered
+  `==/2` gap.
 
 ### Added
 - **WAM Rust target: maplist family, atomic_list_concat, char_type
