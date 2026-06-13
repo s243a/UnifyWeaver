@@ -81,7 +81,9 @@ The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `NF`, e.g. `$1 == "ERROR" { print NR, NF, $2, $3 }`, plus native field lengths
 such as `$1 == "ERROR" { print length($2), $2 }` and native byte substrings such
 as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
-`$1 == "ERROR" { print index($2, "sk") }`. Scalar state works with `$1 ==
+`$1 == "ERROR" { print index($2, "sk") }`. Rule prints can also emit ASCII
+case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
+Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. The first
