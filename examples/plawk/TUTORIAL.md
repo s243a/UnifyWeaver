@@ -275,6 +275,8 @@ disk,full
 net,down
 ```
 
+The native output path writes the single-byte separator directly, so separators
+such as `%` are treated as data rather than `printf` format strings.
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

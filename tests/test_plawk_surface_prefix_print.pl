@@ -238,6 +238,16 @@ test(surface_begin_output_separator_drives_begin_printing) :-
         "INFO boot ok\nERROR disk full\n",
         "kind,count\ntotal,2\n").
 
+test(surface_begin_output_separator_treats_rule_percent_as_data) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \"%\" } $1 == \"ERROR\" { print $2, $3 }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
+        "disk%full\nnet%down\n").
+
+test(surface_begin_output_separator_treats_begin_and_end_percent_as_data) :-
+    run_surface_print_smoke("BEGIN { OFS = \"%\"; print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n",
+        "INFO boot ok\nERROR disk full\n",
+        "kind%count\ntotal%2\n").
+
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
         ( between(0, 2050, Index), format(atom(Line), 'K~w payload\n', [Index]) ),
@@ -339,9 +349,10 @@ test(surface_begin_field_separator_uses_configured_delimiter) :-
 test(surface_begin_output_separator_uses_configured_delimiter) :-
     plawk_parse_string("BEGIN { OFS = \",\" } { total++ } END { print \"total\", total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space = private constant [2 x i8] c"\\2c\\00"'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_space_1 = call i32'))),
-    assertion(\+ sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space = private constant [2 x i8] c" \\00"')),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_separator_1 = call i32 @putchar(i32 44)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'printf(i8* %end_space_fmt')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%printed_end_space_1')),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
