@@ -7,6 +7,7 @@ import unittest
 
 from scripts.distribution_precompute_depth_estimator import (
     build_records,
+    calibration_from_payload_recurrence_summaries,
     cumulative_branching,
     parse_args,
     parse_depth_float_map,
@@ -35,25 +36,28 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
             and row["representation"] == "exact_sparse_histogram"
         ]
 
+        self.assertEqual([row["boundary_depth"] for row in rows], [0, 1, 2])
         self.assertAlmostEqual(rows[0]["expected_hits"], 1000.0)
         self.assertAlmostEqual(rows[1]["expected_hits"], 250.0)
         self.assertAlmostEqual(rows[2]["expected_hits"], 62.5)
 
-    def test_fifty_point_model_can_break_even_below_fifty_hits(self):
+    def test_sampled_point_limit_is_upper_bound_and_break_even_can_be_lower(self):
         args = parse_args([
             "--expected-queries", "10",
             "--branching-factor", "4",
             "--max-depth", "4",
+            "--target-depth", "8",
         ])
 
         row = next(
             row for row in build_records(args)
             if row["record_type"] == "distribution_precompute_depth_estimate"
-            and row["depth"] == 4
-            and row["representation"] == "sampled_50_point_distribution"
+            and row["boundary_depth"] == 4
+            and row["representation"] == "sampled_up_to_50_point_distribution"
         )
 
-        self.assertEqual(row["points"], 50)
+        self.assertEqual(row["suffix_hops"], 4)
+        self.assertEqual(row["points"], 5)
         self.assertLess(row["hits_to_break_even"], 50.0)
 
     def test_depth_specific_query_reach_probability_scales_hits(self):
@@ -67,11 +71,46 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         row = next(
             row for row in build_records(args)
             if row["record_type"] == "distribution_precompute_depth_estimate"
-            and row["depth"] == 2
+            and row["boundary_depth"] == 2
             and row["representation"] == "exact_sparse_histogram"
         )
 
         self.assertAlmostEqual(row["expected_hits"], 62.5)
+
+    def test_suffix_cost_uses_target_depth_not_boundary_depth(self):
+        args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "2",
+            "--target-depth", "5",
+        ])
+
+        row = next(
+            row for row in build_records(args)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["boundary_depth"] == 2
+            and row["representation"] == "exact_sparse_histogram"
+        )
+
+        self.assertEqual(row["suffix_hops"], 3)
+        self.assertAlmostEqual(row["expected_build_states"], 16.0)
+        self.assertAlmostEqual(row["expected_suffix_states"], 64.0)
+
+    def test_calibration_reads_payload_recurrence_summary(self):
+        args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "4",
+        ])
+
+        calibration = calibration_from_payload_recurrence_summaries(
+            ["docs/reports/enwiki_mtc_payload_recurrence_layer_depth3_smoke_payload_recurrence_layer_summary.json"],
+            args,
+        )
+
+        self.assertEqual(calibration["source_summaries"], 1)
+        self.assertGreater(calibration["source_budget_rows"], 0)
+        self.assertGreater(calibration["uncached_cost_per_state"], 0.0)
+        self.assertGreater(calibration["cached_eval_cost_per_point"], 0.0)
+        self.assertGreater(calibration["decode_cost_per_byte"], 0.0)
 
 
 if __name__ == "__main__":
