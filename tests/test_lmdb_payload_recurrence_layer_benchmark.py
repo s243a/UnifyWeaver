@@ -67,6 +67,7 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["recurrence_histogram"], {2: 2})
         self.assertEqual(rows[0]["payload_histogram"], {2: 2})
         self.assertTrue(rows[0]["exact_match"])
+        self.assertEqual(rows[0]["parent_payload_nodes"], ["A", "B"])
         self.assertEqual(rows[0]["missing_parent_payloads"], 0)
         self.assertGreater(rows[0]["payload_bytes_read"], 0)
 
@@ -143,6 +144,7 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
                 "exact_match": True,
                 "missing_parent_payloads": 0,
                 "parent_payloads_available": 2,
+                "parent_payload_nodes": ["A", "B"],
                 "l1_error": 0.0,
                 "max_cdf_error": 0.0,
                 "w1_cdf_error": 0.0,
@@ -170,8 +172,13 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
         rendered = markdown_summary(summary)
 
         self.assertEqual(summary["budget_rows"][0]["exact_match_rows"], 1)
+        self.assertEqual(summary["budget_rows"][0]["unique_parent_payloads_referenced"], 2)
+        self.assertEqual(summary["budget_rows"][0]["total_parent_payload_references"], 2)
+        self.assertEqual(summary["budget_rows"][0]["max_children_per_parent_payload"], 1)
         self.assertEqual(summary["budget_rows"][0]["mean_payload_bytes_read"], 64)
         self.assertIn("mean_payload_read", rendered)
+        self.assertIn("unique_refs", rendered)
+        self.assertIn("max_share", rendered)
         self.assertIn("decode_cache", rendered)
 
     def test_parse_decode_cache_modes_deduplicates_modes(self):
