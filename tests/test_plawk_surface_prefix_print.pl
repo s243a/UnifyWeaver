@@ -48,6 +48,11 @@ test(parses_field_eq_print_length_field_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [print([special('NR'), special('NF'), length(field(2)), field(2)])])], [])).
 
+test(parses_field_eq_print_substr_field_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { print substr($2, 1, 3), substr($0, 7, 4) }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [print([substr(field(2), 1, 3), substr(field(0), 7, 4)])])], [])).
+
 test(parses_field_eq_increment_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { count++ } END { print count }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [inc(var(count))])],
@@ -183,6 +188,11 @@ test(surface_default_space_fs_collapses_whitespace_runs) :-
         "  INFO   boot ok\n\tERROR   disk   full  \nWARN cpu hot\n  ERROR\tnetwork  down now\n",
         "3 disk 4\n4 network 7\n").
 
+test(surface_field_eq_prints_native_substrings) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { print substr($2, 1, 3), substr($0, 7, 4) }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down now\n",
+        "dis disk\nnet netw\n").
+
 test(surface_field_eq_prints_nr_with_output_separator) :-
     run_surface_print_smoke("BEGIN { OFS = \",\" } $1 == \"ERROR\" { print NR, $2, $3 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -277,6 +287,11 @@ test(surface_begin_field_separator_drives_length_printing) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print length($0), length($2), $2 }\n",
         "ERROR:disk:full\nWARN:cpu:hot\nERROR:network:down:now\n",
         "15,4,disk\n22,7,network\n").
+
+test(surface_begin_field_separator_drives_substr_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print substr($2, 1, 3), substr($0, 7, 4) }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:network:down:now\n",
+        "dis,disk\nnet,netw\n").
 
 test(surface_begin_output_separator_drives_end_printing) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { counts[$2]++ } END { print \"disk\", counts[\"disk\"], \"net\", counts[\"net\"] }\n",
@@ -441,6 +456,16 @@ test(surface_default_space_fs_uses_native_whitespace_helpers) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_count_value(%Value %line, i8 32)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_length_value(%Value %line, i64 2, i8 32)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_substr_print_uses_native_subslice) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print substr($2, 1, 3), substr($0, 7, 4) }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_substr_0 = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 2, i8 58, i64 1, i64 3)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_substr_1 = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 0, i8 58, i64 7, i64 4)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_substr_0 = call i32 (i8*, ...) @printf(i8* %substr_fmt_0, i32 %plawk_substr_0_len, i8* %plawk_substr_0_ptr)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

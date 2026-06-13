@@ -255,8 +255,9 @@ Rule prints can include native `NR`, implemented as a record-number `i64` phi in
 the print-only streaming loop, and native `NF`, implemented with the shared
 `@wam_atom_field_count_value` helper over the active single-byte `FS`. Rule
 prints can also call native `length($N)` through the shared
-`@wam_atom_field_length_value` helper. The scalar counter path threads a native
-`i64` loop variable and prints it from the `END` action. Multiple scalar counters
+`@wam_atom_field_length_value` helper and native `substr($N, Start, Len)` through
+the allocation-free `@wam_atom_field_subslice_value` helper. The scalar counter
+path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.
 Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The current

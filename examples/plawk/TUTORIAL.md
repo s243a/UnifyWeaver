@@ -120,9 +120,10 @@ The Phase 0 examples use the counter as `NR`, collect printed lines in
 
 ## Current surface example: count matching records
 
-The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected fields,
-native field lengths such as `length($2)`, and `OFS`, matching the first awk-style
-example above. It can also compile a scalar counter and an `END` action:
+The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
+fields, native field lengths such as `length($2)`, native byte substrings such as
+`substr($2, 1, 3)`, and `OFS`, matching the first awk-style example above. It can
+also compile a scalar counter and an `END` action:
 
 ```awk
 $1 == "ERROR" { count++ } END { print count }
@@ -242,6 +243,8 @@ total 4
 
 By default, `FS=" "` uses AWK-style whitespace splitting: leading and trailing
 whitespace is ignored, and whitespace runs do not create empty fields.
+
+The first `substr` surface uses AWK-style 1-based starts and byte counts.
 
 `BEGIN` can also set an explicit single-byte field separator for the native field helpers:
 
