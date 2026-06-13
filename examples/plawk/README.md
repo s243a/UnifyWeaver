@@ -88,7 +88,8 @@ source array rather than specializing the `END` keys to fixed slots. Guarded
 associative count rules lower through the same native rule-chain shape as scalar
 counters, so `$1 == "ERROR" { by_component[$2]++ }` only updates on matches. Each table
 grows and rehashes as needed, and the native stream reader grows its line buffer
-without consuming WAM arena space per record. Mixed scalar/associative state is
+without consuming WAM arena space per record. `BEGIN` print clauses can emit
+literal report headers before the stream opens. Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.

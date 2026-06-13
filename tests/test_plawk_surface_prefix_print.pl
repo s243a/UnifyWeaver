@@ -104,6 +104,15 @@ test(parses_mixed_end_print_string_literal_fields) :-
             assoc(var(counts), string("ERROR"))
         ])])])).
 
+test(parses_begin_print_string_literal_fields) :-
+    plawk_parse_string("BEGIN { print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n", Program),
+    assertion(Program == program([begin([print([string("kind"), string("count")])])],
+        [rule(always, [inc(var(total))])],
+        [end([print([
+            string("total"),
+            var(total)
+        ])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -173,6 +182,11 @@ test(surface_mixed_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "total 4 errors 2\n").
+
+test(surface_begin_prints_string_literals) :-
+    run_surface_print_smoke("BEGIN { print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "kind count\ntotal 4\n").
 
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
@@ -250,6 +264,17 @@ test(surface_end_string_literals_use_indexed_globals) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_string_0 = call i32'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_string_2 = call i32'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_assoc_print_key_3 = private constant [6 x i8]'))),
+    !.
+
+test(surface_begin_string_literals_use_indexed_globals) :-
+    plawk_parse_string("BEGIN { print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_begin_print_string_0 = private constant [5 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_begin_print_string_1 = private constant [6 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_begin_string_0 = call i32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_begin_string_1 = call i32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_begin_newline = call i32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_end_print_string_0 = private constant [6 x i8]'))),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-

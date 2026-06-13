@@ -24,15 +24,18 @@
 %      $N == "VALUE" { counts[$M]++ } END { print counts["KEY"] }
 %      { total++; counts[$1]++ } END { print total, counts["ERROR"] }
 %      { total++ } END { print "total", total }
+%      BEGIN { print "kind", "count" } { total++ } END { print "total", total }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
 %  the deterministic guard, and prints matching records.
 plawk_program_native_driver_ir(
-    program([], [rule(Pattern, [print(Fields)])], []),
+    program(BeginClauses, [rule(Pattern, [print(Fields)])], []),
     InputPath,
     DriverIR
 ) :-
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, BeginIR),
     plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
     plawk_print_action_ir(Fields, PrintActionIR),
     format(atom(RecordIR),
@@ -48,21 +51,25 @@ print_line:
 @.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
 @.plawk_surface_print_space = private constant [2 x i8] c" \\00"
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
+@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+~w
 ~w
 ',
-        [GuardGlobalIR]),
+        [BeginGlobalIR, GuardGlobalIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, '', lowered_match, RecordIR, '',
+        driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
 plawk_program_native_driver_ir(
-    program([], Rules, [end([print(PrintFields)])]),
+    program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
     plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
     MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, BeginIR),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
@@ -70,8 +77,9 @@ plawk_program_native_driver_ir(
     plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, NextPhiIR),
     plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -79,22 +87,25 @@ plawk_program_native_driver_ir(
   ret i32 0',
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, lowered_mixed,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
             RuleChainIR, NextPhiIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
-    program([], Rules, [end([print(PrintFields)])]),
+    program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
     plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, BeginIR),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, NextPhiIR),
     plawk_scalar_end_print_ir(PrintFields, StatePlan, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w', [StringGlobalIR, RuleGlobalIR]),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -102,23 +113,26 @@ plawk_program_native_driver_ir(
   ret i32 0',
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, LoopPhiIR, lowered_match, RuleChainIR,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RuleChainIR,
             NextPhiIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
-    program([], Rules, [end([print(PrintFields)])]),
+    program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
     plawk_assoc_runtime_count_plan(Rules, PrintFields, AssocPlan),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, BeginIR),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, AssocRuleGlobalIR, AssocChainIR),
     plawk_assoc_end_print_ir(PrintFields, AssocPlan, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -126,9 +140,16 @@ plawk_program_native_driver_ir(
   ret i32 0',
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, EntrySetupIR, '', lowered_assoc,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
             AssocChainIR, '', end_print, CloseOkIR),
         DriverIR).
+
+plawk_combine_entry_ir('', IR, IR) :-
+    !.
+plawk_combine_entry_ir(IR, '', IR) :-
+    !.
+plawk_combine_entry_ir(FirstIR, SecondIR, CombinedIR) :-
+    format(atom(CombinedIR), '~w~n~w', [FirstIR, SecondIR]).
 
 plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
     format(atom(RuntimeGlobals),
@@ -631,6 +652,76 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel).
+
+plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
+    plawk_begin_print_fields(BeginClauses, Fields),
+    phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines),
+    atomic_list_concat(Lines, '\n', GlobalIR).
+
+plawk_begin_print_fields([], []).
+plawk_begin_print_fields([begin([print(Fields)])], Fields).
+
+plawk_begin_print_string_global_lines([], _) -->
+    [].
+plawk_begin_print_string_global_lines([string(Value) | Rest], Index) -->
+    { string_codes(Value, Codes),
+      length(Codes, StringLen),
+      BytesLen is StringLen + 1,
+      llvm_c_bytes(Codes, Bytes),
+      format(atom(Line),
+          '@.plawk_begin_print_string_~w = private constant [~w x i8] c"~w\\00"',
+          [Index, BytesLen, Bytes]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_begin_print_string_global_lines(Rest, NextIndex).
+
+plawk_begin_print_ir([], '') :-
+    !.
+plawk_begin_print_ir([begin([print(Fields)])], IR) :-
+    maplist(plawk_begin_print_field, Fields),
+    phrase(plawk_begin_print_lines(Fields, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_begin_print_field(string(_)).
+
+plawk_begin_print_lines([], _) -->
+    ['  %begin_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+     '  %printed_begin_newline = call i32 (i8*, ...) @printf(i8* %begin_newline_fmt)'].
+plawk_begin_print_lines([string(Value) | Rest], Index) -->
+    plawk_begin_separator_lines(Index),
+    plawk_begin_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_begin_print_lines(Rest, NextIndex).
+
+plawk_begin_separator_lines(0) -->
+    !,
+    [].
+plawk_begin_separator_lines(Index) -->
+    { format(atom(SpacePtr),
+          '  %begin_space_fmt_~w = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_space, i32 0, i32 0',
+          [Index]),
+      format(atom(SpaceCall),
+          '  %printed_begin_space_~w = call i32 (i8*, ...) @printf(i8* %begin_space_fmt_~w)',
+          [Index, Index])
+    },
+    [SpacePtr, SpaceCall].
+
+plawk_begin_string_print_lines(Value, Index) -->
+    { string_codes(Value, Codes),
+      length(Codes, StringLen),
+      BytesLen is StringLen + 1,
+      format(atom(StringPtr),
+          '  %begin_string_~w_ptr = getelementptr [~w x i8], [~w x i8]* @.plawk_begin_print_string_~w, i32 0, i32 0',
+          [Index, BytesLen, BytesLen, Index]),
+      format(atom(FmtPtr),
+          '  %begin_string_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_begin_string_~w = call i32 (i8*, ...) @printf(i8* %begin_string_fmt_~w, i8* %begin_string_~w_ptr)',
+          [Index, Index, Index])
+    },
+    [StringPtr, FmtPtr, PrintCall].
 
 plawk_assoc_print_key_globals(PrintFields, GlobalIR) :-
     phrase(plawk_assoc_print_key_global_lines(PrintFields, 0), Lines),

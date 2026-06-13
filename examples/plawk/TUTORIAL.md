@@ -223,6 +223,21 @@ That prints:
 total 4 errors 2
 ```
 
+`BEGIN` can emit literal report headers before the first input record is read:
+
+```awk
+BEGIN { print "kind", "count" }
+{ total++ }
+END { print "total", total }
+```
+
+For the sample input, that prints:
+
+```text
+kind count
+total 4
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

@@ -16,6 +16,7 @@
 %      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
 %      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
+%      BEGIN { print "kind", "count" } { count++ } END { print "count", count }
 %      { count++ } END { print "count", count }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
@@ -25,8 +26,9 @@ plawk_parse_string(Source, Program) :-
     string_codes(Source, Codes),
     phrase(plawk_program(Program), Codes).
 
-plawk_program(program([], Rules, EndClauses)) -->
+plawk_program(program(BeginClauses, Rules, EndClauses)) -->
     ws,
+    begin_clauses(BeginClauses),
     rules(Rules),
     end_clauses(EndClauses),
     eos.
@@ -130,6 +132,19 @@ quoted_string_codes([Code | Codes]) -->
     !,
     quoted_string_codes(Codes).
 quoted_string_codes([]) -->
+    [].
+
+begin_clauses([begin([PrintAction])]) -->
+    "BEGIN",
+    ws,
+    "{",
+    ws,
+    print_action(PrintAction),
+    ws,
+    "}",
+    ws,
+    !.
+begin_clauses([]) -->
     [].
 
 end_clauses([end([PrintAction])]) -->
