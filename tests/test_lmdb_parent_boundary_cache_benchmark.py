@@ -72,6 +72,18 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(parametric_cache, {})
         self.assertEqual(rows[0]["cache_admission_action"], "materialize_exact")
         self.assertEqual(rows[0]["cache_admission_reason"], "baseline_uncapped_histogram")
+        self.assertEqual(rows[0]["cache_payload_representation"], "packed_sparse_histogram")
+        self.assertGreater(rows[0]["cache_payload_bytes"], 0)
+
+        cached_hist, cached_stats = cached_parent_histogram(
+            graph.parents,
+            "A",
+            "R",
+            1,
+            cache,
+        )
+        self.assertEqual(cached_hist, {1: 1})
+        self.assertGreater(cached_stats.cache_payload_bytes_read, 0)
 
     def test_depth_prior_boundary_policy_materializes_within_budget(self):
         graph = DictGraph({"A": ["R"]})
@@ -117,6 +129,8 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
         self.assertFalse(rows[0]["cached"])
         self.assertTrue(rows[0]["parametric_cached"])
+        self.assertEqual(rows[0]["parametric_payload_representation"], "packed_sparse_histogram")
+        self.assertGreater(rows[0]["parametric_payload_bytes"], 0)
 
     def test_parametric_unit_mass_model_records_mass_error(self):
         graph = DictGraph({"A": ["R"], "B": ["A", "R"]})

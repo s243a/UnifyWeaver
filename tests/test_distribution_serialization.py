@@ -8,6 +8,7 @@ import unittest
 from scripts.distribution_serialization import (
     decode_packed_sparse_histogram,
     decode_quantized_cdf_table,
+    decode_distribution_payload,
     encode_packed_sparse_histogram,
     encode_quantized_cdf_table,
     encode_selected_distribution,
@@ -51,6 +52,18 @@ class DistributionSerializationTests(unittest.TestCase):
         self.assertEqual(meta["representation"], "packed_sparse_histogram")
         self.assertEqual(meta["payload_bytes"], len(payload))
         self.assertEqual(meta["decoded_max_cdf_error"], 0.0)
+
+    def test_generic_decoder_dispatches_from_payload_header(self):
+        sparse = encode_packed_sparse_histogram([0.25, 0.75], origin=3, total_mass=4)
+        cdf = encode_quantized_cdf_table([0.25, 0.75], origin=3, total_mass=4, bits=8)
+
+        sparse_decoded, sparse_meta = decode_distribution_payload(sparse)
+        cdf_decoded, cdf_meta = decode_distribution_payload(cdf)
+
+        self.assertEqual(sparse_decoded, [0.25, 0.75])
+        self.assertEqual(sparse_meta["representation"], "packed_sparse_histogram")
+        self.assertEqual(cdf_meta["representation"], "quantized_cdf_table")
+        self.assertLessEqual(max_cdf_error([0.25, 0.75], cdf_decoded), cdf_meta["quantization_step"])
 
     def test_unknown_representation_is_rejected(self):
         with self.assertRaises(ValueError):
