@@ -250,6 +250,8 @@ print_fields_rest([Field | Fields]) -->
 print_fields_rest([]) -->
     [].
 
+field_expr(special('NR')) -->
+    "NR".
 field_expr(assoc(var(Name), KeyExpr)) -->
     identifier(Name),
     ws,

@@ -41,18 +41,21 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
+    plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR),
     plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintActionIR),
     format(atom(RecordIR),
 '~w
+~w
   br i1 %is_match, label %print_line, label %continue_loop
 
 print_line:
 ~w
   br label %continue_loop',
-        [GuardCallIR, PrintActionIR]),
+        [RecordCounterIR, GuardCallIR, PrintActionIR]),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
 @.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
+@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 ~w
@@ -60,7 +63,7 @@ print_line:
 ',
         [BeginGlobalIR, GuardGlobalIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
@@ -1143,6 +1146,14 @@ plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, Match
     llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
 
+plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR) :-
+    (   member(special('NR'), Fields)
+    ->  LoopPhiIR = '  %plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]',
+        RecordCounterIR = '  %current_nr = add i64 %plawk_nr, 1'
+    ;   LoopPhiIR = '',
+        RecordCounterIR = ''
+    ).
+
 plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, IR) :-
     !,
     IR = '  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
@@ -1169,6 +1180,16 @@ plawk_print_separator_ir(Index, OutputSeparator) -->
           [Index, OutputSeparator])
     },
     [SpaceCall].
+
+plawk_print_field_ir(special('NR'), _FieldSeparator, Index) -->
+    { format(atom(FmtPtr),
+          '  %nr_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_nr_~w = call i32 (i8*, ...) @printf(i8* %nr_fmt_~w, i64 %current_nr)',
+          [Index, Index])
+    },
+    [FmtPtr, PrintCall].
 
 plawk_print_field_ir(field(0), _FieldSeparator, Index) -->
     { format(atom(LineLen64),

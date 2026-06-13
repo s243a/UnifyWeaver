@@ -250,10 +250,11 @@ streaming WAM/LLVM driver using `llvm_emit_atom_prefix_guard/5` or
 `tests/test_plawk_surface_prefix_print.pl` proves that the generated binary
 prints matching records from a text file without calling `run_loop` in the hot
 record loop. The field-equality path scans fields in native code without
-allocating substrings; selected-field printing projects byte slices directly;
-the scalar counter path threads a native `i64` loop variable and prints it from
-the `END` action. Multiple scalar counters become parallel `i64` phi slots in
-the native streaming loop.
+allocating substrings; selected-field printing projects byte slices directly.
+Rule prints can include native `NR`, implemented as a record-number `i64` phi in
+the print-only streaming loop. The scalar counter path threads a native `i64`
+loop variable and prints it from the `END` action. Multiple scalar counters
+become parallel `i64` phi slots in the native streaming loop.
 Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The current
 associative-count surface allocates one reusable WAM/LLVM
