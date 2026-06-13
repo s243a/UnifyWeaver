@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.distribution_fit_comparison import binomial_pmf, exact_excess_distribution, l1_error, max_cdf_error
+from scripts.distribution_fit_comparison import binomial_pmf, effective_support_bins, exact_excess_distribution, l1_error, max_cdf_error
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
     parse_int_list,
@@ -359,6 +359,32 @@ def histogram_distribution_error(full_hist, cached_hist):
     return l1_error(full_dist, cached_dist), max_cdf_error(full_dist, cached_dist)
 
 
+def histogram_effective_bins(hist, tail_epsilon):
+    probabilities, _origin = exact_excess_distribution(hist)
+    if not probabilities:
+        return 0
+    return effective_support_bins(probabilities, tail_epsilon)
+
+
+def recurrence_threshold_decision(row, max_recurrence_states, max_effective_bins_after_trim):
+    states_limit = max(0, int(max_recurrence_states or 0))
+    bins_limit = max(0, int(max_effective_bins_after_trim or 0))
+    state_count = row.get("recurrence_states_evaluated")
+    effective_bins = int(row.get("effective_support_bins_after_trim", 0))
+    states_over = bool(row.get("boundary_builder") == "recurrence" and states_limit > 0 and state_count is not None and int(state_count) > states_limit)
+    bins_over = bool(bins_limit > 0 and effective_bins > bins_limit)
+    reasons = []
+    if states_over:
+        reasons.append("recurrence_states_over_limit")
+    if bins_over:
+        reasons.append("effective_bins_over_limit")
+    return {
+        "states_over": states_over,
+        "bins_over": bins_over,
+        "reason": "+".join(reasons) if reasons else None,
+    }
+
+
 def root_reaching_parent_degree(graph, root, node, max_parent_depth, distance_memo):
     def distances(candidate):
         return root_distances(candidate, root, graph.parents, max_parent_depth, distance_memo)
@@ -386,6 +412,8 @@ def build_boundary_cache(
     tail_epsilon=0.001,
     max_parent_depth=24,
     boundary_builder="search",
+    max_recurrence_states=0,
+    max_effective_bins_after_trim=0,
 ):
     cache = {}
     parametric_cache = {}
@@ -404,6 +432,7 @@ def build_boundary_cache(
             "histogram": hist,
             "path_count": sum(hist.values()),
             "support_bins": len(hist),
+            "effective_support_bins_after_trim": histogram_effective_bins(hist, tail_epsilon),
             "histogram_L_min": min(hist) if hist else None,
             "histogram_L_max": max(hist) if hist else None,
             "histogram_bytes": histogram_storage_bytes(hist),
@@ -431,7 +460,7 @@ def build_boundary_cache(
         })
 
     priors = {}
-    if admission_policy == "depth-prior":
+    if admission_policy == "depth-prior" or max_recurrence_states or max_effective_bins_after_trim:
         degrees_by_lmax = {}
         for row in rows:
             lmax = row["histogram_L_max"]
@@ -489,7 +518,27 @@ def build_boundary_cache(
             }
             cached = False
 
+        threshold = recurrence_threshold_decision(row, max_recurrence_states, max_effective_bins_after_trim)
+        threshold_forces_parametric = bool(threshold["reason"] and hist and lmax in priors)
+        parametric_representation_fits = int(parametric_bytes) > 0 and (int(max_histogram_bytes) <= 0 or int(parametric_bytes) <= int(max_histogram_bytes))
+        if threshold_forces_parametric and parametric_representation_fits:
+            policy = {
+                "action": "use_parametric_prior",
+                "reason": threshold["reason"],
+                "safety_prediction_bytes": policy["safety_prediction_bytes"],
+                "observed_or_predicted_bytes": policy["observed_or_predicted_bytes"],
+                "max_histogram_bytes": policy["max_histogram_bytes"],
+                "parametric_bytes": parametric_bytes,
+            }
+            cached = False
+
         row["admission_policy"] = admission_policy
+        row["max_recurrence_states"] = max_recurrence_states
+        row["max_effective_bins_after_trim"] = max_effective_bins_after_trim
+        row["recurrence_states_over_limit"] = threshold["states_over"]
+        row["effective_bins_over_limit"] = threshold["bins_over"]
+        row["approximation_forced_by_threshold"] = bool(policy["action"] == "use_parametric_prior" and threshold["reason"])
+        row["approximation_threshold_reason"] = threshold["reason"]
         row["predicted_prior_bytes"] = predicted_prior_bytes
         row["prior_effective_bins"] = prior_effective_bins
         row["cache_admission_action"] = policy["action"]
@@ -671,6 +720,8 @@ def run_benchmark(args):
             args.tail_epsilon,
             args.max_parent_depth,
             args.boundary_builder,
+            args.max_recurrence_states,
+            args.max_effective_bins_after_trim,
         )
         records = [{
             "record_type": "boundary_cache_selection",
@@ -686,6 +737,8 @@ def run_benchmark(args):
             "boundary_budget": args.boundary_budget,
             "admission_policy": args.admission_policy,
             "boundary_builder": args.boundary_builder,
+            "max_recurrence_states": args.max_recurrence_states,
+            "max_effective_bins_after_trim": args.max_effective_bins_after_trim,
             "safety_factor": args.safety_factor,
             "max_histogram_bytes": args.max_histogram_bytes,
             "parametric_bytes": args.parametric_bytes,
@@ -853,6 +906,31 @@ def summarize(records):
                 sum(1 for row in rows if row.get("parametric_support_truncated")),
                 sum(1 for row in rows if row.get("parametric_support_cycle_skipped")),
             ))
+    threshold_rows = [row for row in cache_rows if row.get("max_recurrence_states") or row.get("max_effective_bins_after_trim")]
+    if threshold_rows:
+        lines.extend([
+            "",
+            "## Approximation Thresholds",
+            "",
+            "| max_recurrence_states | max_effective_bins_after_trim | rows | states_over_limit | bins_over_limit | forced_parametric | mean_effective_bins_after_trim |",
+            "|----------------------:|------------------------------:|-----:|------------------:|----------------:|------------------:|-------------------------------:|",
+        ])
+        lines.append("| {} | {} | {} | {} | {} | {} | {:.3f} |".format(
+            selection.get("max_recurrence_states", 0),
+            selection.get("max_effective_bins_after_trim", 0),
+            len(threshold_rows),
+            sum(1 for row in threshold_rows if row.get("recurrence_states_over_limit")),
+            sum(1 for row in threshold_rows if row.get("effective_bins_over_limit")),
+            sum(1 for row in threshold_rows if row.get("approximation_forced_by_threshold")),
+            statistics.mean(int(row.get("effective_support_bins_after_trim", 0)) for row in threshold_rows) if threshold_rows else 0.0,
+        ))
+        threshold_reasons = {}
+        for row in threshold_rows:
+            reason = row.get("approximation_threshold_reason") or "within_threshold"
+            threshold_reasons[reason] = threshold_reasons.get(reason, 0) + 1
+        lines.extend(["", "| threshold_reason | rows |", "|------------------|-----:|"])
+        for reason in sorted(threshold_reasons):
+            lines.append("| {} | {} |".format(reason, threshold_reasons[reason]))
     builder_rows = {}
     for row in cache_rows:
         builder_rows.setdefault(row.get("boundary_builder", "search"), []).append(row)
@@ -974,6 +1052,8 @@ def main(argv=None):
     parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
     parser.add_argument("--boundary-builder", choices=["search", "recurrence"], default="search", help="Method used to build boundary histograms before admission.")
+    parser.add_argument("--max-recurrence-states", type=int, default=0, help="If positive, use a parametric boundary state when recurrence state count exceeds this limit.")
+    parser.add_argument("--max-effective-bins-after-trim", type=int, default=0, help="If positive, use a parametric boundary state when tail-trimmed effective bins exceed this limit.")
     parser.add_argument("--budgets", default=",".join(map(str, DEFAULT_BUDGETS)), help="Comma-separated target path budgets.")
     parser.add_argument("--admission-policy", choices=["baseline", "depth-prior"], default="baseline", help="Policy used to decide whether measured boundary histograms enter the cache.")
     parser.add_argument("--safety-factor", type=float, default=1.25, help="Multiplier for depth-prior predicted histogram bytes.")
