@@ -379,6 +379,13 @@ def summarize(records):
             "",
         ])
         append_representation_selection_table(lines, fit_rows)
+        lines.extend([
+            "",
+            "## Representation Policy By Budget And Depth",
+            "",
+        ])
+        append_budget_depth_policy_table(lines, fit_rows)
+
     return "\n".join(lines) + "\n"
 
 
@@ -388,6 +395,69 @@ def percentile(values, pct):
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, round((pct / 100.0) * (len(ordered) - 1))))
     return float(ordered[index])
+
+
+def compact_counts(values):
+    counts = {}
+    for value in values:
+        counts[str(value)] = counts.get(str(value), 0) + 1
+    return ", ".join("{}:{}".format(key, counts[key]) for key in sorted(counts))
+
+
+def append_budget_depth_policy_table(lines, fit_rows):
+    lines.extend([
+        "| child_depth | budget | workload | model_rows | parametric_cdf_pass | selected_counts | mean_bins | capped_hist_rows |",
+        "|------------:|-------:|----------|-----------:|--------------------:|-----------------|----------:|-----------------:|",
+    ])
+    by_group = {}
+    for row in fit_rows:
+        group = (row.get("child_sample_depth"), row.get("budget"))
+        by_group.setdefault(group, []).append(row)
+    for child_depth, budget in sorted(by_group):
+        rows = by_group[(child_depth, budget)]
+        unique_histogram_keys = {
+            (row.get("target_node"), row.get("budget"))
+            for row in rows
+        }
+        capped_histogram_keys = {
+            (row.get("target_node"), row.get("budget"))
+            for row in rows
+            if row.get("path_cap_hit") or row.get("expansion_cap_hit")
+        }
+        mean_bins = statistics.mean(float(row.get("support_bins", 0)) for row in rows) if rows else 0.0
+        for workload, policy_key in [
+            ("prefix_mass", "selected_prefix_policy"),
+            ("arbitrary_functional", "selected_functional_policy"),
+        ]:
+            selected = [
+                row.get(policy_key, {}).get("selected_representation") or "none"
+                for row in rows
+            ]
+            parametric_pass = 0
+            for row in rows:
+                policy = row.get(policy_key, {})
+                max_cdf = policy.get("policy_max_cdf_error")
+                if max_cdf is not None and float(row.get("max_cdf_error", 1.0)) <= float(max_cdf):
+                    parametric_pass += 1
+            lines.append(
+                "| {child_depth} | {budget} | {workload} | {model_rows} | {param_pass} | {selected_counts} | {mean_bins:.3f} | {capped} |".format(
+                    child_depth=child_depth,
+                    budget=budget,
+                    workload=workload,
+                    model_rows=len(rows),
+                    param_pass=parametric_pass,
+                    selected_counts=compact_counts(selected),
+                    mean_bins=mean_bins,
+                    capped=len(capped_histogram_keys),
+                )
+            )
+        if not unique_histogram_keys:
+            lines.append(
+                "| {child_depth} | {budget} | none | 0 | 0 | none:0 | 0.000 | 0 |".format(
+                    child_depth=child_depth,
+                    budget=budget,
+                )
+            )
 
 
 def format_optional(value):
