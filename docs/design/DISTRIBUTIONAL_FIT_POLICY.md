@@ -487,6 +487,49 @@ defer_full_distribution(node) when
     and expected_reuse(node) is low
 ```
 
+The reuse term should be amortized over the expected query workload, not treated
+as a local depth constant.  For a workload with `Q` expected queries:
+
+```text
+expected_hits(v) =
+    Q * probability_that_a_query_reaches_v_before_a_cached_boundary
+
+materialize_or_fit(v) when
+    expected_hits(v) * (uncached_suffix_cost(v) - cached_suffix_eval_cost(v))
+      >
+    build_cost(v) + fit_cost(v) + storage_cost(v) + amortized_decode_cost(v)
+```
+
+`E[p^2] / E[p]` gives the first prior for the hit probability.  If parent path
+mass expands by a factor `b = E[p^2] / E[p]` per layer and the workload is
+broadly distributed across that layer, then the per-node traffic one layer
+farther from the root drops by roughly `1 / b`.  Near-root distributions are
+therefore disproportionately valuable: many query paths cross them, while the
+same aggregate traffic is spread over more nodes deeper in the tree.  This is a
+planning prior, not a correctness rule.  The estimator should replace it with
+observed query frequencies, subtree-specific branch factors, or sampled parent
+reference counts when those measurements are available.
+
+The apparent "50 point model means 50 hits to break even" rule is only a rough
+mnemonic and should not be encoded literally.  A 50-point sampled distribution
+has about 50 stored/evaluated states, but one cached hit can replace hundreds or
+thousands of DFS expansions, several LMDB parent lookups, and repeated cycle
+checks.  In that case the break-even hit count can be far below 50.  Conversely,
+if the suffix is already narrow, the uncached recurrence is cheap, or fitting a
+closed form costs more than packing the exact histogram, the threshold can be
+well above 50.  The planner should compute:
+
+```text
+hits_to_break_even(v) =
+    (build_cost + fit_cost + storage_cost + amortized_decode_cost)
+    / max(epsilon, uncached_suffix_cost - cached_suffix_eval_cost)
+```
+
+and use the point count only as an input to the build/storage/evaluation cost
+model.  Decode cost is also workload-dependent: if a parent payload is decoded
+once and memoised for a batch, it should be charged once per batch or divided
+across expected hits, not charged independently to every query path.
+
 For SimpleWiki, the current measurements suggest the first condition dominates.
 For enwiki, the parent-branching moment should be measured by root-distance
 bucket before deciding how far exact histograms should be propagated.

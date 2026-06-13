@@ -159,6 +159,45 @@ The default candidate order should be conservative and discrete-first.  Users
 can opt into Gaussian mixtures or learned smoothers, but those should not be the
 first default while simpler bounded discrete families pass the error gate.
 
+Add a precompute-depth estimator before wiring the policy into production
+materialisation.  The estimator should report, per root-distance bucket and per
+candidate representation:
+
+```text
+expected_hits
+hits_to_break_even
+uncached_suffix_cost
+cached_suffix_eval_cost
+build_cost
+fit_cost
+storage_cost
+amortized_decode_cost
+size_biased_parent_branching
+```
+
+The initial `expected_hits` prior can use
+`b = E[p^2] / E[p]`: if query traffic is broadly spread across a layer, the
+per-node expected hit rate should fall by roughly `1 / b` for each step away
+from the root.  The implementation should keep this as a replaceable prior,
+because observed query frequencies, subtree-specific branching, and sampled
+parent-reference counts are better signals when available.
+
+Do not use the number of points in an approximation as the break-even hit count.
+A 50-point sampled distribution is a representation cost, not a direct claim
+that 50 hits are required.  One hit may avoid many path expansions and LMDB
+lookups, so the threshold can be much smaller; a cheap narrow exact histogram or
+expensive fit can make it larger.  Compute the threshold in measured units:
+
+```text
+hits_to_break_even =
+    (build_cost + fit_cost + storage_cost + amortized_decode_cost)
+    / max(epsilon, uncached_suffix_cost - cached_suffix_eval_cost)
+```
+
+When decode caching is active, charge decode cost at the batch or parent-payload
+level.  A decoded parent distribution reused by many child queries should not
+be charged as if every path decoded it independently.
+
 ## Phase 7: Learned smoothers
 
 Gaussian-mixture smoothing or a tiny convolutional smoother can be evaluated
