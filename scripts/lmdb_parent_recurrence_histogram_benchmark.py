@@ -17,7 +17,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.distribution_fit_comparison import exact_excess_distribution, l1_error, max_cdf_error
+from scripts.distribution_fit_comparison import (
+    exact_excess_distribution,
+    l1_error,
+    max_cdf_error,
+    total_error_certificate,
+    w1_cdf_error,
+    weighted_parent_certificate,
+)
 from scripts.lmdb_parent_branching_diagnostic import LmdbCategoryGraph, parse_int_list, select_targets_by_child_depth
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram, percentile, safe_graph_name
 from scripts.parent_histogram_recurrence import recurrence_parent_histogram
@@ -34,20 +41,25 @@ def histogram_error(left_hist, right_hist):
     left, _left_origin = exact_excess_distribution(left_hist)
     right, _right_origin = exact_excess_distribution(right_hist)
     if not left and not right:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     if not left or not right:
-        return 1.0, 1.0
-    return l1_error(left, right), max_cdf_error(left, right)
+        return 1.0, 1.0, 1.0
+    return l1_error(left, right), max_cdf_error(left, right), w1_cdf_error(left, right)
 
 
 def comparison_record(args, target, child_depth, budget, dfs_hist, dfs_stats, dfs_time, recurrence_hist, recurrence_stats, recurrence_time):
-    l1, cdf = histogram_error(dfs_hist, recurrence_hist)
+    l1, cdf, w1 = histogram_error(dfs_hist, recurrence_hist)
     dfs_paths = sum(dfs_hist.values())
     recurrence_paths = sum(recurrence_hist.values())
+    inherited_max_cdf = weighted_parent_certificate([], [])
+    inherited_w1 = weighted_parent_certificate([], [])
+    total_max_cdf = total_error_certificate(inherited_max_cdf, cdf)
+    total_w1 = total_error_certificate(inherited_w1, w1)
     return {
         "record_type": "parent_recurrence_histogram_comparison",
         "graph": args.graph_name,
         "root": args.root,
+        "certificate_mode": "observed_recurrence_vs_dfs",
         "target_node": target,
         "child_sample_depth": child_depth,
         "budget": budget,
@@ -58,6 +70,13 @@ def comparison_record(args, target, child_depth, budget, dfs_hist, dfs_stats, df
         "path_count_delta": recurrence_paths - dfs_paths,
         "l1_error": l1,
         "max_cdf_error": cdf,
+        "w1_cdf_error": w1,
+        "inherited_error_max_cdf": inherited_max_cdf,
+        "inherited_error_w1_cdf": inherited_w1,
+        "fit_error_max_cdf": cdf,
+        "fit_error_w1_cdf": w1,
+        "total_error_max_cdf": total_max_cdf,
+        "total_error_w1_cdf": total_w1,
         "dfs_nodes_expanded": dfs_stats.nodes_expanded,
         "recurrence_states_evaluated": recurrence_stats.states_evaluated,
         "state_expansion_ratio": 0.0 if dfs_stats.nodes_expanded == 0 else recurrence_stats.states_evaluated / dfs_stats.nodes_expanded,
@@ -99,6 +118,9 @@ def summarize(records):
             "mean_l1_error": mean(row["l1_error"] for row in bucket),
             "p95_l1_error": percentile([row["l1_error"] for row in bucket], 95),
             "mean_max_cdf_error": mean(row["max_cdf_error"] for row in bucket),
+            "mean_w1_cdf_error": mean(row["w1_cdf_error"] for row in bucket),
+            "mean_total_error_max_cdf": mean(row["total_error_max_cdf"] for row in bucket),
+            "mean_total_error_w1_cdf": mean(row["total_error_w1_cdf"] for row in bucket),
             "mean_state_expansion_ratio": mean(row["state_expansion_ratio"] for row in bucket),
             "mean_time_ratio": mean(row["time_ratio"] for row in bucket),
             "dfs_capped_rows": sum(1 for row in bucket if row["dfs_path_cap_hit"] or row["dfs_expansion_cap_hit"]),
@@ -111,18 +133,19 @@ def markdown_summary(summary):
     lines = [
         "# Parent Histogram Recurrence Benchmark",
         "",
-        "| budget | rows | exact_matches | cycle_approx | mean_l1 | mean_cdf | mean_state_ratio | mean_time_ratio | dfs_capped | recurrence_capped |",
-        "|-------:|-----:|--------------:|-------------:|--------:|---------:|-----------------:|----------------:|-----------:|------------------:|",
+        "| budget | rows | exact_matches | cycle_approx | mean_l1 | mean_cdf | mean_w1 | mean_state_ratio | mean_time_ratio | dfs_capped | recurrence_capped |",
+        "|-------:|-----:|--------------:|-------------:|--------:|---------:|--------:|-----------------:|----------------:|-----------:|------------------:|",
     ]
     for row in summary["budget_rows"]:
         lines.append(
-            "| {budget} | {rows} | {exact} | {cycle} | {l1:.6f} | {cdf:.6f} | {state_ratio:.3f} | {time_ratio:.3f} | {dfs_capped} | {rec_capped} |".format(
+            "| {budget} | {rows} | {exact} | {cycle} | {l1:.6f} | {cdf:.6f} | {w1:.6f} | {state_ratio:.3f} | {time_ratio:.3f} | {dfs_capped} | {rec_capped} |".format(
                 budget=row["budget"],
                 rows=row["rows"],
                 exact=row["exact_match_rows"],
                 cycle=row["cycle_approximation_rows"],
                 l1=row["mean_l1_error"],
                 cdf=row["mean_max_cdf_error"],
+                w1=row["mean_w1_cdf_error"],
                 state_ratio=row["mean_state_expansion_ratio"],
                 time_ratio=row["mean_time_ratio"],
                 dfs_capped=row["dfs_capped_rows"],

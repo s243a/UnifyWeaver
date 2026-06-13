@@ -17,8 +17,12 @@ from scripts.distribution_fit_comparison import (
     nfold_convolution,
     append_realized_support_table,
     run_graph_fit_comparison,
+    shift_distribution,
     size_biased_excess_pmf,
     summarize,
+    total_error_certificate,
+    w1_cdf_error,
+    weighted_parent_certificate,
 )
 from tools.distribution_cache_support import FIXTURES, ROOT
 
@@ -40,6 +44,26 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(params["probability"], 0.25)
         self.assertLess(l1_error([0.75, 0.25], model), 1e-12)
         self.assertLess(max_cdf_error([0.75, 0.25], model), 1e-12)
+
+    def test_cdf_error_certificates_are_shift_invariant(self):
+        exact = [0.2, 0.3, 0.5]
+        model = [0.1, 0.4, 0.5]
+
+        self.assertAlmostEqual(max_cdf_error(exact, model), max_cdf_error(shift_distribution(exact), shift_distribution(model)))
+        self.assertAlmostEqual(w1_cdf_error(exact, model), w1_cdf_error(shift_distribution(exact), shift_distribution(model)))
+
+    def test_weighted_parent_certificate_uses_mass_weights(self):
+        inherited = weighted_parent_certificate([2.0, 6.0], [0.1, 0.3])
+
+        self.assertAlmostEqual(inherited, 0.25)
+
+    def test_error_certificate_adds_inherited_and_fit_terms(self):
+        self.assertAlmostEqual(total_error_certificate(0.2, 0.05), 0.25)
+        self.assertAlmostEqual(total_error_certificate(-0.2, 0.05), 0.05)
+
+    def test_weighted_parent_certificate_rejects_mismatched_inputs(self):
+        with self.assertRaises(ValueError):
+            weighted_parent_certificate([1.0], [0.1, 0.2])
 
     def test_fitted_gamma_degenerates_for_one_point_histogram(self):
         model, params = fitted_gamma_pmf([1.0])
