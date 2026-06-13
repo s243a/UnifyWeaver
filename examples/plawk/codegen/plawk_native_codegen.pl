@@ -25,6 +25,7 @@
 %      { total++; counts[$1]++ } END { print total, counts["ERROR"] }
 %      { total++ } END { print "total", total }
 %      BEGIN { print "kind", "count" } { total++ } END { print "total", total }
+%      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -36,8 +37,9 @@ plawk_program_native_driver_ir(
 ) :-
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, BeginIR),
-    plawk_pattern_guard_ir(Pattern, GuardGlobalIR-GuardCallIR),
-    plawk_print_action_ir(Fields, PrintActionIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
+    plawk_print_action_ir(Fields, FieldSeparator, PrintActionIR),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -70,10 +72,11 @@ plawk_program_native_driver_ir(
     MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
-    plawk_mixed_rule_chain_ir(MixedPlan, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, NextPhiIR),
     plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, EndPrintIR),
@@ -99,8 +102,9 @@ plawk_program_native_driver_ir(
     plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
-    plawk_scalar_rule_chain_ir(Rules, StatePlan, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, NextPhiIR),
     plawk_scalar_end_print_ir(PrintFields, StatePlan, EndPrintIR),
@@ -125,10 +129,11 @@ plawk_program_native_driver_ir(
     plawk_assoc_runtime_count_plan(Rules, PrintFields, AssocPlan),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
-    plawk_assoc_rule_chain_ir(AssocPlan, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
     plawk_assoc_end_print_ir(PrintFields, AssocPlan, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
@@ -369,17 +374,17 @@ plawk_mixed_increment_action(inc(var(Name)), scalar(Name)).
 plawk_mixed_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), assoc(ArrayName-KeyIndex)) :-
     KeyIndex > 0.
 
-plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, _AssocPlan, Rules), GlobalIR, ChainIR, RuleCount) :-
+plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, _AssocPlan, Rules), FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
     length(Rules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_mixed_rule_chain_lines(Rules, ScalarPlan, 0), Pairs),
+    phrase(plawk_mixed_rule_chain_lines(Rules, ScalarPlan, FieldSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_mixed_rule_chain_lines([], _ScalarPlan, _) -->
+plawk_mixed_rule_chain_lines([], _ScalarPlan, _FieldSeparator, _) -->
     [].
-plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarVars, AssocActions) | Rest], ScalarPlan, Index) -->
+plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarVars, AssocActions) | Rest], ScalarPlan, FieldSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -390,9 +395,9 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarVars, AssocAction
       format(atom(DoneLabel), 'rule_~w_done', [Index]),
       plawk_mixed_scalar_rule_input_phi_ir(ScalarPlan, Index, InputPhiIR),
       plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
-          NextLabel, InputPhiIR, GuardGlobalIR-GuardIR),
+          NextLabel, InputPhiIR, FieldSeparator, GuardGlobalIR-GuardIR),
       plawk_scalar_match_update_ir(ScalarPlan, ScalarVars, Index, ScalarUpdateIR),
-      plawk_mixed_assoc_apply_ir(Index, AssocActions, DoneLabel, AssocApplyIR),
+      plawk_mixed_assoc_apply_ir(Index, AssocActions, DoneLabel, FieldSeparator, AssocApplyIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
       ;  EntryIR = ''
@@ -411,10 +416,10 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarVars, AssocAction
       Pair = GuardGlobalIR-RuleIR
     },
     [Pair],
-    plawk_mixed_rule_chain_lines(Rest, ScalarPlan, NextIndex).
+    plawk_mixed_rule_chain_lines(Rest, ScalarPlan, FieldSeparator, NextIndex).
 
 plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
-    InputPhiIR, ''-IR) :-
+    InputPhiIR, _FieldSeparator, ''-IR) :-
     !,
     format(atom(MatchVar), 'rule_~w_is_match', [Index]),
     format(atom(IR),
@@ -423,11 +428,11 @@ plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
   br i1 %~w, label %~w, label %~w',
         [RuleLabel, InputPhiIR, MatchVar, MatchVar, ApplyLabel, NextLabel]).
 plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
-    InputPhiIR, GuardGlobalIR-IR) :-
+    InputPhiIR, FieldSeparator, GuardGlobalIR-IR) :-
     format(atom(MatchVar), 'rule_~w_is_match', [Index]),
     format(atom(GlobalBase), 'plawk_mixed_rule_~w', [Index]),
     format(atom(MatchValue), '%~w', [MatchVar]),
-    plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
         GuardGlobalIR-GuardCallIR),
     format(atom(IR),
 '~w:
@@ -435,11 +440,11 @@ plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
   br i1 %~w, label %~w, label %~w',
         [RuleLabel, InputPhiIR, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
 
-plawk_mixed_assoc_apply_ir(_RuleIndex, [], DoneLabel, IR) :-
+plawk_mixed_assoc_apply_ir(_RuleIndex, [], DoneLabel, _FieldSeparator, IR) :-
     !,
     format(atom(IR), '  br label %~w', [DoneLabel]).
-plawk_mixed_assoc_apply_ir(RuleIndex, AssocActions, DoneLabel, IR) :-
-    phrase(plawk_assoc_rule_action_lines(RuleIndex, AssocActions, DoneLabel), Lines),
+plawk_mixed_assoc_apply_ir(RuleIndex, AssocActions, DoneLabel, FieldSeparator, IR) :-
+    phrase(plawk_assoc_rule_action_lines(RuleIndex, AssocActions, DoneLabel, FieldSeparator), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_mixed_scalar_rule_input_phi_ir(_StatePlan, 0, '') :-
@@ -546,17 +551,17 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index) -->
     [Line],
     plawk_assoc_entry_setup_lines(Rest, NextIndex).
 
-plawk_assoc_rule_chain_ir(assoc_plan(_Tables, Rules), GlobalIR, ChainIR) :-
+plawk_assoc_rule_chain_ir(assoc_plan(_Tables, Rules), FieldSeparator, GlobalIR, ChainIR) :-
     length(Rules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_assoc_rule_chain_lines(Rules, 0), Pairs),
+    phrase(plawk_assoc_rule_chain_lines(Rules, FieldSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_assoc_rule_chain_lines([], _) -->
+plawk_assoc_rule_chain_lines([], _FieldSeparator, _) -->
     [].
-plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions) | Rest], Index) -->
+plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions) | Rest], FieldSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -564,13 +569,13 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions) | Rest], Index
       ),
       format(atom(RuleLabel), 'assoc_rule_~w_match', [Index]),
       format(atom(ApplyLabel), 'assoc_rule_~w_apply', [Index]),
-      plawk_assoc_rule_apply_ir(Index, Actions, NextLabel, ApplyIR),
+      plawk_assoc_rule_apply_ir(Index, Actions, NextLabel, FieldSeparator, ApplyIR),
       ( Index =:= 0
       -> EntryIR = '  br label %assoc_rule_0_match\n\n'
       ;  EntryIR = ''
       ),
       plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
-          NextLabel, EntryIR, GuardGlobalIR, BranchIR),
+          NextLabel, EntryIR, FieldSeparator, GuardGlobalIR, BranchIR),
       format(atom(RuleIR),
 '~w
 
@@ -580,21 +585,21 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions) | Rest], Index
       Pair = GuardGlobalIR-RuleIR
     },
     [Pair],
-    plawk_assoc_rule_chain_lines(Rest, NextIndex).
+    plawk_assoc_rule_chain_lines(Rest, FieldSeparator, NextIndex).
 
 plawk_assoc_rule_guard_ir(always, _Index, RuleLabel, ApplyLabel, _NextLabel,
-    EntryIR, '', IR) :-
+    EntryIR, _FieldSeparator, '', IR) :-
     !,
     format(atom(IR),
 '~w~w:
   br label %~w',
         [EntryIR, RuleLabel, ApplyLabel]).
 plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
-    EntryIR, GuardGlobalIR, IR) :-
+    EntryIR, FieldSeparator, GuardGlobalIR, IR) :-
     format(atom(MatchVar), 'assoc_rule_~w_is_match', [Index]),
     format(atom(GlobalBase), 'plawk_assoc_rule_~w', [Index]),
     format(atom(MatchValue), '%~w', [MatchVar]),
-    plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
         GuardGlobalIR-GuardCallIR),
     format(atom(IR),
 '~w~w:
@@ -602,20 +607,20 @@ plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
   br i1 %~w, label %~w, label %~w',
         [EntryIR, RuleLabel, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
 
-plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, IR) :-
-    phrase(plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel), Lines),
+plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, FieldSeparator, IR) :-
+    phrase(plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel) -->
+plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator) -->
     { Actions = [_ | _],
       format(atom(FirstBranch), '  br label %assoc_rule_~w_action_0', [RuleIndex])
     },
     [FirstBranch, ''],
-    plawk_assoc_rule_action_blocks(RuleIndex, Actions, NextLabel).
+    plawk_assoc_rule_action_blocks(RuleIndex, Actions, NextLabel, FieldSeparator).
 
-plawk_assoc_rule_action_blocks(_RuleIndex, [], _NextLabel) -->
+plawk_assoc_rule_action_blocks(_RuleIndex, [], _NextLabel, _FieldSeparator) -->
     [].
-plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel) -->
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
       ;  NextIndex is Index + 1,
@@ -628,8 +633,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
           [RuleIndex, Index]),
       format(atom(Slice),
-          '  %assoc_rule_~w_action_~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 32)',
-          [RuleIndex, Index, KeyIndex]),
+          '  %assoc_rule_~w_action_~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [RuleIndex, Index, KeyIndex, FieldSeparator]),
       format(atom(Ptr),
           '  %assoc_rule_~w_action_~w_key_ptr = extractvalue %WamSlice %assoc_rule_~w_action_~w_key_slice, 0',
           [RuleIndex, Index, RuleIndex, Index]),
@@ -651,7 +656,14 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
-    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel).
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+plawk_field_separator(BeginClauses, FieldSeparator) :-
+    (   member(begin(Actions), BeginClauses),
+        member(set(var('FS'), string(Value)), Actions)
+    ->  string_codes(Value, [FieldSeparator])
+    ;   FieldSeparator = 32
+    ).
 
 plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_begin_print_fields(BeginClauses, Fields),
@@ -659,7 +671,11 @@ plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     atomic_list_concat(Lines, '\n', GlobalIR).
 
 plawk_begin_print_fields([], []).
-plawk_begin_print_fields([begin([print(Fields)])], Fields).
+plawk_begin_print_fields([begin(Actions)], Fields) :-
+    (   member(print(Fields), Actions)
+    ->  true
+    ;   Fields = []
+    ).
 
 plawk_begin_print_string_global_lines([], _) -->
     [].
@@ -675,13 +691,19 @@ plawk_begin_print_string_global_lines([string(Value) | Rest], Index) -->
     },
     [Line],
     plawk_begin_print_string_global_lines(Rest, NextIndex).
+plawk_begin_print_string_global_lines([_Field | Rest], Index) -->
+    { NextIndex is Index + 1 },
+    plawk_begin_print_string_global_lines(Rest, NextIndex).
 
 plawk_begin_print_ir([], '') :-
     !.
-plawk_begin_print_ir([begin([print(Fields)])], IR) :-
+plawk_begin_print_ir([begin(Actions)], IR) :-
+    member(print(Fields), Actions),
+    !,
     maplist(plawk_begin_print_field, Fields),
     phrase(plawk_begin_print_lines(Fields, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
+plawk_begin_print_ir([begin(_Actions)], '').
 
 plawk_begin_print_field(string(_)).
 
@@ -889,17 +911,17 @@ plawk_scalar_increment_action(inc(var(Name)), Name).
 
 plawk_scalar_print_expr(var(Name), Name).
 
-plawk_scalar_rule_chain_ir(Rules, StatePlan, GlobalIR, ChainIR, RuleCount) :-
+plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
     length(Rules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_scalar_rule_chain_lines(Rules, StatePlan, 0), Pairs),
+    phrase(plawk_scalar_rule_chain_lines(Rules, StatePlan, FieldSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_scalar_rule_chain_lines([], _StatePlan, _) -->
+plawk_scalar_rule_chain_lines([], _StatePlan, _FieldSeparator, _) -->
     [].
-plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], StatePlan, Index) -->
+plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], StatePlan, FieldSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -910,7 +932,7 @@ plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], StatePlan, Index)
       format(atom(MatchVar), 'rule_~w_is_match', [Index]),
       format(atom(GlobalBase), 'plawk_surface_rule_~w', [Index]),
       format(atom(MatchValue), '%~w', [MatchVar]),
-      plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+      plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       maplist(plawk_scalar_increment_action, Actions, ActionVars),
       plawk_scalar_rule_input_phi_ir(StatePlan, Index, InputPhiIR),
@@ -932,7 +954,7 @@ plawk_scalar_rule_chain_lines([rule(Pattern, Actions) | Rest], StatePlan, Index)
       Pair = GuardGlobalIR-BranchIR
     },
     [Pair],
-    plawk_scalar_rule_chain_lines(Rest, StatePlan, NextIndex).
+    plawk_scalar_rule_chain_lines(Rest, StatePlan, FieldSeparator, NextIndex).
 
 plawk_scalar_rule_input_phi_ir(_StatePlan, 0, '') :-
     !.
@@ -1087,8 +1109,15 @@ plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
         '%is_match', GuardIR).
 
 plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
+    plawk_pattern_guard_ir(field_eq(Index, Value), 32, GuardIR).
+
+plawk_pattern_guard_ir(always, _FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(always, GuardIR).
+plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(prefix(Prefix), GuardIR).
+plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
-        32, '%is_match', GuardIR).
+        FieldSeparator, '%is_match', GuardIR).
 
 plawk_pattern_guard_ir(always, _GlobalBase, MatchValue, GuardIR) :-
     format(atom(GuardCallIR), '  ~w = icmp eq i1 true, true', [MatchValue]),
@@ -1099,25 +1128,33 @@ plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR) :-
         GuardIR).
 
 plawk_pattern_guard_ir(field_eq(Index, Value), GlobalBase, MatchValue, GuardIR) :-
-    llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, 32,
+    plawk_pattern_guard_ir(field_eq(Index, Value), 32, GlobalBase, MatchValue,
+        GuardIR).
+
+plawk_pattern_guard_ir(always, _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_pattern_guard_ir(always, GlobalBase, MatchValue, GuardIR).
+plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR).
+plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
 
-plawk_print_action_ir([field(0)], IR) :-
+plawk_print_action_ir([field(0)], _FieldSeparator, IR) :-
     !,
     IR = '  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
   %printed = call i32 (i8*, ...) @printf(i8* %fmt, i8* %line_s)'.
-plawk_print_action_ir(Fields, IR) :-
-    phrase(plawk_print_fields_ir(Fields, 0), Parts),
+plawk_print_action_ir(Fields, FieldSeparator, IR) :-
+    phrase(plawk_print_fields_ir(Fields, FieldSeparator, 0), Parts),
     atomic_list_concat(Parts, '\n', IR).
 
-plawk_print_fields_ir([], _) -->
+plawk_print_fields_ir([], _FieldSeparator, _) -->
     ['  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
      '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'].
-plawk_print_fields_ir([Field | Rest], Index) -->
+plawk_print_fields_ir([Field | Rest], FieldSeparator, Index) -->
     plawk_print_separator_ir(Index),
-    plawk_print_field_ir(Field, Index),
+    plawk_print_field_ir(Field, FieldSeparator, Index),
     { NextIndex is Index + 1 },
-    plawk_print_fields_ir(Rest, NextIndex).
+    plawk_print_fields_ir(Rest, FieldSeparator, NextIndex).
 
 plawk_print_separator_ir(0) -->
     !,
@@ -1132,7 +1169,7 @@ plawk_print_separator_ir(Index) -->
     },
     [SpacePtr, SpaceCall].
 
-plawk_print_field_ir(field(0), Index) -->
+plawk_print_field_ir(field(0), _FieldSeparator, Index) -->
     { format(atom(LineLen64),
           '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
           [Index]),
@@ -1147,10 +1184,10 @@ plawk_print_field_ir(field(0), Index) -->
           [Index, Index, Index])
     },
     [LineLen64, LineLen, FmtPtr, PrintCall].
-plawk_print_field_ir(field(FieldIndex), Index) -->
+plawk_print_field_ir(field(FieldIndex), FieldSeparator, Index) -->
     { FieldIndex > 0,
       format(atom(Base), 'plawk_field_~w', [Index]),
-      llvm_emit_atom_field_slice('%line', FieldIndex, 32, Base, SliceIR),
+      llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
       format(atom(FmtPtr),
           '  %slice_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
           [Index]),

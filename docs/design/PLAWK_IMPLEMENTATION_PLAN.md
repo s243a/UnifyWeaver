@@ -270,8 +270,10 @@ counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
 `END` printing can interleave scalar variables with associative lookups.
 `END` printing also supports string literal fields for report labels; codegen
 emits indexed string globals and prints them with the same separator rules.
-The first `BEGIN` slice emits literal `print` headers before stream setup, using
-separate indexed string globals so it does not collide with `END` literals.
+The first `BEGIN` slices emit literal `print` headers before stream setup, using
+separate indexed string globals so they do not collide with `END` literals, and
+thread single-byte `FS` assignments through native field-equality, selected-field
+print, and associative-key extraction helpers.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
