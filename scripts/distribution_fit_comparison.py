@@ -295,6 +295,41 @@ def max_cdf_error(empirical: list[float], model: list[float]) -> float:
     return worst
 
 
+def w1_cdf_error(empirical: list[float], model: list[float]) -> float:
+    """Return 1-D Wasserstein distance on integer support via CDF deltas."""
+    empirical, model = pad_to(empirical, model)
+    empirical_total = 0.0
+    model_total = 0.0
+    total = 0.0
+    for empirical_value, model_value in zip(empirical, model):
+        empirical_total += empirical_value
+        model_total += model_value
+        total += abs(empirical_total - model_total)
+    return total
+
+
+def shift_distribution(probabilities: list[float], offset: int = 1) -> list[float]:
+    """Shift probability mass to the right; useful for parent recurrence tests."""
+    if offset <= 0:
+        return list(probabilities)
+    return [0.0 for _ in range(offset)] + list(probabilities)
+
+
+def weighted_parent_certificate(parent_masses: list[float], parent_total_errors: list[float]) -> float:
+    """Propagate scalar parent error certificates by mass-weighted averaging."""
+    if len(parent_masses) != len(parent_total_errors):
+        raise ValueError("parent_masses and parent_total_errors must have the same length")
+    total_mass = sum(parent_masses)
+    if total_mass <= 0.0:
+        return 0.0
+    return sum((mass / total_mass) * error for mass, error in zip(parent_masses, parent_total_errors))
+
+
+def total_error_certificate(inherited_error: float, fit_error: float) -> float:
+    """Combine inherited and local fit certificates using the triangle bound."""
+    return max(0.0, inherited_error) + max(0.0, fit_error)
+
+
 def mean_absolute_error(empirical: list[float], model: list[float]) -> float:
     empirical, model = pad_to(empirical, model)
     if not empirical:
@@ -323,6 +358,7 @@ def compare_models(empirical: list[float], model_builders) -> list[dict[str, obj
             "model": model_name,
             "l1_error": l1_error(empirical, model),
             "max_cdf_error": max_cdf_error(empirical, model),
+            "w1_cdf_error": w1_cdf_error(empirical, model),
             "mean_absolute_error": mean_absolute_error(empirical, model),
             "model_mean_excess": model_mean,
             "model_variance_excess": model_variance,
