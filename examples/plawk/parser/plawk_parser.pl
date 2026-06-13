@@ -20,6 +20,7 @@
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      { count++ } END { print "count", count }
+%      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -214,6 +215,9 @@ action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
+    add_assign_action(Action),
+    !.
+action(Action) -->
     increment_action(Action),
     !.
 
@@ -230,6 +234,28 @@ increment_action(inc_assoc(var(Name), KeyExpr)) -->
 increment_action(inc(var(Name))) -->
     identifier(Name),
     "++".
+
+add_assign_action(add(var(Name), Delta)) -->
+    identifier(Name),
+    ws,
+    "+=",
+    ws,
+    scalar_delta_expr(Delta).
+
+scalar_delta_expr(int(Value)) -->
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes),
+      Value >= 0 }.
+scalar_delta_expr(length(Field)) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
 
 print_action(print(Fields)) -->
     "print",

@@ -265,7 +265,10 @@ The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.
 Scalar counters lower through an explicit codegen state plan that keeps
-source-level state recognition separate from LLVM slot numbering. The current
+source-level state recognition separate from LLVM slot numbering. The same
+native slots now support `+=` with integer constants and field lengths, so
+programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`
+stay in the compiled stream loop. The current
 associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`
