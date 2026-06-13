@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 import sys
 from dataclasses import dataclass
@@ -99,6 +100,128 @@ def load_payload_recurrence_summaries(paths):
         with Path(path).open("r", encoding="utf-8") as handle:
             summaries.append(json.load(handle))
     return summaries
+
+
+def load_jsonl_records(paths):
+    records = []
+    for path in paths:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+    return records
+
+
+def parse_boundary_depth_from_graph(graph):
+    match = re.search(r"_b([0-9]+)(?:_|$)", str(graph))
+    return None if match is None else int(match.group(1))
+
+
+def max_int_key(mapping):
+    if not mapping:
+        return None
+    return max(int(key) for key in mapping)
+
+
+def validation_measurements_from_records(records):
+    """Aggregate boundary-cache benchmark JSONL rows by boundary depth.
+
+    Zero-hit rows are treated as validation-shape warnings, not economic
+    evidence.  In the intended ancestor-tree search, a target that shares the
+    root and recurses only through ancestors should hit a selected ancestor
+    boundary.  Measured saved-per-hit calibration therefore uses positive-hit
+    rows only and marks all-zero depths unusable for validation capping.
+    """
+    selections_by_graph = {}
+    comparisons_by_graph = {}
+    for record in records:
+        graph = record.get("graph")
+        if record.get("record_type") == "boundary_cache_selection":
+            selections_by_graph[graph] = record
+        elif record.get("record_type") == "boundary_cache_comparison":
+            comparisons_by_graph.setdefault(graph, []).append(record)
+
+    measurements = {}
+    for graph, rows in sorted(comparisons_by_graph.items()):
+        selection = selections_by_graph.get(graph, {})
+        boundary_depth = max_int_key(selection.get("boundary_counts")) if selection else None
+        if boundary_depth is None:
+            boundary_depth = parse_boundary_depth_from_graph(graph)
+        if boundary_depth is None:
+            continue
+
+        target_depth = max_int_key(selection.get("target_counts")) if selection else None
+        positive_rows = [
+            row for row in rows
+            if float(row.get("cache_hits", row.get("histogram_cache_hits", 0.0))) > 0.0
+        ]
+        calibration_rows = positive_rows
+        calibration_usable = bool(calibration_rows)
+        full_times = [float(row.get("full_time_ns", 0.0)) for row in calibration_rows]
+        cached_times = [float(row.get("cached_time_ns", 0.0)) for row in calibration_rows]
+        cache_hits = [float(row.get("cache_hits", row.get("histogram_cache_hits", 0.0))) for row in calibration_rows]
+        all_cache_hits = [float(row.get("cache_hits", row.get("histogram_cache_hits", 0.0))) for row in rows]
+        mean_full_time = mean(full_times)
+        mean_cached_time = mean(cached_times)
+        mean_cache_hits = mean(cache_hits)
+        raw_saved_per_hit = None
+        if mean_cache_hits > 0.0:
+            raw_saved_per_hit = (mean_full_time - mean_cached_time) / mean_cache_hits
+        clipped_saved_per_hit = max(0.0, raw_saved_per_hit or 0.0)
+        time_ratios = [
+            ratio for ratio in (
+                safe_ratio(row.get("cached_time_ns", 0.0), row.get("full_time_ns", 0.0))
+                for row in calibration_rows
+            )
+            if ratio is not None
+        ]
+        all_time_ratios = [
+            ratio for ratio in (
+                safe_ratio(row.get("cached_time_ns", 0.0), row.get("full_time_ns", 0.0))
+                for row in rows
+            )
+            if ratio is not None
+        ]
+
+        measurements[int(boundary_depth)] = {
+            "record_type": "distribution_precompute_validation_measurement",
+            "graph": graph,
+            "boundary_depth": int(boundary_depth),
+            "target_depth": target_depth,
+            "rows": len(rows),
+            "boundary_nodes": selection.get("boundary_nodes"),
+            "cached_boundary_nodes": selection.get("cached_boundary_nodes"),
+            "selected_boundary_nodes": selection.get("selected_boundary_nodes"),
+            "target_ancestor_boundary_nodes_added": selection.get("target_ancestor_boundary_nodes_added"),
+            "mean_full_time_ns": mean_full_time,
+            "mean_cached_time_ns": mean_cached_time,
+            "mean_time_ratio": mean(time_ratios),
+            "all_rows_mean_time_ratio": mean(all_time_ratios),
+            "mean_full_nodes_expanded": mean(row.get("full_nodes_expanded", 0.0) for row in calibration_rows),
+            "mean_cached_nodes_expanded": mean(row.get("cached_nodes_expanded", 0.0) for row in calibration_rows),
+            "mean_cache_hits": mean_cache_hits,
+            "all_rows_mean_cache_hits": mean(all_cache_hits),
+            "positive_cache_hit_rows": len(positive_rows),
+            "zero_cache_hit_rows": len(rows) - len(positive_rows),
+            "validation_usable_for_cap": calibration_usable,
+            "mean_histogram_cache_hits": mean(row.get("histogram_cache_hits", 0.0) for row in calibration_rows),
+            "mean_cache_bins_spliced": mean(row.get("cache_bins_spliced", 0.0) for row in calibration_rows),
+            "mean_payload_bytes_read": mean(row.get("cache_payload_bytes_read", 0.0) for row in calibration_rows),
+            "mean_decode_ns": mean(row.get("cache_decode_ns", 0.0) for row in calibration_rows),
+            "full_capped_rows": sum(1 for row in calibration_rows if row.get("full_expansion_cap_hit")),
+            "cached_capped_rows": sum(1 for row in calibration_rows if row.get("cached_expansion_cap_hit")),
+            "measured_pays": calibration_usable and mean_cached_time < mean_full_time,
+            "measured_saved_per_hit_ns": raw_saved_per_hit,
+            "clipped_saved_per_hit_ns": clipped_saved_per_hit,
+        }
+    return measurements
+
+
+def validation_measurements_from_jsonl(paths):
+    if not paths:
+        return {}
+    return validation_measurements_from_records(load_jsonl_records(paths))
 
 
 def calibration_from_payload_recurrence_summaries(paths, args):
@@ -216,7 +339,7 @@ def default_representations(depth, args):
     ]
 
 
-def estimate_row(boundary_depth, target_depth, representation, args, depth_branching, query_reach_prob):
+def estimate_row(boundary_depth, target_depth, representation, args, depth_branching, query_reach_prob, validation_measurement=None):
     cumulative_b = cumulative_branching(boundary_depth, args.branching_factor, depth_branching)
     expected_hits = args.expected_queries * query_reach_prob / max(cumulative_b, 1.0)
     build_states = estimated_path_states(boundary_depth, args.branching_factor, depth_branching, args.min_path_states)
@@ -232,7 +355,7 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         cap_ceiling = max(0.0, float(args.path_cap))
     elif args.cap_mode == "expansion":
         cap_ceiling = max(0.0, float(args.expansion_cap))
-    elif args.cap_mode != "uncapped":
+    elif args.cap_mode not in {"uncapped", "validation"}:
         raise ValueError("unknown cap mode: {}".format(args.cap_mode))
     if cap_ceiling is not None and cap_ceiling > 0.0:
         cap_limited_suffix_work = min(uncapped_suffix_work, cap_ceiling)
@@ -247,6 +370,16 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         + splice_cost
     )
     saved_per_hit = max(0.0, uncached_suffix_cost - cached_suffix_eval_cost)
+    validation_effective_suffix_states = None
+
+    if (
+        args.cap_mode == "validation"
+        and validation_measurement is not None
+        and validation_measurement.get("validation_usable_for_cap")
+    ):
+        saved_per_hit = float(validation_measurement["clipped_saved_per_hit_ns"])
+        validation_effective_suffix_states = safe_ratio(saved_per_hit, args.uncached_cost_per_state)
+        uncached_suffix_cost = cached_suffix_eval_cost + saved_per_hit
 
     build_cost = args.build_base_cost + build_states * args.build_cost_per_state
     fit_cost = representation.points * representation.fit_cost_per_point
@@ -256,8 +389,9 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
     hits_to_break_even = math.inf if saved_per_hit <= 0.0 else one_time_cost / saved_per_hit
     net_value = expected_hits * saved_per_hit - one_time_cost
 
-    return {
+    row = {
         "record_type": "distribution_precompute_depth_estimate",
+        "cap_mode": args.cap_mode,
         "boundary_depth": int(boundary_depth),
         "target_depth": int(target_depth),
         "suffix_hops": suffix_hops,
@@ -287,11 +421,32 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         "expected_net_value": net_value,
         "precompute_pays": net_value > 0.0,
     }
+    if validation_measurement is not None:
+        row.update({
+            "validation_rows": validation_measurement["rows"],
+            "validation_mean_time_ratio": validation_measurement["mean_time_ratio"],
+            "validation_mean_full_time_ns": validation_measurement["mean_full_time_ns"],
+            "validation_mean_cached_time_ns": validation_measurement["mean_cached_time_ns"],
+            "validation_mean_cache_hits": validation_measurement["mean_cache_hits"],
+            "validation_all_rows_mean_cache_hits": validation_measurement["all_rows_mean_cache_hits"],
+            "validation_positive_cache_hit_rows": validation_measurement["positive_cache_hit_rows"],
+            "validation_zero_cache_hit_rows": validation_measurement["zero_cache_hit_rows"],
+            "validation_usable_for_cap": validation_measurement["validation_usable_for_cap"],
+            "validation_mean_payload_bytes_read": validation_measurement["mean_payload_bytes_read"],
+            "validation_mean_decode_ns": validation_measurement["mean_decode_ns"],
+            "validation_measured_pays": validation_measurement["measured_pays"],
+            "validation_measured_saved_per_hit_ns": validation_measurement["measured_saved_per_hit_ns"],
+            "validation_clipped_saved_per_hit_ns": validation_measurement["clipped_saved_per_hit_ns"],
+            "validation_effective_suffix_states": validation_effective_suffix_states,
+            "validation_prediction_matches_measured": None if not validation_measurement["validation_usable_for_cap"] else (net_value > 0.0) == validation_measurement["measured_pays"],
+        })
+    return row
 
 
-def build_records(args, calibration=None):
+def build_records(args, calibration=None, validation_measurements=None):
     depth_branching = parse_depth_float_map(args.depth_branching)
     query_reach = parse_depth_float_map(args.query_reach_probability)
+    validation_measurements = validation_measurements or {}
     target_depth = args.max_depth if args.target_depth is None else int(args.target_depth)
     records = [{
         "record_type": "distribution_precompute_depth_estimator_selection",
@@ -304,6 +459,10 @@ def build_records(args, calibration=None):
         "max_depth": args.max_depth,
         "target_depth": target_depth,
         "calibration": calibration,
+        "validation_measurements": [
+            validation_measurements[depth]
+            for depth in sorted(validation_measurements)
+        ],
         "cost_model": {
             "cap_mode": args.cap_mode,
             "path_cap": args.path_cap,
@@ -325,8 +484,9 @@ def build_records(args, calibration=None):
     }]
     for depth in range(0, int(args.max_depth) + 1):
         reach_probability = query_reach.get(depth, args.default_query_reach_probability)
+        validation_measurement = validation_measurements.get(depth)
         for representation in default_representations(depth, args):
-            records.append(estimate_row(depth, target_depth, representation, args, depth_branching, reach_probability))
+            records.append(estimate_row(depth, target_depth, representation, args, depth_branching, reach_probability, validation_measurement))
     return records
 
 
@@ -369,11 +529,35 @@ def summarize(records):
             ),
             "",
         ])
+    if selection.get("validation_measurements"):
+        lines.extend([
+            "## Validation Measurements",
+            "",
+            "| boundary_depth | rows | positive_hit_rows | zero_hit_rows | mean_time_ratio | mean_cache_hits | measured_saved_per_hit_ns | clipped_saved_per_hit_ns | usable_for_cap | measured_pays |",
+            "|---------------:|-----:|------------------:|--------------:|----------------:|----------------:|--------------------------:|-------------------------:|----------------|---------------|",
+        ])
+        for measurement in selection["validation_measurements"]:
+            raw_saved = measurement["measured_saved_per_hit_ns"]
+            lines.append(
+                "| {depth} | {rows} | {positive_rows} | {zero_rows} | {ratio} | {hits:.3f} | {raw} | {clipped:.3f} | {usable} | {pays} |".format(
+                    depth=measurement["boundary_depth"],
+                    rows=measurement["rows"],
+                    positive_rows=measurement["positive_cache_hit_rows"],
+                    zero_rows=measurement["zero_cache_hit_rows"],
+                    ratio="n/a" if not measurement["validation_usable_for_cap"] else "{:.3f}".format(measurement["mean_time_ratio"]),
+                    hits=measurement["mean_cache_hits"],
+                    raw="n/a" if raw_saved is None else "{:.3f}".format(raw_saved),
+                    clipped=measurement["clipped_saved_per_hit_ns"],
+                    usable="yes" if measurement["validation_usable_for_cap"] else "no",
+                    pays="yes" if measurement["measured_pays"] else "no",
+                )
+            )
+        lines.append("")
     lines.extend([
         "## Depth Recommendation",
         "",
-        "| boundary_depth | suffix_hops | expected_hits | suffix_states | cap_limited_suffix_states | build_states | best_representation | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|--------------:|--------------:|--------------------------:|-------------:|--------------------|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | expected_hits | suffix_states | cap_limited_suffix_states | build_states | best_representation | validation_time_ratio | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|--------------:|--------------:|--------------------------:|-------------:|--------------------|----------------------:|-------------------:|----------:|------|",
     ])
     recommendation_rows = []
     for depth in sorted(by_depth):
@@ -381,7 +565,7 @@ def summarize(records):
         best = max(rows, key=lambda item: item["expected_net_value"])
         recommendation_rows.append(best)
         lines.append(
-            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {build_states:.3f} | {rep} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {build_states:.3f} | {rep} | {ratio} | {breakeven} | {net:.3f} | {pays} |".format(
                 depth=depth,
                 suffix_hops=best["suffix_hops"],
                 hits=best["expected_hits"],
@@ -389,6 +573,11 @@ def summarize(records):
                 cap_suffix_states=best["cap_limited_suffix_states"],
                 build_states=best["expected_build_states"],
                 rep=best["representation"],
+                ratio=(
+                    "n/a"
+                    if "validation_mean_time_ratio" not in best or not best.get("validation_usable_for_cap", True)
+                    else "{:.3f}".format(best["validation_mean_time_ratio"])
+                ),
                 breakeven="n/a" if best["hits_to_break_even"] is None else "{:.3f}".format(best["hits_to_break_even"]),
                 net=best["expected_net_value"],
                 pays="yes" if best["precompute_pays"] else "no",
@@ -399,12 +588,12 @@ def summarize(records):
         "",
         "## Representation Detail",
         "",
-        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | cap_limited_suffix_states | saved_per_hit | per_hit_decode | splice_cost | one_time_cost | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------------------:|--------------:|---------------:|------------:|--------------:|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | cap_limited_suffix_states | saved_per_hit | validation_time_ratio | per_hit_decode | splice_cost | one_time_cost | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------------------:|--------------:|----------------------:|---------------:|------------:|--------------:|-------------------:|----------:|------|",
     ])
     for row in estimate_rows:
         lines.append(
-            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {saved:.3f} | {decode:.3f} | {splice:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {saved:.3f} | {ratio} | {decode:.3f} | {splice:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
                 depth=row["boundary_depth"],
                 suffix_hops=row["suffix_hops"],
                 rep=row["representation"],
@@ -414,6 +603,11 @@ def summarize(records):
                 suffix_states=row["expected_suffix_states"],
                 cap_suffix_states=row["cap_limited_suffix_states"],
                 saved=row["saved_per_hit"],
+                ratio=(
+                    "n/a"
+                    if "validation_mean_time_ratio" not in row or not row.get("validation_usable_for_cap", True)
+                    else "{:.3f}".format(row["validation_mean_time_ratio"])
+                ),
                 decode=row["per_hit_decode_cost"],
                 splice=row["splice_cost"],
                 cost=row["one_time_cost"],
@@ -456,7 +650,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-depth", type=int, default=8, help="Maximum boundary depth to evaluate.")
     parser.add_argument("--target-depth", type=int, default=None, help="Depth of the query target. Defaults to --max-depth.")
     parser.add_argument("--min-path-states", type=float, default=1.0)
-    parser.add_argument("--cap-mode", choices=["uncapped", "path", "expansion", "measured"], default="uncapped", help="Ceiling applied to skipped suffix work.")
+    parser.add_argument("--cap-mode", choices=["uncapped", "path", "expansion", "measured", "validation"], default="uncapped", help="Ceiling or validation mode applied to skipped suffix work.")
     parser.add_argument("--path-cap", type=float, default=0.0, help="Path cap used when --cap-mode=path; non-positive disables the ceiling.")
     parser.add_argument("--expansion-cap", type=float, default=0.0, help="Expansion cap used when --cap-mode=expansion; non-positive disables the ceiling.")
     parser.add_argument("--estimated-full-work", type=float, default=0.0, help="Measured full-search work ceiling used when --cap-mode=measured.")
@@ -480,13 +674,15 @@ def parse_args(argv=None):
     parser.add_argument("--parametric-fit-cost", type=float, default=8.0)
     parser.add_argument("--output-dir", type=Path, default=Path("docs/reports"))
     parser.add_argument("--calibration-summary", action="append", type=Path, default=[], help="Payload recurrence layer summary JSON used to derive timing costs. Can be repeated.")
+    parser.add_argument("--validation-jsonl", action="append", type=Path, default=[], help="Boundary-cache validation JSONL used to derive per-depth measured saved-per-hit. Can be repeated.")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     calibration = apply_calibration(args)
-    records = build_records(args, calibration)
+    validation_measurements = validation_measurements_from_jsonl(args.validation_jsonl)
+    records = build_records(args, calibration, validation_measurements)
     summary = summarize(records)
     summary_json, summary_md = write_outputs(records, summary, args.output_dir, args.graph_name)
     print(summary, end="")

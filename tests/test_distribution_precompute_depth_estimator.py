@@ -11,6 +11,7 @@ from scripts.distribution_precompute_depth_estimator import (
     cumulative_branching,
     parse_args,
     parse_depth_float_map,
+    validation_measurements_from_records,
 )
 
 
@@ -94,6 +95,118 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         self.assertEqual(row["suffix_hops"], 3)
         self.assertAlmostEqual(row["expected_build_states"], 16.0)
         self.assertAlmostEqual(row["expected_suffix_states"], 64.0)
+
+
+
+    def test_validation_measurements_clip_negative_saved_per_hit(self):
+        measurements = validation_measurements_from_records([
+            {
+                "record_type": "boundary_cache_selection",
+                "graph": "fixture_b3_recurrence",
+                "boundary_counts": {"0": 1, "1": 2, "2": 3, "3": 4},
+                "target_counts": {"0": 1, "1": 2, "4": 5},
+                "boundary_nodes": 4,
+                "cached_boundary_nodes": 4,
+            },
+            {
+                "record_type": "boundary_cache_comparison",
+                "graph": "fixture_b3_recurrence",
+                "full_time_ns": 100.0,
+                "cached_time_ns": 120.0,
+                "cache_hits": 10,
+                "full_nodes_expanded": 50,
+                "cached_nodes_expanded": 50,
+                "cache_payload_bytes_read": 64,
+                "cache_decode_ns": 8,
+                "full_expansion_cap_hit": True,
+                "cached_expansion_cap_hit": True,
+            },
+            {
+                "record_type": "boundary_cache_comparison",
+                "graph": "fixture_b3_recurrence",
+                "full_time_ns": 200.0,
+                "cached_time_ns": 240.0,
+                "cache_hits": 0,
+                "full_nodes_expanded": 60,
+                "cached_nodes_expanded": 60,
+                "cache_payload_bytes_read": 0,
+                "cache_decode_ns": 0,
+                "full_expansion_cap_hit": False,
+                "cached_expansion_cap_hit": False,
+            },
+        ])
+
+        measurement = measurements[3]
+        self.assertEqual(measurement["target_depth"], 4)
+        self.assertEqual(measurement["rows"], 2)
+        self.assertAlmostEqual(measurement["mean_cache_hits"], 10.0)
+        self.assertAlmostEqual(measurement["all_rows_mean_cache_hits"], 5.0)
+        self.assertEqual(measurement["positive_cache_hit_rows"], 1)
+        self.assertEqual(measurement["zero_cache_hit_rows"], 1)
+        self.assertTrue(measurement["validation_usable_for_cap"])
+        self.assertAlmostEqual(measurement["measured_saved_per_hit_ns"], -2.0)
+        self.assertEqual(measurement["clipped_saved_per_hit_ns"], 0.0)
+        self.assertFalse(measurement["measured_pays"])
+
+    def test_validation_measurements_require_cache_hits_to_pay(self):
+        measurements = validation_measurements_from_records([
+            {
+                "record_type": "boundary_cache_comparison",
+                "graph": "fixture_b7_recurrence",
+                "full_time_ns": 120.0,
+                "cached_time_ns": 100.0,
+                "cache_hits": 0,
+            },
+        ])
+
+        measurement = measurements[7]
+        self.assertEqual(measurement["positive_cache_hit_rows"], 0)
+        self.assertEqual(measurement["zero_cache_hit_rows"], 1)
+        self.assertFalse(measurement["validation_usable_for_cap"])
+        self.assertIsNone(measurement["measured_saved_per_hit_ns"])
+        self.assertEqual(measurement["clipped_saved_per_hit_ns"], 0.0)
+        self.assertFalse(measurement["measured_pays"])
+
+    def test_validation_cap_mode_uses_measured_saved_per_hit(self):
+        args = parse_args([
+            "--expected-queries", "1000",
+            "--branching-factor", "2",
+            "--max-depth", "3",
+            "--target-depth", "5",
+            "--cap-mode", "validation",
+            "--uncached-cost-per-state", "10",
+            "--cached-eval-cost-per-point", "0",
+        ])
+        validation = {
+            2: {
+                "rows": 2,
+                "mean_time_ratio": 1.2,
+                "mean_full_time_ns": 100.0,
+                "mean_cached_time_ns": 120.0,
+                "mean_cache_hits": 5.0,
+                "positive_cache_hit_rows": 2,
+                "zero_cache_hit_rows": 0,
+                "validation_usable_for_cap": True,
+                "all_rows_mean_cache_hits": 5.0,
+                "mean_payload_bytes_read": 64.0,
+                "mean_decode_ns": 8.0,
+                "measured_pays": False,
+                "measured_saved_per_hit_ns": -4.0,
+                "clipped_saved_per_hit_ns": 0.0,
+            }
+        }
+
+        row = next(
+            row for row in build_records(args, validation_measurements=validation)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["boundary_depth"] == 2
+            and row["representation"] == "exact_sparse_histogram"
+        )
+
+        self.assertEqual(row["saved_per_hit"], 0.0)
+        self.assertIsNone(row["hits_to_break_even"])
+        self.assertFalse(row["precompute_pays"])
+        self.assertTrue(row["validation_prediction_matches_measured"])
 
     def test_measured_cap_limits_suffix_work(self):
         args = parse_args([
