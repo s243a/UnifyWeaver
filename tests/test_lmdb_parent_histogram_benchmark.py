@@ -88,6 +88,7 @@ class BoundedParentHistogramTests(unittest.TestCase):
         self.assertTrue(all(row["selected_prefix_representation"] for row in fit_rows))
         self.assertTrue(all(row["selected_functional_representation"] for row in fit_rows))
         self.assertIn("Representation Policy Selection", summary)
+        self.assertIn("Representation Policy By Budget And Depth", summary)
 
 
 if __name__ == "__main__":
