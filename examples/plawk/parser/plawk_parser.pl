@@ -254,6 +254,15 @@ field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
+field_expr(length(Field)) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
 field_expr(assoc(var(Name), KeyExpr)) -->
     identifier(Name),
     ws,

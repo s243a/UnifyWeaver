@@ -78,7 +78,8 @@ The demo prints the record count and the lines whose first field is `ERROR`.
 The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
 `$1 == "ERROR" { print $0 }`, plus selected-field actions such as
 `$1 == "ERROR" { print $2, $3 }`. Rule prints can include native `NR` and
-`NF`, e.g. `$1 == "ERROR" { print NR, NF, $2, $3 }`, and scalar state with
+`NF`, e.g. `$1 == "ERROR" { print NR, NF, $2, $3 }`, plus native field lengths
+such as `$1 == "ERROR" { print length($2), $2 }`. Scalar state works with
 `$1 == "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. The first
