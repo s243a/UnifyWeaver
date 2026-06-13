@@ -195,6 +195,21 @@ increment block. For the sample input, that prints:
 1 1
 ```
 
+Scalar counters and associative counts can be used together:
+
+```awk
+{ total++; counts[$1]++ }
+$1 == "ERROR" { errors++; by_component[$2]++ }
+END { print total, errors, counts["WARN"], by_component["disk"] }
+```
+
+The generated native loop carries scalar counters as `i64` phi slots and keeps
+associative arrays in runtime tables. For the sample input, that prints:
+
+```text
+4 2 1 1
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

@@ -22,6 +22,7 @@
 %      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
 %      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
 %      $N == "VALUE" { counts[$M]++ } END { print counts["KEY"] }
+%      { total++; counts[$1]++ } END { print total, counts["ERROR"] }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -52,6 +53,31 @@ print_line:
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
+        DriverIR).
+
+plawk_program_native_driver_ir(
+    program([], Rules, [end([print(PrintFields)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_mixed_rule_chain_ir(MixedPlan, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
+    plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, NextPhiIR),
+    plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w', [AssocGlobalIR, RuleGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  ret i32 0',
+        [EndPrintIR]),
+    plawk_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, lowered_mixed,
+            RuleChainIR, NextPhiIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -242,6 +268,187 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
 
 plawk_scalar_state_slot(Name, scalar_counter(Name)).
 
+plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
+    plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
+    plawk_mixed_assoc_count_plan(Rules, PrintFields, AssocPlan),
+    phrase(plawk_mixed_planned_rules(Rules, AssocPlan, 0), PlannedRules),
+    PlannedRules \== [].
+
+plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
+    findall(Name,
+        ( member(rule(_Pattern, Actions), Rules),
+          member(Action, Actions),
+          plawk_scalar_increment_action(Action, Name)
+        ),
+        ActionVars),
+    ActionVars \== [],
+    findall(Name,
+        ( member(Field, PrintFields),
+          plawk_scalar_print_expr(Field, Name)
+        ),
+        PrintVars),
+    append(ActionVars, PrintVars, Names0),
+    sort(Names0, Names),
+    maplist(plawk_scalar_state_slot, Names, Slots).
+
+plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
+    findall(ArrayName,
+        ( member(rule(_Pattern, Actions), Rules),
+          member(Action, Actions),
+          plawk_assoc_increment_action(Action, ArrayName-_KeyIndex)
+        ),
+        ActionArrays),
+    ActionArrays \== [],
+    findall(ArrayName,
+        ( member(Field, PrintFields),
+          plawk_assoc_print_array(Field, ArrayName)
+        ),
+        PrintArrays),
+    PrintArrays \== [],
+    append(ActionArrays, PrintArrays, ArrayNames0),
+    sort(ArrayNames0, Tables).
+
+plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
+    [].
+plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Actions0), Index) -->
+    { plawk_mixed_rule_actions(Actions, ScalarVars, AssocSpecs),
+      ( ScalarVars == [], AssocSpecs == []
+      -> HasActions = false,
+         NextIndex = Index,
+         PlannedAssocActions = []
+      ;  HasActions = true,
+         phrase(plawk_assoc_planned_actions(AssocSpecs, Tables, 0), PlannedAssocActions),
+         NextIndex is Index + 1
+      )
+    },
+    ( { HasActions == true }
+    -> [mixed_rule(Index, Pattern, ScalarVars, PlannedAssocActions)]
+    ;  []
+    ),
+    plawk_mixed_planned_rules(Rest, assoc_plan(Tables, Actions0), NextIndex).
+
+plawk_mixed_rule_actions(Actions, ScalarVars, AssocSpecs) :-
+    maplist(plawk_mixed_increment_action, Actions, TypedActions),
+    findall(Name, member(scalar(Name), TypedActions), ScalarVars),
+    findall(Spec, member(assoc(Spec), TypedActions), AssocSpecs).
+
+plawk_mixed_increment_action(inc(var(Name)), scalar(Name)).
+plawk_mixed_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), assoc(ArrayName-KeyIndex)) :-
+    KeyIndex > 0.
+
+plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, _AssocPlan, Rules), GlobalIR, ChainIR, RuleCount) :-
+    length(Rules, RuleCount),
+    RuleCount > 0,
+    phrase(plawk_mixed_rule_chain_lines(Rules, ScalarPlan, 0), Pairs),
+    pairs_keys_values(Pairs, GlobalParts, ChainParts),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR),
+    atomic_list_concat(ChainParts, '\n', ChainIR).
+
+plawk_mixed_rule_chain_lines([], _ScalarPlan, _) -->
+    [].
+plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarVars, AssocActions) | Rest], ScalarPlan, Index) -->
+    { NextIndex is Index + 1,
+      ( Rest == []
+      -> NextLabel = 'continue_loop'
+      ;  format(atom(NextLabel), 'rule_~w_match', [NextIndex])
+      ),
+      format(atom(RuleLabel), 'rule_~w_match', [Index]),
+      format(atom(ApplyLabel), 'rule_~w_apply', [Index]),
+      format(atom(DoneLabel), 'rule_~w_done', [Index]),
+      plawk_mixed_scalar_rule_input_phi_ir(ScalarPlan, Index, InputPhiIR),
+      plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
+          NextLabel, InputPhiIR, GuardGlobalIR-GuardIR),
+      plawk_scalar_match_update_ir(ScalarPlan, ScalarVars, Index, ScalarUpdateIR),
+      plawk_mixed_assoc_apply_ir(Index, AssocActions, DoneLabel, AssocApplyIR),
+      ( Index =:= 0
+      -> EntryIR = '  br label %rule_0_match\n\n'
+      ;  EntryIR = ''
+      ),
+      format(atom(RuleIR),
+'~w~w
+
+~w:
+~w
+~w
+
+~w:
+  br label %~w',
+          [EntryIR, GuardIR, ApplyLabel, ScalarUpdateIR, AssocApplyIR,
+           DoneLabel, NextLabel]),
+      Pair = GuardGlobalIR-RuleIR
+    },
+    [Pair],
+    plawk_mixed_rule_chain_lines(Rest, ScalarPlan, NextIndex).
+
+plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
+    InputPhiIR, ''-IR) :-
+    !,
+    format(atom(MatchVar), 'rule_~w_is_match', [Index]),
+    format(atom(IR),
+'~w:
+~w  %~w = icmp eq i1 true, true
+  br i1 %~w, label %~w, label %~w',
+        [RuleLabel, InputPhiIR, MatchVar, MatchVar, ApplyLabel, NextLabel]).
+plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
+    InputPhiIR, GuardGlobalIR-IR) :-
+    format(atom(MatchVar), 'rule_~w_is_match', [Index]),
+    format(atom(GlobalBase), 'plawk_mixed_rule_~w', [Index]),
+    format(atom(MatchValue), '%~w', [MatchVar]),
+    plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+        GuardGlobalIR-GuardCallIR),
+    format(atom(IR),
+'~w:
+~w~w
+  br i1 %~w, label %~w, label %~w',
+        [RuleLabel, InputPhiIR, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
+
+plawk_mixed_assoc_apply_ir(_RuleIndex, [], DoneLabel, IR) :-
+    !,
+    format(atom(IR), '  br label %~w', [DoneLabel]).
+plawk_mixed_assoc_apply_ir(RuleIndex, AssocActions, DoneLabel, IR) :-
+    phrase(plawk_assoc_rule_action_lines(RuleIndex, AssocActions, DoneLabel), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_mixed_scalar_rule_input_phi_ir(_StatePlan, 0, '') :-
+    !.
+plawk_mixed_scalar_rule_input_phi_ir(StatePlan, RuleIndex, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    phrase(plawk_mixed_scalar_rule_input_phi_lines(Slots, RuleIndex, 0), Lines),
+    atomic_list_concat(Lines, '\n', LinesIR),
+    format(atom(IR), '~w~n', [LinesIR]).
+
+plawk_mixed_scalar_rule_input_phi_lines([], _RuleIndex, _) -->
+    [].
+plawk_mixed_scalar_rule_input_phi_lines([_Slot | Rest], RuleIndex, SlotIndex) -->
+    { PrevRuleIndex is RuleIndex - 1,
+      plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
+      format(atom(Line),
+          '  %rule_~w_in_slot_~w = phi i64 [~w, %rule_~w_match], [%rule_~w_slot_~w, %rule_~w_done]',
+          [RuleIndex, SlotIndex, PrevFalseValue, PrevRuleIndex,
+           PrevRuleIndex, SlotIndex, PrevRuleIndex]),
+      NextSlotIndex is SlotIndex + 1
+    },
+    [Line],
+    plawk_mixed_scalar_rule_input_phi_lines(Rest, RuleIndex, NextSlotIndex).
+
+plawk_mixed_scalar_next_phi_ir(StatePlan, RuleCount, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    phrase(plawk_mixed_scalar_next_phi_lines(Slots, RuleCount, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_mixed_scalar_next_phi_lines([], _RuleCount, _) -->
+    [].
+plawk_mixed_scalar_next_phi_lines([_Slot | Rest], RuleCount, Index) -->
+    { LastRuleIndex is RuleCount - 1,
+      plawk_scalar_rule_input_value(LastRuleIndex, Index, FalseValue),
+      format(atom(Line),
+          '  %next_slot_~w = phi i64 [~w, %rule_~w_match], [%rule_~w_slot_~w, %rule_~w_done]',
+          [Index, FalseValue, LastRuleIndex, LastRuleIndex, Index, LastRuleIndex]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_mixed_scalar_next_phi_lines(Rest, RuleCount, NextIndex).
+
 plawk_assoc_runtime_count_plan(
     Rules,
     PrintFields,
@@ -427,6 +634,10 @@ plawk_assoc_print_key_global_lines([assoc(var(_ArrayName), string(Key)) | Rest],
     },
     [Line],
     plawk_assoc_print_key_global_lines(Rest, NextIndex).
+plawk_assoc_print_key_global_lines([Field | Rest], Index) -->
+    { \+ Field = assoc(var(_), string(_)),
+      NextIndex is Index + 1 },
+    plawk_assoc_print_key_global_lines(Rest, NextIndex).
 
 plawk_assoc_key_codes(Key, Codes) :-
     string(Key),
@@ -485,6 +696,53 @@ plawk_assoc_free_lines([_ArrayName | Rest], Index) -->
     },
     [Line],
     plawk_assoc_free_lines(Rest, NextIndex).
+
+plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, IR) :-
+    phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _) -->
+    ['  %end_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+     '  %printed_end_newline = call i32 (i8*, ...) @printf(i8* %end_newline_fmt)'],
+    plawk_assoc_free_lines(AssocPlan).
+plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex),
+    { plawk_state_slot_index(ScalarPlan, scalar_counter(Name), SlotIndex),
+      format(atom(FmtPtr),
+          '  %end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [PrintIndex]),
+      format(atom(PrintCall),
+          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %slot_~w)',
+          [PrintIndex, PrintIndex, SlotIndex]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, NextPrintIndex).
+plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarPlan, AssocPlan, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex),
+    { plawk_assoc_key_codes(Key, Codes),
+      length(Codes, KeyLen),
+      BytesLen is KeyLen + 1,
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      format(atom(KeyPtr),
+          '  %assoc_end_key_~w_ptr = getelementptr [~w x i8], [~w x i8]* @.plawk_assoc_print_key_~w, i32 0, i32 0',
+          [PrintIndex, BytesLen, BytesLen, PrintIndex]),
+      format(atom(KeyId),
+          '  %assoc_end_key_~w_id = call i64 @wam_intern_atom(i8* %assoc_end_key_~w_ptr, i64 ~w)',
+          [PrintIndex, PrintIndex, KeyLen]),
+      format(atom(Value),
+          '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_end_key_~w_id)',
+          [PrintIndex, TableIndex, PrintIndex]),
+      format(atom(FmtPtr),
+          '  %assoc_end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [PrintIndex]),
+      format(atom(PrintCall),
+          '  %printed_assoc_end_i64_~w = call i32 (i8*, ...) @printf(i8* %assoc_end_i64_fmt_~w, i64 %assoc_end_value_~w)',
+          [PrintIndex, PrintIndex, PrintIndex]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [KeyPtr, KeyId, Value, FmtPtr, PrintCall],
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, NextPrintIndex).
 
 plawk_scalar_increment_action(inc(var(Name)), Name).
 

@@ -88,8 +88,9 @@ source array rather than specializing the `END` keys to fixed slots. Guarded
 associative count rules lower through the same native rule-chain shape as scalar
 counters, so `$1 == "ERROR" { by_component[$2]++ }` only updates on matches. Each table
 grows and rehashes as needed, and the native stream reader grows its line buffer
-without consuming WAM
-arena space per record.
+without consuming WAM arena space per record. Mixed scalar/associative state is
+supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
+`END` print of both `total` and `counts["ERROR"]`.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
