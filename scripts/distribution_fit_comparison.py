@@ -949,6 +949,8 @@ def unique_distribution_records(rows: list[dict[str, object]]) -> list[dict[str,
     for record in rows:
         if record.get("distribution_role") == "realized_fit":
             key = (record.get("distribution_role"), record.get("fixture"), record.get("target_node"))
+        elif record.get("target_node") is not None and record.get("budget") is not None:
+            key = (record.get("record_type"), record.get("target_node"), record.get("budget"), record.get("model"))
         else:
             key = (record.get("distribution_role"), record.get("fixture"), record.get("root_distance_horizon"))
         if key not in by_key:

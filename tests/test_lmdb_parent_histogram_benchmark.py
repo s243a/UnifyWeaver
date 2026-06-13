@@ -5,7 +5,7 @@
 
 import unittest
 
-from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
+from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram, summarize, target_budget_records
 
 
 class BoundedParentHistogramTests(unittest.TestCase):
@@ -57,6 +57,37 @@ class BoundedParentHistogramTests(unittest.TestCase):
 
         self.assertEqual(sum(hist.values()), 1)
         self.assertTrue(stats.path_cap_hit)
+
+    def test_target_budget_records_report_representation_selection(self):
+        parents = {
+            "A": ["R"],
+            "B": ["R", "A"],
+            "C": ["B"],
+        }
+
+        class Graph:
+            def parents(self, node):
+                return parents.get(node, [])
+
+        records = target_budget_records(
+            "fixture",
+            Graph(),
+            "R",
+            "C",
+            child_depth=2,
+            budget=3,
+            tail_epsilon=0.01,
+            prune_thresholds=[0.01],
+            path_cap=None,
+            expansion_cap=None,
+        )
+        fit_rows = [row for row in records if row["record_type"] == "lmdb_parent_histogram_fit"]
+        summary = summarize(records)
+
+        self.assertTrue(fit_rows)
+        self.assertTrue(all(row["selected_prefix_representation"] for row in fit_rows))
+        self.assertTrue(all(row["selected_functional_representation"] for row in fit_rows))
+        self.assertIn("Representation Policy Selection", summary)
 
 
 if __name__ == "__main__":

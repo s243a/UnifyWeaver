@@ -27,6 +27,7 @@ from scripts.distribution_fit_comparison import (
     size_biased_excess_pmf,
     summarize,
     total_error_certificate,
+    unique_distribution_records,
     w1_cdf_error,
     weighted_parent_certificate,
     representation_policy_candidates,
@@ -265,6 +266,18 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertIn("Prior Support By Depth", summary)
         self.assertIn("Packed Exact Candidates", summary)
         self.assertIn("Representation Policy Selection", summary)
+
+    def test_unique_distribution_records_keeps_lmdb_target_budget_models(self):
+        rows = [
+            {"record_type": "lmdb_parent_histogram_fit", "target_node": 1, "budget": 4, "model": "a"},
+            {"record_type": "lmdb_parent_histogram_fit", "target_node": 1, "budget": 4, "model": "b"},
+            {"record_type": "lmdb_parent_histogram_fit", "target_node": 1, "budget": 6, "model": "a"},
+            {"record_type": "lmdb_parent_histogram_fit", "target_node": 1, "budget": 4, "model": "a"},
+        ]
+
+        unique = unique_distribution_records(rows)
+
+        self.assertEqual(len(unique), 3)
 
 
 if __name__ == "__main__":
