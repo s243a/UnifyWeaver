@@ -49,7 +49,8 @@
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
     llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
-    llvm_emit_atom_field_length/5        % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
+    llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
+    llvm_emit_atom_field_subslice/7      % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -4969,6 +4970,81 @@ fl.field:
 
 fl.zero:
   ret i64 0
+}
+
+define %WamSlice @wam_subslice_value(i8* %source_ptr, i64 %source_len, i64 %start, i64 %max_len) {
+entry:
+  %ss.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %ss.empty = insertvalue %WamSlice %ss.empty0, i64 0, 1
+  %ss.null = icmp eq i8* %source_ptr, null
+  br i1 %ss.null, label %ss.no, label %ss.check_start
+
+ss.check_start:
+  %ss.start_ok = icmp sgt i64 %start, 0
+  br i1 %ss.start_ok, label %ss.check_len, label %ss.no
+
+ss.check_len:
+  %ss.len_ok = icmp sge i64 %max_len, 0
+  br i1 %ss.len_ok, label %ss.compute, label %ss.no
+
+ss.compute:
+  %ss.offset = sub i64 %start, 1
+  %ss.in_range = icmp ult i64 %ss.offset, %source_len
+  br i1 %ss.in_range, label %ss.make_slice, label %ss.no
+
+ss.make_slice:
+  %ss.available = sub i64 %source_len, %ss.offset
+  %ss.len_fits = icmp ule i64 %max_len, %ss.available
+  %ss.out_len = select i1 %ss.len_fits, i64 %max_len, i64 %ss.available
+  %ss.ptr = getelementptr i8, i8* %source_ptr, i64 %ss.offset
+  %ss.slice0 = insertvalue %WamSlice undef, i8* %ss.ptr, 0
+  %ss.slice = insertvalue %WamSlice %ss.slice0, i64 %ss.out_len, 1
+  ret %WamSlice %ss.slice
+
+ss.no:
+  ret %WamSlice %ss.empty
+}
+
+define %WamSlice @wam_atom_field_subslice_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %start, i64 %max_len) {
+entry:
+  %afs.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %afs.empty = insertvalue %WamSlice %afs.empty0, i64 0, 1
+  %afs.whole = icmp eq i64 %field_index, 0
+  br i1 %afs.whole, label %afs.whole_record, label %afs.field
+
+afs.whole_record:
+  %afs.t = call i32 @value_tag(%Value %atom_value)
+  %afs.is_atom = icmp eq i32 %afs.t, 0
+  br i1 %afs.is_atom, label %afs.lookup, label %afs.no
+
+afs.lookup:
+  %afs.aid = call i64 @value_payload(%Value %atom_value)
+  %afs.str = call i8* @wam_atom_to_string(i64 %afs.aid)
+  %afs.null = icmp eq i8* %afs.str, null
+  br i1 %afs.null, label %afs.no, label %afs.measure
+
+afs.measure:
+  %afs.len = call i64 @strlen(i8* %afs.str)
+  %afs.whole_slice = call %WamSlice @wam_subslice_value(i8* %afs.str, i64 %afs.len, i64 %start, i64 %max_len)
+  ret %WamSlice %afs.whole_slice
+
+afs.field:
+  %afs.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %afs.index_ok, label %afs.field_slice, label %afs.no
+
+afs.field_slice:
+  %afs.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afs.source_ptr = extractvalue %WamSlice %afs.source, 0
+  %afs.source_len = extractvalue %WamSlice %afs.source, 1
+  %afs.source_has_ptr = icmp ne i8* %afs.source_ptr, null
+  br i1 %afs.source_has_ptr, label %afs.subslice, label %afs.no
+
+afs.subslice:
+  %afs.slice = call %WamSlice @wam_subslice_value(i8* %afs.source_ptr, i64 %afs.source_len, i64 %start, i64 %max_len)
+  ret %WamSlice %afs.slice
+
+afs.no:
+  ret %WamSlice %afs.empty
 }
 
 ; Dispatches on integer op codes:
@@ -16424,6 +16500,19 @@ llvm_emit_atom_field_length(ValueIR, FieldIndex, SepCode, LengthBase, CallIR) :-
     format(atom(CallIR),
         '  %~w = call i64 @wam_atom_field_length_value(%Value ~w, i64 ~w, i8 ~w)',
         [LengthBase, ValueIR, FieldIndex, SepCode]).
+
+%% llvm_emit_atom_field_subslice(+ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR)
+%
+%  Emit a native AWK-style substr/3 projection over an atom-backed text record.
+%  Start is 1-based and Len is a byte count. Field 0 slices the whole record;
+%  positive fields slice the projected field without allocating substrings.
+llvm_emit_atom_field_subslice(ValueIR, FieldIndex, SepCode, Start, Len, SliceBase, CallIR) :-
+    format(atom(CallIR),
+        '  %~w = call %WamSlice @wam_atom_field_subslice_value(%Value ~w, i64 ~w, i8 ~w, i64 ~w, i64 ~w)~n  %~w_ptr = extractvalue %WamSlice %~w, 0~n  %~w_len64 = extractvalue %WamSlice %~w, 1~n  %~w_len = trunc i64 %~w_len64 to i32',
+        [SliceBase, ValueIR, FieldIndex, SepCode, Start, Len,
+         SliceBase, SliceBase,
+         SliceBase, SliceBase,
+         SliceBase, SliceBase]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-

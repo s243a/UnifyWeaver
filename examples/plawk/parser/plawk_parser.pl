@@ -263,6 +263,26 @@ field_expr(length(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+field_expr(substr(Field, Start, Len)) -->
+    "substr",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ",",
+    ws,
+    integer_codes(StartCodes),
+    ws,
+    ",",
+    ws,
+    integer_codes(LenCodes),
+    ws,
+    ")",
+    { Field = field(_),
+      StartCodes \== [], LenCodes \== [],
+      number_codes(Start, StartCodes), Start >= 1,
+      number_codes(Len, LenCodes), Len >= 0 }.
 field_expr(assoc(var(Name), KeyExpr)) -->
     identifier(Name),
     ws,
