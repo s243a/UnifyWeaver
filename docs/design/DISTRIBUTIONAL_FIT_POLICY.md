@@ -1,6 +1,6 @@
 # Distributional Fit Policy
 
-This note specifies the policy layer between exact path-statistic distributions and closed-form approximations. It is a companion to `ROOT_ANCHORED_METRICS_SPECIFICATION.md` and `RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md`.
+This note specifies the policy layer between exact path-statistic distributions and closed-form approximations. It is a companion to `ROOT_ANCHORED_METRICS_SPECIFICATION.md`, `RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md`, `DISTRIBUTIONAL_COMPRESSION_THEORY.md`, and `DISTRIBUTIONAL_COMPRESSION_IMPLEMENTATION_PLAN.md`.
 
 The problem: root-anchored metrics such as `d_wPow` often start with an exact finite histogram over path statistics. Near the root, or on small graphs, that histogram is cheap and should be kept exactly. Deeper in the graph, especially on enwiki, the support can grow enough that the runtime should switch to a compact representation. That switch must be explicit, diagnosable, and user-overridable.
 
@@ -88,25 +88,46 @@ remove a large fraction of bins; for skewed or medium/heavy tails, the same rule
 will refuse to prune because the suffix mass or functional contribution remains
 too large.
 
-The first tail family should be `truncated_geometric` or equivalently a discrete exponential over finite support. It is simple, has closed-form CDF/survival functions, and matches the intuition that longer parent-only paths often decay after the high-signal prefix. Do not assume a Poisson family by default: parent path distributions are finite, graph-constrained, and driven by branching structure rather than independent arrival counts.
+After cheap exact encodings are considered, the candidate ladder should stay
+bounded and discrete first.  `truncated_geometric` remains useful for a visible
+finite-support exponential tail, but it should not be the universal first
+fallback.  Do not assume a Poisson family by default: parent path distributions
+are finite, graph-constrained, and driven by branching structure rather than
+independent arrival counts.
 
-Candidate families for later extension:
+Candidate representations:
 
 | Family | Use when |
 |--------|----------|
+| `tail_pruned_histogram` | The retained exact prefix plus dropped-tail certificate meets the error budget |
+| `quantized_cdf_table` | Prefix-mass queries dominate and CDF error is the right certificate |
 | `truncated_geometric` | Tail decays approximately exponentially after the exact prefix |
-| `truncated_discrete_normal` | Large-depth CLT regime after tail/error validation |
 | `binomial` | Bounded excess-event support where mean/variance recover compatible `n,p` |
 | `beta_binomial` | Bounded support with measurable over-dispersion beyond binomial variance |
+| `truncated_discrete_normal` | Large-depth CLT regime after CDF/W1 validation |
+| `mixture(binomial)` | Bounded discrete modes fit better than one family |
+| `discretized_gmm` | Narrow residual spikes or bottleneck modes survive cheaper discrete fits |
 | `empirical_sketch` | No simple family fits but quantile/CDF accuracy is enough |
-| `mixture(Families)` | Topical and administrative regimes visibly mix |
 
 The normal family should be treated as a large-depth approximation, not as the
-default for rare excess-parent events. In near-chain SimpleWiki regimes,
-binomial or empirical discrete priors preserve the skewed finite support more
-directly. If measured parent degrees become scale-free rather than
-Poisson-like, the policy should favor empirical sketches, mixtures, or explicit
-hub handling instead of a single light-tailed count family.
+default for rare excess-parent events.  For real deep nodes, repeated shifted
+sums make binomial or normal approximations increasingly plausible by the
+central limit theorem.  That is a reason to try those families earlier in deep
+ancestor cones, not a reason to accept them without an error certificate.  In
+near-chain SimpleWiki regimes, binomial or empirical discrete priors preserve
+the skewed finite support more directly.  If measured parent degrees become
+scale-free rather than Poisson-like, the policy should favor empirical
+sketches, mixtures, or explicit hub handling instead of a single light-tailed
+count family.
+
+Gaussian mixtures are not deprioritized because they are wrong.  They are
+deprioritized because the primary object is a bounded integer histogram, and
+cheaper discrete encodings usually expose the same planner information with
+fewer parameters.  A mixture of binomials with shared support uses `2K - 1`
+parameters, while a Gaussian mixture needs `3K - 1`.  GMMs should be
+available as an escalation family when the residual error has sub-binomial-width
+spikes, bottleneck modes, or other structure that cheaper discrete candidates
+cannot pass through the CDF/W1 gate.
 
 The family choice should be evidence-driven. Simplewiki is a calibration fixture: compute exact parent-only distributions there, fit candidate tails, and measure error. Enwiki is the stress case where the representation switch is expected to matter.
 
@@ -255,6 +276,9 @@ Diagnostics should be emitted into the recurrence strategy trace:
 - fitted finite support range;
 - materialised cumulative bases;
 - estimated error for the selected functional;
+- inherited parent approximation error before fitting;
+- local fit error after compression;
+- CDF and W1 error certificates when available;
 - fallback reason if no family passed the threshold;
 - fallback reason if a requested functional has no matching cumulative basis;
 - whether a user selection predicate overrode the default.
