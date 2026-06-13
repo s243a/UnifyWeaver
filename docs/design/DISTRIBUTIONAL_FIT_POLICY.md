@@ -124,7 +124,7 @@ Gaussian mixtures are not deprioritized because they are wrong.  They are
 deprioritized because the primary object is a bounded integer histogram, and
 cheaper discrete encodings usually expose the same planner information with
 fewer parameters.  A mixture of binomials with shared support uses `2K - 1`
-parameters, while a Gaussian mixture needs roughly `3K - 1`.  GMMs should be
+parameters, while a Gaussian mixture needs `3K - 1`.  GMMs should be
 available as an escalation family when the residual error has sub-binomial-width
 spikes, bottleneck modes, or other structure that cheaper discrete candidates
 cannot pass through the CDF/W1 gate.

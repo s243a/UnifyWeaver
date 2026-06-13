@@ -32,8 +32,10 @@ the recurrence becomes:
 
 ```text
 N_v * P_v[L] = sum_{p in parents(v)} N_p * P_p[L - 1]
-N_v = sum_L sum_{p in parents(v)} N_p * P_p[L - 1]
+N_v = sum_{p in parents(v)} N_p
 ```
+
+The mass recurrence collapses to a plain sum because each `P_p` sums to one.
 
 The current benchmark keeps the unnormalised form because cache splicing needs
 path-count mass directly.
@@ -79,6 +81,26 @@ For normalised forms, scale the parent errors by `N_p` before shifting:
 E_pre_v_mass[L] = sum_p N_p * (P_p[L - 1] - Q_p[L - 1])
 ```
 
+### Scalar certificate recurrence
+
+The signed-vector recurrence above is the exact statement, but persisting
+`E_p` per node defeats compression: the residual vector is as large as the
+exact histogram it certifies.  What the cache should persist are scalar
+certificates, and those obey their own recurrence.  The normalised child is
+the mass-weighted mixture of unit-shifted parents, and a unit shift changes
+neither metric, so by the triangle inequality:
+
+```text
+epsilon_K(v)  <= sum_p (N_p / N_v) * epsilon_K(p)  + epsilon_K_local(v)
+epsilon_W1(v) <= sum_p (N_p / N_v) * epsilon_W1(p) + epsilon_W1_local(v)
+```
+
+where the local term is the metric applied to the new compression residual
+`R_v`.  Inherited error therefore propagates as a mass-weighted average of
+parent certificates — one float per metric per node.  The full `E_pre_v`
+vector is only needed as a diagnostic, for example to see where inherited
+error concentrates after a fit rejection.
+
 ## 3. Error metrics
 
 Prefix-mass queries use a CDF:
@@ -113,6 +135,25 @@ The compression gate should therefore be expressed as tolerances over
 `epsilon_K`, `epsilon_W1`, or a functional-specific certificate.  State-count or
 bin-count thresholds are cost triggers; they do not by themselves prove quality.
 
+### Absolute versus relative certificates
+
+The certificates above are absolute, and absolute certificates are the right
+gate for additive aggregates.  When many small tail contributions are summed
+into an `O(1)` total, each term's absolute error is bounded by the
+certificate and products of small errors are second-order — the usual
+justification for dropping higher-order terms in approximations.
+
+The case that needs a different gate is when a product of tail masses is the
+whole quantity, for example ranking two candidates whose scores are each
+products of small survival probabilities.  Relative errors add under
+multiplication: factors with relative errors `delta_i` give a product with
+relative error approximately `sum_i delta_i`.  An absolute certificate
+`epsilon_K = 0.01` on a tail of mass `0.001` is a 10x relative error on that
+factor, easily enough to invert the ranking of two competing small products,
+even though the absolute error of either product is tiny.  Queries of this
+shape should be gated on relative CDF/survival error over the queried tail
+region, not on absolute `epsilon_K`.
+
 ## 4. Fit ladder
 
 The representation ladder should prefer the cheapest encoding that satisfies
@@ -121,7 +162,7 @@ the active error budget.
 | Representation | Parameters / storage | Strength | Weakness |
 |----------------|----------------------|----------|----------|
 | Tail-pruned exact histogram | packed nonzero bins plus dropped-tail certificate | Exact where kept; no fitting | Cost grows with effective support |
-| Quantised CDF table | one monotone fixed-point CDF value per retained point | Direct prefix queries, simple error bound | Less useful for arbitrary PMF functionals |
+| Quantised CDF table | one monotone fixed-point CDF value per retained point | Direct prefix queries; error bounded by the quantisation step (`<= 2^-17` at 16 bits) | Less useful for arbitrary PMF functionals |
 | Binomial | `D`, `p`, mass, support | Very cheap, bounded discrete support | Under/over-dispersion and multimodality fail quickly |
 | Beta-binomial | `D`, `alpha`, `beta`, mass, support | First upgrade for over-dispersion | CDF is a finite sum unless tabulated |
 | Mixture of binomials | `K` weights and `K` probabilities, shared `D` | Bounded, discrete, modes-per-float efficient | Component width tied to location |
@@ -135,7 +176,7 @@ first fallback.
 - The data are bounded integer histograms.  Binomial and beta-binomial families
   encode that support directly.
 - Mixtures of binomials use `2K - 1` parameters when every component shares
-  `D`; a Gaussian mixture needs roughly `3K - 1` parameters.  For equal storage,
+  `D`; a Gaussian mixture needs `3K - 1` parameters.  For equal storage,
   binomial mixtures can represent more natural binomial-width modes.
 - Per-node compression is judged by exact CDF/W1 error, not by sampling
   likelihood.  If a cheaper discrete family meets the error budget, a GMM adds
