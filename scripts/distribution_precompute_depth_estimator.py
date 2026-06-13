@@ -71,8 +71,12 @@ def branching_at_depth(depth, default_branching, depth_branching):
 
 
 def cumulative_branching(depth, default_branching, depth_branching):
+    return cumulative_branching_between(0, depth, default_branching, depth_branching)
+
+
+def cumulative_branching_between(start_depth, end_depth, default_branching, depth_branching):
     product = 1.0
-    for step in range(1, int(depth) + 1):
+    for step in range(int(start_depth) + 1, int(end_depth) + 1):
         product *= branching_at_depth(step, default_branching, depth_branching)
     return product
 
@@ -81,6 +85,12 @@ def estimated_path_states(depth, default_branching, depth_branching, minimum=1.0
     if depth <= 0:
         return float(minimum)
     return max(float(minimum), cumulative_branching(depth, default_branching, depth_branching))
+
+
+def estimated_suffix_states(boundary_depth, target_depth, default_branching, depth_branching, minimum=1.0):
+    if int(target_depth) <= int(boundary_depth):
+        return float(minimum)
+    return max(float(minimum), cumulative_branching_between(boundary_depth, target_depth, default_branching, depth_branching))
 
 
 def load_payload_recurrence_summaries(paths):
@@ -180,6 +190,7 @@ class Representation:
 
 def default_representations(depth, args):
     exact_bins = min(max(1, int(depth) + 1), max(1, int(args.exact_max_bins)))
+    sampled_points = min(max(1, int(args.sample_points)), exact_bins)
     return [
         Representation(
             "exact_sparse_histogram",
@@ -189,8 +200,8 @@ def default_representations(depth, args):
             0.0,
         ),
         Representation(
-            "sampled_{}_point_distribution".format(args.sample_points),
-            max(1, int(args.sample_points)),
+            "sampled_up_to_{}_point_distribution".format(args.sample_points),
+            sampled_points,
             args.sample_bytes_per_point,
             0.0,
             args.sample_fit_cost_per_point,
@@ -205,19 +216,21 @@ def default_representations(depth, args):
     ]
 
 
-def estimate_row(depth, representation, args, depth_branching, query_reach_prob):
-    cumulative_b = cumulative_branching(depth, args.branching_factor, depth_branching)
+def estimate_row(boundary_depth, target_depth, representation, args, depth_branching, query_reach_prob):
+    cumulative_b = cumulative_branching(boundary_depth, args.branching_factor, depth_branching)
     expected_hits = args.expected_queries * query_reach_prob / max(cumulative_b, 1.0)
-    path_states = estimated_path_states(depth, args.branching_factor, depth_branching, args.min_path_states)
+    build_states = estimated_path_states(boundary_depth, args.branching_factor, depth_branching, args.min_path_states)
+    suffix_hops = max(0, int(target_depth) - int(boundary_depth))
+    suffix_states = estimated_suffix_states(boundary_depth, target_depth, args.branching_factor, depth_branching, args.min_path_states)
 
-    uncached_suffix_cost = args.uncached_base_cost + path_states * args.uncached_cost_per_state
+    uncached_suffix_cost = args.uncached_base_cost + suffix_states * args.uncached_cost_per_state
     cached_suffix_eval_cost = (
         args.cached_eval_base_cost
         + representation.points * args.cached_eval_cost_per_point
     )
     saved_per_hit = max(0.0, uncached_suffix_cost - cached_suffix_eval_cost)
 
-    build_cost = args.build_base_cost + path_states * args.build_cost_per_state
+    build_cost = args.build_base_cost + build_states * args.build_cost_per_state
     fit_cost = representation.points * representation.fit_cost_per_point
     storage_cost = representation.bytes_estimate * args.storage_cost_per_byte
     amortized_decode_cost = representation.bytes_estimate * args.decode_cost_per_byte
@@ -227,15 +240,18 @@ def estimate_row(depth, representation, args, depth_branching, query_reach_prob)
 
     return {
         "record_type": "distribution_precompute_depth_estimate",
-        "depth": int(depth),
+        "boundary_depth": int(boundary_depth),
+        "target_depth": int(target_depth),
+        "suffix_hops": suffix_hops,
         "representation": representation.name,
         "points": int(representation.points),
         "bytes_estimate": representation.bytes_estimate,
-        "branching_factor": branching_at_depth(depth, args.branching_factor, depth_branching),
+        "branching_factor": branching_at_depth(boundary_depth, args.branching_factor, depth_branching),
         "cumulative_branching": cumulative_b,
         "query_reach_probability": query_reach_prob,
         "expected_hits": expected_hits,
-        "expected_path_states": path_states,
+        "expected_build_states": build_states,
+        "expected_suffix_states": suffix_states,
         "uncached_suffix_cost": uncached_suffix_cost,
         "cached_suffix_eval_cost": cached_suffix_eval_cost,
         "saved_per_hit": saved_per_hit,
@@ -253,6 +269,7 @@ def estimate_row(depth, representation, args, depth_branching, query_reach_prob)
 def build_records(args, calibration=None):
     depth_branching = parse_depth_float_map(args.depth_branching)
     query_reach = parse_depth_float_map(args.query_reach_probability)
+    target_depth = args.max_depth if args.target_depth is None else int(args.target_depth)
     records = [{
         "record_type": "distribution_precompute_depth_estimator_selection",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -262,6 +279,7 @@ def build_records(args, calibration=None):
         "depth_branching": depth_branching,
         "query_reach_probability": query_reach,
         "max_depth": args.max_depth,
+        "target_depth": target_depth,
         "calibration": calibration,
         "cost_model": {
             "uncached_base_cost": args.uncached_base_cost,
@@ -279,7 +297,7 @@ def build_records(args, calibration=None):
     for depth in range(0, int(args.max_depth) + 1):
         reach_probability = query_reach.get(depth, args.default_query_reach_probability)
         for representation in default_representations(depth, args):
-            records.append(estimate_row(depth, representation, args, depth_branching, reach_probability))
+            records.append(estimate_row(depth, target_depth, representation, args, depth_branching, reach_probability))
     return records
 
 
@@ -288,7 +306,7 @@ def summarize(records):
     estimate_rows = [row for row in records if row["record_type"] == "distribution_precompute_depth_estimate"]
     by_depth = {}
     for row in estimate_rows:
-        by_depth.setdefault(row["depth"], []).append(row)
+        by_depth.setdefault(row["boundary_depth"], []).append(row)
 
     lines = [
         "# Distribution Precompute Depth Estimator",
@@ -298,6 +316,8 @@ def summarize(records):
         "Expected queries: `{:.3f}`".format(selection["expected_queries"]),
         "",
         "Default parent branching prior `b = E[p^2] / E[p]`: `{:.6f}`".format(selection["branching_factor"]),
+        "",
+        "Target depth: `{}`".format(selection["target_depth"]),
         "",
     ]
     if selection.get("calibration"):
@@ -321,8 +341,8 @@ def summarize(records):
     lines.extend([
         "## Depth Recommendation",
         "",
-        "| depth | expected_hits | path_states | best_representation | hits_to_break_even | net_value | pays |",
-        "|------:|--------------:|------------:|--------------------|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | expected_hits | suffix_states | build_states | best_representation | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|--------------:|--------------:|-------------:|--------------------|-------------------:|----------:|------|",
     ])
     recommendation_rows = []
     for depth in sorted(by_depth):
@@ -330,10 +350,12 @@ def summarize(records):
         best = max(rows, key=lambda item: item["expected_net_value"])
         recommendation_rows.append(best)
         lines.append(
-            "| {depth} | {hits:.3f} | {states:.3f} | {rep} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {build_states:.3f} | {rep} | {breakeven} | {net:.3f} | {pays} |".format(
                 depth=depth,
+                suffix_hops=best["suffix_hops"],
                 hits=best["expected_hits"],
-                states=best["expected_path_states"],
+                suffix_states=best["expected_suffix_states"],
+                build_states=best["expected_build_states"],
                 rep=best["representation"],
                 breakeven="n/a" if best["hits_to_break_even"] is None else "{:.3f}".format(best["hits_to_break_even"]),
                 net=best["expected_net_value"],
@@ -345,17 +367,19 @@ def summarize(records):
         "",
         "## Representation Detail",
         "",
-        "| depth | representation | points | bytes | expected_hits | saved_per_hit | one_time_cost | hits_to_break_even | net_value | pays |",
-        "|------:|----------------|-------:|------:|--------------:|--------------:|--------------:|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | saved_per_hit | one_time_cost | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------:|--------------:|-------------------:|----------:|------|",
     ])
     for row in estimate_rows:
         lines.append(
-            "| {depth} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {saved:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
-                depth=row["depth"],
+            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {saved:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
+                depth=row["boundary_depth"],
+                suffix_hops=row["suffix_hops"],
                 rep=row["representation"],
                 points=row["points"],
                 bytes=row["bytes_estimate"],
                 hits=row["expected_hits"],
+                suffix_states=row["expected_suffix_states"],
                 saved=row["saved_per_hit"],
                 cost=row["one_time_cost"],
                 breakeven="n/a" if row["hits_to_break_even"] is None else "{:.3f}".format(row["hits_to_break_even"]),
@@ -364,12 +388,12 @@ def summarize(records):
             )
         )
 
-    paying_depths = [row["depth"] for row in recommendation_rows if row["precompute_pays"]]
+    paying_depths = [row["boundary_depth"] for row in recommendation_rows if row["precompute_pays"]]
     lines.extend([
         "",
         "## Summary",
         "",
-        "- deepest recommended depth: `{}`".format(max(paying_depths) if paying_depths else "none"),
+        "- deepest recommended boundary depth: `{}`".format(max(paying_depths) if paying_depths else "none"),
         "- mean best net value: `{:.3f}`".format(mean(row["expected_net_value"] for row in recommendation_rows)),
         "- note: point count is a representation cost input, not the break-even hit count.",
     ])
@@ -394,7 +418,8 @@ def parse_args(argv=None):
     parser.add_argument("--depth-branching", default="", help="Optional depth-specific b values, e.g. 1:1,2:1.67,3:4.25.")
     parser.add_argument("--query-reach-probability", default="", help="Optional depth-specific query reach probabilities.")
     parser.add_argument("--default-query-reach-probability", type=float, default=1.0)
-    parser.add_argument("--max-depth", type=int, default=8)
+    parser.add_argument("--max-depth", type=int, default=8, help="Maximum boundary depth to evaluate.")
+    parser.add_argument("--target-depth", type=int, default=None, help="Depth of the query target. Defaults to --max-depth.")
     parser.add_argument("--min-path-states", type=float, default=1.0)
     parser.add_argument("--uncached-base-cost", type=float, default=0.0)
     parser.add_argument("--uncached-cost-per-state", type=float, default=1.0)

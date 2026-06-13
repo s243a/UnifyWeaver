@@ -6,6 +6,8 @@ Expected queries: `1000.000`
 
 Default parent branching prior `b = E[p^2] / E[p]`: `4.255699`
 
+Target depth: `8`
+
 ## Calibration
 
 | source_summaries | budget_rows | uncached_cost_per_state | build_cost_per_state | cached_eval_cost_per_point | decode_cost_per_byte | mean_parent_reference_reuse |
@@ -14,52 +16,52 @@ Default parent branching prior `b = E[p^2] / E[p]`: `4.255699`
 
 ## Depth Recommendation
 
-| depth | expected_hits | path_states | best_representation | hits_to_break_even | net_value | pays |
-|------:|--------------:|------------:|--------------------|-------------------:|----------:|------|
-| 0 | 1000.000 | 1.000 | exact_sparse_histogram | 2.911 | 38614779.341 | yes |
-| 1 | 1000.000 | 1.000 | exact_sparse_histogram | 10.887 | 10342939.766 | yes |
-| 2 | 600.000 | 1.667 | exact_sparse_histogram | 7.053 | 15921966.668 | yes |
-| 3 | 360.000 | 2.778 | exact_sparse_histogram | 4.307 | 25974520.340 | yes |
-| 4 | 168.000 | 5.952 | parametric_closed_form | 2.342 | 47332112.651 | yes |
-| 5 | 39.476 | 25.332 | parametric_closed_form | 1.788 | 59702077.658 | yes |
-| 6 | 9.276 | 107.803 | parametric_closed_form | 1.694 | 53907984.983 | yes |
-| 7 | 2.180 | 458.779 | parametric_closed_form | 1.673 | 15518615.324 | yes |
-| 8 | 0.512 | 1952.426 | parametric_closed_form | 1.668 | -151081590.705 | no |
+| boundary_depth | suffix_hops | expected_hits | suffix_states | build_states | best_representation | hits_to_break_even | net_value | pays |
+|---------------:|------------:|--------------:|--------------:|-------------:|--------------------|-------------------:|----------:|------|
+| 0 | 8 | 1000.000 | 1952.426 | 1.000 | sampled_up_to_50_point_distribution | 0.001 | 130782728917.374 | yes |
+| 1 | 7 | 1000.000 | 1952.426 | 1.000 | sampled_up_to_50_point_distribution | 0.001 | 130754457621.586 | yes |
+| 2 | 6 | 600.000 | 1171.455 | 1.667 | sampled_up_to_50_point_distribution | 0.002 | 47040906113.140 | yes |
+| 3 | 5 | 360.000 | 702.873 | 2.778 | sampled_up_to_50_point_distribution | 0.007 | 16912084077.661 | yes |
+| 4 | 4 | 168.000 | 328.007 | 5.952 | parametric_closed_form | 0.031 | 3672343216.786 | yes |
+| 5 | 3 | 39.476 | 77.075 | 25.332 | parametric_closed_form | 0.561 | 196557671.118 | yes |
+| 6 | 2 | 9.276 | 18.111 | 107.803 | parametric_closed_form | 10.944 | -1835423.400 | no |
+| 7 | 1 | 2.180 | 4.256 | 458.779 | parametric_closed_form | 297.796 | -50859174.295 | no |
+| 8 | 0 | 0.512 | 1.000 | 1952.426 | parametric_closed_form | n/a | -218022955.366 | no |
 
 ## Representation Detail
 
-| depth | representation | points | bytes | expected_hits | saved_per_hit | one_time_cost | hits_to_break_even | net_value | pays |
-|------:|----------------|-------:|------:|--------------:|--------------:|--------------:|-------------------:|----------:|------|
-| 0 | exact_sparse_histogram | 1 | 16.0 | 1000.000 | 38727.534 | 112755.071 | 2.911 | 38614779.341 | yes |
-| 0 | sampled_50_point_distribution | 50 | 400.0 | 1000.000 | 0.000 | 138954.859 | n/a | -138954.859 | no |
-| 0 | parametric_closed_form | 4 | 64.0 | 1000.000 | 0.000 | 116055.794 | n/a | -116055.794 | no |
-| 1 | exact_sparse_histogram | 2 | 32.0 | 1000.000 | 10456.784 | 113844.645 | 10.887 | 10342939.766 | yes |
-| 1 | sampled_50_point_distribution | 50 | 400.0 | 1000.000 | 0.000 | 138954.859 | n/a | -138954.859 | no |
-| 1 | parametric_closed_form | 4 | 64.0 | 1000.000 | 0.000 | 116055.794 | n/a | -116055.794 | no |
-| 2 | exact_sparse_histogram | 3 | 48.0 | 600.000 | 26852.246 | 189377.921 | 7.053 | 15921966.668 | yes |
-| 2 | sampled_50_point_distribution | 50 | 400.0 | 600.000 | 0.000 | 213398.560 | n/a | -213398.560 | no |
-| 2 | parametric_closed_form | 4 | 64.0 | 600.000 | 0.000 | 190499.496 | n/a | -190499.496 | no |
-| 3 | exact_sparse_histogram | 4 | 64.0 | 360.000 | 73025.198 | 314540.356 | 4.307 | 25974520.340 | yes |
-| 3 | sampled_50_point_distribution | 50 | 400.0 | 360.000 | 0.000 | 337471.421 | n/a | -337471.421 | no |
-| 3 | parametric_closed_form | 4 | 64.0 | 360.000 | 73025.198 | 314572.356 | 4.308 | 25974488.340 | yes |
-| 4 | exact_sparse_histogram | 5 | 80.0 | 168.000 | 257450.647 | 670123.668 | 2.603 | 42581570.660 | yes |
-| 4 | sampled_50_point_distribution | 50 | 400.0 | 168.000 | 0.000 | 691965.158 | n/a | -691965.158 | no |
-| 4 | parametric_closed_form | 4 | 64.0 | 168.000 | 285721.397 | 669066.093 | 2.342 | 47332112.651 | yes |
-| 5 | exact_sparse_histogram | 6 | 96.0 | 39.476 | 1527570.230 | 2835197.563 | 1.856 | 57467872.078 | yes |
-| 5 | sampled_50_point_distribution | 50 | 400.0 | 39.476 | 283657.230 | 2855949.479 | 10.068 | 8341834.676 | yes |
-| 5 | parametric_closed_form | 4 | 64.0 | 39.476 | 1584111.730 | 2833050.414 | 1.788 | 59702077.658 | yes |
-| 6 | exact_sparse_histogram | 7 | 112.0 | 9.276 | 7024857.923 | 12045553.051 | 1.715 | 53118017.890 | yes |
-| 6 | sampled_50_point_distribution | 50 | 400.0 | 9.276 | 5809215.673 | 12065215.391 | 2.077 | 41821886.919 | yes |
-| 6 | parametric_closed_form | 4 | 64.0 | 9.276 | 7109670.173 | 12042316.327 | 1.694 | 53907984.983 | yes |
-| 7 | exact_sparse_histogram | 8 | 128.0 | 2.180 | 30511700.711 | 51238506.360 | 1.679 | 15267802.179 | yes |
-| 7 | sampled_50_point_distribution | 50 | 400.0 | 2.180 | 29324329.211 | 51257079.126 | 1.748 | 12661117.525 | yes |
-| 7 | parametric_closed_form | 4 | 64.0 | 2.180 | 30624783.711 | 51234180.062 | 1.673 | 15518615.324 | yes |
-| 8 | exact_sparse_histogram | 9 | 144.0 | 0.512 | 130556675.129 | 218028371.239 | 1.670 | -151159405.626 | no |
-| 8 | sampled_50_point_distribution | 50 | 400.0 | 0.512 | 129397574.379 | 218045854.431 | 1.685 | -151770561.015 | no |
-| 8 | parametric_closed_form | 4 | 64.0 | 0.512 | 130698028.879 | 218022955.366 | 1.668 | -151081590.705 | no |
+| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | saved_per_hit | one_time_cost | hits_to_break_even | net_value | pays |
+|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------:|--------------:|-------------------:|----------:|------|
+| 0 | 8 | exact_sparse_histogram | 1 | 16.0 | 1000.000 | 1952.426 | 130782841.129 | 112755.071 | 0.001 | 130782728373.586 | yes |
+| 0 | 8 | sampled_up_to_50_point_distribution | 1 | 8.0 | 1000.000 | 1952.426 | 130782841.129 | 112211.284 | 0.001 | 130782728917.374 | yes |
+| 0 | 8 | parametric_closed_form | 4 | 64.0 | 1000.000 | 1952.426 | 130698028.879 | 116055.794 | 0.001 | 130697912822.863 | yes |
+| 1 | 7 | exact_sparse_histogram | 2 | 32.0 | 1000.000 | 1952.426 | 130754570.379 | 113844.645 | 0.001 | 130754456534.012 | yes |
+| 1 | 7 | sampled_up_to_50_point_distribution | 2 | 16.0 | 1000.000 | 1952.426 | 130754570.379 | 112757.071 | 0.001 | 130754457621.586 | yes |
+| 1 | 7 | parametric_closed_form | 4 | 64.0 | 1000.000 | 1952.426 | 130698028.879 | 116055.794 | 0.001 | 130697912822.863 | yes |
+| 2 | 6 | exact_sparse_histogram | 3 | 48.0 | 600.000 | 1171.455 | 78401838.780 | 189377.921 | 0.002 | 47040904481.778 | yes |
+| 2 | 6 | sampled_up_to_50_point_distribution | 3 | 24.0 | 600.000 | 1171.455 | 78401838.780 | 187746.560 | 0.002 | 47040906113.140 | yes |
+| 2 | 6 | parametric_closed_form | 4 | 64.0 | 600.000 | 1171.455 | 78373568.030 | 190499.496 | 0.002 | 47023940913.596 | yes |
+| 3 | 5 | exact_sparse_histogram | 4 | 64.0 | 360.000 | 702.873 | 46978897.800 | 314540.356 | 0.007 | 16912081902.512 | yes |
+| 3 | 5 | sampled_up_to_50_point_distribution | 4 | 32.0 | 360.000 | 702.873 | 46978897.800 | 312365.207 | 0.007 | 16912084077.661 | yes |
+| 3 | 5 | parametric_closed_form | 4 | 64.0 | 360.000 | 702.873 | 46978897.800 | 314572.356 | 0.007 | 16912081870.512 | yes |
+| 4 | 4 | exact_sparse_histogram | 5 | 80.0 | 168.000 | 328.007 | 21834904.888 | 670123.668 | 0.031 | 3667592674.795 | yes |
+| 4 | 4 | sampled_up_to_50_point_distribution | 5 | 40.0 | 168.000 | 328.007 | 21834904.888 | 667404.731 | 0.031 | 3667595393.731 | yes |
+| 4 | 4 | parametric_closed_form | 4 | 64.0 | 168.000 | 328.007 | 21863175.638 | 669066.093 | 0.031 | 3672343216.786 | yes |
+| 5 | 3 | exact_sparse_histogram | 6 | 96.0 | 39.476 | 77.075 | 4994334.554 | 2835197.563 | 0.568 | 194323465.538 | yes |
+| 5 | 3 | sampled_up_to_50_point_distribution | 6 | 48.0 | 39.476 | 77.075 | 4994334.554 | 2831934.840 | 0.567 | 194326728.262 | yes |
+| 5 | 3 | parametric_closed_form | 4 | 64.0 | 39.476 | 77.075 | 5050876.054 | 2833050.414 | 0.561 | 196557671.118 | yes |
+| 6 | 2 | exact_sparse_histogram | 7 | 112.0 | 9.276 | 18.111 | 1015526.047 | 12045553.051 | 11.861 | -2625390.493 | no |
+| 6 | 2 | sampled_up_to_50_point_distribution | 7 | 56.0 | 9.276 | 18.111 | 1015526.047 | 12041746.540 | 11.858 | -2621583.982 | no |
+| 6 | 2 | parametric_closed_form | 4 | 64.0 | 9.276 | 18.111 | 1100338.297 | 12042316.327 | 10.944 | -1835423.400 | no |
+| 7 | 1 | exact_sparse_histogram | 8 | 128.0 | 2.180 | 4.256 | 58961.788 | 51238506.360 | 869.012 | -51109987.439 | no |
+| 7 | 1 | sampled_up_to_50_point_distribution | 8 | 64.0 | 2.180 | 4.256 | 58961.788 | 51234156.062 | 868.938 | -51105637.141 | no |
+| 7 | 1 | parametric_closed_form | 4 | 64.0 | 2.180 | 4.256 | 172044.788 | 51234180.062 | 297.796 | -50859174.295 | no |
+| 8 | 0 | exact_sparse_histogram | 9 | 144.0 | 0.512 | 1.000 | 0.000 | 218028371.239 | n/a | -218028371.239 | no |
+| 8 | 0 | sampled_up_to_50_point_distribution | 9 | 72.0 | 0.512 | 1.000 | 0.000 | 218023477.153 | n/a | -218023477.153 | no |
+| 8 | 0 | parametric_closed_form | 4 | 64.0 | 0.512 | 1.000 | 0.000 | 218022955.366 | n/a | -218022955.366 | no |
 
 ## Summary
 
-- deepest recommended depth: `7`
-- mean best net value: `12914822.892`
+- deepest recommended boundary depth: `5`
+- mean best net value: `36565373340.512`
 - note: point count is a representation cost input, not the break-even hit count.
