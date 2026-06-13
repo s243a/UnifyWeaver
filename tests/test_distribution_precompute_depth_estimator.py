@@ -95,6 +95,58 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         self.assertAlmostEqual(row["expected_build_states"], 16.0)
         self.assertAlmostEqual(row["expected_suffix_states"], 64.0)
 
+    def test_measured_cap_limits_suffix_work(self):
+        args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "2",
+            "--target-depth", "5",
+            "--cap-mode", "measured",
+            "--estimated-full-work", "10",
+        ])
+
+        row = next(
+            row for row in build_records(args)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["boundary_depth"] == 2
+            and row["representation"] == "exact_sparse_histogram"
+        )
+
+        self.assertAlmostEqual(row["expected_suffix_states"], 64.0)
+        self.assertAlmostEqual(row["cap_limited_suffix_states"], 10.0)
+        self.assertAlmostEqual(row["uncached_suffix_cost"], 10.0)
+
+    def test_decode_cost_is_per_hit_unless_memoized(self):
+        uncached_args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "1",
+            "--target-depth", "3",
+            "--decode-cost-per-byte", "2",
+        ])
+        memoized_args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "1",
+            "--target-depth", "3",
+            "--decode-cost-per-byte", "2",
+            "--decode-memoized",
+        ])
+
+        uncached = next(
+            row for row in build_records(uncached_args)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["boundary_depth"] == 1
+            and row["representation"] == "exact_sparse_histogram"
+        )
+        memoized = next(
+            row for row in build_records(memoized_args)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["boundary_depth"] == 1
+            and row["representation"] == "exact_sparse_histogram"
+        )
+
+        self.assertGreater(uncached["per_hit_decode_cost"], 0.0)
+        self.assertEqual(memoized["per_hit_decode_cost"], 0.0)
+        self.assertGreater(memoized["saved_per_hit"], uncached["saved_per_hit"])
+
     def test_calibration_reads_payload_recurrence_summary(self):
         args = parse_args([
             "--branching-factor", "4",
