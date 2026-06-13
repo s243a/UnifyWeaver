@@ -1,0 +1,314 @@
+[
+  {
+    "admit_l_max": 2,
+    "admit_l_min": 1,
+    "ancestor_capped_queries": 1,
+    "ancestor_capped_query_rate": 0.25,
+    "boundary_budget": 4,
+    "boundary_capped_entries": 0,
+    "budget_rows": [
+      {
+        "budget": 3,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 3765.0,
+        "mean_cache_hits": 1.0,
+        "mean_cache_payload_bytes_read": 43.0,
+        "mean_cached_time_ns": 119681.5,
+        "mean_full_time_ns": 91839.5,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9624556062912227,
+        "mean_time_ratio": 1.3202886955127866,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      },
+      {
+        "budget": 4,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 9289.25,
+        "mean_cache_hits": 2.25,
+        "mean_cache_payload_bytes_read": 99.0,
+        "mean_cached_time_ns": 553474.75,
+        "mean_full_time_ns": 499363.0,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9637353746940588,
+        "mean_time_ratio": 1.102844095417615,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      }
+    ],
+    "cache_slots": 32,
+    "expansion_cap": 12000,
+    "generated_at": "2026-06-13T06:13:44.001705+00:00",
+    "graph": "enwiki_mtc_payload_cache_runtime_smoke",
+    "materialized_boundary_entries": 8,
+    "materialized_boundary_rate": 1.0,
+    "max_cache_payload_bytes": 52,
+    "mean_ancestor_nodes": 260.0,
+    "mean_boundary_nodes_expanded": 384.375,
+    "mean_cache_payload_bytes": 44.5,
+    "mean_cache_payload_decoded_max_cdf_error": 0.0,
+    "mean_raw_histogram_bytes": 22.0,
+    "p95_ancestor_nodes": 600.0,
+    "path_cap": 3000,
+    "policy_action_rates": {
+      "insert": 0.3076923076923077,
+      "refresh": 0.6923076923076923
+    },
+    "policy_actions": {
+      "insert": 8,
+      "refresh": 18
+    },
+    "policy_resident_entries": 8,
+    "record_type": "policy_cache_runtime_summary",
+    "root": 7345184,
+    "target_depths": [
+      2
+    ],
+    "target_selection_counts": {
+      "0": 1,
+      "1": 16,
+      "2": 200
+    },
+    "targets": 4
+  },
+  {
+    "admit_l_max": 3,
+    "admit_l_min": 1,
+    "ancestor_capped_queries": 1,
+    "ancestor_capped_query_rate": 0.25,
+    "boundary_budget": 4,
+    "boundary_capped_entries": 0,
+    "budget_rows": [
+      {
+        "budget": 3,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 5037.25,
+        "mean_cache_hits": 1.25,
+        "mean_cache_payload_bytes_read": 56.0,
+        "mean_cached_time_ns": 122769.0,
+        "mean_full_time_ns": 105137.25,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9624556062912227,
+        "mean_time_ratio": 1.2120032953632334,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      },
+      {
+        "budget": 4,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 10887.5,
+        "mean_cache_hits": 2.5,
+        "mean_cache_payload_bytes_read": 112.0,
+        "mean_cached_time_ns": 602170.5,
+        "mean_full_time_ns": 517400.25,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9626805223733836,
+        "mean_time_ratio": 1.1588693575458184,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      }
+    ],
+    "cache_slots": 32,
+    "expansion_cap": 12000,
+    "generated_at": "2026-06-13T06:13:44.010187+00:00",
+    "graph": "enwiki_mtc_payload_cache_runtime_smoke",
+    "materialized_boundary_entries": 9,
+    "materialized_boundary_rate": 1.0,
+    "max_cache_payload_bytes": 52,
+    "mean_ancestor_nodes": 260.0,
+    "mean_boundary_nodes_expanded": 445.44444444444446,
+    "mean_cache_payload_bytes": 45.333333333333336,
+    "mean_cache_payload_decoded_max_cdf_error": 0.0,
+    "mean_raw_histogram_bytes": 23.11111111111111,
+    "p95_ancestor_nodes": 600.0,
+    "path_cap": 3000,
+    "policy_action_rates": {
+      "insert": 0.3103448275862069,
+      "refresh": 0.6896551724137931
+    },
+    "policy_actions": {
+      "insert": 9,
+      "refresh": 20
+    },
+    "policy_resident_entries": 9,
+    "record_type": "policy_cache_runtime_summary",
+    "root": 7345184,
+    "target_depths": [
+      2
+    ],
+    "target_selection_counts": {
+      "0": 1,
+      "1": 16,
+      "2": 200
+    },
+    "targets": 4
+  },
+  {
+    "admit_l_max": 2,
+    "admit_l_min": 1,
+    "ancestor_capped_queries": 1,
+    "ancestor_capped_query_rate": 0.25,
+    "boundary_budget": 4,
+    "boundary_capped_entries": 0,
+    "budget_rows": [
+      {
+        "budget": 3,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 3900.0,
+        "mean_cache_hits": 1.0,
+        "mean_cache_payload_bytes_read": 43.0,
+        "mean_cached_time_ns": 110310.5,
+        "mean_full_time_ns": 98312.5,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9624556062912227,
+        "mean_time_ratio": 1.1424865321059117,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      },
+      {
+        "budget": 4,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 8640.0,
+        "mean_cache_hits": 2.25,
+        "mean_cache_payload_bytes_read": 99.0,
+        "mean_cached_time_ns": 560624.75,
+        "mean_full_time_ns": 497954.0,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9637353746940588,
+        "mean_time_ratio": 1.1196482724455497,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      }
+    ],
+    "cache_slots": 64,
+    "expansion_cap": 12000,
+    "generated_at": "2026-06-13T06:13:44.017760+00:00",
+    "graph": "enwiki_mtc_payload_cache_runtime_smoke",
+    "materialized_boundary_entries": 8,
+    "materialized_boundary_rate": 1.0,
+    "max_cache_payload_bytes": 52,
+    "mean_ancestor_nodes": 260.0,
+    "mean_boundary_nodes_expanded": 384.375,
+    "mean_cache_payload_bytes": 44.5,
+    "mean_cache_payload_decoded_max_cdf_error": 0.0,
+    "mean_raw_histogram_bytes": 22.0,
+    "p95_ancestor_nodes": 600.0,
+    "path_cap": 3000,
+    "policy_action_rates": {
+      "insert": 0.3076923076923077,
+      "refresh": 0.6923076923076923
+    },
+    "policy_actions": {
+      "insert": 8,
+      "refresh": 18
+    },
+    "policy_resident_entries": 8,
+    "record_type": "policy_cache_runtime_summary",
+    "root": 7345184,
+    "target_depths": [
+      2
+    ],
+    "target_selection_counts": {
+      "0": 1,
+      "1": 16,
+      "2": 200
+    },
+    "targets": 4
+  },
+  {
+    "admit_l_max": 3,
+    "admit_l_min": 1,
+    "ancestor_capped_queries": 1,
+    "ancestor_capped_query_rate": 0.25,
+    "boundary_budget": 4,
+    "boundary_capped_entries": 0,
+    "budget_rows": [
+      {
+        "budget": 3,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 5308.5,
+        "mean_cache_hits": 1.25,
+        "mean_cache_payload_bytes_read": 56.0,
+        "mean_cached_time_ns": 130135.75,
+        "mean_full_time_ns": 97310.75,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9624556062912227,
+        "mean_time_ratio": 1.3705573936804638,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      },
+      {
+        "budget": 4,
+        "cached_capped": 0,
+        "full_capped": 0,
+        "max_l1_error": 0.0,
+        "mean_cache_decode_ns": 11401.5,
+        "mean_cache_hits": 2.5,
+        "mean_cache_payload_bytes_read": 112.0,
+        "mean_cached_time_ns": 587843.75,
+        "mean_full_time_ns": 522545.5,
+        "mean_l1_error": 0.0,
+        "mean_max_cdf_error": 0.0,
+        "mean_node_expansion_ratio": 0.9626805223733836,
+        "mean_time_ratio": 1.1198768886392767,
+        "p95_l1_error": 0.0,
+        "rows": 4
+      }
+    ],
+    "cache_slots": 64,
+    "expansion_cap": 12000,
+    "generated_at": "2026-06-13T06:13:44.026098+00:00",
+    "graph": "enwiki_mtc_payload_cache_runtime_smoke",
+    "materialized_boundary_entries": 9,
+    "materialized_boundary_rate": 1.0,
+    "max_cache_payload_bytes": 52,
+    "mean_ancestor_nodes": 260.0,
+    "mean_boundary_nodes_expanded": 445.44444444444446,
+    "mean_cache_payload_bytes": 45.333333333333336,
+    "mean_cache_payload_decoded_max_cdf_error": 0.0,
+    "mean_raw_histogram_bytes": 23.11111111111111,
+    "p95_ancestor_nodes": 600.0,
+    "path_cap": 3000,
+    "policy_action_rates": {
+      "insert": 0.3103448275862069,
+      "refresh": 0.6896551724137931
+    },
+    "policy_actions": {
+      "insert": 9,
+      "refresh": 20
+    },
+    "policy_resident_entries": 9,
+    "record_type": "policy_cache_runtime_summary",
+    "root": 7345184,
+    "target_depths": [
+      2
+    ],
+    "target_selection_counts": {
+      "0": 1,
+      "1": 16,
+      "2": 200
+    },
+    "targets": 4
+  }
+]
