@@ -246,6 +246,13 @@ whitespace is ignored, and whitespace runs do not create empty fields.
 
 The first `substr` surface uses AWK-style 1-based starts and byte counts.
 
+`index` returns an AWK-style 1-based byte position, or `0` if the literal is not
+present:
+
+```awk
+$1 == "ERROR" { print index($2, "sk"), index($0, "disk") }
+```
+
 `BEGIN` can also set an explicit single-byte field separator for the native field helpers:
 
 ```awk
