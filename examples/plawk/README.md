@@ -84,7 +84,9 @@ guarded rules can update shared scalar slots before an `END` print. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
 Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per
-source array rather than specializing the `END` keys to fixed slots; each table
+source array rather than specializing the `END` keys to fixed slots. Guarded
+associative count rules lower through the same native rule-chain shape as scalar
+counters, so `$1 == "ERROR" { by_component[$2]++ }` only updates on matches. Each table
 grows and rehashes as needed, and the native stream reader grows its line buffer
 without consuming WAM
 arena space per record.

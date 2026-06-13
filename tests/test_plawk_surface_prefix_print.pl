@@ -65,6 +65,16 @@ test(parses_multi_assoc_count_end_print_rule) :-
         [end([print([assoc(var(counts), string("ERROR")),
                      assoc(var(by_component), string("disk"))])])])).
 
+test(parses_guarded_assoc_count_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { by_component[$2]++ } $1 == \"WARN\" { warnings[$2]++ } END { print by_component[\"disk\"], warnings[\"cpu\"] }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "ERROR"), [inc_assoc(var(by_component), field(2))]),
+         rule(field_eq(1, "WARN"), [inc_assoc(var(warnings), field(2))])],
+        [end([print([
+            assoc(var(by_component), string("disk")),
+            assoc(var(warnings), string("cpu"))
+        ])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -110,6 +120,11 @@ test(surface_assoc_counts_multiple_arrays) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2 1 1\n").
 
+test(surface_guarded_assoc_counts_multiple_arrays) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { by_component[$2]++ } $1 == \"WARN\" { warnings[$2]++ } END { print by_component[\"disk\"], by_component[\"net\"], warnings[\"cpu\"], warnings[\"disk\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\nWARN disk alert\n",
+        "1 1 1 1\n").
+
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
         ( between(0, 2050, Index), format(atom(Line), 'K~w payload\n', [Index]) ),
@@ -134,18 +149,32 @@ test(surface_assoc_counts_use_runtime_table) :-
     assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_free')),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_check_0')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%assoc_inc_slot_')),
-    assertion(\+ sub_atom(DriverIR, _, _, _, '%slot_0 = phi')).
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%slot_0 = phi')),
+    !.
 
 test(surface_assoc_counts_multiple_arrays_use_distinct_runtime_tables) :-
     plawk_parse_string("{ counts[$1]++; by_component[$2]++ } END { print counts[\"ERROR\"], by_component[\"disk\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_0 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_1 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_action_0:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_action_1:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_1:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%plawk_assoc_table = call')),
+    !.
+
+test(surface_guarded_assoc_counts_use_native_rule_chain) :-
+    plawk_parse_string("$1 == \"ERROR\" { by_component[$2]++ } $1 == \"WARN\" { warnings[$2]++ } END { print by_component[\"disk\"], warnings[\"cpu\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_match:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_match:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fassoc_5Frule_5F0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fassoc_5Frule_5F1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-

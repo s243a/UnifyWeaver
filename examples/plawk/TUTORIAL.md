@@ -180,6 +180,21 @@ For the sample input above, that prints:
 2 1 1
 ```
 
+Associative counts can also be guarded:
+
+```awk
+$1 == "ERROR" { by_component[$2]++ }
+$1 == "WARN"  { warnings[$2]++ }
+END { print by_component["disk"], warnings["cpu"] }
+```
+
+The generated native loop checks each rule's guard before entering its table
+increment block. For the sample input, that prints:
+
+```text
+1 1
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

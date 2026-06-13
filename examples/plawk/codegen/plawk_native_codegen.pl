@@ -21,6 +21,7 @@
 %      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
 %      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
+%      $N == "VALUE" { counts[$M]++ } END { print counts["KEY"] }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -82,9 +83,10 @@ plawk_program_native_driver_ir(
     plawk_assoc_runtime_count_plan(Rules, PrintFields, AssocPlan),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
-    plawk_assoc_count_chain_ir(AssocPlan, AssocChainIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, AssocRuleGlobalIR, AssocChainIR),
     plawk_assoc_end_print_ir(PrintFields, AssocPlan, EndPrintIR),
-    plawk_i64_end_print_globals(AssocGlobalIR, RuntimeGlobals),
+    format(atom(SurfaceGlobalIR), '~w~n~w', [AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
 ~w
@@ -241,23 +243,40 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
 plawk_scalar_state_slot(Name, scalar_counter(Name)).
 
 plawk_assoc_runtime_count_plan(
-    [rule(always, Actions)],
+    Rules,
     PrintFields,
-    assoc_plan(Tables, PlannedActions)
+    assoc_plan(Tables, PlannedRules)
 ) :-
-    maplist(plawk_assoc_increment_action, Actions, ActionSpecs),
-    ActionSpecs \== [],
+    maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
+    RuleSpecs \== [],
     maplist(plawk_assoc_print_array, PrintFields, PrintArrays),
     PrintArrays \== [],
-    findall(ArrayName, member(ArrayName-_KeyIndex, ActionSpecs), ActionArrays),
+    findall(ArrayName,
+        ( member(rule(_Pattern, ActionSpecs), RuleSpecs),
+          member(ArrayName-_KeyIndex, ActionSpecs)
+        ),
+        ActionArrays),
     append(ActionArrays, PrintArrays, ArrayNames0),
     sort(ArrayNames0, Tables),
-    phrase(plawk_assoc_planned_actions(ActionSpecs, Tables, 0), PlannedActions).
+    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
+
+plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs)) :-
+    maplist(plawk_assoc_increment_action, Actions, ActionSpecs),
+    ActionSpecs \== [].
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
 
 plawk_assoc_print_array(assoc(var(ArrayName), string(_Key)), ArrayName).
+
+plawk_assoc_planned_rules([], _Tables, _Index) -->
+    [].
+plawk_assoc_planned_rules([rule(Pattern, ActionSpecs) | Rest], Tables, Index) -->
+    { phrase(plawk_assoc_planned_actions(ActionSpecs, Tables, 0), PlannedActions),
+      NextIndex is Index + 1
+    },
+    [assoc_rule(Index, Pattern, PlannedActions)],
+    plawk_assoc_planned_rules(Rest, Tables, NextIndex).
 
 plawk_assoc_planned_actions([], _Tables, _Index) -->
     [].
@@ -283,52 +302,112 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index) -->
     [Line],
     plawk_assoc_entry_setup_lines(Rest, NextIndex).
 
-plawk_assoc_count_chain_ir(assoc_plan(_Tables, Actions), ChainIR) :-
-    phrase(plawk_assoc_count_action_lines(Actions), Lines),
-    atomic_list_concat(Lines, '\n', ChainIR).
+plawk_assoc_rule_chain_ir(assoc_plan(_Tables, Rules), GlobalIR, ChainIR) :-
+    length(Rules, RuleCount),
+    RuleCount > 0,
+    phrase(plawk_assoc_rule_chain_lines(Rules, 0), Pairs),
+    pairs_keys_values(Pairs, GlobalParts, ChainParts),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR),
+    atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_assoc_count_action_lines([]) -->
-    ['  br label %continue_loop'].
-plawk_assoc_count_action_lines([Action | Rest]) -->
-    ['  br label %assoc_action_0', ''],
-    plawk_assoc_count_action_blocks([Action | Rest]).
-
-plawk_assoc_count_action_blocks([]) -->
+plawk_assoc_rule_chain_lines([], _) -->
     [].
-plawk_assoc_count_action_blocks([assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest]) -->
-    { ( Rest == []
+plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions) | Rest], Index) -->
+    { NextIndex is Index + 1,
+      ( Rest == []
       -> NextLabel = 'continue_loop'
-      ;  NextIndex is Index + 1,
-         format(atom(NextLabel), 'assoc_action_~w', [NextIndex])
+      ;  format(atom(NextLabel), 'assoc_rule_~w_match', [NextIndex])
       ),
-      format(atom(Label), 'assoc_action_~w:', [Index]),
-      format(atom(HaveLabel), 'assoc_action_~w_have_key:', [Index]),
-      format(atom(HaveLabelName), 'assoc_action_~w_have_key', [Index]),
+      format(atom(RuleLabel), 'assoc_rule_~w_match', [Index]),
+      format(atom(ApplyLabel), 'assoc_rule_~w_apply', [Index]),
+      plawk_assoc_rule_apply_ir(Index, Actions, NextLabel, ApplyIR),
+      ( Index =:= 0
+      -> EntryIR = '  br label %assoc_rule_0_match\n\n'
+      ;  EntryIR = ''
+      ),
+      plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
+          NextLabel, EntryIR, GuardGlobalIR, BranchIR),
+      format(atom(RuleIR),
+'~w
+
+~w:
+~w',
+          [BranchIR, ApplyLabel, ApplyIR]),
+      Pair = GuardGlobalIR-RuleIR
+    },
+    [Pair],
+    plawk_assoc_rule_chain_lines(Rest, NextIndex).
+
+plawk_assoc_rule_guard_ir(always, _Index, RuleLabel, ApplyLabel, _NextLabel,
+    EntryIR, '', IR) :-
+    !,
+    format(atom(IR),
+'~w~w:
+  br label %~w',
+        [EntryIR, RuleLabel, ApplyLabel]).
+plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
+    EntryIR, GuardGlobalIR, IR) :-
+    format(atom(MatchVar), 'assoc_rule_~w_is_match', [Index]),
+    format(atom(GlobalBase), 'plawk_assoc_rule_~w', [Index]),
+    format(atom(MatchValue), '%~w', [MatchVar]),
+    plawk_pattern_guard_ir(Pattern, GlobalBase, MatchValue,
+        GuardGlobalIR-GuardCallIR),
+    format(atom(IR),
+'~w~w:
+~w
+  br i1 %~w, label %~w, label %~w',
+        [EntryIR, RuleLabel, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
+
+plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, IR) :-
+    phrase(plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel) -->
+    { Actions = [_ | _],
+      format(atom(FirstBranch), '  br label %assoc_rule_~w_action_0', [RuleIndex])
+    },
+    [FirstBranch, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Actions, NextLabel).
+
+plawk_assoc_rule_action_blocks(_RuleIndex, [], _NextLabel) -->
+    [].
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:',
+          [RuleIndex, Index]),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
+          [RuleIndex, Index]),
       format(atom(Slice),
-          '  %assoc_action_~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 32)',
-          [Index, KeyIndex]),
+          '  %assoc_rule_~w_action_~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 32)',
+          [RuleIndex, Index, KeyIndex]),
       format(atom(Ptr),
-          '  %assoc_action_~w_key_ptr = extractvalue %WamSlice %assoc_action_~w_key_slice, 0',
-          [Index, Index]),
+          '  %assoc_rule_~w_action_~w_key_ptr = extractvalue %WamSlice %assoc_rule_~w_action_~w_key_slice, 0',
+          [RuleIndex, Index, RuleIndex, Index]),
       format(atom(Len),
-          '  %assoc_action_~w_key_len = extractvalue %WamSlice %assoc_action_~w_key_slice, 1',
-          [Index, Index]),
+          '  %assoc_rule_~w_action_~w_key_len = extractvalue %WamSlice %assoc_rule_~w_action_~w_key_slice, 1',
+          [RuleIndex, Index, RuleIndex, Index]),
       format(atom(Missing),
-          '  %assoc_action_~w_key_missing = icmp eq i8* %assoc_action_~w_key_ptr, null',
-          [Index, Index]),
+          '  %assoc_rule_~w_action_~w_key_missing = icmp eq i8* %assoc_rule_~w_action_~w_key_ptr, null',
+          [RuleIndex, Index, RuleIndex, Index]),
       format(atom(Branch),
-          '  br i1 %assoc_action_~w_key_missing, label %~w, label %~w',
-          [Index, NextLabel, HaveLabelName]),
+          '  br i1 %assoc_rule_~w_action_~w_key_missing, label %~w, label %~w',
+          [RuleIndex, Index, ActionNextLabel, HaveLabelName]),
       format(atom(KeyId),
-          '  %assoc_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_action_~w_key_ptr, i64 %assoc_action_~w_key_len)',
-          [Index, Index, Index]),
+          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_ptr, i64 %assoc_rule_~w_action_~w_key_len)',
+          [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
       format(atom(Inc),
-          '  %assoc_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_action_~w_key_id, i64 1)',
-          [Index, TableIndex, Index]),
-      format(atom(Next), '  br label %~w', [NextLabel])
+          '  %assoc_rule_~w_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id, i64 1)',
+          [RuleIndex, Index, TableIndex, RuleIndex, Index]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
-    plawk_assoc_count_action_blocks(Rest).
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel).
 
 plawk_assoc_print_key_globals(PrintFields, GlobalIR) :-
     phrase(plawk_assoc_print_key_global_lines(PrintFields, 0), Lines),
