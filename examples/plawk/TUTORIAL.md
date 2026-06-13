@@ -240,7 +240,10 @@ kind count
 total 4
 ```
 
-`BEGIN` can also set a single-byte field separator for the native field helpers:
+By default, `FS=" "` uses AWK-style whitespace splitting: leading and trailing
+whitespace is ignored, and whitespace runs do not create empty fields.
+
+`BEGIN` can also set an explicit single-byte field separator for the native field helpers:
 
 ```awk
 BEGIN { FS = ":" }

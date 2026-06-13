@@ -91,9 +91,11 @@ associative count rules lower through the same native rule-chain shape as scalar
 counters, so `$1 == "ERROR" { by_component[$2]++ }` only updates on matches. Each table
 grows and rehashes as needed, and the native stream reader grows its line buffer
 without consuming WAM arena space per record. `BEGIN` print clauses can emit
-literal report headers before the stream opens, and the first `BEGIN` assignment
-slice supports single-byte `FS` values such as `BEGIN { FS = ":" }` for native
-field equality, selected-field printing, and associative key extraction. Single-byte
+literal report headers before the stream opens. The default space `FS` uses
+AWK-style whitespace splitting, so leading whitespace is ignored and whitespace
+runs do not create empty fields. The first `BEGIN` assignment slice supports
+explicit single-byte `FS` values such as `BEGIN { FS = ":" }` for native field
+equality, selected-field printing, and associative key extraction. Single-byte
 `OFS` values such as `BEGIN { OFS = "," }` drive comma-separated `print` fields;
 the native path emits separator bytes directly, so values such as `%` are data,
 not `printf` formats. Mixed scalar/associative state is

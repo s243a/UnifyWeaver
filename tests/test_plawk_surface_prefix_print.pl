@@ -178,6 +178,11 @@ test(surface_field_eq_prints_native_field_lengths) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down now\n",
         "2 3 4 disk\n4 4 7 network\n").
 
+test(surface_default_space_fs_collapses_whitespace_runs) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { print NF, $2, length($2) }\n",
+        "  INFO   boot ok\n\tERROR   disk   full  \nWARN cpu hot\n  ERROR\tnetwork  down now\n",
+        "3 disk 4\n4 network 7\n").
+
 test(surface_field_eq_prints_nr_with_output_separator) :-
     run_surface_print_smoke("BEGIN { OFS = \",\" } $1 == \"ERROR\" { print NR, $2, $3 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -426,6 +431,16 @@ test(surface_length_print_uses_native_field_length) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_length_1 = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_length_1 = call i32 (i8*, ...) @printf(i8* %length_fmt_1, i64 %plawk_length_1)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_default_space_fs_uses_native_whitespace_helpers) :-
+    plawk_parse_string("$1 == \"ERROR\" { print NF, $2, length($2) }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value(%Value %line, i64 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_count_value(%Value %line, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_length_value(%Value %line, i64 2, i8 32)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

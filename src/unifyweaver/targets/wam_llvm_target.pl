@@ -4580,8 +4580,52 @@ ap.no:
   ret i1 false
 }
 
+define i1 @wam_is_field_whitespace(i8 %ch) {
+entry:
+  %ws.space = icmp eq i8 %ch, 32
+  %ws.tab = icmp eq i8 %ch, 9
+  %ws.lf = icmp eq i8 %ch, 10
+  %ws.cr = icmp eq i8 %ch, 13
+  %ws.a = or i1 %ws.space, %ws.tab
+  %ws.b = or i1 %ws.lf, %ws.cr
+  %ws.r = or i1 %ws.a, %ws.b
+  ret i1 %ws.r
+}
+
 define i1 @wam_atom_field_eq_value(%Value %atom_value, i64 %field_index, i8* %expected, i64 %expected_len, i8 %sep) {
 entry:
+  %fe.default_sep = icmp eq i8 %sep, 32
+  br i1 %fe.default_sep, label %fe.slice_compare, label %fe.literal_entry
+
+fe.slice_compare:
+  %fe.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fe.slice_ptr = extractvalue %WamSlice %fe.slice, 0
+  %fe.slice_len = extractvalue %WamSlice %fe.slice, 1
+  %fe.slice_has_ptr = icmp ne i8* %fe.slice_ptr, null
+  br i1 %fe.slice_has_ptr, label %fe.slice_len_check, label %fe.no
+
+fe.slice_len_check:
+  %fe.slice_len_ok = icmp eq i64 %fe.slice_len, %expected_len
+  br i1 %fe.slice_len_ok, label %fe.slice_compare_loop, label %fe.no
+
+fe.slice_compare_loop:
+  %fe.slice_i = phi i64 [ 0, %fe.slice_len_check ], [ %fe.slice_next_i, %fe.slice_compare_step ]
+  %fe.slice_done = icmp uge i64 %fe.slice_i, %expected_len
+  br i1 %fe.slice_done, label %fe.yes, label %fe.slice_compare_char
+
+fe.slice_compare_char:
+  %fe.slice_line_ptr = getelementptr i8, i8* %fe.slice_ptr, i64 %fe.slice_i
+  %fe.slice_exp_ptr = getelementptr i8, i8* %expected, i64 %fe.slice_i
+  %fe.slice_line_ch = load i8, i8* %fe.slice_line_ptr
+  %fe.slice_exp_ch = load i8, i8* %fe.slice_exp_ptr
+  %fe.slice_eq = icmp eq i8 %fe.slice_line_ch, %fe.slice_exp_ch
+  br i1 %fe.slice_eq, label %fe.slice_compare_step, label %fe.no
+
+fe.slice_compare_step:
+  %fe.slice_next_i = add i64 %fe.slice_i, 1
+  br label %fe.slice_compare_loop
+
+fe.literal_entry:
   %fe.t = call i32 @value_tag(%Value %atom_value)
   %fe.is_atom = icmp eq i32 %fe.t, 0
   br i1 %fe.is_atom, label %fe.check_index, label %fe.no
@@ -4664,6 +4708,10 @@ define %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_inde
 entry:
   %fs.empty0 = insertvalue %WamSlice undef, i8* null, 0
   %fs.empty = insertvalue %WamSlice %fs.empty0, i64 0, 1
+  %fs.default_sep = icmp eq i8 %sep, 32
+  br i1 %fs.default_sep, label %fs.ws_atom_check, label %fs.literal_entry
+
+fs.literal_entry:
   %fs.t = call i32 @value_tag(%Value %atom_value)
   %fs.is_atom = icmp eq i32 %fs.t, 0
   br i1 %fs.is_atom, label %fs.check_index, label %fs.no
@@ -4726,12 +4774,97 @@ fs.yes:
   %fs.slice = insertvalue %WamSlice %fs.slice0, i64 %fs.len, 1
   ret %WamSlice %fs.slice
 
+fs.ws_atom_check:
+  %fs.ws.t = call i32 @value_tag(%Value %atom_value)
+  %fs.ws.is_atom = icmp eq i32 %fs.ws.t, 0
+  br i1 %fs.ws.is_atom, label %fs.ws_check_index, label %fs.no
+
+fs.ws_check_index:
+  %fs.ws.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fs.ws.index_ok, label %fs.ws_lookup, label %fs.no
+
+fs.ws_lookup:
+  %fs.ws.aid = call i64 @value_payload(%Value %atom_value)
+  %fs.ws.str = call i8* @wam_atom_to_string(i64 %fs.ws.aid)
+  %fs.ws.null = icmp eq i8* %fs.ws.str, null
+  br i1 %fs.ws.null, label %fs.no, label %fs.ws_start
+
+fs.ws_start:
+  %fs.ws.cur_index = phi i64 [ 1, %fs.ws_lookup ], [ %fs.ws.next_index, %fs.ws_after_field ]
+  %fs.ws.pos0 = phi i64 [ 0, %fs.ws_lookup ], [ %fs.ws.after_field_pos, %fs.ws_after_field ]
+  br label %fs.ws_skip_ws
+
+fs.ws_skip_ws:
+  %fs.ws.skip_pos = phi i64 [ %fs.ws.pos0, %fs.ws_start ], [ %fs.ws.skip_next_pos, %fs.ws_skip_next ]
+  %fs.ws.skip_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.skip_pos
+  %fs.ws.skip_ch = load i8, i8* %fs.ws.skip_ptr
+  %fs.ws.skip_nul = icmp eq i8 %fs.ws.skip_ch, 0
+  br i1 %fs.ws.skip_nul, label %fs.no, label %fs.ws_skip_check
+
+fs.ws_skip_check:
+  %fs.ws.skip_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.skip_ch)
+  br i1 %fs.ws.skip_is_ws, label %fs.ws_skip_next, label %fs.ws_field_start
+
+fs.ws_skip_next:
+  %fs.ws.skip_next_pos = add i64 %fs.ws.skip_pos, 1
+  br label %fs.ws_skip_ws
+
+fs.ws_field_start:
+  %fs.ws.index_match = icmp eq i64 %fs.ws.cur_index, %field_index
+  br i1 %fs.ws.index_match, label %fs.ws_end_loop, label %fs.ws_scan_field
+
+fs.ws_scan_field:
+  %fs.ws.scan_pos = phi i64 [ %fs.ws.skip_pos, %fs.ws_field_start ], [ %fs.ws.scan_next_pos, %fs.ws_scan_next ]
+  %fs.ws.scan_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.scan_pos
+  %fs.ws.scan_ch = load i8, i8* %fs.ws.scan_ptr
+  %fs.ws.scan_nul = icmp eq i8 %fs.ws.scan_ch, 0
+  br i1 %fs.ws.scan_nul, label %fs.no, label %fs.ws_scan_check
+
+fs.ws_scan_check:
+  %fs.ws.scan_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.scan_ch)
+  br i1 %fs.ws.scan_is_ws, label %fs.ws_after_field, label %fs.ws_scan_next
+
+fs.ws_scan_next:
+  %fs.ws.scan_next_pos = add i64 %fs.ws.scan_pos, 1
+  br label %fs.ws_scan_field
+
+fs.ws_after_field:
+  %fs.ws.after_field_pos = add i64 %fs.ws.scan_pos, 1
+  %fs.ws.next_index = add i64 %fs.ws.cur_index, 1
+  br label %fs.ws_start
+
+fs.ws_end_loop:
+  %fs.ws.end_pos = phi i64 [ %fs.ws.skip_pos, %fs.ws_field_start ], [ %fs.ws.end_next_pos, %fs.ws_end_next ]
+  %fs.ws.end_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.end_pos
+  %fs.ws.end_ch = load i8, i8* %fs.ws.end_ptr
+  %fs.ws.end_nul = icmp eq i8 %fs.ws.end_ch, 0
+  br i1 %fs.ws.end_nul, label %fs.ws_yes, label %fs.ws_end_check
+
+fs.ws_end_check:
+  %fs.ws.end_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.end_ch)
+  br i1 %fs.ws.end_is_ws, label %fs.ws_yes, label %fs.ws_end_next
+
+fs.ws_end_next:
+  %fs.ws.end_next_pos = add i64 %fs.ws.end_pos, 1
+  br label %fs.ws_end_loop
+
+fs.ws_yes:
+  %fs.ws.ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.skip_pos
+  %fs.ws.len = sub i64 %fs.ws.end_pos, %fs.ws.skip_pos
+  %fs.ws.slice0 = insertvalue %WamSlice undef, i8* %fs.ws.ptr, 0
+  %fs.ws.slice = insertvalue %WamSlice %fs.ws.slice0, i64 %fs.ws.len, 1
+  ret %WamSlice %fs.ws.slice
+
 fs.no:
   ret %WamSlice %fs.empty
 }
 
 define i64 @wam_atom_field_count_value(%Value %atom_value, i8 %sep) {
 entry:
+  %fc.default_sep = icmp eq i8 %sep, 32
+  br i1 %fc.default_sep, label %fc.ws_atom_check, label %fc.literal_entry
+
+fc.literal_entry:
   %fc.t = call i32 @value_tag(%Value %atom_value)
   %fc.is_atom = icmp eq i32 %fc.t, 0
   br i1 %fc.is_atom, label %fc.lookup, label %fc.zero
@@ -4767,6 +4900,43 @@ fc.step:
 
 fc.done:
   ret i64 %fc.count
+
+fc.ws_atom_check:
+  %fc.ws.t = call i32 @value_tag(%Value %atom_value)
+  %fc.ws.is_atom = icmp eq i32 %fc.ws.t, 0
+  br i1 %fc.ws.is_atom, label %fc.ws_lookup, label %fc.zero
+
+fc.ws_lookup:
+  %fc.ws.aid = call i64 @value_payload(%Value %atom_value)
+  %fc.ws.str = call i8* @wam_atom_to_string(i64 %fc.ws.aid)
+  %fc.ws.null = icmp eq i8* %fc.ws.str, null
+  br i1 %fc.ws.null, label %fc.zero, label %fc.ws_loop
+
+fc.ws_loop:
+  %fc.ws.pos = phi i64 [ 0, %fc.ws_lookup ], [ %fc.ws.next_pos, %fc.ws_step ]
+  %fc.ws.count = phi i64 [ 0, %fc.ws_lookup ], [ %fc.ws.next_count, %fc.ws_step ]
+  %fc.ws.in_field = phi i1 [ false, %fc.ws_lookup ], [ %fc.ws.next_in_field, %fc.ws_step ]
+  %fc.ws.ptr = getelementptr i8, i8* %fc.ws.str, i64 %fc.ws.pos
+  %fc.ws.ch = load i8, i8* %fc.ws.ptr
+  %fc.ws.nul = icmp eq i8 %fc.ws.ch, 0
+  br i1 %fc.ws.nul, label %fc.ws_done, label %fc.ws_check
+
+fc.ws_check:
+  %fc.ws.is_ws = call i1 @wam_is_field_whitespace(i8 %fc.ws.ch)
+  %fc.ws.not_ws = xor i1 %fc.ws.is_ws, true
+  %fc.ws.not_in_field = xor i1 %fc.ws.in_field, true
+  %fc.ws.new_field = and i1 %fc.ws.not_ws, %fc.ws.not_in_field
+  %fc.ws.inc = zext i1 %fc.ws.new_field to i64
+  %fc.ws.next_count = add i64 %fc.ws.count, %fc.ws.inc
+  %fc.ws.next_in_field = select i1 %fc.ws.is_ws, i1 false, i1 true
+  br label %fc.ws_step
+
+fc.ws_step:
+  %fc.ws.next_pos = add i64 %fc.ws.pos, 1
+  br label %fc.ws_loop
+
+fc.ws_done:
+  ret i64 %fc.ws.count
 
 fc.zero:
   ret i64 0

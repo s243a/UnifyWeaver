@@ -197,6 +197,7 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_eq_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_slice_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_count_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_is_field_whitespace')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_length_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamAssocI64Table* @wam_assoc_i64_new')),
