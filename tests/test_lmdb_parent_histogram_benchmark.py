@@ -87,8 +87,12 @@ class BoundedParentHistogramTests(unittest.TestCase):
         self.assertTrue(fit_rows)
         self.assertTrue(all(row["selected_prefix_representation"] for row in fit_rows))
         self.assertTrue(all(row["selected_functional_representation"] for row in fit_rows))
+        self.assertTrue(all(row["selected_prefix_serialized_bytes"] > 0 for row in fit_rows))
+        self.assertTrue(all(row["selected_functional_serialized_bytes"] > 0 for row in fit_rows))
+        self.assertTrue(all(row["selected_prefix_serialized"]["decoded_max_cdf_error"] >= 0.0 for row in fit_rows))
         self.assertIn("Representation Policy Selection", summary)
         self.assertIn("Representation Policy By Budget And Depth", summary)
+        self.assertIn("mean_serialized_bytes", summary)
 
 
 if __name__ == "__main__":

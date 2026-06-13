@@ -45,6 +45,7 @@ from scripts.distribution_fit_comparison import (
     realized_model_builders,
     tail_pruning_summary,
 )
+from scripts.distribution_serialization import encode_selected_distribution
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
     parse_int_list,
@@ -194,6 +195,12 @@ def target_budget_records(
         )
         prefix_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="prefix_mass")
         functional_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="arbitrary_functional")
+        _prefix_payload, prefix_serialized = encode_selected_distribution(
+            empirical, prefix_selection["selected_representation"], origin=origin, total_mass=sum(hist.values())
+        )
+        _functional_payload, functional_serialized = encode_selected_distribution(
+            empirical, functional_selection["selected_representation"], origin=origin, total_mass=sum(hist.values())
+        )
         model = dict(base)
         model.update({
             "record_type": "lmdb_parent_histogram_fit",
@@ -207,6 +214,10 @@ def target_budget_records(
             "selected_functional_policy": functional_selection,
             "selected_distribution_representation": prefix_selection["selected_representation"],
             "selected_distribution_reason": prefix_selection["selected_reason"],
+            "selected_prefix_serialized": prefix_serialized,
+            "selected_prefix_serialized_bytes": prefix_serialized["payload_bytes"],
+            "selected_functional_serialized": functional_serialized,
+            "selected_functional_serialized_bytes": functional_serialized["payload_bytes"],
             **model_record,
         })
         records.append(model)
@@ -406,8 +417,8 @@ def compact_counts(values):
 
 def append_budget_depth_policy_table(lines, fit_rows):
     lines.extend([
-        "| child_depth | budget | workload | model_rows | parametric_cdf_pass | selected_counts | mean_bins | capped_hist_rows |",
-        "|------------:|-------:|----------|-----------:|--------------------:|-----------------|----------:|-----------------:|",
+        "| child_depth | budget | workload | model_rows | parametric_cdf_pass | selected_counts | mean_bins | mean_serialized_bytes | mean_decoded_cdf | capped_hist_rows |",
+        "|------------:|-------:|----------|-----------:|--------------------:|-----------------|----------:|----------------------:|-----------------:|-----------------:|",
     ])
     by_group = {}
     for row in fit_rows:
@@ -433,14 +444,26 @@ def append_budget_depth_policy_table(lines, fit_rows):
                 row.get(policy_key, {}).get("selected_representation") or "none"
                 for row in rows
             ]
+            serialized_key = "selected_prefix_serialized" if workload == "prefix_mass" else "selected_functional_serialized"
+            byte_key = "selected_prefix_serialized_bytes" if workload == "prefix_mass" else "selected_functional_serialized_bytes"
             parametric_pass = 0
             for row in rows:
                 policy = row.get(policy_key, {})
                 max_cdf = policy.get("policy_max_cdf_error")
                 if max_cdf is not None and float(row.get("max_cdf_error", 1.0)) <= float(max_cdf):
                     parametric_pass += 1
+            serialized_bytes = [
+                int(row[byte_key])
+                for row in rows
+                if row.get(byte_key) is not None
+            ]
+            decoded_cdf = [
+                float(row.get(serialized_key, {}).get("decoded_max_cdf_error", 0.0))
+                for row in rows
+                if row.get(serialized_key)
+            ]
             lines.append(
-                "| {child_depth} | {budget} | {workload} | {model_rows} | {param_pass} | {selected_counts} | {mean_bins:.3f} | {capped} |".format(
+                "| {child_depth} | {budget} | {workload} | {model_rows} | {param_pass} | {selected_counts} | {mean_bins:.3f} | {mean_serialized:.3f} | {mean_decoded:.6f} | {capped} |".format(
                     child_depth=child_depth,
                     budget=budget,
                     workload=workload,
@@ -448,12 +471,14 @@ def append_budget_depth_policy_table(lines, fit_rows):
                     param_pass=parametric_pass,
                     selected_counts=compact_counts(selected),
                     mean_bins=mean_bins,
+                    mean_serialized=statistics.mean(serialized_bytes) if serialized_bytes else 0.0,
+                    mean_decoded=statistics.mean(decoded_cdf) if decoded_cdf else 0.0,
                     capped=len(capped_histogram_keys),
                 )
             )
         if not unique_histogram_keys:
             lines.append(
-                "| {child_depth} | {budget} | none | 0 | 0 | none:0 | 0.000 | 0 |".format(
+                "| {child_depth} | {budget} | none | 0 | 0 | none:0 | 0.000 | 0.000 | 0.000000 | 0 |".format(
                     child_depth=child_depth,
                     budget=budget,
                 )
