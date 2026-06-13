@@ -261,6 +261,20 @@ that prints:
 disk 2 net 1
 ```
 
+`BEGIN` can set the output field separator too:
+
+```awk
+BEGIN { FS = ":"; OFS = "," }
+$1 == "ERROR" { print $2, $3 }
+```
+
+For the same colon-separated input, that prints:
+
+```text
+disk,full
+net,down
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

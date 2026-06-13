@@ -18,6 +18,7 @@
 %      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
 %      BEGIN { print "kind", "count" } { count++ } END { print "count", count }
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
+%      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      { count++ } END { print "count", count }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
@@ -163,19 +164,24 @@ begin_actions_rest([]) -->
     [].
 
 begin_action(Action) -->
-    field_separator_assignment(Action),
+    begin_assignment(Action),
     !.
 begin_action(Action) -->
     print_action(Action),
     !.
 
-field_separator_assignment(set(var('FS'), string(Value))) -->
-    "FS",
+begin_assignment(set(var(Name), string(Value))) -->
+    begin_assignment_name(Name),
     ws,
     "=",
     ws,
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes) }.
+
+begin_assignment_name('FS') -->
+    "FS".
+begin_assignment_name('OFS') -->
+    "OFS".
 
 end_clauses([end([PrintAction])]) -->
     "END",

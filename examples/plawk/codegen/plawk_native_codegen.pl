@@ -26,6 +26,7 @@
 %      { total++ } END { print "total", total }
 %      BEGIN { print "kind", "count" } { total++ } END { print "total", total }
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
+%      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -38,6 +39,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, BeginIR),
     plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_output_separator_global(BeginClauses, OutputSeparatorGlobalIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_print_action_ir(Fields, FieldSeparator, PrintActionIR),
     format(atom(RecordIR),
@@ -51,13 +53,13 @@ print_line:
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
 @.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
-@.plawk_surface_print_space = private constant [2 x i8] c" \\00"
+~w
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 ~w
 ~w
 ',
-        [BeginGlobalIR, GuardGlobalIR]),
+        [OutputSeparatorGlobalIR, BeginGlobalIR, GuardGlobalIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
@@ -83,7 +85,7 @@ plawk_program_native_driver_ir(
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
-    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
 ~w
@@ -110,7 +112,7 @@ plawk_program_native_driver_ir(
     plawk_scalar_end_print_ir(PrintFields, StatePlan, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
-    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
 ~w
@@ -138,7 +140,7 @@ plawk_program_native_driver_ir(
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
-    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
 ~w
@@ -156,16 +158,17 @@ plawk_combine_entry_ir(IR, '', IR) :-
 plawk_combine_entry_ir(FirstIR, SecondIR, CombinedIR) :-
     format(atom(CombinedIR), '~w~n~w', [FirstIR, SecondIR]).
 
-plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
+plawk_i64_end_print_globals(BeginClauses, SurfaceGlobals, RuntimeGlobals) :-
+    plawk_output_separator_global(BeginClauses, OutputSeparatorGlobalIR),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
-@.plawk_surface_print_space = private constant [2 x i8] c" \\00"
+~w
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 ~w
 
 ',
-        [SurfaceGlobals]).
+        [OutputSeparatorGlobalIR, SurfaceGlobals]).
 
 % Shared native streaming skeleton. Surface-specific lowerers provide globals,
 % loop-carried state phis, the per-record lowered block, continuation phis, and
@@ -664,6 +667,17 @@ plawk_field_separator(BeginClauses, FieldSeparator) :-
     ->  string_codes(Value, [FieldSeparator])
     ;   FieldSeparator = 32
     ).
+
+plawk_output_separator_global(BeginClauses, GlobalIR) :-
+    (   member(begin(Actions), BeginClauses),
+        member(set(var('OFS'), string(Value)), Actions)
+    ->  string_codes(Value, [OutputSeparator])
+    ;   OutputSeparator = 32
+    ),
+    llvm_c_byte(OutputSeparator, OutputSeparatorByte),
+    format(atom(GlobalIR),
+        '@.plawk_surface_print_space = private constant [2 x i8] c"~w\\00"',
+        [OutputSeparatorByte]).
 
 plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_begin_print_fields(BeginClauses, Fields),

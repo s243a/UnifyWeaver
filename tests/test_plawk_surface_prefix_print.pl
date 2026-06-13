@@ -127,6 +127,12 @@ test(parses_begin_field_separator_with_header) :-
         [rule(always, [inc_assoc(var(counts), field(1))])],
         [end([print([assoc(var(counts), string("ERROR"))])])])).
 
+test(parses_begin_output_separator_assignment) :-
+    plawk_parse_string("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print $2, $3 }\n", Program),
+    assertion(Program == program([begin([set(var('FS'), string(":")), set(var('OFS'), string(","))])],
+        [rule(field_eq(1, "ERROR"), [print([field(2), field(3)])])],
+        [])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -216,6 +222,21 @@ test(surface_begin_field_separator_prints_header) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; print \"kind\", \"count\" } { counts[$1]++ } END { print \"ERROR\", counts[\"ERROR\"] }\n",
         "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
         "kind count\nERROR 2\n").
+
+test(surface_begin_output_separator_drives_selected_field_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print $2, $3 }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
+        "disk,full\nnet,down\n").
+
+test(surface_begin_output_separator_drives_end_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { counts[$2]++ } END { print \"disk\", counts[\"disk\"], \"net\", counts[\"net\"] }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\nERROR:disk:again\n",
+        "disk,2,net,1\n").
+
+test(surface_begin_output_separator_drives_begin_printing) :-
+    run_surface_print_smoke("BEGIN { OFS = \",\"; print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n",
+        "INFO boot ok\nERROR disk full\n",
+        "kind,count\ntotal,2\n").
 
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
@@ -313,6 +334,14 @@ test(surface_begin_field_separator_uses_configured_delimiter) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
+    !.
+
+test(surface_begin_output_separator_uses_configured_delimiter) :-
+    plawk_parse_string("BEGIN { OFS = \",\" } { total++ } END { print \"total\", total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space = private constant [2 x i8] c"\\2c\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_space_1 = call i32'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space = private constant [2 x i8] c" \\00"')),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
