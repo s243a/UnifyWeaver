@@ -37,9 +37,11 @@ from scripts.lmdb_ancestor_cache_policy_sweep import (
     parse_grid,
     sweep_configs,
 )
+from scripts.lmdb_depth_planning_prior_probe import histogram_storage_bytes
 from scripts.lmdb_parent_boundary_cache_benchmark import (
     cached_parent_histogram,
     comparison_record,
+    serialized_histogram_cache_entry,
 )
 from scripts.lmdb_parent_branching_diagnostic import LmdbCategoryGraph, parse_int_list
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram, percentile, safe_graph_name
@@ -88,8 +90,9 @@ def build_policy_boundary_cache(parents_func, root, cache_entries, boundary_budg
         )
         elapsed = time.perf_counter_ns() - started
         cached = bool(hist) and not stats.path_cap_hit and not stats.expansion_cap_hit
+        payload_entry = serialized_histogram_cache_entry(hist) if cached else None
         if cached:
-            boundary_cache[entry.node] = hist
+            boundary_cache[entry.node] = payload_entry
         rows.append({
             "record_type": "policy_boundary_cache_entry",
             "slot": slot,
@@ -101,6 +104,12 @@ def build_policy_boundary_cache(parents_func, root, cache_entries, boundary_budg
             "histogram": hist,
             "path_count": sum(hist.values()),
             "support_bins": len(hist),
+            "raw_histogram_bytes": histogram_storage_bytes(hist),
+            "cache_payload_representation": None if payload_entry is None else payload_entry.metadata["representation"],
+            "cache_payload_bytes": 0 if payload_entry is None else payload_entry.metadata["payload_bytes"],
+            "cache_payload_decoded_max_cdf_error": None if payload_entry is None else payload_entry.metadata["decoded_max_cdf_error"],
+            "cache_payload_decoded_w1_cdf_error": None if payload_entry is None else payload_entry.metadata["decoded_w1_cdf_error"],
+            "cache_payload_bin_count": 0 if payload_entry is None else payload_entry.metadata["bin_count"],
             "nodes_expanded": stats.nodes_expanded,
             "edges_examined": stats.edges_examined,
             "cycle_skips": stats.cycle_skips,
@@ -165,6 +174,8 @@ def summarize_runtime(args, target_counts, query_inputs, config, policy_actions,
         hits = [int(row["cache_hits"]) for row in rows]
         full_times = [int(row["full_time_ns"]) for row in rows]
         cached_times = [int(row["cached_time_ns"]) for row in rows]
+        payload_bytes_read = [int(row.get("cache_payload_bytes_read", 0)) for row in rows]
+        decode_ns = [int(row.get("cache_decode_ns", 0)) for row in rows]
         time_ratios = [
             0.0 if int(row["full_time_ns"]) == 0 else int(row["cached_time_ns"]) / int(row["full_time_ns"])
             for row in rows
@@ -181,6 +192,8 @@ def summarize_runtime(args, target_counts, query_inputs, config, policy_actions,
             "mean_full_time_ns": mean(full_times),
             "mean_cached_time_ns": mean(cached_times),
             "mean_cache_hits": mean(hits),
+            "mean_cache_payload_bytes_read": mean(payload_bytes_read),
+            "mean_cache_decode_ns": mean(decode_ns),
             "full_capped": sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
             "cached_capped": sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
         })
@@ -211,6 +224,13 @@ def summarize_runtime(args, target_counts, query_inputs, config, policy_actions,
         "materialized_boundary_entries": len(cached_rows),
         "materialized_boundary_rate": 0.0 if not cache_rows else len(cached_rows) / len(cache_rows),
         "mean_boundary_nodes_expanded": mean(row["nodes_expanded"] for row in cache_rows),
+        "mean_raw_histogram_bytes": mean(row["raw_histogram_bytes"] for row in cached_rows),
+        "mean_cache_payload_bytes": mean(row["cache_payload_bytes"] for row in cached_rows),
+        "max_cache_payload_bytes": max((int(row["cache_payload_bytes"]) for row in cached_rows), default=0),
+        "mean_cache_payload_decoded_max_cdf_error": mean(
+            row["cache_payload_decoded_max_cdf_error"] for row in cached_rows
+            if row.get("cache_payload_decoded_max_cdf_error") is not None
+        ),
         "boundary_capped_entries": sum(1 for row in cache_rows if row["path_cap_hit"] or row["expansion_cap_hit"]),
         "budget_rows": budget_rows,
     }
@@ -220,13 +240,13 @@ def markdown_summary(summaries):
     lines = [
         "# Policy Cache Runtime Benchmark",
         "",
-        "| slots | L_min | L_max | boundary_budget | targets | capped_cones | resident | materialized | mean_nodes | budget | mean_l1 | mean_node_ratio | mean_time_ratio | mean_cache_hits | full_capped | cached_capped |",
-        "|------:|------:|------:|----------------:|--------:|-------------:|---------:|-------------:|-----------:|-------:|--------:|----------------:|----------------:|----------------:|------------:|--------------:|",
+        "| slots | L_min | L_max | boundary_budget | targets | capped_cones | resident | materialized | mean_nodes | mean_raw_bytes | mean_payload_bytes | budget | mean_l1 | mean_node_ratio | mean_time_ratio | mean_cache_hits | mean_payload_read | mean_decode_ns | full_capped | cached_capped |",
+        "|------:|------:|------:|----------------:|--------:|-------------:|---------:|-------------:|-----------:|---------------:|-------------------:|-------:|--------:|----------------:|----------------:|----------------:|------------------:|---------------:|------------:|--------------:|",
     ]
     for summary in summaries:
         for budget in summary["budget_rows"]:
             lines.append(
-                "| {slots} | {l_min} | {l_max} | {boundary_budget} | {targets} | {capped} | {resident} | {materialized} | {mean_nodes:.1f} | {budget} | {mean_l1:.6f} | {node_ratio:.3f} | {time_ratio:.3f} | {hits:.3f} | {full_capped} | {cached_capped} |".format(
+                "| {slots} | {l_min} | {l_max} | {boundary_budget} | {targets} | {capped} | {resident} | {materialized} | {mean_nodes:.1f} | {mean_raw:.3f} | {mean_payload:.3f} | {budget} | {mean_l1:.6f} | {node_ratio:.3f} | {time_ratio:.3f} | {hits:.3f} | {payload_read:.3f} | {decode_ns:.1f} | {full_capped} | {cached_capped} |".format(
                     slots=summary["cache_slots"],
                     l_min=summary["admit_l_min"],
                     l_max=summary["admit_l_max"],
@@ -236,11 +256,15 @@ def markdown_summary(summaries):
                     resident=summary["policy_resident_entries"],
                     materialized=summary["materialized_boundary_entries"],
                     mean_nodes=summary["mean_ancestor_nodes"],
+                    mean_raw=summary["mean_raw_histogram_bytes"],
+                    mean_payload=summary["mean_cache_payload_bytes"],
                     budget=budget["budget"],
                     mean_l1=budget["mean_l1_error"],
                     node_ratio=budget["mean_node_expansion_ratio"],
                     time_ratio=budget["mean_time_ratio"],
                     hits=budget["mean_cache_hits"],
+                    payload_read=budget["mean_cache_payload_bytes_read"],
+                    decode_ns=budget["mean_cache_decode_ns"],
                     full_capped=budget["full_capped"],
                     cached_capped=budget["cached_capped"],
                 )

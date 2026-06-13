@@ -53,6 +53,8 @@ class PolicyCacheRuntimeBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         self.assertEqual(boundary_cache[3], {2: 2})
         self.assertEqual(boundary_cache[1], {1: 1})
+        self.assertEqual(rows[0]["cache_payload_representation"], "packed_sparse_histogram")
+        self.assertGreater(rows[0]["cache_payload_bytes"], 0)
 
     def test_summarize_runtime_reports_budget_rows(self):
         class Args:
@@ -70,6 +72,9 @@ class PolicyCacheRuntimeBenchmarkTests(unittest.TestCase):
                 "nodes_expanded": 1,
                 "path_cap_hit": False,
                 "expansion_cap_hit": False,
+                "raw_histogram_bytes": 16,
+                "cache_payload_bytes": 32,
+                "cache_payload_decoded_max_cdf_error": 0.0,
             }
         ]
         comparison_rows = [
@@ -81,6 +86,8 @@ class PolicyCacheRuntimeBenchmarkTests(unittest.TestCase):
                 "cache_hits": 1,
                 "full_time_ns": 100,
                 "cached_time_ns": 50,
+                "cache_payload_bytes_read": 32,
+                "cache_decode_ns": 5,
                 "full_path_cap_hit": False,
                 "full_expansion_cap_hit": False,
                 "cached_path_cap_hit": False,
