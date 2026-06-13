@@ -322,6 +322,68 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["path_count"], 3)
         self.assertFalse(rows[0]["recurrence_cycle_approximation"])
 
+    def test_recurrence_state_threshold_uses_parametric_boundary(self):
+        parents = {
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+            "D": ["C", "A"],
+        }
+        graph = DictGraph(parents)
+
+        cache, parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["D"],
+            4,
+            None,
+            None,
+            boundary_builder="recurrence",
+            max_recurrence_states=1,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertIn("D", parametric_cache)
+        self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
+        self.assertEqual(rows[0]["cache_admission_reason"], "recurrence_states_over_limit")
+        self.assertTrue(rows[0]["recurrence_states_over_limit"])
+        self.assertFalse(rows[0]["effective_bins_over_limit"])
+        self.assertTrue(rows[0]["approximation_forced_by_threshold"])
+        self.assertEqual(rows[0]["path_count"], 3)
+        self.assertEqual(sum(parametric_cache["D"].values()), 3)
+
+    def test_effective_bin_threshold_uses_parametric_boundary(self):
+        parents = {
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+            "D": ["C", "A"],
+        }
+        graph = DictGraph(parents)
+
+        cache, parametric_cache, rows = build_boundary_cache(
+            graph,
+            "R",
+            ["D"],
+            4,
+            None,
+            None,
+            boundary_builder="recurrence",
+            tail_epsilon=0.0,
+            max_effective_bins_after_trim=1,
+        )
+
+        self.assertEqual(cache, {})
+        self.assertIn("D", parametric_cache)
+        self.assertEqual(rows[0]["effective_support_bins_after_trim"], 2)
+        self.assertEqual(rows[0]["cache_admission_action"], "use_parametric_prior")
+        self.assertEqual(rows[0]["cache_admission_reason"], "effective_bins_over_limit")
+        self.assertFalse(rows[0]["recurrence_states_over_limit"])
+        self.assertTrue(rows[0]["effective_bins_over_limit"])
+        self.assertTrue(rows[0]["approximation_forced_by_threshold"])
+        self.assertEqual(rows[0]["path_count"], 3)
+        self.assertEqual(sum(parametric_cache["D"].values()), 3)
+
     def test_recurrence_boundary_builder_records_cycle_approximation(self):
         parents = {
             "A": ["R", "C"],
