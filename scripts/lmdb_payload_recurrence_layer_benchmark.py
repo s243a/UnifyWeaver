@@ -223,6 +223,7 @@ def payload_layer_records(
                 "budget": budget,
                 "direct_parent_count": len(direct_parents),
                 "parent_payloads_available": len(available_payloads),
+                "parent_payload_nodes": available_parent_nodes,
                 "missing_parent_payloads": missing_parent_count,
                 "recurrence_histogram": recurrence_hist,
                 "payload_histogram": payload_hist,
@@ -268,6 +269,49 @@ def summarize(records):
     by_budget = {}
     for row in comparison_rows:
         by_budget.setdefault((row["decode_cache_mode"], row["budget"]), []).append(row)
+    budget_rows = []
+    for (mode, budget), rows in sorted(by_budget.items()):
+        parent_reference_counts = Counter(
+            parent
+            for row in rows
+            for parent in row.get("parent_payload_nodes", [])
+        )
+        unique_parent_payloads_referenced = len(parent_reference_counts)
+        total_parent_payload_references = sum(parent_reference_counts.values())
+        max_children_per_parent_payload = max(parent_reference_counts.values(), default=0)
+        mean_children_per_parent_payload = mean(parent_reference_counts.values())
+        budget_rows.append({
+            "decode_cache_mode": mode,
+            "budget": budget,
+            "rows": len(rows),
+            "exact_match_rows": sum(1 for row in rows if row["exact_match"]),
+            "missing_parent_rows": sum(1 for row in rows if row["missing_parent_payloads"]),
+            "mean_missing_parent_payloads": mean(row["missing_parent_payloads"] for row in rows),
+            "mean_parent_payloads_available": mean(row["parent_payloads_available"] for row in rows),
+            "unique_parent_payloads_referenced": unique_parent_payloads_referenced,
+            "total_parent_payload_references": total_parent_payload_references,
+            "max_children_per_parent_payload": max_children_per_parent_payload,
+            "mean_children_per_parent_payload": mean_children_per_parent_payload,
+            "mean_l1_error": mean(row["l1_error"] for row in rows),
+            "p95_l1_error": percentile([row["l1_error"] for row in rows], 95),
+            "mean_max_cdf_error": mean(row["max_cdf_error"] for row in rows),
+            "mean_w1_cdf_error": mean(row["w1_cdf_error"] for row in rows),
+            "mean_payload_bytes_read": mean(row["payload_bytes_read"] for row in rows),
+            "mean_payload_decode_ns": mean(row["payload_decode_ns"] for row in rows),
+            "mean_payload_decoded_bins": mean(row["payload_decoded_bins"] for row in rows),
+            "mean_payload_references": mean(row["payload_references"] for row in rows),
+            "mean_payloads_decoded": mean(row["payloads_decoded"] for row in rows),
+            "mean_decode_cache_hits": mean(row["decode_cache_hits"] for row in rows),
+            "mean_decode_cache_misses": mean(row["decode_cache_misses"] for row in rows),
+            "mean_decode_cache_hit_rate": mean(row["decode_cache_hit_rate"] for row in rows),
+            "mean_payload_output_bins": mean(row["payload_output_bins"] for row in rows),
+            "mean_payload_output_bytes": mean(row["payload_output_bytes"] for row in rows),
+            "mean_recurrence_time_ns": mean(row["recurrence_time_ns"] for row in rows),
+            "mean_payload_time_ns": mean(row["payload_time_ns"] for row in rows),
+            "mean_time_ratio": mean(row["time_ratio"] for row in rows),
+            "recurrence_capped_rows": sum(1 for row in rows if row["recurrence_path_cap_hit"] or row["recurrence_expansion_cap_hit"]),
+            "payload_capped_rows": sum(1 for row in rows if row["payload_path_cap_hit"]),
+        })
     return {
         "record_type": "payload_recurrence_layer_summary",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -279,37 +323,7 @@ def summarize(records):
         "child_rows": len(comparison_rows),
         "mean_parent_payload_bytes": mean(row["payload_bytes"] for row in parent_rows),
         "mean_parent_payload_bins": mean(row["support_bins"] for row in parent_rows),
-        "budget_rows": [
-            {
-                "decode_cache_mode": mode,
-                "budget": budget,
-                "rows": len(rows),
-                "exact_match_rows": sum(1 for row in rows if row["exact_match"]),
-                "missing_parent_rows": sum(1 for row in rows if row["missing_parent_payloads"]),
-                "mean_missing_parent_payloads": mean(row["missing_parent_payloads"] for row in rows),
-                "mean_parent_payloads_available": mean(row["parent_payloads_available"] for row in rows),
-                "mean_l1_error": mean(row["l1_error"] for row in rows),
-                "p95_l1_error": percentile([row["l1_error"] for row in rows], 95),
-                "mean_max_cdf_error": mean(row["max_cdf_error"] for row in rows),
-                "mean_w1_cdf_error": mean(row["w1_cdf_error"] for row in rows),
-                "mean_payload_bytes_read": mean(row["payload_bytes_read"] for row in rows),
-                "mean_payload_decode_ns": mean(row["payload_decode_ns"] for row in rows),
-                "mean_payload_decoded_bins": mean(row["payload_decoded_bins"] for row in rows),
-                "mean_payload_references": mean(row["payload_references"] for row in rows),
-                "mean_payloads_decoded": mean(row["payloads_decoded"] for row in rows),
-                "mean_decode_cache_hits": mean(row["decode_cache_hits"] for row in rows),
-                "mean_decode_cache_misses": mean(row["decode_cache_misses"] for row in rows),
-                "mean_decode_cache_hit_rate": mean(row["decode_cache_hit_rate"] for row in rows),
-                "mean_payload_output_bins": mean(row["payload_output_bins"] for row in rows),
-                "mean_payload_output_bytes": mean(row["payload_output_bytes"] for row in rows),
-                "mean_recurrence_time_ns": mean(row["recurrence_time_ns"] for row in rows),
-                "mean_payload_time_ns": mean(row["payload_time_ns"] for row in rows),
-                "mean_time_ratio": mean(row["time_ratio"] for row in rows),
-                "recurrence_capped_rows": sum(1 for row in rows if row["recurrence_path_cap_hit"] or row["recurrence_expansion_cap_hit"]),
-                "payload_capped_rows": sum(1 for row in rows if row["payload_path_cap_hit"]),
-            }
-            for (mode, budget), rows in sorted(by_budget.items())
-        ],
+        "budget_rows": budget_rows,
     }
 
 
@@ -317,12 +331,12 @@ def markdown_summary(summary):
     lines = [
         "# Payload Recurrence Layer Benchmark",
         "",
-        "| decode_cache | budget | rows | exact_matches | missing_parent_rows | mean_missing | mean_parents_used | mean_l1 | mean_cdf | mean_refs | mean_decodes | mean_hits | hit_rate | mean_payload_read | mean_decode_ns | mean_output_bins | mean_output_bytes | mean_time_ratio | recurrence_capped | payload_capped |",
-        "|--------------|-------:|-----:|--------------:|--------------------:|-------------:|------------------:|--------:|---------:|----------:|-------------:|----------:|---------:|------------------:|---------------:|-----------------:|------------------:|----------------:|------------------:|---------------:|",
+        "| decode_cache | budget | rows | exact_matches | missing_parent_rows | mean_missing | mean_parents_used | unique_refs | total_refs | max_share | mean_share | mean_l1 | mean_cdf | mean_refs | mean_decodes | mean_hits | hit_rate | mean_payload_read | mean_decode_ns | mean_output_bins | mean_output_bytes | mean_time_ratio | recurrence_capped | payload_capped |",
+        "|--------------|-------:|-----:|--------------:|--------------------:|-------------:|------------------:|------------:|-----------:|----------:|-----------:|--------:|---------:|----------:|-------------:|----------:|---------:|------------------:|---------------:|-----------------:|------------------:|----------------:|------------------:|---------------:|",
     ]
     for row in summary["budget_rows"]:
         lines.append(
-            "| {mode} | {budget} | {rows} | {exact} | {missing_rows} | {missing:.3f} | {parents:.3f} | {l1:.6f} | {cdf:.6f} | {refs:.3f} | {decodes:.3f} | {hits:.3f} | {hit_rate:.3f} | {payload_read:.3f} | {decode_ns:.1f} | {out_bins:.3f} | {out_bytes:.3f} | {time_ratio:.3f} | {rec_capped} | {payload_capped} |".format(
+            "| {mode} | {budget} | {rows} | {exact} | {missing_rows} | {missing:.3f} | {parents:.3f} | {unique_refs} | {total_refs} | {max_share} | {mean_share:.3f} | {l1:.6f} | {cdf:.6f} | {refs:.3f} | {decodes:.3f} | {hits:.3f} | {hit_rate:.3f} | {payload_read:.3f} | {decode_ns:.1f} | {out_bins:.3f} | {out_bytes:.3f} | {time_ratio:.3f} | {rec_capped} | {payload_capped} |".format(
                 mode=row["decode_cache_mode"],
                 budget=row["budget"],
                 rows=row["rows"],
@@ -330,6 +344,10 @@ def markdown_summary(summary):
                 missing_rows=row["missing_parent_rows"],
                 missing=row["mean_missing_parent_payloads"],
                 parents=row["mean_parent_payloads_available"],
+                unique_refs=row["unique_parent_payloads_referenced"],
+                total_refs=row["total_parent_payload_references"],
+                max_share=row["max_children_per_parent_payload"],
+                mean_share=row["mean_children_per_parent_payload"],
                 l1=row["mean_l1_error"],
                 cdf=row["mean_max_cdf_error"],
                 refs=row["mean_payload_references"],
