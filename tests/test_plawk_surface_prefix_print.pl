@@ -53,6 +53,11 @@ test(parses_field_eq_print_substr_field_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [print([substr(field(2), 1, 3), substr(field(0), 7, 4)])])], [])).
 
+test(parses_field_eq_print_index_field_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { print index($2, \"sk\"), index($0, \"disk\") }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [print([index(field(2), string("sk")), index(field(0), string("disk"))])])], [])).
+
 test(parses_field_eq_increment_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { count++ } END { print count }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [inc(var(count))])],
@@ -193,6 +198,11 @@ test(surface_field_eq_prints_native_substrings) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down now\n",
         "dis disk\nnet netw\n").
 
+test(surface_field_eq_prints_native_index_values) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { print index($2, \"sk\"), index($0, \"disk\") }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down now\n",
+        "3 7\n0 0\n").
+
 test(surface_field_eq_prints_nr_with_output_separator) :-
     run_surface_print_smoke("BEGIN { OFS = \",\" } $1 == \"ERROR\" { print NR, $2, $3 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -292,6 +302,11 @@ test(surface_begin_field_separator_drives_substr_printing) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print substr($2, 1, 3), substr($0, 7, 4) }\n",
         "ERROR:disk:full\nWARN:cpu:hot\nERROR:network:down:now\n",
         "dis,disk\nnet,netw\n").
+
+test(surface_begin_field_separator_drives_index_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print index($2, \"work\"), index($0, \"network\") }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:network:down:now\n",
+        "0,0\n4,7\n").
 
 test(surface_begin_output_separator_drives_end_printing) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { counts[$2]++ } END { print \"disk\", counts[\"disk\"], \"net\", counts[\"net\"] }\n",
@@ -466,6 +481,17 @@ test(surface_substr_print_uses_native_subslice) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_substr_1 = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 0, i8 58, i64 7, i64 4)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_substr_0 = call i32 (i8*, ...) @printf(i8* %substr_fmt_0, i32 %plawk_substr_0_len, i8* %plawk_substr_0_ptr)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_index_print_uses_native_field_index) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print index($2, \"work\"), index($0, \"network\") }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Findex_5Fneedle_5F0 = private constant [5 x i8] c"work\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Findex_5Fneedle_5F1 = private constant [8 x i8] c"network\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_5Findex_5Fneedle_5F0_ptr = getelementptr [5 x i8], [5 x i8]* @.plawk_5Findex_5Fneedle_5F0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_index_0 = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_index_1 = call i32 (i8*, ...) @printf(i8* %index_fmt_1, i64 %plawk_index_1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

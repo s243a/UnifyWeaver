@@ -201,6 +201,8 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_length_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_subslice_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_subslice_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_slice_index_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_index_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamAssocI64Table* @wam_assoc_i64_new')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_assoc_i64_resize')),
@@ -241,6 +243,13 @@ test(atom_field_subslice_emitter) :-
     assertion(sub_atom(CallIR, _, _, _, '%plawk_substr = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 2, i8 58, i64 1, i64 3)')),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_substr_ptr = extractvalue %WamSlice %plawk_substr, 0')),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_substr_len = trunc i64 %plawk_substr_len64 to i32')).
+
+test(atom_field_index_emitter) :-
+    llvm_emit_atom_field_index(plawk_index_needle, '%line', 2, 'disk', 58, plawk_index, GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.plawk_5Findex_5Fneedle = private constant [5 x i8] c"disk\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_5Findex_5Fneedle_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_index = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 4')).
 
 % ============================================================================
 % Builtin op ID mapping
