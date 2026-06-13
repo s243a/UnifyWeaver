@@ -90,7 +90,8 @@ counters, so `$1 == "ERROR" { by_component[$2]++ }` only updates on matches. Eac
 grows and rehashes as needed, and the native stream reader grows its line buffer
 without consuming WAM arena space per record. Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
-`END` print of both `total` and `counts["ERROR"]`.
+`END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
+include literal labels such as `print "total", total, "errors", counts["ERROR"]`.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see

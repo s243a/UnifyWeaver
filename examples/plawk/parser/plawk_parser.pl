@@ -16,6 +16,7 @@
 %      $N == "VALUE" { errors++; matches++ } END { print errors, matches }
 %      $N == "ERROR" { errors++ } $N == "WARN" { warnings++ } END { print errors, warnings }
 %      { counts[$1]++ } END { print counts["ERROR"], counts["WARN"] }
+%      { count++ } END { print "count", count }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -213,6 +214,10 @@ field_expr(field(Index)) -->
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index >= 0
+    }.
+field_expr(string(Value)) -->
+    quoted_string(ValueCodes),
+    { string_codes(Value, ValueCodes)
     }.
 field_expr(var(Name)) -->
     identifier(Name).
