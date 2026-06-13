@@ -51,7 +51,8 @@
     llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
     llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
     llvm_emit_atom_field_subslice/7,     % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
-    llvm_emit_atom_field_index/7         % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
+    llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
+    llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -5145,6 +5146,60 @@ afi.index:
 
 afi.zero:
   ret i64 0
+}
+
+define void @wam_print_ascii_lower_slice(i8* %source_ptr, i64 %source_len) {
+entry:
+  %lsp.null = icmp eq i8* %source_ptr, null
+  br i1 %lsp.null, label %lsp.done, label %lsp.loop
+
+lsp.loop:
+  %lsp.pos = phi i64 [ 0, %entry ], [ %lsp.next_pos, %lsp.step ]
+  %lsp.finished = icmp uge i64 %lsp.pos, %source_len
+  br i1 %lsp.finished, label %lsp.done, label %lsp.step
+
+lsp.step:
+  %lsp.ptr = getelementptr i8, i8* %source_ptr, i64 %lsp.pos
+  %lsp.ch = load i8, i8* %lsp.ptr
+  %lsp.ge_a = icmp uge i8 %lsp.ch, 65
+  %lsp.le_z = icmp ule i8 %lsp.ch, 90
+  %lsp.is_upper = and i1 %lsp.ge_a, %lsp.le_z
+  %lsp.lower_ch = add i8 %lsp.ch, 32
+  %lsp.out_ch = select i1 %lsp.is_upper, i8 %lsp.lower_ch, i8 %lsp.ch
+  %lsp.out_i32 = zext i8 %lsp.out_ch to i32
+  %lsp.printed = call i32 @putchar(i32 %lsp.out_i32)
+  %lsp.next_pos = add i64 %lsp.pos, 1
+  br label %lsp.loop
+
+lsp.done:
+  ret void
+}
+
+define void @wam_print_ascii_upper_slice(i8* %source_ptr, i64 %source_len) {
+entry:
+  %usp.null = icmp eq i8* %source_ptr, null
+  br i1 %usp.null, label %usp.done, label %usp.loop
+
+usp.loop:
+  %usp.pos = phi i64 [ 0, %entry ], [ %usp.next_pos, %usp.step ]
+  %usp.finished = icmp uge i64 %usp.pos, %source_len
+  br i1 %usp.finished, label %usp.done, label %usp.step
+
+usp.step:
+  %usp.ptr = getelementptr i8, i8* %source_ptr, i64 %usp.pos
+  %usp.ch = load i8, i8* %usp.ptr
+  %usp.ge_a = icmp uge i8 %usp.ch, 97
+  %usp.le_z = icmp ule i8 %usp.ch, 122
+  %usp.is_lower = and i1 %usp.ge_a, %usp.le_z
+  %usp.upper_ch = sub i8 %usp.ch, 32
+  %usp.out_ch = select i1 %usp.is_lower, i8 %usp.upper_ch, i8 %usp.ch
+  %usp.out_i32 = zext i8 %usp.out_ch to i32
+  %usp.printed = call i32 @putchar(i32 %usp.out_i32)
+  %usp.next_pos = add i64 %usp.pos, 1
+  br label %usp.loop
+
+usp.done:
+  ret void
 }
 
 ; Dispatches on integer op codes:
@@ -16631,6 +16686,22 @@ llvm_emit_atom_field_index(GlobalBase, ValueIR, FieldIndex, Needle, SepCode, Ind
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  %~w = call i64 @wam_atom_field_index_value(%Value ~w, i64 ~w, i8 ~w, i8* %~w_ptr, i64 ~w)',
         [SafeGlobalBase, ArrLen, ArrLen, SafeGlobalBase,
          IndexBase, ValueIR, FieldIndex, SepCode, SafeGlobalBase, NeedleLen]).
+
+%% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
+%
+%  Emit an allocation-free ASCII case-mapped slice printer. This is intentionally
+%  a print helper, not a value materializer; callers that need a transformed atom
+%  should use a separate interning/materialization helper.
+llvm_emit_ascii_case_slice_print(lower, PtrIR, LenIR, PrintBase, CallIR) :-
+    nonvar(PrintBase),
+    format(atom(CallIR),
+        '  call void @wam_print_ascii_lower_slice(i8* ~w, i64 ~w)',
+        [PtrIR, LenIR]).
+llvm_emit_ascii_case_slice_print(upper, PtrIR, LenIR, PrintBase, CallIR) :-
+    nonvar(PrintBase),
+    format(atom(CallIR),
+        '  call void @wam_print_ascii_upper_slice(i8* ~w, i64 ~w)',
+        [PtrIR, LenIR]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-

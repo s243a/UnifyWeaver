@@ -253,6 +253,13 @@ present:
 $1 == "ERROR" { print index($2, "sk"), index($0, "disk") }
 ```
 
+`tolower` and `toupper` can print ASCII case-mapped field bytes without
+allocating transformed field strings:
+
+```awk
+$1 == "ERROR" { print tolower($2), toupper($0) }
+```
+
 `BEGIN` can also set an explicit single-byte field separator for the native field helpers:
 
 ```awk

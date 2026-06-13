@@ -298,6 +298,24 @@ field_expr(index(Field, string(Needle))) -->
     { Field = field(_),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
+field_expr(tolower(Field)) -->
+    "tolower",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
+field_expr(toupper(Field)) -->
+    "toupper",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
 field_expr(assoc(var(Name), KeyExpr)) -->
     identifier(Name),
     ws,
