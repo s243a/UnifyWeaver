@@ -7,6 +7,7 @@ import unittest
 
 from scripts.distribution_precompute_depth_estimator import (
     build_records,
+    calibration_from_payload_recurrence_summaries,
     cumulative_branching,
     parse_args,
     parse_depth_float_map,
@@ -72,6 +73,23 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(row["expected_hits"], 62.5)
+
+    def test_calibration_reads_payload_recurrence_summary(self):
+        args = parse_args([
+            "--branching-factor", "4",
+            "--max-depth", "4",
+        ])
+
+        calibration = calibration_from_payload_recurrence_summaries(
+            ["docs/reports/enwiki_mtc_payload_recurrence_layer_depth3_smoke_payload_recurrence_layer_summary.json"],
+            args,
+        )
+
+        self.assertEqual(calibration["source_summaries"], 1)
+        self.assertGreater(calibration["source_budget_rows"], 0)
+        self.assertGreater(calibration["uncached_cost_per_state"], 0.0)
+        self.assertGreater(calibration["cached_eval_cost_per_point"], 0.0)
+        self.assertGreater(calibration["decode_cost_per_byte"], 0.0)
 
 
 if __name__ == "__main__":

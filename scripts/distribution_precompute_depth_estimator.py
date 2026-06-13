@@ -36,6 +36,18 @@ def mean(values):
     return 0.0 if not values else statistics.fmean(values)
 
 
+def positive_mean(values):
+    return mean(value for value in values if value is not None and value > 0.0)
+
+
+def safe_ratio(numerator, denominator):
+    numerator = float(numerator)
+    denominator = float(denominator)
+    if denominator <= 0.0:
+        return None
+    return numerator / denominator
+
+
 def parse_depth_float_map(text):
     """Parse depth:value pairs such as '0:1,1:1.5,2:4'."""
     out = {}
@@ -69,6 +81,88 @@ def estimated_path_states(depth, default_branching, depth_branching, minimum=1.0
     if depth <= 0:
         return float(minimum)
     return max(float(minimum), cumulative_branching(depth, default_branching, depth_branching))
+
+
+def load_payload_recurrence_summaries(paths):
+    summaries = []
+    for path in paths:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            summaries.append(json.load(handle))
+    return summaries
+
+
+def calibration_from_payload_recurrence_summaries(paths, args):
+    """Derive cost constants from payload recurrence summary JSON files."""
+    summaries = load_payload_recurrence_summaries(paths)
+    recurrence_costs = []
+    cached_eval_costs = []
+    decode_costs = []
+    build_costs = []
+    reuse_ratios = []
+    source_rows = 0
+    depth_branching = parse_depth_float_map(args.depth_branching)
+
+    for summary in summaries:
+        parent_depths = summary.get("parent_depths", [])
+        child_depths = summary.get("child_depths", [])
+        parent_depth = max(parent_depths) if parent_depths else 0
+        child_depth = max(child_depths) if child_depths else parent_depth
+        parent_states = estimated_path_states(parent_depth, args.branching_factor, depth_branching, args.min_path_states)
+        child_states = estimated_path_states(child_depth, args.branching_factor, depth_branching, args.min_path_states)
+        # Parent payload build timing is not persisted in these summaries, so
+        # use child recurrence timing as the first build-cost proxy.
+        build_states = max(parent_states, 1.0)
+
+        for row in summary.get("budget_rows", []):
+            source_rows += 1
+            recurrence_ratio = safe_ratio(row.get("mean_recurrence_time_ns", 0.0), child_states)
+            if recurrence_ratio is not None:
+                recurrence_costs.append(recurrence_ratio)
+                build_costs.append(safe_ratio(row.get("mean_recurrence_time_ns", 0.0), build_states))
+
+            if row.get("mean_payload_bytes_read", 0.0) > 0.0 and row.get("mean_payload_decode_ns", 0.0) > 0.0:
+                decode_ratio = safe_ratio(row["mean_payload_decode_ns"], row["mean_payload_bytes_read"])
+                if decode_ratio is not None:
+                    decode_costs.append(decode_ratio)
+
+            payload_bins = max(1.0, float(row.get("mean_payload_output_bins", 0.0)))
+            payload_time = float(row.get("mean_payload_time_ns", 0.0))
+            decode_time = float(row.get("mean_payload_decode_ns", 0.0))
+            decode_free_payload_time = max(0.0, payload_time - decode_time)
+            cached_ratio = safe_ratio(decode_free_payload_time, payload_bins)
+            if cached_ratio is not None:
+                cached_eval_costs.append(cached_ratio)
+
+            total_refs = row.get("total_parent_payload_references")
+            unique_refs = row.get("unique_parent_payloads_referenced")
+            if total_refs and unique_refs:
+                reuse_ratios.append(safe_ratio(total_refs, unique_refs))
+
+    return {
+        "source_paths": [str(path) for path in paths],
+        "source_summaries": len(summaries),
+        "source_budget_rows": source_rows,
+        "uncached_cost_per_state": positive_mean(recurrence_costs),
+        "build_cost_per_state": positive_mean(build_costs),
+        "cached_eval_cost_per_point": positive_mean(cached_eval_costs),
+        "decode_cost_per_byte": positive_mean(decode_costs),
+        "mean_parent_reference_reuse": positive_mean(reuse_ratios),
+    }
+
+
+def apply_calibration(args):
+    if not args.calibration_summary:
+        return None
+    calibration = calibration_from_payload_recurrence_summaries(args.calibration_summary, args)
+    if calibration["uncached_cost_per_state"] > 0.0:
+        args.uncached_cost_per_state = calibration["uncached_cost_per_state"]
+    if calibration["build_cost_per_state"] > 0.0:
+        args.build_cost_per_state = calibration["build_cost_per_state"]
+    if calibration["cached_eval_cost_per_point"] > 0.0:
+        args.cached_eval_cost_per_point = calibration["cached_eval_cost_per_point"]
+    if calibration["decode_cost_per_byte"] > 0.0:
+        args.decode_cost_per_byte = calibration["decode_cost_per_byte"]
+    return calibration
 
 
 @dataclass(frozen=True)
@@ -156,7 +250,7 @@ def estimate_row(depth, representation, args, depth_branching, query_reach_prob)
     }
 
 
-def build_records(args):
+def build_records(args, calibration=None):
     depth_branching = parse_depth_float_map(args.depth_branching)
     query_reach = parse_depth_float_map(args.query_reach_probability)
     records = [{
@@ -168,6 +262,7 @@ def build_records(args):
         "depth_branching": depth_branching,
         "query_reach_probability": query_reach,
         "max_depth": args.max_depth,
+        "calibration": calibration,
         "cost_model": {
             "uncached_base_cost": args.uncached_base_cost,
             "uncached_cost_per_state": args.uncached_cost_per_state,
@@ -204,11 +299,31 @@ def summarize(records):
         "",
         "Default parent branching prior `b = E[p^2] / E[p]`: `{:.6f}`".format(selection["branching_factor"]),
         "",
+    ]
+    if selection.get("calibration"):
+        calibration = selection["calibration"]
+        lines.extend([
+            "## Calibration",
+            "",
+            "| source_summaries | budget_rows | uncached_cost_per_state | build_cost_per_state | cached_eval_cost_per_point | decode_cost_per_byte | mean_parent_reference_reuse |",
+            "|-----------------:|------------:|------------------------:|---------------------:|---------------------------:|---------------------:|----------------------------:|",
+            "| {sources} | {rows} | {uncached:.3f} | {build:.3f} | {cached:.3f} | {decode:.3f} | {reuse:.3f} |".format(
+                sources=calibration["source_summaries"],
+                rows=calibration["source_budget_rows"],
+                uncached=calibration["uncached_cost_per_state"],
+                build=calibration["build_cost_per_state"],
+                cached=calibration["cached_eval_cost_per_point"],
+                decode=calibration["decode_cost_per_byte"],
+                reuse=calibration["mean_parent_reference_reuse"],
+            ),
+            "",
+        ])
+    lines.extend([
         "## Depth Recommendation",
         "",
         "| depth | expected_hits | path_states | best_representation | hits_to_break_even | net_value | pays |",
         "|------:|--------------:|------------:|--------------------|-------------------:|----------:|------|",
-    ]
+    ])
     recommendation_rows = []
     for depth in sorted(by_depth):
         rows = by_depth[depth]
@@ -298,12 +413,14 @@ def parse_args(argv=None):
     parser.add_argument("--parametric-bytes", type=float, default=64.0)
     parser.add_argument("--parametric-fit-cost", type=float, default=8.0)
     parser.add_argument("--output-dir", type=Path, default=Path("docs/reports"))
+    parser.add_argument("--calibration-summary", action="append", type=Path, default=[], help="Payload recurrence layer summary JSON used to derive timing costs. Can be repeated.")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    records = build_records(args)
+    calibration = apply_calibration(args)
+    records = build_records(args, calibration)
     summary = summarize(records)
     summary_json, summary_md = write_outputs(records, summary, args.output_dir, args.graph_name)
     print(summary, end="")
