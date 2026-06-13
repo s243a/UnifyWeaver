@@ -28,12 +28,20 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.distribution_fit_comparison import (
     DEFAULT_PRUNE_THRESHOLDS,
+    append_packed_exact_table,
+    append_representation_selection_table,
+    cheapest_candidate_within,
+    choose_distribution_representation,
     compare_models,
     distribution_moments,
     distribution_skewness,
     effective_support_bins,
     exact_excess_distribution,
     histogram_bytes,
+    packed_exact_candidates,
+    parametric_candidate_from_model,
+    parametric_state_bytes_estimate,
+    representation_policy_candidates,
     realized_model_builders,
     tail_pruning_summary,
 )
@@ -175,10 +183,30 @@ def target_budget_records(
     })
 
     records = [base]
+    packed_candidates = packed_exact_candidates(empirical, prune_thresholds)
+    best_packed_cdf = cheapest_candidate_within(packed_candidates, tail_epsilon)
     for model_record in compare_models(empirical, realized_model_builders()):
+        parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
+        policy_candidates = representation_policy_candidates(
+            base["exact_histogram_bytes"],
+            packed_candidates,
+            parametric_candidate_from_model(model_record, parametric_bytes),
+        )
+        prefix_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="prefix_mass")
+        functional_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="arbitrary_functional")
         model = dict(base)
         model.update({
             "record_type": "lmdb_parent_histogram_fit",
+            "packed_exact_candidates": packed_candidates,
+            "best_packed_exact_cdf": best_packed_cdf,
+            "parametric_state_bytes_estimate": parametric_bytes,
+            "representation_policy_candidates": policy_candidates,
+            "selected_prefix_representation": prefix_selection["selected_representation"],
+            "selected_prefix_policy": prefix_selection,
+            "selected_functional_representation": functional_selection["selected_representation"],
+            "selected_functional_policy": functional_selection,
+            "selected_distribution_representation": prefix_selection["selected_representation"],
+            "selected_distribution_reason": prefix_selection["selected_reason"],
             **model_record,
         })
         records.append(model)
@@ -337,6 +365,20 @@ def summarize(records):
                     mean_cdf=statistics.mean(cdf) if cdf else 0.0,
                 )
             )
+        lines.extend([
+            "",
+            "## Packed Exact Candidate Selection",
+            "",
+            "| representation | rows | mean_bytes | mean_cdf | mean_w1 |",
+            "|----------------|------|------------|----------|---------|",
+        ])
+        append_packed_exact_table(lines, fit_rows)
+        lines.extend([
+            "",
+            "## Representation Policy Selection",
+            "",
+        ])
+        append_representation_selection_table(lines, fit_rows)
     return "\n".join(lines) + "\n"
 
 
