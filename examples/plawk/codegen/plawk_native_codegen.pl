@@ -8,7 +8,8 @@
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
-     llvm_emit_atom_field_slice/5]).
+     llvm_emit_atom_field_slice/5,
+     llvm_emit_atom_field_count/4]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
 %
@@ -1190,6 +1191,18 @@ plawk_print_field_ir(special('NR'), _FieldSeparator, Index) -->
           [Index, Index])
     },
     [FmtPtr, PrintCall].
+
+plawk_print_field_ir(special('NF'), FieldSeparator, Index) -->
+    { format(atom(Base), 'plawk_nf_~w', [Index]),
+      llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
+      format(atom(FmtPtr),
+          '  %nf_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_nf_~w = call i32 (i8*, ...) @printf(i8* %nf_fmt_~w, i64 %~w)',
+          [Index, Index, Base])
+    },
+    [CountIR, FmtPtr, PrintCall].
 
 plawk_print_field_ir(field(0), _FieldSeparator, Index) -->
     { format(atom(LineLen64),

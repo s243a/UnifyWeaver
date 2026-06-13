@@ -196,6 +196,7 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_eq_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_slice_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_count_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamAssocI64Table* @wam_assoc_i64_new')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_assoc_i64_resize')),
@@ -222,6 +223,10 @@ test(atom_field_slice_emitter) :-
     assertion(sub_atom(CallIR, _, _, _, '%plawk_f2 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_ptr = extractvalue %WamSlice %plawk_f2, 0')),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_len = trunc i64 %plawk_f2_len64 to i32')).
+
+test(atom_field_count_emitter) :-
+    llvm_emit_atom_field_count('%line', 58, plawk_nf, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_nf = call i64 @wam_atom_field_count_value(%Value %line, i8 58)')).
 
 % ============================================================================
 % Builtin op ID mapping

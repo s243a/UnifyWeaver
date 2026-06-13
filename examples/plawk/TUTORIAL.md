@@ -120,8 +120,9 @@ The Phase 0 examples use the counter as `NR`, collect printed lines in
 
 ## Current surface example: count matching records
 
-The native Phase 2 surface can compile rule prints with `NR`, selected fields,
-and `OFS`, matching the first awk-style example above. It can also compile a scalar counter and an `END` action:
+The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
+fields, and `OFS`, matching the first awk-style example above. It can also
+compile a scalar counter and an `END` action:
 
 ```awk
 $1 == "ERROR" { count++ } END { print count }

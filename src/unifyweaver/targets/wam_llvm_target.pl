@@ -47,7 +47,8 @@
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
-    llvm_emit_atom_field_slice/5         % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
+    llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
+    llvm_emit_atom_field_count/4         % +ValueIR, +SepCode, +CountBase, -CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -4726,6 +4727,48 @@ fs.yes:
 
 fs.no:
   ret %WamSlice %fs.empty
+}
+
+define i64 @wam_atom_field_count_value(%Value %atom_value, i8 %sep) {
+entry:
+  %fc.t = call i32 @value_tag(%Value %atom_value)
+  %fc.is_atom = icmp eq i32 %fc.t, 0
+  br i1 %fc.is_atom, label %fc.lookup, label %fc.zero
+
+fc.lookup:
+  %fc.aid = call i64 @value_payload(%Value %atom_value)
+  %fc.str = call i8* @wam_atom_to_string(i64 %fc.aid)
+  %fc.null = icmp eq i8* %fc.str, null
+  br i1 %fc.null, label %fc.zero, label %fc.check_empty
+
+fc.check_empty:
+  %fc.first = load i8, i8* %fc.str
+  %fc.empty = icmp eq i8 %fc.first, 0
+  br i1 %fc.empty, label %fc.zero, label %fc.loop
+
+fc.loop:
+  %fc.pos = phi i64 [ 0, %fc.check_empty ], [ %fc.next_pos, %fc.step ]
+  %fc.count = phi i64 [ 1, %fc.check_empty ], [ %fc.next_count, %fc.step ]
+  %fc.ptr = getelementptr i8, i8* %fc.str, i64 %fc.pos
+  %fc.ch = load i8, i8* %fc.ptr
+  %fc.nul = icmp eq i8 %fc.ch, 0
+  br i1 %fc.nul, label %fc.done, label %fc.check_sep
+
+fc.check_sep:
+  %fc.is_sep = icmp eq i8 %fc.ch, %sep
+  br label %fc.step
+
+fc.step:
+  %fc.sep_i64 = zext i1 %fc.is_sep to i64
+  %fc.next_count = add i64 %fc.count, %fc.sep_i64
+  %fc.next_pos = add i64 %fc.pos, 1
+  br label %fc.loop
+
+fc.done:
+  ret i64 %fc.count
+
+fc.zero:
+  ret i64 0
 }
 
 ; Dispatches on integer op codes:
@@ -16161,6 +16204,16 @@ llvm_emit_atom_field_slice(ValueIR, FieldIndex, SepCode, SliceBase, CallIR) :-
          SliceBase, SliceBase,
          SliceBase, SliceBase,
          SliceBase, SliceBase]).
+
+%% llvm_emit_atom_field_count(+ValueIR, +SepCode, +CountBase, -CallIR)
+%
+%  Emit a native field-count operation over an atom-backed text record. The
+%  runtime returns the split_string/4-style field count for the single-byte
+%  separator without allocating field substrings.
+llvm_emit_atom_field_count(ValueIR, SepCode, CountBase, CallIR) :-
+    format(atom(CallIR),
+        '  %~w = call i64 @wam_atom_field_count_value(%Value ~w, i8 ~w)',
+        [CountBase, ValueIR, SepCode]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-
