@@ -226,6 +226,13 @@ That prints:
 total 4 errors 2
 ```
 
+Scalar variables can accumulate native integer deltas and field lengths:
+
+```awk
+$1 == "ERROR" { bytes += length($0); hits += 2 }
+END { print bytes, hits }
+```
+
 `BEGIN` can emit literal report headers before the first input record is read:
 
 ```awk

@@ -81,6 +81,17 @@ test(parses_multi_rule_scalar_end_print_rule) :-
          rule(field_eq(1, "WARN"), [inc(var(warnings))])],
         [end([print([var(errors), var(warnings)])])])).
 
+test(parses_field_eq_scalar_add_assign_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [add(var(bytes), length(field(0))), add(var(hits), int(2))])],
+        [end([print([var(bytes), var(hits)])])])).
+
+test(parses_always_scalar_add_assign_end_print_rule) :-
+    plawk_parse_string("{ total += 3 } END { print total }\n", Program),
+    assertion(Program == program([], [rule(always, [add(var(total), int(3))])],
+        [end([print([var(total)])])])).
+
 test(parses_assoc_count_end_print_rule) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     assertion(Program == program([], [rule(always, [inc_assoc(var(counts), field(1))])],
@@ -238,6 +249,21 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4\n").
 
+test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down\n",
+        "33 4\n").
+
+test(surface_always_scalar_add_assign_accumulates_constants) :-
+    run_surface_print_smoke("{ total += 3 } END { print total }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "12\n").
+
+test(surface_mixed_inc_and_add_assign_accumulates_same_slot) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { hits++; hits += 2 } END { print hits }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "6\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -262,6 +288,11 @@ test(surface_mixed_scalar_assoc_counts) :-
     run_surface_print_smoke("{ total++; counts[$1]++ } $1 == \"ERROR\" { errors++; by_component[$2]++ } END { print total, errors, counts[\"WARN\"], by_component[\"disk\"] }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4 2 1 1\n").
+
+test(surface_mixed_scalar_add_assign_and_assoc_counts) :-
+    run_surface_print_smoke("{ bytes += length($0); counts[$1]++ } END { print bytes, counts[\"ERROR\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "53 2\n").
 
 test(surface_assoc_end_prints_string_literals) :-
     run_surface_print_smoke("{ counts[$1]++ } END { print \"errors\", counts[\"ERROR\"], \"warnings\", counts[\"WARN\"] }\n",
@@ -407,6 +438,18 @@ test(surface_mixed_scalar_assoc_uses_native_state_and_tables) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_done:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_action_0:'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += length($2); hits += 2 } END { print bytes, hits }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'lowered_match:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%slot_0 = phi i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_0_const = add i64 %slot_0, 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_rule_0_slot_0_delta_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_1_const = add i64 %slot_1, 2'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

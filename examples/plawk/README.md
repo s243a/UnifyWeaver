@@ -86,7 +86,9 @@ case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0)
 Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
-guarded rules can update shared scalar slots before an `END` print. The first
+guarded rules can update shared scalar slots before an `END` print. Scalar slots
+also support native `+=` with integer constants and field lengths, e.g.
+`$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
 Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per
