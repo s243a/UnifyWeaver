@@ -9,6 +9,7 @@ from scripts.distribution_fit_comparison import (
     binomial_pmf,
     convolve,
     exact_excess_distribution,
+    choose_distribution_representation,
     cheapest_candidate_within,
     depth_prior_records,
     fitted_binomial_pmf,
@@ -19,6 +20,7 @@ from scripts.distribution_fit_comparison import (
     append_realized_support_table,
     packed_exact_candidates,
     packed_sparse_histogram_bytes,
+    parametric_candidate_from_model,
     quantized_cdf_table_pmf,
     run_graph_fit_comparison,
     shift_distribution,
@@ -27,6 +29,7 @@ from scripts.distribution_fit_comparison import (
     total_error_certificate,
     w1_cdf_error,
     weighted_parent_certificate,
+    representation_policy_candidates,
     tail_pruned_pmf,
 )
 from tools.distribution_cache_support import FIXTURES, ROOT
@@ -107,6 +110,75 @@ class DistributionFitComparisonTests(unittest.TestCase):
     def test_packed_sparse_histogram_bytes_counts_nonzero_bins(self):
         self.assertLess(packed_sparse_histogram_bytes(1), packed_sparse_histogram_bytes(2))
 
+    def test_representation_selector_chooses_cheapest_candidate_under_policy(self):
+        candidates = [
+            {
+                "representation": "exact_histogram",
+                "candidate_source": "exact",
+                "bytes_estimate": 100,
+                "max_cdf_error": 0.0,
+                "w1_cdf_error": 0.0,
+                "workloads": ["prefix_mass", "arbitrary_functional"],
+            },
+            {
+                "representation": "quantized_cdf_table",
+                "candidate_source": "packed_exact",
+                "bytes_estimate": 20,
+                "max_cdf_error": 0.001,
+                "w1_cdf_error": 0.004,
+                "workloads": ["prefix_mass"],
+            },
+            {
+                "representation": "parametric:binomial_fit",
+                "candidate_source": "parametric",
+                "bytes_estimate": 16,
+                "max_cdf_error": 0.2,
+                "w1_cdf_error": 0.2,
+                "workloads": ["prefix_mass", "arbitrary_functional"],
+            },
+        ]
+
+        selected = choose_distribution_representation(candidates, max_cdf=0.01, max_w1=0.01, workload="prefix_mass")
+
+        self.assertEqual(selected["selected_representation"], "quantized_cdf_table")
+        rejected = {row["representation"]: row["rejection_reason"] for row in selected["evaluated_candidates"]}
+        self.assertEqual(rejected["parametric:binomial_fit"], "max_cdf_error_exceeds_policy")
+
+    def test_representation_selector_respects_workload_support(self):
+        candidates = [
+            {
+                "representation": "quantized_cdf_table",
+                "candidate_source": "packed_exact",
+                "bytes_estimate": 10,
+                "max_cdf_error": 0.0,
+                "w1_cdf_error": 0.0,
+                "workloads": ["prefix_mass"],
+            },
+            {
+                "representation": "exact_histogram",
+                "candidate_source": "exact",
+                "bytes_estimate": 40,
+                "max_cdf_error": 0.0,
+                "w1_cdf_error": 0.0,
+                "workloads": ["prefix_mass", "arbitrary_functional"],
+            },
+        ]
+
+        selected = choose_distribution_representation(candidates, max_cdf=0.0, workload="arbitrary_functional")
+
+        self.assertEqual(selected["selected_representation"], "exact_histogram")
+
+    def test_policy_candidates_add_exact_packed_and_parametric_sources(self):
+        model = {"model": "binomial_fit", "max_cdf_error": 0.01, "w1_cdf_error": 0.02, "l1_error": 0.03}
+        candidates = representation_policy_candidates(
+            100,
+            [{"representation": "quantized_cdf_table", "bytes_estimate": 12, "max_cdf_error": 0.0, "w1_cdf_error": 0.0}],
+            parametric_candidate_from_model(model, 32),
+        )
+
+        self.assertEqual([candidate["candidate_source"] for candidate in candidates], ["exact", "packed_exact", "parametric"])
+        self.assertEqual(candidates[-1]["representation"], "parametric:binomial_fit")
+
     def test_fitted_gamma_degenerates_for_one_point_histogram(self):
         model, params = fitted_gamma_pmf([1.0])
 
@@ -144,6 +216,8 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertEqual(roles, {"depth_prior"})
         self.assertTrue(all(record["effective_support_bins"] >= 1 for record in records))
         self.assertTrue(all(record["best_packed_exact_cdf"] is not None for record in records))
+        self.assertTrue(all(record["selected_prefix_representation"] is not None for record in records))
+        self.assertTrue(all(record["selected_functional_representation"] is not None for record in records))
 
     def test_realized_support_table_counts_targets_once(self):
         lines = []
@@ -190,6 +264,7 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertIn("Realized Support By Root Distance", summary)
         self.assertIn("Prior Support By Depth", summary)
         self.assertIn("Packed Exact Candidates", summary)
+        self.assertIn("Representation Policy Selection", summary)
 
 
 if __name__ == "__main__":

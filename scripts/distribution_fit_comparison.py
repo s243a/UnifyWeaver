@@ -282,6 +282,111 @@ def cheapest_candidate_within(candidates: list[dict[str, float | int | str | Non
     return min(valid, key=lambda candidate: (int(candidate["bytes_estimate"]), str(candidate["representation"])))
 
 
+def parametric_candidate_from_model(model_record: dict[str, object], bytes_estimate: int) -> dict[str, object]:
+    return {
+        "representation": "parametric:{}".format(model_record["model"]),
+        "family": model_record["model"],
+        "bytes_estimate": bytes_estimate,
+        "max_cdf_error": model_record["max_cdf_error"],
+        "w1_cdf_error": model_record.get("w1_cdf_error", 0.0),
+        "l1_error": model_record.get("l1_error", 0.0),
+        "workloads": ["prefix_mass", "arbitrary_functional"],
+    }
+
+
+def exact_histogram_candidate(bytes_estimate: int) -> dict[str, object]:
+    return {
+        "representation": "exact_histogram",
+        "bytes_estimate": bytes_estimate,
+        "max_cdf_error": 0.0,
+        "w1_cdf_error": 0.0,
+        "workloads": ["prefix_mass", "arbitrary_functional"],
+    }
+
+
+def normalize_policy_candidate(candidate: dict[str, object], source: str) -> dict[str, object]:
+    normalized = dict(candidate)
+    normalized["candidate_source"] = source
+    if "workloads" not in normalized:
+        if normalized.get("representation") == "quantized_cdf_table":
+            normalized["workloads"] = ["prefix_mass"]
+        else:
+            normalized["workloads"] = ["prefix_mass", "arbitrary_functional"]
+    return normalized
+
+
+def representation_policy_candidates(
+    exact_bytes: int,
+    packed_candidates: list[dict[str, object]],
+    parametric_candidate: dict[str, object],
+) -> list[dict[str, object]]:
+    candidates = [normalize_policy_candidate(exact_histogram_candidate(exact_bytes), "exact")]
+    candidates.extend(normalize_policy_candidate(candidate, "packed_exact") for candidate in packed_candidates)
+    candidates.append(normalize_policy_candidate(parametric_candidate, "parametric"))
+    return candidates
+
+
+def candidate_rejection_reason(candidate: dict[str, object], max_cdf: float, max_w1: float | None, workload: str) -> str | None:
+    if workload not in candidate.get("workloads", []):
+        return "workload_not_supported"
+    if float(candidate["max_cdf_error"]) > max_cdf:
+        return "max_cdf_error_exceeds_policy"
+    if max_w1 is not None and float(candidate["w1_cdf_error"]) > max_w1:
+        return "w1_cdf_error_exceeds_policy"
+    return None
+
+
+def choose_distribution_representation(
+    candidates: list[dict[str, object]],
+    max_cdf: float,
+    max_w1: float | None = None,
+    workload: str = "prefix_mass",
+) -> dict[str, object]:
+    evaluated = []
+    accepted = []
+    for candidate in candidates:
+        candidate = dict(candidate)
+        reason = candidate_rejection_reason(candidate, max_cdf, max_w1, workload)
+        candidate["accepted"] = reason is None
+        candidate["rejection_reason"] = reason
+        evaluated.append(candidate)
+        if reason is None:
+            accepted.append(candidate)
+    if not accepted:
+        return {
+            "selected_representation": None,
+            "selected_candidate_source": None,
+            "selected_bytes_estimate": None,
+            "selected_max_cdf_error": None,
+            "selected_w1_cdf_error": None,
+            "selected_reason": "no_candidate_satisfies_policy",
+            "workload": workload,
+            "policy_max_cdf_error": max_cdf,
+            "policy_max_w1_error": max_w1,
+            "evaluated_candidates": evaluated,
+        }
+    selected = min(
+        accepted,
+        key=lambda candidate: (
+            int(candidate["bytes_estimate"]),
+            float(candidate["max_cdf_error"]),
+            str(candidate["representation"]),
+        ),
+    )
+    return {
+        "selected_representation": selected["representation"],
+        "selected_candidate_source": selected["candidate_source"],
+        "selected_bytes_estimate": selected["bytes_estimate"],
+        "selected_max_cdf_error": selected["max_cdf_error"],
+        "selected_w1_cdf_error": selected["w1_cdf_error"],
+        "selected_reason": "cheapest_candidate_within_policy",
+        "workload": workload,
+        "policy_max_cdf_error": max_cdf,
+        "policy_max_w1_error": max_w1,
+        "evaluated_candidates": evaluated,
+    }
+
+
 def binomial_pmf(trials: int, probability: float) -> list[float]:
     if trials <= 0:
         return [1.0]
@@ -550,6 +655,15 @@ def target_fit_records(
     best_packed_cdf = cheapest_candidate_within(packed_candidates, tail_epsilon)
     for model_record in compare_models(empirical, realized_model_builders()):
         parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
+        policy_candidates = representation_policy_candidates(
+            exact_bytes,
+            packed_candidates,
+            parametric_candidate_from_model(model_record, parametric_bytes),
+        )
+        prefix_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="prefix_mass")
+        functional_selection = choose_distribution_representation(
+            policy_candidates, tail_epsilon, workload="arbitrary_functional"
+        )
         records.append({
             "record_type": "distribution_fit",
             "distribution_role": "realized_fit",
@@ -580,6 +694,13 @@ def target_fit_records(
             "best_packed_exact_cdf": best_packed_cdf,
             "best_packed_exact_bytes_estimate": None if best_packed_cdf is None else best_packed_cdf["bytes_estimate"],
             "packed_exact_compression_ratio_estimate": 0.0 if not best_packed_cdf else exact_bytes / int(best_packed_cdf["bytes_estimate"]),
+            "representation_policy_candidates": policy_candidates,
+            "selected_prefix_representation": prefix_selection["selected_representation"],
+            "selected_prefix_policy": prefix_selection,
+            "selected_functional_representation": functional_selection["selected_representation"],
+            "selected_functional_policy": functional_selection,
+            "selected_distribution_representation": prefix_selection["selected_representation"],
+            "selected_distribution_reason": prefix_selection["selected_reason"],
             "parent_degree": len(parents.get(target, [])),
             **model_record,
         })
@@ -601,6 +722,15 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
         best_packed_cdf = cheapest_candidate_within(packed_candidates, tail_epsilon)
         for model_record in compare_models(empirical, prior_model_builders(depth)):
             parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
+            policy_candidates = representation_policy_candidates(
+                dense_prior_estimate,
+                packed_candidates,
+                parametric_candidate_from_model(model_record, parametric_bytes),
+            )
+            prefix_selection = choose_distribution_representation(policy_candidates, tail_epsilon, workload="prefix_mass")
+            functional_selection = choose_distribution_representation(
+                policy_candidates, tail_epsilon, workload="arbitrary_functional"
+            )
             records.append({
                 "record_type": "distribution_fit",
                 "distribution_role": "depth_prior",
@@ -615,6 +745,13 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
                 "best_packed_exact_cdf": best_packed_cdf,
                 "best_packed_exact_bytes_estimate": None if best_packed_cdf is None else best_packed_cdf["bytes_estimate"],
                 "packed_exact_compression_ratio_estimate": 0.0 if not best_packed_cdf else dense_prior_estimate / int(best_packed_cdf["bytes_estimate"]),
+                "representation_policy_candidates": policy_candidates,
+                "selected_prefix_representation": prefix_selection["selected_representation"],
+                "selected_prefix_policy": prefix_selection,
+                "selected_functional_representation": functional_selection["selected_representation"],
+                "selected_functional_policy": functional_selection,
+                "selected_distribution_representation": prefix_selection["selected_representation"],
+                "selected_distribution_reason": prefix_selection["selected_reason"],
                 "mean_excess": mean,
                 "variance_excess": variance,
                 "skewness_excess": distribution_skewness(empirical),
@@ -740,6 +877,13 @@ def summarize(records: list[dict[str, object]]) -> str:
             "|----------------|------|------------|----------|---------|",
         ])
         append_packed_exact_table(lines, realized_records)
+        lines.extend([
+            "",
+            "## Realized Representation Policy Selection",
+            "",
+        ])
+        append_representation_selection_table(lines, realized_records)
+
     lines.extend([
         "",
         "## Depth-Conditioned Prior Distributions",
@@ -786,6 +930,12 @@ def summarize(records: list[dict[str, object]]) -> str:
             "|----------------|------|------------|----------|---------|",
         ])
         append_packed_exact_table(lines, prior_records)
+        lines.extend([
+            "",
+            "## Prior Representation Policy Selection",
+            "",
+        ])
+        append_representation_selection_table(lines, prior_records)
 
     if error_records:
         lines.extend(["", "## Errors", ""])
@@ -850,6 +1000,52 @@ def append_packed_exact_table(lines: list[str], rows: list[dict[str, object]]) -
                 mean_w1=statistics.mean(float(candidate["w1_cdf_error"]) for candidate in candidates),
             )
         )
+
+
+def append_representation_selection_table(lines: list[str], rows: list[dict[str, object]]) -> None:
+    unique_rows = unique_distribution_records(rows)
+    lines.extend([
+        "| workload | selected | rows | mean_bytes | mean_cdf | mean_w1 |",
+        "|----------|----------|------|------------|----------|---------|",
+    ])
+    for workload, key in [
+        ("prefix_mass", "selected_prefix_policy"),
+        ("arbitrary_functional", "selected_functional_policy"),
+    ]:
+        by_representation: dict[str, list[dict[str, object]]] = {}
+        for row in unique_rows:
+            policy = row.get(key)
+            if not policy:
+                continue
+            representation = policy.get("selected_representation") or "none"
+            by_representation.setdefault(str(representation), []).append(policy)
+        for representation in sorted(by_representation):
+            policies = by_representation[representation]
+            bytes_values = [
+                int(policy["selected_bytes_estimate"])
+                for policy in policies
+                if policy.get("selected_bytes_estimate") is not None
+            ]
+            cdf_values = [
+                float(policy["selected_max_cdf_error"])
+                for policy in policies
+                if policy.get("selected_max_cdf_error") is not None
+            ]
+            w1_values = [
+                float(policy["selected_w1_cdf_error"])
+                for policy in policies
+                if policy.get("selected_w1_cdf_error") is not None
+            ]
+            lines.append(
+                "| {workload} | {representation} | {rows} | {mean_bytes:.3f} | {mean_cdf:.6f} | {mean_w1:.6f} |".format(
+                    workload=workload,
+                    representation=representation,
+                    rows=len(policies),
+                    mean_bytes=statistics.mean(bytes_values) if bytes_values else 0.0,
+                    mean_cdf=statistics.mean(cdf_values) if cdf_values else 0.0,
+                    mean_w1=statistics.mean(w1_values) if w1_values else 0.0,
+                )
+            )
 
 
 def unique_realized_target_records(rows: list[dict[str, object]]) -> list[dict[str, object]]:
