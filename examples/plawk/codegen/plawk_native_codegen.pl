@@ -1184,76 +1184,65 @@ plawk_print_separator_ir(Index, OutputSeparator) -->
     },
     [SpaceCall].
 
-plawk_print_field_ir(special('NR'), _FieldSeparator, Index) -->
-    { format(atom(FmtPtr),
-          '  %nr_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_nr_~w = call i32 (i8*, ...) @printf(i8* %nr_fmt_~w, i64 %current_nr)',
-          [Index, Index])
+plawk_print_field_ir(Field, FieldSeparator, Index) -->
+    { plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, SetupParts),
+      plawk_print_expr_output_ir(Type, Index, PrintParts),
+      append(SetupParts, PrintParts, Parts)
     },
-    [FmtPtr, PrintCall].
+    Parts.
 
-plawk_print_field_ir(special('NF'), FieldSeparator, Index) -->
-    { format(atom(Base), 'plawk_nf_~w', [Index]),
-      llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
-      format(atom(FmtPtr),
-          '  %nf_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_nf_~w = call i32 (i8*, ...) @printf(i8* %nf_fmt_~w, i64 %~w)',
-          [Index, Index, Base])
-    },
-    [CountIR, FmtPtr, PrintCall].
+plawk_emit_print_expr_ir(special('NR'), _FieldSeparator, _Index,
+        i64(nr, nr, '%current_nr'), []).
 
-plawk_print_field_ir(length(field(FieldIndex)), FieldSeparator, Index) -->
-    { format(atom(Base), 'plawk_length_~w', [Index]),
-      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
-      format(atom(FmtPtr),
-          '  %length_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_length_~w = call i32 (i8*, ...) @printf(i8* %length_fmt_~w, i64 %~w)',
-          [Index, Index, Base])
-    },
-    [LengthIR, FmtPtr, PrintCall].
+plawk_emit_print_expr_ir(special('NF'), FieldSeparator, Index,
+        i64(nf, nf, ValueIR), [CountIR]) :-
+    format(atom(Base), 'plawk_nf_~w', [Index]),
+    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
+    format(atom(ValueIR), '%~w', [Base]).
 
-plawk_print_field_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Index) -->
-    { format(atom(Base), 'plawk_substr_~w', [Index]),
-      llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
-      format(atom(FmtPtr),
-          '  %substr_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_substr_~w = call i32 (i8*, ...) @printf(i8* %substr_fmt_~w, i32 %~w_len, i8* %~w_ptr)',
-          [Index, Index, Base, Base])
-    },
-    [SliceIR, FmtPtr, PrintCall].
+plawk_emit_print_expr_ir(length(field(FieldIndex)), FieldSeparator, Index,
+        i64(length, length, ValueIR), [LengthIR]) :-
+    format(atom(Base), 'plawk_length_~w', [Index]),
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
+    format(atom(ValueIR), '%~w', [Base]).
 
-plawk_print_field_ir(field(0), _FieldSeparator, Index) -->
-    { format(atom(LineLen64),
-          '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
-          [Index]),
-      format(atom(LineLen),
-          '  %line_len_~w = trunc i64 %line_len64_~w to i32',
-          [Index, Index]),
-      format(atom(FmtPtr),
-          '  %line_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_line_~w = call i32 (i8*, ...) @printf(i8* %line_fmt_~w, i32 %line_len_~w, i8* %line_s)',
-          [Index, Index, Index])
-    },
-    [LineLen64, LineLen, FmtPtr, PrintCall].
-plawk_print_field_ir(field(FieldIndex), FieldSeparator, Index) -->
-    { FieldIndex > 0,
-      format(atom(Base), 'plawk_field_~w', [Index]),
-      llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
-      format(atom(FmtPtr),
-          '  %slice_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
-          [Index]),
-      format(atom(PrintCall),
-          '  %printed_slice_~w = call i32 (i8*, ...) @printf(i8* %slice_fmt_~w, i32 %~w_len, i8* %~w_ptr)',
-          [Index, Index, Base, Base])
-    },
-    [SliceIR, FmtPtr, PrintCall].
+plawk_emit_print_expr_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Index,
+        slice(substr, substr, LenIR, PtrIR), [SliceIR]) :-
+    format(atom(Base), 'plawk_substr_~w', [Index]),
+    llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_emit_print_expr_ir(field(0), _FieldSeparator, Index,
+        slice(line, line, LenIR, '%line_s'), [LineLen64, LineLen]) :-
+    format(atom(LineLen64),
+        '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
+        [Index]),
+    format(atom(LineLen),
+        '  %line_len_~w = trunc i64 %line_len64_~w to i32',
+        [Index, Index]),
+    format(atom(LenIR), '%line_len_~w', [Index]).
+
+plawk_emit_print_expr_ir(field(FieldIndex), FieldSeparator, Index,
+        slice(slice, slice, LenIR, PtrIR), [SliceIR]) :-
+    FieldIndex > 0,
+    format(atom(Base), 'plawk_field_~w', [Index]),
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_print_expr_output_ir(i64(FmtPrefix, PrintPrefix, ValueIR), Index, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [FmtPrefix, Index]),
+    format(atom(PrintCall),
+        '  %printed_~w_~w = call i32 (i8*, ...) @printf(i8* %~w_fmt_~w, i64 ~w)',
+        [PrintPrefix, Index, FmtPrefix, Index, ValueIR]).
+
+plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w_fmt_~w = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+        [FmtPrefix, Index]),
+    format(atom(PrintCall),
+        '  %printed_~w_~w = call i32 (i8*, ...) @printf(i8* %~w_fmt_~w, i32 ~w, i8* ~w)',
+        [PrintPrefix, Index, FmtPrefix, Index, LenIR, PtrIR]).
