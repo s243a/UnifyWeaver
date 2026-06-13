@@ -346,10 +346,28 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
     suffix_hops = max(0, int(target_depth) - int(boundary_depth))
     suffix_states = estimated_suffix_states(boundary_depth, target_depth, args.branching_factor, depth_branching, args.min_path_states)
 
-    uncached_suffix_cost = args.uncached_base_cost + suffix_states * args.uncached_cost_per_state
+    uncapped_suffix_work = suffix_states
+    cap_limited_suffix_work = uncapped_suffix_work
+    cap_ceiling = None
+    if args.cap_mode == "measured":
+        cap_ceiling = max(0.0, float(args.estimated_full_work))
+    elif args.cap_mode == "path":
+        cap_ceiling = max(0.0, float(args.path_cap))
+    elif args.cap_mode == "expansion":
+        cap_ceiling = max(0.0, float(args.expansion_cap))
+    elif args.cap_mode not in {"uncapped", "validation"}:
+        raise ValueError("unknown cap mode: {}".format(args.cap_mode))
+    if cap_ceiling is not None and cap_ceiling > 0.0:
+        cap_limited_suffix_work = min(uncapped_suffix_work, cap_ceiling)
+
+    uncached_suffix_cost = args.uncached_base_cost + cap_limited_suffix_work * args.uncached_cost_per_state
+    per_hit_decode_cost = 0.0 if args.decode_memoized else representation.bytes_estimate * args.decode_cost_per_byte
+    splice_cost = representation.points * args.splice_cost_per_point
     cached_suffix_eval_cost = (
         args.cached_eval_base_cost
         + representation.points * args.cached_eval_cost_per_point
+        + per_hit_decode_cost
+        + splice_cost
     )
     saved_per_hit = max(0.0, uncached_suffix_cost - cached_suffix_eval_cost)
     validation_effective_suffix_states = None
@@ -386,8 +404,13 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         "expected_hits": expected_hits,
         "expected_build_states": build_states,
         "expected_suffix_states": suffix_states,
+        "cap_mode": args.cap_mode,
+        "cap_limited_suffix_states": cap_limited_suffix_work,
+        "cap_ceiling": cap_ceiling,
         "uncached_suffix_cost": uncached_suffix_cost,
         "cached_suffix_eval_cost": cached_suffix_eval_cost,
+        "per_hit_decode_cost": per_hit_decode_cost,
+        "splice_cost": splice_cost,
         "saved_per_hit": saved_per_hit,
         "build_cost": build_cost,
         "fit_cost": fit_cost,
@@ -442,10 +465,15 @@ def build_records(args, calibration=None, validation_measurements=None):
         ],
         "cost_model": {
             "cap_mode": args.cap_mode,
+            "path_cap": args.path_cap,
+            "expansion_cap": args.expansion_cap,
+            "estimated_full_work": args.estimated_full_work,
             "uncached_base_cost": args.uncached_base_cost,
             "uncached_cost_per_state": args.uncached_cost_per_state,
             "cached_eval_base_cost": args.cached_eval_base_cost,
             "cached_eval_cost_per_point": args.cached_eval_cost_per_point,
+            "splice_cost_per_point": args.splice_cost_per_point,
+            "decode_memoized": args.decode_memoized,
             "build_base_cost": args.build_base_cost,
             "build_cost_per_state": args.build_cost_per_state,
             "storage_cost_per_byte": args.storage_cost_per_byte,
@@ -479,6 +507,8 @@ def summarize(records):
         "Default parent branching prior `b = E[p^2] / E[p]`: `{:.6f}`".format(selection["branching_factor"]),
         "",
         "Target depth: `{}`".format(selection["target_depth"]),
+        "",
+        "Cap mode: `{}`".format(selection["cost_model"]["cap_mode"]),
         "",
     ]
     if selection.get("calibration"):
@@ -526,8 +556,8 @@ def summarize(records):
     lines.extend([
         "## Depth Recommendation",
         "",
-        "| boundary_depth | suffix_hops | expected_hits | suffix_states | build_states | best_representation | validation_time_ratio | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|--------------:|--------------:|-------------:|--------------------|----------------------:|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | expected_hits | suffix_states | cap_limited_suffix_states | build_states | best_representation | validation_time_ratio | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|--------------:|--------------:|--------------------------:|-------------:|--------------------|----------------------:|-------------------:|----------:|------|",
     ])
     recommendation_rows = []
     for depth in sorted(by_depth):
@@ -535,11 +565,12 @@ def summarize(records):
         best = max(rows, key=lambda item: item["expected_net_value"])
         recommendation_rows.append(best)
         lines.append(
-            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {build_states:.3f} | {rep} | {ratio} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {build_states:.3f} | {rep} | {ratio} | {breakeven} | {net:.3f} | {pays} |".format(
                 depth=depth,
                 suffix_hops=best["suffix_hops"],
                 hits=best["expected_hits"],
                 suffix_states=best["expected_suffix_states"],
+                cap_suffix_states=best["cap_limited_suffix_states"],
                 build_states=best["expected_build_states"],
                 rep=best["representation"],
                 ratio=(
@@ -557,12 +588,12 @@ def summarize(records):
         "",
         "## Representation Detail",
         "",
-        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | saved_per_hit | validation_time_ratio | one_time_cost | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------:|----------------------:|--------------:|-------------------:|----------:|------|",
+        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | cap_limited_suffix_states | saved_per_hit | validation_time_ratio | per_hit_decode | splice_cost | one_time_cost | hits_to_break_even | net_value | pays |",
+        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------------------:|--------------:|----------------------:|---------------:|------------:|--------------:|-------------------:|----------:|------|",
     ])
     for row in estimate_rows:
         lines.append(
-            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {saved:.3f} | {ratio} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {saved:.3f} | {ratio} | {decode:.3f} | {splice:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
                 depth=row["boundary_depth"],
                 suffix_hops=row["suffix_hops"],
                 rep=row["representation"],
@@ -570,12 +601,15 @@ def summarize(records):
                 bytes=row["bytes_estimate"],
                 hits=row["expected_hits"],
                 suffix_states=row["expected_suffix_states"],
+                cap_suffix_states=row["cap_limited_suffix_states"],
                 saved=row["saved_per_hit"],
                 ratio=(
                     "n/a"
                     if "validation_mean_time_ratio" not in row or not row.get("validation_usable_for_cap", True)
                     else "{:.3f}".format(row["validation_mean_time_ratio"])
                 ),
+                decode=row["per_hit_decode_cost"],
+                splice=row["splice_cost"],
                 cost=row["one_time_cost"],
                 breakeven="n/a" if row["hits_to_break_even"] is None else "{:.3f}".format(row["hits_to_break_even"]),
                 net=row["expected_net_value"],
@@ -616,10 +650,16 @@ def parse_args(argv=None):
     parser.add_argument("--max-depth", type=int, default=8, help="Maximum boundary depth to evaluate.")
     parser.add_argument("--target-depth", type=int, default=None, help="Depth of the query target. Defaults to --max-depth.")
     parser.add_argument("--min-path-states", type=float, default=1.0)
+    parser.add_argument("--cap-mode", choices=["uncapped", "path", "expansion", "measured", "validation"], default="uncapped", help="Ceiling or validation mode applied to skipped suffix work.")
+    parser.add_argument("--path-cap", type=float, default=0.0, help="Path cap used when --cap-mode=path; non-positive disables the ceiling.")
+    parser.add_argument("--expansion-cap", type=float, default=0.0, help="Expansion cap used when --cap-mode=expansion; non-positive disables the ceiling.")
+    parser.add_argument("--estimated-full-work", type=float, default=0.0, help="Measured full-search work ceiling used when --cap-mode=measured.")
     parser.add_argument("--uncached-base-cost", type=float, default=0.0)
     parser.add_argument("--uncached-cost-per-state", type=float, default=1.0)
     parser.add_argument("--cached-eval-base-cost", type=float, default=1.0)
     parser.add_argument("--cached-eval-cost-per-point", type=float, default=0.02)
+    parser.add_argument("--splice-cost-per-point", type=float, default=0.0)
+    parser.add_argument("--decode-memoized", action="store_true", help="Do not charge distribution decode cost per query hit.")
     parser.add_argument("--build-base-cost", type=float, default=0.0)
     parser.add_argument("--build-cost-per-state", type=float, default=1.0)
     parser.add_argument("--storage-cost-per-byte", type=float, default=0.01)
@@ -635,7 +675,6 @@ def parse_args(argv=None):
     parser.add_argument("--output-dir", type=Path, default=Path("docs/reports"))
     parser.add_argument("--calibration-summary", action="append", type=Path, default=[], help="Payload recurrence layer summary JSON used to derive timing costs. Can be repeated.")
     parser.add_argument("--validation-jsonl", action="append", type=Path, default=[], help="Boundary-cache validation JSONL used to derive per-depth measured saved-per-hit. Can be repeated.")
-    parser.add_argument("--cap-mode", choices=["none", "validation"], default="none", help="Use validation rows to cap expected suffix savings.")
     return parser.parse_args(argv)
 
 

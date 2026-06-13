@@ -283,6 +283,39 @@ field_expr(substr(Field, Start, Len)) -->
       StartCodes \== [], LenCodes \== [],
       number_codes(Start, StartCodes), Start >= 1,
       number_codes(Len, LenCodes), Len >= 0 }.
+field_expr(index(Field, string(Needle))) -->
+    "index",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ",",
+    ws,
+    quoted_string(NeedleCodes),
+    ws,
+    ")",
+    { Field = field(_),
+      NeedleCodes \== [],
+      string_codes(Needle, NeedleCodes) }.
+field_expr(tolower(Field)) -->
+    "tolower",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
+field_expr(toupper(Field)) -->
+    "toupper",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
 field_expr(assoc(var(Name), KeyExpr)) -->
     identifier(Name),
     ws,

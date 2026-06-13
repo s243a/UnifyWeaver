@@ -11,7 +11,9 @@
      llvm_emit_atom_field_slice/5,
      llvm_emit_atom_field_count/4,
      llvm_emit_atom_field_length/5,
-     llvm_emit_atom_field_subslice/7]).
+     llvm_emit_atom_field_subslice/7,
+     llvm_emit_atom_field_index/7,
+     llvm_emit_ascii_case_slice_print/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
 %
@@ -45,7 +47,7 @@ plawk_program_native_driver_ir(
     plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR),
-    plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintActionIR),
+    plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintGlobalIR-PrintActionIR),
     format(atom(RecordIR),
 '~w
 ~w
@@ -63,8 +65,9 @@ print_line:
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 ~w
 ~w
+~w
 ',
-        [BeginGlobalIR, GuardGlobalIR]),
+        [BeginGlobalIR, GuardGlobalIR, PrintGlobalIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
@@ -1157,17 +1160,30 @@ plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR) :-
         RecordCounterIR = ''
     ).
 
-plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, IR) :-
+plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, ''-IR) :-
     !,
     IR = '  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
   %printed = call i32 (i8*, ...) @printf(i8* %fmt, i8* %line_s)'.
-plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, IR) :-
-    phrase(plawk_print_fields_ir(Fields, FieldSeparator, OutputSeparator, 0), Parts),
-    atomic_list_concat(Parts, '\n', IR).
+plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
+    phrase(plawk_print_fields_ir(Fields, FieldSeparator, OutputSeparator, 0), Pairs),
+    plawk_print_ir_parts(Pairs, GlobalParts, BodyParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(BodyParts, '\n', IR).
+
+plawk_print_ir_parts([], [], []).
+plawk_print_ir_parts([GlobalIR-BodyIR | Parts], [GlobalIR | GlobalParts], [BodyIR | BodyParts]) :-
+    plawk_print_ir_parts(Parts, GlobalParts, BodyParts).
+
+plawk_join_nonempty_ir(Parts, IR) :-
+    include(plawk_nonempty_ir, Parts, NonEmptyParts),
+    atomic_list_concat(NonEmptyParts, '\n', IR).
+
+plawk_nonempty_ir(IR) :-
+    IR \== ''.
 
 plawk_print_fields_ir([], _FieldSeparator, _OutputSeparator, _) -->
-    ['  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
-     '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'].
+    [''-'  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+     ''-'  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'].
 plawk_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Index) -->
     plawk_print_separator_ir(Index, OutputSeparator),
     plawk_print_field_ir(Field, FieldSeparator, Index),
@@ -1182,39 +1198,61 @@ plawk_print_separator_ir(Index, OutputSeparator) -->
           '  %printed_separator_~w = call i32 @putchar(i32 ~w)',
           [Index, OutputSeparator])
     },
-    [SpaceCall].
+    [''-SpaceCall].
 
 plawk_print_field_ir(Field, FieldSeparator, Index) -->
-    { plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, SetupParts),
+    { plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts),
       plawk_print_expr_output_ir(Type, Index, PrintParts),
-      append(SetupParts, PrintParts, Parts)
+      plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+      append(SetupParts, PrintParts, BodyParts),
+      atomic_list_concat(BodyParts, '\n', BodyIR)
     },
-    Parts.
+    [GlobalIR-BodyIR].
 
 plawk_emit_print_expr_ir(special('NR'), _FieldSeparator, _Index,
-        i64(nr, nr, '%current_nr'), []).
+        i64(nr, nr, '%current_nr'), [], []).
 
 plawk_emit_print_expr_ir(special('NF'), FieldSeparator, Index,
-        i64(nf, nf, ValueIR), [CountIR]) :-
+        i64(nf, nf, ValueIR), [], [CountIR]) :-
     format(atom(Base), 'plawk_nf_~w', [Index]),
     llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
     format(atom(ValueIR), '%~w', [Base]).
 
 plawk_emit_print_expr_ir(length(field(FieldIndex)), FieldSeparator, Index,
-        i64(length, length, ValueIR), [LengthIR]) :-
+        i64(length, length, ValueIR), [], [LengthIR]) :-
     format(atom(Base), 'plawk_length_~w', [Index]),
     llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
     format(atom(ValueIR), '%~w', [Base]).
 
 plawk_emit_print_expr_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Index,
-        slice(substr, substr, LenIR, PtrIR), [SliceIR]) :-
+        slice(substr, substr, LenIR, PtrIR), [], [SliceIR]) :-
     format(atom(Base), 'plawk_substr_~w', [Index]),
     llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
+plawk_emit_print_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Index,
+        i64(index, index, ValueIR), [GlobalIR], [CallIR]) :-
+    format(atom(Base), 'plawk_index_~w', [Index]),
+    format(atom(GlobalBase), 'plawk_index_needle_~w', [Index]),
+    llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
+        Base, GlobalIR-CallIR),
+    format(atom(ValueIR), '%~w', [Base]).
+
+plawk_emit_print_expr_ir(tolower(field(FieldIndex)), FieldSeparator, Index,
+        case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
+    format(atom(LowerBase), 'plawk_tolower_~w', [Index]),
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, LowerBase, LenIR, PtrIR,
+        SetupParts).
+
+plawk_emit_print_expr_ir(toupper(field(FieldIndex)), FieldSeparator, Index,
+        case_slice(upper, UpperBase, LenIR, PtrIR), [], SetupParts) :-
+    format(atom(UpperBase), 'plawk_toupper_~w', [Index]),
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
+        SetupParts).
+
 plawk_emit_print_expr_ir(field(0), _FieldSeparator, Index,
-        slice(line, line, LenIR, '%line_s'), [LineLen64, LineLen]) :-
+        slice(line, line, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
     format(atom(LineLen64),
         '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
         [Index]),
@@ -1224,11 +1262,22 @@ plawk_emit_print_expr_ir(field(0), _FieldSeparator, Index,
     format(atom(LenIR), '%line_len_~w', [Index]).
 
 plawk_emit_print_expr_ir(field(FieldIndex), FieldSeparator, Index,
-        slice(slice, slice, LenIR, PtrIR), [SliceIR]) :-
+        slice(slice, slice, LenIR, PtrIR), [], [SliceIR]) :-
     FieldIndex > 0,
     format(atom(Base), 'plawk_field_~w', [Index]),
     llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_emit_case_source_slice_ir(0, _FieldSeparator, Base, LenIR, '%line_s', [LineLen64]) :-
+    format(atom(LineLen64),
+        '  %~w_len64 = call i64 @strlen(i8* %line_s)',
+        [Base]),
+    format(atom(LenIR), '%~w_len64', [Base]).
+plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, Base, LenIR, PtrIR, [SliceIR]) :-
+    FieldIndex > 0,
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
+    format(atom(LenIR), '%~w_len64', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
 plawk_print_expr_output_ir(i64(FmtPrefix, PrintPrefix, ValueIR), Index, [FmtPtr, PrintCall]) :-
@@ -1246,3 +1295,6 @@ plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, [
     format(atom(PrintCall),
         '  %printed_~w_~w = call i32 (i8*, ...) @printf(i8* %~w_fmt_~w, i32 ~w, i8* ~w)',
         [PrintPrefix, Index, FmtPrefix, Index, LenIR, PtrIR]).
+
+plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
+    llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
