@@ -273,7 +273,9 @@ emits indexed string globals and prints them with the same separator rules.
 The first `BEGIN` slices emit literal `print` headers before stream setup, using
 separate indexed string globals so they do not collide with `END` literals, and
 thread single-byte `FS` assignments through native field-equality, selected-field
-print, and associative-key extraction helpers.
+print, and associative-key extraction helpers. Single-byte `OFS` assignments now
+configure the separator used by comma-separated `print` fields in `BEGIN`, rule,
+and `END` actions.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

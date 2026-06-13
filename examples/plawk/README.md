@@ -91,7 +91,8 @@ grows and rehashes as needed, and the native stream reader grows its line buffer
 without consuming WAM arena space per record. `BEGIN` print clauses can emit
 literal report headers before the stream opens, and the first `BEGIN` assignment
 slice supports single-byte `FS` values such as `BEGIN { FS = ":" }` for native
-field equality, selected-field printing, and associative key extraction. Mixed scalar/associative state is
+field equality, selected-field printing, and associative key extraction. Single-byte
+`OFS` values such as `BEGIN { OFS = "," }` drive comma-separated `print` fields. Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.
