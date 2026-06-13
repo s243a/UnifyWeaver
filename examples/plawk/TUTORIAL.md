@@ -238,6 +238,29 @@ kind count
 total 4
 ```
 
+`BEGIN` can also set a single-byte field separator for the native field helpers:
+
+```awk
+BEGIN { FS = ":" }
+$1 == "ERROR" { counts[$2]++ }
+END { print "disk", counts["disk"], "net", counts["net"] }
+```
+
+For this input:
+
+```text
+ERROR:disk:full
+WARN:cpu:hot
+ERROR:net:down
+ERROR:disk:again
+```
+
+that prints:
+
+```text
+disk 2 net 1
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

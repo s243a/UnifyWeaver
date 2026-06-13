@@ -113,6 +113,20 @@ test(parses_begin_print_string_literal_fields) :-
             var(total)
         ])])])).
 
+test(parses_begin_field_separator_assignment) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { counts[$2]++ } END { print counts[\"disk\"] }\n", Program),
+    assertion(Program == program([begin([set(var('FS'), string(":"))])],
+        [rule(field_eq(1, "ERROR"), [inc_assoc(var(counts), field(2))])],
+        [end([print([
+            assoc(var(counts), string("disk"))
+        ])])])).
+
+test(parses_begin_field_separator_with_header) :-
+    plawk_parse_string("BEGIN { FS = \":\"; print \"kind\", \"count\" } { counts[$1]++ } END { print counts[\"ERROR\"] }\n", Program),
+    assertion(Program == program([begin([set(var('FS'), string(":")), print([string("kind"), string("count")])])],
+        [rule(always, [inc_assoc(var(counts), field(1))])],
+        [end([print([assoc(var(counts), string("ERROR"))])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -187,6 +201,21 @@ test(surface_begin_prints_string_literals) :-
     run_surface_print_smoke("BEGIN { print \"kind\", \"count\" } { total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "kind count\ntotal 4\n").
+
+test(surface_begin_field_separator_drives_field_eq_and_assoc_keys) :-
+    run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { counts[$2]++ } END { print \"disk\", counts[\"disk\"], \"net\", counts[\"net\"] }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\nERROR:disk:again\n",
+        "disk 2 net 1\n").
+
+test(surface_begin_field_separator_drives_selected_field_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { print $2, $3 }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
+        "disk full\nnet down\n").
+
+test(surface_begin_field_separator_prints_header) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; print \"kind\", \"count\" } { counts[$1]++ } END { print \"ERROR\", counts[\"ERROR\"] }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
+        "kind count\nERROR 2\n").
 
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
@@ -275,6 +304,15 @@ test(surface_begin_string_literals_use_indexed_globals) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_begin_string_1 = call i32'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_begin_newline = call i32'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_end_print_string_0 = private constant [6 x i8]'))),
+    !.
+
+test(surface_begin_field_separator_uses_configured_delimiter) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print $2, $3 }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value(%Value %line, i64 1, i8* %plawk_5Fsurface_5Ffield_5Feq_ptr, i64 5, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-
