@@ -9,7 +9,8 @@
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
      llvm_emit_atom_field_slice/5,
-     llvm_emit_atom_field_count/4]).
+     llvm_emit_atom_field_count/4,
+     llvm_emit_atom_field_length/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
 %
@@ -1203,6 +1204,18 @@ plawk_print_field_ir(special('NF'), FieldSeparator, Index) -->
           [Index, Index, Base])
     },
     [CountIR, FmtPtr, PrintCall].
+
+plawk_print_field_ir(length(field(FieldIndex)), FieldSeparator, Index) -->
+    { format(atom(Base), 'plawk_length_~w', [Index]),
+      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
+      format(atom(FmtPtr),
+          '  %length_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %printed_length_~w = call i32 (i8*, ...) @printf(i8* %length_fmt_~w, i64 %~w)',
+          [Index, Index, Base])
+    },
+    [LengthIR, FmtPtr, PrintCall].
 
 plawk_print_field_ir(field(0), _FieldSeparator, Index) -->
     { format(atom(LineLen64),

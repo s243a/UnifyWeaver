@@ -48,7 +48,8 @@
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
-    llvm_emit_atom_field_count/4         % +ValueIR, +SepCode, +CountBase, -CallIR
+    llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
+    llvm_emit_atom_field_length/5        % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
 ]).
 
 :- use_module(library(lists)).
@@ -4768,6 +4769,35 @@ fc.done:
   ret i64 %fc.count
 
 fc.zero:
+  ret i64 0
+}
+
+define i64 @wam_atom_field_length_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fl.whole = icmp eq i64 %field_index, 0
+  br i1 %fl.whole, label %fl.whole_record, label %fl.field
+
+fl.whole_record:
+  %fl.t = call i32 @value_tag(%Value %atom_value)
+  %fl.is_atom = icmp eq i32 %fl.t, 0
+  br i1 %fl.is_atom, label %fl.lookup, label %fl.zero
+
+fl.lookup:
+  %fl.aid = call i64 @value_payload(%Value %atom_value)
+  %fl.str = call i8* @wam_atom_to_string(i64 %fl.aid)
+  %fl.null = icmp eq i8* %fl.str, null
+  br i1 %fl.null, label %fl.zero, label %fl.measure
+
+fl.measure:
+  %fl.len = call i64 @strlen(i8* %fl.str)
+  ret i64 %fl.len
+
+fl.field:
+  %fl.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fl.field_len = extractvalue %WamSlice %fl.slice, 1
+  ret i64 %fl.field_len
+
+fl.zero:
   ret i64 0
 }
 
@@ -16214,6 +16244,16 @@ llvm_emit_atom_field_count(ValueIR, SepCode, CountBase, CallIR) :-
     format(atom(CallIR),
         '  %~w = call i64 @wam_atom_field_count_value(%Value ~w, i8 ~w)',
         [CountBase, ValueIR, SepCode]).
+
+%% llvm_emit_atom_field_length(+ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR)
+%
+%  Emit a native byte-length operation over an atom-backed text record. Field 0
+%  measures the whole record; positive fields measure the projected field slice
+%  without allocating a field substring.
+llvm_emit_atom_field_length(ValueIR, FieldIndex, SepCode, LengthBase, CallIR) :-
+    format(atom(CallIR),
+        '  %~w = call i64 @wam_atom_field_length_value(%Value ~w, i64 ~w, i8 ~w)',
+        [LengthBase, ValueIR, FieldIndex, SepCode]).
 
 escape_llvm_codes([], []).
 escape_llvm_codes([C|Cs], Out) :-
