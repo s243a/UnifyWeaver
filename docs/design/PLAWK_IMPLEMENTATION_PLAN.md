@@ -268,6 +268,8 @@ and table increments without per-record WAM dispatch for the supported surface.
 Mixed scalar/associative programs use a combined native state plan: scalar
 counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
 `END` printing can interleave scalar variables with associative lookups.
+`END` printing also supports string literal fields for report labels; codegen
+emits indexed string globals and prints them with the same separator rules.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

@@ -88,6 +88,22 @@ test(parses_mixed_scalar_assoc_end_print_rule) :-
             assoc(var(by_component), string("disk"))
         ])])])).
 
+test(parses_end_print_string_literal_fields) :-
+    plawk_parse_string("{ total++ } END { print \"total\", total }\n", Program),
+    assertion(Program == program([], [rule(always, [inc(var(total))])],
+        [end([print([string("total"), var(total)])])])).
+
+test(parses_mixed_end_print_string_literal_fields) :-
+    plawk_parse_string("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [inc(var(total)), inc_assoc(var(counts), field(1))])],
+        [end([print([
+            string("total"),
+            var(total),
+            string("errors"),
+            assoc(var(counts), string("ERROR"))
+        ])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -123,6 +139,11 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4\n").
 
+test(surface_scalar_end_prints_string_literals) :-
+    run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "total 4\n").
+
 test(surface_assoc_counts_requested_keys) :-
     run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -142,6 +163,16 @@ test(surface_mixed_scalar_assoc_counts) :-
     run_surface_print_smoke("{ total++; counts[$1]++ } $1 == \"ERROR\" { errors++; by_component[$2]++ } END { print total, errors, counts[\"WARN\"], by_component[\"disk\"] }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4 2 1 1\n").
+
+test(surface_assoc_end_prints_string_literals) :-
+    run_surface_print_smoke("{ counts[$1]++ } END { print \"errors\", counts[\"ERROR\"], \"warnings\", counts[\"WARN\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "errors 2 warnings 1\n").
+
+test(surface_mixed_end_prints_string_literals) :-
+    run_surface_print_smoke("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "total 4 errors 2\n").
 
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
@@ -208,6 +239,17 @@ test(surface_mixed_scalar_assoc_uses_native_state_and_tables) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_action_0:'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_end_string_literals_use_indexed_globals) :-
+    plawk_parse_string("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_end_print_string_0 = private constant [6 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_end_print_string_2 = private constant [7 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_string_0 = call i32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_string_2 = call i32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_assoc_print_key_3 = private constant [6 x i8]'))),
     !.
 
 run_surface_print_smoke(Source, Input, ExpectedOutput) :-

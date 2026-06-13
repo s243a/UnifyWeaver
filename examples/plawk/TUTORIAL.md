@@ -210,6 +210,19 @@ associative arrays in runtime tables. For the sample input, that prints:
 4 2 1 1
 ```
 
+`END` print fields can include literal labels:
+
+```awk
+{ total++; counts[$1]++ }
+END { print "total", total, "errors", counts["ERROR"] }
+```
+
+That prints:
+
+```text
+total 4 errors 2
+```
+
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 
