@@ -162,6 +162,15 @@ def decode_quantized_cdf_table(payload: bytes) -> tuple[list[float], dict[str, f
     }
 
 
+def decode_distribution_payload(payload: bytes) -> tuple[list[float], dict[str, float | int | str]]:
+    kind, _bits, _origin, _bin_count, _total_mass, _offset = _parse_header(payload)
+    if kind == KIND_PACKED_SPARSE:
+        return decode_packed_sparse_histogram(payload)
+    if kind == KIND_QUANTIZED_CDF:
+        return decode_quantized_cdf_table(payload)
+    raise ValueError("unsupported distribution payload kind: {}".format(kind))
+
+
 def encode_selected_distribution(
     probabilities: list[float],
     representation: str,

@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.distribution_fit_comparison import binomial_pmf, effective_support_bins, exact_excess_distribution, l1_error, max_cdf_error
+from scripts.distribution_serialization import decode_distribution_payload, encode_selected_distribution
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
     parse_int_list,
@@ -64,6 +65,8 @@ class CachedSearchStats:
     cache_bins_spliced: int = 0
     histogram_bins_spliced: int = 0
     parametric_bins_spliced: int = 0
+    cache_payload_bytes_read: int = 0
+    cache_decode_ns: int = 0
     path_cap_hit: bool = False
     expansion_cap_hit: bool = False
 
@@ -79,6 +82,50 @@ class BoundaryBuildResult:
     recurrence_cycle_approximation: bool = False
     recurrence_states_evaluated: int | None = None
     recurrence_memo_hits: int | None = None
+
+
+@dataclass
+class SerializedHistogramCacheEntry:
+    payload: bytes
+    metadata: dict
+
+    def decode_histogram(self):
+        started = time.perf_counter_ns()
+        probabilities, decoded_meta = decode_distribution_payload(self.payload)
+        elapsed = time.perf_counter_ns() - started
+        total_count = int(round(float(decoded_meta.get("total_mass", 0.0))))
+        hist = scaled_distribution_histogram(probabilities, int(decoded_meta.get("origin", 0)), total_count)
+        return hist, elapsed
+
+    def values(self):
+        hist, _elapsed = self.decode_histogram()
+        return hist.values()
+
+    def items(self):
+        hist, _elapsed = self.decode_histogram()
+        return hist.items()
+
+    def __getitem__(self, key):
+        hist, _elapsed = self.decode_histogram()
+        return hist[key]
+
+    def __iter__(self):
+        hist, _elapsed = self.decode_histogram()
+        return iter(hist)
+
+    def __len__(self):
+        hist, _elapsed = self.decode_histogram()
+        return len(hist)
+
+    def __eq__(self, other):
+        hist, _elapsed = self.decode_histogram()
+        return hist == other
+
+
+def serialized_histogram_cache_entry(hist, representation="packed_sparse_histogram"):
+    probabilities, origin = exact_excess_distribution(hist)
+    payload, metadata = encode_selected_distribution(probabilities, representation, origin=0 if origin is None else origin, total_mass=sum(hist.values()))
+    return SerializedHistogramCacheEntry(payload=payload, metadata=metadata)
 
 
 def build_boundary_histogram(parents_func, node, root, budget, path_cap, expansion_cap, boundary_builder):
@@ -285,6 +332,13 @@ def add_shifted_hist(out, suffix_hist, prefix_depth, remaining):
     return added
 
 
+def cache_entry_histogram(entry):
+    if isinstance(entry, SerializedHistogramCacheEntry):
+        hist, decode_ns = entry.decode_histogram()
+        return hist, int(entry.metadata.get("payload_bytes", len(entry.payload))), decode_ns
+    return entry, 0, 0
+
+
 def cached_parent_histogram(
     parents_func,
     target,
@@ -312,7 +366,10 @@ def cached_parent_histogram(
         if node in boundary_cache:
             stats.cache_hits += 1
             stats.histogram_cache_hits += 1
-            added = add_shifted_hist(hist, boundary_cache[node], depth, remaining)
+            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(boundary_cache[node])
+            stats.cache_payload_bytes_read += payload_bytes
+            stats.cache_decode_ns += decode_ns
+            added = add_shifted_hist(hist, suffix_hist, depth, remaining)
             stats.cache_bins_spliced += added
             stats.histogram_bins_spliced += added
             if path_cap is not None and sum(hist.values()) >= path_cap:
@@ -321,7 +378,10 @@ def cached_parent_histogram(
         if node in parametric_boundary_cache:
             stats.cache_hits += 1
             stats.parametric_cache_hits += 1
-            added = add_shifted_hist(hist, parametric_boundary_cache[node], depth, remaining)
+            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(parametric_boundary_cache[node])
+            stats.cache_payload_bytes_read += payload_bytes
+            stats.cache_decode_ns += decode_ns
+            added = add_shifted_hist(hist, suffix_hist, depth, remaining)
             stats.cache_bins_spliced += added
             stats.parametric_bins_spliced += added
             if path_cap is not None and sum(hist.values()) >= path_cap:
@@ -548,6 +608,16 @@ def build_boundary_cache(
         row["cache_admission_max_histogram_bytes"] = policy["max_histogram_bytes"]
         row["cache_admission_parametric_bytes"] = policy["parametric_bytes"]
         row["cached"] = cached
+        row["cache_payload_representation"] = None
+        row["cache_payload_bytes"] = 0
+        row["cache_payload_decoded_max_cdf_error"] = None
+        row["cache_payload_decoded_w1_cdf_error"] = None
+        row["cache_payload_bin_count"] = 0
+        row["parametric_payload_representation"] = None
+        row["parametric_payload_bytes"] = 0
+        row["parametric_payload_decoded_max_cdf_error"] = None
+        row["parametric_payload_decoded_w1_cdf_error"] = None
+        row["parametric_payload_bin_count"] = 0
         row["parametric_cached"] = False
         row["parametric_histogram"] = {}
         row["parametric_path_count"] = 0
@@ -574,7 +644,13 @@ def build_boundary_cache(
         row["parametric_support_min"] = None
         row["parametric_support_max"] = None
         if cached:
-            cache[row["node"]] = hist
+            entry = serialized_histogram_cache_entry(hist)
+            cache[row["node"]] = entry
+            row["cache_payload_representation"] = entry.metadata["representation"]
+            row["cache_payload_bytes"] = entry.metadata["payload_bytes"]
+            row["cache_payload_decoded_max_cdf_error"] = entry.metadata["decoded_max_cdf_error"]
+            row["cache_payload_decoded_w1_cdf_error"] = entry.metadata["decoded_w1_cdf_error"]
+            row["cache_payload_bin_count"] = entry.metadata["bin_count"]
         elif policy["action"] == "use_parametric_prior" and lmax in priors and hist:
             mass_estimate = estimate_parametric_total_count(
                 row,
@@ -613,7 +689,8 @@ def build_boundary_cache(
                 mass_estimate["estimated_path_count"],
             )
             if approx_hist and shape_params:
-                parametric_cache[row["node"]] = approx_hist
+                entry = serialized_histogram_cache_entry(approx_hist)
+                parametric_cache[row["node"]] = entry
                 row["parametric_cached"] = True
                 row["parametric_histogram"] = approx_hist
                 row["parametric_path_count"] = sum(approx_hist.values())
@@ -627,6 +704,11 @@ def build_boundary_cache(
                 row["parametric_support_bins"] = len(approx_hist)
                 row["parametric_support_min"] = min(approx_hist)
                 row["parametric_support_max"] = max(approx_hist)
+                row["parametric_payload_representation"] = entry.metadata["representation"]
+                row["parametric_payload_bytes"] = entry.metadata["payload_bytes"]
+                row["parametric_payload_decoded_max_cdf_error"] = entry.metadata["decoded_max_cdf_error"]
+                row["parametric_payload_decoded_w1_cdf_error"] = entry.metadata["decoded_w1_cdf_error"]
+                row["parametric_payload_bin_count"] = entry.metadata["bin_count"]
     return cache, parametric_cache, rows
 
 
@@ -667,6 +749,8 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "cache_bins_spliced": cached_stats.cache_bins_spliced,
         "histogram_bins_spliced": cached_stats.histogram_bins_spliced,
         "parametric_bins_spliced": cached_stats.parametric_bins_spliced,
+        "cache_payload_bytes_read": cached_stats.cache_payload_bytes_read,
+        "cache_decode_ns": cached_stats.cache_decode_ns,
         "full_path_cap_hit": full_stats.path_cap_hit,
         "full_expansion_cap_hit": full_stats.expansion_cap_hit,
         "cached_path_cap_hit": cached_stats.path_cap_hit,
@@ -975,12 +1059,37 @@ def summarize(records):
             capped=sum(1 for row in cache_rows if row.get("path_cap_hit") or row.get("expansion_cap_hit")),
         )
     )
+    payload_rows = [row for row in cache_rows if row.get("cache_payload_bytes") or row.get("parametric_payload_bytes")]
+    if payload_rows:
+        histogram_payloads = [int(row["cache_payload_bytes"]) for row in cache_rows if row.get("cache_payload_bytes")]
+        parametric_payloads = [int(row["parametric_payload_bytes"]) for row in cache_rows if row.get("parametric_payload_bytes")]
+        histogram_cdf = [float(row["cache_payload_decoded_max_cdf_error"]) for row in cache_rows if row.get("cache_payload_decoded_max_cdf_error") is not None]
+        parametric_cdf = [float(row["parametric_payload_decoded_max_cdf_error"]) for row in cache_rows if row.get("parametric_payload_decoded_max_cdf_error") is not None]
+        lines.extend([
+            "",
+            "## Boundary Cache Payloads",
+            "",
+            "| role | entries | mean_payload_bytes | max_payload_bytes | mean_decoded_cdf |",
+            "|------|--------:|-------------------:|------------------:|-----------------:|",
+            "| histogram | {} | {:.3f} | {} | {:.6f} |".format(
+                len(histogram_payloads),
+                statistics.mean(histogram_payloads) if histogram_payloads else 0.0,
+                max(histogram_payloads, default=0),
+                statistics.mean(histogram_cdf) if histogram_cdf else 0.0,
+            ),
+            "| parametric | {} | {:.3f} | {} | {:.6f} |".format(
+                len(parametric_payloads),
+                statistics.mean(parametric_payloads) if parametric_payloads else 0.0,
+                max(parametric_payloads, default=0),
+                statistics.mean(parametric_cdf) if parametric_cdf else 0.0,
+            ),
+        ])
     lines.extend([
         "",
         "## Full Search Versus Boundary Cache",
         "",
-        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | full_capped | cached_capped |",
-        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|---------------:|----------------:|-----------------------:|------------------------:|-------------|---------------|",
+        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | full_capped | cached_capped |",
+        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|-------------|---------------|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -996,8 +1105,10 @@ def summarize(records):
         parametric_hits = [int(row["parametric_cache_hits"]) for row in rows]
         histogram_bins_spliced = [int(row["histogram_bins_spliced"]) for row in rows]
         parametric_bins_spliced = [int(row["parametric_bins_spliced"]) for row in rows]
+        payload_bytes_read = [int(row["cache_payload_bytes_read"]) for row in rows]
+        decode_ns = [int(row["cache_decode_ns"]) for row in rows]
         lines.append(
-            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {full_capped} | {cached_capped} |".format(
+            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {full_capped} | {cached_capped} |".format(
                 budget=budget,
                 rows=len(rows),
                 mean_l1=statistics.mean(l1) if l1 else 0.0,
@@ -1011,6 +1122,8 @@ def summarize(records):
                 mean_param_hits=statistics.mean(parametric_hits) if parametric_hits else 0.0,
                 mean_hist_bins=statistics.mean(histogram_bins_spliced) if histogram_bins_spliced else 0.0,
                 mean_param_bins=statistics.mean(parametric_bins_spliced) if parametric_bins_spliced else 0.0,
+                mean_payload_bytes=statistics.mean(payload_bytes_read) if payload_bytes_read else 0.0,
+                mean_decode_ns=statistics.mean(decode_ns) if decode_ns else 0.0,
                 full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
                 cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
             )
