@@ -9,6 +9,7 @@ from scripts.distribution_fit_comparison import (
     binomial_pmf,
     convolve,
     exact_excess_distribution,
+    cheapest_candidate_within,
     depth_prior_records,
     fitted_binomial_pmf,
     fitted_gamma_pmf,
@@ -16,6 +17,9 @@ from scripts.distribution_fit_comparison import (
     max_cdf_error,
     nfold_convolution,
     append_realized_support_table,
+    packed_exact_candidates,
+    packed_sparse_histogram_bytes,
+    quantized_cdf_table_pmf,
     run_graph_fit_comparison,
     shift_distribution,
     size_biased_excess_pmf,
@@ -23,6 +27,7 @@ from scripts.distribution_fit_comparison import (
     total_error_certificate,
     w1_cdf_error,
     weighted_parent_certificate,
+    tail_pruned_pmf,
 )
 from tools.distribution_cache_support import FIXTURES, ROOT
 
@@ -65,6 +70,43 @@ class DistributionFitComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             weighted_parent_certificate([1.0], [0.1, 0.2])
 
+    def test_tail_pruned_pmf_drops_suffix_with_error_certificate(self):
+        approximation, summary = tail_pruned_pmf([0.7, 0.2, 0.07, 0.03], 0.05)
+
+        self.assertEqual(approximation, [0.7, 0.2, 0.07, 0.0])
+        self.assertEqual(summary["kept_bins"], 3)
+        self.assertEqual(summary["dropped_bins"], 1)
+        self.assertAlmostEqual(summary["dropped_mass"], 0.03)
+        self.assertAlmostEqual(max_cdf_error([0.7, 0.2, 0.07, 0.03], approximation), 0.03)
+
+    def test_quantized_cdf_table_roundtrips_with_bounded_error(self):
+        approximation, summary = quantized_cdf_table_pmf([0.25, 0.25, 0.5], bits=8)
+
+        self.assertEqual(len(approximation), 3)
+        self.assertAlmostEqual(sum(approximation), 1.0)
+        self.assertLessEqual(max_cdf_error([0.25, 0.25, 0.5], approximation), summary["quantization_step"])
+
+    def test_packed_exact_candidates_include_sparse_tail_and_cdf(self):
+        candidates = packed_exact_candidates([0.7, 0.2, 0.07, 0.03], [0.05], cdf_bits=8)
+        representations = {candidate["representation"] for candidate in candidates}
+
+        self.assertEqual(representations, {"packed_sparse_histogram", "tail_pruned_histogram", "quantized_cdf_table"})
+        tail = [candidate for candidate in candidates if candidate["representation"] == "tail_pruned_histogram"][0]
+        self.assertAlmostEqual(tail["max_cdf_error"], 0.03)
+
+    def test_cheapest_candidate_within_uses_error_gate_then_bytes(self):
+        candidates = [
+            {"representation": "bad_small", "bytes_estimate": 4, "max_cdf_error": 0.2, "w1_cdf_error": 0.2},
+            {"representation": "good_large", "bytes_estimate": 20, "max_cdf_error": 0.0, "w1_cdf_error": 0.0},
+            {"representation": "good_small", "bytes_estimate": 12, "max_cdf_error": 0.01, "w1_cdf_error": 0.01},
+        ]
+
+        self.assertEqual(cheapest_candidate_within(candidates, max_cdf=0.05)["representation"], "good_small")
+        self.assertEqual(cheapest_candidate_within(candidates, max_cdf=0.005, max_w1=0.005)["representation"], "good_large")
+
+    def test_packed_sparse_histogram_bytes_counts_nonzero_bins(self):
+        self.assertLess(packed_sparse_histogram_bytes(1), packed_sparse_histogram_bytes(2))
+
     def test_fitted_gamma_degenerates_for_one_point_histogram(self):
         model, params = fitted_gamma_pmf([1.0])
 
@@ -101,6 +143,7 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertEqual(models, {"binomial_prior", "shifted_gamma_prior"})
         self.assertEqual(roles, {"depth_prior"})
         self.assertTrue(all(record["effective_support_bins"] >= 1 for record in records))
+        self.assertTrue(all(record["best_packed_exact_cdf"] is not None for record in records))
 
     def test_realized_support_table_counts_targets_once(self):
         lines = []
@@ -146,6 +189,7 @@ class DistributionFitComparisonTests(unittest.TestCase):
         self.assertIn("Depth-Conditioned Prior Distributions", summary)
         self.assertIn("Realized Support By Root Distance", summary)
         self.assertIn("Prior Support By Depth", summary)
+        self.assertIn("Packed Exact Candidates", summary)
 
 
 if __name__ == "__main__":

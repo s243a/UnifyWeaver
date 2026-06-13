@@ -109,6 +109,19 @@ def parametric_state_bytes_estimate(params: dict[str, object]) -> int:
     return scalar_count * 8
 
 
+def packed_sparse_histogram_bytes(nonzero_bins: int, include_error_metadata: bool = True) -> int:
+    """Estimate a packed sparse histogram as fixed-width bin/value pairs."""
+    header_bytes = 24
+    pair_bytes = 12
+    error_bytes = 16 if include_error_metadata else 0
+    return header_bytes + max(0, nonzero_bins) * pair_bytes + error_bytes
+
+
+def quantized_cdf_table_bytes(points: int, bits: int = 16) -> int:
+    header_bytes = 24
+    return header_bytes + max(0, points) * max(1, math.ceil(bits / 8))
+
+
 def dense_sample_bytes(sample_points: int) -> int:
     return max(0, sample_points) * 8
 
@@ -154,6 +167,119 @@ def tail_pruning_summary(probabilities: list[float], thresholds: list[float], or
             "first_dropped_index": None if dropped_bins == 0 else origin + kept_bins,
         }
     return summaries
+
+
+def tail_pruned_pmf(probabilities: list[float], threshold: float) -> tuple[list[float], dict[str, float | int | None]]:
+    """Drop a suffix while its mass stays within the absolute tail threshold."""
+    if not probabilities:
+        return [], {
+            "kept_bins": 0,
+            "dropped_bins": 0,
+            "dropped_mass": 0.0,
+            "first_dropped_index": None,
+        }
+    allowed_tail = max(0.0, threshold)
+    dropped_mass = 0.0
+    dropped_bins = 0
+    for index in range(len(probabilities) - 1, -1, -1):
+        probability = probabilities[index]
+        if dropped_bins >= len(probabilities) - 1:
+            break
+        if dropped_mass + probability > allowed_tail:
+            break
+        dropped_mass += probability
+        dropped_bins += 1
+    kept_bins = len(probabilities) - dropped_bins
+    approximation = list(probabilities[:kept_bins]) + [0.0 for _ in range(dropped_bins)]
+    return approximation, {
+        "kept_bins": kept_bins,
+        "dropped_bins": dropped_bins,
+        "dropped_mass": dropped_mass,
+        "first_dropped_index": None if dropped_bins == 0 else kept_bins,
+    }
+
+
+def quantized_cdf_table_pmf(probabilities: list[float], bits: int = 16) -> tuple[list[float], dict[str, float | int]]:
+    """Approximate a PMF by quantizing its CDF and differencing adjacent entries."""
+    if not probabilities:
+        return [], {
+            "bits": bits,
+            "points": 0,
+            "quantization_step": 0.0,
+            "max_quantization_error_bound": 0.0,
+        }
+    bits = max(1, int(bits))
+    levels = (1 << bits) - 1
+    cumulative = 0.0
+    quantized_cdf = []
+    for index, probability in enumerate(probabilities):
+        cumulative += probability
+        if index == len(probabilities) - 1:
+            quantized = levels
+        else:
+            quantized = min(levels, max(0, round(cumulative * levels)))
+        if quantized_cdf and quantized < quantized_cdf[-1]:
+            quantized = quantized_cdf[-1]
+        quantized_cdf.append(quantized)
+    previous = 0
+    approximation = []
+    for quantized in quantized_cdf:
+        approximation.append((quantized - previous) / levels)
+        previous = quantized
+    return approximation, {
+        "bits": bits,
+        "points": len(probabilities),
+        "quantization_step": 1.0 / levels,
+        "max_quantization_error_bound": 0.5 / levels,
+    }
+
+
+def packed_exact_candidates(probabilities: list[float], tail_thresholds: list[float], cdf_bits: int = 16) -> list[dict[str, float | int | str | None]]:
+    candidates: list[dict[str, float | int | str | None]] = []
+    nonzero_bins = sum(1 for probability in probabilities if probability)
+    candidates.append({
+        "representation": "packed_sparse_histogram",
+        "bytes_estimate": packed_sparse_histogram_bytes(nonzero_bins, include_error_metadata=False),
+        "kept_bins": nonzero_bins,
+        "max_cdf_error": 0.0,
+        "w1_cdf_error": 0.0,
+    })
+    for threshold in tail_thresholds:
+        approximation, summary = tail_pruned_pmf(probabilities, threshold)
+        candidates.append({
+            "representation": "tail_pruned_histogram",
+            "threshold": threshold,
+            "bytes_estimate": packed_sparse_histogram_bytes(int(summary["kept_bins"]), include_error_metadata=True),
+            "kept_bins": summary["kept_bins"],
+            "dropped_bins": summary["dropped_bins"],
+            "dropped_mass": summary["dropped_mass"],
+            "max_cdf_error": max_cdf_error(probabilities, approximation),
+            "w1_cdf_error": w1_cdf_error(probabilities, approximation),
+        })
+    approximation, summary = quantized_cdf_table_pmf(probabilities, cdf_bits)
+    candidates.append({
+        "representation": "quantized_cdf_table",
+        "bits": cdf_bits,
+        "bytes_estimate": quantized_cdf_table_bytes(len(probabilities), cdf_bits),
+        "kept_bins": summary["points"],
+        "max_quantization_error_bound": summary["max_quantization_error_bound"],
+        "max_cdf_error": max_cdf_error(probabilities, approximation),
+        "w1_cdf_error": w1_cdf_error(probabilities, approximation),
+    })
+    return candidates
+
+
+def cheapest_candidate_within(candidates: list[dict[str, float | int | str | None]], max_cdf: float, max_w1: float | None = None) -> dict[str, float | int | str | None] | None:
+    valid = []
+    for candidate in candidates:
+        if float(candidate["max_cdf_error"]) > max_cdf:
+            continue
+        if max_w1 is not None and float(candidate["w1_cdf_error"]) > max_w1:
+            continue
+        valid.append(candidate)
+    if not valid:
+        return None
+    return min(valid, key=lambda candidate: (int(candidate["bytes_estimate"]), str(candidate["representation"])))
 
 
 def binomial_pmf(trials: int, probability: float) -> list[float]:
@@ -420,6 +546,8 @@ def target_fit_records(
     dense_sample_estimate = dense_sample_bytes(continuous_sample_points)
     cone_nodes, cone_edges = ancestor_cone_size(target, parents)
     records = []
+    packed_candidates = packed_exact_candidates(empirical, prune_thresholds)
+    best_packed_cdf = cheapest_candidate_within(packed_candidates, tail_epsilon)
     for model_record in compare_models(empirical, realized_model_builders()):
         parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
         records.append({
@@ -448,6 +576,10 @@ def target_fit_records(
             "continuous_sample_points": continuous_sample_points,
             "continuous_sample_bytes_estimate": dense_sample_estimate,
             "sample_storage_ratio_estimate": 0.0 if dense_sample_estimate == 0 else exact_bytes / dense_sample_estimate,
+            "packed_exact_candidates": packed_candidates,
+            "best_packed_exact_cdf": best_packed_cdf,
+            "best_packed_exact_bytes_estimate": None if best_packed_cdf is None else best_packed_cdf["bytes_estimate"],
+            "packed_exact_compression_ratio_estimate": 0.0 if not best_packed_cdf else exact_bytes / int(best_packed_cdf["bytes_estimate"]),
             "parent_degree": len(parents.get(target, [])),
             **model_record,
         })
@@ -465,6 +597,8 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
         mean, variance = distribution_moments(empirical)
         dense_sample_estimate = dense_sample_bytes(continuous_sample_points)
         dense_prior_estimate = dense_sample_bytes(len(empirical))
+        packed_candidates = packed_exact_candidates(empirical, prune_thresholds)
+        best_packed_cdf = cheapest_candidate_within(packed_candidates, tail_epsilon)
         for model_record in compare_models(empirical, prior_model_builders(depth)):
             parametric_bytes = parametric_state_bytes_estimate(model_record["fit_params"])
             records.append({
@@ -477,6 +611,10 @@ def depth_prior_records(graph_name, graph_label, parent_degrees, depths, tail_ep
                 "support_bins": len(empirical),
                 "effective_support_bins": effective_support_bins(empirical, tail_epsilon),
                 "tail_pruning": tail_pruning_summary(empirical, prune_thresholds, 0),
+                "packed_exact_candidates": packed_candidates,
+                "best_packed_exact_cdf": best_packed_cdf,
+                "best_packed_exact_bytes_estimate": None if best_packed_cdf is None else best_packed_cdf["bytes_estimate"],
+                "packed_exact_compression_ratio_estimate": 0.0 if not best_packed_cdf else dense_prior_estimate / int(best_packed_cdf["bytes_estimate"]),
                 "mean_excess": mean,
                 "variance_excess": variance,
                 "skewness_excess": distribution_skewness(empirical),
@@ -594,6 +732,14 @@ def summarize(records: list[dict[str, object]]) -> str:
             "",
         ])
         append_tail_pruning_table(lines, realized_records)
+        lines.extend([
+            "",
+            "## Realized Packed Exact Candidates",
+            "",
+            "| representation | rows | mean_bytes | mean_cdf | mean_w1 |",
+            "|----------------|------|------------|----------|---------|",
+        ])
+        append_packed_exact_table(lines, realized_records)
     lines.extend([
         "",
         "## Depth-Conditioned Prior Distributions",
@@ -632,6 +778,14 @@ def summarize(records: list[dict[str, object]]) -> str:
             "",
         ])
         append_tail_pruning_table(lines, prior_records)
+        lines.extend([
+            "",
+            "## Prior Packed Exact Candidates",
+            "",
+            "| representation | rows | mean_bytes | mean_cdf | mean_w1 |",
+            "|----------------|------|------------|----------|---------|",
+        ])
+        append_packed_exact_table(lines, prior_records)
 
     if error_records:
         lines.extend(["", "## Errors", ""])
@@ -674,6 +828,26 @@ def append_tail_pruning_table(lines: list[str], rows: list[dict[str, object]]) -
                 mean_dropped=statistics.mean(int(row["dropped_bins"]) for row in pruning_rows),
                 mean_mass=statistics.mean(float(row["dropped_mass"]) for row in pruning_rows),
                 mean_weighted=statistics.mean(float(row["relative_weighted_power_error"]) for row in pruning_rows),
+            )
+        )
+
+
+def append_packed_exact_table(lines: list[str], rows: list[dict[str, object]]) -> None:
+    unique_rows = unique_distribution_records(rows)
+    by_representation: dict[str, list[dict[str, float | int | str | None]]] = {}
+    for row in unique_rows:
+        for candidate in row.get("packed_exact_candidates", []):
+            key = str(candidate["representation"])
+            by_representation.setdefault(key, []).append(candidate)
+    for representation in sorted(by_representation):
+        candidates = by_representation[representation]
+        lines.append(
+            "| {representation} | {rows} | {mean_bytes:.3f} | {mean_cdf:.6f} | {mean_w1:.6f} |".format(
+                representation=representation,
+                rows=len(candidates),
+                mean_bytes=statistics.mean(int(candidate["bytes_estimate"]) for candidate in candidates),
+                mean_cdf=statistics.mean(float(candidate["max_cdf_error"]) for candidate in candidates),
+                mean_w1=statistics.mean(float(candidate["w1_cdf_error"]) for candidate in candidates),
             )
         )
 
