@@ -265,6 +265,9 @@ dispatch is needed per record for those count updates.
 Guarded associative-count rules now reuse the same native guard emitters and
 rule-chain structure as scalar counters, so the loop can run field/prefix checks
 and table increments without per-record WAM dispatch for the supported surface.
+Mixed scalar/associative programs use a combined native state plan: scalar
+counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
+`END` printing can interleave scalar variables with associative lookups.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.

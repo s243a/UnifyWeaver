@@ -75,6 +75,19 @@ test(parses_guarded_assoc_count_end_print_rule) :-
             assoc(var(warnings), string("cpu"))
         ])])])).
 
+test(parses_mixed_scalar_assoc_end_print_rule) :-
+    plawk_parse_string("{ total++; counts[$1]++ } $1 == \"ERROR\" { errors++; by_component[$2]++ } END { print total, errors, counts[\"WARN\"], by_component[\"disk\"] }\n", Program),
+    assertion(Program == program([],
+        [rule(always, [inc(var(total)), inc_assoc(var(counts), field(1))]),
+         rule(field_eq(1, "ERROR"),
+            [inc(var(errors)), inc_assoc(var(by_component), field(2))])],
+        [end([print([
+            var(total),
+            var(errors),
+            assoc(var(counts), string("WARN")),
+            assoc(var(by_component), string("disk"))
+        ])])])).
+
 test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -125,6 +138,11 @@ test(surface_guarded_assoc_counts_multiple_arrays) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\nWARN disk alert\n",
         "1 1 1 1\n").
 
+test(surface_mixed_scalar_assoc_counts) :-
+    run_surface_print_smoke("{ total++; counts[$1]++ } $1 == \"ERROR\" { errors++; by_component[$2]++ } END { print total, errors, counts[\"WARN\"], by_component[\"disk\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "4 2 1 1\n").
+
 test(surface_assoc_counts_resize_runtime_table) :-
     findall(Line,
         ( between(0, 2050, Index), format(atom(Line), 'K~w payload\n', [Index]) ),
@@ -174,6 +192,21 @@ test(surface_guarded_assoc_counts_use_native_rule_chain) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fassoc_5Frule_5F0'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fassoc_5Frule_5F1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_mixed_scalar_assoc_uses_native_state_and_tables) :-
+    plawk_parse_string("{ total++; counts[$1]++ } $1 == \"ERROR\" { errors++; by_component[$2]++ } END { print total, errors, counts[\"WARN\"], by_component[\"disk\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'lowered_mixed:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%slot_0 = phi i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_0 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_1 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_done:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_done:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_action_0:'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
