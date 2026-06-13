@@ -262,6 +262,9 @@ array, increments those tables in the native streaming loop, and performs `END`
 lookups through the matching source-array table. Multiple associative increments
 in one always-rule are planned as sequential native action blocks, so no WAM
 dispatch is needed per record for those count updates.
+Guarded associative-count rules now reuse the same native guard emitters and
+rule-chain structure as scalar counters, so the loop can run field/prefix checks
+and table increments without per-record WAM dispatch for the supported surface.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
