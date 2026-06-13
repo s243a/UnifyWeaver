@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 import statistics
 import sys
 import time
@@ -23,8 +24,8 @@ from scripts.lmdb_parent_histogram_benchmark import percentile, safe_graph_name
 from scripts.lmdb_parent_recurrence_histogram_benchmark import histogram_error
 from scripts.parent_histogram_recurrence import (
     histogram_distribution,
+    payload_to_histogram,
     recurrence_parent_histogram,
-    serialize_shifted_parent_payload_histogram,
 )
 
 
@@ -82,6 +83,97 @@ def build_parent_payloads(
     return payloads, rows
 
 
+class PayloadDecodeCache:
+    def __init__(self, mode="none"):
+        if mode not in {"none", "memo"}:
+            raise ValueError("unknown decode cache mode: {}".format(mode))
+        self.mode = mode
+        self.cache = {}
+        self.hits = 0
+        self.misses = 0
+        self.payloads_decoded = 0
+        self.payload_bytes_read = 0
+        self.decode_ns = 0
+        self.decoded_bins = 0
+
+    def snapshot(self):
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "payloads_decoded": self.payloads_decoded,
+            "payload_bytes_read": self.payload_bytes_read,
+            "decode_ns": self.decode_ns,
+            "decoded_bins": self.decoded_bins,
+        }
+
+    def delta(self, before):
+        return {
+            "hits": self.hits - before["hits"],
+            "misses": self.misses - before["misses"],
+            "payloads_decoded": self.payloads_decoded - before["payloads_decoded"],
+            "payload_bytes_read": self.payload_bytes_read - before["payload_bytes_read"],
+            "decode_ns": self.decode_ns - before["decode_ns"],
+            "decoded_bins": self.decoded_bins - before["decoded_bins"],
+        }
+
+    def get(self, node, payload):
+        if self.mode == "memo" and node in self.cache:
+            self.hits += 1
+            return self.cache[node]
+        hist, _metadata, decode_ns, payload_bytes = payload_to_histogram(payload)
+        self.misses += 1
+        self.payloads_decoded += 1
+        self.payload_bytes_read += payload_bytes
+        self.decode_ns += decode_ns
+        self.decoded_bins += len(hist)
+        if self.mode == "memo":
+            self.cache[node] = hist
+        return hist
+
+
+def shifted_parent_payload_nodes(parent_payload_items, representation="packed_sparse_histogram", remaining=None, path_cap=None, decode_cache=None):
+    decode_cache = decode_cache or PayloadDecodeCache("none")
+    before = decode_cache.snapshot()
+    out = Counter()
+    horizon = None if remaining is None else int(remaining)
+    path_cap_hit = False
+    references = 0
+    for node, payload in parent_payload_items:
+        references += 1
+        parent_hist = decode_cache.get(node, payload)
+        for length, count in parent_hist.items():
+            shifted = int(length) + 1
+            if horizon is None or shifted <= horizon:
+                out[shifted] += int(count)
+                if path_cap is not None and sum(out.values()) >= path_cap:
+                    path_cap_hit = True
+                    break
+        if path_cap_hit:
+            break
+    hist = dict(sorted(out.items()))
+    payload, metadata = serialize_histogram_payload(hist, representation)
+    delta = decode_cache.delta(before)
+    hit_count = int(delta["hits"])
+    miss_count = int(delta["misses"])
+    total_lookups = hit_count + miss_count
+    stats = {
+        "payload_references": references,
+        "payloads_decoded": int(delta["payloads_decoded"]),
+        "payload_bytes_read": int(delta["payload_bytes_read"]),
+        "payload_decode_ns": int(delta["decode_ns"]),
+        "payload_decoded_bins": int(delta["decoded_bins"]),
+        "decode_cache_hits": hit_count,
+        "decode_cache_misses": miss_count,
+        "decode_cache_hit_rate": 0.0 if total_lookups == 0 else hit_count / total_lookups,
+        "decode_cache_entries": len(decode_cache.cache),
+        "payload_output_bins": len(hist),
+        "payload_output_path_count": sum(hist.values()),
+        "payload_output_bytes": metadata["payload_bytes"],
+        "payload_path_cap_hit": path_cap_hit,
+    }
+    return payload, metadata, hist, stats
+
+
 def payload_layer_records(
     parents_func,
     root,
@@ -92,8 +184,10 @@ def payload_layer_records(
     path_cap,
     expansion_cap,
     representation="packed_sparse_histogram",
+    decode_cache_mode="none",
 ):
     rows = []
+    decode_cache = PayloadDecodeCache(decode_cache_mode)
     for child in child_nodes:
         direct_parents = list(parents_func(child))
         available_parent_nodes = [parent for parent in direct_parents if parent in parent_payloads]
@@ -112,11 +206,12 @@ def payload_layer_records(
             recurrence_time_ns = time.perf_counter_ns() - rec_started
 
             payload_started = time.perf_counter_ns()
-            child_payload, child_metadata, payload_hist, payload_stats = serialize_shifted_parent_payload_histogram(
-                available_payloads,
+            child_payload, child_metadata, payload_hist, payload_stats = shifted_parent_payload_nodes(
+                list(zip(available_parent_nodes, available_payloads)),
                 representation=representation,
                 remaining=budget,
                 path_cap=path_cap,
+                decode_cache=decode_cache,
             )
             payload_time_ns = time.perf_counter_ns() - payload_started
 
@@ -143,15 +238,21 @@ def payload_layer_records(
                 "recurrence_cycle_approximation": recurrence_stats.cycle_approximation,
                 "recurrence_path_cap_hit": recurrence_stats.path_cap_hit,
                 "recurrence_expansion_cap_hit": recurrence_stats.expansion_cap_hit,
-                "payloads_decoded": payload_stats.payloads_decoded,
-                "payload_bytes_read": payload_stats.payload_bytes_read,
-                "payload_decode_ns": payload_stats.decode_ns,
-                "payload_decoded_bins": payload_stats.decoded_bins,
-                "payload_output_bins": payload_stats.output_bins,
-                "payload_output_path_count": payload_stats.output_path_count,
-                "payload_output_bytes": payload_stats.output_payload_bytes,
+                "decode_cache_mode": decode_cache_mode,
+                "payload_references": payload_stats["payload_references"],
+                "payloads_decoded": payload_stats["payloads_decoded"],
+                "payload_bytes_read": payload_stats["payload_bytes_read"],
+                "payload_decode_ns": payload_stats["payload_decode_ns"],
+                "payload_decoded_bins": payload_stats["payload_decoded_bins"],
+                "decode_cache_hits": payload_stats["decode_cache_hits"],
+                "decode_cache_misses": payload_stats["decode_cache_misses"],
+                "decode_cache_hit_rate": payload_stats["decode_cache_hit_rate"],
+                "decode_cache_entries": payload_stats["decode_cache_entries"],
+                "payload_output_bins": payload_stats["payload_output_bins"],
+                "payload_output_path_count": payload_stats["payload_output_path_count"],
+                "payload_output_bytes": payload_stats["payload_output_bytes"],
                 "payload_output_representation": child_metadata["representation"],
-                "payload_path_cap_hit": payload_stats.path_cap_hit,
+                "payload_path_cap_hit": payload_stats["payload_path_cap_hit"],
                 "recurrence_time_ns": recurrence_time_ns,
                 "payload_time_ns": payload_time_ns,
                 "time_ratio": 0.0 if recurrence_time_ns == 0 else payload_time_ns / recurrence_time_ns,
@@ -166,7 +267,7 @@ def summarize(records):
     comparison_rows = [row for row in records if row.get("record_type") == "payload_recurrence_layer_comparison"]
     by_budget = {}
     for row in comparison_rows:
-        by_budget.setdefault(row["budget"], []).append(row)
+        by_budget.setdefault((row["decode_cache_mode"], row["budget"]), []).append(row)
     return {
         "record_type": "payload_recurrence_layer_summary",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -180,6 +281,7 @@ def summarize(records):
         "mean_parent_payload_bins": mean(row["support_bins"] for row in parent_rows),
         "budget_rows": [
             {
+                "decode_cache_mode": mode,
                 "budget": budget,
                 "rows": len(rows),
                 "exact_match_rows": sum(1 for row in rows if row["exact_match"]),
@@ -193,6 +295,11 @@ def summarize(records):
                 "mean_payload_bytes_read": mean(row["payload_bytes_read"] for row in rows),
                 "mean_payload_decode_ns": mean(row["payload_decode_ns"] for row in rows),
                 "mean_payload_decoded_bins": mean(row["payload_decoded_bins"] for row in rows),
+                "mean_payload_references": mean(row["payload_references"] for row in rows),
+                "mean_payloads_decoded": mean(row["payloads_decoded"] for row in rows),
+                "mean_decode_cache_hits": mean(row["decode_cache_hits"] for row in rows),
+                "mean_decode_cache_misses": mean(row["decode_cache_misses"] for row in rows),
+                "mean_decode_cache_hit_rate": mean(row["decode_cache_hit_rate"] for row in rows),
                 "mean_payload_output_bins": mean(row["payload_output_bins"] for row in rows),
                 "mean_payload_output_bytes": mean(row["payload_output_bytes"] for row in rows),
                 "mean_recurrence_time_ns": mean(row["recurrence_time_ns"] for row in rows),
@@ -201,7 +308,7 @@ def summarize(records):
                 "recurrence_capped_rows": sum(1 for row in rows if row["recurrence_path_cap_hit"] or row["recurrence_expansion_cap_hit"]),
                 "payload_capped_rows": sum(1 for row in rows if row["payload_path_cap_hit"]),
             }
-            for budget, rows in sorted(by_budget.items())
+            for (mode, budget), rows in sorted(by_budget.items())
         ],
     }
 
@@ -210,12 +317,13 @@ def markdown_summary(summary):
     lines = [
         "# Payload Recurrence Layer Benchmark",
         "",
-        "| budget | rows | exact_matches | missing_parent_rows | mean_missing | mean_parents_used | mean_l1 | mean_cdf | mean_payload_read | mean_decode_ns | mean_output_bins | mean_output_bytes | mean_time_ratio | recurrence_capped | payload_capped |",
-        "|-------:|-----:|--------------:|--------------------:|-------------:|------------------:|--------:|---------:|------------------:|---------------:|-----------------:|------------------:|----------------:|------------------:|---------------:|",
+        "| decode_cache | budget | rows | exact_matches | missing_parent_rows | mean_missing | mean_parents_used | mean_l1 | mean_cdf | mean_refs | mean_decodes | mean_hits | hit_rate | mean_payload_read | mean_decode_ns | mean_output_bins | mean_output_bytes | mean_time_ratio | recurrence_capped | payload_capped |",
+        "|--------------|-------:|-----:|--------------:|--------------------:|-------------:|------------------:|--------:|---------:|----------:|-------------:|----------:|---------:|------------------:|---------------:|-----------------:|------------------:|----------------:|------------------:|---------------:|",
     ]
     for row in summary["budget_rows"]:
         lines.append(
-            "| {budget} | {rows} | {exact} | {missing_rows} | {missing:.3f} | {parents:.3f} | {l1:.6f} | {cdf:.6f} | {payload_read:.3f} | {decode_ns:.1f} | {out_bins:.3f} | {out_bytes:.3f} | {time_ratio:.3f} | {rec_capped} | {payload_capped} |".format(
+            "| {mode} | {budget} | {rows} | {exact} | {missing_rows} | {missing:.3f} | {parents:.3f} | {l1:.6f} | {cdf:.6f} | {refs:.3f} | {decodes:.3f} | {hits:.3f} | {hit_rate:.3f} | {payload_read:.3f} | {decode_ns:.1f} | {out_bins:.3f} | {out_bytes:.3f} | {time_ratio:.3f} | {rec_capped} | {payload_capped} |".format(
+                mode=row["decode_cache_mode"],
                 budget=row["budget"],
                 rows=row["rows"],
                 exact=row["exact_match_rows"],
@@ -224,6 +332,10 @@ def markdown_summary(summary):
                 parents=row["mean_parent_payloads_available"],
                 l1=row["mean_l1_error"],
                 cdf=row["mean_max_cdf_error"],
+                refs=row["mean_payload_references"],
+                decodes=row["mean_payloads_decoded"],
+                hits=row["mean_decode_cache_hits"],
+                hit_rate=row["mean_decode_cache_hit_rate"],
                 payload_read=row["mean_payload_bytes_read"],
                 decode_ns=row["mean_payload_decode_ns"],
                 out_bins=row["mean_payload_output_bins"],
@@ -282,6 +394,7 @@ def run_benchmark(args):
             "child_direct_parent_nodes_added": len(set(parent_nodes) - selected_parent_nodes),
             "budgets": budgets,
             "representation": args.representation,
+            "decode_cache_modes": parse_decode_cache_modes(args.decode_cache_modes),
         }]
         parent_payloads, parent_rows = build_parent_payloads(
             graph.parents,
@@ -293,20 +406,35 @@ def run_benchmark(args):
             args.representation,
         )
         records.extend(parent_rows)
-        records.extend(payload_layer_records(
-            graph.parents,
-            args.root,
-            child_nodes,
-            child_depth_by_node,
-            parent_payloads,
-            budgets,
-            args.path_cap,
-            args.expansion_cap,
-            args.representation,
-        ))
+        for mode in parse_decode_cache_modes(args.decode_cache_modes):
+            records.extend(payload_layer_records(
+                graph.parents,
+                args.root,
+                child_nodes,
+                child_depth_by_node,
+                parent_payloads,
+                budgets,
+                args.path_cap,
+                args.expansion_cap,
+                args.representation,
+                mode,
+            ))
         return records, summarize(records)
     finally:
         graph.close()
+
+
+def parse_decode_cache_modes(value):
+    modes = []
+    for mode in str(value).split(","):
+        mode = mode.strip()
+        if not mode:
+            continue
+        if mode not in {"none", "memo"}:
+            raise ValueError("unknown decode cache mode: {}".format(mode))
+        if mode not in modes:
+            modes.append(mode)
+    return modes or ["none"]
 
 
 def write_outputs(records, summary, output_dir, graph_name, write_jsonl=False):
@@ -339,6 +467,7 @@ def parse_args():
     parser.add_argument("--parent-budget", type=int, default=None)
     parser.add_argument("--budgets", default="3,4")
     parser.add_argument("--no-include-child-direct-parents", dest="include_child_direct_parents", action="store_false", help="Use only sampled parent-depth nodes; by default direct parents of sampled children are added to the payload set.")
+    parser.add_argument("--decode-cache-modes", default="none,memo", help="Comma-separated decode-cache modes to compare: none,memo.")
     parser.add_argument("--representation", choices=["packed_sparse_histogram", "quantized_cdf_table"], default="packed_sparse_histogram")
     parser.add_argument("--path-cap", type=int, default=10000)
     parser.add_argument("--expansion-cap", type=int, default=50000)

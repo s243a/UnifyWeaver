@@ -6,10 +6,12 @@
 import unittest
 
 from scripts.lmdb_payload_recurrence_layer_benchmark import (
+    PayloadDecodeCache,
     build_parent_payloads,
+    markdown_summary,
+    parse_decode_cache_modes,
     payload_layer_records,
     summarize,
-    markdown_summary,
 )
 
 
@@ -68,6 +70,33 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
         self.assertEqual(rows[0]["missing_parent_payloads"], 0)
         self.assertGreater(rows[0]["payload_bytes_read"], 0)
 
+    def test_payload_layer_memo_cache_reuses_parent_decodes_across_children(self):
+        graph = DictGraph({"A": ["R"], "B": ["R"], "C": ["A", "B"], "D": ["A", "B"]})
+        payloads, _rows = build_parent_payloads(
+            graph.parents,
+            "R",
+            ["R", "A", "B"],
+            parent_budget=1,
+            path_cap=None,
+            expansion_cap=None,
+        )
+
+        rows = payload_layer_records(
+            graph.parents,
+            "R",
+            ["C", "D"],
+            {"C": 2, "D": 2},
+            payloads,
+            budgets=[2],
+            path_cap=None,
+            expansion_cap=None,
+            decode_cache_mode="memo",
+        )
+
+        self.assertEqual(sum(row["payload_references"] for row in rows), 4)
+        self.assertEqual(sum(row["payloads_decoded"] for row in rows), 2)
+        self.assertEqual(sum(row["decode_cache_hits"] for row in rows), 2)
+
     def test_payload_layer_reports_missing_parent_payloads(self):
         graph = DictGraph({"A": ["R"], "B": ["R"], "C": ["A", "B"]})
         payloads, _rows = build_parent_payloads(
@@ -117,6 +146,12 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
                 "l1_error": 0.0,
                 "max_cdf_error": 0.0,
                 "w1_cdf_error": 0.0,
+                "decode_cache_mode": "memo",
+                "payload_references": 2,
+                "payloads_decoded": 1,
+                "decode_cache_hits": 1,
+                "decode_cache_misses": 1,
+                "decode_cache_hit_rate": 0.5,
                 "payload_bytes_read": 64,
                 "payload_decode_ns": 10,
                 "payload_decoded_bins": 2,
@@ -137,6 +172,11 @@ class PayloadRecurrenceLayerBenchmarkTests(unittest.TestCase):
         self.assertEqual(summary["budget_rows"][0]["exact_match_rows"], 1)
         self.assertEqual(summary["budget_rows"][0]["mean_payload_bytes_read"], 64)
         self.assertIn("mean_payload_read", rendered)
+        self.assertIn("decode_cache", rendered)
+
+    def test_parse_decode_cache_modes_deduplicates_modes(self):
+        self.assertEqual(parse_decode_cache_modes("none,memo,memo"), ["none", "memo"])
+        self.assertEqual(PayloadDecodeCache("memo").mode, "memo")
 
 
 if __name__ == "__main__":
