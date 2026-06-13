@@ -9,6 +9,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
     build_boundary_histogram,
     cached_parent_histogram,
+    collect_target_ancestor_boundaries,
     estimate_parametric_total_count,
     histogram_distribution_error,
     parametric_shape_distribution,
@@ -41,6 +42,20 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(full, cached)
         self.assertEqual(stats.cache_hits, 1)
+
+    def test_collect_target_ancestor_boundaries_matches_root_distance(self):
+        graph = DictGraph({"A": ["R"], "B": ["A"], "C": ["B"]})
+
+        boundaries = collect_target_ancestor_boundaries(
+            graph.parents,
+            "R",
+            ["C"],
+            [1],
+            max_hops=3,
+            max_parent_depth=4,
+        )
+
+        self.assertEqual(boundaries, ["A"])
 
     def test_boundary_cache_can_differ_when_suffix_violates_visited_state(self):
         parents = {

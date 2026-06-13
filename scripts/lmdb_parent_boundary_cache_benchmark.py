@@ -32,6 +32,7 @@ from scripts.distribution_fit_comparison import binomial_pmf, effective_support_
 from scripts.distribution_serialization import decode_distribution_payload, encode_selected_distribution
 from scripts.lmdb_parent_branching_diagnostic import (
     LmdbCategoryGraph,
+    deterministic_sample,
     parse_int_list,
     root_distances,
     select_targets_by_child_depth,
@@ -452,6 +453,54 @@ def root_reaching_parent_degree(graph, root, node, max_parent_depth, distance_me
     return sum(1 for parent in graph.parents(node) if distances(parent)["L_min"] is not None)
 
 
+def collect_target_ancestor_boundaries(
+    parents_func,
+    root,
+    targets,
+    boundary_depths,
+    max_hops,
+    max_parent_depth,
+    limit=None,
+    seed="target-ancestor-boundaries",
+):
+    """Collect target ancestors whose root distance matches a boundary depth."""
+    wanted_depths = set(int(depth) for depth in boundary_depths)
+    if not wanted_depths or max_hops <= 0:
+        return []
+    distance_memo = {}
+    found = []
+    found_set = set()
+
+    def distances(node):
+        return root_distances(node, root, parents_func, max_parent_depth, distance_memo)
+
+    def visit(node, remaining, visited):
+        if remaining <= 0:
+            return
+        for parent in parents_func(node):
+            if parent in visited:
+                continue
+            parent_distances = distances(parent)
+            parent_depth = parent_distances["L_min"]
+            if parent_depth in wanted_depths and parent not in found_set:
+                found_set.add(parent)
+                found.append(parent)
+            if parent == root:
+                continue
+            visited.add(parent)
+            visit(parent, remaining - 1, visited)
+            visited.remove(parent)
+
+    for target in targets:
+        visit(target, int(max_hops), {target})
+
+    return deterministic_sample(
+        found,
+        None if limit is None or int(limit) <= 0 else int(limit),
+        seed,
+    )
+
+
 def build_boundary_cache(
     graph,
     root,
@@ -784,6 +833,20 @@ def run_benchmark(args):
             args.targets_per_depth,
             args.seed + ":target",
         )
+        selected_boundary_nodes = set(boundary_nodes)
+        target_ancestor_boundary_nodes = []
+        if args.include_target_ancestor_boundaries:
+            target_ancestor_boundary_nodes = collect_target_ancestor_boundaries(
+                graph.parents,
+                args.root,
+                targets,
+                boundary_depths,
+                max(budgets, default=args.boundary_budget),
+                args.max_parent_depth,
+                args.target_ancestor_boundary_limit,
+                args.seed + ":target-ancestor-boundaries",
+            )
+            boundary_nodes = sorted(selected_boundary_nodes | set(target_ancestor_boundary_nodes))
         cache, parametric_cache, cache_rows = build_boundary_cache(
             graph,
             args.root,
@@ -814,6 +877,9 @@ def run_benchmark(args):
             "boundary_counts": boundary_counts,
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
+            "selected_boundary_nodes": len(selected_boundary_nodes),
+            "target_ancestor_boundary_nodes_added": len(set(boundary_nodes) - selected_boundary_nodes),
+            "include_target_ancestor_boundaries": args.include_target_ancestor_boundaries,
             "cached_boundary_nodes": len(cache),
             "parametric_boundary_nodes": len(parametric_cache),
             "targets": len(targets),
@@ -900,10 +966,12 @@ def summarize(records):
         lines.append("| target | {} | {} |".format(depth, count))
     lines.extend([
         "",
-        "| boundary_nodes | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget | boundary_builder |",
-        "|----------------|-----------------------|---------------------------|---------|-----------------|------------------|",
-        "| {} | {} | {} | {} | {} | {} |".format(
+        "| boundary_nodes | selected_boundary_nodes | target_ancestor_boundary_nodes_added | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget | boundary_builder |",
+        "|----------------|------------------------:|-------------------------------------:|----------------------:|--------------------------:|--------:|----------------:|-----------------|",
+        "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
             selection.get("boundary_nodes", 0),
+            selection.get("selected_boundary_nodes", selection.get("boundary_nodes", 0)),
+            selection.get("target_ancestor_boundary_nodes_added", 0),
             selection.get("cached_boundary_nodes", 0),
             selection.get("parametric_boundary_nodes", 0),
             selection.get("targets", 0),
@@ -1088,8 +1156,8 @@ def summarize(records):
         "",
         "## Full Search Versus Boundary Cache",
         "",
-        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | full_capped | cached_capped |",
-        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|-------------|---------------|",
+        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | full_capped | cached_capped |",
+        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|-------------|---------------|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -1107,8 +1175,14 @@ def summarize(records):
         parametric_bins_spliced = [int(row["parametric_bins_spliced"]) for row in rows]
         payload_bytes_read = [int(row["cache_payload_bytes_read"]) for row in rows]
         decode_ns = [int(row["cache_decode_ns"]) for row in rows]
+        full_times = [int(row["full_time_ns"]) for row in rows]
+        cached_times = [int(row["cached_time_ns"]) for row in rows]
+        time_ratios = [
+            0.0 if int(row["full_time_ns"]) == 0 else int(row["cached_time_ns"]) / int(row["full_time_ns"])
+            for row in rows
+        ]
         lines.append(
-            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {full_capped} | {cached_capped} |".format(
+            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {full_capped} | {cached_capped} |".format(
                 budget=budget,
                 rows=len(rows),
                 mean_l1=statistics.mean(l1) if l1 else 0.0,
@@ -1118,6 +1192,9 @@ def summarize(records):
                 mean_path_relative=statistics.mean(path_relative) if path_relative else 0.0,
                 mean_path_delta=statistics.mean(path_delta) if path_delta else 0.0,
                 mean_ratio=statistics.mean(ratios) if ratios else 0.0,
+                mean_time_ratio=statistics.mean(time_ratios) if time_ratios else 0.0,
+                mean_full_time=statistics.mean(full_times) if full_times else 0.0,
+                mean_cached_time=statistics.mean(cached_times) if cached_times else 0.0,
                 mean_hist_hits=statistics.mean(histogram_hits) if histogram_hits else 0.0,
                 mean_param_hits=statistics.mean(parametric_hits) if parametric_hits else 0.0,
                 mean_hist_bins=statistics.mean(histogram_bins_spliced) if histogram_bins_spliced else 0.0,
@@ -1163,6 +1240,8 @@ def main(argv=None):
     parser.add_argument("--frontier-limit", type=int, default=2000, help="Deterministic cap for each sampled child-depth frontier.")
     parser.add_argument("--boundaries-per-depth", type=int, default=100, help="Boundary cache candidates per requested boundary depth.")
     parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
+    parser.add_argument("--include-target-ancestor-boundaries", action="store_true", help="Add ancestors of sampled targets whose root distance matches requested boundary depths.")
+    parser.add_argument("--target-ancestor-boundary-limit", type=int, default=500, help="Maximum target-ancestor boundary nodes to add; non-positive means no extra cap.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
     parser.add_argument("--boundary-builder", choices=["search", "recurrence"], default="search", help="Method used to build boundary histograms before admission.")
     parser.add_argument("--max-recurrence-states", type=int, default=0, help="If positive, use a parametric boundary state when recurrence state count exceeds this limit.")
