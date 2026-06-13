@@ -276,10 +276,13 @@ counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
 emits indexed string globals and prints them with the same separator rules.
 The first `BEGIN` slices emit literal `print` headers before stream setup, using
 separate indexed string globals so they do not collide with `END` literals, and
-thread single-byte `FS` assignments through native field-equality, selected-field
-print, and associative-key extraction helpers. Single-byte `OFS` assignments now
-configure the separator used by comma-separated `print` fields in `BEGIN`, rule,
-and `END` actions. Native separator emission uses direct byte output rather than
+thread `FS` assignments through native field-equality, selected-field print, and
+associative-key extraction helpers. The default space `FS` follows AWK-style
+whitespace splitting by ignoring leading/trailing whitespace and treating runs of
+space, tab, CR, or LF as one separator; explicit non-space `FS` values still use
+the single-byte literal path. Single-byte `OFS` assignments now configure the
+separator used by comma-separated `print` fields in `BEGIN`, rule, and `END`
+actions. Native separator emission uses direct byte output rather than
 passing the separator through `printf` as a format string.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
