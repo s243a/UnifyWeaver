@@ -1241,29 +1241,34 @@ plawk_scalar_loop_phi_lines([_Slot | Rest], Index) -->
 
 plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, RuleIndex, GlobalIR-IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
-    phrase(plawk_scalar_match_update_pairs(Slots, Actions, FieldSeparator, RuleIndex, 0), Pairs),
+    phrase(plawk_scalar_initial_slot_values(RuleIndex, Slots, 0), InitialValues),
+    format(atom(Prefix), 'rule_~w_body', [RuleIndex]),
+    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, FieldSeparator,
+        Prefix, RuleIndex, 0, InitialValues, FinalValues, _NextOpIndex), Pairs0),
+    phrase(plawk_scalar_final_slot_pairs(FinalValues, RuleIndex, 0), FinalPairs),
+    append(Pairs0, FinalPairs, Pairs),
     pairs_keys_values(Pairs, GlobalParts, LineParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(LineParts, '\n', IR).
 
-plawk_scalar_match_update_pairs([], _Actions, _FieldSeparator, _RuleIndex, _) -->
+plawk_scalar_initial_slot_values(_RuleIndex, [], _) -->
     [].
-plawk_scalar_match_update_pairs([scalar_counter(Name) | Rest], Actions, FieldSeparator, RuleIndex, SlotIndex) -->
-    { plawk_scalar_action_operations(Name, Actions, Operations),
-      plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, InputValue),
-      phrase(plawk_scalar_update_operation_pairs(Operations, FieldSeparator, RuleIndex,
-          SlotIndex, 0, InputValue, OutputValue), OperationPairs),
-      pairs_keys_values(OperationPairs, GlobalParts, OperationLines),
-      atomic_list_concat(GlobalParts, '\n', OperationGlobalIR),
-      atomic_list_concat(OperationLines, '\n', OperationIR),
-      format(atom(Line),
-          '  %rule_~w_slot_~w = add i64 ~w, 0',
-          [RuleIndex, SlotIndex, OutputValue]),
-      format(atom(SlotIR), '~w~n~w', [OperationIR, Line]),
+plawk_scalar_initial_slot_values(RuleIndex, [_Slot | Rest], SlotIndex) -->
+    { plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, Value),
       NextIndex is SlotIndex + 1
     },
-    [OperationGlobalIR-SlotIR],
-    plawk_scalar_match_update_pairs(Rest, Actions, FieldSeparator, RuleIndex, NextIndex).
+    [Value],
+    plawk_scalar_initial_slot_values(RuleIndex, Rest, NextIndex).
+
+plawk_scalar_final_slot_pairs([], _RuleIndex, _) -->
+    [].
+plawk_scalar_final_slot_pairs([Value | Rest], RuleIndex, SlotIndex) -->
+    { format(atom(Line), '  %rule_~w_slot_~w = add i64 ~w, 0',
+          [RuleIndex, SlotIndex, Value]),
+      NextSlotIndex is SlotIndex + 1
+    },
+    [''-Line],
+    plawk_scalar_final_slot_pairs(Rest, RuleIndex, NextSlotIndex).
 
 plawk_scalar_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
@@ -1290,80 +1295,45 @@ plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) 
 plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
     FieldIndex >= 0.
 
-plawk_scalar_action_operations(Name, Actions, Operations) :-
-    findall(Operation,
-        ( member(Action, Actions),
-          plawk_scalar_action_operation(Name, Action, Operation)
-        ),
-        Operations).
-
-plawk_scalar_action_operation(Name, Action, Operation) :-
-    plawk_scalar_action_update(Action, Name, Operation).
-plawk_scalar_action_operation(Name, if(Pattern, ThenActions, ElseActions),
-        if(Pattern, ThenOperations, ElseOperations)) :-
-    plawk_scalar_branch_action_operations(Name, ThenActions, ThenOperations),
-    plawk_scalar_branch_action_operations(Name, ElseActions, ElseOperations),
-    ( ThenOperations \== [] -> true ; ElseOperations \== [] ).
-
-plawk_scalar_branch_action_operations(Name, Actions, Operations) :-
-    findall(Operation,
-        ( member(Action, Actions),
-          plawk_scalar_action_update(Action, Name, Operation)
-        ),
-        Operations).
-
-plawk_scalar_update_operation_pairs([], _FieldSeparator, _RuleIndex, _SlotIndex, _OpIndex, Value, Value) -->
+plawk_scalar_action_sequence_pairs([], _Slots, _FieldSeparator, _Prefix, _RuleIndex,
+        OpIndex, Values, Values, OpIndex) -->
     [].
-plawk_scalar_update_operation_pairs([add(const(Value)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, InputValue, OutputValue) -->
-    { format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(AddLine), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, Value]),
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, FieldSeparator, Prefix, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex) -->
+    { plawk_scalar_action_update(Action, Name, Operation),
+      nth0(SlotIndex, Slots, scalar_counter(Name)),
+      nth0(SlotIndex, Values0, InputValue),
+      plawk_scalar_update_operation_ir(Operation, FieldSeparator, Prefix, SlotIndex,
+          OpIndex, InputValue, NextValue, Pair),
+      replace_nth0(SlotIndex, Values0, NextValue, Values1),
       NextOpIndex is OpIndex + 1
     },
-    [''-AddLine],
-    plawk_scalar_update_operation_pairs(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_update_operation_pairs([add(length(FieldIndex)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, InputValue, OutputValue) -->
-    { format(atom(LengthBase), 'plawk_rule_~w_slot_~w_op_~w_len', [RuleIndex, SlotIndex, OpIndex]),
-      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-      format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
-      format(atom(IR), '~w~n~w', [LengthCall, AddLine]),
-      NextOpIndex is OpIndex + 1
-    },
-    [''-IR],
-    plawk_scalar_update_operation_pairs(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_update_operation_pairs([set(const(Value)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, _InputValue, OutputValue) -->
-    { format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, Value]),
-      NextOpIndex is OpIndex + 1
-    },
-    [''-SetLine],
-    plawk_scalar_update_operation_pairs(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_update_operation_pairs([set(length(FieldIndex)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, _InputValue, OutputValue) -->
-    { format(atom(LengthBase), 'plawk_rule_~w_slot_~w_op_~w_len', [RuleIndex, SlotIndex, OpIndex]),
-      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-      format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
-      format(atom(IR), '~w~n~w', [LengthCall, SetLine]),
-      NextOpIndex is OpIndex + 1
-    },
-    [''-IR],
-    plawk_scalar_update_operation_pairs(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_update_operation_pairs([if(Pattern, ThenOperations, ElseOperations) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, InputValue, OutputValue) -->
-    { format(atom(GlobalBase), 'plawk_rule_~w_slot_~w_if_~w', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(CondValue), '%rule_~w_slot_~w_if_~w_cond', [RuleIndex, SlotIndex, OpIndex]),
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, FieldSeparator, Prefix, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex).
+plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
+        Slots, FieldSeparator, Prefix, RuleIndex, OpIndex, Values0, Values, FinalOpIndex) -->
+    { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
+      format(atom(CondValue), '%~w_if_~w_cond', [Prefix, OpIndex]),
       plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue, GuardGlobalIR-GuardIR),
-      format(atom(ThenLabel), 'rule_~w_slot_~w_if_~w_then', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(ElseLabel), 'rule_~w_slot_~w_if_~w_else', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(DoneLabel), 'rule_~w_slot_~w_if_~w_done', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(ThenPrefix), 'rule_~w_slot_~w_if_~w_then', [RuleIndex, SlotIndex, OpIndex]),
-      format(atom(ElsePrefix), 'rule_~w_slot_~w_if_~w_else', [RuleIndex, SlotIndex, OpIndex]),
-      phrase(plawk_scalar_branch_operation_lines(ThenOperations, FieldSeparator,
-          ThenPrefix, 0, InputValue, ThenValue), ThenLines),
-      phrase(plawk_scalar_branch_operation_lines(ElseOperations, FieldSeparator,
-          ElsePrefix, 0, InputValue, ElseValue), ElseLines),
-      atomic_list_concat(ThenLines, '\n', ThenIR),
-      atomic_list_concat(ElseLines, '\n', ElseIR),
-      format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
+      format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
+      format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
+      format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
+      phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, FieldSeparator,
+          ThenLabel, RuleIndex, 0, Values0, ThenValues, _ThenOpIndex), ThenPairs),
+      phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, FieldSeparator,
+          ElseLabel, RuleIndex, 0, Values0, ElseValues, _ElseOpIndex), ElsePairs),
+      pairs_keys_values(ThenPairs, ThenGlobalParts, ThenLineParts),
+      pairs_keys_values(ElsePairs, ElseGlobalParts, ElseLineParts),
+      atomic_list_concat(ThenGlobalParts, '\n', ThenGlobalIR),
+      atomic_list_concat(ElseGlobalParts, '\n', ElseGlobalIR),
+      atomic_list_concat(ThenLineParts, '\n', ThenIR),
+      atomic_list_concat(ElseLineParts, '\n', ElseIR),
+      phrase(plawk_scalar_if_phi_lines(ThenValues, ElseValues, Prefix, OpIndex,
+          ThenLabel, ElseLabel, 0), PhiPairs),
+      pairs_keys_values(PhiPairs, _PhiGlobalParts, PhiLineParts),
+      atomic_list_concat(PhiLineParts, '\n', PhiIR),
+      pairs_keys(PhiPairs, Values1),
       format(atom(IR),
 '~w
   br i1 ~w, label %~w, label %~w
@@ -1377,50 +1347,59 @@ plawk_scalar_update_operation_pairs([if(Pattern, ThenOperations, ElseOperations)
   br label %~w
 
 ~w:
-  ~w = phi i64 [~w, %~w], [~w, %~w]',
+~w',
           [GuardIR, CondValue, ThenLabel, ElseLabel,
            ThenLabel, ThenIR, DoneLabel,
            ElseLabel, ElseIR, DoneLabel,
-           DoneLabel, NextValue, ThenValue, ThenLabel, ElseValue, ElseLabel]),
+           DoneLabel, PhiIR]),
+      atomic_list_concat([GuardGlobalIR, ThenGlobalIR, ElseGlobalIR], '\n', GlobalIR),
       NextOpIndex is OpIndex + 1
     },
-    [GuardGlobalIR-IR],
-    plawk_scalar_update_operation_pairs(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, FieldSeparator, Prefix, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex).
 
-plawk_scalar_branch_operation_lines([], _FieldSeparator, _Prefix, _OpIndex, Value, Value) -->
+plawk_scalar_update_operation_ir(add(const(Value)), _FieldSeparator, Prefix, SlotIndex,
+        OpIndex, InputValue, NextValue, ''-Line) :-
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(Line), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, Value]).
+plawk_scalar_update_operation_ir(add(length(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, InputValue, NextValue, ''-IR) :-
+    format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
+    format(atom(IR), '~w~n~w', [LengthCall, AddLine]).
+plawk_scalar_update_operation_ir(set(const(Value)), _FieldSeparator, Prefix, SlotIndex,
+        OpIndex, _InputValue, NextValue, ''-Line) :-
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(Line), '  ~w = add i64 0, ~w', [NextValue, Value]).
+plawk_scalar_update_operation_ir(set(length(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, _InputValue, NextValue, ''-IR) :-
+    format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
+    format(atom(IR), '~w~n~w', [LengthCall, SetLine]).
+
+plawk_scalar_if_phi_lines([], [], _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].
-plawk_scalar_branch_operation_lines([add(const(Value)) | Rest], FieldSeparator, Prefix, OpIndex, InputValue, OutputValue) -->
-    { format(atom(NextValue), '%~w_op_~w', [Prefix, OpIndex]),
-      format(atom(Line), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, Value]),
-      NextOpIndex is OpIndex + 1
+plawk_scalar_if_phi_lines([ThenValue | ThenRest], [ElseValue | ElseRest],
+        Prefix, OpIndex, ThenLabel, ElseLabel, SlotIndex) -->
+    { format(atom(PhiValue), '%~w_if_~w_slot_~w', [Prefix, OpIndex, SlotIndex]),
+      format(atom(Line), '  ~w = phi i64 [~w, %~w], [~w, %~w]',
+          [PhiValue, ThenValue, ThenLabel, ElseValue, ElseLabel]),
+      NextSlotIndex is SlotIndex + 1
     },
-    [Line],
-    plawk_scalar_branch_operation_lines(Rest, FieldSeparator, Prefix, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_branch_operation_lines([add(length(FieldIndex)) | Rest], FieldSeparator, Prefix, OpIndex, InputValue, OutputValue) -->
-    { format(atom(LengthBase), '~w_op_~w_len', [Prefix, OpIndex]),
-      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-      format(atom(NextValue), '%~w_op_~w', [Prefix, OpIndex]),
-      format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
-      NextOpIndex is OpIndex + 1
-    },
-    [LengthCall, AddLine],
-    plawk_scalar_branch_operation_lines(Rest, FieldSeparator, Prefix, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_branch_operation_lines([set(const(Value)) | Rest], FieldSeparator, Prefix, OpIndex, _InputValue, OutputValue) -->
-    { format(atom(NextValue), '%~w_op_~w', [Prefix, OpIndex]),
-      format(atom(Line), '  ~w = add i64 0, ~w', [NextValue, Value]),
-      NextOpIndex is OpIndex + 1
-    },
-    [Line],
-    plawk_scalar_branch_operation_lines(Rest, FieldSeparator, Prefix, NextOpIndex, NextValue, OutputValue).
-plawk_scalar_branch_operation_lines([set(length(FieldIndex)) | Rest], FieldSeparator, Prefix, OpIndex, _InputValue, OutputValue) -->
-    { format(atom(LengthBase), '~w_op_~w_len', [Prefix, OpIndex]),
-      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-      format(atom(NextValue), '%~w_op_~w', [Prefix, OpIndex]),
-      format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
-      NextOpIndex is OpIndex + 1
-    },
-    [LengthCall, SetLine],
-    plawk_scalar_branch_operation_lines(Rest, FieldSeparator, Prefix, NextOpIndex, NextValue, OutputValue).
+    [PhiValue-Line],
+    plawk_scalar_if_phi_lines(ThenRest, ElseRest, Prefix, OpIndex, ThenLabel, ElseLabel, NextSlotIndex).
+
+replace_nth0(0, [_Old | Rest], Value, [Value | Rest]) :-
+    !.
+replace_nth0(Index, [Head | Rest], Value, [Head | NewRest]) :-
+    Index > 0,
+    NextIndex is Index - 1,
+    replace_nth0(NextIndex, Rest, Value, NewRest).
 
 plawk_scalar_next_phi_ir(StatePlan, RuleCount, Controls, IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
