@@ -196,6 +196,15 @@ test(parses_scalar_if_else_without_keyword_space) :-
         [if(field_eq(1, "ERROR"), [inc(var(errors))], [inc(var(non_errors))])])],
         [end([print([var(errors), var(non_errors)])])])).
 
+test(parses_assoc_if_else_count_rule) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { counts[$2]++ } else { counts[$1]++ } } END { print counts[\"disk\"], counts[\"WARN\"] }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [if(field_eq(1, "ERROR"),
+            [inc_assoc(var(counts), field(2))],
+            [inc_assoc(var(counts), field(1))])])],
+        [end([print([assoc(var(counts), string("disk")),
+                     assoc(var(counts), string("WARN"))])])])).
+
 test(parses_assoc_count_end_print_rule) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     assertion(Program == program([], [rule(always, [inc_assoc(var(counts), field(1))])],
@@ -453,6 +462,16 @@ test(surface_mixed_scalar_if_else_and_assoc_counts) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2 2 2 1\n").
 
+test(surface_assoc_if_else_updates_native_tables) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { counts[$2]++ } else { counts[$1]++ } } END { print counts[\"disk\"], counts[\"WARN\"] }\n",
+        "ERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "1 1\n").
+
+test(surface_mixed_if_else_updates_scalar_slots_and_native_tables) :-
+    run_surface_print_smoke("{ total++; if ($1 == \"ERROR\") { errors++; counts[$2]++ } else { counts[$1]++ } } END { print total, errors, counts[\"disk\"], counts[\"WARN\"] }\n",
+        "ERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "3 2 1 1\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -625,8 +644,8 @@ test(surface_mixed_scalar_assoc_uses_native_state_and_tables) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_assoc_table_1 = call %WamAssocI64Table* @wam_assoc_i64_new'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_done:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_done:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_1_action_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_assoc_1:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_body_assoc_1:'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -668,8 +687,19 @@ test(surface_if_else_rejects_nested_next, [fail]) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { next } else { total++ } } END { print total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
-test(surface_if_else_rejects_assoc_branch_updates, [fail]) :-
+test(surface_if_else_assoc_branch_updates_use_native_tables) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { counts[$1]++ } else { counts[$2]++ } } END { print counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then_assoc_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_else_assoc_0:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_done:'))),
+    findall(inc, sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc'), Increments),
+    assertion(Increments == [inc, inc]),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_if_else_rejects_branch_print, [fail]) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { print $0 } else { counts[$1]++ } } END { print counts[\"ERROR\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
 test(surface_terminal_next_uses_native_continue_phi) :-

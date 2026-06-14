@@ -457,7 +457,11 @@ plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, Pla
     plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
     plawk_mixed_assoc_count_plan(Rules, PrintFields, AssocPlan),
     phrase(plawk_mixed_planned_rules(Rules, AssocPlan, 0), PlannedRules),
-    PlannedRules \== [].
+    PlannedRules \== [],
+    (   plawk_state_slot_count(ScalarPlan, ScalarCount),
+        ScalarCount > 0
+    ;   plawk_planned_rules_have_conditionals(PlannedRules)
+    ).
 
 plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     findall(Name,
@@ -466,7 +470,6 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
           plawk_scalar_update_action_name(Action, Name)
         ),
         ActionVars),
-    ActionVars \== [],
     findall(Name,
         ( member(Field, PrintFields),
           plawk_scalar_print_expr(Field, Name)
@@ -479,8 +482,7 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
 plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     findall(ArrayName,
         ( member(rule(_Pattern, Actions), Rules),
-          member(Action, Actions),
-          plawk_assoc_increment_action(Action, ArrayName-_KeyIndex)
+          plawk_assoc_increment_spec_in_actions(Actions, ArrayName-_KeyIndex)
         ),
         ActionArrays),
     ActionArrays \== [],
@@ -493,12 +495,23 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     append(ActionArrays, PrintArrays, ArrayNames0),
     sort(ArrayNames0, Tables).
 
+plawk_planned_rules_have_conditionals(PlannedRules) :-
+    member(mixed_rule(_Index, _Pattern, Actions, _AssocActions, _Control), PlannedRules),
+    plawk_actions_have_conditional(Actions).
+
+plawk_actions_have_conditional(Actions) :-
+    member(Action, Actions),
+    plawk_action_has_conditional(Action).
+
+plawk_action_has_conditional(if(_Pattern, _ThenActions, _ElseActions)).
+
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
     [].
 plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Actions0), Index) -->
     { plawk_split_terminal_control(Actions, BodyActions, Control),
-      plawk_mixed_rule_actions(BodyActions, ScalarActions, AssocSpecs),
-      ( ScalarActions == [], AssocSpecs == [], Control == fallthrough
+      plawk_mixed_rule_actions(BodyActions, PlannedActions),
+      plawk_assoc_increment_specs_in_actions(BodyActions, AssocSpecs),
+      ( PlannedActions == [], AssocSpecs == [], Control == fallthrough
       -> HasActions = false,
          NextIndex = Index,
          PlannedAssocActions = []
@@ -508,21 +521,26 @@ plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Ac
       )
     },
     ( { HasActions == true }
-    -> [mixed_rule(Index, Pattern, ScalarActions, PlannedAssocActions, Control)]
+    -> [mixed_rule(Index, Pattern, PlannedActions, PlannedAssocActions, Control)]
     ;  []
     ),
     plawk_mixed_planned_rules(Rest, assoc_plan(Tables, Actions0), NextIndex).
 
-plawk_mixed_rule_actions(Actions, ScalarActions, AssocSpecs) :-
-    maplist(plawk_mixed_update_action, Actions, TypedActions),
-    findall(Action, member(scalar(Action), TypedActions), ScalarActions),
-    findall(Spec, member(assoc(Spec), TypedActions), AssocSpecs).
+plawk_mixed_rule_actions([], []).
+plawk_mixed_rule_actions([Action | Rest], [Action | PlannedRest]) :-
+    plawk_mixed_update_action(Action),
+    plawk_mixed_rule_actions(Rest, PlannedRest).
 
-plawk_mixed_update_action(Action, scalar(Action)) :-
+plawk_mixed_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
-plawk_mixed_update_action(Action, scalar(Action)) :-
-    plawk_scalar_conditional_action(Action).
-plawk_mixed_update_action(inc_assoc(var(ArrayName), field(KeyIndex)), assoc(ArrayName-KeyIndex)) :-
+plawk_mixed_update_action(Action) :-
+    plawk_assoc_update_action(Action).
+plawk_mixed_update_action(if(_Pattern, ThenActions, ElseActions)) :-
+    append(ThenActions, ElseActions, Actions),
+    Actions \== [],
+    maplist(plawk_mixed_update_action, Actions).
+
+plawk_assoc_update_action(inc_assoc(var(_ArrayName), field(KeyIndex))) :-
     KeyIndex > 0.
 
 plawk_scalar_conditional_action(if(_Pattern, ThenActions, ElseActions)) :-
@@ -533,11 +551,25 @@ plawk_scalar_conditional_action(if(_Pattern, ThenActions, ElseActions)) :-
 plawk_scalar_plain_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 
+plawk_assoc_increment_spec_in_actions(Actions, Spec) :-
+    member(Action, Actions),
+    plawk_assoc_increment_spec_in_action(Action, Spec).
+
+plawk_assoc_increment_specs_in_actions(Actions, Specs) :-
+    findall(Spec, plawk_assoc_increment_spec_in_actions(Actions, Spec), Specs).
+
+plawk_assoc_increment_spec_in_action(Action, Spec) :-
+    plawk_assoc_increment_action(Action, Spec).
+plawk_assoc_increment_spec_in_action(if(_Pattern, ThenActions, ElseActions), Spec) :-
+    ( plawk_assoc_increment_spec_in_actions(ThenActions, Spec)
+    ; plawk_assoc_increment_spec_in_actions(ElseActions, Spec)
+    ).
+
 plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
     length(Rules, RuleCount),
     RuleCount > 0,
     plawk_mixed_rule_controls(mixed_plan(ScalarPlan, AssocPlan, Rules), Controls),
-    phrase(plawk_mixed_rule_chain_lines(Rules, Controls, ScalarPlan, FieldSeparator, 0), Pairs),
+    phrase(plawk_mixed_rule_chain_lines(Rules, Controls, ScalarPlan, AssocPlan, FieldSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
@@ -545,9 +577,9 @@ plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparat
 plawk_mixed_rule_controls(mixed_plan(_ScalarPlan, _AssocPlan, Rules), Controls) :-
     findall(Control, member(mixed_rule(_Index, _Pattern, _ScalarActions, _AssocActions, Control), Rules), Controls).
 
-plawk_mixed_rule_chain_lines([], _Controls, _ScalarPlan, _FieldSeparator, _) -->
+plawk_mixed_rule_chain_lines([], _Controls, _ScalarPlan, _AssocPlan, _FieldSeparator, _) -->
     [].
-plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarActions, AssocActions, Control) | Rest], Controls, ScalarPlan, FieldSeparator, Index) -->
+plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions, Control) | Rest], Controls, ScalarPlan, AssocPlan, FieldSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -560,9 +592,8 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarActions, AssocAct
       plawk_mixed_scalar_rule_input_phi_ir(ScalarPlan, Index, Controls, InputPhiIR),
       plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
           NextLabel, InputPhiIR, FieldSeparator, GuardGlobalIR-GuardIR),
-      plawk_scalar_match_update_ir(ScalarPlan, ScalarActions, FieldSeparator, Index,
-          ScalarUpdateGlobalIR-ScalarUpdateIR),
-      plawk_mixed_assoc_apply_ir(Index, AssocActions, DoneLabel, FieldSeparator, AssocApplyIR),
+      plawk_native_match_update_ir(ScalarPlan, AssocPlan, Actions, FieldSeparator, Index,
+          ActionGlobalIR-ActionIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
       ;  EntryIR = ''
@@ -572,17 +603,16 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, ScalarActions, AssocAct
 
 ~w:
 ~w
-~w
+  br label %~w
 
 ~w:
   br label %~w',
-          [EntryIR, GuardIR, ApplyLabel, ScalarUpdateIR, AssocApplyIR,
-           DoneLabel, RuleTargetLabel]),
-      format(atom(CombinedGlobalIR), '~w~n~w', [GuardGlobalIR, ScalarUpdateGlobalIR]),
+          [EntryIR, GuardIR, ApplyLabel, ActionIR, DoneLabel, DoneLabel, RuleTargetLabel]),
+      format(atom(CombinedGlobalIR), '~w~n~w', [GuardGlobalIR, ActionGlobalIR]),
       Pair = CombinedGlobalIR-RuleIR
     },
     [Pair],
-    plawk_mixed_rule_chain_lines(Rest, Controls, ScalarPlan, FieldSeparator, NextIndex).
+    plawk_mixed_rule_chain_lines(Rest, Controls, ScalarPlan, AssocPlan, FieldSeparator, NextIndex).
 
 plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
     InputPhiIR, _FieldSeparator, ''-IR) :-
@@ -605,13 +635,6 @@ plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
 ~w~w
   br i1 %~w, label %~w, label %~w',
         [RuleLabel, InputPhiIR, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
-
-plawk_mixed_assoc_apply_ir(_RuleIndex, [], DoneLabel, _FieldSeparator, IR) :-
-    !,
-    format(atom(IR), '  br label %~w', [DoneLabel]).
-plawk_mixed_assoc_apply_ir(RuleIndex, AssocActions, DoneLabel, FieldSeparator, IR) :-
-    phrase(plawk_assoc_rule_action_lines(RuleIndex, AssocActions, DoneLabel, FieldSeparator), Lines),
-    atomic_list_concat(Lines, '\n', IR).
 
 plawk_mixed_scalar_rule_input_phi_ir(_StatePlan, 0, _Controls, '') :-
     !.
@@ -1240,11 +1263,14 @@ plawk_scalar_loop_phi_lines([_Slot | Rest], Index) -->
     plawk_scalar_loop_phi_lines(Rest, NextIndex).
 
 plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, RuleIndex, GlobalIR-IR) :-
+    plawk_native_match_update_ir(StatePlan, none, Actions, FieldSeparator, RuleIndex, GlobalIR-IR).
+
+plawk_native_match_update_ir(StatePlan, AssocPlan, Actions, FieldSeparator, RuleIndex, GlobalIR-IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_initial_slot_values(RuleIndex, Slots, 0), InitialValues),
     format(atom(Prefix), 'rule_~w_body', [RuleIndex]),
-    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, FieldSeparator,
-        Prefix, RuleIndex, 0, InitialValues, FinalValues, _NextOpIndex), Pairs0),
+    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan, FieldSeparator,
+        Prefix, Prefix, RuleIndex, 0, InitialValues, FinalValues, _NextOpIndex, _ExitLabel), Pairs0),
     phrase(plawk_scalar_final_slot_pairs(FinalValues, RuleIndex, 0), FinalPairs),
     append(Pairs0, FinalPairs, Pairs),
     pairs_keys_values(Pairs, GlobalParts, LineParts),
@@ -1295,11 +1321,11 @@ plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) 
 plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
     FieldIndex >= 0.
 
-plawk_scalar_action_sequence_pairs([], _Slots, _FieldSeparator, _Prefix, _RuleIndex,
-        OpIndex, Values, Values, OpIndex) -->
+plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _Prefix, CurrentLabel, _RuleIndex,
+        OpIndex, Values, Values, OpIndex, CurrentLabel) -->
     [].
-plawk_scalar_action_sequence_pairs([Action | Rest], Slots, FieldSeparator, Prefix, RuleIndex,
-        OpIndex, Values0, Values, FinalOpIndex) -->
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
     { plawk_scalar_action_update(Action, Name, Operation),
       nth0(SlotIndex, Slots, scalar_counter(Name)),
       nth0(SlotIndex, Values0, InputValue),
@@ -1309,20 +1335,31 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, FieldSeparator, Prefi
       NextOpIndex is OpIndex + 1
     },
     [Pair],
-    plawk_scalar_action_sequence_pairs(Rest, Slots, FieldSeparator, Prefix, RuleIndex,
-        NextOpIndex, Values1, Values, FinalOpIndex).
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel).
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
+    { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
+          FieldSeparator, Pair, AssocExitLabel),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, AssocExitLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel).
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
-        Slots, FieldSeparator, Prefix, RuleIndex, OpIndex, Values0, Values, FinalOpIndex) -->
+        Slots, AssocPlan, FieldSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
       format(atom(CondValue), '%~w_if_~w_cond', [Prefix, OpIndex]),
       plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
       format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
-      phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, FieldSeparator,
-          ThenLabel, RuleIndex, 0, Values0, ThenValues, _ThenOpIndex), ThenPairs),
-      phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, FieldSeparator,
-          ElseLabel, RuleIndex, 0, Values0, ElseValues, _ElseOpIndex), ElsePairs),
+      phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, AssocPlan, FieldSeparator,
+          ThenLabel, ThenLabel, RuleIndex, 0, Values0, ThenValues, _ThenOpIndex, ThenExitLabel), ThenPairs),
+      phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, AssocPlan, FieldSeparator,
+          ElseLabel, ElseLabel, RuleIndex, 0, Values0, ElseValues, _ElseOpIndex, ElseExitLabel), ElsePairs),
       pairs_keys_values(ThenPairs, ThenGlobalParts, ThenLineParts),
       pairs_keys_values(ElsePairs, ElseGlobalParts, ElseLineParts),
       atomic_list_concat(ThenGlobalParts, '\n', ThenGlobalIR),
@@ -1330,7 +1367,7 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
       atomic_list_concat(ThenLineParts, '\n', ThenIR),
       atomic_list_concat(ElseLineParts, '\n', ElseIR),
       phrase(plawk_scalar_if_phi_lines(ThenValues, ElseValues, Prefix, OpIndex,
-          ThenLabel, ElseLabel, 0), PhiPairs),
+          ThenExitLabel, ElseExitLabel, 0), PhiPairs),
       pairs_keys_values(PhiPairs, _PhiGlobalParts, PhiLineParts),
       atomic_list_concat(PhiLineParts, '\n', PhiIR),
       pairs_keys(PhiPairs, Values1),
@@ -1356,8 +1393,8 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
-    plawk_scalar_action_sequence_pairs(Rest, Slots, FieldSeparator, Prefix, RuleIndex,
-        NextOpIndex, Values1, Values, FinalOpIndex).
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, DoneLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel).
 
 plawk_scalar_update_operation_ir(add(const(Value)), _FieldSeparator, Prefix, SlotIndex,
         OpIndex, InputValue, NextValue, ''-Line) :-
@@ -1381,6 +1418,46 @@ plawk_scalar_update_operation_ir(set(length(FieldIndex)), FieldSeparator, Prefix
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
     format(atom(IR), '~w~n~w', [LengthCall, SetLine]).
+
+plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
+        FieldSeparator, ''-IR, DoneLabel) :-
+    format(atom(Label), '~w_assoc_~w', [Prefix, OpIndex]),
+    format(atom(HaveLabel), '~w_assoc_~w_have_key', [Prefix, OpIndex]),
+    format(atom(DoneLabel), '~w_assoc_~w_done', [Prefix, OpIndex]),
+    format(atom(SliceValue), '%~w_assoc_~w_key_slice', [Prefix, OpIndex]),
+    format(atom(KeyPtr), '%~w_assoc_~w_key_ptr', [Prefix, OpIndex]),
+    format(atom(KeyLen), '%~w_assoc_~w_key_len', [Prefix, OpIndex]),
+    format(atom(KeyMissing), '%~w_assoc_~w_key_missing', [Prefix, OpIndex]),
+    format(atom(KeyId), '%~w_assoc_~w_key_id', [Prefix, OpIndex]),
+    format(atom(CountValue), '%~w_assoc_~w_count', [Prefix, OpIndex]),
+    format(atom(IR),
+'  br label %~w
+
+~w:
+  ~w = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)
+  ~w = extractvalue %WamSlice ~w, 0
+  ~w = extractvalue %WamSlice ~w, 1
+  ~w = icmp eq i8* ~w, null
+  br i1 ~w, label %~w, label %~w
+
+~w:
+  ~w = call i64 @wam_intern_atom(i8* ~w, i64 ~w)
+  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)
+  br label %~w
+
+~w:',
+        [Label,
+         Label,
+         SliceValue, KeyIndex, FieldSeparator,
+         KeyPtr, SliceValue,
+         KeyLen, SliceValue,
+         KeyMissing, KeyPtr,
+         KeyMissing, DoneLabel, HaveLabel,
+         HaveLabel,
+         KeyId, KeyPtr, KeyLen,
+         CountValue, TableIndex, KeyId,
+         DoneLabel,
+         DoneLabel]).
 
 plawk_scalar_if_phi_lines([], [], _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].

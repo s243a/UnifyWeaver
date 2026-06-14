@@ -254,11 +254,22 @@ The first `if/else` surface lowers scalar updates behind field-equality guards:
 END { print total, errors, non_errors, last_len }
 ```
 
-For now, branch bodies support scalar updates only; branch-local `print`,
-associative updates, `next`, and `break` are rejected by native codegen.
+For now, branch bodies support scalar updates, field-key associative increments,
+and combinations of the two. Branch-local `print`, `next`, and `break` are
+rejected by native codegen.
 The generated native code evaluates the `if` condition once, runs the selected
 branch, and rejoins all scalar slots through LLVM phi nodes before later actions
 or rules continue.
+
+Associative increments can live inside the selected branch:
+
+```awk
+{
+  if ($1 == "ERROR") { by_component[$2]++ }
+  else { by_kind[$1]++ }
+}
+END { print by_component["disk"], by_kind["WARN"] }
+```
 
 A terminal `next` skips the remaining rules for the current record:
 
