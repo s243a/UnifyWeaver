@@ -1,0 +1,144 @@
+// par_aggregate.rs — generated {{date}}
+//
+// T7 parallel-aggregate runtime (route 1). The compile-time transform
+// (parallel_gate.parallel_aggregate_transform) rewrites a parallel-eligible
+// aggregate into two ordinary predicates plus a plan:
+//
+//     __par_enum(Input)         -- yields each branch's input tuple
+//     __par_body(Input, Value)  -- per branch, yields the collected value
+//
+// Those compile to normal `fn(&mut WamState, ...) -> bool` predicate functions.
+// This module drives them: enumerate the inputs once (sequential, cheap), then
+// run the body on a *cloned* machine per input across worker threads (a WAM
+// machine is mutable shared state, so each branch needs its own clone), and
+// concatenate the per-branch values in generator order. No interpreter surgery —
+// it only calls the generated predicate functions.
+
+use std::thread;
+use crate::value::Value;
+use crate::state::WamState;
+
+const IN_VAR: &str = "__PAR_IN";
+const VAL_VAR: &str = "__PAR_VAL";
+
+/// Drive a unary predicate to exhaustion, collecting the binding of its argument
+/// across all solutions (the WAM result convention: pass `Unbound(name)`, read
+/// `bindings[name]`).
+fn collect_inputs(base: &WamState, enum_fn: fn(&mut WamState, Value) -> bool) -> Vec<Value> {
+    let mut vm = base.clone();
+    let mut out = Vec::new();
+    if enum_fn(&mut vm, Value::Unbound(IN_VAR.to_string())) {
+        loop {
+            if let Some(raw) = vm.bindings.get(IN_VAR).cloned() {
+                // resolve heap refs / nested terms, as EndAggregate does
+                out.push(vm.deref_var(&vm.deref_heap(&raw)));
+            }
+            // A WAM predicate yields the next solution only by backtracking to a
+            // choice point (reposition) AND re-running (which pops exhausted CPs
+            // via trust_me). backtrack() alone never makes progress.
+            if !vm.backtrack() || !vm.run() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Run the body for one input on machine `m` (reset to `base` first), collecting
+/// the value binding across all of the body's solutions.
+fn run_body(
+    base: &WamState,
+    m: &mut WamState,
+    body_fn: fn(&mut WamState, Value, Value) -> bool,
+    input: Value,
+) -> Vec<Value> {
+    *m = base.clone(); // each branch starts from a clean machine
+    let mut vals = Vec::new();
+    if body_fn(m, input, Value::Unbound(VAL_VAR.to_string())) {
+        loop {
+            if let Some(raw) = m.bindings.get(VAL_VAR).cloned() {
+                vals.push(m.deref_var(&m.deref_heap(&raw)));
+            }
+            if !m.backtrack() || !m.run() {
+                break;
+            }
+        }
+    }
+    vals
+}
+
+/// Run the body over all inputs, in parallel when there is enough to fan out,
+/// preserving generator order (chunks concatenated by input index).
+fn map_bodies(
+    base: &WamState,
+    inputs: &[Value],
+    body_fn: fn(&mut WamState, Value, Value) -> bool,
+) -> Vec<Value> {
+    let n = inputs.len();
+    let cores = thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n);
+    if n < 2 || cores < 2 {
+        // sequential: reuse one machine, reset per branch
+        let mut out = Vec::new();
+        let mut m = base.clone();
+        for inp in inputs {
+            out.extend(run_body(base, &mut m, body_fn, inp.clone()));
+        }
+        return out;
+    }
+    let chunk = (n + cores - 1) / cores;
+    let mut results: Vec<(usize, Vec<Value>)> = thread::scope(|s| {
+        let mut handles = Vec::new();
+        for c in 0..cores {
+            let lo = c * chunk;
+            let hi = ((c + 1) * chunk).min(n);
+            if lo >= hi {
+                continue;
+            }
+            let slice = &inputs[lo..hi];
+            handles.push(s.spawn(move || {
+                let mut m = base.clone(); // one clone per worker, reset per branch
+                let mut local = Vec::new();
+                for inp in slice {
+                    local.extend(run_body(base, &mut m, body_fn, inp.clone()));
+                }
+                (lo, local)
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    results.sort_by_key(|(lo, _)| *lo);
+    let mut out = Vec::new();
+    for (_, mut v) in results {
+        out.append(&mut v);
+    }
+    out
+}
+
+/// Parallel `collect` (findall/bag): the ordered sequence of body values over
+/// all enumerated inputs. The compile-time gate already decided this aggregate
+/// is worth parallelising; `map_bodies` falls back to sequential for tiny input
+/// sets so there is never a fan-out regression.
+pub fn par_collect(
+    base: &WamState,
+    enum_fn: fn(&mut WamState, Value) -> bool,
+    body_fn: fn(&mut WamState, Value, Value) -> bool,
+) -> Vec<Value> {
+    let inputs = collect_inputs(base, enum_fn);
+    map_bodies(base, &inputs, body_fn)
+}
+
+/// The same collection done strictly sequentially — the reference the parallel
+/// path must match (used by tests and available as a fallback).
+pub fn seq_collect(
+    base: &WamState,
+    enum_fn: fn(&mut WamState, Value) -> bool,
+    body_fn: fn(&mut WamState, Value, Value) -> bool,
+) -> Vec<Value> {
+    let inputs = collect_inputs(base, enum_fn);
+    let mut out = Vec::new();
+    let mut m = base.clone();
+    for inp in &inputs {
+        out.extend(run_body(base, &mut m, body_fn, inp.clone()));
+    }
+    out
+}

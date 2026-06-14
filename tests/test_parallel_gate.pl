@@ -157,4 +157,62 @@ test(split_preserves_goals) :-
 flatten_conj((A, B), L) :- !, flatten_conj(A, LA), flatten_conj(B, LB), append(LA, LB, L).
 flatten_conj(G, [G]).
 
+% --- route-1 source transform: enum/body helpers + plan ---------------------
+
+% Run a transform's two helper predicates sequentially (enum -> inputs, then
+% body per input -> values) and return the collected value sequence.
+decomp_values(AggGoal, Seed, Trans) :-
+    build(M),
+    parallel_aggregate_transform(AggGoal, M, Seed,
+                                 Helpers, par_aggregate(_Type, EnumName/1, BodyName/2, _R)),
+    copy_term(Helpers, HC),
+    forall(member(C, HC), assertz(user:C)),
+    EnumGoal =.. [EnumName, IT],
+    findall(IT, user:EnumGoal, Inputs),
+    findall(V, ( member(I, Inputs), BG =.. [BodyName, I, V], call(user:BG) ), Trans),
+    EH =.. [EnumName, _],    retractall(user:EH),
+    BH =.. [BodyName, _, _], retractall(user:BH).
+
+% Decisive correctness: sequential (enum,body) collects exactly the original
+% aggregate's value sequence (recursive body, predictable output).
+test(decomp_preserves_values) :-
+    findall(L, (pg_fact(X), pg_down(X, L)), Ref),
+    decomp_values(findall(L2, (pg_fact(X2), pg_down(X2, L2)), _), dseed1, Trans),
+    assertion(Ref == [[1], [2,1], [3,2,1]]),
+    assertion(Trans == Ref).
+
+% The collected value uses a var the ENUMERATOR binds (X), reconstructed via the
+% Input tuple -- the case that needs the value-aware frontier.
+test(decomp_value_var_from_enum) :-
+    findall(X-L, (pg_fact(X), pg_down(X, L)), Ref),
+    decomp_values(findall(X2-L2, (pg_fact(X2), pg_down(X2, L2)), _), dseed2, Trans),
+    assertion(Ref == [1-[1], 2-[2,1], 3-[3,2,1]]),
+    assertion(Trans == Ref).
+
+% count: the decomposition yields the same number of rows
+test(decomp_count_matches) :-
+    decomp_values(aggregate_all(count, (pg_fact(X), pg_down(X, _L)), _), dseed3, Trans),
+    assertion(length(Trans, 3)).
+
+% transform plan shape + result threading
+test(transform_plan_shape) :-
+    build(M),
+    parallel_aggregate_transform(findall(L, (pg_fact(X), pg_down(X, L)), Res),
+                                 M, dseed4, Helpers, Plan),
+    Plan = par_aggregate(collect, _/1, _/2, R),
+    assertion(R == Res),
+    Helpers = [(_ :- EnumBody), (_ :- BodyBody)],
+    assertion(EnumBody =@= pg_fact(_)),
+    assertion(BodyBody =@= pg_down(_, _)).
+
+% transform declines exactly when the split/gate declines
+test(transform_declines_all_cheap) :-
+    build(M),
+    assertion(\+ parallel_aggregate_transform(
+        findall(Y, (pg_fact(X), pg_cheap(X, Y)), _), M, dseed5, _, _)).
+
+test(transform_declines_non_aggregate) :-
+    build(M),
+    assertion(\+ parallel_aggregate_transform(pg_down(3, _L), M, dseed6, _, _)).
+
 :- end_tests(parallel_gate).
