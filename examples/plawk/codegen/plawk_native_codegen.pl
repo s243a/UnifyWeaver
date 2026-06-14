@@ -43,6 +43,7 @@
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
+%      $1 == "ERROR" { print int($3) + 1 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -1302,6 +1303,7 @@ plawk_rule_body_print_field(string(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
+plawk_rule_body_print_field(add_i64(int(field(_)), int(_))).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
@@ -1326,6 +1328,11 @@ plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i6
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_scalar_action_update(add(var(Name), add_i64(int(field(FieldIndex)), int(Value))),
+        Name, add(add_i64(int(field(FieldIndex)), int(Value)))) :-
+    FieldIndex >= 0,
+    integer(Value),
+    Value >= 0.
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -1335,6 +1342,11 @@ plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i6
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_scalar_action_update(set(var(Name), add_i64(int(field(FieldIndex)), int(Value))),
+        Name, set(add_i64(int(field(FieldIndex)), int(Value)))) :-
+    FieldIndex >= 0,
+    integer(Value),
+    Value >= 0.
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
@@ -1462,6 +1474,12 @@ plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, Slot
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(field_i64(FieldIndex), FieldSeparator, ParseBase, ParseBase,
         ValueIR, IR).
+plawk_scalar_numeric_expr_ir(add_i64(Left, int(Value)), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, IR) :-
+    format(atom(AddBase), '~w_slot_~w_op_~w_i64_add',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(add_i64(Left, int(Value)), FieldSeparator, AddBase,
+        AddBase, ValueIR, IR).
 
 plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase, ValueIR, IR) :-
     plawk_i64_expr_ir(Expr, FieldSeparator, Base, GlobalBase,
@@ -1480,10 +1498,24 @@ plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR])
 plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [LengthIR]) :-
     llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
     format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(int(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [ParseIR]) :-
     format(atom(ValueIR), '%~w_value_or_default', [Base]),
     llvm_emit_atom_field_i64_or_default('%line', FieldIndex, FieldSeparator, 0,
         Base, ValueIR, ParseIR).
+plawk_i64_expr_ir(add_i64(Left, int(Value)), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    integer(Value),
+    format(atom(LeftBase), '~w_lhs', [Base]),
+    format(atom(LeftGlobalBase), '~w_lhs', [GlobalBase]),
+    plawk_i64_expr_ir(Left, FieldSeparator, LeftBase, LeftGlobalBase,
+        LeftValueIR, GlobalParts, LeftSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(AddIR), '  ~w = add i64 ~w, ~w', [ValueIR, LeftValueIR, Value]),
+    append(LeftSetupParts, [AddIR], SetupParts).
 plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
         ValueIR, [GlobalIR], [CallIR]) :-
     llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
@@ -1875,6 +1907,13 @@ plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Contex
     plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
+plawk_emit_print_expr_for_context(add_i64(Left, int(Value)), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, int_add, Base),
+    plawk_print_expr_output_names(Context, int_add, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(add_i64(Left, int(Value)), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
 plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, length, Base),
@@ -1933,6 +1972,8 @@ plawk_normal_print_expr_value_base(nf, Index, Base) :-
     format(atom(Base), 'plawk_nf_~w', [Index]).
 plawk_normal_print_expr_value_base(int, Index, Base) :-
     format(atom(Base), 'plawk_int_~w', [Index]).
+plawk_normal_print_expr_value_base(int_add, Index, Base) :-
+    format(atom(Base), 'plawk_int_add_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-

@@ -85,6 +85,8 @@ as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
 case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
 Explicit numeric field coercion is available as `int($N)`, e.g.
 `$1 == "ERROR" { print $3, int($3) }`; failed numeric parses print `0`.
+The first arithmetic composition form is `int($N) + K`, e.g.
+`$1 == "ERROR" { print int($3) + 1 }`.
 Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
 such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
 streaming loop.
@@ -99,7 +101,8 @@ e.g. `$1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }`.
 Plain scalar assignment uses the same native slot path and preserves source
 order with later updates, e.g. `$1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }`. The current assignment expression subset is
-integer literals, `length($N)`, numeric `$N`, and explicit `int($N)`.
+integer literals, `length($N)`, numeric `$N`, explicit `int($N)`, and
+`int($N) + K`.
 Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports

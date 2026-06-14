@@ -22,6 +22,7 @@
 %      { count++ } END { print "count", count }
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
+%      $1 == "ERROR" { print int($3) + 1 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
@@ -351,6 +352,15 @@ scalar_delta_expr(int(Value)) -->
     { ValueCodes \== [],
       number_codes(Value, ValueCodes),
       Value >= 0 }.
+scalar_delta_expr(add_i64(Left, int(Value))) -->
+    int_field_expr(Left),
+    ws,
+    "+",
+    ws,
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes),
+      Value >= 0 }.
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -359,14 +369,7 @@ scalar_delta_expr(field(Index)) -->
       Index >= 0
     }.
 scalar_delta_expr(int(Field)) -->
-    "int",
-    ws,
-    "(",
-    ws,
-    field_expr(Field),
-    ws,
-    ")",
-    { Field = field(_) }.
+    int_field_expr(int(Field)).
 scalar_delta_expr(length(Field)) -->
     "length",
     ws,
@@ -400,15 +403,17 @@ field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
+field_expr(add_i64(Left, int(Value))) -->
+    int_field_expr(Left),
+    ws,
+    "+",
+    ws,
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes),
+      Value >= 0 }.
 field_expr(int(Field)) -->
-    "int",
-    ws,
-    "(",
-    ws,
-    field_expr(Field),
-    ws,
-    ")",
-    { Field = field(_) }.
+    int_field_expr(int(Field)).
 field_expr(length(Field)) -->
     "length",
     ws,
@@ -493,6 +498,16 @@ field_expr(string(Value)) -->
     }.
 field_expr(var(Name)) -->
     identifier(Name).
+
+int_field_expr(int(Field)) -->
+    "int",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ")",
+    { Field = field(_) }.
 
 assoc_key_expr(field(Index)) -->
     "$",
