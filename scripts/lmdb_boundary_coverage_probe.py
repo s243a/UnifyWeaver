@@ -157,6 +157,17 @@ def suffix_path_length_sum(suffix, prefix_depth):
     )
 
 
+def histogram_path_value_sum(histogram, kernel):
+    return sum(
+        int(count) * path_value(int(length), kernel)
+        for length, count in histogram.items()
+    )
+
+
+def histogram_path_length_sum(histogram):
+    return sum(int(length) * int(count) for length, count in histogram.items())
+
+
 @dataclass
 class CoverageStats:
     terminal_prefixes: int = 0
@@ -1054,6 +1065,114 @@ def time_target(callable_fn):
     return record
 
 
+def relative_error(delta, baseline):
+    baseline = float(baseline)
+    if baseline == 0.0:
+        return 0.0 if float(delta) == 0.0 else None
+    return abs(float(delta)) / abs(baseline)
+
+
+def full_exact_splice_validation_record(
+    boundary_row,
+    parents_func,
+    root,
+    path_count_cap,
+    expansion_cap,
+    parent_filter,
+    path_value_kernel,
+):
+    target = boundary_row["target_node"]
+    budget = int(boundary_row["path_length_budget"])
+    path_count_cap = normalize_limit(path_count_cap)
+    expansion_cap = normalize_limit(expansion_cap)
+    started = time.perf_counter_ns()
+    full_hist, full_stats = filtered_bounded_parent_histogram(
+        parents_func,
+        target,
+        root,
+        budget,
+        path_count_cap,
+        expansion_cap,
+        parent_filter,
+    )
+    elapsed_ns = time.perf_counter_ns() - started
+    full_root_paths = sum(int(count) for count in full_hist.values())
+    full_path_length_sum = histogram_path_length_sum(full_hist)
+    full_value_sum = histogram_path_value_sum(full_hist, path_value_kernel)
+    full_mean_path_length = None if full_root_paths <= 0 else full_path_length_sum / full_root_paths
+    spliced_root_paths = boundary_row.get("spliced_total_root_paths")
+    spliced_path_length_sum = boundary_row.get("spliced_total_path_length_sum")
+    spliced_value_sum = boundary_row.get("spliced_total_value_sum")
+    spliced_mean_path_length = boundary_row.get("spliced_mean_path_length")
+    path_delta = None if spliced_root_paths is None else float(spliced_root_paths) - float(full_root_paths)
+    length_delta = None if spliced_path_length_sum is None else float(spliced_path_length_sum) - float(full_path_length_sum)
+    value_delta = None if spliced_value_sum is None else float(spliced_value_sum) - float(full_value_sum)
+    mean_length_delta = (
+        None
+        if spliced_mean_path_length is None or full_mean_path_length is None
+        else float(spliced_mean_path_length) - float(full_mean_path_length)
+    )
+    boundary_partial = (
+        bool(boundary_row.get("path_count_cap_hit"))
+        or bool(boundary_row.get("expansion_cap_hit"))
+        or int(boundary_row.get("boundary_suffix_path_count_cap_hits", 0)) > 0
+        or int(boundary_row.get("boundary_suffix_expansion_cap_hits", 0)) > 0
+    )
+    full_partial = bool(full_stats.path_cap_hit) or bool(full_stats.expansion_cap_hit)
+    comparable = (
+        not boundary_partial
+        and not full_partial
+        and spliced_root_paths is not None
+        and spliced_path_length_sum is not None
+        and spliced_value_sum is not None
+    )
+    return {
+        "record_type": "boundary_splice_validation",
+        "graph": boundary_row.get("graph"),
+        "root": boundary_row.get("root", root),
+        "target_node": target,
+        "child_sample_depth": boundary_row.get("child_sample_depth"),
+        "path_length_budget": budget,
+        "parent_filter": boundary_row.get("parent_filter", "all"),
+        "path_value_kernel": path_value_kernel.name,
+        "path_value_branching_factor": path_value_kernel.branching_factor,
+        "path_value_branching_factor_source": path_value_kernel.branching_factor_source,
+        "path_value_power": path_value_kernel.power,
+        "spliced_total_root_paths": spliced_root_paths,
+        "spliced_total_path_length_sum": spliced_path_length_sum,
+        "spliced_total_value_sum": spliced_value_sum,
+        "spliced_mean_path_length": spliced_mean_path_length,
+        "full_root_paths": full_root_paths,
+        "full_path_length_sum": full_path_length_sum,
+        "full_value_sum": full_value_sum,
+        "full_mean_path_length": full_mean_path_length,
+        "root_path_delta": path_delta,
+        "abs_root_path_delta": None if path_delta is None else abs(path_delta),
+        "root_path_relative_error": None if path_delta is None else relative_error(path_delta, full_root_paths),
+        "path_length_sum_delta": length_delta,
+        "abs_path_length_sum_delta": None if length_delta is None else abs(length_delta),
+        "value_sum_delta": value_delta,
+        "abs_value_sum_delta": None if value_delta is None else abs(value_delta),
+        "value_sum_relative_error": None if value_delta is None else relative_error(value_delta, full_value_sum),
+        "mean_path_length_delta": mean_length_delta,
+        "abs_mean_path_length_delta": None if mean_length_delta is None else abs(mean_length_delta),
+        "comparable": comparable,
+        "boundary_partial": boundary_partial,
+        "full_partial": full_partial,
+        "boundary_path_count_cap_hit": bool(boundary_row.get("path_count_cap_hit")),
+        "boundary_expansion_cap_hit": bool(boundary_row.get("expansion_cap_hit")),
+        "boundary_suffix_path_count_cap_hits": int(boundary_row.get("boundary_suffix_path_count_cap_hits", 0)),
+        "boundary_suffix_expansion_cap_hits": int(boundary_row.get("boundary_suffix_expansion_cap_hits", 0)),
+        "full_path_count_cap_hit": bool(full_stats.path_cap_hit),
+        "full_expansion_cap_hit": bool(full_stats.expansion_cap_hit),
+        "full_nodes_expanded": int(full_stats.nodes_expanded),
+        "full_edges_examined": int(full_stats.edges_examined),
+        "full_cycle_skips": int(full_stats.cycle_skips),
+        "full_root_unreachable_parent_skips": int(getattr(full_stats, "root_unreachable_parent_skips", 0)),
+        "full_elapsed_ns": elapsed_ns,
+    }
+
+
 def aggregate_rows(rows):
     if not rows:
         return {}
@@ -1119,6 +1238,21 @@ def format_optional(value, digits=3):
 def mean_optional_field(rows, field):
     values = [float(row[field]) for row in rows if row.get(field) is not None]
     return None if not values else statistics.mean(values)
+
+
+def max_optional_field(rows, field):
+    values = [float(row[field]) for row in rows if row.get(field) is not None]
+    return None if not values else max(values)
+
+
+def validation_exact_match(row, tolerance=1.0e-9):
+    if not row.get("comparable"):
+        return False
+    return (
+        float(row.get("abs_root_path_delta") or 0.0) <= tolerance
+        and float(row.get("abs_value_sum_delta") or 0.0) <= tolerance
+        and float(row.get("abs_mean_path_length_delta") or 0.0) <= tolerance
+    )
 
 
 def sorted_depth_items(counts):
@@ -1210,6 +1344,10 @@ def boundary_coverage_generation_notes(selection):
         lines.append(
             "- Filtered suffix measurement was not requested. Pass `--measure-filtered-boundary-suffix-mass` to materialize boundary suffix histograms under the same parent filter."
         )
+    if selection.get("validate_full_exact"):
+        lines.append(
+            "- Full exact validation was requested. The report includes a separate comparison between boundary-stopped suffix splicing and full filtered DFS to root for exact-mode rows."
+        )
     lines.append(
         "- Path value kernel `{}` defines the functional being estimated after path coverage is known. It is separate from the random-walk proposal correction.".format(
             selection.get("path_value_kernel", "count")
@@ -1227,6 +1365,7 @@ def boundary_coverage_table_guide():
         "- `Coverage Summary` aggregates observed terminal outcomes by mode and path-length budget. In exact mode these are enumerated simple-prefix counts; in sample/root-sample modes they are raw sample outcomes.",
         "- `spliced_total_root_paths`, `spliced_total_value_sum`, and `spliced_mean_path_length` are boundary-aware estimates: direct root terminals plus suffix histogram mass/value from boundary hits.",
         "- `Boundary Sample Estimates` and `Root Path Sample Estimates` contain branch-product weighted estimates. Use those estimate tables, not raw observed sample counts, when reasoning about path-space size.",
+        "- `Full Exact Splice Validation`, when present, checks whether boundary-stopped exact search plus suffix histograms reproduces full filtered DFS to root for the same target and budget.",
         "- `Target Rows` is per target and budget. `root_paths` counts direct root terminals reached before a boundary stop; `boundary_hit_prefixes` counts prefixes where the boundary condition would take over.",
         "- `root_unreachable_parent_skips` counts parent edges rejected by the active parent filter. Under `root-cone`, that includes parents outside the cone or too deep for the remaining budget, not only globally unreachable parents.",
         "- `budget_exhausted_prefixes`, `path_count_cap_hit_targets`, and `expansion_cap_hit_targets` identify rows whose result is limited by the path budget or safety caps.",
@@ -1313,9 +1452,67 @@ def boundary_coverage_result_implications(selection, target_rows):
     return lines
 
 
+def boundary_splice_validation_section(validation_rows):
+    if not validation_rows:
+        return []
+    by_budget = {}
+    for row in validation_rows:
+        by_budget.setdefault(row["path_length_budget"], []).append(row)
+    lines = [
+        "## Full Exact Splice Validation",
+        "",
+        "This section compares boundary-stopped exact search plus suffix splicing against full filtered DFS to root on the same targets and path-length budgets. Comparable rows are uncapped on both sides and have measured suffix mass. For those rows, zero deltas mean the boundary condition reproduced full exact search for path mass, selected value, and mean path length.",
+        "",
+        "| path_length_budget | rows | comparable_rows | exact_match_rows | max_abs_root_path_delta | max_abs_value_sum_delta | max_abs_mean_path_length_delta | boundary_partial_rows | full_partial_rows | mean_full_nodes_expanded |",
+        "|-------------------:|-----:|----------------:|-----------------:|------------------------:|------------------------:|-------------------------------:|----------------------:|------------------:|-------------------------:|",
+    ]
+    for budget, rows in sorted(by_budget.items()):
+        comparable = [row for row in rows if row.get("comparable")]
+        lines.append(
+            "| {budget} | {rows} | {comparable} | {matches} | {max_path_delta} | {max_value_delta} | {max_mean_delta} | {boundary_partial} | {full_partial} | {mean_full_nodes} |".format(
+                budget=budget,
+                rows=len(rows),
+                comparable=len(comparable),
+                matches=sum(1 for row in rows if validation_exact_match(row)),
+                max_path_delta=format_optional(max_optional_field(comparable, "abs_root_path_delta"), 3),
+                max_value_delta=format_optional(max_optional_field(comparable, "abs_value_sum_delta"), 6),
+                max_mean_delta=format_optional(max_optional_field(comparable, "abs_mean_path_length_delta"), 6),
+                boundary_partial=sum(1 for row in rows if row.get("boundary_partial")),
+                full_partial=sum(1 for row in rows if row.get("full_partial")),
+                mean_full_nodes=format_optional(mean_optional_field(rows, "full_nodes_expanded"), 3),
+            )
+        )
+    lines.extend([
+        "",
+        "| target_node | path_length_budget | comparable | spliced_total_root_paths | full_root_paths | root_path_delta | spliced_total_value_sum | full_value_sum | value_sum_delta | spliced_mean_path_length | full_mean_path_length | mean_path_length_delta | boundary_partial | full_partial |",
+        "|------------:|-------------------:|------------|-------------------------:|----------------:|----------------:|------------------------:|---------------:|----------------:|-------------------------:|----------------------:|-----------------------:|------------------|--------------|",
+    ])
+    for row in validation_rows:
+        lines.append(
+            "| {target} | {budget} | {comparable} | {spliced_paths} | {full_paths} | {path_delta} | {spliced_value} | {full_value} | {value_delta} | {spliced_mean} | {full_mean} | {mean_delta} | {boundary_partial} | {full_partial} |".format(
+                target=row["target_node"],
+                budget=row["path_length_budget"],
+                comparable="yes" if row.get("comparable") else "no",
+                spliced_paths=format_optional(row.get("spliced_total_root_paths"), 3),
+                full_paths=row.get("full_root_paths"),
+                path_delta=format_optional(row.get("root_path_delta"), 3),
+                spliced_value=format_optional(row.get("spliced_total_value_sum"), 6),
+                full_value=format_optional(row.get("full_value_sum"), 6),
+                value_delta=format_optional(row.get("value_sum_delta"), 6),
+                spliced_mean=format_optional(row.get("spliced_mean_path_length"), 3),
+                full_mean=format_optional(row.get("full_mean_path_length"), 3),
+                mean_delta=format_optional(row.get("mean_path_length_delta"), 6),
+                boundary_partial="yes" if row.get("boundary_partial") else "no",
+                full_partial="yes" if row.get("full_partial") else "no",
+            )
+        )
+    return lines
+
+
 def summarize(records):
     selection = next((row for row in records if row.get("record_type") == "boundary_coverage_selection"), {})
     target_rows = [row for row in records if row.get("record_type") == "boundary_coverage_target"]
+    validation_rows = [row for row in records if row.get("record_type") == "boundary_splice_validation"]
     by_mode_budget = {}
     for row in target_rows:
         by_mode_budget.setdefault((row["mode"], row["path_length_budget"]), []).append(row)
@@ -1414,6 +1611,11 @@ def summarize(records):
                 suffix_expansion_cap_hits=aggregate["boundary_suffix_expansion_cap_hits"],
             )
         )
+
+    validation_section = boundary_splice_validation_section(validation_rows)
+    if validation_section:
+        lines.extend([""])
+        lines.extend(validation_section)
 
     sampled = [row for row in target_rows if row.get("mode") == "sample"]
     if sampled:
@@ -1646,7 +1848,7 @@ def run_probe(args):
             reachability = RootConeFilter(root_cone_depth_by_node)
         measure_suffix_mass = (
             not args.skip_boundary_suffix_mass
-            and (reachability is None or args.measure_filtered_boundary_suffix_mass)
+            and (reachability is None or args.measure_filtered_boundary_suffix_mass or args.validate_full_exact)
         )
         suffix_parent_filter = reachability if measure_suffix_mass and reachability is not None else None
         path_value_kernel, path_value_branching_stats = resolve_path_value_kernel(
@@ -1700,13 +1902,14 @@ def run_probe(args):
             "measure_boundary_suffix_mass": measure_suffix_mass,
             "measure_filtered_boundary_suffix_mass": args.measure_filtered_boundary_suffix_mass,
             "boundary_suffix_parent_filter": args.parent_filter if suffix_parent_filter is not None else "none",
+            "validate_full_exact": args.validate_full_exact,
         }]
 
         boundary_set = set(boundary_nodes)
         for target in targets:
             for budget in budgets:
                 if args.mode in {"exact", "both", "all"}:
-                    records.append(time_target(lambda target=target, budget=budget: exact_boundary_coverage(
+                    exact_row = time_target(lambda target=target, budget=budget: exact_boundary_coverage(
                         graph.parents,
                         target,
                         args.root,
@@ -1721,10 +1924,21 @@ def run_probe(args):
                         args.path_count_cap,
                         args.expansion_cap,
                         path_value_kernel,
-                    )))
-                    records[-1]["child_sample_depth"] = target_depth_by_node[target]
-                    records[-1]["graph"] = args.graph_name
-                    records[-1]["root"] = args.root
+                    ))
+                    exact_row["child_sample_depth"] = target_depth_by_node[target]
+                    exact_row["graph"] = args.graph_name
+                    exact_row["root"] = args.root
+                    records.append(exact_row)
+                    if args.validate_full_exact:
+                        records.append(full_exact_splice_validation_record(
+                            exact_row,
+                            graph.parents,
+                            args.root,
+                            args.path_count_cap,
+                            args.expansion_cap,
+                            reachability,
+                            path_value_kernel,
+                        ))
                 if args.mode in {"sample", "both", "all"}:
                     records.append(time_target(lambda target=target, budget=budget: sample_boundary_coverage(
                         graph.parents,
@@ -1793,6 +2007,7 @@ def main(argv=None):
     parser.add_argument("--require-boundaries-in-root-cone", action="store_true", help="Drop selected boundaries that are not present in the precomputed root cone.")
     parser.add_argument("--skip-boundary-suffix-mass", action="store_true", help="Do not enumerate suffix path histograms after boundary hits. Use this for larger path budgets when only boundary coverage is being measured.")
     parser.add_argument("--measure-filtered-boundary-suffix-mass", action="store_true", help="When a parent filter is active, also materialize boundary suffix histograms through the same filter so boundary hits can be converted into spliced root-path mass/value estimates.")
+    parser.add_argument("--validate-full-exact", action="store_true", help="Run full filtered DFS for exact rows and compare it with boundary-stopped suffix splicing. Implies filtered suffix measurement when a parent filter is active.")
     parser.add_argument("--boundary-depths", default=",".join(map(str, DEFAULT_BOUNDARY_DEPTHS)), help="Child depths used as boundary candidates.")
     parser.add_argument("--target-depths", default=",".join(map(str, DEFAULT_TARGET_DEPTHS)), help="Child depths used as target candidates.")
     parser.add_argument("--children-per-node", type=int, default=128, help="Deterministic child sample cap per frontier node.")

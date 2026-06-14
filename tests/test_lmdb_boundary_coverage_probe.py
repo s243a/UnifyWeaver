@@ -13,11 +13,13 @@ from scripts.lmdb_boundary_coverage_probe import (
     build_root_cone,
     estimate_parent_branching_factor,
     exact_boundary_coverage,
+    full_exact_splice_validation_record,
     sample_boundary_coverage,
     sample_root_path_space,
     select_nodes_by_root_cone_depth,
     resolve_path_value_kernel,
     summarize,
+    validation_exact_match,
 )
 
 
@@ -119,6 +121,46 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(record["spliced_total_path_length_sum"], 3)
         self.assertEqual(record["spliced_mean_path_length"], 3.0)
         self.assertEqual(record["spliced_total_value_sum"], 1.0)
+
+    def test_full_exact_splice_validation_matches_filtered_dag(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        root_filter = RootConeFilter({"R": 0, "A": 1, "B": 2, "C": 3})
+        boundary_row = exact_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            reachability_filter=root_filter.can_reach,
+            parent_filter_name="root-cone",
+            measure_suffix_mass=True,
+            suffix_parent_filter=root_filter,
+        )
+        boundary_row["graph"] = "fixture"
+        boundary_row["root"] = "R"
+        boundary_row["child_sample_depth"] = 3
+
+        record = full_exact_splice_validation_record(
+            boundary_row,
+            graph.parents,
+            "R",
+            0,
+            0,
+            root_filter,
+            PathValueKernel(),
+        )
+
+        self.assertTrue(record["comparable"])
+        self.assertTrue(validation_exact_match(record))
+        self.assertEqual(record["spliced_total_root_paths"], 1)
+        self.assertEqual(record["full_root_paths"], 1)
+        self.assertEqual(record["root_path_delta"], 0.0)
+        self.assertEqual(record["value_sum_delta"], 0.0)
+        self.assertEqual(record["mean_path_length_delta"], 0.0)
 
     def test_exact_boundary_coverage_unfiltered_keeps_off_root_prefixes(self):
         graph = DictGraph({
@@ -411,6 +453,51 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         row["graph"] = "fixture"
         row["root"] = "R"
         row["child_sample_depth"] = 3
+        validation_row = {
+            "record_type": "boundary_splice_validation",
+            "graph": "fixture",
+            "root": "R",
+            "target_node": "C",
+            "child_sample_depth": 3,
+            "path_length_budget": 3,
+            "parent_filter": "root-cone",
+            "path_value_kernel": "count",
+            "path_value_branching_factor": None,
+            "path_value_branching_factor_source": None,
+            "path_value_power": None,
+            "spliced_total_root_paths": 1,
+            "spliced_total_path_length_sum": 3,
+            "spliced_total_value_sum": 1.0,
+            "spliced_mean_path_length": 3.0,
+            "full_root_paths": 1,
+            "full_path_length_sum": 3,
+            "full_value_sum": 1.0,
+            "full_mean_path_length": 3.0,
+            "root_path_delta": 0.0,
+            "abs_root_path_delta": 0.0,
+            "root_path_relative_error": 0.0,
+            "path_length_sum_delta": 0.0,
+            "abs_path_length_sum_delta": 0.0,
+            "value_sum_delta": 0.0,
+            "abs_value_sum_delta": 0.0,
+            "value_sum_relative_error": 0.0,
+            "mean_path_length_delta": 0.0,
+            "abs_mean_path_length_delta": 0.0,
+            "comparable": True,
+            "boundary_partial": False,
+            "full_partial": False,
+            "boundary_path_count_cap_hit": False,
+            "boundary_expansion_cap_hit": False,
+            "boundary_suffix_path_count_cap_hits": 0,
+            "boundary_suffix_expansion_cap_hits": 0,
+            "full_path_count_cap_hit": False,
+            "full_expansion_cap_hit": False,
+            "full_nodes_expanded": 4,
+            "full_edges_examined": 3,
+            "full_cycle_skips": 0,
+            "full_root_unreachable_parent_skips": 0,
+            "full_elapsed_ns": 1000,
+        }
         summary = summarize([
             {
                 "record_type": "boundary_coverage_selection",
@@ -449,6 +536,7 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
                 "measure_boundary_suffix_mass": False,
             },
             row,
+            validation_row,
         ])
 
         self.assertIn("## How This Was Generated", summary)
@@ -459,6 +547,9 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertIn("boundary-covered", summary)
         self.assertIn("`Target Rows` is per target and budget", summary)
         self.assertIn("spliced_total_root_paths", summary)
+        self.assertIn("## Full Exact Splice Validation", summary)
+        self.assertIn("exact_match_rows", summary)
+        self.assertIn("max_abs_root_path_delta", summary)
 
 
 if __name__ == "__main__":
