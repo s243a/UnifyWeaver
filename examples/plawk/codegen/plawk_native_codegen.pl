@@ -1807,50 +1807,110 @@ plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
     },
     [GlobalIR-BodyIR].
 
-plawk_emit_print_expr_ir(special('NR'), _FieldSeparator, _Index,
-        i64(nr, nr, '%current_nr'), [], []).
+plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts) :-
+    plawk_emit_print_expr_for_context(Field, FieldSeparator, print_context(normal, '', Index),
+        Type, GlobalParts, SetupParts).
 
-plawk_emit_print_expr_ir(special('NF'), FieldSeparator, Index,
-        i64(nf, nf, ValueIR), [], [CountIR]) :-
-    format(atom(Base), 'plawk_nf_~w', [Index]),
+plawk_emit_prefixed_print_expr_ir(Field, FieldSeparator, Prefix, Index,
+        Type, GlobalParts, SetupParts) :-
+    plawk_emit_print_expr_for_context(Field, FieldSeparator,
+        print_context(prefixed, Prefix, Index), Type, GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(special('NR'), _FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, '%current_nr'), [], []) :-
+    plawk_print_expr_output_names(Context, nr, FmtPrefix, PrintPrefix).
+
+plawk_emit_print_expr_for_context(string(Value), _FieldSeparator, Context,
+        string(Base, PtrIR), [GlobalIR], [StringPtr]) :-
+    plawk_print_expr_value_base(Context, string, Base),
+    llvm_emit_c_string_global(Base, Value, GlobalIR, _StringLen, BytesLen),
+    format(atom(StringPtr),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, BytesLen, BytesLen, Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_emit_print_expr_for_context(special('NF'), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), [], [CountIR]) :-
+    plawk_print_expr_value_base(Context, nf, Base),
+    plawk_print_expr_output_names(Context, nf, FmtPrefix, PrintPrefix),
     llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
     format(atom(ValueIR), '%~w', [Base]).
 
-plawk_emit_print_expr_ir(length(field(FieldIndex)), FieldSeparator, Index,
-        i64(length, length, ValueIR), [], [LengthIR]) :-
-    format(atom(Base), 'plawk_length_~w', [Index]),
+plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), [], [LengthIR]) :-
+    plawk_print_expr_value_base(Context, length, Base),
+    plawk_print_expr_output_names(Context, length, FmtPrefix, PrintPrefix),
     llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
     format(atom(ValueIR), '%~w', [Base]).
 
-plawk_emit_print_expr_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Index,
-        slice(substr, substr, LenIR, PtrIR), [], [SliceIR]) :-
-    format(atom(Base), 'plawk_substr_~w', [Index]),
+plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
+    plawk_print_expr_value_base(Context, substr, Base),
+    plawk_print_expr_output_names(Context, substr, FmtPrefix, PrintPrefix),
     llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
-plawk_emit_print_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Index,
-        i64(index, index, ValueIR), [GlobalIR], [CallIR]) :-
-    format(atom(Base), 'plawk_index_~w', [Index]),
-    format(atom(GlobalBase), 'plawk_index_needle_~w', [Index]),
+plawk_emit_print_expr_for_context(index(field(FieldIndex), string(Needle)), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), [GlobalIR], [CallIR]) :-
+    plawk_print_expr_value_base(Context, index, Base),
+    plawk_print_expr_value_base(Context, index_needle, GlobalBase),
+    plawk_print_expr_output_names(Context, index, FmtPrefix, PrintPrefix),
     llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
         Base, GlobalIR-CallIR),
     format(atom(ValueIR), '%~w', [Base]).
 
-plawk_emit_print_expr_ir(tolower(field(FieldIndex)), FieldSeparator, Index,
+plawk_emit_print_expr_for_context(tolower(field(FieldIndex)), FieldSeparator, Context,
         case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
-    format(atom(LowerBase), 'plawk_tolower_~w', [Index]),
+    plawk_print_expr_value_base(Context, tolower, LowerBase),
     plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, LowerBase, LenIR, PtrIR,
         SetupParts).
 
-plawk_emit_print_expr_ir(toupper(field(FieldIndex)), FieldSeparator, Index,
+plawk_emit_print_expr_for_context(toupper(field(FieldIndex)), FieldSeparator, Context,
         case_slice(upper, UpperBase, LenIR, PtrIR), [], SetupParts) :-
-    format(atom(UpperBase), 'plawk_toupper_~w', [Index]),
+    plawk_print_expr_value_base(Context, toupper, UpperBase),
     plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
         SetupParts).
 
-plawk_emit_print_expr_ir(field(0), _FieldSeparator, Index,
-        slice(line, line, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
+plawk_emit_print_expr_for_context(field(0), _FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
+    plawk_print_expr_output_names(Context, line, FmtPrefix, PrintPrefix),
+    plawk_emit_print_line_length_ir(Context, LenIR, LineLen64, LineLen).
+
+plawk_emit_print_expr_for_context(field(FieldIndex), FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
+    FieldIndex > 0,
+    plawk_print_expr_value_base(Context, field, Base),
+    plawk_print_expr_output_names(Context, field, FmtPrefix, PrintPrefix),
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_print_expr_value_base(print_context(normal, _Prefix, Index), Kind, Base) :-
+    plawk_normal_print_expr_value_base(Kind, Index, Base).
+plawk_print_expr_value_base(print_context(prefixed, Prefix, Index), Kind, Base) :-
+    format(atom(Base), '~w_~w_~w', [Prefix, Kind, Index]).
+
+plawk_normal_print_expr_value_base(nf, Index, Base) :-
+    format(atom(Base), 'plawk_nf_~w', [Index]).
+plawk_normal_print_expr_value_base(length, Index, Base) :-
+    format(atom(Base), 'plawk_length_~w', [Index]).
+plawk_normal_print_expr_value_base(substr, Index, Base) :-
+    format(atom(Base), 'plawk_substr_~w', [Index]).
+plawk_normal_print_expr_value_base(index, Index, Base) :-
+    format(atom(Base), 'plawk_index_~w', [Index]).
+plawk_normal_print_expr_value_base(index_needle, Index, Base) :-
+    format(atom(Base), 'plawk_index_needle_~w', [Index]).
+plawk_normal_print_expr_value_base(tolower, Index, Base) :-
+    format(atom(Base), 'plawk_tolower_~w', [Index]).
+plawk_normal_print_expr_value_base(toupper, Index, Base) :-
+    format(atom(Base), 'plawk_toupper_~w', [Index]).
+plawk_normal_print_expr_value_base(field, Index, Base) :-
+    format(atom(Base), 'plawk_field_~w', [Index]).
+plawk_normal_print_expr_value_base(string, Index, Base) :-
+    format(atom(Base), 'plawk_string_~w', [Index]).
+
+plawk_emit_print_line_length_ir(print_context(normal, _Prefix, Index), LenIR, LineLen64, LineLen) :-
     format(atom(LineLen64),
         '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
         [Index]),
@@ -1858,69 +1918,7 @@ plawk_emit_print_expr_ir(field(0), _FieldSeparator, Index,
         '  %line_len_~w = trunc i64 %line_len64_~w to i32',
         [Index, Index]),
     format(atom(LenIR), '%line_len_~w', [Index]).
-
-plawk_emit_print_expr_ir(field(FieldIndex), FieldSeparator, Index,
-        slice(slice, slice, LenIR, PtrIR), [], [SliceIR]) :-
-    FieldIndex > 0,
-    format(atom(Base), 'plawk_field_~w', [Index]),
-    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
-    format(atom(LenIR), '%~w_len', [Base]),
-    format(atom(PtrIR), '%~w_ptr', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(special('NR'), _FieldSeparator, Prefix, Index,
-        i64(Base, Base, '%current_nr'), [], []) :-
-    format(atom(Base), '~w_nr_~w', [Prefix, Index]).
-
-plawk_emit_prefixed_print_expr_ir(string(Value), _FieldSeparator, Prefix, Index,
-        string(Base, PtrIR), [GlobalIR], [StringPtr]) :-
-    format(atom(Base), '~w_string_~w', [Prefix, Index]),
-    llvm_emit_c_string_global(Base, Value, GlobalIR, _StringLen, BytesLen),
-    format(atom(StringPtr),
-        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
-        [Base, BytesLen, BytesLen, Base]),
-    format(atom(PtrIR), '%~w_ptr', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(special('NF'), FieldSeparator, Prefix, Index,
-        i64(Base, Base, ValueIR), [], [CountIR]) :-
-    format(atom(Base), '~w_nf_~w', [Prefix, Index]),
-    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
-    format(atom(ValueIR), '%~w', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(length(field(FieldIndex)), FieldSeparator, Prefix, Index,
-        i64(Base, Base, ValueIR), [], [LengthIR]) :-
-    format(atom(Base), '~w_length_~w', [Prefix, Index]),
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
-    format(atom(ValueIR), '%~w', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Prefix, Index,
-        slice(Base, Base, LenIR, PtrIR), [], [SliceIR]) :-
-    format(atom(Base), '~w_substr_~w', [Prefix, Index]),
-    llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
-    format(atom(LenIR), '%~w_len', [Base]),
-    format(atom(PtrIR), '%~w_ptr', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Prefix, Index,
-        i64(Base, Base, ValueIR), [GlobalIR], [CallIR]) :-
-    format(atom(Base), '~w_index_~w', [Prefix, Index]),
-    format(atom(GlobalBase), '~w_index_needle_~w', [Prefix, Index]),
-    llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
-        Base, GlobalIR-CallIR),
-    format(atom(ValueIR), '%~w', [Base]).
-
-plawk_emit_prefixed_print_expr_ir(tolower(field(FieldIndex)), FieldSeparator, Prefix, Index,
-        case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
-    format(atom(LowerBase), '~w_tolower_~w', [Prefix, Index]),
-    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, LowerBase, LenIR, PtrIR,
-        SetupParts).
-
-plawk_emit_prefixed_print_expr_ir(toupper(field(FieldIndex)), FieldSeparator, Prefix, Index,
-        case_slice(upper, UpperBase, LenIR, PtrIR), [], SetupParts) :-
-    format(atom(UpperBase), '~w_toupper_~w', [Prefix, Index]),
-    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
-        SetupParts).
-
-plawk_emit_prefixed_print_expr_ir(field(0), _FieldSeparator, Prefix, Index,
-        slice(Base, Base, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
+plawk_emit_print_line_length_ir(print_context(prefixed, Prefix, Index), LenIR, LineLen64, LineLen) :-
     format(atom(Base), '~w_line_~w', [Prefix, Index]),
     format(atom(LineLen64),
         '  %~w_len64 = call i64 @strlen(i8* %line_s)',
@@ -1930,13 +1928,11 @@ plawk_emit_prefixed_print_expr_ir(field(0), _FieldSeparator, Prefix, Index,
         [Base, Base]),
     format(atom(LenIR), '%~w_len', [Base]).
 
-plawk_emit_prefixed_print_expr_ir(field(FieldIndex), FieldSeparator, Prefix, Index,
-        slice(Base, Base, LenIR, PtrIR), [], [SliceIR]) :-
-    FieldIndex > 0,
-    format(atom(Base), '~w_field_~w', [Prefix, Index]),
-    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
-    format(atom(LenIR), '%~w_len', [Base]),
-    format(atom(PtrIR), '%~w_ptr', [Base]).
+plawk_print_expr_output_names(print_context(normal, _Prefix, _Index), field, slice, slice) :-
+    !.
+plawk_print_expr_output_names(print_context(normal, _Prefix, _Index), Kind, Kind, Kind).
+plawk_print_expr_output_names(print_context(prefixed, Prefix, Index), Kind, Base, Base) :-
+    format(atom(Base), '~w_~w_~w', [Prefix, Kind, Index]).
 
 plawk_emit_case_source_slice_ir(0, _FieldSeparator, Base, LenIR, '%line_s', [LineLen64]) :-
     format(atom(LineLen64),

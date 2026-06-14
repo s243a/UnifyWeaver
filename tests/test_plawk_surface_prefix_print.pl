@@ -866,6 +866,17 @@ test(surface_if_else_branch_string_print_uses_prefixed_globals) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+test(surface_if_else_branch_print_uses_shared_prefixed_expr_lowering) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { print length($2), substr($2, 1, 2), index($2, \"is\") } else { print NF } } END { print \"done\" }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_length_0 = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_substr_1 = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 2, i8 32, i64 1, i64 2)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fif_5F0_5Fthen_5Fprint_5F0_5Findex_5Fneedle_5F2 = private constant [3 x i8] c"is\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_index_2 = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 32'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_nf_0 = call i64 @wam_atom_field_count_value(%Value %line, i8 32)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
 test(surface_terminal_next_uses_native_continue_phi) :-
     plawk_parse_string("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
