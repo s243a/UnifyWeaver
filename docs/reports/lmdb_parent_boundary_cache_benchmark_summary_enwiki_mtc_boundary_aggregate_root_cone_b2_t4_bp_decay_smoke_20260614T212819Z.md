@@ -20,6 +20,37 @@ Aggregate branching factor: `2.164`
 
 Aggregate power: `1.0`
 
+## How This Was Generated
+
+- This older selection record stores observed boundary/target frontier counts over child-depths `0, 1, 2` and `0, 1, 2, 3, 4`, but not the requested depth arguments separately.
+- This selection record predates sampler-limit provenance fields; newer JSONL records include child/frontier/per-depth sampling limits directly.
+- Boundary states used builder `recurrence` with `boundary_budget=10`. This budget limits how far each cached suffix histogram is built; it is separate from the target-row `path_length_budget` values `6,8`.
+- Target rows compare full simple-path parent DFS against cache-aware DFS over the same parent filter `root-cone`. Both searches reject repeated nodes in a path and use the same path-count and expansion caps.
+- A cache hit stops the live DFS at a boundary node and splices in the cached suffix histogram for the remaining path budget. Exactness requires compatible root, parent filter, budget, and cycle policy.
+- The recurrence builder forms each boundary histogram by shifting parent histograms one hop to the right and summing them; recurrence state counts and cycle approximations are reported in the builder table.
+- Target-ancestor boundary inclusion was enabled, so sampled boundary-depth ancestors of each target could be added to the selected boundary set.
+- The root-cone filter was built to child depth `10` with `8897` nodes. Parent edges outside that cone, or too deep for the remaining parent-hop budget, are rejected and counted as filtered skips.
+
+## Table Guide
+
+- `Selection` reports the sampled boundary and target frontiers, plus the root-cone shape when a root-cone parent filter is active.
+- `Admission Policy`, `Boundary Admission Outcomes`, and `Boundary Admission Reasons` explain why candidate boundary states became exact histograms, parametric approximations, or skipped rows.
+- `Boundary Builders` and `Boundary Cache Build` report precompute cost and payload size. `mean_nodes_or_states` means DFS nodes for the search builder and recurrence states for the recurrence builder.
+- `Full Search Versus Boundary Cache` compares full DFS histograms with boundary-stopped histograms. `mean_l1` and `mean_cdf` measure distribution-shape error; path-count, aggregate, and mean-length deltas measure functional error.
+- In the comparison table, `mean_node_ratio` and `mean_time_ratio` are cached/full ratios. Values below `1` mean the cached search expanded fewer nodes or ran faster; values above `1` mean extra work or overhead dominated.
+- `Search Termination Diagnostics` tells whether rows are complete. If path-count or expansion caps fire, timing and hit rates describe only the enumerated prefix.
+- `Cache Hit Geometry` and `Cached Runtime Attribution` explain where hits occur, how much remaining budget they replace, and where cached-side runtime is spent.
+
+## Result Implications
+
+- Boundary build produced `22` candidate rows: `22` exact histogram entries, `0` parametric entries, and `0` rows without a cached payload.
+- Target comparisons completed `8/8` rows without path-count or expansion caps. budget `6`: `4/4` complete rows, max L1 `0.000000`, max CDF `0.000000`, mean cache hits `0.250`; budget `8`: `4/4` complete rows, max L1 `0.000000`, max CDF `0.000000`, mean cache hits `0.250`.
+- Across all comparison rows, max errors were L1 `0.000000`, CDF `0.000000`, path-count relative `0.000000`, and aggregate relative `0.000000`.
+- This sampled scope validates the boundary condition semantically: boundary-stopped evaluation matched full DFS for distribution shape, path mass, selected aggregate value, and mean path length.
+- Mean cache hits per row were `0.250` (`0.250` exact-histogram hits and `0.000` parametric hits). Low hit rates mostly validate semantics; higher target budgets or deeper targets are needed to measure speed benefit.
+- Cached search expanded fewer nodes on average (`mean_node_ratio=0.821`) but was slower in this Python run (`mean_time_ratio=1.333`), so payload decode, lookup, and instrumentation overhead still dominate at this scale.
+- Root-cone filtered-skip counts are part of the result: they show how much off-scope parent branching was removed before evaluating boundary-cache behavior.
+
 ## Selection
 
 | role | child_depth | sampled_frontier_nodes |

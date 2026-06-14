@@ -1408,12 +1408,16 @@ def run_benchmark(args):
             "record_type": "boundary_cache_selection",
             "graph": args.graph_name,
             "root": args.root,
+            "seed": args.seed,
+            "boundary_depths": boundary_depths,
+            "target_depths": target_depths,
             "boundary_counts": boundary_counts,
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
             "selected_boundary_nodes": len(selected_boundary_nodes),
             "target_ancestor_boundary_nodes_added": len(set(boundary_nodes) - selected_boundary_nodes),
             "include_target_ancestor_boundaries": args.include_target_ancestor_boundaries,
+            "target_ancestor_boundary_limit": args.target_ancestor_boundary_limit,
             "cached_boundary_nodes": len(cache),
             "parametric_boundary_nodes": len(parametric_cache),
             "boundary_lookup_nodes": len(boundary_lookup),
@@ -1425,6 +1429,10 @@ def run_benchmark(args):
             "root_cone_counts": root_cone_counts,
             "root_cone_children_per_node": args.root_cone_children_per_node,
             "root_cone_frontier_limit": args.root_cone_frontier_limit,
+            "children_per_node": args.children_per_node,
+            "frontier_limit": args.frontier_limit,
+            "boundaries_per_depth": args.boundaries_per_depth,
+            "targets_per_depth": args.targets_per_depth,
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
             "path_count_cap": args.path_cap,
@@ -1503,6 +1511,233 @@ def run_benchmark(args):
         graph.close()
 
 
+def _sorted_depth_items(counts):
+    return sorted(counts.items(), key=lambda item: int(item[0]))
+
+
+def _depths_text(counts):
+    if not counts:
+        return "none"
+    return ", ".join(str(depth) for depth, _count in _sorted_depth_items(counts))
+
+
+def _numeric_values(rows, key):
+    return [
+        float(row[key])
+        for row in rows
+        if row.get(key) is not None
+    ]
+
+
+def _mean_numeric(rows, key):
+    values = _numeric_values(rows, key)
+    return statistics.mean(values) if values else 0.0
+
+
+def boundary_cache_generation_notes(selection):
+    parent_filter = selection.get("parent_filter", "all")
+    boundary_builder = selection.get("boundary_builder", "search")
+    lines = [
+        "## How This Was Generated",
+        "",
+    ]
+    if selection.get("boundary_depths") is not None and selection.get("target_depths") is not None:
+        lines.append(
+            "- Boundary candidates were sampled from requested child depth(s) `{}` and target rows from requested child depth(s) `{}` using deterministic sampling. The `Selection` table also reports frontier counts observed while traversing to those depths.".format(
+                ", ".join(str(value) for value in selection.get("boundary_depths", [])),
+                ", ".join(str(value) for value in selection.get("target_depths", [])),
+            )
+        )
+    else:
+        lines.append(
+            "- This older selection record stores observed boundary/target frontier counts over child-depths `{}` and `{}`, but not the requested depth arguments separately.".format(
+                _depths_text(selection.get("boundary_counts", {})),
+                _depths_text(selection.get("target_counts", {})),
+            )
+        )
+    if all(selection.get(key) is not None for key in ("children_per_node", "frontier_limit", "boundaries_per_depth", "targets_per_depth")):
+        lines.append(
+            "- The child frontier sampler used `children_per_node={}` and `frontier_limit={}`; per-depth sampling limits were `boundaries_per_depth={}` and `targets_per_depth={}`.".format(
+                selection.get("children_per_node"),
+                selection.get("frontier_limit"),
+                selection.get("boundaries_per_depth"),
+                selection.get("targets_per_depth"),
+            )
+        )
+    else:
+        lines.append(
+            "- This selection record predates sampler-limit provenance fields; newer JSONL records include child/frontier/per-depth sampling limits directly."
+        )
+    lines.extend([
+        "- Boundary states used builder `{}` with `boundary_budget={}`. This budget limits how far each cached suffix histogram is built; it is separate from the target-row `path_length_budget` values `{}`.".format(
+            boundary_builder,
+            selection.get("boundary_budget", "n/a"),
+            ",".join(str(value) for value in selection.get("budgets", [])),
+        ),
+        "- Target rows compare full simple-path parent DFS against cache-aware DFS over the same parent filter `{}`. Both searches reject repeated nodes in a path and use the same path-count and expansion caps.".format(parent_filter),
+        "- A cache hit stops the live DFS at a boundary node and splices in the cached suffix histogram for the remaining path budget. Exactness requires compatible root, parent filter, budget, and cycle policy.",
+    ])
+    if boundary_builder == "recurrence":
+        lines.append(
+            "- The recurrence builder forms each boundary histogram by shifting parent histograms one hop to the right and summing them; recurrence state counts and cycle approximations are reported in the builder table."
+        )
+    if selection.get("include_target_ancestor_boundaries"):
+        if selection.get("target_ancestor_boundary_limit") is None:
+            lines.append(
+                "- Target-ancestor boundary inclusion was enabled, so sampled boundary-depth ancestors of each target could be added to the selected boundary set."
+            )
+        else:
+            lines.append(
+                "- Target-ancestor boundary inclusion was enabled, so up to `{}` sampled boundary-depth ancestors of each target could be added to the selected boundary set.".format(
+                    selection.get("target_ancestor_boundary_limit")
+                )
+            )
+    if parent_filter == "root-cone":
+        lines.append(
+            "- The root-cone filter was built to child depth `{}` with `{}` nodes. Parent edges outside that cone, or too deep for the remaining parent-hop budget, are rejected and counted as filtered skips.".format(
+                selection.get("root_cone_depth", "n/a"),
+                selection.get("root_cone_nodes", "n/a"),
+            )
+        )
+    elif parent_filter == "root-reachable":
+        lines.append(
+            "- The root-reachable filter rejects parent edges that cannot reach the configured root within the memoized reachability test."
+        )
+    return lines
+
+
+def boundary_cache_table_guide():
+    return [
+        "## Table Guide",
+        "",
+        "- `Selection` reports the sampled boundary and target frontiers, plus the root-cone shape when a root-cone parent filter is active.",
+        "- `Admission Policy`, `Boundary Admission Outcomes`, and `Boundary Admission Reasons` explain why candidate boundary states became exact histograms, parametric approximations, or skipped rows.",
+        "- `Boundary Builders` and `Boundary Cache Build` report precompute cost and payload size. `mean_nodes_or_states` means DFS nodes for the search builder and recurrence states for the recurrence builder.",
+        "- `Full Search Versus Boundary Cache` compares full DFS histograms with boundary-stopped histograms. `mean_l1` and `mean_cdf` measure distribution-shape error; path-count, aggregate, and mean-length deltas measure functional error.",
+        "- In the comparison table, `mean_node_ratio` and `mean_time_ratio` are cached/full ratios. Values below `1` mean the cached search expanded fewer nodes or ran faster; values above `1` mean extra work or overhead dominated.",
+        "- `Search Termination Diagnostics` tells whether rows are complete. If path-count or expansion caps fire, timing and hit rates describe only the enumerated prefix.",
+        "- `Cache Hit Geometry` and `Cached Runtime Attribution` explain where hits occur, how much remaining budget they replace, and where cached-side runtime is spent.",
+    ]
+
+
+def boundary_cache_result_implications(selection, cache_rows, comparison_rows):
+    lines = ["## Result Implications", ""]
+    if cache_rows:
+        exact_entries = sum(1 for row in cache_rows if row.get("cached"))
+        parametric_entries = sum(1 for row in cache_rows if row.get("parametric_cached"))
+        capped_entries = sum(1 for row in cache_rows if row.get("path_cap_hit") or row.get("expansion_cap_hit"))
+        skipped_entries = len(cache_rows) - exact_entries - parametric_entries
+        lines.append(
+            "- Boundary build produced `{}` candidate rows: `{}` exact histogram entries, `{}` parametric entries, and `{}` rows without a cached payload.".format(
+                len(cache_rows),
+                exact_entries,
+                parametric_entries,
+                skipped_entries,
+            )
+        )
+        if capped_entries:
+            lines.append(
+                "- `{}` boundary rows hit a path-count or expansion cap; those cached suffixes should be treated as partial unless the cap was intentional for an approximation experiment.".format(capped_entries)
+            )
+    else:
+        lines.append("- No boundary cache entry rows were generated, so this report cannot evaluate precompute cost or cache admission behavior.")
+    if not comparison_rows:
+        lines.append("- No target comparison rows were generated; selection and build sections are still useful, but no search-quality or runtime conclusion should be drawn.")
+        return lines
+
+    total_rows = len(comparison_rows)
+    complete_rows = sum(
+        1
+        for row in comparison_rows
+        if not row.get("full_path_cap_hit")
+        and not row.get("full_expansion_cap_hit")
+        and not row.get("cached_path_cap_hit")
+        and not row.get("cached_expansion_cap_hit")
+    )
+    max_l1 = max(_numeric_values(comparison_rows, "l1_error"), default=0.0)
+    max_cdf = max(_numeric_values(comparison_rows, "max_cdf_error"), default=0.0)
+    max_path_relative = max(_numeric_values(comparison_rows, "path_count_relative_error"), default=0.0)
+    max_aggregate_relative = max(_numeric_values(comparison_rows, "aggregate_value_relative_error"), default=0.0)
+    mean_hits = _mean_numeric(comparison_rows, "cache_hits")
+    mean_hist_hits = _mean_numeric(comparison_rows, "histogram_cache_hits")
+    mean_param_hits = _mean_numeric(comparison_rows, "parametric_cache_hits")
+    mean_node_ratio = _mean_numeric(comparison_rows, "node_expansion_ratio")
+    time_ratios = [
+        0.0 if int(row.get("full_time_ns", 0)) == 0 else int(row.get("cached_time_ns", 0)) / int(row.get("full_time_ns", 0))
+        for row in comparison_rows
+    ]
+    mean_time_ratio = statistics.mean(time_ratios) if time_ratios else 0.0
+    budgets = sorted({row.get("budget") for row in comparison_rows})
+    budget_summaries = []
+    for budget in budgets:
+        rows = [row for row in comparison_rows if row.get("budget") == budget]
+        budget_summaries.append(
+            "budget `{}`: `{}/{}` complete rows, max L1 `{:.6f}`, max CDF `{:.6f}`, mean cache hits `{:.3f}`".format(
+                budget,
+                sum(
+                    1
+                    for row in rows
+                    if not row.get("full_path_cap_hit")
+                    and not row.get("full_expansion_cap_hit")
+                    and not row.get("cached_path_cap_hit")
+                    and not row.get("cached_expansion_cap_hit")
+                ),
+                len(rows),
+                max(_numeric_values(rows, "l1_error"), default=0.0),
+                max(_numeric_values(rows, "max_cdf_error"), default=0.0),
+                _mean_numeric(rows, "cache_hits"),
+            )
+        )
+    lines.append(
+        "- Target comparisons completed `{}/{}` rows without path-count or expansion caps. {}.".format(
+            complete_rows,
+            total_rows,
+            "; ".join(budget_summaries),
+        )
+    )
+    lines.append(
+        "- Across all comparison rows, max errors were L1 `{:.6f}`, CDF `{:.6f}`, path-count relative `{:.6f}`, and aggregate relative `{:.6f}`.".format(
+            max_l1,
+            max_cdf,
+            max_path_relative,
+            max_aggregate_relative,
+        )
+    )
+    if max_l1 == 0.0 and max_cdf == 0.0 and max_path_relative == 0.0 and max_aggregate_relative == 0.0 and complete_rows == total_rows:
+        lines.append("- This sampled scope validates the boundary condition semantically: boundary-stopped evaluation matched full DFS for distribution shape, path mass, selected aggregate value, and mean path length.")
+    elif complete_rows < total_rows:
+        lines.append("- Because at least one comparison row was capped, cache benefit and error should be read as evidence for the enumerated prefix, not a full-cone proof.")
+    else:
+        lines.append("- Nonzero error means the cached suffix representation diverged from full simple-path DFS on this sample; inspect cycle skips, parametric entries, and support-bound rows before treating the cache as exact.")
+    lines.append(
+        "- Mean cache hits per row were `{:.3f}` (`{:.3f}` exact-histogram hits and `{:.3f}` parametric hits). Low hit rates mostly validate semantics; higher target budgets or deeper targets are needed to measure speed benefit.".format(
+            mean_hits,
+            mean_hist_hits,
+            mean_param_hits,
+        )
+    )
+    if mean_node_ratio < 1.0 and mean_time_ratio >= 1.0:
+        lines.append(
+            "- Cached search expanded fewer nodes on average (`mean_node_ratio={:.3f}`) but was slower in this Python run (`mean_time_ratio={:.3f}`), so payload decode, lookup, and instrumentation overhead still dominate at this scale.".format(
+                mean_node_ratio,
+                mean_time_ratio,
+            )
+        )
+    elif mean_node_ratio < 1.0:
+        lines.append(
+            "- Cached search reduced node expansions on average (`mean_node_ratio={:.3f}`); this is the main structural signal for whether precompute is paying off.".format(mean_node_ratio)
+        )
+    else:
+        lines.append(
+            "- Cached search did not reduce node expansions on average (`mean_node_ratio={:.3f}`); move boundaries closer to expected target paths or increase target budgets before expecting runtime wins.".format(mean_node_ratio)
+        )
+    if selection.get("parent_filter") == "root-cone":
+        lines.append(
+            "- Root-cone filtered-skip counts are part of the result: they show how much off-scope parent branching was removed before evaluating boundary-cache behavior."
+        )
+    return lines
+
+
 def summarize(records):
     selection = next((row for row in records if row.get("record_type") == "boundary_cache_selection"), {})
     cache_rows = [row for row in records if row.get("record_type") == "boundary_cache_entry"]
@@ -1530,14 +1765,22 @@ def summarize(records):
         "",
         "Aggregate power: `{}`".format(selection.get("aggregate_power")),
         "",
+    ]
+    lines.extend(boundary_cache_generation_notes(selection))
+    lines.extend([""])
+    lines.extend(boundary_cache_table_guide())
+    lines.extend([""])
+    lines.extend(boundary_cache_result_implications(selection, cache_rows, comparison_rows))
+    lines.extend([
+        "",
         "## Selection",
         "",
         "| role | child_depth | sampled_frontier_nodes |",
         "|------|-------------|------------------------|",
-    ]
-    for depth, count in sorted(selection.get("boundary_counts", {}).items()):
+    ])
+    for depth, count in _sorted_depth_items(selection.get("boundary_counts", {})):
         lines.append("| boundary | {} | {} |".format(depth, count))
-    for depth, count in sorted(selection.get("target_counts", {}).items()):
+    for depth, count in _sorted_depth_items(selection.get("target_counts", {})):
         lines.append("| target | {} | {} |".format(depth, count))
     if selection.get("parent_filter") == "root-cone":
         lines.extend([
@@ -1554,7 +1797,7 @@ def summarize(records):
             "| root_cone_child_depth | nodes |",
             "|----------------------:|------:|",
         ])
-        for depth, count in sorted(selection.get("root_cone_counts", {}).items()):
+        for depth, count in _sorted_depth_items(selection.get("root_cone_counts", {})):
             lines.append("| {} | {} |".format(depth, count))
     lines.extend([
         "",
