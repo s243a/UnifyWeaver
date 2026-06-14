@@ -20,6 +20,7 @@
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      { count++ } END { print "count", count }
+%      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -72,6 +73,9 @@ pattern(Pattern) -->
     prefix_pattern(Pattern),
     !.
 pattern(Pattern) -->
+    field_i64_cmp_pattern(Pattern),
+    !.
+pattern(Pattern) -->
     field_eq_pattern(Pattern).
 
 prefix_pattern(prefix(Prefix)) -->
@@ -95,6 +99,31 @@ field_eq_pattern(field_eq(Index, Value)) -->
       ValueCodes \== [],
       string_codes(Value, ValueCodes)
     }.
+
+field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(Value),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0
+    }.
+
+numeric_cmp_op(eq) -->
+    "==".
+numeric_cmp_op(ne) -->
+    "!=".
+numeric_cmp_op(le) -->
+    "<=".
+numeric_cmp_op(ge) -->
+    ">=".
+numeric_cmp_op(lt) -->
+    "<".
+numeric_cmp_op(gt) -->
+    ">".
 
 prefix_codes([Code | Codes]) -->
     [Code],
@@ -127,6 +156,27 @@ integer_codes_rest([Code | Codes]) -->
     integer_codes_rest(Codes).
 integer_codes_rest([]) -->
     [].
+
+signed_integer_value(Value) -->
+    "-",
+    !,
+    integer_codes(Digits),
+    { Digits \== [],
+      number_codes(Magnitude, Digits),
+      Value is -Magnitude
+    }.
+signed_integer_value(Value) -->
+    "+",
+    !,
+    integer_codes(Digits),
+    { Digits \== [],
+      number_codes(Value, Digits)
+    }.
+signed_integer_value(Value) -->
+    integer_codes(Digits),
+    { Digits \== [],
+      number_codes(Value, Digits)
+    }.
 
 quoted_string(Codes) -->
     "\"",
@@ -242,7 +292,7 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     ws,
     "(",
     ws,
-    field_eq_pattern(Pattern),
+    condition_pattern(Pattern),
     ws,
     ")",
     ws,
@@ -250,6 +300,12 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     "else",
     required_ws,
     action_block(ElseActions).
+
+condition_pattern(Pattern) -->
+    field_i64_cmp_pattern(Pattern),
+    !.
+condition_pattern(Pattern) -->
+    field_eq_pattern(Pattern).
 
 increment_action(inc_assoc(var(Name), KeyExpr)) -->
     identifier(Name),

@@ -13,6 +13,7 @@
      llvm_emit_atom_field_length/5,
      llvm_emit_atom_field_subslice/7,
      llvm_emit_atom_field_index/7,
+     llvm_emit_atom_field_i64_cmp_guard/7,
      llvm_emit_c_string_global/5,
      llvm_emit_printf_i64/5,
      llvm_emit_printf_slice/6,
@@ -39,6 +40,7 @@
 %      BEGIN { print "kind", "count" } { total++ } END { print "total", total }
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
+%      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
@@ -1634,6 +1636,8 @@ plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
 
 plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
     plawk_pattern_guard_ir(field_eq(Index, Value), 32, GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), GuardIR) :-
+    plawk_pattern_guard_ir(field_cmp(Index, Op, Value), 32, GuardIR).
 
 plawk_pattern_guard_ir(always, _FieldSeparator, GuardIR) :-
     plawk_pattern_guard_ir(always, GuardIR).
@@ -1642,6 +1646,10 @@ plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GuardIR) :-
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         FieldSeparator, '%is_match', GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCallIR) :-
+    plawk_field_cmp_op_code(Op, OpCode),
+    llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
+        FieldSeparator, '%is_match', GuardCallIR).
 
 plawk_pattern_guard_ir(always, _GlobalBase, MatchValue, GuardIR) :-
     format(atom(GuardCallIR), '  ~w = icmp eq i1 true, true', [MatchValue]),
@@ -1654,6 +1662,9 @@ plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR) :-
 plawk_pattern_guard_ir(field_eq(Index, Value), GlobalBase, MatchValue, GuardIR) :-
     plawk_pattern_guard_ir(field_eq(Index, Value), 32, GlobalBase, MatchValue,
         GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), GlobalBase, MatchValue, GuardIR) :-
+    plawk_pattern_guard_ir(field_cmp(Index, Op, Value), 32, GlobalBase,
+        MatchValue, GuardIR).
 
 plawk_pattern_guard_ir(always, _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_pattern_guard_ir(always, GlobalBase, MatchValue, GuardIR).
@@ -1662,6 +1673,17 @@ plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GlobalBase, MatchValue, 
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_field_cmp_op_code(Op, OpCode),
+    llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
+        FieldSeparator, MatchValue, GuardCallIR).
+
+plawk_field_cmp_op_code(eq, 0).
+plawk_field_cmp_op_code(ne, 1).
+plawk_field_cmp_op_code(lt, 2).
+plawk_field_cmp_op_code(le, 3).
+plawk_field_cmp_op_code(gt, 4).
+plawk_field_cmp_op_code(ge, 5).
 
 plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR) :-
     (   member(special('NR'), Fields)

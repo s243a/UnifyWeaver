@@ -264,6 +264,9 @@ the allocation-free `@wam_atom_field_subslice_value` helper, and native
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
+Numeric field guards such as `$3 > 100` lower through the shared
+`@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
+as a strict signed decimal `i64` and compares with numeric op codes.
 The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.
@@ -301,8 +304,8 @@ associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`
 lookups through the matching source-array table. Multiple associative increments
-in one always-rule are planned as sequential native action blocks, so no WAM
-dispatch is needed per record for those count updates.
+in one rule lower as sequential native action blocks, so no WAM dispatch is
+needed per record for those count updates.
 Guarded associative-count rules now reuse the same native guard emitters and
 rule-chain structure as scalar counters, so the loop can run field/prefix checks
 and table increments without per-record WAM dispatch for the supported surface.

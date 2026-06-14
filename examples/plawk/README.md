@@ -83,6 +83,9 @@ such as `$1 == "ERROR" { print length($2), $2 }` and native byte substrings such
 as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
 `$1 == "ERROR" { print index($2, "sk") }`. Rule prints can also emit ASCII
 case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
+Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
+such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
+streaming loop.
 Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
