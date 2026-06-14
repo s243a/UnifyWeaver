@@ -9,10 +9,14 @@ In exact mode it enumerates all simple parent-prefixes until root, boundary, or
 the path-length budget is reached, subject only to optional safety caps.  In
 sample mode it samples simple random parent walks and uses branch-product
 weights to estimate path-prefix counts; those estimates are statistical and
-depend on the random-walk proposal distribution.  The default parent filter is
-root-cone: a bounded child-reachable cone is precomputed from the root, then a
-parent edge is followed only when the parent is in that cone and its root-depth
-fits within the remaining path budget.
+depend on the random-walk proposal distribution.  Boundary-terminating sampling
+is the cache-boundary estimator: after a boundary hit, the remaining suffix can
+be supplied by the boundary histogram.  Root-walk sampling is the no-boundary
+search-space estimator: it ignores boundaries and walks to root, budget
+exhaustion, or dead end.  The default parent filter is root-cone: a bounded
+child-reachable cone is precomputed from the root, then a parent edge is
+followed only when the parent is in that cone and its root-depth fits within
+the remaining path budget.
 """
 
 from __future__ import annotations
@@ -246,6 +250,7 @@ def exact_boundary_coverage(
     expansion_cap = None if expansion_cap is None or int(expansion_cap) <= 0 else int(expansion_cap)
     stats = CoverageStats()
     suffix_memo = {}
+    suffix_measure_compatible = measure_suffix_mass and reachability_filter is None
 
     def terminal_reached():
         if path_count_cap is not None and stats.terminal_prefixes >= path_count_cap:
@@ -273,7 +278,7 @@ def exact_boundary_coverage(
             stats.boundary_hits_by_depth[int(depth)] += 1
             stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
             stats.boundary_hits_by_node[node] += 1
-            if measure_suffix_mass:
+            if suffix_measure_compatible:
                 suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
                 stats.boundary_suffix_path_mass_sum += int(suffix["path_count"])
             terminal_reached()
@@ -323,7 +328,7 @@ def exact_boundary_coverage(
         weighted=None,
         elapsed_ns=None,
         parent_filter_name=parent_filter_name,
-        measure_suffix_mass=measure_suffix_mass,
+        measure_suffix_mass=suffix_measure_compatible,
     )
 
 
@@ -378,9 +383,11 @@ def sample_boundary_coverage(
     rng = random.Random(str(seed))
     stats = CoverageStats()
     suffix_memo = {}
+    suffix_measure_compatible = measure_suffix_mass and reachability_filter is None
     terminal_weights = []
     root_weights = []
     boundary_weights = []
+    boundary_spliced_weights = []
     budget_weights = []
     dead_end_weights = []
     suffix_mass_weights = []
@@ -400,6 +407,7 @@ def sample_boundary_coverage(
                 terminal_weights.append(weight)
                 root_weights.append(weight)
                 boundary_weights.append(0.0)
+                boundary_spliced_weights.append(0.0)
                 budget_weights.append(0.0)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(0.0)
@@ -414,13 +422,14 @@ def sample_boundary_coverage(
                 stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
                 stats.boundary_hits_by_node[node] += 1
                 suffix_mass = 0
-                if measure_suffix_mass:
+                if suffix_measure_compatible:
                     suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
                     suffix_mass = int(suffix["path_count"])
                     stats.boundary_suffix_path_mass_sum += suffix_mass
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
                 boundary_weights.append(weight)
+                boundary_spliced_weights.append(weight * suffix_mass)
                 budget_weights.append(0.0)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(weight * suffix_mass)
@@ -432,6 +441,7 @@ def sample_boundary_coverage(
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
                 boundary_weights.append(0.0)
+                boundary_spliced_weights.append(0.0)
                 budget_weights.append(weight)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(0.0)
@@ -458,6 +468,7 @@ def sample_boundary_coverage(
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
                 boundary_weights.append(0.0)
+                boundary_spliced_weights.append(0.0)
                 budget_weights.append(0.0)
                 dead_end_weights.append(weight)
                 suffix_mass_weights.append(0.0)
@@ -477,6 +488,8 @@ def sample_boundary_coverage(
         "estimated_root_paths_se": standard_error(root_weights),
         "estimated_boundary_hit_prefixes": weighted_mean(boundary_weights),
         "estimated_boundary_hit_prefixes_se": standard_error(boundary_weights),
+        "estimated_boundary_spliced_root_paths": weighted_mean(boundary_spliced_weights),
+        "estimated_boundary_spliced_root_paths_se": standard_error(boundary_spliced_weights),
         "estimated_budget_exhausted_prefixes": weighted_mean(budget_weights),
         "estimated_budget_exhausted_prefixes_se": standard_error(budget_weights),
         "estimated_dead_end_prefixes": weighted_mean(dead_end_weights),
@@ -484,6 +497,16 @@ def sample_boundary_coverage(
         "estimated_boundary_suffix_path_mass": weighted_mean(suffix_mass_weights),
         "estimated_boundary_suffix_path_mass_se": standard_error(suffix_mass_weights),
     }
+    if suffix_measure_compatible:
+        weighted["estimated_spliced_total_root_paths"] = (
+            weighted["estimated_root_paths"] + weighted["estimated_boundary_spliced_root_paths"]
+        )
+    else:
+        weighted["estimated_boundary_spliced_root_paths"] = None
+        weighted["estimated_boundary_spliced_root_paths_se"] = None
+        weighted["estimated_spliced_total_root_paths"] = None
+        weighted["estimated_boundary_suffix_path_mass"] = None
+        weighted["estimated_boundary_suffix_path_mass_se"] = None
     total_estimate = weighted["estimated_terminal_prefixes"]
     boundary_estimate = weighted["estimated_boundary_hit_prefixes"]
     weighted["estimated_boundary_hit_fraction"] = None if total_estimate <= 0.0 else boundary_estimate / total_estimate
@@ -500,7 +523,157 @@ def sample_boundary_coverage(
         weighted=weighted,
         elapsed_ns=None,
         parent_filter_name=parent_filter_name,
-        measure_suffix_mass=measure_suffix_mass,
+        measure_suffix_mass=suffix_measure_compatible,
+    )
+
+
+def sample_root_path_space(
+    parents_func,
+    target,
+    root,
+    budget,
+    boundary_nodes,
+    samples,
+    seed,
+    reachability_filter=None,
+    parent_filter_name="all",
+):
+    """Sample full simple parent walks and estimate root-path search space.
+
+    For a uniformly sampled simple parent walk, the product of eligible branch
+    counts along the walk is an unbiased contribution for the size of the
+    sampled path space.  Path length is the first concrete mean reported here;
+    arbitrary property means need their property-specific numerator derived
+    before adding them to this probe.
+    """
+    budget = int(budget)
+    boundary_nodes = set(boundary_nodes)
+    rng = random.Random(str(seed))
+    stats = CoverageStats()
+    terminal_weights = []
+    root_weights = []
+    boundary_weights = []
+    root_boundary_weights = []
+    root_length_weights = []
+    budget_weights = []
+    dead_end_weights = []
+
+    for _sample in range(int(samples)):
+        node = target
+        remaining = budget
+        depth = 0
+        visited = {target}
+        weight = 1.0
+        boundary_seen = False
+
+        while True:
+            stats.nodes_expanded += 1
+            if depth > 0 and not boundary_seen and node in boundary_nodes:
+                boundary_seen = True
+                stats.boundary_hits += 1
+                stats.boundary_hit_depth_sum += int(depth)
+                stats.boundary_hit_remaining_budget_sum += int(remaining)
+                stats.boundary_hits_by_depth[int(depth)] += 1
+                stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
+                stats.boundary_hits_by_node[node] += 1
+
+            if node == root:
+                stats.terminal_prefixes += 1
+                stats.root_paths += 1
+                terminal_weights.append(weight)
+                root_weights.append(weight)
+                boundary_weights.append(weight if boundary_seen else 0.0)
+                root_boundary_weights.append(weight if boundary_seen else 0.0)
+                root_length_weights.append(weight * depth)
+                budget_weights.append(0.0)
+                dead_end_weights.append(0.0)
+                break
+
+            if remaining <= 0:
+                stats.terminal_prefixes += 1
+                stats.budget_exhausted_prefixes += 1
+                terminal_weights.append(weight)
+                root_weights.append(0.0)
+                boundary_weights.append(weight if boundary_seen else 0.0)
+                root_boundary_weights.append(0.0)
+                root_length_weights.append(0.0)
+                budget_weights.append(weight)
+                dead_end_weights.append(0.0)
+                break
+
+            parents = list(parents_func(node))
+            eligible = []
+            filtered_parents = 0
+            for parent in parents:
+                stats.edges_examined += 1
+                if parent in visited:
+                    stats.cycle_skips += 1
+                elif reachability_filter is not None and not reachability_filter(parent, remaining - 1):
+                    stats.root_unreachable_parent_skips += 1
+                    filtered_parents += 1
+                else:
+                    eligible.append(parent)
+            if not eligible:
+                stats.terminal_prefixes += 1
+                if filtered_parents > 0:
+                    stats.filtered_dead_end_prefixes += 1
+                else:
+                    stats.dead_end_prefixes += 1
+                terminal_weights.append(weight)
+                root_weights.append(0.0)
+                boundary_weights.append(weight if boundary_seen else 0.0)
+                root_boundary_weights.append(0.0)
+                root_length_weights.append(0.0)
+                budget_weights.append(0.0)
+                dead_end_weights.append(weight)
+                break
+
+            weight *= len(eligible)
+            parent = eligible[rng.randrange(len(eligible))]
+            visited.add(parent)
+            node = parent
+            remaining -= 1
+            depth += 1
+
+    weighted = {
+        "estimated_terminal_prefixes": weighted_mean(terminal_weights),
+        "estimated_terminal_prefixes_se": standard_error(terminal_weights),
+        "estimated_root_paths": weighted_mean(root_weights),
+        "estimated_root_paths_se": standard_error(root_weights),
+        "estimated_boundary_hit_prefixes": weighted_mean(boundary_weights),
+        "estimated_boundary_hit_prefixes_se": standard_error(boundary_weights),
+        "estimated_root_boundary_hit_paths": weighted_mean(root_boundary_weights),
+        "estimated_root_boundary_hit_paths_se": standard_error(root_boundary_weights),
+        "estimated_root_path_length_sum": weighted_mean(root_length_weights),
+        "estimated_root_path_length_sum_se": standard_error(root_length_weights),
+        "estimated_budget_exhausted_prefixes": weighted_mean(budget_weights),
+        "estimated_budget_exhausted_prefixes_se": standard_error(budget_weights),
+        "estimated_dead_end_prefixes": weighted_mean(dead_end_weights),
+        "estimated_dead_end_prefixes_se": standard_error(dead_end_weights),
+    }
+    total_estimate = weighted["estimated_terminal_prefixes"]
+    boundary_estimate = weighted["estimated_boundary_hit_prefixes"]
+    root_estimate = weighted["estimated_root_paths"]
+    root_boundary_estimate = weighted["estimated_root_boundary_hit_paths"]
+    weighted["estimated_boundary_hit_fraction"] = None if total_estimate <= 0.0 else boundary_estimate / total_estimate
+    weighted["estimated_root_boundary_hit_fraction"] = None if root_estimate <= 0.0 else root_boundary_estimate / root_estimate
+    weighted["estimated_mean_root_path_length"] = (
+        None if root_estimate <= 0.0 else weighted["estimated_root_path_length_sum"] / root_estimate
+    )
+    ci_low, ci_high = bootstrap_ratio(boundary_weights, terminal_weights, str(seed) + ":bootstrap")
+    weighted["estimated_boundary_hit_fraction_ci95_low"] = ci_low
+    weighted["estimated_boundary_hit_fraction_ci95_high"] = ci_high
+
+    return coverage_record(
+        mode="root-sample",
+        target=target,
+        budget=budget,
+        stats=stats,
+        samples=int(samples),
+        weighted=weighted,
+        elapsed_ns=None,
+        parent_filter_name=parent_filter_name,
+        measure_suffix_mass=False,
     )
 
 
@@ -598,6 +771,11 @@ def format_optional(value, digits=3):
     return ("{:." + str(digits) + "f}").format(float(value))
 
 
+def mean_optional_field(rows, field):
+    values = [float(row[field]) for row in rows if row.get(field) is not None]
+    return None if not values else statistics.mean(values)
+
+
 def summarize(records):
     selection = next((row for row in records if row.get("record_type") == "boundary_coverage_selection"), {})
     target_rows = [row for row in records if row.get("record_type") == "boundary_coverage_target"]
@@ -656,7 +834,7 @@ def summarize(records):
         "",
         "## Coverage Summary",
         "",
-        "For sample mode, these are observed random-walk outcomes. Use `Sampled Estimates` for branch-product weighted path-space estimates.",
+        "For sample and root-sample modes, these are observed random-walk outcomes. Use the estimate sections below for branch-product weighted path-space estimates.",
         "",
         "| mode | path_length_budget | targets | completed_targets | observed_terminal_prefixes | observed_root_paths | observed_boundary_hit_prefixes | observed_boundary_hit_fraction | observed_budget_exhausted_prefixes | observed_filtered_dead_ends | mean_boundary_suffix_path_mass | path_count_cap_hit_targets | expansion_cap_hit_targets | cycle_skips | root_unreachable_parent_skips |",
         "|------|-------------------:|--------:|------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|----------------------------:|-------------------------------:|---------------------------:|--------------------------:|------------:|------------------------------:|",
@@ -687,26 +865,53 @@ def summarize(records):
     if sampled:
         lines.extend([
             "",
-            "## Sampled Estimates",
+            "## Boundary Sample Estimates",
             "",
-            "Weighted estimates use the product of eligible parent choices along each sampled simple path. Confidence intervals are bootstrap intervals for the weighted boundary-hit fraction.",
+            "Boundary sample mode stops at the first boundary. `estimated_spliced_total_root_paths` adds direct root-path weight to boundary-prefix weight multiplied by the remaining-budget suffix mass.",
             "",
-            "| path_length_budget | targets | samples_per_target | mean_estimated_terminal_prefixes | mean_estimated_boundary_hit_fraction | mean_ci95_low | mean_ci95_high |",
-            "|-------------------:|--------:|-------------------:|---------------------------------:|------------------------------------:|--------------:|---------------:|",
+            "| path_length_budget | targets | samples_per_target | mean_estimated_terminal_prefixes | mean_estimated_boundary_hit_fraction | mean_estimated_spliced_total_root_paths | mean_ci95_low | mean_ci95_high |",
+            "|-------------------:|--------:|-------------------:|---------------------------------:|------------------------------------:|---------------------------------------:|--------------:|---------------:|",
         ])
         by_budget = {}
         for row in sampled:
             by_budget.setdefault(row["path_length_budget"], []).append(row)
         for budget, rows in sorted(by_budget.items()):
             lines.append(
-                "| {budget} | {targets} | {samples} | {terminal} | {fraction} | {lo} | {hi} |".format(
+                "| {budget} | {targets} | {samples} | {terminal} | {fraction} | {spliced} | {lo} | {hi} |".format(
                     budget=budget,
                     targets=len(rows),
                     samples=rows[0].get("samples"),
-                    terminal=format_optional(statistics.mean(float(row.get("estimated_terminal_prefixes", 0.0)) for row in rows), 3),
-                    fraction=format_optional(statistics.mean(float(row.get("estimated_boundary_hit_fraction") or 0.0) for row in rows), 6),
-                    lo=format_optional(statistics.mean(float(row.get("estimated_boundary_hit_fraction_ci95_low") or 0.0) for row in rows), 6),
-                    hi=format_optional(statistics.mean(float(row.get("estimated_boundary_hit_fraction_ci95_high") or 0.0) for row in rows), 6),
+                    terminal=format_optional(mean_optional_field(rows, "estimated_terminal_prefixes"), 3),
+                    fraction=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction"), 6),
+                    spliced=format_optional(mean_optional_field(rows, "estimated_spliced_total_root_paths"), 3),
+                    lo=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction_ci95_low"), 6),
+                    hi=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction_ci95_high"), 6),
+                )
+            )
+
+    root_sampled = [row for row in target_rows if row.get("mode") == "root-sample"]
+    if root_sampled:
+        lines.extend([
+            "",
+            "## Root Path Sample Estimates",
+            "",
+            "Root-sample mode ignores boundary stopping and walks until root, budget exhaustion, or dead end. `estimated_root_paths` estimates the root-reaching search-space size from the branch-product weight. `estimated_mean_root_path_length` is the corresponding weighted mean path length.",
+            "",
+            "| path_length_budget | targets | samples_per_target | mean_estimated_root_paths | mean_estimated_mean_root_path_length | mean_estimated_root_boundary_hit_fraction |",
+            "|-------------------:|--------:|-------------------:|--------------------------:|-------------------------------------:|------------------------------------------:|",
+        ])
+        by_budget = {}
+        for row in root_sampled:
+            by_budget.setdefault(row["path_length_budget"], []).append(row)
+        for budget, rows in sorted(by_budget.items()):
+            lines.append(
+                "| {budget} | {targets} | {samples} | {root_paths} | {mean_len} | {boundary_fraction} |".format(
+                    budget=budget,
+                    targets=len(rows),
+                    samples=rows[0].get("samples"),
+                    root_paths=format_optional(mean_optional_field(rows, "estimated_root_paths"), 3),
+                    mean_len=format_optional(mean_optional_field(rows, "estimated_mean_root_path_length"), 3),
+                    boundary_fraction=format_optional(mean_optional_field(rows, "estimated_root_boundary_hit_fraction"), 6),
                 )
             )
 
@@ -776,6 +981,8 @@ def run_probe(args):
         else:
             boundary_nodes, boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
                 graph,
+                args.root,
+                boundary_depths,
                 args.children_per_node,
                 args.frontier_limit,
                 args.boundaries_per_depth,
@@ -836,6 +1043,7 @@ def run_probe(args):
             reachability = RootReachabilityFilter(graph.parents, args.root)
         elif args.parent_filter == "root-cone":
             reachability = RootConeFilter(root_cone_depth_by_node)
+        measure_suffix_mass = not args.skip_boundary_suffix_mass and reachability is None
 
         records = [{
             "record_type": "boundary_coverage_selection",
@@ -860,13 +1068,13 @@ def run_probe(args):
             "samples": args.samples,
             "path_count_cap": args.path_count_cap,
             "expansion_cap": args.expansion_cap,
-            "measure_boundary_suffix_mass": not args.skip_boundary_suffix_mass,
+            "measure_boundary_suffix_mass": measure_suffix_mass,
         }]
 
         boundary_set = set(boundary_nodes)
         for target in targets:
             for budget in budgets:
-                if args.mode in {"exact", "both"}:
+                if args.mode in {"exact", "both", "all"}:
                     records.append(time_target(lambda target=target, budget=budget: exact_boundary_coverage(
                         graph.parents,
                         target,
@@ -877,12 +1085,12 @@ def run_probe(args):
                         args.expansion_cap,
                         None if reachability is None else reachability.can_reach,
                         args.parent_filter,
-                        not args.skip_boundary_suffix_mass,
+                        measure_suffix_mass,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
                     records[-1]["root"] = args.root
-                if args.mode in {"sample", "both"}:
+                if args.mode in {"sample", "both", "all"}:
                     records.append(time_target(lambda target=target, budget=budget: sample_boundary_coverage(
                         graph.parents,
                         target,
@@ -893,7 +1101,22 @@ def run_probe(args):
                         "{}:{}:{}".format(args.seed, target, budget),
                         None if reachability is None else reachability.can_reach,
                         args.parent_filter,
-                        not args.skip_boundary_suffix_mass,
+                        measure_suffix_mass,
+                    )))
+                    records[-1]["child_sample_depth"] = target_depth_by_node[target]
+                    records[-1]["graph"] = args.graph_name
+                    records[-1]["root"] = args.root
+                if args.mode in {"root-sample", "all"}:
+                    records.append(time_target(lambda target=target, budget=budget: sample_root_path_space(
+                        graph.parents,
+                        target,
+                        args.root,
+                        budget,
+                        boundary_set,
+                        args.samples,
+                        "{}:{}:{}:root-sample".format(args.seed, target, budget),
+                        None if reachability is None else reachability.can_reach,
+                        args.parent_filter,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -922,7 +1145,7 @@ def main(argv=None):
     parser.add_argument("--lmdb-dir", required=True, type=Path, help="Numeric-keyed category LMDB directory.")
     parser.add_argument("--root", required=True, type=int, help="Numeric root id.")
     parser.add_argument("--graph-name", default="lmdb_boundary_coverage", help="Graph label used in output filenames.")
-    parser.add_argument("--mode", choices=["exact", "sample", "both"], default="exact", help="Coverage audit mode.")
+    parser.add_argument("--mode", choices=["exact", "sample", "root-sample", "both", "all"], default="exact", help="Coverage audit mode. sample stops at boundaries; root-sample walks to root/budget/dead-end; both runs exact+sample; all runs exact+sample+root-sample.")
     parser.add_argument("--parent-filter", choices=["all", "root-reachable", "root-cone"], default="root-cone", help="Parent expansion filter. root-reachable checks recursive finite-horizon reachability; root-cone uses a precomputed bounded child-reachable cone.")
     parser.add_argument("--selection-source", choices=["graph", "root-cone"], default="root-cone", help="Source for boundary and target sampling. root-cone samples directly from the precomputed root cone by child depth.")
     parser.add_argument("--root-cone-depth", type=int, default=0, help="Maximum child depth for the precomputed root cone. Non-positive uses the maximum requested budget/depth.")
