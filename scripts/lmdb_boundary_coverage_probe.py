@@ -10,8 +10,9 @@ the path-length budget is reached, subject only to optional safety caps.  In
 sample mode it samples simple random parent walks and uses branch-product
 weights to estimate path-prefix counts; those estimates are statistical and
 depend on the random-walk proposal distribution.  The default parent filter is
-root-reachable: a parent edge is followed only when that parent can still reach
-the selected root within the remaining path budget.
+root-cone: a bounded child-reachable cone is precomputed from the root, then a
+parent edge is followed only when the parent is in that cone and its root-depth
+fits within the remaining path budget.
 """
 
 from __future__ import annotations
@@ -118,8 +119,98 @@ class RootReachabilityFilter:
         return reachable
 
 
+class RootConeFilter:
+    """Constant-time finite-horizon predicate from a precomputed root cone."""
+
+    def __init__(self, depth_by_node):
+        self.depth_by_node = dict(depth_by_node)
+        self.checks = 0
+        self.depth_misses = 0
+        self.remaining_misses = 0
+
+    def can_reach(self, node, remaining):
+        self.checks += 1
+        depth = self.depth_by_node.get(node)
+        if depth is None:
+            self.depth_misses += 1
+            return False
+        if int(depth) > int(remaining):
+            self.remaining_misses += 1
+            return False
+        return True
+
+
 def fraction(numerator, denominator):
     return None if denominator <= 0 else numerator / denominator
+
+
+def normalize_limit(limit):
+    return None if limit is None or int(limit) <= 0 else int(limit)
+
+
+def build_root_cone(children_func, root, max_depth, children_per_node, frontier_limit, seed):
+    """Build a bounded child-reachable cone from root with minimum depths."""
+    max_depth = int(max_depth)
+    children_limit = normalize_limit(children_per_node)
+    frontier_limit = normalize_limit(frontier_limit)
+    depth_by_node = {root: 0}
+    frontier = [root]
+    counts = {0: 1}
+
+    for depth in range(1, max_depth + 1):
+        next_nodes = []
+        for node in frontier:
+            children = deterministic_sample(
+                children_func(node),
+                children_limit,
+                "{}:children:{}:{}".format(seed, depth, node),
+            )
+            next_nodes.extend(children)
+
+        sampled = deterministic_sample(
+            list(dict.fromkeys(next_nodes)),
+            frontier_limit,
+            "{}:frontier:{}".format(seed, depth),
+        )
+        new_frontier = []
+        for child in sampled:
+            if child in depth_by_node:
+                continue
+            depth_by_node[child] = depth
+            new_frontier.append(child)
+        counts[depth] = len(new_frontier)
+        frontier = new_frontier
+        if not frontier:
+            break
+
+    return depth_by_node, counts
+
+
+def select_nodes_by_root_cone_depth(depth_by_node, depths, nodes_per_depth, seed):
+    """Sample nodes from a precomputed root cone by minimum child depth."""
+    requested = [int(depth) for depth in depths]
+    buckets = {depth: [] for depth in requested}
+    for node, depth in depth_by_node.items():
+        if int(depth) in buckets:
+            buckets[int(depth)].append(node)
+
+    selected = []
+    selected_depth_by_node = {}
+    counts = {}
+    limit = normalize_limit(nodes_per_depth)
+    for depth in requested:
+        candidates = sorted(buckets.get(depth, []))
+        counts[depth] = len(candidates)
+        sampled = deterministic_sample(
+            candidates,
+            limit,
+            "{}:depth:{}".format(seed, depth),
+        )
+        for node in sampled:
+            if node not in selected_depth_by_node:
+                selected.append(node)
+                selected_depth_by_node[node] = depth
+    return selected, selected_depth_by_node, counts
 
 
 def suffix_path_mass(parents_func, boundary_node, root, remaining, memo):
@@ -523,7 +614,13 @@ def summarize(records):
         "",
         "Target selection: `{}`".format(selection.get("target_selection", "")),
         "",
+        "Selection source: `{}`".format(selection.get("selection_source", "graph")),
+        "",
         "Parent filter: `{}`".format(selection.get("parent_filter", "all")),
+        "",
+        "Root cone depth: `{}`".format(selection.get("root_cone_depth", "n/a")),
+        "",
+        "Root cone nodes: `{}`".format(selection.get("root_cone_nodes", 0)),
         "",
         "Boundary suffix mass measured: `{}`".format(selection.get("measure_boundary_suffix_mass", True)),
         "",
@@ -533,7 +630,7 @@ def summarize(records):
         "",
         "Path length budgets: `{}`".format(",".join(str(value) for value in selection.get("budgets", []))),
         "",
-        "Exact mode enumerates simple parent-prefixes until root, boundary, or the path-length budget. Sample mode uses branch-product weighted random walks; its path-count totals are estimates, not direct counts. With `root-reachable`, parent expansion keeps only parent nodes that can still reach the selected root within the remaining path budget.",
+        "Exact mode enumerates simple parent-prefixes until root, boundary, or the path-length budget. Sample mode uses branch-product weighted random walks; its path-count totals are estimates, not direct counts. With `root-reachable`, parent expansion checks finite-horizon reachability recursively. With `root-cone`, parent expansion uses a precomputed root cone and keeps only parent nodes whose cone depth fits within the remaining path budget.",
         "",
         "## Selection",
         "",
@@ -544,6 +641,16 @@ def summarize(records):
         lines.append("| boundary | {} | {} |".format(depth, count))
     for depth, count in sorted(selection.get("target_counts", {}).items()):
         lines.append("| target | {} | {} |".format(depth, count))
+    if selection.get("root_cone_counts"):
+        lines.extend([
+            "",
+            "## Root Cone",
+            "",
+            "| child_depth | new_nodes |",
+            "|------------:|----------:|",
+        ])
+        for depth, count in sorted(selection.get("root_cone_counts", {}).items()):
+            lines.append("| {} | {} |".format(depth, count))
 
     lines.extend([
         "",
@@ -638,36 +745,75 @@ def run_probe(args):
         boundary_depths = parse_int_list(args.boundary_depths)
         target_depths = parse_int_list(args.target_depths)
         budgets = parse_int_list(args.budgets)
+        max_requested_depth = max(boundary_depths + target_depths + budgets, default=0)
 
-        boundary_nodes, boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
-            graph,
-            args.root,
-            boundary_depths,
-            args.children_per_node,
-            args.frontier_limit,
-            args.boundaries_per_depth,
-            args.seed + ":boundary",
-        )
-        if args.target_selection == "boundary-descendants":
-            targets, target_depth_by_node, target_counts = select_targets_by_boundary_descendants(
-                graph,
-                boundary_depth_by_node,
+        root_cone_depth_by_node = None
+        root_cone_counts = {}
+        root_cone_depth = int(args.root_cone_depth) if int(args.root_cone_depth) > 0 else max_requested_depth
+        if args.parent_filter == "root-cone" or args.selection_source == "root-cone":
+            root_cone_depth_by_node, root_cone_counts = build_root_cone(
+                graph.children,
+                args.root,
+                root_cone_depth,
+                args.root_cone_children_per_node if args.root_cone_children_per_node is not None else args.children_per_node,
+                args.root_cone_frontier_limit if args.root_cone_frontier_limit is not None else args.frontier_limit,
+                args.seed + ":root-cone",
+            )
+
+        if args.selection_source == "root-cone":
+            boundary_nodes, boundary_depth_by_node, boundary_counts = select_nodes_by_root_cone_depth(
+                root_cone_depth_by_node,
+                boundary_depths,
+                args.boundaries_per_depth,
+                args.seed + ":root-cone-boundary",
+            )
+            targets, target_depth_by_node, target_counts = select_nodes_by_root_cone_depth(
+                root_cone_depth_by_node,
                 target_depths,
-                args.children_per_node,
-                args.frontier_limit,
                 args.targets_per_depth,
-                args.seed + ":boundary-descendant-target",
+                args.seed + ":root-cone-target",
             )
         else:
-            targets, target_depth_by_node, target_counts = select_targets_by_child_depth(
+            boundary_nodes, boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
                 graph,
-                args.root,
-                target_depths,
                 args.children_per_node,
                 args.frontier_limit,
-                args.targets_per_depth,
-                args.seed + ":target",
+                args.boundaries_per_depth,
+                args.seed + ":boundary",
             )
+            if args.target_selection == "boundary-descendants":
+                targets, target_depth_by_node, target_counts = select_targets_by_boundary_descendants(
+                    graph,
+                    boundary_depth_by_node,
+                    target_depths,
+                    args.children_per_node,
+                    args.frontier_limit,
+                    args.targets_per_depth,
+                    args.seed + ":boundary-descendant-target",
+                )
+            else:
+                targets, target_depth_by_node, target_counts = select_targets_by_child_depth(
+                    graph,
+                    args.root,
+                    target_depths,
+                    args.children_per_node,
+                    args.frontier_limit,
+                    args.targets_per_depth,
+                    args.seed + ":target",
+                )
+
+        if args.selection_source == "root-cone":
+            target_selection_label = "root-cone-child-depth"
+        else:
+            target_selection_label = args.target_selection
+
+        if args.require_targets_in_root_cone and root_cone_depth_by_node is not None:
+            targets = [target for target in targets if target in root_cone_depth_by_node]
+            target_depth_by_node = {target: target_depth_by_node[target] for target in targets}
+
+        if args.require_boundaries_in_root_cone and root_cone_depth_by_node is not None:
+            boundary_nodes = [node for node in boundary_nodes if node in root_cone_depth_by_node]
+            boundary_depth_by_node = {node: boundary_depth_by_node[node] for node in boundary_nodes}
 
         selected_boundary_nodes = set(boundary_nodes)
         if args.include_target_ancestor_boundaries:
@@ -681,24 +827,34 @@ def run_probe(args):
                 args.target_ancestor_boundary_limit,
                 args.seed + ":target-ancestor-boundaries",
             )
+            if args.parent_filter == "root-cone" and root_cone_depth_by_node is not None:
+                extra = [node for node in extra if node in root_cone_depth_by_node]
             boundary_nodes = sorted(selected_boundary_nodes | set(extra))
 
         reachability = None
         if args.parent_filter == "root-reachable":
             reachability = RootReachabilityFilter(graph.parents, args.root)
+        elif args.parent_filter == "root-cone":
+            reachability = RootConeFilter(root_cone_depth_by_node)
 
         records = [{
             "record_type": "boundary_coverage_selection",
             "graph": args.graph_name,
             "root": args.root,
             "parent_filter": args.parent_filter,
+            "selection_source": args.selection_source,
+            "root_cone_depth": root_cone_depth if root_cone_depth_by_node is not None else None,
+            "root_cone_nodes": len(root_cone_depth_by_node or {}),
+            "root_cone_counts": root_cone_counts,
+            "root_cone_children_per_node": args.root_cone_children_per_node if args.root_cone_children_per_node is not None else args.children_per_node,
+            "root_cone_frontier_limit": args.root_cone_frontier_limit if args.root_cone_frontier_limit is not None else args.frontier_limit,
             "boundary_counts": boundary_counts,
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
             "selected_boundary_nodes": len(selected_boundary_nodes),
             "target_ancestor_boundary_nodes_added": len(set(boundary_nodes) - selected_boundary_nodes),
             "targets": len(targets),
-            "target_selection": args.target_selection,
+            "target_selection": target_selection_label,
             "budgets": budgets,
             "mode": args.mode,
             "samples": args.samples,
@@ -767,7 +923,13 @@ def main(argv=None):
     parser.add_argument("--root", required=True, type=int, help="Numeric root id.")
     parser.add_argument("--graph-name", default="lmdb_boundary_coverage", help="Graph label used in output filenames.")
     parser.add_argument("--mode", choices=["exact", "sample", "both"], default="exact", help="Coverage audit mode.")
-    parser.add_argument("--parent-filter", choices=["all", "root-reachable"], default="root-reachable", help="Parent expansion filter. root-reachable follows only parent nodes that can still reach the selected root within the remaining path budget.")
+    parser.add_argument("--parent-filter", choices=["all", "root-reachable", "root-cone"], default="root-cone", help="Parent expansion filter. root-reachable checks recursive finite-horizon reachability; root-cone uses a precomputed bounded child-reachable cone.")
+    parser.add_argument("--selection-source", choices=["graph", "root-cone"], default="root-cone", help="Source for boundary and target sampling. root-cone samples directly from the precomputed root cone by child depth.")
+    parser.add_argument("--root-cone-depth", type=int, default=0, help="Maximum child depth for the precomputed root cone. Non-positive uses the maximum requested budget/depth.")
+    parser.add_argument("--root-cone-children-per-node", type=int, help="Child sample cap per root-cone frontier node. Omit to reuse --children-per-node; non-positive disables the per-node cap.")
+    parser.add_argument("--root-cone-frontier-limit", type=int, help="Root-cone frontier cap per depth. Omit to reuse --frontier-limit; non-positive disables the frontier cap.")
+    parser.add_argument("--require-targets-in-root-cone", action="store_true", help="Drop selected targets that are not present in the precomputed root cone.")
+    parser.add_argument("--require-boundaries-in-root-cone", action="store_true", help="Drop selected boundaries that are not present in the precomputed root cone.")
     parser.add_argument("--skip-boundary-suffix-mass", action="store_true", help="Do not enumerate suffix path histograms after boundary hits. Use this for larger path budgets when only boundary coverage is being measured.")
     parser.add_argument("--boundary-depths", default=",".join(map(str, DEFAULT_BOUNDARY_DEPTHS)), help="Child depths used as boundary candidates.")
     parser.add_argument("--target-depths", default=",".join(map(str, DEFAULT_TARGET_DEPTHS)), help="Child depths used as target candidates.")
@@ -775,7 +937,7 @@ def main(argv=None):
     parser.add_argument("--frontier-limit", type=int, default=2000, help="Deterministic cap for each sampled child-depth frontier.")
     parser.add_argument("--boundaries-per-depth", type=int, default=100, help="Boundary candidates per requested boundary depth.")
     parser.add_argument("--targets-per-depth", type=int, default=20, help="Targets per requested target depth.")
-    parser.add_argument("--target-selection", choices=["child-depth", "boundary-descendants"], default="boundary-descendants", help="Target sampling mode.")
+    parser.add_argument("--target-selection", choices=["child-depth", "boundary-descendants"], default="boundary-descendants", help="Target sampling mode when --selection-source graph is used.")
     parser.add_argument("--include-target-ancestor-boundaries", action="store_true", help="Add target ancestors whose root distance matches requested boundary depths.")
     parser.add_argument("--target-ancestor-boundary-limit", type=int, default=500, help="Maximum target-ancestor boundary nodes to add; non-positive means no extra cap.")
     parser.add_argument("--max-parent-depth", type=int, default=24, help="Parent depth cap for target-ancestor boundary collection.")
