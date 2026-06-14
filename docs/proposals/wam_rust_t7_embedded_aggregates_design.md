@@ -161,3 +161,44 @@ control proving default output is unchanged.
 2. Step B foreign registration + dispatch arms — cargo-check a generated project.
 3. Step C exec test — embedded == sequential.
 4. Step D regression + matrix.
+
+---
+
+## 4. Concrete seams (implementation-ready — from investigation)
+
+Step 1 (the pure clause-lifting pass `rust_lift_predicate_clauses/4`) is **done +
+proven** (PR #3156). The remaining integration has these exact seams:
+
+- **Rewritten-clause compilation (no module mutation):**
+  `compile_predicate_to_wam_text/3` is `wam_predicate_clauses/5` +
+  `compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code)`. So a lifted
+  predicate's WAM is `compile_clauses_to_wam(Pred, Arity, RewrittenClauses, …)` —
+  compiled directly from the lifted clause list, **no need to touch the module**.
+- **WamCode seam:** `classify_predicates/3` (`wam_rust_target.pl`) acquires per-pred
+  WAM at `wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions,
+  WamCode)` (~line 5617). For a lifted predicate, substitute `WamCode` with the
+  rewritten-clause compile above (e.g. via a `lifted_wamcode(PI, Code)` entry in
+  `Options` populated by a Pass -1, checked before the `compile_predicate_to_wam`
+  call).
+- **Cost-model correctness:** lifted helpers must be analysed against the **full
+  program** — so assert helper clauses into the **user module** (not a scratch
+  module), so `rust_inject_parallel_aggregates`' `build_cost_model(user)` sees
+  `ew_down` etc. and classifies the helper parallel. (Step 1's pass is read-only;
+  the integration adds a guarded assert+cleanup of helpers only.)
+- **Foreign dispatch:** `execute_foreign_predicate` (`compile_execute_foreign_predicate_to_rust`,
+  ~line 1798) is a fixed `match native_kind { … }`. `Call` already routes any
+  `pred ∈ foreign_predicates` here (line ~669). Add a **conditional** arm
+  `"lift_agg" => match pred_key { "__lift_agg_K/N" => { read A1..A_{n+1};
+  crate::__lift_agg_K_n(self, …) } … }`, generated only when ≥1 lifted helper
+  exists (so gate-off projects get no new arm ⇒ **zero blast radius**). Register
+  each helper in `setup_foreign_predicates` (`foreign_predicates.insert("__lift_agg_K/N")`
+  + `foreign_native_kinds.insert(key, "lift_agg")`) and `foreign_pred_keys()`.
+- **Wrapper reuse:** the lifted helper, added to the compile set, is turned into a
+  native `par_collect` wrapper by the **existing** `rust_inject_parallel_aggregates`
+  / `rust_parallel_aggregate_wrapper` — no new emission needed; the foreign arm
+  just calls that wrapper.
+
+**Assessment:** mechanically clear, gated to near-zero blast radius, but a
+multi-part change to the core compile pipeline + the foreign-dispatch template,
+with cargo exec/regression cycles between steps. Best executed as a focused,
+undistracted pass (Step-1 — the subtle-correctness half — is already banked).
