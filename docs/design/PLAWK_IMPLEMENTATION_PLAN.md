@@ -293,7 +293,11 @@ mixed, and assoc-only branch bodies now share the same rule-body action walker;
 branch phis use each branch's actual exit block, including assoc side-effect
 `_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
 prints do not collide; branch-local `NR` printing uses the same native record
-counter threaded through the stream loop as top-level `print NR`. Terminal
+counter threaded through the stream loop as top-level `print NR`. Print
+expression lowering now shares one context-aware path for top-level and
+branch-local prints; the context supplies prefixed names while `$N`, `NF`,
+`length`, `substr`, `index`, and case transforms use the same expression
+lowering clauses. Terminal
 branch-local `next` branches directly to the stream-loop continuation and adds
 the selected branch's scalar values to the loop phi inputs. Terminal
 branch-local `break` branches to the same dedicated stream-close block as
