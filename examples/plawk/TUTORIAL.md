@@ -123,7 +123,9 @@ The Phase 0 examples use the counter as `NR`, collect printed lines in
 The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
 fields, native field lengths such as `length($2)`, native byte substrings such as
 `substr($2, 1, 3)`, and `OFS`, matching the first awk-style example above. It can
-also compile a scalar counter and an `END` action:
+also print explicit numeric field coercions with `int($N)`, where missing or
+non-numeric fields become `0`. It can also compile a scalar counter and an `END`
+action:
 
 ```awk
 $1 == "ERROR" { count++ } END { print count }
@@ -369,6 +371,13 @@ present:
 
 ```awk
 $1 == "ERROR" { print index($2, "sk"), index($0, "disk") }
+```
+
+`int($N)` prints the strict signed-decimal numeric value of a field, or `0` for
+missing and non-numeric fields:
+
+```awk
+$1 == "ERROR" { print $3, int($3) }
 ```
 
 `tolower` and `toupper` can print ASCII case-mapped field bytes without
