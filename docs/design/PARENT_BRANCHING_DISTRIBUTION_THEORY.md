@@ -73,6 +73,17 @@ epsilon = 0.028750
 That is close to a chain: most visited nodes have one parent, with rare extra
 parent choices.
 
+For sampling estimators, `b_p` is a prior and cost-planning statistic rather
+than the per-path sample correction.  A simple random parent walk has proposal
+probability `q(pi) = product_i 1/d_i` and inverse correction
+`c(pi) = product_i d_i`, where `d_i` is the eligible parent count actually seen
+on the sampled path.  The stationary approximation `d_i ~= b_p` gives
+`q(pi) ~= b_p^(-L)` and `c(pi) ~= b_p^L`, which is useful for expected search
+cost and cache-depth planning.  It should not replace the branch-product
+correction in a concrete random-walk estimator.  A path-length kernel such as
+`b_p^(-L)` is a separate metric choice; see
+`ROOT_PATH_SAMPLE_ESTIMATOR_THEORY.md`.
+
 ## 3. Small-branching approximation
 
 When parent degree is mostly `1`, sometimes `2`, and rarely larger, the excess

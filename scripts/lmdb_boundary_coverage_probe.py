@@ -8,10 +8,12 @@ probe measures the shape of the path space that the cache can actually cover.
 In exact mode it enumerates all simple parent-prefixes until root, boundary, or
 the path-length budget is reached, subject only to optional safety caps.  In
 sample mode it samples simple random parent walks and uses branch-product
-weights to estimate path-prefix counts; those estimates are statistical and
-depend on the random-walk proposal distribution.  Boundary-terminating sampling
-is the cache-boundary estimator: after a boundary hit, the remaining suffix can
-be supplied by the boundary histogram.  Root-walk sampling is the no-boundary
+proposal corrections to estimate path-prefix counts; those estimates are
+statistical and depend on the random-walk proposal distribution.  A separate
+path-value kernel, if any, belongs to the measured functional rather than to the
+proposal correction.  Boundary-terminating sampling is the cache-boundary
+estimator: after a boundary hit, the remaining suffix can be supplied by the
+boundary histogram.  Root-walk sampling is the no-boundary
 search-space estimator: it ignores boundaries and walks to root, budget
 exhaustion, or dead end.  The default parent filter is root-cone: a bounded
 child-reachable cone is precomputed from the root, then a parent edge is
@@ -377,7 +379,12 @@ def sample_boundary_coverage(
     parent_filter_name="all",
     measure_suffix_mass=True,
 ):
-    """Sample simple random parent walks and estimate prefix counts by weights."""
+    """Sample random parent walks and estimate prefix counts by proposal correction.
+
+    The branch product corrects for the local random-walk proposal.  Boundary
+    suffix mass is a value supplied by the cached histogram for the remaining
+    budget; metric-specific kernels require matching suffix bases.
+    """
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
     rng = random.Random(str(seed))
@@ -541,7 +548,7 @@ def sample_root_path_space(
     """Sample full simple parent walks and estimate root-path search space.
 
     For a uniformly sampled simple parent walk, the product of eligible branch
-    counts along the walk is an unbiased contribution for the size of the
+    counts along the walk is the inverse-proposal correction for the size of the
     sampled path space.  Path length is the first concrete mean reported here;
     arbitrary property means need their property-specific numerator derived
     before adding them to this probe.
