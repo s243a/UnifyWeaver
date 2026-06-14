@@ -4654,6 +4654,48 @@ rust_lift_clause_fully(H, B, Model, P, A, Seed0, NB, Helpers, SeedN) :-
     ;   NB = B, Helpers = [], SeedN = Seed0
     ).
 
+% --- T7 embedded-aggregate wiring, step 2: project Pass -1 (live) ------------
+%
+% Lift embedded aggregates across the project predicate list. Asserts the
+% synthesised whole-body helper clauses into `user` (so the existing whole-body
+% injection + build_cost_model(user) see the full program), augments Options with
+% lifted_wam(PI, WamCode) substitutions (the rewritten predicate's WAM, compiled
+% from the lifted clause list via compile_clauses_to_wam — no module mutation of
+% the lifted predicate), and appends the helper PIs to the compile set. No-op
+% unless parallel_aggregates(true). Returns HelperPIs for caller cleanup.
+rust_apply_embedded_lifts(Preds0, Options0, Preds, Options, HelperPIs) :-
+    (   option(parallel_aggregates(true), Options0),
+        catch(build_cost_model(user, Model), _, fail),
+        rust_lift_project_preds(Preds0, Model, Options0, WamSubs, HelperPIs, HelperClauses),
+        HelperPIs \== []
+    ->  forall(member(HC, HelperClauses), assertz(user:HC)),
+        append(Preds0, HelperPIs, Preds),
+        append(WamSubs, Options0, Options)
+    ;   Preds = Preds0, Options = Options0, HelperPIs = []
+    ).
+
+rust_lift_project_preds([], _, _, [], [], []).
+rust_lift_project_preds([PI|Rest], Model, Opts, WamSubs, HelperPIs, HelperClauses) :-
+    (   ( PI = Module:P/A -> true ; PI = P/A, Module = user ),
+        catch(rust_lift_predicate_clauses(PI, Model, Rewritten, Helpers), _, fail),
+        maplist([(H :- B), H-B]>>true, Rewritten, Pairs),
+        catch(wam_target:compile_clauses_to_wam(P, A, Pairs, Opts, WamCode), _, fail)
+    ->  rust_helper_pis(Helpers, Module, MyHPIs),
+        rust_lift_project_preds(Rest, Model, Opts, WS, HP, HC),
+        WamSubs = [lifted_wam(Module:P/A, WamCode)|WS],
+        append(MyHPIs, HP, HelperPIs),
+        append(Helpers, HC, HelperClauses)
+    ;   rust_lift_project_preds(Rest, Model, Opts, WamSubs, HelperPIs, HelperClauses)
+    ).
+
+rust_helper_pis([], _, []).
+rust_helper_pis([(HH :- _)|T], Module, [Module:N/A|R]) :-
+    functor(HH, N, A), rust_helper_pis(T, Module, R).
+
+rust_retract_helpers([]).
+rust_retract_helpers([Module:N/A|T]) :-
+    functor(Clean, N, A), retractall(Module:Clean), rust_retract_helpers(T).
+
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
         rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
@@ -5467,7 +5509,18 @@ rust_predicate_clause(Name/Arity, Head, Body) :-
 %  Two-pass compilation: collects all WAM-fallback predicates into a shared
 %  code+labels table so cross-predicate WAM calls (Execute/Call) work.
 %  Native-lowered predicates are compiled independently as before.
-compile_predicates_for_project(Predicates0, Options, Code) :-
+compile_predicates_for_project(Predicates00, Options00, Code) :-
+    % Pass -1 (T7 embedded): lift embedded aggregates into whole-body helpers +
+    % rewritten-clause WAM, asserting helpers into user for the duration. No-op
+    % unless parallel_aggregates(true).
+    rust_apply_embedded_lifts(Predicates00, Options00, Predicates0, Options0, HelperPIs),
+    setup_call_cleanup(
+        true,
+        compile_predicates_for_project_(Predicates0, Options0, Code),
+        rust_retract_helpers(HelperPIs)
+    ).
+
+compile_predicates_for_project_(Predicates0, Options, Code) :-
     % Pass 0 (T7 route-1): pull out predicates whose body is a parallel-eligible
     % aggregate — synthesise their enum/body helpers (added to the compile set)
     % and emit a native par_collect wrapper for each. No-op unless
@@ -5614,7 +5667,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         -> WamOptions = Options
         ;  WamOptions = [ite_use_y_level(true)|Options]
         ),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode),
+        % T7 embedded: a lifted predicate uses its rewritten-clause WAM (which
+        % calls the synthesised helper) instead of its original module clauses.
+        (   member(lifted_wam(Module:Pred/Arity, LiftedWam), Options)
+        ->  WamCode = LiftedWam
+        ;   wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode)
+        ),
         (   option(foreign_lowering(ForeignSpec), Options),
             rust_foreign_spec(Pred/Arity, ForeignSpec, _, _)
         ->  % Foreign-lowered: compile individually (not shared WAM)
