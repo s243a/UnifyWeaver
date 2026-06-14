@@ -635,9 +635,9 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, 'lowered_match:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%slot_0 = phi i64'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_rule_0_slot_0_op_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_0_op_0 = add i64 %slot_0, %plawk_rule_0_slot_0_op_0_len'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_1_op_0 = add i64 %slot_1, 2'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_len'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 %slot_1, 2'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -645,9 +645,9 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
 test(surface_scalar_assignment_uses_ordered_native_state_ops) :-
     plawk_parse_string("$1 == \"ERROR\" { last_len = length($0); last_len += 2 } END { print last_len }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_rule_0_slot_0_op_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_0_op_0 = add i64 %plawk_rule_0_slot_0_op_0_len, 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_0_op_1 = add i64 %rule_0_slot_0_op_0, 2'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %rule_0_body_slot_0_op_0_len, 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_1 = add i64 %rule_0_body_slot_0_op_0, 2'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'i64 %final_slot_0'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -655,11 +655,12 @@ test(surface_scalar_assignment_uses_ordered_native_state_ops) :-
 test(surface_scalar_if_else_uses_native_branch_phi) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { errors++; last_len = length($0) } else { non_errors++ } } END { print errors, non_errors, last_len }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_then:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_else:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_done:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_else:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_done:'))),
+    findall(guard, sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value'), Guards),
+    assertion(Guards == [guard]),
     assertion(once(sub_atom(DriverIR, _, _, _, '= phi i64'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

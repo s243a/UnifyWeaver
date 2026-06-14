@@ -272,8 +272,9 @@ stay in the compiled stream loop. Plain scalar assignment to integer literals or
 field lengths uses the same native slot path and is folded in source order with
 later `++`/`+=` updates, so programs such as `$1 == "ERROR" { last_len =
 length($0); hits++ } END { print hits, last_len }` also stay native. The first
-native `if/else` action slice lowers field-equality conditions around scalar
-slot updates, emits per-slot branch phis, and joins scalar rules through an
+native `if/else` action slice lowers field-equality conditions once at rule-body
+scope, threads the whole scalar slot vector through then/else action sequences,
+emits per-slot phis at the branch join, and joins scalar rules through an
 explicit `rule_N_done` label so downstream loop phis have stable predecessors.
 Branch-local associative updates, `print`, `next`, and `break` still need a
 broader intra-rule CFG. Native rule chains also support terminal
