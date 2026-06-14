@@ -263,7 +263,8 @@ the allocation-free `@wam_atom_field_subslice_value` helper, and native
 `index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
 Explicit print-side numeric coercions such as `int($N)` lower through the shared
 `@wam_atom_field_i64_value` parse helper and print zero when the field is
-missing or not a strict signed decimal.
+missing or not a strict signed decimal. The first composed arithmetic form,
+`int($N) + K`, lowers as the same native parse followed by an `add i64`.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
@@ -303,7 +304,8 @@ branch-local prints; the context supplies prefixed names while `$N`, `NF`,
 lowering clauses. Numeric expression lowering is also factored through a shared
 `plawk_i64_expr_ir` layer, so scalar updates and print expressions both consume
 the same native `i64` emitters for constants, `NR`, `NF`, `length($N)`, numeric
-field coercion, and `index($N, "...")` where those forms apply. Terminal
+field coercion, `int($N) + K`, and `index($N, "...")` where those forms apply.
+Terminal
 branch-local `next` branches directly to the stream-loop continuation and adds
 the selected branch's scalar values to the loop phi inputs. Terminal
 branch-local `break` branches to the same dedicated stream-close block as
