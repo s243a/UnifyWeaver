@@ -97,7 +97,7 @@ Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports
 field-equality conditions, scalar updates, field-key associative increments,
-selected-field `print` including `NR`, and terminal `next`/`break` inside
+selected-field and string-literal `print` including `NR`, and terminal `next`/`break` inside
 branches. The native lowering evaluates each source `if` guard once, threads
 every scalar slot through the then/else bodies, emits associative table
 increments and branch-local prints only on the selected branch, rejoins scalar

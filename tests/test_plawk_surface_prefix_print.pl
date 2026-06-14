@@ -213,6 +213,14 @@ test(parses_branch_print_if_else_rule) :-
             [inc_assoc(var(counts), field(1))])])],
         [end([print([assoc(var(counts), string("WARN"))])])])).
 
+test(parses_branch_string_print_if_else_rule) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { print \"error\", NR, $2 } else { print \"ok\", $1 } } END { print \"done\" }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [if(field_eq(1, "ERROR"),
+            [print([string("error"), special('NR'), field(2)])],
+            [print([string("ok"), field(1)])])])],
+        [end([print([string("done")])])])).
+
 test(parses_assoc_count_end_print_rule) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     assertion(Program == program([], [rule(always, [inc_assoc(var(counts), field(1))])],
@@ -495,6 +503,11 @@ test(surface_scalar_if_else_prints_branch_nr) :-
         "ERROR disk full\nWARN cpu hot\nERROR net down\n",
         "1 disk\n3 net\n4\n").
 
+test(surface_if_else_branch_prints_string_literals) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { print \"error\", NR, $2 } else { print \"ok\", $1 } } END { print \"done\" }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
+        "ok INFO\nerror 2 disk\nok WARN\ndone\n").
+
 test(surface_scalar_if_else_branch_next_skips_later_actions) :-
     run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; next } else { seen++ }; total++ } END { print total, seen, skipped }\n",
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
@@ -765,6 +778,17 @@ test(surface_if_else_branch_nr_print_uses_native_record_counter) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%current_nr = add i64 %plawk_nr, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_1_then_print_0_nr_0_fmt_0 = getelementptr'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_1_then_print_0_nr_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_1_then_print_0_nr_0_fmt_0, i64 %current_nr)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_if_else_branch_string_print_uses_prefixed_globals) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { print \"error\", $2 } else { print \"ok\", $1 } } END { print \"done\" }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_0_body_if_0_then_print_0_string_0 = private constant [6 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_0_body_if_0_else_print_0_string_0 = private constant [3 x i8]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_string_0_ptr = getelementptr [6 x i8], [6 x i8]* @.rule_0_body_if_0_then_print_0_string_0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_then_print_0_string_0_0 = call i32 (i8*, ...) @printf'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

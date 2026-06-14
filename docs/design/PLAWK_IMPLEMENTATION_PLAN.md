@@ -275,7 +275,7 @@ length($0); hits++ } END { print hits, last_len }` also stay native. The first
 native `if/else` action slice lowers field-equality conditions once at rule-body
 scope, threads the whole scalar slot vector through then/else action sequences,
 emits per-slot phis at the branch join, and can run field-key associative
-increments or selected-field `print` as branch-local side effects. Scalar,
+increments or selected-field/string-literal `print` as branch-local side effects. Scalar,
 mixed, and assoc-only branch bodies now share the same rule-body action walker;
 branch phis use each branch's actual exit block, including assoc side-effect
 `_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
