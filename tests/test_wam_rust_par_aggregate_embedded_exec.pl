@@ -23,6 +23,12 @@ eemb_down(N, [N|T]) :- N > 0, M is N - 1, eemb_down(M, T).
 % so route-1 (whole-body native wrapper) does not apply; route-2 must.
 eemb_collect(L) :- eemb_ready, findall(D, (eemb_fact(X), eemb_down(X, D)), L).
 
+% Composition: a driver predicate calls the embedded-aggregate predicate and
+% USES its result downstream (length/2). Exercises the WAM-to-WAM call chain —
+% the parallel embedded aggregate's result must surface from the callee's
+% permanent (Y) result register to the caller so length/2 sees it.
+eemb_driver(N) :- eemb_collect(L), length(L, N).
+
 cargo_ok :-
     catch(( process_create(path(cargo), ['--version'],
                            [stdout(null), stderr(null), process(P)]),
@@ -90,6 +96,49 @@ fn user_embedded_findall_parallel() {
     ( Status == exit(0), sub_string(OutS, _, _, _, "test result: ok")
     ->  true
     ;   format(user_error, "~n[embedded exec FAILED] status=~w~n~w~n~w~n", [Status, OutS, ErrS]),
+        fail ).
+
+test(embedded_aggregate_composes_in_call_chain,
+     [condition(cargo_ok), cleanup(safe_rmdir('output/test_paragg_embed_compose'))]) :-
+    Dir = 'output/test_paragg_embed_compose',
+    safe_rmdir(Dir),
+    once(write_wam_rust_project(
+        [user:eemb_driver/1, user:eemb_collect/1, user:eemb_ready/0,
+         user:eemb_fact/1, user:eemb_down/2],
+        [module_name(pcmp), parallel_aggregates(true)], Dir)),
+    atom_concat(Dir, '/src/lib.rs', LibRs),
+    read_file_to_string(LibRs, Src, []),
+    assertion(sub_string(Src, _, _, _, "ParAggregate")),
+    atom_concat(Dir, '/tests', TestsDir),
+    make_directory_path(TestsDir),
+    atom_concat(Dir, '/tests/pcmp_test.rs', TestPath),
+    % A caller that consumes the embedded aggregate''s result: length(L, N) over
+    % the 6-fact collect must give N = 6, proving the parallel result surfaces
+    % through the call chain.
+    TestSrc = '
+use pcmp::value::Value;
+use pcmp::state::WamState;
+use pcmp::eemb_driver_1;
+
+#[test]
+fn driver_uses_embedded_aggregate() {
+    let mut vm = WamState::new(vec![], std::collections::HashMap::new());
+    assert!(eemb_driver_1(&mut vm, Value::Unbound("N".to_string())), "eemb_driver should succeed");
+    assert_eq!(vm.bindings.get("N").cloned(), Some(Value::Integer(6)),
+               "length of the 6-fact embedded collect");
+}',
+    setup_call_cleanup(open(TestPath, write, S),
+                       format(S, "~w", [TestSrc]), close(S)),
+    format(atom(Cmd), 'cd "~w" && cargo test --test pcmp_test -- --nocapture 2>&1', [Dir]),
+    setup_call_cleanup(
+        process_create(path(sh), ['-c', Cmd],
+                       [stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+        ( read_string(Out, _, OutS), read_string(Err, _, ErrS) ),
+        ( close(Out), close(Err) )),
+    process_wait(Pid, Status),
+    ( Status == exit(0), sub_string(OutS, _, _, _, "test result: ok")
+    ->  true
+    ;   format(user_error, "~n[embedded compose exec FAILED] status=~w~n~w~n~w~n", [Status, OutS, ErrS]),
         fail ).
 
 :- end_tests(wam_rust_par_aggregate_embedded_exec).
