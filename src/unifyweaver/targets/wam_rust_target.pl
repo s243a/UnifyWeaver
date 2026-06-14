@@ -4509,10 +4509,9 @@ rust_parallel_annotation(_, '').
 % the clause is a single forkable aggregate that splits and the gate says
 % parallel. Gated by parallel_aggregates(true).
 
-rust_parallel_aggregate_wrapper(Pred/Arity, Options, Helpers, WrapperRust) :-
+rust_parallel_aggregate_wrapper(QPI, Options, Helpers, WrapperRust) :-
     option(parallel_aggregates(true), Options),
-    option(module_name(Mod0), Options, user),
-    ( atom(Mod0) -> Module = Mod0 ; Module = user ),
+    ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
     functor(Head, Pred, Arity),
     findall(t, clause(Module:Head, _), Marks), Marks = [t],  % exactly one clause
     clause(Module:Head, Body),                                % bind Head + Body
@@ -4542,6 +4541,41 @@ rust_agg_reduce(collect, "Value::List(__vals)") :- !.
 rust_agg_reduce(count, "Value::Integer(__vals.len() as i64)") :- !.
 rust_agg_reduce(sum, Expr) :- !,
     Expr = "{ let mut si: i64 = 0; let mut sf: f64 = 0.0; let mut isf = false; for v in &__vals { match v { Value::Integer(n) => { si += *n; sf += *n as f64; }, Value::Float(f) => { isf = true; sf += *f; }, _ => {} } } if isf { Value::Float(sf) } else { Value::Integer(si) } }".
+
+% Partition the project predicate list: predicates whose body is a
+% parallel-eligible aggregate are replaced by (a) their synthesised enum/body
+% helper predicates (compiled normally) and (b) a native par_collect wrapper
+% (returned in Wrappers, appended to the project code). All others pass through.
+rust_inject_parallel_aggregates(Preds0, Options, Preds, Wrappers) :-
+    (   option(parallel_aggregates(true), Options)
+    ->  rust_partition_par(Preds0, Options, Kept, HelperPIs, Wrappers),
+        append(Kept, HelperPIs, Preds)
+    ;   Preds = Preds0, Wrappers = []
+    ).
+
+rust_partition_par([], _, [], [], []).
+rust_partition_par([PI|Rest], Options, Kept, HelperPIs, Wrappers) :-
+    (   catch(rust_parallel_aggregate_wrapper(PI, Options, Helpers, Wrapper), _, fail)
+    ->  rust_pi_module(PI, Module),
+        maplist(rust_assert_helper(Module), Helpers, MyHelperPIs),
+        rust_partition_par(Rest, Options, Kept, RestHelperPIs, RestWrappers),
+        append(MyHelperPIs, RestHelperPIs, HelperPIs),
+        Wrappers = [Wrapper|RestWrappers]
+    ;   rust_partition_par(Rest, Options, Kept0, HelperPIs, Wrappers),
+        Kept = [PI|Kept0]
+    ).
+
+rust_pi_module(Module:_, Module) :- !.
+rust_pi_module(_, user).
+
+% Assert one synthesised helper clause into its source module (replacing any
+% prior version) and return its module-qualified PI for the compile set.
+rust_assert_helper(Module, (Head :- Body), Module:Name/Arity) :-
+    functor(Head, Name, Arity),
+    functor(Clean, Name, Arity),
+    retractall(Module:Clean),
+    copy_term((Head :- Body), (H :- B)),
+    assertz(Module:(H :- B)).
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
@@ -5356,7 +5390,12 @@ rust_predicate_clause(Name/Arity, Head, Body) :-
 %  Two-pass compilation: collects all WAM-fallback predicates into a shared
 %  code+labels table so cross-predicate WAM calls (Execute/Call) work.
 %  Native-lowered predicates are compiled independently as before.
-compile_predicates_for_project(Predicates, Options, Code) :-
+compile_predicates_for_project(Predicates0, Options, Code) :-
+    % Pass 0 (T7 route-1): pull out predicates whose body is a parallel-eligible
+    % aggregate — synthesise their enum/body helpers (added to the compile set)
+    % and emit a native par_collect wrapper for each. No-op unless
+    % parallel_aggregates(true).
+    rust_inject_parallel_aggregates(Predicates0, Options, Predicates, ParWrappers),
     % Pass 1: classify each predicate as native, wam, or failed
     classify_predicates(Predicates, Options, Classified),
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
@@ -5397,11 +5436,17 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     ),
     % Pass 3: generate code for each predicate
     generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
-    % Combine shared table + predicate code
+    % Combine shared table + predicate code (+ T7 parallel wrappers)
     (   SharedCode == ""
-    ->  atomic_list_concat(PredCodes, '\n\n', Code)
+    ->  atomic_list_concat(PredCodes, '\n\n', Body0)
     ;   atomic_list_concat(PredCodes, '\n\n', PredCodesStr),
-        format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
+        format(string(Body0), "~w\n\n~w", [SharedCode, PredCodesStr])
+    ),
+    (   ParWrappers == []
+    ->  Code = Body0
+    ;   atomic_list_concat(ParWrappers, '\n\n', WrapStr),
+        format(string(Code), "~w\n\n// --- T7 parallel-aggregate wrappers (route 1) ---\n~w",
+               [Body0, WrapStr])
     ).
 
 %% rust_pred_has_control_constructs(+Module:Pred/Arity)
