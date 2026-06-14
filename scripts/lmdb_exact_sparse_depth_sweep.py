@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (s243a)
-"""Sweep exact sparse parent histograms by child depth on an LMDB graph.
+"""Sweep exact sparse parent histograms by depth bucket on an LMDB graph.
 
 This probe answers a narrower question than the boundary-cache benchmarks:
-given root-reachable targets at increasing child-depths, how expensive is it to
-keep the parent-path histogram exact and sparse?
+given root-reachable targets at increasing depth buckets, how expensive is it
+to keep the parent-path histogram exact and sparse?
 
 For each sampled target and path-length budget it compares:
 
@@ -16,7 +16,8 @@ For each sampled target and path-length budget it compares:
 The summary treats a point cap such as 50 as an upper bound, not a cost paid by
 every histogram.  The observed support, tail-pruned support, path mass, DFS
 expansions, recurrence states, and state-based break-even hits are reported by
-target child-depth and path-length budget.
+target bucket and path-length budget.  The bucket can be either child-depth
+from the chosen root or maximum parent-path distance `L_max` back to that root.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from scripts.distribution_fit_comparison import (  # noqa: E402
 )
 from scripts.lmdb_parent_branching_diagnostic import (  # noqa: E402
     LmdbCategoryGraph,
+    deterministic_sample,
     parse_int_list,
     root_distances,
     select_targets_by_child_depth,
@@ -55,6 +57,7 @@ from scripts.parent_histogram_recurrence import recurrence_parent_histogram  # n
 
 
 DEFAULT_TARGET_DEPTHS = "1,2,3,4"
+DEFAULT_PARENT_DISTANCE_BUCKETS = "1,2,3,4,5,6"
 DEFAULT_BUDGETS = "10,20"
 
 
@@ -111,7 +114,31 @@ def break_even_hits(build_states, uncached_states, eval_bins):
     return float(build_states or 0) / saved_states
 
 
-def select_root_reachable_targets(graph, root, target_depths, args):
+def child_depth_target_row(target, child_depth, distances):
+    return {
+        "target_node": target,
+        "child_sample_depth": child_depth,
+        "selection_bucket": child_depth,
+        "L_min": distances["L_min"],
+        "L_max": distances["L_max"],
+        "distance_truncated": distances["truncated"],
+        "distance_cycle_skipped": distances["cycle_skipped"],
+    }
+
+
+def deterministic_sample_rows(rows, limit, seed):
+    rows = list(rows)
+    if limit is None or len(rows) <= limit:
+        return rows
+    sampled_nodes = set(deterministic_sample(
+        [row["target_node"] for row in rows],
+        limit,
+        seed,
+    ))
+    return [row for row in rows if row["target_node"] in sampled_nodes]
+
+
+def select_root_reachable_child_depth_targets(graph, root, target_depths, args):
     targets, child_depth_by_node, selection_counts = select_targets_by_child_depth(
         graph,
         root,
@@ -126,18 +153,92 @@ def select_root_reachable_targets(graph, root, target_depths, args):
     filtered = []
     for target in targets:
         distances = root_distances(target, root, graph.parents, args.max_parent_depth, distance_memo)
-        row = {
-            "target_node": target,
-            "child_sample_depth": child_depth_by_node[target],
-            "L_min": distances["L_min"],
-            "L_max": distances["L_max"],
-            "distance_truncated": distances["truncated"],
-            "distance_cycle_skipped": distances["cycle_skipped"],
-        }
+        row = child_depth_target_row(target, child_depth_by_node[target], distances)
         if distances["L_min"] is not None and not distances["truncated"]:
             kept.append(row)
         else:
             filtered.append(row)
+    return kept, filtered, selection_counts
+
+
+def collect_child_cone(graph, root, args):
+    """Collect descendants of root for parent-distance sampling."""
+    max_child_depth = int(args.root_cone_max_child_depth or 0)
+    max_nodes = int(args.root_cone_max_nodes or 0)
+    depth_by_node = {root: 0}
+    frontier = [root]
+    truncated_by_depth = False
+    truncated_by_nodes = False
+    child_edges_examined = 0
+    depth = 0
+    while frontier:
+        if max_child_depth > 0 and depth >= max_child_depth:
+            truncated_by_depth = True
+            break
+        next_nodes = []
+        for node in frontier:
+            children = deterministic_sample(
+                graph.children(node),
+                args.children_per_node,
+                "{}:root-cone:children:{}:{}".format(args.seed, depth + 1, node),
+            )
+            child_edges_examined += len(children)
+            next_nodes.extend(children)
+        next_nodes = deterministic_sample(
+            list(dict.fromkeys(next_nodes)),
+            args.frontier_limit,
+            "{}:root-cone:frontier:{}".format(args.seed, depth + 1),
+        )
+        frontier = []
+        for node in next_nodes:
+            if node in depth_by_node:
+                continue
+            if max_nodes > 0 and len(depth_by_node) >= max_nodes:
+                truncated_by_nodes = True
+                continue
+            depth_by_node[node] = depth + 1
+            frontier.append(node)
+        depth += 1
+    return {
+        "depth_by_node": depth_by_node,
+        "child_edges_examined": child_edges_examined,
+        "truncated_by_depth": truncated_by_depth,
+        "truncated_by_nodes": truncated_by_nodes,
+    }
+
+
+def select_root_reachable_parent_distance_targets(graph, root, buckets, args):
+    wanted = set(int(bucket) for bucket in buckets)
+    collection = collect_child_cone(graph, root, args)
+    depth_by_node = collection["depth_by_node"]
+    distance_memo = {}
+    candidates_by_bucket = {bucket: [] for bucket in sorted(wanted)}
+    filtered = []
+    for node, child_depth in sorted(depth_by_node.items(), key=lambda item: (item[1], item[0])):
+        distances = root_distances(node, root, graph.parents, args.max_parent_depth, distance_memo)
+        row = child_depth_target_row(node, child_depth, distances)
+        row["selection_bucket"] = distances["L_max"]
+        if distances["L_min"] is None or distances["truncated"]:
+            filtered.append(row)
+            continue
+        bucket = int(distances["L_max"])
+        if bucket in wanted:
+            candidates_by_bucket.setdefault(bucket, []).append(row)
+    kept = []
+    for bucket in sorted(wanted):
+        kept.extend(deterministic_sample_rows(
+            candidates_by_bucket.get(bucket, []),
+            args.targets_per_depth,
+            "{}:parent-distance-targets:{}".format(args.seed, bucket),
+        ))
+    selection_counts = {str(bucket): len(candidates_by_bucket.get(bucket, [])) for bucket in sorted(wanted)}
+    selection_counts.update({
+        "root_cone_nodes": len(depth_by_node),
+        "root_cone_max_observed_child_depth": max(depth_by_node.values()) if depth_by_node else None,
+        "root_cone_child_edges_examined": collection["child_edges_examined"],
+        "root_cone_truncated_by_depth": collection["truncated_by_depth"],
+        "root_cone_truncated_by_nodes": collection["truncated_by_nodes"],
+    })
     return kept, filtered, selection_counts
 
 
@@ -153,6 +254,7 @@ def comparison_record(args, target_row, budget, dfs_hist, dfs_stats, dfs_time_ns
         "root": args.root,
         "target_node": target_row["target_node"],
         "child_sample_depth": target_row["child_sample_depth"],
+        "selection_bucket": target_row["selection_bucket"],
         "budget": int(budget),
         "target_L_min": target_row["L_min"],
         "target_L_max": target_row["L_max"],
@@ -198,7 +300,7 @@ def comparison_record(args, target_row, budget, dfs_hist, dfs_stats, dfs_time_ns
 
 
 def summary_row(key, rows, point_cap):
-    depth, budget = key
+    bucket, budget = key
     reachable = [row for row in rows if row["reachable"]]
     exact_sparse = [
         row for row in reachable
@@ -216,7 +318,7 @@ def summary_row(key, rows, point_cap):
     ]
     return {
         "record_type": "exact_sparse_depth_sweep_summary_bucket",
-        "child_sample_depth": depth,
+        "selection_bucket": bucket,
         "budget": budget,
         "rows": len(rows),
         "reachable_rows": len(reachable),
@@ -243,6 +345,9 @@ def summary_row(key, rows, point_cap):
         "mean_time_ratio": mean(row["time_ratio"] for row in reachable),
         "mean_hits_to_break_even_states": mean(break_even),
         "p95_hits_to_break_even_states": percentile(break_even, 95),
+        "mean_child_sample_depth": mean(row["child_sample_depth"] for row in reachable),
+        "mean_target_L_min": mean(row["target_L_min"] for row in reachable),
+        "mean_target_L_max": mean(row["target_L_max"] for row in reachable),
     }
 
 
@@ -250,7 +355,7 @@ def build_summary(records, args):
     rows = [row for row in records if row.get("record_type") == "exact_sparse_depth_sweep_row"]
     by_key = {}
     for row in rows:
-        by_key.setdefault((row["child_sample_depth"], row["budget"]), []).append(row)
+        by_key.setdefault((row["selection_bucket"], row["budget"]), []).append(row)
     buckets = [summary_row(key, by_key[key], args.point_cap) for key in sorted(by_key)]
     selection = next(row for row in records if row.get("record_type") == "exact_sparse_depth_sweep_selection")
     return {
@@ -258,6 +363,7 @@ def build_summary(records, args):
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "graph": args.graph_name,
         "root": args.root,
+        "target_selection": args.target_selection,
         "point_cap": args.point_cap,
         "tail_epsilon": args.tail_epsilon,
         "selection": selection,
@@ -267,6 +373,7 @@ def build_summary(records, args):
 
 def markdown_summary(summary):
     selection = summary["selection"]
+    bucket_label = "child_depth" if summary.get("target_selection") == "child-depth" else "L_max_bucket"
     lines = [
         "# LMDB Exact Sparse Depth Sweep",
         "",
@@ -278,38 +385,59 @@ def markdown_summary(summary):
         "",
         "Tail epsilon: `{}`".format(summary["tail_epsilon"]),
         "",
+        "Target selection: `{}`".format(summary.get("target_selection", "child-depth")),
+        "",
         "## Selection",
         "",
-        "| child_depth | sampled_frontier_nodes | selected_targets | root_reachable_targets | filtered_targets |",
+        "| {} | candidate_nodes | selected_targets | root_reachable_targets | filtered_targets |".format(bucket_label),
         "|------------:|-----------------------:|-----------------:|-----------------------:|-----------------:|",
     ]
-    selected_by_depth = Counter(row["child_sample_depth"] for row in selection["selected_targets"])
-    kept_by_depth = Counter(row["child_sample_depth"] for row in selection["root_reachable_targets"])
-    filtered_by_depth = Counter(row["child_sample_depth"] for row in selection["filtered_targets"])
-    for depth in sorted(set(selection["selection_counts"]) | set(selected_by_depth) | set(kept_by_depth) | set(filtered_by_depth), key=int):
-        depth_int = int(depth)
-        lines.append("| {depth} | {frontier} | {selected} | {kept} | {filtered} |".format(
-            depth=depth_int,
-            frontier=selection["selection_counts"].get(str(depth), selection["selection_counts"].get(depth, 0)),
-            selected=selected_by_depth.get(depth_int, 0),
-            kept=kept_by_depth.get(depth_int, 0),
-            filtered=filtered_by_depth.get(depth_int, 0),
+    selected_by_bucket = Counter(row["selection_bucket"] for row in selection["selected_targets"] if row["selection_bucket"] is not None)
+    kept_by_bucket = Counter(row["selection_bucket"] for row in selection["root_reachable_targets"] if row["selection_bucket"] is not None)
+    filtered_by_bucket = Counter(row["selection_bucket"] for row in selection["filtered_targets"] if row["selection_bucket"] is not None)
+    numeric_count_keys = [
+        key for key in selection["selection_counts"]
+        if isinstance(key, int) or (isinstance(key, str) and key.lstrip("-").isdigit())
+    ]
+    for bucket in sorted(set(int(key) for key in numeric_count_keys) | set(selected_by_bucket) | set(kept_by_bucket) | set(filtered_by_bucket)):
+        lines.append("| {bucket} | {frontier} | {selected} | {kept} | {filtered} |".format(
+            bucket=bucket,
+            frontier=selection["selection_counts"].get(str(bucket), selection["selection_counts"].get(bucket, 0)),
+            selected=selected_by_bucket.get(bucket, 0),
+            kept=kept_by_bucket.get(bucket, 0),
+            filtered=filtered_by_bucket.get(bucket, 0),
         ))
+    if summary.get("target_selection") == "parent-distance":
+        lines.extend([
+            "",
+            "| root_cone_nodes | max_observed_child_depth | child_edges_examined | truncated_by_depth | truncated_by_nodes |",
+            "|----------------:|-------------------------:|---------------------:|--------------------|--------------------|",
+            "| {nodes} | {depth} | {edges} | {depth_trunc} | {node_trunc} |".format(
+                nodes=selection["selection_counts"].get("root_cone_nodes", 0),
+                depth=selection["selection_counts"].get("root_cone_max_observed_child_depth", "n/a"),
+                edges=selection["selection_counts"].get("root_cone_child_edges_examined", 0),
+                depth_trunc="yes" if selection["selection_counts"].get("root_cone_truncated_by_depth") else "no",
+                node_trunc="yes" if selection["selection_counts"].get("root_cone_truncated_by_nodes") else "no",
+            ),
+        ])
     lines.extend([
         "",
         "## Depth And Budget Buckets",
         "",
-        "| child_depth | budget | rows | exact_sparse | exact_matches | mean_paths | max_paths | mean_eff_bins | max_eff_bins | pct_eff_bins_le_cap | mean_dfs_nodes | mean_rec_states | mean_state_ratio | mean_time_ratio | mean_break_even_hits |",
-        "|------------:|-------:|-----:|-------------:|--------------:|-----------:|----------:|--------------:|-------------:|--------------------:|---------------:|----------------:|-----------------:|----------------:|---------------------:|",
+        "| {} | budget | rows | exact_sparse | exact_matches | mean_child_depth | mean_L_min | mean_L_max | mean_paths | max_paths | mean_eff_bins | max_eff_bins | pct_eff_bins_le_cap | mean_dfs_nodes | mean_rec_states | mean_state_ratio | mean_time_ratio | mean_break_even_hits |".format(bucket_label),
+        "|------------:|-------:|-----:|-------------:|--------------:|-----------------:|-----------:|-----------:|-----------:|----------:|--------------:|-------------:|--------------------:|---------------:|----------------:|-----------------:|----------------:|---------------------:|",
     ])
     for row in summary["buckets"]:
         lines.append(
-            "| {depth} | {budget} | {rows} | {exact_sparse} | {exact} | {mean_paths:.3f} | {max_paths} | {mean_bins:.3f} | {max_bins} | {pct_bins:.3f} | {dfs_nodes:.3f} | {rec_states:.3f} | {state_ratio:.3f} | {time_ratio:.3f} | {break_even:.3f} |".format(
-                depth=row["child_sample_depth"],
+            "| {bucket} | {budget} | {rows} | {exact_sparse} | {exact} | {mean_child:.3f} | {mean_lmin:.3f} | {mean_lmax:.3f} | {mean_paths:.3f} | {max_paths} | {mean_bins:.3f} | {max_bins} | {pct_bins:.3f} | {dfs_nodes:.3f} | {rec_states:.3f} | {state_ratio:.3f} | {time_ratio:.3f} | {break_even:.3f} |".format(
+                bucket=row["selection_bucket"],
                 budget=row["budget"],
                 rows=row["rows"],
                 exact_sparse=row["exact_sparse_under_point_cap_rows"],
                 exact=row["exact_match_rows"],
+                mean_child=row["mean_child_sample_depth"],
+                mean_lmin=row["mean_target_L_min"],
+                mean_lmax=row["mean_target_L_max"],
                 mean_paths=row["mean_path_count"],
                 max_paths=row["max_path_count"],
                 mean_bins=row["mean_effective_support_bins"],
@@ -337,18 +465,34 @@ def run_sweep(args):
     graph = LmdbCategoryGraph(args.lmdb_dir)
     try:
         target_depths = parse_int_list(args.target_depths)
+        parent_distance_buckets = parse_int_list(args.parent_distance_buckets)
         budgets = parse_int_list(args.budgets)
-        root_reachable_targets, filtered_targets, selection_counts = select_root_reachable_targets(
-            graph,
-            args.root,
-            target_depths,
-            args,
-        )
+        if args.target_selection == "child-depth":
+            root_reachable_targets, filtered_targets, selection_counts = select_root_reachable_child_depth_targets(
+                graph,
+                args.root,
+                target_depths,
+                args,
+            )
+            target_buckets = target_depths
+        elif args.target_selection == "parent-distance":
+            root_reachable_targets, filtered_targets, selection_counts = select_root_reachable_parent_distance_targets(
+                graph,
+                args.root,
+                parent_distance_buckets,
+                args,
+            )
+            target_buckets = parent_distance_buckets
+        else:
+            raise ValueError("unknown target selection: {}".format(args.target_selection))
         records = [{
             "record_type": "exact_sparse_depth_sweep_selection",
             "graph": args.graph_name,
             "root": args.root,
+            "target_selection": args.target_selection,
             "target_depths": target_depths,
+            "target_buckets": target_buckets,
+            "parent_distance_buckets": parent_distance_buckets,
             "budgets": budgets,
             "selection_counts": selection_counts,
             "selected_targets": root_reachable_targets + filtered_targets,
@@ -358,6 +502,8 @@ def run_sweep(args):
             "frontier_limit": args.frontier_limit,
             "targets_per_depth": args.targets_per_depth,
             "max_parent_depth": args.max_parent_depth,
+            "root_cone_max_child_depth": args.root_cone_max_child_depth,
+            "root_cone_max_nodes": args.root_cone_max_nodes,
             "path_cap": args.path_cap,
             "expansion_cap": args.expansion_cap,
         }]
@@ -422,12 +568,16 @@ def parse_args(argv=None):
     parser.add_argument("--lmdb-dir", type=Path, required=True, help="Numeric-keyed category LMDB directory.")
     parser.add_argument("--root", type=int, required=True, help="Numeric root id.")
     parser.add_argument("--graph-name", default="lmdb_exact_sparse_depth_sweep", help="Graph label used in output filenames.")
+    parser.add_argument("--target-selection", choices=["child-depth", "parent-distance"], default="child-depth", help="Target bucket axis.")
     parser.add_argument("--target-depths", default=DEFAULT_TARGET_DEPTHS, help="Child depths to sample, e.g. `1,2,3,4`.")
+    parser.add_argument("--parent-distance-buckets", default=DEFAULT_PARENT_DISTANCE_BUCKETS, help="L_max parent-distance buckets for `--target-selection parent-distance`.")
     parser.add_argument("--children-per-node", type=int, default=50000, help="Child sample cap per frontier node.")
     parser.add_argument("--frontier-limit", type=int, default=50000, help="Depth frontier sample cap.")
     parser.add_argument("--targets-per-depth", type=int, default=12, help="Targets sampled per requested child depth.")
     parser.add_argument("--budgets", default=DEFAULT_BUDGETS, help="Parent path-length budgets, e.g. `10,20`.")
     parser.add_argument("--max-parent-depth", type=int, default=48, help="Root-reachable filtering horizon.")
+    parser.add_argument("--root-cone-max-child-depth", type=int, default=0, help="Parent-distance mode root-cone child-depth cap; 0 means no depth cap.")
+    parser.add_argument("--root-cone-max-nodes", type=int, default=50000, help="Parent-distance mode root-cone node cap; 0 means no node cap.")
     parser.add_argument("--path-cap", type=int, default=100000, help="Maximum root-reaching paths before capping one row.")
     parser.add_argument("--expansion-cap", type=int, default=250000, help="Maximum DFS/recurrence states before capping one row.")
     parser.add_argument("--point-cap", type=int, default=50, help="Exact sparse support cap used for classification.")
@@ -446,6 +596,10 @@ def parse_args(argv=None):
         raise SystemExit("--targets-per-depth must be positive")
     if args.max_parent_depth <= 0:
         raise SystemExit("--max-parent-depth must be positive")
+    if args.root_cone_max_child_depth < 0:
+        raise SystemExit("--root-cone-max-child-depth must be non-negative")
+    if args.root_cone_max_nodes < 0:
+        raise SystemExit("--root-cone-max-nodes must be non-negative")
     if args.point_cap <= 0:
         raise SystemExit("--point-cap must be positive")
     return args

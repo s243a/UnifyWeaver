@@ -559,6 +559,16 @@ overhead, but the state model still estimates break-even near one cache hit.
 This supports carrying exact sparse histograms deeper on SimpleWiki before
 trying binomial, Gamma, or sampled approximations.
 
+`docs/reports/lmdb_exact_sparse_depth_sweep_simplewiki_articles_exact_sparse_parent_distance_sweep_b10_20_20260614T165557Z.md`
+reruns the same question using `L_max` parent-distance buckets instead of
+child-depth buckets.  For the full SimpleWiki `Category:Articles` root cone in
+this LMDB (`14,680` nodes, max child depth `3`), buckets `L_max=4..6` had no
+candidates.  Buckets `1`, `2`, and `3` again had all sampled rows exact sparse
+under budgets `10` and `20`.  The `L_max=3` bucket matched the earlier deepest
+child-depth result: max path mass `3`, mean effective support `1.447`, and max
+effective support `3`.  This makes `Category:Articles` a useful low-branching
+validation cone, but not a stress case for deep parent-distance histograms.
+
 `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
 small excess parent branching is binomial-like, while larger parent branching is
 better treated as a compound/convolution model before fitting a closed form.
