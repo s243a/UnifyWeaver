@@ -203,10 +203,11 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ).
 
 %% compile_clauses_to_wam_items_native(+Pred, +Arity, +Clauses, +Options, -Items)
-%  Direct items path for simple single-clause predicates. This is the first
-%  incremental native producer slice; aggregates, indexing, lowered builtins,
-%  multi-goal rules, and peephole-sensitive shapes intentionally fall back to
-%  the legacy text bridge.
+%  Direct items path for simple single-clause predicates. This incremental
+%  native producer slice covers facts, simple user calls, generic builtin calls,
+%  and conjunctions of those shapes. Aggregates, indexing, lowered builtins,
+%  control flow, compound body arguments, and peephole-sensitive shapes
+%  intentionally fall back to the legacy text bridge.
 compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
     normalize_goals(Body, []),
     !,
@@ -217,36 +218,116 @@ compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :
     append(HeadItems, [proceed], InstrItems),
     Items = [label(Label)|InstrItems].
 compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
-    normalize_goals(Body, [Goal]),
-    native_simple_execute_goal(Goal),
+    normalize_goals(Body, Goals),
+    Goals = [_|_],
+    native_simple_goal_sequence(Goals),
     !,
     Head =.. [_|Args],
     empty_varmap(V0),
-    pre_assign_permanent_vars([Goal], V0, V0a),
-    compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
-    compile_goal_execute_items_simple(Goal, V1, _Vf, GoalItems),
+    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     format(string(Label), "~w/~w", [Pred, Arity]),
+    (   native_simple_goals_need_env(Goals, ExpandedGoals)
+    ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
+        compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
+        compile_goals_items_simple(Goals, V1, yes, _Vf, GoalItems),
+        PrefixItems = [label(Label), allocate]
+    ;   compile_head_arguments_items(Args, 1, V0, V1, HeadItems),
+        compile_goals_items_simple(Goals, V1, no, _Vf, GoalItems),
+        PrefixItems = [label(Label)]
+    ),
     append(HeadItems, GoalItems, InstrItems),
-    Items = [label(Label), allocate|InstrItems].
+    append(PrefixItems, InstrItems, Items).
 
-native_simple_execute_goal(Goal) :-
+native_simple_goals_need_env(Goals, ExpandedGoals) :-
+    (   length(ExpandedGoals, N), N > 1
+    ;   goals_contain_call_or_aggregate(Goals)
+    ),
+    !.
+
+native_simple_goal_sequence(Goals) :-
+    forall(member(Goal, Goals), native_simple_goal(Goal)).
+
+native_simple_goal(M:InnerGoal) :-
+    (atom(M) ; string(M)),
+    !,
+    native_simple_goal(InnerGoal).
+native_simple_goal(Goal) :-
     callable(Goal),
-    Goal =.. [GoalPred|Args],
-    length(Args, Arity),
-    \+ is_builtin_pred(GoalPred, Arity),
+    \+ native_special_goal(Goal),
+    Goal =.. [_GoalPred|Args],
+    \+ goal_has_visited_set_arg(Goal),
     forall(member(Arg, Args), native_simple_goal_arg(Arg)).
+
+native_special_goal('!') :- !.
+native_special_goal(Goal) :-
+    nonvar(Goal),
+    (   Goal = aggregate_all(_, _, _)
+    ;   Goal = findall(_, _, _)
+    ;   Goal = bagof(_, _, _)
+    ;   Goal = setof(_, _, _)
+    ;   Goal = (_ -> _ ; _)
+    ;   Goal = (_ -> _)
+    ;   Goal = (_ ; _)
+    ;   Goal = \+(_)
+    ;   Goal = once(_)
+    ;   Goal = forall(_, _)
+    ;   is_term_construction_goal(Goal)
+    ).
 
 native_simple_goal_arg(Arg) :-
     var(Arg), !.
 native_simple_goal_arg(Arg) :-
     atomic(Arg).
 
-compile_goal_execute_items_simple(Goal, V0, Vf, Items) :-
+compile_goals_items_simple([], V, _, V, []).
+compile_goals_items_simple([Goal], V0, HasEnv, Vf, Items) :-
+    !,
+    compile_last_goal_items_simple(Goal, V0, HasEnv, Vf, Items).
+compile_goals_items_simple([Goal|Rest], V0, HasEnv, Vf, Items) :-
+    compile_goal_call_items_simple(Goal, V0, V1, GoalItems),
+    compile_goals_items_simple(Rest, V1, HasEnv, Vf, RestItems),
+    append(GoalItems, RestItems, Items).
+
+compile_goal_call_items_simple(M:InnerGoal, V0, Vf, Items) :-
+    (atom(M) ; string(M)),
+    !,
+    compile_goal_call_items_simple(InnerGoal, V0, Vf, Items).
+compile_goal_call_items_simple(Goal, V0, Vf, Items) :-
     Goal =.. [GoalPred|Args],
     length(Args, Arity),
     compile_put_arguments_items_simple(Args, 1, V0, Vf, PutItems),
     wam_functor_token(GoalPred, Arity, PredTok),
-    append(PutItems, [deallocate, execute(PredTok)], Items).
+    wam_arity_token(Arity, ArityTok),
+    (   is_builtin_pred(GoalPred, Arity)
+    ->  CallItem = builtin_call(PredTok, ArityTok)
+    ;   CallItem = call(PredTok, ArityTok)
+    ),
+    append(PutItems, [CallItem], Items).
+
+compile_last_goal_items_simple(M:InnerGoal, V0, HasEnv, Vf, Items) :-
+    (atom(M) ; string(M)),
+    !,
+    compile_last_goal_items_simple(InnerGoal, V0, HasEnv, Vf, Items).
+compile_last_goal_items_simple(Goal, V0, yes, Vf, Items) :-
+    Goal =.. [GoalPred|Args],
+    length(Args, Arity),
+    compile_put_arguments_items_simple(Args, 1, V0, Vf, PutItems),
+    wam_functor_token(GoalPred, Arity, PredTok),
+    wam_arity_token(Arity, ArityTok),
+    (   is_builtin_pred(GoalPred, Arity)
+    ->  append(PutItems, [builtin_call(PredTok, ArityTok), deallocate, proceed], Items)
+    ;   append(PutItems, [deallocate, execute(PredTok)], Items)
+    ).
+compile_last_goal_items_simple(Goal, V0, no, Vf, Items) :-
+    Goal =.. [GoalPred|Args],
+    length(Args, Arity),
+    compile_put_arguments_items_simple(Args, 1, V0, Vf, PutItems),
+    wam_functor_token(GoalPred, Arity, PredTok),
+    wam_arity_token(Arity, ArityTok),
+    (   is_builtin_pred(GoalPred, Arity)
+    ->  append(PutItems, [builtin_call(PredTok, ArityTok), proceed], Items)
+    ;   append(PutItems, [execute(PredTok)], Items)
+    ).
 
 compile_put_arguments_items_simple([], _, V, V, []).
 compile_put_arguments_items_simple([Arg|Rest], I, V0, Vf, Items) :-
@@ -355,6 +436,9 @@ wam_arg_register(I, Ai) :-
 
 wam_functor_token(F, Arity, Token) :-
     format(string(Token), "~w/~w", [F, Arity]).
+
+wam_arity_token(Arity, Token) :-
+    number_string(Arity, Token).
 
 wam_operand_string(Value, String) :-
     (   string(Value)
