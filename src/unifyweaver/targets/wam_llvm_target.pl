@@ -54,6 +54,7 @@
     llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
     llvm_emit_atom_field_i64_cmp_guard/7,% +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR
     llvm_emit_atom_field_i64/5,          % +ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR
+    llvm_emit_atom_field_i64_or_default/7,% +ValueIR, +FieldIndex, +SepCode, +DefaultValue, +ParseBase, +ResultIR, -CallIR
     llvm_emit_c_string_global/5,         % +GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen
     llvm_emit_printf_i64/5,              % +FmtGlobal, +FmtVar, +PrintVar, +ValueIR, -Parts
     llvm_emit_printf_slice/6,            % +FmtGlobal, +FmtVar, +PrintVar, +LenIR, +PtrIR, -Parts
@@ -16896,6 +16897,21 @@ llvm_emit_atom_field_i64(ValueIR, FieldIndex, SepCode, ParseBase, CallIR) :-
         [ParseBase, ValueIR, FieldIndex, SepCode,
          ParseBase, ParseBase,
          ParseBase, ParseBase]).
+
+%% llvm_emit_atom_field_i64_or_default(+ValueIR, +FieldIndex, +SepCode, +DefaultValue, +ParseBase, +ResultIR, -CallIR)
+%
+%  Emit a native signed-decimal i64 parse and coerce failed parses to
+%  DefaultValue. This is useful for AWK-style numeric contexts while keeping the
+%  parse value/success pair reusable for stricter consumers.
+llvm_emit_atom_field_i64_or_default(ValueIR, FieldIndex, SepCode, DefaultValue,
+        ParseBase, ResultIR, CallIR) :-
+    integer(FieldIndex),
+    integer(DefaultValue),
+    llvm_emit_atom_field_i64(ValueIR, FieldIndex, SepCode, ParseBase, ParseIR),
+    format(atom(SelectIR),
+        '  ~w = select i1 %~w_ok, i64 %~w_value, i64 ~w',
+        [ResultIR, ParseBase, ParseBase, DefaultValue]),
+    format(atom(CallIR), '~w~n~w', [ParseIR, SelectIR]).
 
 %% llvm_emit_c_string_global(+GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen)
 %

@@ -786,6 +786,8 @@ test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_ok = extractvalue %WamI64Parse'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_0_op_0_field_i64_ok'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_1_op_1_field_i64_ok'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -793,7 +795,7 @@ test(surface_scalar_assignment_uses_ordered_native_state_ops) :-
     plawk_parse_string("$1 == \"ERROR\" { last_len = length($0); last_len += 2 } END { print last_len }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %rule_0_body_slot_0_op_0_len, 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 0, %rule_0_body_slot_0_op_0_len'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_1 = add i64 %rule_0_body_slot_0_op_0, 2'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'i64 %final_slot_0'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),

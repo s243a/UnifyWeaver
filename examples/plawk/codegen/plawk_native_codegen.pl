@@ -14,7 +14,7 @@
      llvm_emit_atom_field_subslice/7,
      llvm_emit_atom_field_index/7,
      llvm_emit_atom_field_i64_cmp_guard/7,
-     llvm_emit_atom_field_i64/5,
+     llvm_emit_atom_field_i64_or_default/7,
      llvm_emit_c_string_global/5,
      llvm_emit_printf_i64/5,
      llvm_emit_printf_slice/6,
@@ -1425,46 +1425,38 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(BranchNextExits, RestNextExits, NextExits) }.
 
-plawk_scalar_update_operation_ir(add(const(Value)), _FieldSeparator, Prefix, SlotIndex,
-        OpIndex, InputValue, NextValue, ''-Line) :-
-    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(Line), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, Value]).
-plawk_scalar_update_operation_ir(add(length(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+plawk_scalar_update_operation_ir(add(Expr), FieldSeparator, Prefix, SlotIndex,
         OpIndex, InputValue, NextValue, ''-IR) :-
-    format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
+    plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, SetupIR),
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
-    format(atom(IR), '~w~n~w', [LengthCall, AddLine]).
-plawk_scalar_update_operation_ir(add(field_i64(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, InputValue, NextValue, ''-IR) :-
-    format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64', [Prefix, SlotIndex, OpIndex]),
-    llvm_emit_atom_field_i64('%line', FieldIndex, FieldSeparator, ParseBase, ParseCall),
-    format(atom(DeltaValue), '%~w_delta', [ParseBase]),
-    format(atom(DeltaLine), '  ~w = select i1 %~w_ok, i64 %~w_value, i64 0',
-        [DeltaValue, ParseBase, ParseBase]),
-    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(AddLine), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, DeltaValue]),
-    format(atom(IR), '~w~n~w~n~w', [ParseCall, DeltaLine, AddLine]).
-plawk_scalar_update_operation_ir(set(const(Value)), _FieldSeparator, Prefix, SlotIndex,
-        OpIndex, _InputValue, NextValue, ''-Line) :-
-    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(Line), '  ~w = add i64 0, ~w', [NextValue, Value]).
-plawk_scalar_update_operation_ir(set(length(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+    format(atom(AddLine), '  ~w = add i64 ~w, ~w',
+        [NextValue, InputValue, ValueIR]),
+    plawk_join_nonempty_ir([SetupIR, AddLine], IR).
+plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, ''-IR) :-
+    plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, SetupIR),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
+    plawk_join_nonempty_ir([SetupIR, SetLine], IR).
+
+plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
+        _OpIndex, ValueIR, '') :-
+    integer(Value),
+    format(atom(ValueIR), '~w', [Value]).
+plawk_scalar_numeric_expr_ir(length(FieldIndex), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, IR) :-
     format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
-    format(atom(IR), '~w~n~w', [LengthCall, SetLine]).
-plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, _InputValue, NextValue, ''-IR) :-
-    format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64', [Prefix, SlotIndex, OpIndex]),
-    llvm_emit_atom_field_i64('%line', FieldIndex, FieldSeparator, ParseBase, ParseCall),
-    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
-    format(atom(SetLine), '  ~w = select i1 %~w_ok, i64 %~w_value, i64 0',
-        [NextValue, ParseBase, ParseBase]),
-    format(atom(IR), '~w~n~w', [ParseCall, SetLine]).
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, IR),
+    format(atom(ValueIR), '%~w', [LengthBase]).
+plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, IR) :-
+    format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64',
+        [Prefix, SlotIndex, OpIndex]),
+    format(atom(ValueIR), '%~w_value_or_default', [ParseBase]),
+    llvm_emit_atom_field_i64_or_default('%line', FieldIndex, FieldSeparator, 0,
+        ParseBase, ValueIR, IR).
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.
