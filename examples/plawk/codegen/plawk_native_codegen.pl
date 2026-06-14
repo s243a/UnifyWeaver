@@ -19,6 +19,7 @@
      llvm_emit_printf_string/5,
      llvm_emit_printf_string/6,
      llvm_emit_printf0/5,
+     llvm_emit_stream_driver_ir/3,
      llvm_emit_ascii_case_slice_print/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
@@ -80,7 +81,7 @@ print_line:
 ~w
 ',
         [BeginGlobalIR, GuardGlobalIR, PrintGlobalIR]),
-    plawk_stream_driver_ir(InputPath,
+    llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
@@ -121,7 +122,7 @@ plawk_program_native_driver_ir(
 ~w~w
   ret i32 0',
         [FinalStatePhiIR, EndPrintIR]),
-    plawk_stream_driver_ir(InputPath,
+    llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
             RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
@@ -158,7 +159,7 @@ plawk_program_native_driver_ir(
 ~w~w
   ret i32 0',
         [FinalStatePhiIR, EndPrintIR]),
-    plawk_stream_driver_ir(InputPath,
+    llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
@@ -193,7 +194,7 @@ plawk_program_native_driver_ir(
 ~w
   ret i32 0',
         [EndPrintIR]),
-    plawk_stream_driver_ir(InputPath,
+    llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
@@ -216,115 +217,6 @@ plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
 
 ',
         [SurfaceGlobals]).
-
-% Shared native streaming skeleton. Surface-specific lowerers provide globals,
-% loop-carried state phis, the per-record lowered block, continuation phis, an
-% optional terminal-break close block, and the close-success block; file
-% open/read/eof/close stays backend infrastructure.
-plawk_stream_driver_ir(
-    InputPath,
-    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
-        ContinueIR, CloseOkLabel, CloseOkIR),
-    DriverIR
-) :-
-    plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
-            ContinueIR, CloseOkLabel, CloseOkIR),
-        DriverIR).
-
-plawk_stream_driver_ir(
-    InputPath,
-    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
-        ContinueIR, CloseOkLabel, CloseOkIR),
-    DriverIR
-) :-
-    plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
-            ContinueIR, '', CloseOkLabel, CloseOkIR),
-        DriverIR).
-
-plawk_stream_driver_ir(
-    InputPath,
-    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
-        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
-    DriverIR
-) :-
-    llvm_emit_c_string_global(plawk_surface_path, InputPath, PathGlobalIR, PathLen, BytesLen),
-    format(atom(DriverIR),
-'~w
-@.plawk_surface_eof = private constant [12 x i8] c"end_of_file\\00"
-~w
-
-define i32 @main() {
-entry:
-  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.plawk_surface_path, i32 0, i32 0
-  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
-  %path0 = insertvalue %Value undef, i32 0, 0
-  %path = insertvalue %Value %path0, i64 %path_id, 1
-~w
-  %handle = call %Value @wam_stream_open_value(%Value %path)
-  %handle_tag = extractvalue %Value %handle, 0
-  %handle_is_int = icmp eq i32 %handle_tag, 1
-  br i1 %handle_is_int, label %check_handle_value, label %fail_open
-
-check_handle_value:
-  %handle_payload = extractvalue %Value %handle, 1
-  %handle_ok = icmp sgt i64 %handle_payload, 0
-  br i1 %handle_ok, label %loop, label %fail_open
-
-loop:
-~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
-  %line_tag = extractvalue %Value %line, 0
-  %line_payload = extractvalue %Value %line, 1
-  %line_is_int = icmp eq i32 %line_tag, 1
-  %line_bad_payload = icmp slt i64 %line_payload, 0
-  %line_bad = and i1 %line_is_int, %line_bad_payload
-  br i1 %line_bad, label %fail_read, label %check_line_atom
-
-check_line_atom:
-  %line_is_atom = icmp eq i32 %line_tag, 0
-  br i1 %line_is_atom, label %check_eof, label %fail_line_tag
-
-check_eof:
-  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
-  %eof_s = getelementptr [12 x i8], [12 x i8]* @.plawk_surface_eof, i32 0, i32 0
-  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
-  %is_eof = icmp eq i32 %eof_cmp, 0
-  br i1 %is_eof, label %close_stream, label %~w
-
-~w:
-~w
-
-continue_loop:
-~w
-  br label %loop
-
-~w
-close_stream:
-  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
-  br i1 %close_ok, label %~w, label %fail_close
-
-~w
-
-fail_open:
-  ret i32 10
-
-fail_read:
-  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
-  ret i32 11
-
-fail_line_tag:
-  %close_ignore_line_tag = call i1 @wam_stream_close_value(%Value %handle)
-  ret i32 12
-
-fail_close:
-  ret i32 16
-}
-',
-        [PathGlobalIR, RuntimeGlobals,
-         BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
-         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 % State plans keep recognized PLAWK state separate from the LLVM slot numbering.
 % Associative arrays use a separate table plan because they are pointer state.

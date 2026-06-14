@@ -58,6 +58,7 @@
     llvm_emit_printf_string/5,           % +FmtGlobal, +FmtVar, +PrintVar, +PtrIR, -Parts
     llvm_emit_printf_string/6,           % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts
     llvm_emit_printf0/5,                 % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts
+    llvm_emit_stream_driver_ir/3,        % +InputPath, +DriverBlocks, -DriverIR
     llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
 ]).
 
@@ -16758,6 +16759,117 @@ llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
     format(atom(PrintCall),
         '  %~w = call i32 (i8*, ...) @printf(i8* %~w)',
         [PrintVar, FmtVar]).
+
+%% llvm_emit_stream_driver_ir(+InputPath, +DriverBlocks, -DriverIR)
+%
+%  Emit the reusable native file-stream driver skeleton. Surface-specific
+%  lowerers provide runtime globals, optional entry setup, loop-carried phis,
+%  per-record lowered IR, continuation phis, optional terminal-break close IR,
+%  and the close-success block.
+llvm_emit_stream_driver_ir(
+    InputPath,
+    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_stream_driver_ir(
+    InputPath,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_stream_driver_ir(
+    InputPath,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_c_string_global(wam_stream_input_path, InputPath, PathGlobalIR, PathLen, BytesLen),
+    format(atom(DriverIR),
+'~w
+@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
+~w
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.wam_stream_input_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line_tag = extractvalue %Value %line, 0
+  %line_payload = extractvalue %Value %line, 1
+  %line_is_int = icmp eq i32 %line_tag, 1
+  %line_bad_payload = icmp slt i64 %line_payload, 0
+  %line_bad = and i1 %line_is_int, %line_bad_payload
+  br i1 %line_bad, label %fail_read, label %check_line_atom
+
+check_line_atom:
+  %line_is_atom = icmp eq i32 %line_tag, 0
+  br i1 %line_is_atom, label %check_eof, label %fail_line_tag
+
+check_eof:
+  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
+  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
+  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
+  %is_eof = icmp eq i32 %eof_cmp, 0
+  br i1 %is_eof, label %close_stream, label %~w
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_line_tag:
+  %close_ignore_line_tag = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 12
+
+fail_close:
+  ret i32 16
+}
+',
+        [PathGlobalIR, RuntimeGlobals,
+         BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
+         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 %% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
 %

@@ -301,6 +301,38 @@ test(printf0_emitter) :-
         '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'
     ]).
 
+test(stream_driver_emitter_compact_blocks) :-
+    llvm_emit_stream_driver_ir('input.txt',
+        driver_blocks('@.fmt = private constant [2 x i8] c"\\0A\\00"',
+            '', lowered_test, '  br label %continue_loop', '',
+            success, 'success:\n  ret i32 0'),
+        DriverIR),
+    assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_input_path = private constant [10 x i8]')),
+    assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"')),
+    assertion(sub_atom(DriverIR, _, _, _, '@.fmt = private constant [2 x i8] c"\\0A\\00"')),
+    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_value(%Value %handle)')),
+    assertion(sub_atom(DriverIR, _, _, _, 'br i1 %is_eof, label %close_stream, label %lowered_test')),
+    assertion(sub_atom(DriverIR, _, _, _, 'success:\n  ret i32 0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'plawk_surface_path')),
+    !.
+
+test(stream_driver_emitter_full_blocks) :-
+    llvm_emit_stream_driver_ir('input.txt',
+        driver_blocks('', '  %setup = add i64 0, 0', '  %slot = phi i64 [0, %check_handle_value], [%slot_next, %continue_loop]',
+            lowered_full, '  %slot_next = add i64 %slot, 1',
+            '  %next_slot = phi i64 [%slot_next, %lowered_full]',
+            'break_close_stream:\n  br label %close_stream\n',
+            end_print, 'end_print:\n  ret i32 0'),
+        DriverIR),
+    assertion(sub_atom(DriverIR, _, _, _, 'entry:\n  %path_ptr')),
+    assertion(sub_atom(DriverIR, _, _, _, '  %setup = add i64 0, 0\n  %handle = call %Value @wam_stream_open_value')),
+    assertion(sub_atom(DriverIR, _, _, _, 'loop:\n  %slot = phi i64 [0, %check_handle_value], [%slot_next, %continue_loop]')),
+    assertion(sub_atom(DriverIR, _, _, _, 'lowered_full:\n  %slot_next = add i64 %slot, 1')),
+    assertion(sub_atom(DriverIR, _, _, _, 'continue_loop:\n  %next_slot = phi i64 [%slot_next, %lowered_full]\n  br label %loop')),
+    assertion(sub_atom(DriverIR, _, _, _, 'break_close_stream:\n  br label %close_stream\n\nclose_stream:')),
+    assertion(sub_atom(DriverIR, _, _, _, 'br i1 %close_ok, label %end_print, label %fail_close')),
+    !.
+
 % ============================================================================
 % Builtin op ID mapping
 % ============================================================================
