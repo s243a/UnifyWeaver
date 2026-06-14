@@ -1335,6 +1335,12 @@ def boundary_coverage_generation_notes(selection):
                     selection.get("target_ancestor_boundary_limit")
                 )
             )
+        if selection.get("target_ancestor_boundary_scope"):
+            lines.append(
+                "- Target-ancestor boundary collection scope was `{}`.".format(
+                    selection.get("target_ancestor_boundary_scope")
+                )
+            )
     lines.append(
         "- Boundary suffix mass measured: `{}`. When this is false, boundary-hit rows measure coverage only; they do not splice cached suffix mass into a total root-path estimate.".format(
             selection.get("measure_boundary_suffix_mass", True)
@@ -1826,7 +1832,18 @@ def run_probe(args):
             boundary_depth_by_node = {node: boundary_depth_by_node[node] for node in boundary_nodes}
 
         selected_boundary_nodes = set(boundary_nodes)
+        target_ancestor_boundary_scope = "root-distance"
         if args.include_target_ancestor_boundaries:
+            ancestor_parent_accept = None
+            ancestor_depth_by_node = None
+            if args.parent_filter == "root-cone" and root_cone_depth_by_node is not None:
+                target_ancestor_boundary_scope = "root-cone"
+                ancestor_depth_by_node = root_cone_depth_by_node
+
+                def ancestor_parent_accept(_node, parent, remaining):
+                    depth = root_cone_depth_by_node.get(parent)
+                    return depth is not None and int(depth) <= int(remaining)
+
             extra = collect_target_ancestor_boundaries(
                 graph.parents,
                 args.root,
@@ -1836,6 +1853,8 @@ def run_probe(args):
                 args.max_parent_depth,
                 args.target_ancestor_boundary_limit,
                 args.seed + ":target-ancestor-boundaries",
+                ancestor_parent_accept,
+                ancestor_depth_by_node,
             )
             if args.parent_filter == "root-cone" and root_cone_depth_by_node is not None:
                 extra = [node for node in extra if node in root_cone_depth_by_node]
@@ -1892,6 +1911,7 @@ def run_probe(args):
             "target_ancestor_boundary_nodes_added": len(set(boundary_nodes) - selected_boundary_nodes),
             "include_target_ancestor_boundaries": args.include_target_ancestor_boundaries,
             "target_ancestor_boundary_limit": args.target_ancestor_boundary_limit,
+            "target_ancestor_boundary_scope": target_ancestor_boundary_scope if args.include_target_ancestor_boundaries else None,
             "targets": len(targets),
             "target_selection": target_selection_label,
             "budgets": budgets,

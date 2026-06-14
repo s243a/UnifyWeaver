@@ -782,11 +782,14 @@ def collect_target_ancestor_boundaries(
     max_parent_depth,
     limit=None,
     seed="target-ancestor-boundaries",
+    parent_accept=None,
+    depth_by_node=None,
 ):
-    """Collect target ancestors whose root distance matches a boundary depth."""
+    """Collect target ancestors whose root or supplied cone depth matches a boundary depth."""
     wanted_depths = set(int(depth) for depth in boundary_depths)
     if not wanted_depths or max_hops <= 0:
         return []
+    depth_by_node = None if depth_by_node is None else dict(depth_by_node)
     distance_memo = {}
     found = []
     found_set = set()
@@ -794,21 +797,28 @@ def collect_target_ancestor_boundaries(
     def distances(node):
         return root_distances(node, root, parents_func, max_parent_depth, distance_memo)
 
+    def parent_depth(node):
+        if depth_by_node is not None:
+            return depth_by_node.get(node)
+        return distances(node)["L_min"]
+
     def visit(node, remaining, visited):
         if remaining <= 0:
             return
         for parent in parents_func(node):
             if parent in visited:
                 continue
-            parent_distances = distances(parent)
-            parent_depth = parent_distances["L_min"]
-            if parent_depth in wanted_depths and parent not in found_set:
+            next_remaining = remaining - 1
+            if parent_accept is not None and not parent_accept(node, parent, next_remaining):
+                continue
+            depth = parent_depth(parent)
+            if depth in wanted_depths and parent not in found_set:
                 found_set.add(parent)
                 found.append(parent)
             if parent == root:
                 continue
             visited.add(parent)
-            visit(parent, remaining - 1, visited)
+            visit(parent, next_remaining, visited)
             visited.remove(parent)
 
     for target in targets:
