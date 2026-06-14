@@ -22,7 +22,17 @@ machine), so it is **cost-gated**.
 | 2a: cost gate drives codegen annotation (both standalone + shared-table paths) | #3039 | merged |
 | 2b.1: `WamState: Clone + Send` (forkable machine) | #3041 | merged |
 | Exec acceptance harness + fork analysis report | #3051 | open |
-| Route-1: split + transform + **parallel runtime orchestrator (exec-verified)** | #3054 | open |
+| **Route-1 COMPLETE: split + transform + runtime + compile-pipeline injection (exec-verified end-to-end)** | #3054 | open |
+
+**UPDATE 2026-06-14:** Route-1 is now **functionally complete end-to-end**. A user
+predicate whose body is a single parallel-eligible aggregate
+(`p(L) :- findall(D, (fact(X), recursive_body(X,D)), L)`) compiles, with
+`parallel_aggregates(true)`, to synthesised `__par_enum`/`__par_body` helpers
+(ordinary shared-table WAM functions) + a native `par_collect` wrapper that
+reduces by aggregate type. Verified by `tests/test_wam_rust_parallel_injection_exec.pl`
+(user `findall` builds + runs → correct answer in parallel) and the full
+`test_wam_rust_target.pl` regression (no-op when the gate is off). The
+"last-mile" section below is DONE; see "Remaining now" at the end.
 
 Local branch with the route-1 work: `claude/t7-2b2-split-analysis` (clean tree).
 PRs are merged by the user; create PRs freely when ready.
@@ -108,13 +118,33 @@ Run a Prolog test: `swipl -q -g "run_tests(UNIT),halt" -t "halt(1)" tests/FILE.p
   `src/unifyweaver/targets/wam_target.pl` (SHARED front-end → all targets;
   changing it is risky). It emits `begin_aggregate Type,V,R` … `end_aggregate V`.
 
-## THE REMAINING LAST-MILE: compile-pipeline injection
+## DONE: compile-pipeline injection (route-1, whole-body aggregates)
 
-Everything above is built, tested, and proven. What's missing is the wiring that
-makes a *user's* `findall`/`aggregate_all` automatically use the parallel runtime.
+This was the last-mile and is now **implemented + exec-verified** (see UPDATE
+above). The injection lives in `wam_rust_target.pl`:
+`compile_predicates_for_project` → `rust_inject_parallel_aggregates` →
+`rust_parallel_aggregate_wrapper/4` (+ `rust_agg_reduce/2`). It emits the helpers
+into the shared WAM table and a native `par_collect` wrapper — it did NOT need a
+new WAM instruction, because a whole-body aggregate predicate can be a native
+function. The `par_aggregate`-instruction design below was the original plan and
+is only needed for the *embedded-aggregate* follow-up.
 
-**Recommended design — a `par_aggregate` WAM instruction (Rust-target-local, do
-NOT change the shared `compile_aggregate_all`):**
+## Remaining now (follow-ups, not blockers)
+
+1. **Aggregates embedded in a larger clause body** (not the whole body) — the
+   native-wrapper trick doesn't apply. This needs the `par_aggregate` WAM
+   instruction route (design retained below).
+2. **Wall-clock speedup benchmark** on a large workload (correctness is proven;
+   the substrate showed 2–3.7× on expensive branches in #3025).
+3. **More aggregate types in the wrapper reduce** — `max`/`min`/`bag`/`set`
+   (currently `collect`/`count`/`sum`; extend `rust_agg_reduce/2`).
+
+## Original design for the embedded-aggregate route (`par_aggregate` WAM instruction)
+
+(Only needed for follow-up #1 above — aggregates inside larger bodies.)
+
+**A `par_aggregate` WAM instruction (Rust-target-local, do NOT change the shared
+`compile_aggregate_all`):**
 
 1. During Rust project compilation, for each predicate detect forkable aggregates
    in clause bodies (reuse `parallel_gate`), and when
@@ -145,9 +175,8 @@ unchanged (as 2a already is).
 
 ## One-line resume
 
-"Continue T7 route-1: implement the compile-pipeline injection — emit the
-`__par_enum`/`__par_body` helpers into the shared WAM table and a new
-`par_aggregate(AggType,EnumLabel,BodyLabel,ResultReg)` instruction whose runtime
-handler runs the enum then label-based parallel-maps the body (clone per input)
-and reduces by AggType; gate behind `parallel_aggregates(true)`; validate with an
-exec test that a user `findall` == sequential."
+Route-1 (whole-body aggregates) is DONE end-to-end. Next options, pick one:
+"(a) benchmark T7 parallel speedup on a large workload; or (b) extend
+`rust_agg_reduce/2` to max/min/bag/set; or (c) handle aggregates EMBEDDED in
+larger clause bodies via the `par_aggregate` WAM instruction route (design in
+this doc)."
