@@ -1,0 +1,439 @@
+{
+  "caches": [
+    {
+      "admission_policy": "baseline",
+      "boundary_budget": 8,
+      "boundary_builder": "recurrence",
+      "boundary_counts": {
+        "0": 1,
+        "1": 10,
+        "2": 99,
+        "3": 500
+      },
+      "boundary_nodes": 81,
+      "budgets": [
+        8
+      ],
+      "cached_boundary_nodes": 81,
+      "comparison_rows": 2,
+      "entries": 81,
+      "exact_histogram_entries": 81,
+      "graph": "enwiki_mtc_boundary_cache_estimator_validation_b3_recurrence",
+      "histogram_regime": "exact_sparse_high_mass",
+      "label": "enwiki_mtc",
+      "max_cdf_error": 0.0,
+      "max_effective_support_bins": 6,
+      "max_l1_error": 0.0,
+      "max_path_count": 381,
+      "max_payload_bytes": 100,
+      "max_recurrence_states": 1316,
+      "max_support_bins": 6,
+      "mean_cache_hits": 13.5,
+      "mean_cached_path_count": 1.0,
+      "mean_effective_support_bins": 5.962962962962963,
+      "mean_full_path_count": 1.0,
+      "mean_histogram_cache_hits": 13.5,
+      "mean_l1_error": 0.0,
+      "mean_max_cdf_error": 0.0,
+      "mean_parametric_cache_hits": 0.0,
+      "mean_path_count": 77.93827160493827,
+      "mean_payload_bytes": 96.5925925925926,
+      "mean_recurrence_states": 506.2962962962963,
+      "mean_support_bins": 5.716049382716049,
+      "mean_time_ratio": 1.116609417255499,
+      "measured_cache_faster": false,
+      "nonempty_entries": 81,
+      "p95_effective_support_bins": 6.0,
+      "p95_path_count": 205.0,
+      "p95_recurrence_states": 742.0,
+      "p95_support_bins": 6.0,
+      "p95_time_ratio": 1.1168689344107434,
+      "parametric_boundary_nodes": 0,
+      "parametric_entries": 0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "pct_support_bins_le_point_cap": 100.0,
+      "positive_cache_hit_rows": 1,
+      "root": 7345184,
+      "selected_boundary_nodes": 1,
+      "source_paths": [
+        "docs/reports/lmdb_parent_boundary_cache_benchmark_enwiki_mtc_boundary_cache_estimator_validation_b3_recurrence_20260613T164209Z.jsonl"
+      ],
+      "target_ancestor_boundary_nodes_added": 80,
+      "target_counts": {
+        "0": 1,
+        "1": 10,
+        "2": 94,
+        "3": 500,
+        "4": 500,
+        "5": 500,
+        "6": 500,
+        "7": 500,
+        "8": 500
+      },
+      "targets": 2
+    },
+    {
+      "admission_policy": "baseline",
+      "boundary_budget": 8,
+      "boundary_builder": "recurrence",
+      "boundary_counts": {
+        "0": 1,
+        "1": 128
+      },
+      "boundary_nodes": 33,
+      "budgets": [
+        4,
+        6,
+        8
+      ],
+      "cached_boundary_nodes": 33,
+      "comparison_rows": 9,
+      "entries": 33,
+      "exact_histogram_entries": 33,
+      "graph": "simplewiki_materialization_validation_b1_child_depth",
+      "histogram_regime": "exact_sparse_low_mass",
+      "label": "simplewiki",
+      "max_cdf_error": 0.0,
+      "max_effective_support_bins": 2,
+      "max_l1_error": 0.0,
+      "max_path_count": 2,
+      "max_payload_bytes": 52,
+      "max_recurrence_states": 14,
+      "max_support_bins": 2,
+      "mean_cache_hits": 1.0,
+      "mean_cached_path_count": 1.0,
+      "mean_effective_support_bins": 1.0303030303030303,
+      "mean_full_path_count": 1.0,
+      "mean_histogram_cache_hits": 1.0,
+      "mean_l1_error": 0.0,
+      "mean_max_cdf_error": 0.0,
+      "mean_parametric_cache_hits": 0.0,
+      "mean_path_count": 1.0303030303030303,
+      "mean_payload_bytes": 40.36363636363637,
+      "mean_recurrence_states": 4.303030303030303,
+      "mean_support_bins": 1.0303030303030303,
+      "mean_time_ratio": 1.9863220524584084,
+      "measured_cache_faster": false,
+      "nonempty_entries": 33,
+      "p95_effective_support_bins": 1.0,
+      "p95_path_count": 1.0,
+      "p95_recurrence_states": 10.0,
+      "p95_support_bins": 1.0,
+      "p95_time_ratio": 2.7517241379310344,
+      "parametric_boundary_nodes": 0,
+      "parametric_entries": 0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "pct_support_bins_le_point_cap": 100.0,
+      "positive_cache_hit_rows": 9,
+      "root": 2,
+      "selected_boundary_nodes": 32,
+      "source_paths": [
+        "docs/reports/lmdb_parent_boundary_cache_benchmark_simplewiki_materialization_validation_b1_child_depth_20260614T154446Z.jsonl"
+      ],
+      "target_ancestor_boundary_nodes_added": 1,
+      "target_counts": {
+        "0": 1,
+        "1": 128,
+        "2": 15,
+        "3": 0,
+        "4": 0
+      },
+      "targets": 3
+    }
+  ],
+  "point_cap": 50,
+  "profiles": [
+    {
+      "depth_rows": [
+        {
+          "child_depth": 0,
+          "full_parent_degree": {
+            "max_parent_degree": 3,
+            "mean_excess": 2.0,
+            "mean_parent_degree": 3.0,
+            "nodes": 1,
+            "p95_parent_degree": 3.0,
+            "p99_parent_degree": 3.0,
+            "size_biased_parent_branching": 3.0,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 1.0,
+          "nodes": 1,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 0,
+            "mean_excess": null,
+            "mean_parent_degree": 0.0,
+            "nodes": 0,
+            "p95_parent_degree": 0.0,
+            "p99_parent_degree": 0.0,
+            "size_biased_parent_branching": null,
+            "zero_parent_nodes": 1
+          }
+        },
+        {
+          "child_depth": 1,
+          "full_parent_degree": {
+            "max_parent_degree": 8,
+            "mean_excess": 3.6756756756756754,
+            "mean_parent_degree": 4.228571428571429,
+            "nodes": 35,
+            "p95_parent_degree": 6.0,
+            "p99_parent_degree": 8.0,
+            "size_biased_parent_branching": 4.675675675675675,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.48935374149659866,
+          "nodes": 35,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 5,
+            "mean_excess": 1.6216216216216215,
+            "mean_parent_degree": 2.1142857142857143,
+            "nodes": 35,
+            "p95_parent_degree": 3.0,
+            "p99_parent_degree": 5.0,
+            "size_biased_parent_branching": 2.6216216216216215,
+            "zero_parent_nodes": 0
+          }
+        },
+        {
+          "child_depth": 2,
+          "full_parent_degree": {
+            "max_parent_degree": 19,
+            "mean_excess": 3.818950509823427,
+            "mean_parent_degree": 3.9930486593843098,
+            "nodes": 1007,
+            "p95_parent_degree": 7.0,
+            "p99_parent_degree": 9.0,
+            "size_biased_parent_branching": 4.818950509823427,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.4946821361301577,
+          "nodes": 1007,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 9,
+            "mean_excess": 1.3497063534436733,
+            "mean_parent_degree": 1.8599801390268123,
+            "nodes": 1007,
+            "p95_parent_degree": 4.0,
+            "p99_parent_degree": 5.0,
+            "size_biased_parent_branching": 2.3497063534436733,
+            "zero_parent_nodes": 0
+          }
+        },
+        {
+          "child_depth": 3,
+          "full_parent_degree": {
+            "max_parent_degree": 202,
+            "mean_excess": 6.610849909584087,
+            "mean_parent_degree": 4.192570128885519,
+            "nodes": 3957,
+            "p95_parent_degree": 8.0,
+            "p99_parent_degree": 11.0,
+            "size_biased_parent_branching": 7.610849909584087,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.5456890222150644,
+          "nodes": 3957,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 8,
+            "mean_excess": 1.105673650405261,
+            "mean_parent_degree": 1.652514531210513,
+            "nodes": 3957,
+            "p95_parent_degree": 3.0,
+            "p99_parent_degree": 5.0,
+            "size_biased_parent_branching": 2.105673650405261,
+            "zero_parent_nodes": 0
+          }
+        }
+      ],
+      "full_parent_degree": {
+        "max_parent_degree": 202,
+        "mean_excess": 6.048550236008092,
+        "mean_parent_degree": 4.1524,
+        "nodes": 5000,
+        "p95_parent_degree": 8.0,
+        "p99_parent_degree": 11.0,
+        "size_biased_parent_branching": 7.048550236008092,
+        "zero_parent_nodes": 0
+      },
+      "graph": "enwiki_mtc_root_conditioned_branching_smoke",
+      "label": "enwiki_mtc",
+      "max_child_depth": 4,
+      "max_nodes": 5000,
+      "max_observed_child_depth": 3,
+      "outside_root_parent_degree": {
+        "max_parent_degree": 197,
+        "mean_excess": 6.0097751710654945,
+        "mean_parent_degree": 2.6897458369851006,
+        "nodes": 4564,
+        "p95_parent_degree": 6.0,
+        "p99_parent_degree": 8.0,
+        "size_biased_parent_branching": 7.0097751710654945,
+        "zero_parent_nodes": 436
+      },
+      "retained_nodes": 5000,
+      "root": 7345184,
+      "root_conditioned_parent_degree": {
+        "max_parent_degree": 9,
+        "mean_excess": 1.1640348809804384,
+        "mean_parent_degree": 1.6975395079015803,
+        "nodes": 4999,
+        "p95_parent_degree": 3.0,
+        "p99_parent_degree": 5.0,
+        "size_biased_parent_branching": 2.1640348809804384,
+        "zero_parent_nodes": 1
+      },
+      "source_paths": [
+        "docs/reports/lmdb_root_conditioned_branching_profile_enwiki_mtc_root_conditioned_branching_smoke_20260614T001041Z.jsonl"
+      ],
+      "truncated_by_depth": false,
+      "truncated_by_nodes": true
+    },
+    {
+      "depth_rows": [
+        {
+          "child_depth": 0,
+          "full_parent_degree": {
+            "max_parent_degree": 0,
+            "mean_excess": null,
+            "mean_parent_degree": 0.0,
+            "nodes": 0,
+            "p95_parent_degree": 0.0,
+            "p99_parent_degree": 0.0,
+            "size_biased_parent_branching": null,
+            "zero_parent_nodes": 1
+          },
+          "mean_outside_parent_fraction": 0.0,
+          "nodes": 1,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 0,
+            "mean_excess": null,
+            "mean_parent_degree": 0.0,
+            "nodes": 0,
+            "p95_parent_degree": 0.0,
+            "p99_parent_degree": 0.0,
+            "size_biased_parent_branching": null,
+            "zero_parent_nodes": 1
+          }
+        },
+        {
+          "child_depth": 1,
+          "full_parent_degree": {
+            "max_parent_degree": 28,
+            "mean_excess": 3.820675522640255,
+            "mean_parent_degree": 4.054737609329446,
+            "nodes": 13720,
+            "p95_parent_degree": 7.0,
+            "p99_parent_degree": 10.0,
+            "size_biased_parent_branching": 4.820675522640255,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.7043279946934695,
+          "nodes": 13720,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 3,
+            "mean_excess": 0.02917295394122288,
+            "mean_parent_degree": 1.0143586005830905,
+            "nodes": 13720,
+            "p95_parent_degree": 1.0,
+            "p99_parent_degree": 2.0,
+            "size_biased_parent_branching": 1.0291729539412229,
+            "zero_parent_nodes": 0
+          }
+        },
+        {
+          "child_depth": 2,
+          "full_parent_degree": {
+            "max_parent_degree": 11,
+            "mean_excess": 5.530670743359449,
+            "mean_parent_degree": 5.669555796316359,
+            "nodes": 923,
+            "p95_parent_degree": 9.0,
+            "p99_parent_degree": 9.0,
+            "size_biased_parent_branching": 6.530670743359449,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.7685501509445193,
+          "nodes": 923,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 2,
+            "mean_excess": 0.023554603854389677,
+            "mean_parent_degree": 1.0119176598049837,
+            "nodes": 923,
+            "p95_parent_degree": 1.0,
+            "p99_parent_degree": 2.0,
+            "size_biased_parent_branching": 1.0235546038543897,
+            "zero_parent_nodes": 0
+          }
+        },
+        {
+          "child_depth": 3,
+          "full_parent_degree": {
+            "max_parent_degree": 8,
+            "mean_excess": 3.1904761904761907,
+            "mean_parent_degree": 3.5,
+            "nodes": 36,
+            "p95_parent_degree": 5.0,
+            "p99_parent_degree": 8.0,
+            "size_biased_parent_branching": 4.190476190476191,
+            "zero_parent_nodes": 0
+          },
+          "mean_outside_parent_fraction": 0.631712962962963,
+          "nodes": 36,
+          "root_conditioned_parent_degree": {
+            "max_parent_degree": 1,
+            "mean_excess": 0.0,
+            "mean_parent_degree": 1.0,
+            "nodes": 36,
+            "p95_parent_degree": 1.0,
+            "p99_parent_degree": 1.0,
+            "size_biased_parent_branching": 1.0,
+            "zero_parent_nodes": 0
+          }
+        }
+      ],
+      "full_parent_degree": {
+        "max_parent_degree": 28,
+        "mean_excess": 3.9660928020987054,
+        "mean_parent_degree": 4.154915184958103,
+        "nodes": 14679,
+        "p95_parent_degree": 7.0,
+        "p99_parent_degree": 10.0,
+        "size_biased_parent_branching": 4.966092802098705,
+        "zero_parent_nodes": 1
+      },
+      "graph": "simplewiki_articles_root_conditioned_regime_depth4",
+      "label": "simplewiki",
+      "max_child_depth": 4,
+      "max_nodes": 25000,
+      "max_observed_child_depth": 3,
+      "outside_root_parent_degree": {
+        "max_parent_degree": 26,
+        "mean_excess": 3.201483634470642,
+        "mean_parent_degree": 3.148681874060921,
+        "nodes": 14642,
+        "p95_parent_degree": 6.0,
+        "p99_parent_degree": 9.0,
+        "size_biased_parent_branching": 4.201483634470642,
+        "zero_parent_nodes": 38
+      },
+      "retained_nodes": 14680,
+      "root": 2,
+      "root_conditioned_parent_degree": {
+        "max_parent_degree": 3,
+        "mean_excess": 0.0287499160341238,
+        "mean_parent_degree": 1.0141699025819197,
+        "nodes": 14679,
+        "p95_parent_degree": 1.0,
+        "p99_parent_degree": 2.0,
+        "size_biased_parent_branching": 1.0287499160341238,
+        "zero_parent_nodes": 1
+      },
+      "source_paths": [
+        "docs/reports/lmdb_root_conditioned_branching_profile_simplewiki_articles_root_conditioned_regime_depth4_20260614T161057Z.jsonl"
+      ],
+      "truncated_by_depth": false,
+      "truncated_by_nodes": false
+    }
+  ]
+}
