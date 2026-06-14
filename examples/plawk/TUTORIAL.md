@@ -255,8 +255,8 @@ END { print total, errors, non_errors, last_len }
 ```
 
 For now, branch bodies support scalar updates, field-key associative increments,
-selected-field `print`, and combinations of those actions. Branch-local `next`,
-`break`, and `NR` printing are rejected by native codegen.
+selected-field `print` including `NR`, and combinations of those actions.
+Branch-local `next` and `break` are rejected by native codegen.
 The generated native code evaluates the `if` condition once, runs the selected
 branch, and rejoins all scalar slots through LLVM phi nodes before later actions
 or rules continue.
@@ -275,7 +275,7 @@ Branches can also print selected fields:
 
 ```awk
 {
-  if ($1 == "ERROR") { print $2, $3 }
+  if ($1 == "ERROR") { print NR, $2, $3 }
   else { counts[$1]++ }
 }
 END { print counts["WARN"] }

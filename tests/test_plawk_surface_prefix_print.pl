@@ -490,6 +490,11 @@ test(surface_scalar_if_else_prints_selected_branch) :-
         "ERROR disk full\nWARN cpu hot\nERROR net down\n",
         "3 disk\n3 net\n4\n").
 
+test(surface_scalar_if_else_prints_branch_nr) :-
+    run_surface_print_smoke("{ total++; if ($1 == \"ERROR\") { print NR, $2 } else { total++ } } END { print total }\n",
+        "ERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "1 disk\n3 net\n4\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -728,9 +733,15 @@ test(surface_if_else_branch_print_uses_prefixed_native_prints) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
-test(surface_if_else_rejects_branch_nr_print, [fail]) :-
+test(surface_if_else_branch_nr_print_uses_native_record_counter) :-
     plawk_parse_string("{ total++; if ($1 == \"ERROR\") { print NR, $0 } else { total++ } } END { print total }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%current_nr = add i64 %plawk_nr, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_1_then_print_0_nr_0_fmt_0 = getelementptr'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_1_then_print_0_nr_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_1_then_print_0_nr_0_fmt_0, i64 %current_nr)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_terminal_next_uses_native_continue_phi) :-
     plawk_parse_string("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n", Program),

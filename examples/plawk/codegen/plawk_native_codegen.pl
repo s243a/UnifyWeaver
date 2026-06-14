@@ -93,7 +93,12 @@ plawk_program_native_driver_ir(
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
-    plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    append(PrintFields, BodyPrintFields, AllPrintFields),
+    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
     plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls, NextPhiIR),
     plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls, done,
@@ -110,7 +115,7 @@ plawk_program_native_driver_ir(
         [FinalStatePhiIR, EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
-            RuleChainIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+            RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -125,7 +130,12 @@ plawk_program_native_driver_ir(
     plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
-    plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    append(PrintFields, BodyPrintFields, AllPrintFields),
+    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
     plawk_scalar_rule_controls(Rules, ScalarRuleControls),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, NextPhiIR),
     plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, done,
@@ -140,7 +150,7 @@ plawk_program_native_driver_ir(
   ret i32 0',
         [FinalStatePhiIR, EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RuleChainIR,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
@@ -158,6 +168,10 @@ plawk_program_native_driver_ir(
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    append(PrintFields, BodyPrintFields, AllPrintFields),
+    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_assoc_end_print_ir(PrintFields, AssocPlan, OutputSeparator, EndPrintIR),
@@ -171,8 +185,8 @@ plawk_program_native_driver_ir(
   ret i32 0',
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
-        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_combine_entry_ir('', IR, IR) :-
@@ -507,6 +521,24 @@ plawk_actions_have_conditional(Actions) :-
     plawk_action_has_conditional(Action).
 
 plawk_action_has_conditional(if(_Pattern, _ThenActions, _ElseActions)).
+
+plawk_rules_body_print_fields(Rules, Fields) :-
+    findall(Field,
+        ( member(rule(_Pattern, Actions), Rules),
+          plawk_actions_body_print_field(Actions, Field)
+        ),
+        Fields).
+
+plawk_actions_body_print_field(Actions, Field) :-
+    member(Action, Actions),
+    plawk_action_body_print_field(Action, Field).
+
+plawk_action_body_print_field(print(Fields), Field) :-
+    member(Field, Fields).
+plawk_action_body_print_field(if(_Pattern, ThenActions, ElseActions), Field) :-
+    (   plawk_actions_body_print_field(ThenActions, Field)
+    ;   plawk_actions_body_print_field(ElseActions, Field)
+    ).
 
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
     [].
@@ -1326,6 +1358,7 @@ plawk_rule_body_print_action(print(Fields)) :-
     maplist(plawk_rule_body_print_field, Fields).
 
 plawk_rule_body_print_field(field(_)).
+plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
@@ -1803,6 +1836,10 @@ plawk_emit_print_expr_ir(field(FieldIndex), FieldSeparator, Index,
     llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(special('NR'), _FieldSeparator, Prefix, Index,
+        i64(Base, Base, '%current_nr'), [], []) :-
+    format(atom(Base), '~w_nr_~w', [Prefix, Index]).
 
 plawk_emit_prefixed_print_expr_ir(special('NF'), FieldSeparator, Prefix, Index,
         i64(Base, Base, ValueIR), [], [CountIR]) :-
