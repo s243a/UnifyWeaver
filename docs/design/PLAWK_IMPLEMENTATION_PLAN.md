@@ -297,7 +297,10 @@ counter threaded through the stream loop as top-level `print NR`. Print
 expression lowering now shares one context-aware path for top-level and
 branch-local prints; the context supplies prefixed names while `$N`, `NF`,
 `length`, `substr`, `index`, and case transforms use the same expression
-lowering clauses. Terminal
+lowering clauses. Numeric expression lowering is also factored through a shared
+`plawk_i64_expr_ir` layer, so scalar updates and print expressions both consume
+the same native `i64` emitters for constants, `NR`, `NF`, `length($N)`, numeric
+field coercion, and `index($N, "...")` where those forms apply. Terminal
 branch-local `next` branches directly to the stream-loop continuation and adds
 the selected branch's scalar values to the loop phi inputs. Terminal
 branch-local `break` branches to the same dedicated stream-close block as

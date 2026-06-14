@@ -1442,21 +1442,47 @@ plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
 
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
-        _OpIndex, ValueIR, '') :-
-    integer(Value),
-    format(atom(ValueIR), '~w', [Value]).
+        _OpIndex, ValueIR, IR) :-
+    plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
+        ValueIR, IR).
 plawk_scalar_numeric_expr_ir(length(FieldIndex), FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, IR) :-
     format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, IR),
-    format(atom(ValueIR), '%~w', [LengthBase]).
+    plawk_i64_expr_ir_parts(length(FieldIndex), FieldSeparator, LengthBase, LengthBase,
+        ValueIR, IR).
 plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, IR) :-
     format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64',
         [Prefix, SlotIndex, OpIndex]),
-    format(atom(ValueIR), '%~w_value_or_default', [ParseBase]),
+    plawk_i64_expr_ir_parts(field_i64(FieldIndex), FieldSeparator, ParseBase, ParseBase,
+        ValueIR, IR).
+
+plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase, ValueIR, IR) :-
+    plawk_i64_expr_ir(Expr, FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(SetupParts, '\n', SetupIR),
+    plawk_join_nonempty_ir([GlobalIR, SetupIR], IR).
+
+plawk_i64_expr_ir(const(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], []) :-
+    integer(Value),
+    format(atom(ValueIR), '~w', [Value]).
+plawk_i64_expr_ir(nr, _FieldSeparator, _Base, _GlobalBase, '%current_nr', [], []).
+plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR]) :-
+    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
+    format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [LengthIR]) :-
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
+    format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [ParseIR]) :-
+    format(atom(ValueIR), '%~w_value_or_default', [Base]),
     llvm_emit_atom_field_i64_or_default('%line', FieldIndex, FieldSeparator, 0,
-        ParseBase, ValueIR, IR).
+        Base, ValueIR, ParseIR).
+plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
+        ValueIR, [GlobalIR], [CallIR]) :-
+    llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
+        Base, GlobalIR-CallIR),
+    format(atom(ValueIR), '%~w', [Base]).
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.
@@ -1817,8 +1843,9 @@ plawk_emit_prefixed_print_expr_ir(Field, FieldSeparator, Prefix, Index,
         print_context(prefixed, Prefix, Index), Type, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(special('NR'), _FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, '%current_nr'), [], []) :-
-    plawk_print_expr_output_names(Context, nr, FmtPrefix, PrintPrefix).
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_output_names(Context, nr, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(nr, 0, nr, nr, ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(string(Value), _FieldSeparator, Context,
         string(Base, PtrIR), [GlobalIR], [StringPtr]) :-
@@ -1830,18 +1857,17 @@ plawk_emit_print_expr_for_context(string(Value), _FieldSeparator, Context,
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
 plawk_emit_print_expr_for_context(special('NF'), FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, ValueIR), [], [CountIR]) :-
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, nf, Base),
     plawk_print_expr_output_names(Context, nf, FmtPrefix, PrintPrefix),
-    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
-    format(atom(ValueIR), '%~w', [Base]).
+    plawk_i64_expr_ir(nf, FieldSeparator, Base, Base, ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, ValueIR), [], [LengthIR]) :-
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, length, Base),
     plawk_print_expr_output_names(Context, length, FmtPrefix, PrintPrefix),
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
-    format(atom(ValueIR), '%~w', [Base]).
+    plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSeparator, Context,
         slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
@@ -1852,13 +1878,12 @@ plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSe
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
 plawk_emit_print_expr_for_context(index(field(FieldIndex), string(Needle)), FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, ValueIR), [GlobalIR], [CallIR]) :-
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, index, Base),
     plawk_print_expr_value_base(Context, index_needle, GlobalBase),
     plawk_print_expr_output_names(Context, index, FmtPrefix, PrintPrefix),
-    llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
-        Base, GlobalIR-CallIR),
-    format(atom(ValueIR), '%~w', [Base]).
+    plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(tolower(field(FieldIndex)), FieldSeparator, Context,
         case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
