@@ -180,6 +180,31 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(record["estimated_boundary_spliced_root_paths"], 1.0)
         self.assertEqual(record["estimated_spliced_total_root_paths"], 1.0)
 
+    def test_sample_boundary_coverage_disables_suffix_splice_with_filter(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+
+        record = sample_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            samples=10,
+            seed="fixture",
+            reachability_filter=lambda _node, _remaining: True,
+            parent_filter_name="test-filter",
+        )
+
+        self.assertEqual(record["boundary_hit_prefixes"], 10)
+        self.assertEqual(record["estimated_boundary_hit_prefixes"], 1.0)
+        self.assertIsNone(record["estimated_boundary_spliced_root_paths"])
+        self.assertIsNone(record["estimated_spliced_total_root_paths"])
+        self.assertFalse(record["boundary_suffix_mass_measured"])
+
     def test_sample_root_path_space_estimates_root_count_and_mean_length(self):
         graph = DictGraph({
             "A": ["R"],
