@@ -9,7 +9,9 @@ In exact mode it enumerates all simple parent-prefixes until root, boundary, or
 the path-length budget is reached, subject only to optional safety caps.  In
 sample mode it samples simple random parent walks and uses branch-product
 weights to estimate path-prefix counts; those estimates are statistical and
-depend on the random-walk proposal distribution.
+depend on the random-walk proposal distribution.  The default parent filter is
+root-reachable: a parent edge is followed only when that parent can still reach
+the selected root within the remaining path budget.
 """
 
 from __future__ import annotations
@@ -57,6 +59,8 @@ class CoverageStats:
     nodes_expanded: int = 0
     edges_examined: int = 0
     cycle_skips: int = 0
+    root_unreachable_parent_skips: int = 0
+    filtered_dead_end_prefixes: int = 0
     path_count_cap_hit: bool = False
     expansion_cap_hit: bool = False
     boundary_hit_depth_sum: int = 0
@@ -73,6 +77,45 @@ class CoverageStats:
             self.boundary_hits_by_remaining_budget = Counter()
         if self.boundary_hits_by_node is None:
             self.boundary_hits_by_node = Counter()
+
+
+class RootReachabilityFilter:
+    """Memoized finite-horizon predicate for root-reaching parent candidates."""
+
+    def __init__(self, parents_func, root):
+        self.parents_func = parents_func
+        self.root = root
+        self.memo = {}
+        self.checks = 0
+        self.memo_hits = 0
+        self.cycle_skips = 0
+
+    def can_reach(self, node, remaining):
+        return self._can_reach(node, int(remaining), set())
+
+    def _can_reach(self, node, remaining, visiting):
+        self.checks += 1
+        if node == self.root:
+            return True
+        if remaining <= 0:
+            return False
+        key = (node, int(remaining))
+        if key in self.memo:
+            self.memo_hits += 1
+            return self.memo[key]
+        if node in visiting:
+            self.cycle_skips += 1
+            return False
+
+        visiting.add(node)
+        reachable = False
+        for parent in self.parents_func(node):
+            if self._can_reach(parent, remaining - 1, visiting):
+                reachable = True
+                break
+        visiting.remove(node)
+        self.memo[key] = reachable
+        return reachable
 
 
 def fraction(numerator, denominator):
@@ -93,7 +136,18 @@ def suffix_path_mass(parents_func, boundary_node, root, remaining, memo):
     return memo[key]
 
 
-def exact_boundary_coverage(parents_func, target, root, budget, boundary_nodes, path_count_cap=None, expansion_cap=None):
+def exact_boundary_coverage(
+    parents_func,
+    target,
+    root,
+    budget,
+    boundary_nodes,
+    path_count_cap=None,
+    expansion_cap=None,
+    reachability_filter=None,
+    parent_filter_name="all",
+    measure_suffix_mass=True,
+):
     """Enumerate simple parent prefixes until root, boundary, or budget."""
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
@@ -128,8 +182,9 @@ def exact_boundary_coverage(parents_func, target, root, budget, boundary_nodes, 
             stats.boundary_hits_by_depth[int(depth)] += 1
             stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
             stats.boundary_hits_by_node[node] += 1
-            suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
-            stats.boundary_suffix_path_mass_sum += int(suffix["path_count"])
+            if measure_suffix_mass:
+                suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
+                stats.boundary_suffix_path_mass_sum += int(suffix["path_count"])
             terminal_reached()
             return
 
@@ -141,15 +196,22 @@ def exact_boundary_coverage(parents_func, target, root, budget, boundary_nodes, 
 
         parents = list(parents_func(node))
         eligible = []
+        filtered_parents = 0
         for parent in parents:
             stats.edges_examined += 1
             if parent in visited:
                 stats.cycle_skips += 1
+            elif reachability_filter is not None and not reachability_filter(parent, remaining - 1):
+                stats.root_unreachable_parent_skips += 1
+                filtered_parents += 1
             else:
                 eligible.append(parent)
         if not eligible:
             stats.terminal_prefixes += 1
-            stats.dead_end_prefixes += 1
+            if filtered_parents > 0:
+                stats.filtered_dead_end_prefixes += 1
+            else:
+                stats.dead_end_prefixes += 1
             terminal_reached()
             return
 
@@ -169,6 +231,8 @@ def exact_boundary_coverage(parents_func, target, root, budget, boundary_nodes, 
         samples=None,
         weighted=None,
         elapsed_ns=None,
+        parent_filter_name=parent_filter_name,
+        measure_suffix_mass=measure_suffix_mass,
     )
 
 
@@ -205,7 +269,18 @@ def bootstrap_ratio(boundary_weights, terminal_weights, seed, reps=200):
     return lo, hi
 
 
-def sample_boundary_coverage(parents_func, target, root, budget, boundary_nodes, samples, seed):
+def sample_boundary_coverage(
+    parents_func,
+    target,
+    root,
+    budget,
+    boundary_nodes,
+    samples,
+    seed,
+    reachability_filter=None,
+    parent_filter_name="all",
+    measure_suffix_mass=True,
+):
     """Sample simple random parent walks and estimate prefix counts by weights."""
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
@@ -247,9 +322,11 @@ def sample_boundary_coverage(parents_func, target, root, budget, boundary_nodes,
                 stats.boundary_hits_by_depth[int(depth)] += 1
                 stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
                 stats.boundary_hits_by_node[node] += 1
-                suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
-                suffix_mass = int(suffix["path_count"])
-                stats.boundary_suffix_path_mass_sum += suffix_mass
+                suffix_mass = 0
+                if measure_suffix_mass:
+                    suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
+                    suffix_mass = int(suffix["path_count"])
+                    stats.boundary_suffix_path_mass_sum += suffix_mass
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
                 boundary_weights.append(weight)
@@ -271,15 +348,22 @@ def sample_boundary_coverage(parents_func, target, root, budget, boundary_nodes,
 
             parents = list(parents_func(node))
             eligible = []
+            filtered_parents = 0
             for parent in parents:
                 stats.edges_examined += 1
                 if parent in visited:
                     stats.cycle_skips += 1
+                elif reachability_filter is not None and not reachability_filter(parent, remaining - 1):
+                    stats.root_unreachable_parent_skips += 1
+                    filtered_parents += 1
                 else:
                     eligible.append(parent)
             if not eligible:
                 stats.terminal_prefixes += 1
-                stats.dead_end_prefixes += 1
+                if filtered_parents > 0:
+                    stats.filtered_dead_end_prefixes += 1
+                else:
+                    stats.dead_end_prefixes += 1
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
                 boundary_weights.append(0.0)
@@ -324,14 +408,27 @@ def sample_boundary_coverage(parents_func, target, root, budget, boundary_nodes,
         samples=int(samples),
         weighted=weighted,
         elapsed_ns=None,
+        parent_filter_name=parent_filter_name,
+        measure_suffix_mass=measure_suffix_mass,
     )
 
 
-def coverage_record(mode, target, budget, stats, samples=None, weighted=None, elapsed_ns=None):
+def coverage_record(
+    mode,
+    target,
+    budget,
+    stats,
+    samples=None,
+    weighted=None,
+    elapsed_ns=None,
+    parent_filter_name="all",
+    measure_suffix_mass=True,
+):
     boundary_hits = int(stats.boundary_hits)
     record = {
         "record_type": "boundary_coverage_target",
         "mode": mode,
+        "parent_filter": parent_filter_name,
         "target_node": target,
         "path_length_budget": int(budget),
         "samples": samples,
@@ -340,18 +437,21 @@ def coverage_record(mode, target, budget, stats, samples=None, weighted=None, el
         "boundary_hit_prefixes": boundary_hits,
         "budget_exhausted_prefixes": int(stats.budget_exhausted_prefixes),
         "dead_end_prefixes": int(stats.dead_end_prefixes),
+        "filtered_dead_end_prefixes": int(stats.filtered_dead_end_prefixes),
         "boundary_hit_fraction": fraction(boundary_hits, int(stats.terminal_prefixes)),
         "root_path_fraction": fraction(int(stats.root_paths), int(stats.terminal_prefixes)),
         "budget_exhausted_fraction": fraction(int(stats.budget_exhausted_prefixes), int(stats.terminal_prefixes)),
         "nodes_expanded": int(stats.nodes_expanded),
         "edges_examined": int(stats.edges_examined),
         "cycle_skips": int(stats.cycle_skips),
+        "root_unreachable_parent_skips": int(stats.root_unreachable_parent_skips),
         "path_count_cap_hit": bool(stats.path_count_cap_hit),
         "expansion_cap_hit": bool(stats.expansion_cap_hit),
         "completed": not stats.path_count_cap_hit and not stats.expansion_cap_hit,
         "mean_boundary_hit_depth": None if boundary_hits <= 0 else stats.boundary_hit_depth_sum / boundary_hits,
         "mean_boundary_hit_remaining_budget": None if boundary_hits <= 0 else stats.boundary_hit_remaining_budget_sum / boundary_hits,
-        "mean_boundary_suffix_path_mass": None if boundary_hits <= 0 else stats.boundary_suffix_path_mass_sum / boundary_hits,
+        "boundary_suffix_mass_measured": bool(measure_suffix_mass),
+        "mean_boundary_suffix_path_mass": None if not measure_suffix_mass or boundary_hits <= 0 else stats.boundary_suffix_path_mass_sum / boundary_hits,
         "boundary_suffix_path_mass_sum": int(stats.boundary_suffix_path_mass_sum),
         "boundary_hits_by_depth": dict(sorted(stats.boundary_hits_by_depth.items())),
         "boundary_hits_by_remaining_budget": dict(sorted(stats.boundary_hits_by_remaining_budget.items())),
@@ -377,22 +477,27 @@ def aggregate_rows(rows):
     boundary = sum(int(row["boundary_hit_prefixes"]) for row in rows)
     root = sum(int(row["root_paths"]) for row in rows)
     budget = sum(int(row["budget_exhausted_prefixes"]) for row in rows)
+    filtered_dead = sum(int(row.get("filtered_dead_end_prefixes", 0)) for row in rows)
     suffix_mass = sum(int(row["boundary_suffix_path_mass_sum"]) for row in rows)
+    suffix_mass_measured = all(bool(row.get("boundary_suffix_mass_measured", True)) for row in rows)
     return {
         "targets": len(rows),
         "terminal_prefixes": terminal,
         "root_paths": root,
         "boundary_hit_prefixes": boundary,
         "budget_exhausted_prefixes": budget,
+        "filtered_dead_end_prefixes": filtered_dead,
         "boundary_hit_fraction": fraction(boundary, terminal),
         "root_path_fraction": fraction(root, terminal),
         "budget_exhausted_fraction": fraction(budget, terminal),
         "boundary_suffix_path_mass_sum": suffix_mass,
-        "mean_boundary_suffix_path_mass": None if boundary <= 0 else suffix_mass / boundary,
+        "boundary_suffix_mass_measured": suffix_mass_measured,
+        "mean_boundary_suffix_path_mass": None if not suffix_mass_measured or boundary <= 0 else suffix_mass / boundary,
         "completed_targets": sum(1 for row in rows if row.get("completed")),
         "path_count_cap_hit_targets": sum(1 for row in rows if row.get("path_count_cap_hit")),
         "expansion_cap_hit_targets": sum(1 for row in rows if row.get("expansion_cap_hit")),
         "cycle_skips": sum(int(row.get("cycle_skips", 0)) for row in rows),
+        "root_unreachable_parent_skips": sum(int(row.get("root_unreachable_parent_skips", 0)) for row in rows),
     }
 
 
@@ -418,13 +523,17 @@ def summarize(records):
         "",
         "Target selection: `{}`".format(selection.get("target_selection", "")),
         "",
+        "Parent filter: `{}`".format(selection.get("parent_filter", "all")),
+        "",
+        "Boundary suffix mass measured: `{}`".format(selection.get("measure_boundary_suffix_mass", True)),
+        "",
         "Boundary nodes: `{}`".format(selection.get("boundary_nodes", 0)),
         "",
         "Targets: `{}`".format(selection.get("targets", 0)),
         "",
         "Path length budgets: `{}`".format(",".join(str(value) for value in selection.get("budgets", []))),
         "",
-        "Exact mode enumerates simple parent-prefixes until root, boundary, or the path-length budget. Sample mode uses branch-product weighted random walks; its path-count totals are estimates, not direct counts.",
+        "Exact mode enumerates simple parent-prefixes until root, boundary, or the path-length budget. Sample mode uses branch-product weighted random walks; its path-count totals are estimates, not direct counts. With `root-reachable`, parent expansion keeps only parent nodes that can still reach the selected root within the remaining path budget.",
         "",
         "## Selection",
         "",
@@ -442,13 +551,13 @@ def summarize(records):
         "",
         "For sample mode, these are observed random-walk outcomes. Use `Sampled Estimates` for branch-product weighted path-space estimates.",
         "",
-        "| mode | path_length_budget | targets | completed_targets | observed_terminal_prefixes | observed_root_paths | observed_boundary_hit_prefixes | observed_boundary_hit_fraction | observed_budget_exhausted_prefixes | mean_boundary_suffix_path_mass | path_count_cap_hit_targets | expansion_cap_hit_targets | cycle_skips |",
-        "|------|-------------------:|--------:|------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|-------------------------------:|---------------------------:|--------------------------:|------------:|",
+        "| mode | path_length_budget | targets | completed_targets | observed_terminal_prefixes | observed_root_paths | observed_boundary_hit_prefixes | observed_boundary_hit_fraction | observed_budget_exhausted_prefixes | observed_filtered_dead_ends | mean_boundary_suffix_path_mass | path_count_cap_hit_targets | expansion_cap_hit_targets | cycle_skips | root_unreachable_parent_skips |",
+        "|------|-------------------:|--------:|------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|----------------------------:|-------------------------------:|---------------------------:|--------------------------:|------------:|------------------------------:|",
     ])
     for (mode, budget), rows in sorted(by_mode_budget.items()):
         aggregate = aggregate_rows(rows)
         lines.append(
-            "| {mode} | {budget} | {targets} | {completed} | {terminal} | {root} | {boundary} | {boundary_fraction} | {budget_exhausted} | {suffix_mean} | {path_cap} | {expansion_cap} | {cycle_skips} |".format(
+            "| {mode} | {budget} | {targets} | {completed} | {terminal} | {root} | {boundary} | {boundary_fraction} | {budget_exhausted} | {filtered_dead} | {suffix_mean} | {path_cap} | {expansion_cap} | {cycle_skips} | {root_unreachable} |".format(
                 mode=mode,
                 budget=budget,
                 targets=aggregate["targets"],
@@ -458,10 +567,12 @@ def summarize(records):
                 boundary=aggregate["boundary_hit_prefixes"],
                 boundary_fraction=format_optional(aggregate["boundary_hit_fraction"], 6),
                 budget_exhausted=aggregate["budget_exhausted_prefixes"],
+                filtered_dead=aggregate["filtered_dead_end_prefixes"],
                 suffix_mean=format_optional(aggregate["mean_boundary_suffix_path_mass"], 3),
                 path_cap=aggregate["path_count_cap_hit_targets"],
                 expansion_cap=aggregate["expansion_cap_hit_targets"],
                 cycle_skips=aggregate["cycle_skips"],
+                root_unreachable=aggregate["root_unreachable_parent_skips"],
             )
         )
 
@@ -496,12 +607,12 @@ def summarize(records):
         "",
         "## Target Rows",
         "",
-        "| mode | target_node | path_length_budget | terminal_prefixes | root_paths | boundary_hit_prefixes | boundary_hit_fraction | mean_boundary_remaining_budget | completed | cycle_skips |",
-        "|------|------------:|-------------------:|------------------:|-----------:|----------------------:|----------------------:|-------------------------------:|----------:|------------:|",
+        "| mode | target_node | path_length_budget | terminal_prefixes | root_paths | boundary_hit_prefixes | boundary_hit_fraction | budget_exhausted_prefixes | filtered_dead_end_prefixes | mean_boundary_remaining_budget | completed | cycle_skips | root_unreachable_parent_skips |",
+        "|------|------------:|-------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|---------------------------:|-------------------------------:|----------:|------------:|------------------------------:|",
     ])
     for row in target_rows:
         lines.append(
-            "| {mode} | {target} | {budget} | {terminal} | {root} | {boundary} | {fraction} | {remaining} | {completed} | {cycles} |".format(
+            "| {mode} | {target} | {budget} | {terminal} | {root} | {boundary} | {fraction} | {budget_exhausted} | {filtered_dead} | {remaining} | {completed} | {cycles} | {root_unreachable} |".format(
                 mode=row["mode"],
                 target=row["target_node"],
                 budget=row["path_length_budget"],
@@ -509,9 +620,12 @@ def summarize(records):
                 root=row["root_paths"],
                 boundary=row["boundary_hit_prefixes"],
                 fraction=format_optional(row["boundary_hit_fraction"], 6),
+                budget_exhausted=row["budget_exhausted_prefixes"],
+                filtered_dead=row.get("filtered_dead_end_prefixes", 0),
                 remaining=format_optional(row["mean_boundary_hit_remaining_budget"], 3),
                 completed="yes" if row.get("completed") else "no",
                 cycles=row.get("cycle_skips", 0),
+                root_unreachable=row.get("root_unreachable_parent_skips", 0),
             )
         )
 
@@ -569,10 +683,15 @@ def run_probe(args):
             )
             boundary_nodes = sorted(selected_boundary_nodes | set(extra))
 
+        reachability = None
+        if args.parent_filter == "root-reachable":
+            reachability = RootReachabilityFilter(graph.parents, args.root)
+
         records = [{
             "record_type": "boundary_coverage_selection",
             "graph": args.graph_name,
             "root": args.root,
+            "parent_filter": args.parent_filter,
             "boundary_counts": boundary_counts,
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
@@ -585,6 +704,7 @@ def run_probe(args):
             "samples": args.samples,
             "path_count_cap": args.path_count_cap,
             "expansion_cap": args.expansion_cap,
+            "measure_boundary_suffix_mass": not args.skip_boundary_suffix_mass,
         }]
 
         boundary_set = set(boundary_nodes)
@@ -599,6 +719,9 @@ def run_probe(args):
                         boundary_set,
                         args.path_count_cap,
                         args.expansion_cap,
+                        None if reachability is None else reachability.can_reach,
+                        args.parent_filter,
+                        not args.skip_boundary_suffix_mass,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -612,6 +735,9 @@ def run_probe(args):
                         boundary_set,
                         args.samples,
                         "{}:{}:{}".format(args.seed, target, budget),
+                        None if reachability is None else reachability.can_reach,
+                        args.parent_filter,
+                        not args.skip_boundary_suffix_mass,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -641,6 +767,8 @@ def main(argv=None):
     parser.add_argument("--root", required=True, type=int, help="Numeric root id.")
     parser.add_argument("--graph-name", default="lmdb_boundary_coverage", help="Graph label used in output filenames.")
     parser.add_argument("--mode", choices=["exact", "sample", "both"], default="exact", help="Coverage audit mode.")
+    parser.add_argument("--parent-filter", choices=["all", "root-reachable"], default="root-reachable", help="Parent expansion filter. root-reachable follows only parent nodes that can still reach the selected root within the remaining path budget.")
+    parser.add_argument("--skip-boundary-suffix-mass", action="store_true", help="Do not enumerate suffix path histograms after boundary hits. Use this for larger path budgets when only boundary coverage is being measured.")
     parser.add_argument("--boundary-depths", default=",".join(map(str, DEFAULT_BOUNDARY_DEPTHS)), help="Child depths used as boundary candidates.")
     parser.add_argument("--target-depths", default=",".join(map(str, DEFAULT_TARGET_DEPTHS)), help="Child depths used as target candidates.")
     parser.add_argument("--children-per-node", type=int, default=128, help="Deterministic child sample cap per frontier node.")
