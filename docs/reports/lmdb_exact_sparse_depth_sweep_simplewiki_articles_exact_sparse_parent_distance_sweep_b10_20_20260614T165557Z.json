@@ -1,0 +1,2913 @@
+{
+  "buckets": [
+    {
+      "budget": 10,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 50,
+      "exact_sparse_under_point_cap_rows": 50,
+      "max_effective_support_bins": 1,
+      "max_path_count": 1,
+      "max_support_bins": 1,
+      "mean_child_sample_depth": 1.0,
+      "mean_dfs_nodes_expanded": 5.18,
+      "mean_effective_support_bins": 1.0,
+      "mean_exact_histogram_bytes": 288.0,
+      "mean_hits_to_break_even_states": 1.0,
+      "mean_path_count": 1.0,
+      "mean_recurrence_states_evaluated": 4.18,
+      "mean_state_expansion_ratio": 0.7848008658008658,
+      "mean_support_bins": 1.0,
+      "mean_target_L_max": 1.0,
+      "mean_target_L_min": 1.0,
+      "mean_time_ratio": 1.6251233699480074,
+      "p95_effective_support_bins": 1.0,
+      "p95_hits_to_break_even_states": 1.0,
+      "p95_path_count": 1.0,
+      "p95_support_bins": 1.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 50,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 50,
+      "selection_bucket": 1
+    },
+    {
+      "budget": 20,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 50,
+      "exact_sparse_under_point_cap_rows": 50,
+      "max_effective_support_bins": 1,
+      "max_path_count": 1,
+      "max_support_bins": 1,
+      "mean_child_sample_depth": 1.0,
+      "mean_dfs_nodes_expanded": 5.18,
+      "mean_effective_support_bins": 1.0,
+      "mean_exact_histogram_bytes": 288.0,
+      "mean_hits_to_break_even_states": 1.0,
+      "mean_path_count": 1.0,
+      "mean_recurrence_states_evaluated": 4.18,
+      "mean_state_expansion_ratio": 0.7848008658008658,
+      "mean_support_bins": 1.0,
+      "mean_target_L_max": 1.0,
+      "mean_target_L_min": 1.0,
+      "mean_time_ratio": 1.5139738064560484,
+      "p95_effective_support_bins": 1.0,
+      "p95_hits_to_break_even_states": 1.0,
+      "p95_path_count": 1.0,
+      "p95_support_bins": 1.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 50,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 50,
+      "selection_bucket": 1
+    },
+    {
+      "budget": 10,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 50,
+      "exact_sparse_under_point_cap_rows": 50,
+      "max_effective_support_bins": 2,
+      "max_path_count": 3,
+      "max_support_bins": 2,
+      "mean_child_sample_depth": 1.68,
+      "mean_dfs_nodes_expanded": 10.54,
+      "mean_effective_support_bins": 1.32,
+      "mean_exact_histogram_bytes": 305.92,
+      "mean_hits_to_break_even_states": 0.9954999999999999,
+      "mean_path_count": 1.36,
+      "mean_recurrence_states_evaluated": 9.18,
+      "mean_state_expansion_ratio": 0.8652753635253636,
+      "mean_support_bins": 1.32,
+      "mean_target_L_max": 2.0,
+      "mean_target_L_min": 1.68,
+      "mean_time_ratio": 1.7786837720491622,
+      "p95_effective_support_bins": 2.0,
+      "p95_hits_to_break_even_states": 1.0,
+      "p95_path_count": 2.0,
+      "p95_support_bins": 2.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 50,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 50,
+      "selection_bucket": 2
+    },
+    {
+      "budget": 20,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 50,
+      "exact_sparse_under_point_cap_rows": 50,
+      "max_effective_support_bins": 2,
+      "max_path_count": 3,
+      "max_support_bins": 2,
+      "mean_child_sample_depth": 1.68,
+      "mean_dfs_nodes_expanded": 10.54,
+      "mean_effective_support_bins": 1.32,
+      "mean_exact_histogram_bytes": 305.92,
+      "mean_hits_to_break_even_states": 0.9954999999999999,
+      "mean_path_count": 1.36,
+      "mean_recurrence_states_evaluated": 9.18,
+      "mean_state_expansion_ratio": 0.8652753635253636,
+      "mean_support_bins": 1.32,
+      "mean_target_L_max": 2.0,
+      "mean_target_L_min": 1.68,
+      "mean_time_ratio": 2.3510611179952376,
+      "p95_effective_support_bins": 2.0,
+      "p95_hits_to_break_even_states": 1.0,
+      "p95_path_count": 2.0,
+      "p95_support_bins": 2.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 50,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 50,
+      "selection_bucket": 2
+    },
+    {
+      "budget": 10,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 47,
+      "exact_sparse_under_point_cap_rows": 47,
+      "max_effective_support_bins": 3,
+      "max_path_count": 3,
+      "max_support_bins": 3,
+      "mean_child_sample_depth": 2.5531914893617023,
+      "mean_dfs_nodes_expanded": 12.46808510638298,
+      "mean_effective_support_bins": 1.446808510638298,
+      "mean_exact_histogram_bytes": 303.48936170212767,
+      "mean_hits_to_break_even_states": 1.021629219063512,
+      "mean_path_count": 1.2765957446808511,
+      "mean_recurrence_states_evaluated": 11.170212765957446,
+      "mean_state_expansion_ratio": 0.8905826676671811,
+      "mean_support_bins": 1.2765957446808511,
+      "mean_target_L_max": 3.0,
+      "mean_target_L_min": 2.5531914893617023,
+      "mean_time_ratio": 1.8600645751651164,
+      "p95_effective_support_bins": 3.0,
+      "p95_hits_to_break_even_states": 1.1428571428571428,
+      "p95_path_count": 2.0,
+      "p95_support_bins": 2.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 47,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 47,
+      "selection_bucket": 3
+    },
+    {
+      "budget": 20,
+      "cycle_approximation_rows": 0,
+      "dfs_capped_rows": 0,
+      "exact_match_rows": 47,
+      "exact_sparse_under_point_cap_rows": 47,
+      "max_effective_support_bins": 3,
+      "max_path_count": 3,
+      "max_support_bins": 3,
+      "mean_child_sample_depth": 2.5531914893617023,
+      "mean_dfs_nodes_expanded": 12.46808510638298,
+      "mean_effective_support_bins": 1.446808510638298,
+      "mean_exact_histogram_bytes": 303.48936170212767,
+      "mean_hits_to_break_even_states": 1.021629219063512,
+      "mean_path_count": 1.2765957446808511,
+      "mean_recurrence_states_evaluated": 11.170212765957446,
+      "mean_state_expansion_ratio": 0.8905826676671811,
+      "mean_support_bins": 1.2765957446808511,
+      "mean_target_L_max": 3.0,
+      "mean_target_L_min": 2.5531914893617023,
+      "mean_time_ratio": 2.2911884851485955,
+      "p95_effective_support_bins": 3.0,
+      "p95_hits_to_break_even_states": 1.1428571428571428,
+      "p95_path_count": 2.0,
+      "p95_support_bins": 2.0,
+      "pct_effective_bins_le_point_cap": 100.0,
+      "point_cap": 50,
+      "reachable_rows": 47,
+      "record_type": "exact_sparse_depth_sweep_summary_bucket",
+      "recurrence_capped_rows": 0,
+      "rows": 47,
+      "selection_bucket": 3
+    }
+  ],
+  "generated_at": "2026-06-14T16:55:57.639449+00:00",
+  "graph": "simplewiki_articles_exact_sparse_parent_distance_sweep_b10_20",
+  "point_cap": 50,
+  "record_type": "exact_sparse_depth_sweep_summary",
+  "root": 2,
+  "selection": {
+    "budgets": [
+      10,
+      20
+    ],
+    "children_per_node": 50000,
+    "expansion_cap": 250000,
+    "filtered_targets": [],
+    "frontier_limit": 50000,
+    "graph": "simplewiki_articles_exact_sparse_parent_distance_sweep_b10_20",
+    "max_parent_depth": 48,
+    "parent_distance_buckets": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "path_cap": 100000,
+    "record_type": "exact_sparse_depth_sweep_selection",
+    "root": 2,
+    "root_cone_max_child_depth": 0,
+    "root_cone_max_nodes": 50000,
+    "root_reachable_targets": [
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 851
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 974
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1307
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1550
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1748
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2191
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2345
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2390
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2775
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3315
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3327
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3374
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 4084
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 4773
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5214
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5487
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5752
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 6152
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 7384
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 7551
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 9740
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 10579
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 10735
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 12494
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 14626
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 14837
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 15668
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 16924
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 17266
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 17776
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 18483
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 20334
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 20414
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 21851
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 21999
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 26631
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 28689
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 35735
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 41089
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 44179
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 49458
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 50117
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 68736
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 80919
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 82120
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 88134
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 93204
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 95079
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 97768
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 104021
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1155
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1909
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1993
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 2403
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 3147
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 3439
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 4636
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 5253
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 5613
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 8814
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 9624
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 10967
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 18939
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 49933
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 57481
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 111225
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 13796
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 14203
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 26061
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 37849
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 38044
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 38058
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 48994
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 52190
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 54842
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 56882
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 60542
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 61263
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 65275
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 67735
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 79396
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84074
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84405
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84448
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84711
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86230
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86330
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86332
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 91588
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 101070
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 106567
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 112668
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 119097
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 123388
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124043
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124278
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124859
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 127628
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 130345
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 133769
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 2251
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 3515
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8011
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8441
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8866
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 24382
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 28966
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 35665
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 102873
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 116317
+      },
+      {
+        "L_max": 3,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 40399
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 14201
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 18211
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 22312
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 37954
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 38325
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 38340
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 40160
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 58899
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 59803
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 61857
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 65403
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69587
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69649
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69651
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69667
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 70247
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 85400
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 85924
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 93725
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101379
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101886
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101973
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 105998
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106061
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106178
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106394
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 107743
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 108670
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 108682
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 111643
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112004
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112005
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112490
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 117235
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 123192
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 129704
+      }
+    ],
+    "selected_targets": [
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 851
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 974
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1307
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1550
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 1748
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2191
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2345
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2390
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 2775
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3315
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3327
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 3374
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 4084
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 4773
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5214
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5487
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 5752
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 6152
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 7384
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 7551
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 9740
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 10579
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 10735
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 12494
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 14626
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 14837
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 15668
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 16924
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 17266
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 17776
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 18483
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 20334
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 20414
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 21851
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 21999
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 26631
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 28689
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 35735
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 41089
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 44179
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 49458
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 50117
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 68736
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 80919
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 82120
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 88134
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 93204
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 95079
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 97768
+      },
+      {
+        "L_max": 1,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 1,
+        "target_node": 104021
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1155
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1909
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 1993
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 2403
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 3147
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 3439
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 4636
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 5253
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 5613
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 8814
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 9624
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 10967
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 18939
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 49933
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 57481
+      },
+      {
+        "L_max": 2,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 111225
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 13796
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 14203
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 26061
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 37849
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 38044
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 38058
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 48994
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 52190
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 54842
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 56882
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 60542
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 61263
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 65275
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 67735
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 79396
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84074
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84405
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84448
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 84711
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86230
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86330
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 86332
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 91588
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 101070
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 106567
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 112668
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 119097
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 123388
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124043
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124278
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 124859
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 127628
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 130345
+      },
+      {
+        "L_max": 2,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 2,
+        "target_node": 133769
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 2251
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 3515
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8011
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8441
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 8866
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 24382
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 28966
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 35665
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 102873
+      },
+      {
+        "L_max": 3,
+        "L_min": 1,
+        "child_sample_depth": 1,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 116317
+      },
+      {
+        "L_max": 3,
+        "L_min": 2,
+        "child_sample_depth": 2,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 40399
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 14201
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 18211
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 22312
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 37954
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 38325
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 38340
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 40160
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 58899
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 59803
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 61857
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 65403
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69587
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69649
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69651
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 69667
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 70247
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 85400
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 85924
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 93725
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101379
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101886
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 101973
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 105998
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106061
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106178
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 106394
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 107743
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 108670
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 108682
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 111643
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112004
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112005
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 112490
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 117235
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 123192
+      },
+      {
+        "L_max": 3,
+        "L_min": 3,
+        "child_sample_depth": 3,
+        "distance_cycle_skipped": false,
+        "distance_truncated": false,
+        "selection_bucket": 3,
+        "target_node": 129704
+      }
+    ],
+    "selection_counts": {
+      "1": 13529,
+      "2": 1103,
+      "3": 47,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "root_cone_child_edges_examined": 14887,
+      "root_cone_max_observed_child_depth": 3,
+      "root_cone_nodes": 14680,
+      "root_cone_truncated_by_depth": false,
+      "root_cone_truncated_by_nodes": false
+    },
+    "target_buckets": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "target_depths": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "target_selection": "parent-distance",
+    "targets_per_depth": 50
+  },
+  "tail_epsilon": 0.01,
+  "target_selection": "parent-distance"
+}

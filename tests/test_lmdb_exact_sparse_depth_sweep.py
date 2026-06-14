@@ -4,13 +4,27 @@
 """Tests for exact sparse depth sweep helpers."""
 
 import unittest
+from types import SimpleNamespace
 
 from scripts.lmdb_exact_sparse_depth_sweep import (
     break_even_hits,
     histogram_metrics,
     markdown_summary,
+    select_root_reachable_parent_distance_targets,
     summary_row,
 )
+
+
+class FakeGraph:
+    def __init__(self, children, parents):
+        self._children = children
+        self._parents = parents
+
+    def children(self, node):
+        return self._children.get(node, [])
+
+    def parents(self, node):
+        return self._parents.get(node, [])
 
 
 class ExactSparseDepthSweepTests(unittest.TestCase):
@@ -26,6 +40,35 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
     def test_break_even_hits_uses_cached_bins_as_eval_cost(self):
         self.assertAlmostEqual(break_even_hits(5, 20, 10), 0.5)
         self.assertIsNone(break_even_hits(5, 10, 10))
+
+    def test_parent_distance_selector_buckets_by_lmax(self):
+        graph = FakeGraph(
+            children={"R": ["A", "B"], "A": ["C"], "B": ["C"]},
+            parents={"A": ["R"], "B": ["R"], "C": ["A", "B"]},
+        )
+        args = SimpleNamespace(
+            children_per_node=99,
+            frontier_limit=99,
+            targets_per_depth=10,
+            seed="fixture",
+            max_parent_depth=8,
+            root_cone_max_child_depth=0,
+            root_cone_max_nodes=0,
+        )
+
+        kept, filtered, counts = select_root_reachable_parent_distance_targets(
+            graph,
+            "R",
+            [1, 2],
+            args,
+        )
+
+        by_node = {row["target_node"]: row for row in kept}
+        self.assertEqual(counts["1"], 2)
+        self.assertEqual(counts["2"], 1)
+        self.assertEqual(by_node["A"]["selection_bucket"], 1)
+        self.assertEqual(by_node["C"]["selection_bucket"], 2)
+        self.assertFalse(filtered)
 
     def test_summary_bucket_classifies_exact_sparse_rows(self):
         row = {
@@ -46,10 +89,14 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
             "state_expansion_ratio": 0.3,
             "time_ratio": 0.4,
             "hits_to_break_even_states": 3 / 9,
+            "child_sample_depth": 2,
+            "target_L_min": 2,
+            "target_L_max": 2,
         }
 
         summary = summary_row((2, 10), [row], 50)
 
+        self.assertEqual(summary["selection_bucket"], 2)
         self.assertEqual(summary["exact_sparse_under_point_cap_rows"], 1)
         self.assertEqual(summary["exact_match_rows"], 1)
         self.assertEqual(summary["max_effective_support_bins"], 1)
@@ -59,21 +106,25 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
         summary = {
             "graph": "fixture",
             "root": 1,
+            "target_selection": "parent-distance",
             "point_cap": 50,
             "tail_epsilon": 0.01,
             "selection": {
-                "selection_counts": {0: 1, 2: 1},
-                "selected_targets": [{"child_sample_depth": 2}],
-                "root_reachable_targets": [{"child_sample_depth": 2}],
+                "selection_counts": {2: 1, "root_cone_nodes": 2},
+                "selected_targets": [{"child_sample_depth": 2, "selection_bucket": 2}],
+                "root_reachable_targets": [{"child_sample_depth": 2, "selection_bucket": 2}],
                 "filtered_targets": [],
             },
             "buckets": [
                 {
-                    "child_sample_depth": 2,
+                    "selection_bucket": 2,
                     "budget": 10,
                     "rows": 1,
                     "exact_sparse_under_point_cap_rows": 1,
                     "exact_match_rows": 1,
+                    "mean_child_sample_depth": 2.0,
+                    "mean_target_L_min": 2.0,
+                    "mean_target_L_max": 2.0,
                     "mean_path_count": 1.0,
                     "max_path_count": 1,
                     "mean_effective_support_bins": 1.0,
