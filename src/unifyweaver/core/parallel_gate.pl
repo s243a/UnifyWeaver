@@ -26,6 +26,7 @@
     goal_parallel_decision/3,        % +Generator, +Model, -Decision
     split_aggregate_generator/5,     % +InnerGoal, +Model, -Enum, -Body, -Frontier
     parallel_aggregate_transform/5,  % +AggGoal, +Model, +Seed, -Helpers, -Plan
+    parallel_aggregate_transform/6,  % +AggGoal, +ExternalInputs, +Model, +Seed, -Helpers, -Plan
     lift_embedded_aggregate/6,       % +Head, +Body, +Model, +Seed, -NewBody, -HelperClause
     parallel_worthy_tier/1           % ?Tier   (multifile, overridable policy)
 ]).
@@ -191,24 +192,40 @@ memberchk_eq([_|T], V) :- memberchk_eq(T, V).
 % the gate says parallel, and the inner goal splits soundly.
 
 parallel_aggregate_transform(AggGoal, Model, Seed, Helpers, Plan) :-
+    parallel_aggregate_transform(AggGoal, [], Model, Seed, Helpers, Plan).
+
+%% parallel_aggregate_transform(+AggGoal, +ExternalInputs, +Model, +Seed, -Helpers, -Plan)
+%  ExternalInputs are variables the aggregate's inner goal reads from OUTSIDE the
+%  aggregate (the enclosing predicate's head args / preceding goals). They become
+%  LEADING parameters of both helpers, so the enumerator/body run with those vars
+%  bound to the caller's values rather than free — without this, an aggregate like
+%  `findall(D,(link(Y,Z),down(Z,D)),R)` with `Y` an input enumerates over all `Y`.
+%  For `ExternalInputs = []` the output is identical to the original /5.
+parallel_aggregate_transform(AggGoal, ExternalInputs, Model, Seed, Helpers, Plan) :-
     forkable_aggregate(AggGoal, _Template, InnerGoal),
     agg_value_type(AggGoal, AggType, Value),
     aggregate_result(AggGoal, Result),
     goal_parallel_decision(InnerGoal, Model, parallel),
     split_aggregate_generator(InnerGoal, Model, Enum, Body, _Frontier),
-    % Input = enum-bound vars that the body or the collected value reads.
+    % Input tuple = enum-bound vars the body/value reads, MINUS external inputs
+    % (those are passed as leading params, not via the tuple).
     term_variables(Enum, EnumVars),
     term_variables(Body, BodyVars),
     term_variables(Value, ValueVars),
     append(BodyVars, ValueVars, Downstream),
-    shared_vars(EnumVars, Downstream, Input),
+    shared_vars(EnumVars, Downstream, Input0),
+    exclude(memberchk_eq(ExternalInputs), Input0, Input),
     InputTuple =.. [ti | Input],
     format(atom(EnumName), '__par_enum_~w', [Seed]),
     format(atom(BodyName), '__par_body_~w', [Seed]),
-    EnumHead =.. [EnumName, InputTuple],
-    BodyHead =.. [BodyName, InputTuple, Value],
+    append(ExternalInputs, [InputTuple], EnumArgs),
+    EnumHead =.. [EnumName | EnumArgs],
+    append(ExternalInputs, [InputTuple, Value], BodyArgs),
+    BodyHead =.. [BodyName | BodyArgs],
     Helpers = [ (EnumHead :- Enum), (BodyHead :- Body) ],
-    Plan = par_aggregate(AggType, EnumName/1, BodyName/2, Result).
+    length(ExternalInputs, K),
+    EnumArity is K + 1, BodyArity is K + 2,
+    Plan = par_aggregate(AggType, EnumName/EnumArity, BodyName/BodyArity, Result).
 
 % The per-solution value collected, and how it is reduced.
 agg_value_type(findall(Tmpl, _, _),          collect, Tmpl) :- !.
