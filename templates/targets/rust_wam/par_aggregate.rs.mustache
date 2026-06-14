@@ -142,3 +142,116 @@ pub fn seq_collect(
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Route 2: label-based collection for aggregates EMBEDDED in a larger clause
+// body. `par_collect`/`seq_collect` above take the generated predicate `fn`
+// pointers, which only exist when the whole predicate body IS the aggregate.
+// An embedded aggregate runs mid-clause inside the WAM interpreter (the
+// `ParAggregate` instruction), so it drives the enum/body helper predicates by
+// their entry-PC labels via `self.run()` instead.
+//
+// Isolation: `base` is a clone of the live interpreter machine, so it carries
+// the container clause's choice points. Each enumeration clears them on its own
+// clone before running, so a `backtrack()` past the helper's own choice points
+// stops (returns false) instead of escaping into the container clause.
+
+fn collect_inputs_labeled(base: &WamState, enum_pc: usize) -> Vec<Value> {
+    let mut vm = base.clone();
+    vm.choice_points.clear();
+    vm.aggregate_acc.clear();
+    vm.pc = enum_pc;
+    vm.set_reg("A1", Value::Unbound(IN_VAR.to_string()));
+    let mut out = Vec::new();
+    if vm.run() {
+        loop {
+            if let Some(raw) = vm.bindings.get(IN_VAR).cloned() {
+                out.push(vm.deref_var(&vm.deref_heap(&raw)));
+            }
+            if !vm.backtrack() || !vm.run() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn run_body_labeled(base: &WamState, m: &mut WamState, body_pc: usize, input: Value) -> Vec<Value> {
+    *m = base.clone();
+    m.choice_points.clear();
+    m.aggregate_acc.clear();
+    m.pc = body_pc;
+    m.set_reg("A1", input);
+    m.set_reg("A2", Value::Unbound(VAL_VAR.to_string()));
+    let mut vals = Vec::new();
+    if m.run() {
+        loop {
+            if let Some(raw) = m.bindings.get(VAL_VAR).cloned() {
+                vals.push(m.deref_var(&m.deref_heap(&raw)));
+            }
+            if !m.backtrack() || !m.run() {
+                break;
+            }
+        }
+    }
+    vals
+}
+
+fn map_bodies_labeled(base: &WamState, inputs: &[Value], body_pc: usize) -> Vec<Value> {
+    let n = inputs.len();
+    let cores = thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n);
+    if n < 2 || cores < 2 {
+        let mut out = Vec::new();
+        let mut m = base.clone();
+        for inp in inputs {
+            out.extend(run_body_labeled(base, &mut m, body_pc, inp.clone()));
+        }
+        return out;
+    }
+    let chunk = (n + cores - 1) / cores;
+    let mut results: Vec<(usize, Vec<Value>)> = thread::scope(|s| {
+        let mut handles = Vec::new();
+        for c in 0..cores {
+            let lo = c * chunk;
+            let hi = ((c + 1) * chunk).min(n);
+            if lo >= hi {
+                continue;
+            }
+            let slice = &inputs[lo..hi];
+            handles.push(s.spawn(move || {
+                let mut m = base.clone();
+                let mut local = Vec::new();
+                for inp in slice {
+                    local.extend(run_body_labeled(base, &mut m, body_pc, inp.clone()));
+                }
+                (lo, local)
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    results.sort_by_key(|(lo, _)| *lo);
+    let mut out = Vec::new();
+    for (_, mut v) in results {
+        out.append(&mut v);
+    }
+    out
+}
+
+/// Label-based `collect` for an embedded aggregate: enumerate inputs from the
+/// `__par_enum` helper's entry PC, then run the `__par_body` helper per input
+/// (parallel when worthwhile). Returns the ordered body-value sequence; the
+/// `ParAggregate` instruction handler reduces it by aggregate type. Returns an
+/// empty vec if either label is unknown (the handler then reduces an empty set,
+/// matching an aggregate over no solutions).
+pub fn par_collect_labels(base: &WamState, enum_label: &str, body_label: &str) -> Vec<Value> {
+    let enum_pc = match base.labels.get(enum_label) {
+        Some(p) => *p,
+        None => return Vec::new(),
+    };
+    let body_pc = match base.labels.get(body_label) {
+        Some(p) => *p,
+        None => return Vec::new(),
+    };
+    let inputs = collect_inputs_labeled(base, enum_pc);
+    map_bodies_labeled(base, &inputs, body_pc)
+}

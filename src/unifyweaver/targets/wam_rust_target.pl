@@ -819,6 +819,79 @@ wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
                     self.backtrack()
                 } else { false }'.
 
+% T7 route 2: parallel aggregate embedded in a larger clause body. Drives the
+% __par_enum/__par_body helper predicates by their entry-PC labels, reduces by
+% agg_type (mirrors the aggregate_frame finalisation), binds result_reg in
+% place, and advances to the next instruction (no choice point left behind, so
+% the surrounding clause keeps running normally).
+wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label, result_reg)', Body) :-
+    Body = '                let __base = self.clone();
+                let __vals = crate::par_aggregate::par_collect_labels(&__base, enum_label, body_label);
+                let __result = match agg_type.as_str() {
+                    "count" => Value::Integer(__vals.len() as i64),
+                    "sum" => {
+                        let mut sum_i: i64 = 0;
+                        let mut sum_f: f64 = 0.0;
+                        let mut saw_float = false;
+                        for val in &__vals {
+                            match self.deref_var(&self.deref_heap(val)) {
+                                Value::Integer(n) => { sum_i += n; sum_f += n as f64; }
+                                Value::Float(f) => { saw_float = true; sum_f += f; }
+                                _ => {}
+                            }
+                        }
+                        if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
+                    }
+                    "max" => {
+                        let mut best: Option<Value> = None;
+                        for val in &__vals {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => match (&current, prev) {
+                                    (Value::Integer(a), Value::Integer(b)) if a > b => Some(current),
+                                    (Value::Float(a), Value::Float(b)) if a > b => Some(current),
+                                    (Value::Integer(a), Value::Float(b)) if (*a as f64) > *b => Some(current),
+                                    (Value::Float(a), Value::Integer(b)) if *a > (*b as f64) => Some(current),
+                                    _ => Some(prev.clone()),
+                                },
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    "min" => {
+                        let mut best: Option<Value> = None;
+                        for val in &__vals {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => match (&current, prev) {
+                                    (Value::Integer(a), Value::Integer(b)) if a < b => Some(current),
+                                    (Value::Float(a), Value::Float(b)) if a < b => Some(current),
+                                    (Value::Integer(a), Value::Float(b)) if (*a as f64) < *b => Some(current),
+                                    (Value::Float(a), Value::Integer(b)) if *a < (*b as f64) => Some(current),
+                                    _ => Some(prev.clone()),
+                                },
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    _ => Value::List(__vals),
+                };
+                let __lhs = self.get_reg_raw(result_reg).map(|v| self.deref_var(&v));
+                let __ok = match __lhs {
+                    Some(Value::Unbound(ref __vn)) => {
+                        self.trail_binding(result_reg);
+                        self.set_reg_str(result_reg, __result.clone());
+                        self.bind_var(__vn, __result);
+                        true
+                    }
+                    Some(__existing) => __existing == __result,
+                    None => { self.set_reg_str(result_reg, __result); true }
+                };
+                if __ok { self.pc += 1; }
+                __ok'.
+
 % --- Choice Point Instructions ---
 
 wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
@@ -4590,6 +4663,98 @@ rust_assert_helper(Module, (Head :- Body), Module:Name/Arity) :-
     copy_term((Head :- Body), (H :- B)),
     assertz(Module:(H :- B)).
 
+% --- T7 route 2: aggregates EMBEDDED in a larger clause body ----------------
+%
+% Unlike route 1 (whole-body aggregate -> native par_collect wrapper), an
+% embedded aggregate must run mid-clause inside the WAM. This pass keeps the
+% containing predicate as a WAM predicate but (a) synthesises the same
+% enum/body helpers as route 1 (added to the compile set so they get entry
+% labels) and (b) records a rewrite so the containing predicate's
+% begin_aggregate..end_aggregate block is replaced by a single par_aggregate
+% instruction referencing those helper labels. Gated by parallel_aggregates(true)
+% and the same cost gate as route 1 (only expensive/recursive inner bodies).
+
+rust_inject_embedded_par_aggregates(Preds0, Options, Preds, Rewrites) :-
+    (   option(parallel_aggregates(true), Options)
+    ->  rust_partition_embedded(Preds0, Options, HelperPIs, Rewrites),
+        append(Preds0, HelperPIs, Preds)
+    ;   Preds = Preds0, Rewrites = []
+    ).
+
+rust_partition_embedded([], _, [], []).
+rust_partition_embedded([PI|Rest], Options, HelperPIs, Rewrites) :-
+    (   catch(rust_embedded_par_aggregate(PI, Options, MyHelpers, Rewrite), _, fail)
+    ->  rust_pi_module(PI, Module),
+        maplist(rust_assert_helper(Module), MyHelpers, MyHelperPIs),
+        rust_partition_embedded(Rest, Options, RestHelperPIs, RestRewrites),
+        append(MyHelperPIs, RestHelperPIs, HelperPIs),
+        Rewrites = [Rewrite|RestRewrites]
+    ;   rust_partition_embedded(Rest, Options, HelperPIs, Rewrites)
+    ).
+
+% Succeeds for a single-clause predicate whose body contains (but is not
+% itself) a forkable aggregate that the cost gate sends parallel and whose
+% reduce type the par_aggregate handler supports.
+rust_embedded_par_aggregate(QPI, _Options, Helpers,
+        rewrite(Pred/Arity, EnumName, BodyName)) :-
+    ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
+    functor(Head, Pred, Arity),
+    findall(t, clause(Module:Head, _), [t]),     % exactly one clause
+    clause(Module:Head, Body),
+    \+ forkable_aggregate(Body, _, _),           % not whole-body (that is route 1)
+    rust_body_embedded_aggregate(Body, AggGoal),
+    build_cost_model(Module, CM),
+    parallel_aggregate_transform(AggGoal, CM, Pred, Helpers,
+        par_aggregate(AggType, EnumName/1, BodyName/2, _Result)),
+    rust_supported_par_agg_type(AggType),
+    !.
+
+% Find the first forkable aggregate goal inside a (possibly nested) conjunction.
+rust_body_embedded_aggregate((A, B), Agg) :-
+    !,
+    (   forkable_aggregate(A, _, _)
+    ->  Agg = A
+    ;   rust_body_embedded_aggregate(B, Agg)
+    ).
+rust_body_embedded_aggregate(Goal, Goal) :-
+    forkable_aggregate(Goal, _, _).
+
+% Reduce types the ParAggregate handler implements (must match the sequential
+% aggregate_frame finalisation so par == seq).
+rust_supported_par_agg_type(T) :- memberchk(T, [collect, count, sum, max, min]).
+
+% Rewrite the WAM text lines of a predicate flagged for embedded parallelism:
+% splice a single `par_aggregate` line over its begin_aggregate..end_aggregate
+% block. No-op (Lines unchanged) when there is no matching rewrite directive.
+rust_rewrite_embedded_aggregate(Lines0, PI, Rewrites, Lines) :-
+    memberchk(rewrite(PI, EnumName, BodyName), Rewrites),
+    !,
+    rust_splice_par_aggregate(Lines0, EnumName, BodyName, Lines).
+rust_rewrite_embedded_aggregate(Lines, _, _, Lines).
+
+rust_splice_par_aggregate(Lines0, EnumName, BodyName, Lines) :-
+    rust_find_begin_agg(Lines0, Before, Type, ResultReg, AfterBegin),
+    rust_drop_to_end_agg(AfterBegin, AfterEnd),
+    format(string(ParLine), '    par_aggregate ~w, ~w/1, ~w/2, ~w',
+           [Type, EnumName, BodyName, ResultReg]),
+    append(Before, [ParLine|AfterEnd], Lines).
+
+rust_find_begin_agg([Line|Rest], [], Type, ResultReg, Rest) :-
+    wam_tokenize_line(Line, Parts),
+    Parts = ["begin_aggregate", Type0, _ValueReg, ResultReg0|_],
+    clean_comma(Type0, Type),
+    clean_comma(ResultReg0, ResultReg),
+    !.
+rust_find_begin_agg([Line|Rest], [Line|Before], Type, ResultReg, After) :-
+    rust_find_begin_agg(Rest, Before, Type, ResultReg, After).
+
+rust_drop_to_end_agg([Line|Rest], Rest) :-
+    wam_tokenize_line(Line, Parts),
+    Parts = ["end_aggregate"|_],
+    !.
+rust_drop_to_end_agg([_|Rest], After) :-
+    rust_drop_to_end_agg(Rest, After).
+
 % --- T9 fact-table inline: detection + row extraction ----------------------
 %
 % Recognise a predicate whose every clause is a ground unit clause (a fact) and
@@ -4851,6 +5016,17 @@ wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
         'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
+% T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg
+% (EnumLabel/BodyLabel are predicate-indicator entry labels, e.g.
+% __par_enum_foo/1). Emitted by rust_rewrite_embedded_aggregates.
+wam_line_to_rust_instr(["par_aggregate", Type, EnumLabel, BodyLabel, ResultReg], _, _, Rust) :-
+    clean_comma(Type, CType),
+    clean_comma(EnumLabel, CEnumLabel),
+    clean_comma(BodyLabel, CBodyLabel),
+    clean_comma(ResultReg, CResultReg),
+    format(string(Rust),
+        'Instruction::ParAggregate("~w".to_string(), "~w".to_string(), "~w".to_string(), "~w".to_string())',
+        [CType, CEnumLabel, CBodyLabel, CResultReg]).
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
@@ -5436,11 +5612,15 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     % aggregate — synthesise their enum/body helpers (added to the compile set)
     % and emit a native par_collect wrapper for each. No-op unless
     % parallel_aggregates(true).
-    rust_inject_parallel_aggregates(Predicates0, Options, Predicates, ParWrappers),
+    rust_inject_parallel_aggregates(Predicates0, Options, Predicates1, ParWrappers),
+    % Pass 0.5 (T7 route-2): aggregates EMBEDDED in larger clause bodies —
+    % synthesise their enum/body helpers (added to the compile set) and record a
+    % rewrite to splice a par_aggregate instruction over the begin/end block.
+    rust_inject_embedded_par_aggregates(Predicates1, Options, Predicates, EmbeddedRewrites),
     % Pass 1: classify each predicate as native, wam, or failed
     classify_predicates(Predicates, Options, Classified),
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
-    collect_wam_entries(Classified, 1, WamEntries, AllInstrParts, AllLabelParts),
+    collect_wam_entries(Classified, 1, EmbeddedRewrites, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
     ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
@@ -5606,32 +5786,34 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
 %% collect_wam_entries(+Classified, +StartPC, -WamEntries, -AllInstrParts, -AllLabelParts)
 %  Iterates over classified predicates, collecting WAM code with cumulative PCs.
 %  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms.
-collect_wam_entries([], _, [], [], []).
-collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
+collect_wam_entries([], _, _, [], [], []).
+collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrites,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
+    split_string(WamStr, "\n", "", Lines0),
+    rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
     wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     % Count instructions to compute next PC
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC,
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC, Rewrites,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
+    split_string(WamStr, "\n", "", Lines0),
+    rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
     wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
-    collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
+collect_wam_entries([_|Rest], PC, Rewrites, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, PC, Rewrites, Entries, Instrs, Labels).
 
 %% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
 %  Generates Rust code for each classified predicate. Options is threaded so the
