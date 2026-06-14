@@ -90,6 +90,36 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(record["root_unreachable_parent_skips"], 1)
         self.assertEqual(record["filtered_dead_end_prefixes"], 0)
 
+    def test_exact_boundary_coverage_splices_filtered_suffix_mass(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        root_filter = RootConeFilter({"R": 0, "A": 1, "B": 2, "C": 3})
+
+        record = exact_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            reachability_filter=root_filter.can_reach,
+            parent_filter_name="root-cone",
+            measure_suffix_mass=True,
+            suffix_parent_filter=root_filter,
+        )
+
+        self.assertEqual(record["root_paths"], 0)
+        self.assertEqual(record["boundary_hit_prefixes"], 1)
+        self.assertTrue(record["boundary_suffix_mass_measured"])
+        self.assertEqual(record["boundary_suffix_path_mass_sum"], 1)
+        self.assertEqual(record["boundary_suffix_path_length_sum"], 3)
+        self.assertEqual(record["spliced_total_root_paths"], 1)
+        self.assertEqual(record["spliced_total_path_length_sum"], 3)
+        self.assertEqual(record["spliced_mean_path_length"], 3.0)
+        self.assertEqual(record["spliced_total_value_sum"], 1.0)
+
     def test_exact_boundary_coverage_unfiltered_keeps_off_root_prefixes(self):
         graph = DictGraph({
             "A": ["R"],
@@ -296,6 +326,35 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertIsNone(record["estimated_spliced_total_root_paths"])
         self.assertFalse(record["boundary_suffix_mass_measured"])
 
+    def test_sample_boundary_coverage_splices_filtered_suffix_mass(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        root_filter = RootConeFilter({"R": 0, "A": 1, "B": 2, "C": 3})
+
+        record = sample_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            samples=10,
+            seed="fixture",
+            reachability_filter=root_filter.can_reach,
+            parent_filter_name="root-cone",
+            measure_suffix_mass=True,
+            suffix_parent_filter=root_filter,
+        )
+
+        self.assertTrue(record["boundary_suffix_mass_measured"])
+        self.assertEqual(record["boundary_suffix_path_mass_sum"], 10)
+        self.assertEqual(record["boundary_suffix_path_length_sum"], 30)
+        self.assertEqual(record["estimated_spliced_total_root_paths"], 1.0)
+        self.assertEqual(record["estimated_spliced_total_path_length_sum"], 3.0)
+        self.assertEqual(record["estimated_spliced_mean_path_length"], 3.0)
+
     def test_sample_root_path_space_estimates_root_count_and_mean_length(self):
         graph = DictGraph({
             "A": ["R"],
@@ -399,6 +458,7 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertIn("`root_paths=0` and positive boundary hits", summary)
         self.assertIn("boundary-covered", summary)
         self.assertIn("`Target Rows` is per target and budget", summary)
+        self.assertIn("spliced_total_root_paths", summary)
 
 
 if __name__ == "__main__":
