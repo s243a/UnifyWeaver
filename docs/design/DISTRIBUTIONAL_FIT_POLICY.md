@@ -569,6 +569,20 @@ child-depth result: max path mass `3`, mean effective support `1.447`, and max
 effective support `3`.  This makes `Category:Articles` a useful low-branching
 validation cone, but not a stress case for deep parent-distance histograms.
 
+`docs/reports/lmdb_exact_sparse_depth_sweep_enwiki_mtc_exact_sparse_parent_distance_lmin_sweep_b10_20_smoke_20260614T175202Z.md`
+is the first comparable enwiki stress smoke.  It uses a constrained
+`Category:Main_topic_classifications` root cone (`4,944` sampled nodes, max
+observed child depth `4`) and buckets by `L_min` because clean `L_max` buckets
+are dominated by truncation/cycle evidence at this sampling horizon.  Buckets
+`L_min=1..4` all failed the exact-sparse row criterion under budgets `10` and
+`20`: DFS hit the `100,000` expansion cap in most rows and recurrence reported
+cycle approximation in most budget-10 rows.  The partial histograms still had
+small observed supports, but those support numbers are not exact once caps
+fire.  The design signal is therefore not "enwiki support is small"; it is that
+plain exact DFS enumeration is already too expensive on the MTC cone, so enwiki
+needs recurrence/materialized boundaries, cycle-aware validation, and fitted or
+cached approximations much earlier than SimpleWiki.
+
 `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
 small excess parent branching is binomial-like, while larger parent branching is
 better treated as a compound/convolution model before fitting a closed form.
