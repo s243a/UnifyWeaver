@@ -255,11 +255,11 @@ END { print total, errors, non_errors, last_len }
 ```
 
 For now, branch bodies support scalar updates, field-key associative increments,
-selected-field `print` including `NR`, and combinations of those actions.
-Branch-local `next` and `break` are rejected by native codegen.
-The generated native code evaluates the `if` condition once, runs the selected
-branch, and rejoins all scalar slots through LLVM phi nodes before later actions
-or rules continue.
+selected-field `print` including `NR`, terminal `next`, and combinations of
+those actions. Branch-local `break` is rejected by native codegen. The generated
+native code evaluates the `if` condition once, runs the selected branch, rejoins
+normal scalar slots through LLVM phi nodes, and routes selected branch-local
+`next` paths to the next input record.
 
 Associative increments can live inside the selected branch:
 
@@ -281,6 +281,18 @@ Branches can also print selected fields:
 END { print counts["WARN"] }
 ```
 
+Branches can use terminal `next` to skip later actions and later rules for the
+current record:
+
+```awk
+{
+  if ($1 == "DEBUG") { skipped++; next }
+  else { seen++ }
+  total++
+}
+END { print total, seen, skipped }
+```
+
 A terminal `next` skips the remaining rules for the current record:
 
 ```awk
@@ -298,7 +310,8 @@ $1 == "ERROR" { hits++; break }
 END { print hits, total }
 ```
 
-For now, `next` and `break` must be the last action in the rule body.
+For now, `next` and `break` must be the last action in the rule body, and
+branch-local `next` must be the last action in its branch.
 
 `BEGIN` can emit literal report headers before the first input record is read:
 
