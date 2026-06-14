@@ -259,6 +259,48 @@ test(ascii_case_slice_print_emitter) :-
     assertion(LowerIR == '  call void @wam_print_ascii_lower_slice(i8* %ptr, i64 %len)'),
     assertion(UpperIR == '  call void @wam_print_ascii_upper_slice(i8* %ptr, i64 %len)').
 
+test(c_string_global_emitter) :-
+    llvm_emit_c_string_global(example_label, "hello\n", GlobalIR, StringLen, BytesLen),
+    assertion(StringLen == 6),
+    assertion(BytesLen == 7),
+    assertion(GlobalIR == '@.example_label = private constant [7 x i8] c"hello\\0A\\00"').
+
+test(printf_i64_emitter) :-
+    llvm_emit_printf_i64(plawk_surface_print_i64, value_fmt, printed_value, '%n', Parts),
+    assertion(Parts == [
+        '  %value_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        '  %printed_value = call i32 (i8*, ...) @printf(i8* %value_fmt, i64 %n)'
+    ]).
+
+test(printf_slice_emitter) :-
+    llvm_emit_printf_slice(plawk_surface_print_slice, slice_fmt, printed_slice,
+        '%len', '%ptr', Parts),
+    assertion(Parts == [
+        '  %slice_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+        '  %printed_slice = call i32 (i8*, ...) @printf(i8* %slice_fmt, i32 %len, i8* %ptr)'
+    ]).
+
+test(printf_string_emitter) :-
+    llvm_emit_printf_string(plawk_surface_print_string, string_fmt, printed_string,
+        '%ptr', StringParts),
+    llvm_emit_printf_string(plawk_surface_print_line, 4, line_fmt, printed_line,
+        '%line_s', LineParts),
+    assertion(StringParts == [
+        '  %string_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        '  %printed_string = call i32 (i8*, ...) @printf(i8* %string_fmt, i8* %ptr)'
+    ]),
+    assertion(LineParts == [
+        '  %line_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0',
+        '  %printed_line = call i32 (i8*, ...) @printf(i8* %line_fmt, i8* %line_s)'
+    ]).
+
+test(printf0_emitter) :-
+    llvm_emit_printf0(plawk_surface_print_newline, 2, newline_fmt, printed_newline, Parts),
+    assertion(Parts == [
+        '  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+        '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'
+    ]).
+
 % ============================================================================
 % Builtin op ID mapping
 % ============================================================================

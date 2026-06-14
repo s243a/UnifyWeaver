@@ -52,6 +52,12 @@
     llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
     llvm_emit_atom_field_subslice/7,     % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
     llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
+    llvm_emit_c_string_global/5,         % +GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen
+    llvm_emit_printf_i64/5,              % +FmtGlobal, +FmtVar, +PrintVar, +ValueIR, -Parts
+    llvm_emit_printf_slice/6,            % +FmtGlobal, +FmtVar, +PrintVar, +LenIR, +PtrIR, -Parts
+    llvm_emit_printf_string/5,           % +FmtGlobal, +FmtVar, +PrintVar, +PtrIR, -Parts
+    llvm_emit_printf_string/6,           % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts
+    llvm_emit_printf0/5,                 % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts
     llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
 ]).
 
@@ -16686,6 +16692,72 @@ llvm_emit_atom_field_index(GlobalBase, ValueIR, FieldIndex, Needle, SepCode, Ind
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  %~w = call i64 @wam_atom_field_index_value(%Value ~w, i64 ~w, i8 ~w, i8* %~w_ptr, i64 ~w)',
         [SafeGlobalBase, ArrLen, ArrLen, SafeGlobalBase,
          IndexBase, ValueIR, FieldIndex, SepCode, SafeGlobalBase, NeedleLen]).
+
+%% llvm_emit_c_string_global(+GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen)
+%
+%  Emit a null-terminated `i8` array global for a C string literal. GlobalName is
+%  the LLVM global stem after `@.`; callers that synthesize arbitrary names
+%  should sanitize before calling. StringLen excludes the null terminator;
+%  BytesLen includes it and is suitable for getelementptr array types.
+llvm_emit_c_string_global(GlobalName, Value, GlobalIR, StringLen, BytesLen) :-
+    escape_llvm_string(Value, Escaped, StringLen),
+    BytesLen is StringLen + 1,
+    format(atom(GlobalIR),
+        '@.~w = private constant [~w x i8] c"~w\\00"',
+        [GlobalName, BytesLen, Escaped]).
+
+%% llvm_emit_printf_i64(+FmtGlobal, +FmtVar, +PrintVar, +ValueIR, -Parts)
+%
+%  Emit a `%ld`-style `printf` call against a shared format-string global.
+llvm_emit_printf_i64(FmtGlobal, FmtVar, PrintVar, ValueIR, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [4 x i8], [4 x i8]* @.~w, i32 0, i32 0',
+        [FmtVar, FmtGlobal]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i64 ~w)',
+        [PrintVar, FmtVar, ValueIR]).
+
+%% llvm_emit_printf_slice(+FmtGlobal, +FmtVar, +PrintVar, +LenIR, +PtrIR, -Parts)
+%
+%  Emit a `%.*s`-style `printf` call for an allocation-free byte slice.
+llvm_emit_printf_slice(FmtGlobal, FmtVar, PrintVar, LenIR, PtrIR, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [5 x i8], [5 x i8]* @.~w, i32 0, i32 0',
+        [FmtVar, FmtGlobal]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i32 ~w, i8* ~w)',
+        [PrintVar, FmtVar, LenIR, PtrIR]).
+
+%% llvm_emit_printf_string(+FmtGlobal, +FmtVar, +PrintVar, +PtrIR, -Parts)
+%
+%  Emit a `%s`-style `printf` call for a null-terminated C string pointer.
+llvm_emit_printf_string(FmtGlobal, FmtVar, PrintVar, PtrIR, [FmtPtr, PrintCall]) :-
+    llvm_emit_printf_string(FmtGlobal, 3, FmtVar, PrintVar, PtrIR,
+        [FmtPtr, PrintCall]).
+
+%% llvm_emit_printf_string(+FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts)
+%
+%  Emit a string-pointer `printf` call against a shared C string format global.
+%  FmtLen is the global array length including the null terminator.
+llvm_emit_printf_string(FmtGlobal, FmtLen, FmtVar, PrintVar, PtrIR, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [FmtVar, FmtLen, FmtLen, FmtGlobal]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i8* ~w)',
+        [PrintVar, FmtVar, PtrIR]).
+
+%% llvm_emit_printf0(+FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts)
+%
+%  Emit a no-argument `printf` call against a shared format-string global, such
+%  as newline wrappers.
+llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [FmtVar, FmtLen, FmtLen, FmtGlobal]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w)',
+        [PrintVar, FmtVar]).
 
 %% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
 %
