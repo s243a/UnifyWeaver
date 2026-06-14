@@ -547,6 +547,18 @@ compact support but enough path mass for recurrence materialization to matter.
 The enwiki profile is capped smoke evidence, not a full-root-cone
 characterization.
 
+`docs/reports/lmdb_exact_sparse_depth_sweep_simplewiki_articles_exact_sparse_depth_sweep_b10_20_20260614T163104Z.md`
+checks the SimpleWiki side more directly by sweeping root-reachable
+`Category:Articles` targets at child depths `1`, `2`, and `3` with parent-path
+budgets `10` and `20`.  All sampled rows were exact sparse rows: recurrence
+matched simple-path DFS, no cycle approximation was needed, and every effective
+support stayed below the 50-point cap.  The deepest sampled layer had mean path
+mass `1.277`, max path mass `3`, mean effective support `1.447`, and max
+effective support `3`.  At this scale Python wall-clock timings are mostly
+overhead, but the state model still estimates break-even near one cache hit.
+This supports carrying exact sparse histograms deeper on SimpleWiki before
+trying binomial, Gamma, or sampled approximations.
+
 `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
 small excess parent branching is binomial-like, while larger parent branching is
 better treated as a compound/convolution model before fitting a closed form.
