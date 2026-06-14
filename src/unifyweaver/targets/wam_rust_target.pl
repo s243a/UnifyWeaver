@@ -29,7 +29,7 @@
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 % T7 compile-time parallel-aggregate gate (consumer of the cost machinery).
-:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3, parallel_aggregate_transform/5]).
+:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3, parallel_aggregate_transform/5, lift_embedded_aggregate/6]).
 :- use_module('../core/cost_analysis', [build_cost_model/2, goal_cost_tier/3]).
 :- use_module('../targets/wam_text_parser', [
     wam_classify_constant_token/2,
@@ -4617,6 +4617,42 @@ rust_fact_clause(Head, Body) :-
 
 rust_t9_min_rows(Options, N) :-
     ( member(t9_min_rows(N), Options) -> true ; N = 64 ).
+
+% --- T7 embedded-aggregate wiring, step 1: pure clause-lifting pass ----------
+%
+% Apply lift_embedded_aggregate across a predicate's clauses, lifting every
+% embedded parallel-eligible aggregate into a whole-body helper predicate and
+% replacing it in-place with a call. Returns the rewritten clauses + the
+% synthesised helper clauses. Pure/read-only: it reads clauses via clause/2 and
+% builds terms; it does NOT assert/retract, so the user's module is untouched.
+% Succeeds only if at least one aggregate was lifted (else the predicate is
+% compiled by the existing path). Each lift gets a unique Seed (Pred_Arity_N).
+
+rust_lift_predicate_clauses(QPI, Model, Rewritten, Helpers) :-
+    ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
+    functor(Tmpl, Pred, Arity),
+    findall((Tmpl :- B), clause(Module:Tmpl, B), Clauses),
+    Clauses = [_|_],
+    rust_lift_clauses(Clauses, Model, Pred, Arity, 0, Rewritten, Helpers, Changed),
+    Changed == true.
+
+rust_lift_clauses([], _, _, _, _, [], [], false).
+rust_lift_clauses([(H :- B)|Cs], Model, P, A, Seed0,
+                  [(H :- NB)|RR], Helpers, Changed) :-
+    rust_lift_clause_fully(H, B, Model, P, A, Seed0, NB, MyHelpers, Seed1),
+    rust_lift_clauses(Cs, Model, P, A, Seed1, RR, RestHelpers, ChangedRest),
+    append(MyHelpers, RestHelpers, Helpers),
+    ( ( MyHelpers \== [] ; ChangedRest == true ) -> Changed = true ; Changed = false ).
+
+% Lift every embedded aggregate in one clause body (iterate until none remain).
+rust_lift_clause_fully(H, B, Model, P, A, Seed0, NB, Helpers, SeedN) :-
+    format(atom(Seed), '~w_~w_~w', [P, A, Seed0]),
+    ( lift_embedded_aggregate(H, B, Model, Seed, NB1, Helper)
+    ->  Seed1 is Seed0 + 1,
+        rust_lift_clause_fully(H, NB1, Model, P, A, Seed1, NB, RestHelpers, SeedN),
+        Helpers = [Helper|RestHelpers]
+    ;   NB = B, Helpers = [], SeedN = Seed0
+    ).
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
