@@ -97,19 +97,20 @@ Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports
 field-equality conditions, scalar updates, field-key associative increments,
-selected-field `print` including `NR`, and terminal `next` inside branches. The
-native lowering evaluates each source `if` guard once, threads every scalar slot
-through the then/else bodies, emits associative table increments and
-branch-local prints only on the selected branch, rejoins scalar slots with
-per-slot LLVM phis, and routes selected branch-local `next` paths to the stream
-loop continuation. Branch-local `break` remains outside this boundary.
+selected-field `print` including `NR`, and terminal `next`/`break` inside
+branches. The native lowering evaluates each source `if` guard once, threads
+every scalar slot through the then/else bodies, emits associative table
+increments and branch-local prints only on the selected branch, rejoins scalar
+slots with per-slot LLVM phis, routes selected branch-local `next` paths to the
+stream loop continuation, and routes selected branch-local `break` paths to the
+stream close path before `END`.
 Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. Terminal `break` is supported in the same native
 rule-chain shape and closes the stream before running `END`, e.g. `$1 == "ERROR"
 { hits++; break } { total++ } END { print hits, total }`. In the current surface
 slice, `next` and `break` must be the last action in their rule body; branch
-`next` must also be terminal in that branch. Non-terminal loop control is
+`next`/`break` must also be terminal in that branch. Non-terminal loop control is
 intentionally rejected by the native codegen boundary. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
