@@ -6,6 +6,8 @@
 import unittest
 
 from scripts.distribution_precompute_depth_estimator import (
+    apply_branching_profile,
+    branching_profile_from_records,
     build_records,
     calibration_from_payload_recurrence_summaries,
     cumulative_branching,
@@ -16,6 +18,97 @@ from scripts.distribution_precompute_depth_estimator import (
 
 
 class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
+
+    def test_branching_profile_extracts_overall_and_depth_priors(self):
+        profile = branching_profile_from_records([
+            {
+                "record_type": "root_conditioned_branching_selection",
+                "graph": "fixture",
+                "max_nodes": 100,
+                "truncated": True,
+            },
+            {
+                "record_type": "root_conditioned_branching_overall",
+                "root_conditioned_parent_degree": {
+                    "nodes": 10,
+                    "mean_parent_degree": 1.25,
+                    "second_parent_degree_moment": 3.0,
+                    "size_biased_parent_branching": 2.4,
+                    "mean_excess": 1.4,
+                    "max_parent_degree": 5,
+                    "p95_parent_degree": 4,
+                    "p99_parent_degree": 5,
+                },
+            },
+            {
+                "record_type": "root_conditioned_branching_depth_bucket",
+                "child_depth": 1,
+                "root_conditioned_parent_degree": {
+                    "nodes": 4,
+                    "mean_parent_degree": 1.0,
+                    "size_biased_parent_branching": 1.5,
+                    "mean_excess": 0.5,
+                    "max_parent_degree": 2,
+                },
+            },
+        ], source_paths=["profile.jsonl"])
+
+        self.assertEqual(profile["source_paths"], ["profile.jsonl"])
+        self.assertAlmostEqual(profile["branching_factor"], 2.4)
+        self.assertEqual(profile["overall"]["nodes"], 10)
+        self.assertEqual(profile["selection"]["max_nodes"], 100)
+        self.assertEqual(profile["depth_branching"], {1: 1.5})
+
+    def test_apply_branching_profile_preserves_manual_overrides(self):
+        args = parse_args([
+            "--branching-factor", "9",
+            "--depth-branching", "2:7",
+            "--max-depth", "2",
+        ])
+        profile = {
+            "branching_factor": 2.4,
+            "depth_branching": {1: 1.5, 2: 2.5},
+        }
+
+        original_loader = apply_branching_profile.__globals__["branching_profile_from_jsonl"]
+        try:
+            apply_branching_profile.__globals__["branching_profile_from_jsonl"] = lambda paths, degree_scope: dict(profile)
+            args.branching_profile_jsonl = ["fixture.jsonl"]
+            args.branching_profile_degree_scope = "root_conditioned_parent_degree"
+            applied = apply_branching_profile(args)
+        finally:
+            apply_branching_profile.__globals__["branching_profile_from_jsonl"] = original_loader
+
+        self.assertAlmostEqual(args.branching_factor, 9.0)
+        self.assertEqual(parse_depth_float_map(args.depth_branching), {1: 1.5, 2: 7.0})
+        self.assertTrue(applied["manual_branching_factor_override"])
+        self.assertEqual(applied["manual_depth_branching_overrides"], {2: 7.0})
+
+    def test_apply_branching_profile_updates_estimator_default_branching(self):
+        args = parse_args(["--expected-queries", "1000", "--max-depth", "1"])
+        profile = {
+            "branching_factor": 2.0,
+            "depth_branching": {},
+        }
+
+        original_loader = apply_branching_profile.__globals__["branching_profile_from_jsonl"]
+        try:
+            apply_branching_profile.__globals__["branching_profile_from_jsonl"] = lambda paths, degree_scope: dict(profile)
+            args.branching_profile_jsonl = ["fixture.jsonl"]
+            args.branching_profile_degree_scope = "root_conditioned_parent_degree"
+            applied = apply_branching_profile(args)
+        finally:
+            apply_branching_profile.__globals__["branching_profile_from_jsonl"] = original_loader
+
+        rows = [
+            row for row in build_records(args, branching_profile=applied)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["representation"] == "exact_sparse_histogram"
+        ]
+
+        self.assertAlmostEqual(rows[1]["expected_hits"], 500.0)
+        self.assertAlmostEqual(rows[1]["branching_factor"], 2.0)
+
     def test_cumulative_branching_uses_depth_overrides(self):
         overrides = parse_depth_float_map("1:2,2:3")
 

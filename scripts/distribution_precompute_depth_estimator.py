@@ -16,6 +16,7 @@ across each layer, per-node hits fall by about 1 / b per depth step.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
 import re
@@ -30,6 +31,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.lmdb_parent_histogram_benchmark import safe_graph_name
+
+
+class StoreWithExplicitFlag(argparse.Action):
+    """Store an argparse value and record that the user supplied it."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "{}_explicit".format(self.dest), True)
 
 
 def mean(values):
@@ -111,6 +120,114 @@ def load_jsonl_records(paths):
                 if line:
                     records.append(json.loads(line))
     return records
+
+
+def expand_globs(patterns):
+    paths = []
+    for pattern in patterns:
+        matches = sorted(glob.glob(str(pattern)))
+        if not matches:
+            raise ValueError("glob matched no files: {}".format(pattern))
+        paths.extend(Path(match) for match in matches)
+    return paths
+
+
+def branching_profile_from_records(records, degree_scope="root_conditioned_parent_degree", source_paths=None):
+    """Extract effective branching priors from root-conditioned profile rows."""
+    selection = None
+    overall = None
+    depth_rows = []
+    for record in records:
+        record_type = record.get("record_type")
+        if record_type == "root_conditioned_branching_selection":
+            selection = record
+        elif record_type == "root_conditioned_branching_overall":
+            overall = record
+        elif record_type == "root_conditioned_branching_depth_bucket":
+            depth_rows.append(record)
+
+    if overall is None:
+        raise ValueError("branching profile JSONL has no root_conditioned_branching_overall row")
+
+    if degree_scope not in overall:
+        raise ValueError("branching profile overall row has no {!r} scope".format(degree_scope))
+
+    overall_stats = overall[degree_scope]
+    branching_factor = overall_stats.get("size_biased_parent_branching")
+    depth_branching = {}
+    profile_depth_rows = []
+    for row in sorted(depth_rows, key=lambda item: int(item.get("child_depth", 0))):
+        if degree_scope not in row:
+            continue
+        child_depth = int(row["child_depth"])
+        stats = row[degree_scope]
+        branching = stats.get("size_biased_parent_branching")
+        profile_depth_rows.append({
+            "child_depth": child_depth,
+            "nodes": stats.get("nodes"),
+            "mean_parent_degree": stats.get("mean_parent_degree"),
+            "size_biased_parent_branching": branching,
+            "mean_excess": stats.get("mean_excess"),
+            "max_parent_degree": stats.get("max_parent_degree"),
+        })
+        if branching is not None:
+            depth_branching[child_depth] = float(branching)
+
+    return {
+        "source_paths": [str(path) for path in (source_paths or [])],
+        "degree_scope": degree_scope,
+        "branching_factor": None if branching_factor is None else float(branching_factor),
+        "overall": {
+            "nodes": overall_stats.get("nodes"),
+            "mean_parent_degree": overall_stats.get("mean_parent_degree"),
+            "second_parent_degree_moment": overall_stats.get("second_parent_degree_moment"),
+            "size_biased_parent_branching": branching_factor,
+            "mean_excess": overall_stats.get("mean_excess"),
+            "max_parent_degree": overall_stats.get("max_parent_degree"),
+            "p95_parent_degree": overall_stats.get("p95_parent_degree"),
+            "p99_parent_degree": overall_stats.get("p99_parent_degree"),
+        },
+        "depth_branching": depth_branching,
+        "depth_rows": profile_depth_rows,
+        "selection": selection,
+    }
+
+
+def branching_profile_from_jsonl(paths, degree_scope):
+    return branching_profile_from_records(
+        load_jsonl_records(paths),
+        degree_scope=degree_scope,
+        source_paths=paths,
+    )
+
+
+def apply_branching_profile(args):
+    """Load a branching profile and merge it into argparse inputs.
+
+    A profile supplies root-conditioned defaults. Explicit CLI values still win,
+    so callers can use profile depths while overriding a suspect overall
+    branching prior or one specific depth bucket.
+    """
+    profile = None
+    manual_depth_branching = parse_depth_float_map(args.depth_branching)
+    if args.branching_profile_jsonl:
+        profile = branching_profile_from_jsonl(
+            args.branching_profile_jsonl,
+            args.branching_profile_degree_scope,
+        )
+        if not args.branching_factor_explicit and profile["branching_factor"] is not None:
+            args.branching_factor = profile["branching_factor"]
+        merged_depth_branching = dict(profile["depth_branching"])
+        merged_depth_branching.update(manual_depth_branching)
+        args.depth_branching = ",".join(
+            "{}:{:.12g}".format(depth, merged_depth_branching[depth])
+            for depth in sorted(merged_depth_branching)
+        )
+        profile["manual_branching_factor_override"] = bool(args.branching_factor_explicit)
+        profile["manual_depth_branching_overrides"] = manual_depth_branching
+        profile["effective_branching_factor"] = args.branching_factor
+        profile["effective_depth_branching"] = merged_depth_branching
+    return profile
 
 
 def parse_boundary_depth_from_graph(graph):
@@ -443,7 +560,7 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
     return row
 
 
-def build_records(args, calibration=None, validation_measurements=None):
+def build_records(args, calibration=None, validation_measurements=None, branching_profile=None):
     depth_branching = parse_depth_float_map(args.depth_branching)
     query_reach = parse_depth_float_map(args.query_reach_probability)
     validation_measurements = validation_measurements or {}
@@ -455,6 +572,7 @@ def build_records(args, calibration=None, validation_measurements=None):
         "expected_queries": args.expected_queries,
         "branching_factor": args.branching_factor,
         "depth_branching": depth_branching,
+        "branching_profile": branching_profile,
         "query_reach_probability": query_reach,
         "max_depth": args.max_depth,
         "target_depth": target_depth,
@@ -511,6 +629,52 @@ def summarize(records):
         "Cap mode: `{}`".format(selection["cost_model"]["cap_mode"]),
         "",
     ]
+    if selection.get("branching_profile"):
+        profile = selection["branching_profile"]
+        overall = profile["overall"]
+        source_paths = profile.get("source_paths", [])
+        selection_row = profile.get("selection") or {}
+        lines.extend([
+            "## Branching Profile",
+            "",
+            "Source paths: `{}`".format(len(source_paths)),
+            "",
+            "Degree scope: `{}`".format(profile["degree_scope"]),
+            "",
+            "Overall root-conditioned `b`: `{:.6f}`".format(profile["branching_factor"]),
+            "",
+            "Profile nodes: `{}`".format(overall.get("nodes")),
+            "",
+            "Manual branching override: `{}`".format("yes" if profile.get("manual_branching_factor_override") else "no"),
+            "",
+            "Manual depth override count: `{}`".format(len(profile.get("manual_depth_branching_overrides", {}))),
+            "",
+        ])
+        if selection_row:
+            lines.extend([
+                "Profile sample cap: `{}`".format(selection_row.get("max_nodes")),
+                "",
+                "Profile truncated: `{}`".format("yes" if selection_row.get("truncated") else "no"),
+                "",
+            ])
+        if profile.get("depth_rows"):
+            lines.extend([
+                "| child_depth | nodes | mean_parent_degree | b | mean_excess | max_parent_degree |",
+                "|------------:|------:|-------------------:|--:|------------:|------------------:|",
+            ])
+            for row in profile["depth_rows"]:
+                branching = row["size_biased_parent_branching"]
+                lines.append(
+                    "| {depth} | {nodes} | {mean:.6f} | {branching} | {excess} | {max_parent} |".format(
+                        depth=row["child_depth"],
+                        nodes=row.get("nodes"),
+                        mean=row.get("mean_parent_degree") or 0.0,
+                        branching="n/a" if branching is None else "{:.6f}".format(branching),
+                        excess="n/a" if row.get("mean_excess") is None else "{:.6f}".format(row["mean_excess"]),
+                        max_parent=row.get("max_parent_degree"),
+                    )
+                )
+            lines.append("")
     if selection.get("calibration"):
         calibration = selection["calibration"]
         lines.extend([
@@ -643,7 +807,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graph-name", default="distribution_precompute_depth_estimator")
     parser.add_argument("--expected-queries", type=float, default=1000.0)
-    parser.add_argument("--branching-factor", type=float, default=4.0, help="Default b = E[p^2] / E[p].")
+    parser.set_defaults(branching_factor_explicit=False)
+    parser.add_argument("--branching-factor", type=float, default=4.0, action=StoreWithExplicitFlag, help="Default b = E[p^2] / E[p].")
     parser.add_argument("--depth-branching", default="", help="Optional depth-specific b values, e.g. 1:1,2:1.67,3:4.25.")
     parser.add_argument("--query-reach-probability", default="", help="Optional depth-specific query reach probabilities.")
     parser.add_argument("--default-query-reach-probability", type=float, default=1.0)
@@ -675,14 +840,19 @@ def parse_args(argv=None):
     parser.add_argument("--output-dir", type=Path, default=Path("docs/reports"))
     parser.add_argument("--calibration-summary", action="append", type=Path, default=[], help="Payload recurrence layer summary JSON used to derive timing costs. Can be repeated.")
     parser.add_argument("--validation-jsonl", action="append", type=Path, default=[], help="Boundary-cache validation JSONL used to derive per-depth measured saved-per-hit. Can be repeated.")
+    parser.add_argument("--validation-jsonl-glob", action="append", default=[], help="Glob pattern for boundary-cache validation JSONL files. Can be repeated.")
+    parser.add_argument("--branching-profile-jsonl", action="append", type=Path, default=[], help="Root-conditioned branching profile JSONL used to seed default and depth-specific branching priors. Can be repeated.")
+    parser.add_argument("--branching-profile-degree-scope", choices=["root_conditioned_parent_degree", "full_parent_degree", "outside_root_parent_degree"], default="root_conditioned_parent_degree", help="Degree scope to read from --branching-profile-jsonl.")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    args.validation_jsonl.extend(expand_globs(args.validation_jsonl_glob))
+    branching_profile = apply_branching_profile(args)
     calibration = apply_calibration(args)
     validation_measurements = validation_measurements_from_jsonl(args.validation_jsonl)
-    records = build_records(args, calibration, validation_measurements)
+    records = build_records(args, calibration, validation_measurements, branching_profile)
     summary = summarize(records)
     summary_json, summary_md = write_outputs(records, summary, args.output_dir, args.graph_name)
     print(summary, end="")
