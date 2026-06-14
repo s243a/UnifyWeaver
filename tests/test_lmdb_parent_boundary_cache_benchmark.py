@@ -8,6 +8,7 @@ import unittest
 from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
     build_boundary_histogram,
+    build_boundary_lookup,
     cached_parent_histogram,
     collect_target_ancestor_boundaries,
     comparison_record,
@@ -58,6 +59,49 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(boundaries, ["A"])
 
+
+    def test_boundary_lookup_prefers_exact_histogram_over_parametric(self):
+        lookup = build_boundary_lookup({"B": {2: 1}}, {"B": {5: 10}, "C": {1: 2}})
+
+        self.assertEqual(lookup["B"], ("histogram", "B", {2: 1}))
+        self.assertEqual(lookup["C"], ("parametric", "C", {1: 2}))
+
+    def test_cached_parent_histogram_reuses_decoded_entries_and_tracks_path_count(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+            "D": ["B"],
+        }
+        cache = {"B": {2: 3}}
+        lookup = build_boundary_lookup(cache)
+        memo = {}
+
+        first_hist, first_stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            cache,
+            boundary_lookup=lookup,
+            decoded_cache_memo=memo,
+        )
+        second_hist, second_stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "D",
+            "R",
+            3,
+            cache,
+            boundary_lookup=lookup,
+            decoded_cache_memo=memo,
+        )
+
+        self.assertEqual(first_hist, {3: 3})
+        self.assertEqual(second_hist, {3: 3})
+        self.assertEqual(first_stats.cache_decode_memo_hits, 0)
+        self.assertEqual(second_stats.cache_decode_memo_hits, 1)
+        self.assertEqual(first_stats.path_count, sum(first_hist.values()))
+        self.assertEqual(second_stats.path_count, sum(second_hist.values()))
 
     def test_cached_parent_histogram_collects_runtime_attribution(self):
         parents = {
@@ -126,6 +170,7 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             + record["cache_path_cap_check_ns"]
             + record["cached_parent_lookup_ns"],
         )
+        self.assertEqual(record["cached_path_count_tracked"], record["cached_path_count"])
 
     def test_boundary_cache_can_differ_when_suffix_violates_visited_state(self):
         parents = {
