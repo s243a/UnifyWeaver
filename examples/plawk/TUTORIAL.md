@@ -256,6 +256,9 @@ END { print total, errors, non_errors, last_len }
 
 For now, branch bodies support scalar updates only; branch-local `print`,
 associative updates, `next`, and `break` are rejected by native codegen.
+The generated native code evaluates the `if` condition once, runs the selected
+branch, and rejoins all scalar slots through LLVM phi nodes before later actions
+or rules continue.
 
 A terminal `next` skips the remaining rules for the current record:
 
