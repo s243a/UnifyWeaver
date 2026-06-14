@@ -181,6 +181,21 @@ test(parses_scalar_integer_assignment_end_print_rule) :-
         [set(var(current), int(7)), add(var(current), int(2))])],
         [end([print([var(current)])])])).
 
+test(parses_scalar_if_else_end_print_rule) :-
+    plawk_parse_string("{ total++; if ($1 == \"ERROR\") { errors++; last_len = length($0) } else { non_errors++ } } END { print total, errors, non_errors, last_len }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [inc(var(total)),
+         if(field_eq(1, "ERROR"),
+            [inc(var(errors)), set(var(last_len), length(field(0)))],
+            [inc(var(non_errors))])])],
+        [end([print([var(total), var(errors), var(non_errors), var(last_len)])])])).
+
+test(parses_scalar_if_else_without_keyword_space) :-
+    plawk_parse_string("{ if($1 == \"ERROR\") { errors++ } else { non_errors++ } } END { print errors, non_errors }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [if(field_eq(1, "ERROR"), [inc(var(errors))], [inc(var(non_errors))])])],
+        [end([print([var(errors), var(non_errors)])])])).
+
 test(parses_assoc_count_end_print_rule) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     assertion(Program == program([], [rule(always, [inc_assoc(var(counts), field(1))])],
@@ -423,6 +438,21 @@ test(surface_mixed_scalar_assignment_and_assoc_counts) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "14 2\n").
 
+test(surface_scalar_if_else_updates_native_slots) :-
+    run_surface_print_smoke("{ total++; if ($1 == \"ERROR\") { errors++; last_len = length($0) } else { non_errors++ } } END { print total, errors, non_errors, last_len }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down\n",
+        "4 2 2 18\n").
+
+test(surface_scalar_if_else_preserves_surrounding_update_order) :-
+    run_surface_print_smoke("{ state = 1; if ($1 == \"ERROR\") { state += 10 } else { state += 100 }; state++ } END { print state }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
+        "102\n").
+
+test(surface_mixed_scalar_if_else_and_assoc_counts) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { errors++ } else { non_errors++ }; counts[$1]++ } END { print errors, non_errors, counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "2 2 2 1\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -622,6 +652,25 @@ test(surface_scalar_assignment_uses_ordered_native_state_ops) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+test(surface_scalar_if_else_uses_native_branch_phi) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { errors++; last_len = length($0) } else { non_errors++ } } END { print errors, non_errors, last_len }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_else:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_if_0_done:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= phi i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_eq_value'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_if_else_rejects_nested_next, [fail]) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { next } else { total++ } } END { print total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_if_else_rejects_assoc_branch_updates, [fail]) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { counts[$1]++ } else { counts[$2]++ } } END { print counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
 test(surface_terminal_next_uses_native_continue_phi) :-
     plawk_parse_string("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
@@ -629,7 +678,7 @@ test(surface_terminal_next_uses_native_continue_phi) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_match:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'br label %continue_loop'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_1_in_slot_0 = phi i64 [%slot_0, %rule_0_match]'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64 [%rule_1_in_slot_0, %rule_1_match], [%rule_0_slot_0, %rule_0_apply], [%rule_1_slot_0, %rule_1_apply]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64 [%rule_1_in_slot_0, %rule_1_match], [%rule_0_slot_0, %rule_0_done], [%rule_1_slot_0, %rule_1_done]'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -679,7 +728,7 @@ test(surface_terminal_break_uses_close_path_and_final_state_phi) :-
     plawk_parse_string("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_apply]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_done]'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%final_slot_0 = phi i64 [%slot_0, %close_stream], [%break_slot_0, %break_close_stream]'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'i64 %final_slot_0'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),

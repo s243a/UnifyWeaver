@@ -243,6 +243,20 @@ END { print hits, last_len }
 
 The current assignment expression subset is integer literals and `length($N)`.
 
+The first `if/else` surface lowers scalar updates behind field-equality guards:
+
+```awk
+{
+  total++
+  if ($1 == "ERROR") { errors++; last_len = length($0) }
+  else { non_errors++ }
+}
+END { print total, errors, non_errors, last_len }
+```
+
+For now, branch bodies support scalar updates only; branch-local `print`,
+associative updates, `next`, and `break` are rejected by native codegen.
+
 A terminal `next` skips the remaining rules for the current record:
 
 ```awk

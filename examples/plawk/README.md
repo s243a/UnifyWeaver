@@ -93,6 +93,11 @@ Plain scalar assignment uses the same native slot path and preserves source
 order with later updates, e.g. `$1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }`. The current assignment expression subset is
 integer literals and `length($N)`.
+Scalar slot updates can also sit behind native `if/else` guards, e.g.
+`{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
+END { print errors, non_errors, last_len }`. The first branch slice supports
+field-equality conditions and scalar update actions inside branches; branch-local
+`print`, associative updates, `next`, and `break` remain outside this boundary.
 Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. Terminal `break` is supported in the same native
