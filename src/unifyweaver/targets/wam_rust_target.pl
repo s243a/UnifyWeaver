@@ -878,16 +878,20 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                     }
                     _ => Value::List(__vals),
                 };
-                let __lhs = self.get_reg_raw(result_reg).map(|v| self.deref_var(&v));
+                // Bind through the Y-aware accessors (get_reg/put_reg): an
+                // embedded aggregate''s result register is a permanent (Y)
+                // variable in the environment frame, so get_reg_raw/set_reg_str
+                // would miss it. Mirrors the aggregate_frame finalisation.
+                let __lhs = self.get_reg(result_reg);
                 let __ok = match __lhs {
                     Some(Value::Unbound(ref __vn)) => {
                         self.trail_binding(result_reg);
-                        self.set_reg_str(result_reg, __result.clone());
+                        self.put_reg(result_reg, __result.clone());
                         self.bind_var(__vn, __result);
                         true
                     }
                     Some(__existing) => __existing == __result,
-                    None => { self.set_reg_str(result_reg, __result); true }
+                    None => { self.put_reg(result_reg, __result); true }
                 };
                 if __ok { self.pc += 1; }
                 __ok'.
@@ -3062,17 +3066,23 @@ compile_resume_builtin_to_rust(Code) :-
                 };
 
                 self.aggregate_acc.clear();
-                let lhs = self.get_reg_raw(&result_reg).map(|v| self.deref_var(&v));
+                // Bind through the Y-aware accessors. An aggregate embedded in a
+                // larger clause body has a *permanent* (Y) result register, which
+                // lives in the environment frame, not the flat regs array, so
+                // get_reg_raw/set_reg_str would read/write a dead slot (Uninit)
+                // and never surface the result to the clause variable. get_reg/
+                // put_reg handle both temporary (A/X) and permanent (Y) registers.
+                let lhs = self.get_reg(&result_reg);
                 match lhs {
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(&result_reg);
-                        self.set_reg_str(&result_reg, result.clone());
+                        self.put_reg(&result_reg, result.clone());
                         self.bind_var(var_name, result);
                     }
                     Some(existing) if existing == result => {}
                     Some(_) => return false,
                     None => {
-                        self.set_reg_str(&result_reg, result);
+                        self.put_reg(&result_reg, result);
                     }
                 }
                 self.pc = self.aggregate_return_pc;

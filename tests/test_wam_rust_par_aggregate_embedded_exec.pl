@@ -50,14 +50,11 @@ test(embedded_findall_compiles_to_par_aggregate_and_runs,
     atom_concat(Dir, '/tests', TestsDir),
     make_directory_path(TestsDir),
     atom_concat(Dir, '/tests/pemb_test.rs', TestPath),
-    % NOTE on result reading: this predicate''s result var L is *permanent* (it
-    % is the head arg and survives the eemb_ready call), so the aggregate binds
-    % it in a Y register. This WAM copies registers by value rather than
-    % aliasing, so a permanent result is not surfaced back through A1/bindings
-    % (the same is true of the sequential begin/end aggregate — not specific to
-    % par_aggregate). The collected list therefore lives in a register; the test
-    % finds it among the registers. The point is parallel result == the known
-    % sequential answer.
+    % The result var L is permanent (head arg surviving the eemb_ready call), so
+    % the aggregate binds it in a Y register. The aggregate finalisation binds
+    % through the Y-aware accessors, so the collected list surfaces to the clause
+    % variable in bindings["L"] — same as a whole-body aggregate. The point of the
+    % test is parallel result == the known sequential answer.
     TestSrc = '
 use pemb::value::Value;
 use pemb::state::WamState;
@@ -72,14 +69,13 @@ fn ints(v: &Value) -> Vec<i64> {
 fn user_embedded_findall_parallel() {
     let mut vm = WamState::new(vec![], std::collections::HashMap::new());
     assert!(eemb_collect_1(&mut vm, Value::Unbound("L".to_string())), "eemb_collect should succeed");
-    let res = vm.regs.iter().find(|v| matches!(v, Value::List(xs) if xs.len() == 6)).cloned();
-    match res {
+    match vm.bindings.get("L").cloned() {
         Some(Value::List(items)) => {
             assert_eq!(items.len(), 6, "one list per fact");
             assert_eq!(ints(&items[0]), vec![1], "first = [1]");
             assert_eq!(ints(items.last().unwrap()), vec![6,5,4,3,2,1], "last = [6..1]");
         }
-        _ => panic!("expected 6-element result list in registers, regs={:?}", vm.regs),
+        other => panic!("expected list in bindings[L], got {:?}", other),
     }
 }',
     setup_call_cleanup(open(TestPath, write, S),
