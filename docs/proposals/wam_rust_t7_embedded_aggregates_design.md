@@ -202,3 +202,38 @@ proven** (PR #3156). The remaining integration has these exact seams:
 multi-part change to the core compile pipeline + the foreign-dispatch template,
 with cargo exec/regression cycles between steps. Best executed as a focused,
 undistracted pass (Step-1 — the subtle-correctness half — is already banked).
+
+## 5. Progress + the 2b dispatch wrinkle (live)
+
+- **Step 1** (pure clause-lifting pass `rust_lift_predicate_clauses/4`) — DONE,
+  proven (PR #3156).
+- **Step 2a** (live Pass -1 `rust_apply_embedded_lifts` + `lifted_wam` WamCode
+  substitution + helper-into-user assert + Pass-0 wrapping) — DONE, verified: a
+  gate-on embedded project compiles (`eb_pred` Executes `__lift_agg_…`, whose
+  `par_collect` sub-helpers are in the shared table), and the gate-off regression
+  stays green. The lifted helper's `Execute` does **not** yet dispatch at runtime.
+- **Step 2b** (runtime dispatch) — REMAINING. Structural wrinkle found: in
+  `write_wam_rust_project`, `compile_wam_runtime_to_rust` (which emits
+  `execute_foreign_predicate`) and `generate_setup_foreign_predicates_rust` run
+  **before** `compile_predicates_for_project` (where Pass -1 discovers the
+  helpers). So the helper list must be discovered **before** runtime-gen.
+
+  **Plan for 2b:**
+  1. Hoist lift *discovery* to the top of `write_wam_rust_project` (compute the
+     lifted-helper list + `lifted_wam` subs + assert helpers once; cleanup at the
+     end). `compile_predicates_for_project` then *consumes* the precomputed subs
+     instead of re-lifting.
+  2. Thread the lifted-helper list (each: foreign key, the `__par_enum`/`__par_body`
+     **labels** already in the shared table, agg type, input arity, result reg)
+     into both `generate_setup_foreign_predicates_rust` (register
+     `foreign_predicates` + `foreign_native_kinds="lift_agg"` + the labels/type as
+     `foreign_*_configs`) and `compile_execute_foreign_predicate_to_rust`.
+  3. Add a **generic** `"lift_agg"` arm to `execute_foreign_predicate` (data-driven
+     from the configs — not per-helper codegen) that runs a new label-based
+     `par_collect_labels(self, enum_pc, body_pc)` in `par_aggregate.rs` (clone,
+     set pc + A1=Unbound, `run()`, deref-collect, `backtrack()+run()` loop; per
+     input clone + body_pc), reduces by agg type, and unifies the result arg.
+  4. Exec test: `eb_pred(X,R)` (embedded findall) builds + runs == sequential.
+
+  This is the final increment; everything it needs (the sub-helper labels, the
+  reduce logic, the gate) already exists.
