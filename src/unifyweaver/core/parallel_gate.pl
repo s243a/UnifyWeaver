@@ -26,6 +26,7 @@
     goal_parallel_decision/3,        % +Generator, +Model, -Decision
     split_aggregate_generator/5,     % +InnerGoal, +Model, -Enum, -Body, -Frontier
     parallel_aggregate_transform/5,  % +AggGoal, +Model, +Seed, -Helpers, -Plan
+    lift_embedded_aggregate/6,       % +Head, +Body, +Model, +Seed, -NewBody, -HelperClause
     parallel_worthy_tier/1           % ?Tier   (multifile, overridable policy)
 ]).
 
@@ -220,3 +221,49 @@ agg_value_type(aggregate_all(set(V), _, _),   set, V) :- !.
 
 aggregate_result(findall(_, _, R), R) :- !.
 aggregate_result(aggregate_all(_, _, R), R).
+
+% ============================================================================
+% Embedded-aggregate lift: aggregate inside a larger clause body -> whole-body
+% helper predicate + an in-place call to it.
+% ============================================================================
+%
+% The whole-body injection only fires when a predicate's entire body is the
+% aggregate. This lifts an *embedded* aggregate out: given a clause Head :- Body
+% where Body is a conjunction of >= 2 goals one of which is a parallel-eligible,
+% splittable forkable aggregate, produce
+%
+%   NewBody     = Body with that aggregate replaced by `__lift_agg_Seed(Ins, R)`
+%   HelperClause= (__lift_agg_Seed(Ins, R) :- <the aggregate>)
+%
+% so the helper is a whole-body aggregate the existing machinery parallelises,
+% and the clause calls it (WAM-callable once the helper is registered foreign).
+% Ins = variables the aggregate shares with the rest of the clause (Head + other
+% goals) minus the result R; R is the helper's last argument. Pure source
+% transform — result-preserving (the helper's sequential semantics equal the
+% original goal's), no codegen. Fails (clause compiled unchanged) when no
+% embedded eligible aggregate is present.
+
+lift_embedded_aggregate(Head, Body, Model, Seed, NewBody, (HelperHead :- AggGoal)) :-
+    conj_to_list(Body, Goals),
+    Goals = [_, _|_],                                  % embedded: >= 2 goals
+    member(AggGoal, Goals), nonvar(AggGoal),
+    forkable_aggregate(AggGoal, _Tmpl, Inner),
+    aggregate_parallel_decision(AggGoal, Model, parallel),
+    split_aggregate_generator(Inner, Model, _, _, _),  % must be splittable
+    !,                                                 % commit to first eligible
+    aggregate_result(AggGoal, R),
+    exclude(==(AggGoal), Goals, OtherGoals),
+    term_variables(AggGoal, AggVars),
+    term_variables([Head|OtherGoals], RestVars),
+    shared_vars(AggVars, RestVars, Shared0),
+    exclude(==(R), Shared0, Inputs),
+    append(Inputs, [R], HArgs),
+    format(atom(Name), '__lift_agg_~w', [Seed]),
+    HelperHead =.. [Name|HArgs],
+    replace_goal(Goals, AggGoal, HelperHead, NewGoals),
+    list_to_conj(NewGoals, NewBody).
+
+% replace the first goal identical (==) to Old with New, preserving order.
+replace_goal([G|Gs], Old, New, [Out|Rest]) :-
+    ( G == Old -> Out = New, Rest = Gs
+    ; Out = G, replace_goal(Gs, Old, New, Rest) ).
