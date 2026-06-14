@@ -17,6 +17,7 @@ from scripts.lmdb_boundary_coverage_probe import (
     sample_root_path_space,
     select_nodes_by_root_cone_depth,
     resolve_path_value_kernel,
+    summarize,
 )
 
 
@@ -332,6 +333,72 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertAlmostEqual(record["estimated_root_paths"], 2.0)
         self.assertAlmostEqual(record["estimated_root_value_sum"], 0.5)
         self.assertAlmostEqual(record["estimated_kernel_mean_root_path_length"], 2.0)
+
+    def test_summary_explains_boundary_coverage_report_tables(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        row = exact_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            parent_filter_name="root-cone",
+            measure_suffix_mass=False,
+        )
+        row["graph"] = "fixture"
+        row["root"] = "R"
+        row["child_sample_depth"] = 3
+        summary = summarize([
+            {
+                "record_type": "boundary_coverage_selection",
+                "graph": "fixture",
+                "root": "R",
+                "seed": "fixture",
+                "parent_filter": "root-cone",
+                "path_value_kernel": "count",
+                "path_value_branching_factor": None,
+                "path_value_branching_factor_source": None,
+                "path_value_power": 1.0,
+                "selection_source": "root-cone",
+                "boundary_depths": [2],
+                "target_depths": [3],
+                "root_cone_depth": 3,
+                "root_cone_nodes": 4,
+                "root_cone_counts": {0: 1, 1: 1, 2: 1, 3: 1},
+                "root_cone_children_per_node": 10,
+                "root_cone_frontier_limit": 100,
+                "children_per_node": 10,
+                "frontier_limit": 100,
+                "boundaries_per_depth": 1,
+                "targets_per_depth": 1,
+                "boundary_counts": {2: 1},
+                "target_counts": {3: 1},
+                "boundary_nodes": 1,
+                "selected_boundary_nodes": 1,
+                "target_ancestor_boundary_nodes_added": 0,
+                "targets": 1,
+                "target_selection": "root-cone-child-depth",
+                "budgets": [3],
+                "mode": "exact",
+                "samples": 0,
+                "path_count_cap": 10,
+                "expansion_cap": 20,
+                "measure_boundary_suffix_mass": False,
+            },
+            row,
+        ])
+
+        self.assertIn("## How This Was Generated", summary)
+        self.assertIn("## Table Guide", summary)
+        self.assertIn("## Result Implications", summary)
+        self.assertIn("requested child depth(s) `2`", summary)
+        self.assertIn("`root_paths=0` and positive boundary hits", summary)
+        self.assertIn("boundary-covered", summary)
+        self.assertIn("`Target Rows` is per target and budget", summary)
 
 
 if __name__ == "__main__":

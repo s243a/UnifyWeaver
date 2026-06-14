@@ -959,6 +959,184 @@ def mean_optional_field(rows, field):
     return None if not values else statistics.mean(values)
 
 
+def sorted_depth_items(counts):
+    return sorted(counts.items(), key=lambda item: int(item[0]))
+
+
+def depths_text(values):
+    if values is None:
+        return None
+    return ", ".join(str(value) for value in values)
+
+
+def boundary_coverage_generation_notes(selection):
+    mode = selection.get("mode", "exact")
+    selection_source = selection.get("selection_source", "graph")
+    parent_filter = selection.get("parent_filter", "all")
+    lines = [
+        "## How This Was Generated",
+        "",
+    ]
+    boundary_depths = depths_text(selection.get("boundary_depths"))
+    target_depths = depths_text(selection.get("target_depths"))
+    if boundary_depths is None or target_depths is None:
+        lines.append(
+            "- This older selection record stores observed boundary/target frontier counts over child-depths `{}` and `{}`, but not the requested depth arguments separately.".format(
+                depths_text(depth for depth, _count in sorted_depth_items(selection.get("boundary_counts", {}))) or "none",
+                depths_text(depth for depth, _count in sorted_depth_items(selection.get("target_counts", {}))) or "none",
+            )
+        )
+    else:
+        lines.append(
+            "- Boundary candidates were sampled from requested child depth(s) `{}` and target rows from requested child depth(s) `{}` using selection source `{}`.".format(
+                boundary_depths,
+                target_depths,
+                selection_source,
+            )
+        )
+    if all(selection.get(key) is not None for key in ("children_per_node", "frontier_limit", "boundaries_per_depth", "targets_per_depth")):
+        lines.append(
+            "- The graph/root-cone sampler used `children_per_node={}` and `frontier_limit={}`; per-depth sample limits were `boundaries_per_depth={}` and `targets_per_depth={}`.".format(
+                selection.get("children_per_node"),
+                selection.get("frontier_limit"),
+                selection.get("boundaries_per_depth"),
+                selection.get("targets_per_depth"),
+            )
+        )
+    else:
+        lines.append(
+            "- This selection record predates sampler-limit provenance fields; newer JSONL records include child/frontier/per-depth sampling limits directly."
+        )
+    lines.append(
+        "- Mode `{}` controls the row generator: `exact` enumerates all simple parent prefixes until root, boundary, or budget; `sample` performs branch-product weighted boundary-stopped random walks; `root-sample` samples walks to root without stopping at boundaries.".format(mode)
+    )
+    lines.append(
+        "- Parent filter `{}` is applied during parent expansion. `root-cone` accepts only parents inside the precomputed root cone whose cone depth fits within the remaining path budget; `root-reachable` uses recursive finite-horizon reachability; `all` does no root-scope pruning.".format(parent_filter)
+    )
+    if selection.get("root_cone_counts"):
+        lines.append(
+            "- The root cone was built to child depth `{}` with `{}` nodes, `root_cone_children_per_node={}`, and `root_cone_frontier_limit={}`.".format(
+                selection.get("root_cone_depth", "n/a"),
+                selection.get("root_cone_nodes", 0),
+                selection.get("root_cone_children_per_node", "n/a"),
+                selection.get("root_cone_frontier_limit", "n/a"),
+            )
+        )
+    if selection.get("include_target_ancestor_boundaries"):
+        if selection.get("target_ancestor_boundary_limit") is None:
+            lines.append("- Target-ancestor boundary inclusion was enabled, so sampled boundary-depth ancestors of targets could be added to the selected boundary set.")
+        else:
+            lines.append(
+                "- Target-ancestor boundary inclusion was enabled, with `target_ancestor_boundary_limit={}`.".format(
+                    selection.get("target_ancestor_boundary_limit")
+                )
+            )
+    lines.append(
+        "- Boundary suffix mass measured: `{}`. When this is false, boundary-hit rows measure coverage only; they do not splice cached suffix mass into a total root-path estimate.".format(
+            selection.get("measure_boundary_suffix_mass", True)
+        )
+    )
+    lines.append(
+        "- Path value kernel `{}` defines the functional being estimated after path coverage is known. It is separate from the random-walk proposal correction.".format(
+            selection.get("path_value_kernel", "count")
+        )
+    )
+    return lines
+
+
+def boundary_coverage_table_guide():
+    return [
+        "## Table Guide",
+        "",
+        "- `Selection` lists observed frontier sizes for boundary and target depths. In newer reports, the requested depths are stated above; the table may include intermediate traversal depths.",
+        "- `Root Cone` shows the bounded child-reachable cone used for root-cone filtering. These are not parent-path counts; they are child-depth frontier counts from the root.",
+        "- `Coverage Summary` aggregates observed terminal outcomes by mode and path-length budget. In exact mode these are enumerated simple-prefix counts; in sample/root-sample modes they are raw sample outcomes.",
+        "- `Boundary Sample Estimates` and `Root Path Sample Estimates` contain branch-product weighted estimates. Use those estimate tables, not raw observed sample counts, when reasoning about path-space size.",
+        "- `Target Rows` is per target and budget. `root_paths` counts direct root terminals reached before a boundary stop; `boundary_hit_prefixes` counts prefixes where the boundary condition would take over.",
+        "- `root_unreachable_parent_skips` counts parent edges rejected by the active parent filter. Under `root-cone`, that includes parents outside the cone or too deep for the remaining budget, not only globally unreachable parents.",
+        "- `budget_exhausted_prefixes`, `path_count_cap_hit_targets`, and `expansion_cap_hit_targets` identify rows whose result is limited by the path budget or safety caps.",
+    ]
+
+
+def boundary_coverage_result_implications(selection, target_rows):
+    lines = ["## Result Implications", ""]
+    if not target_rows:
+        lines.append("- No target rows were generated, so this report only documents selection shape.")
+        return lines
+    by_mode_budget = {}
+    for row in target_rows:
+        by_mode_budget.setdefault((row["mode"], row["path_length_budget"]), []).append(row)
+    total_rows = len(target_rows)
+    complete_rows = sum(1 for row in target_rows if row.get("completed"))
+    cap_rows = total_rows - complete_rows
+    zero_root_boundary_rows = [
+        row for row in target_rows
+        if int(row.get("root_paths", 0)) == 0 and int(row.get("boundary_hit_prefixes", 0)) > 0
+    ]
+    budget_cutoff_rows = [row for row in target_rows if int(row.get("budget_exhausted_prefixes", 0)) > 0]
+    root_skip_total = sum(int(row.get("root_unreachable_parent_skips", 0)) for row in target_rows)
+    cycle_skip_total = sum(int(row.get("cycle_skips", 0)) for row in target_rows)
+    filtered_dead_total = sum(int(row.get("filtered_dead_end_prefixes", 0)) for row in target_rows)
+    lines.append("- Target evaluation completed `{}/{}` rows without path-count or expansion caps.".format(complete_rows, total_rows))
+    if cap_rows:
+        lines.append("- `{}` rows hit a path-count or expansion cap; read those rows as partial coverage evidence rather than full target-cone counts.".format(cap_rows))
+    for key in sorted(by_mode_budget):
+        mode, budget = key
+        rows = by_mode_budget[key]
+        aggregate = aggregate_rows(rows)
+        lines.append(
+            "- `{}` budget `{}`: `{}` terminal prefixes, `{}` direct root paths, `{}` boundary-hit prefixes, boundary-hit fraction `{}`, and `{}` budget-exhausted prefixes.".format(
+                mode,
+                budget,
+                aggregate["terminal_prefixes"],
+                aggregate["root_paths"],
+                aggregate["boundary_hit_prefixes"],
+                format_optional(aggregate["boundary_hit_fraction"], 6),
+                aggregate["budget_exhausted_prefixes"],
+            )
+        )
+    if zero_root_boundary_rows:
+        lines.append(
+            "- `{}` target-budget rows have `root_paths=0` and positive boundary hits. In this report that means enumeration stopped at a boundary before reaching root; it is boundary coverage, not evidence that those targets lack root paths.".format(
+                len(zero_root_boundary_rows)
+            )
+        )
+    if not selection.get("measure_boundary_suffix_mass", True):
+        lines.append(
+            "- Boundary suffix mass was not measured, so boundary hits cannot yet be converted into total root-path mass or budgeted CDF mass from this report alone."
+        )
+    elif any(row.get("boundary_suffix_path_mass_sum") for row in target_rows):
+        lines.append(
+            "- Boundary suffix mass was measured, so boundary-hit prefixes can be combined with suffix histograms to estimate total root-path mass under the remaining budget."
+        )
+    if root_skip_total:
+        lines.append(
+            "- The active parent filter rejected `{}` parent edges. Under `{}`, these skips are part of the scoped experiment definition, not necessarily data errors.".format(
+                root_skip_total,
+                selection.get("parent_filter", "all"),
+            )
+        )
+    if budget_cutoff_rows:
+        lines.append(
+            "- `{}` rows exhausted the path-length budget before root or boundary. Larger budgets may change coverage conclusions for those targets.".format(
+                len(budget_cutoff_rows)
+            )
+        )
+    if cycle_skip_total:
+        lines.append(
+            "- Simple-path cycle checks skipped `{}` edges. That keeps rows cycle-free, but it also means cached suffixes must be interpreted with the same cycle policy.".format(cycle_skip_total)
+        )
+    if filtered_dead_total:
+        lines.append(
+            "- Filtered dead ends occurred `{}` times; these are prefixes whose remaining parents were removed by the active parent filter.".format(filtered_dead_total)
+        )
+    if any(row.get("mode") in {"sample", "root-sample"} for row in target_rows):
+        lines.append(
+            "- Sample-mode rows are statistical estimates. Compare confidence intervals and increase `samples` before using them as performance-planning inputs."
+        )
+    return lines
+
+
 def summarize(records):
     selection = next((row for row in records if row.get("record_type") == "boundary_coverage_selection"), {})
     target_rows = [row for row in records if row.get("record_type") == "boundary_coverage_target"]
@@ -997,16 +1175,22 @@ def summarize(records):
         "",
         "Path length budgets: `{}`".format(",".join(str(value) for value in selection.get("budgets", []))),
         "",
-        "Exact mode enumerates simple parent-prefixes until root, boundary, or the path-length budget. Sample mode uses branch-product weighted random walks; its path-count totals are estimates, not direct counts. With `root-reachable`, parent expansion checks finite-horizon reachability recursively. With `root-cone`, parent expansion uses a precomputed root cone and keeps only parent nodes whose cone depth fits within the remaining path budget.",
+    ]
+    lines.extend(boundary_coverage_generation_notes(selection))
+    lines.extend([""])
+    lines.extend(boundary_coverage_table_guide())
+    lines.extend([""])
+    lines.extend(boundary_coverage_result_implications(selection, target_rows))
+    lines.extend([
         "",
         "## Selection",
         "",
         "| role | child_depth | sampled_frontier_nodes |",
         "|------|-------------|------------------------|",
-    ]
-    for depth, count in sorted(selection.get("boundary_counts", {}).items()):
+    ])
+    for depth, count in sorted_depth_items(selection.get("boundary_counts", {})):
         lines.append("| boundary | {} | {} |".format(depth, count))
-    for depth, count in sorted(selection.get("target_counts", {}).items()):
+    for depth, count in sorted_depth_items(selection.get("target_counts", {})):
         lines.append("| target | {} | {} |".format(depth, count))
     if selection.get("root_cone_counts"):
         lines.extend([
@@ -1016,7 +1200,7 @@ def summarize(records):
             "| child_depth | new_nodes |",
             "|------------:|----------:|",
         ])
-        for depth, count in sorted(selection.get("root_cone_counts", {}).items()):
+        for depth, count in sorted_depth_items(selection.get("root_cone_counts", {})):
             lines.append("| {} | {} |".format(depth, count))
 
     lines.extend([
@@ -1112,6 +1296,8 @@ def summarize(records):
     lines.extend([
         "",
         "## Target Rows",
+        "",
+        "Each row is one target under one path-length budget. `root_paths` counts direct root-reaching terminals found before the search stops at a boundary. A row with `root_paths=0` and positive `boundary_hit_prefixes` is boundary-covered; it is not automatically root-unreachable. When boundary suffix mass is disabled, use these rows to judge boundary coverage rather than total root-path mass.",
         "",
         "| mode | target_node | path_length_budget | terminal_prefixes | root_paths | boundary_hit_prefixes | boundary_hit_fraction | budget_exhausted_prefixes | filtered_dead_end_prefixes | mean_boundary_remaining_budget | completed | cycle_skips | root_unreachable_parent_skips |",
         "|------|------------:|-------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|---------------------------:|-------------------------------:|----------:|------------:|------------------------------:|",
@@ -1288,6 +1474,7 @@ def run_probe(args):
             "record_type": "boundary_coverage_selection",
             "graph": args.graph_name,
             "root": args.root,
+            "seed": args.seed,
             "parent_filter": args.parent_filter,
             "path_value_kernel": path_value_kernel.name,
             "path_value_branching_factor": path_value_kernel.branching_factor,
@@ -1295,16 +1482,26 @@ def run_probe(args):
             "path_value_power": path_value_kernel.power,
             "path_value_branching_stats": path_value_branching_stats,
             "selection_source": args.selection_source,
+            "boundary_depths": boundary_depths,
+            "target_depths": target_depths,
             "root_cone_depth": root_cone_depth if root_cone_depth_by_node is not None else None,
             "root_cone_nodes": len(root_cone_depth_by_node or {}),
             "root_cone_counts": root_cone_counts,
             "root_cone_children_per_node": args.root_cone_children_per_node if args.root_cone_children_per_node is not None else args.children_per_node,
             "root_cone_frontier_limit": args.root_cone_frontier_limit if args.root_cone_frontier_limit is not None else args.frontier_limit,
+            "children_per_node": args.children_per_node,
+            "frontier_limit": args.frontier_limit,
+            "boundaries_per_depth": args.boundaries_per_depth,
+            "targets_per_depth": args.targets_per_depth,
+            "require_targets_in_root_cone": args.require_targets_in_root_cone,
+            "require_boundaries_in_root_cone": args.require_boundaries_in_root_cone,
             "boundary_counts": boundary_counts,
             "target_counts": target_counts,
             "boundary_nodes": len(boundary_nodes),
             "selected_boundary_nodes": len(selected_boundary_nodes),
             "target_ancestor_boundary_nodes_added": len(set(boundary_nodes) - selected_boundary_nodes),
+            "include_target_ancestor_boundaries": args.include_target_ancestor_boundaries,
+            "target_ancestor_boundary_limit": args.target_ancestor_boundary_limit,
             "targets": len(targets),
             "target_selection": target_selection_label,
             "budgets": budgets,
