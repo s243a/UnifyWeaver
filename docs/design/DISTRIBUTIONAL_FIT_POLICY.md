@@ -534,6 +534,19 @@ For SimpleWiki, the current measurements suggest the first condition dominates.
 For enwiki, the parent-branching moment should be measured by root-distance
 bucket before deciding how far exact histograms should be propagated.
 
+`docs/reports/lmdb_materialization_regime_comparison_simplewiki_enwiki_materialization_regime_comparison_20260614T161206Z.md`
+is the first concrete comparison report for this split.  In that run,
+SimpleWiki under `Category:Articles` has root-conditioned
+`E[p^2] / E[p] = 1.028750`, mean effective boundary-histogram support
+`1.030`, max support `2`, and mean path mass `1.030`.  The constrained enwiki
+MTC smoke profile has root-conditioned `E[p^2] / E[p] = 2.164035`, mean
+effective support `5.963`, max support `6`, and mean path mass `77.938`.
+The design implication is that SimpleWiki can often carry exact sparse
+histograms well below a nominal 50-point cap, while enwiki can still have
+compact support but enough path mass for recurrence materialization to matter.
+The enwiki profile is capped smoke evidence, not a full-root-cone
+characterization.
+
 `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
 small excess parent branching is binomial-like, while larger parent branching is
 better treated as a compound/convolution model before fitting a closed form.
