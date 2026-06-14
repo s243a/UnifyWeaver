@@ -505,6 +505,16 @@ test(surface_mixed_if_else_branch_next_skips_later_rules) :-
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
         "2 2 2 2 0 1\n").
 
+test(surface_scalar_if_else_branch_break_stops_stream) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; break } else { total++ } } END { print hits, total }\n",
+        "INFO boot ok\nWARN cpu hot\nERROR disk full\nINFO after break\n",
+        "1 2\n").
+
+test(surface_mixed_if_else_branch_break_stops_stream) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; seen[$2]++; break } else { total++; counts[$1]++ } } END { print hits, total, seen[\"disk\"], counts[\"INFO\"], counts[\"WARN\"] }\n",
+        "INFO boot ok\nWARN cpu hot\nERROR disk full\nINFO after break\n",
+        "1 2 1 1 1\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -813,6 +823,20 @@ test(surface_nonterminal_next_mixed_rejected_by_native_codegen, [fail]) :-
 
 test(surface_branch_nonterminal_next_rejected_by_native_codegen, [fail]) :-
     plawk_parse_string("{ if ($1 == \"DEBUG\") { next; skipped++ } else { total++ } } END { print total, skipped }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_if_else_branch_break_uses_native_close_path) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { hits++; break } else { total++ } } END { print hits, total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %break_close_stream'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_body_if_0_then_slot_0_op_0, %rule_0_body_if_0_then]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%final_slot_0 = phi i64 [%slot_0, %close_stream], [%break_slot_0, %break_close_stream]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_branch_nonterminal_break_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { break; hits++ } else { total++ } } END { print hits, total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
 test(surface_terminal_break_uses_close_path_and_final_state_phi) :-
