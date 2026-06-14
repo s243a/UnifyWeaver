@@ -282,17 +282,18 @@ branch phis use each branch's actual exit block, including assoc side-effect
 prints do not collide; branch-local `NR` printing uses the same native record
 counter threaded through the stream loop as top-level `print NR`. Terminal
 branch-local `next` branches directly to the stream-loop continuation and adds
-the selected branch's scalar values to the loop phi inputs. Branch-local
-`break` still needs the broader close/end-print CFG. Native rule chains also
-support terminal `next` by branching directly to the stream-loop continuation;
-scalar and mixed chains add the early-exit rule's scalar values to the loop phi
-inputs, while assoc-only chains update tables before the continuation branch.
-Terminal
-`break` uses the sibling path: matching rules branch to a dedicated stream-close
-block and scalar/mixed programs feed `END` through final-state phis. This native
-slice deliberately supports terminal `next`/`break` only; non-terminal loop
-control needs a future intra-rule control-flow lowering rather than implicit
-fall-through after the skipped or final record. The current
+the selected branch's scalar values to the loop phi inputs. Terminal
+branch-local `break` branches to the same dedicated stream-close block as
+rule-level `break` and feeds the selected branch's scalar values through
+final-state phis. Native rule chains also support terminal `next` by branching
+directly to the stream-loop continuation; scalar and mixed chains add the
+early-exit rule's scalar values to the loop phi inputs, while assoc-only chains
+update tables before the continuation branch. Terminal `break` uses the sibling
+path: matching rules branch to a dedicated stream-close block and scalar/mixed
+programs feed `END` through final-state phis. This native slice deliberately
+supports terminal `next`/`break` only; non-terminal loop control needs a future
+intra-rule control-flow lowering rather than implicit fall-through after the
+skipped or final record. The current
 associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`
