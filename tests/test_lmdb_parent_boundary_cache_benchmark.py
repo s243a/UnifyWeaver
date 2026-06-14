@@ -10,6 +10,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_histogram,
     cached_parent_histogram,
     collect_target_ancestor_boundaries,
+    comparison_record,
     estimate_parametric_total_count,
     histogram_distribution_error,
     parametric_shape_distribution,
@@ -56,6 +57,75 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         )
 
         self.assertEqual(boundaries, ["A"])
+
+
+    def test_cached_parent_histogram_collects_runtime_attribution(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        }
+        cache = {"B": {2: 1}}
+
+        hist, stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            cache,
+            collect_attribution=True,
+        )
+
+        self.assertEqual(hist, {3: 1})
+        self.assertEqual(stats.cache_hits, 1)
+        self.assertGreaterEqual(stats.cache_probe_ns, 0)
+        self.assertGreaterEqual(stats.cache_splice_ns, 0)
+        self.assertGreaterEqual(stats.parent_lookup_ns, 0)
+
+    def test_comparison_record_includes_cached_runtime_attribution(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        }
+        cache = {"B": {2: 1}}
+        full, full_stats = bounded_parent_histogram(lambda node: parents.get(node, []), "C", "R", 3)
+        cached, cached_stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            cache,
+            collect_attribution=True,
+        )
+
+        record = comparison_record(
+            "fixture",
+            "R",
+            "C",
+            3,
+            3,
+            full,
+            full_stats,
+            100,
+            cached,
+            cached_stats,
+            80,
+            collect_attribution=True,
+        )
+
+        self.assertTrue(record["collect_attribution"])
+        self.assertIn("cache_probe_ns", record)
+        self.assertIn("cache_splice_ns", record)
+        self.assertIn("cached_parent_lookup_ns", record)
+        self.assertEqual(
+            record["cached_attributed_ns"],
+            record["cache_decode_ns"]
+            + record["cache_probe_ns"]
+            + record["cache_splice_ns"]
+            + record["cache_path_cap_check_ns"]
+            + record["cached_parent_lookup_ns"],
+        )
 
     def test_boundary_cache_can_differ_when_suffix_violates_visited_state(self):
         parents = {

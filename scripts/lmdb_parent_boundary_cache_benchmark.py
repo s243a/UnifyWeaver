@@ -68,6 +68,10 @@ class CachedSearchStats:
     parametric_bins_spliced: int = 0
     cache_payload_bytes_read: int = 0
     cache_decode_ns: int = 0
+    cache_probe_ns: int = 0
+    cache_splice_ns: int = 0
+    cache_path_cap_check_ns: int = 0
+    parent_lookup_ns: int = 0
     path_cap_hit: bool = False
     expansion_cap_hit: bool = False
 
@@ -349,6 +353,7 @@ def cached_parent_histogram(
     path_cap=None,
     expansion_cap=None,
     parametric_boundary_cache=None,
+    collect_attribution=False,
 ):
     parametric_boundary_cache = parametric_boundary_cache or {}
     hist = Counter()
@@ -361,37 +366,72 @@ def cached_parent_histogram(
         stats.nodes_expanded += 1
         if node == root:
             hist[depth] += 1
-            if path_cap is not None and sum(hist.values()) >= path_cap:
-                stats.path_cap_hit = True
+            if path_cap is not None:
+                started = time.perf_counter_ns() if collect_attribution else None
+                cap_hit = sum(hist.values()) >= path_cap
+                if collect_attribution:
+                    stats.cache_path_cap_check_ns += time.perf_counter_ns() - started
+                if cap_hit:
+                    stats.path_cap_hit = True
             return
-        if node in boundary_cache:
+
+        started = time.perf_counter_ns() if collect_attribution else None
+        histogram_entry = boundary_cache.get(node)
+        parametric_entry = None if histogram_entry is not None else parametric_boundary_cache.get(node)
+        if collect_attribution:
+            stats.cache_probe_ns += time.perf_counter_ns() - started
+
+        if histogram_entry is not None:
             stats.cache_hits += 1
             stats.histogram_cache_hits += 1
-            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(boundary_cache[node])
+            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(histogram_entry)
             stats.cache_payload_bytes_read += payload_bytes
             stats.cache_decode_ns += decode_ns
+            started = time.perf_counter_ns() if collect_attribution else None
             added = add_shifted_hist(hist, suffix_hist, depth, remaining)
+            if collect_attribution:
+                stats.cache_splice_ns += time.perf_counter_ns() - started
             stats.cache_bins_spliced += added
             stats.histogram_bins_spliced += added
-            if path_cap is not None and sum(hist.values()) >= path_cap:
-                stats.path_cap_hit = True
+            if path_cap is not None:
+                started = time.perf_counter_ns() if collect_attribution else None
+                cap_hit = sum(hist.values()) >= path_cap
+                if collect_attribution:
+                    stats.cache_path_cap_check_ns += time.perf_counter_ns() - started
+                if cap_hit:
+                    stats.path_cap_hit = True
             return
-        if node in parametric_boundary_cache:
+        if parametric_entry is not None:
             stats.cache_hits += 1
             stats.parametric_cache_hits += 1
-            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(parametric_boundary_cache[node])
+            suffix_hist, payload_bytes, decode_ns = cache_entry_histogram(parametric_entry)
             stats.cache_payload_bytes_read += payload_bytes
             stats.cache_decode_ns += decode_ns
+            started = time.perf_counter_ns() if collect_attribution else None
             added = add_shifted_hist(hist, suffix_hist, depth, remaining)
+            if collect_attribution:
+                stats.cache_splice_ns += time.perf_counter_ns() - started
             stats.cache_bins_spliced += added
             stats.parametric_bins_spliced += added
-            if path_cap is not None and sum(hist.values()) >= path_cap:
-                stats.path_cap_hit = True
+            if path_cap is not None:
+                started = time.perf_counter_ns() if collect_attribution else None
+                cap_hit = sum(hist.values()) >= path_cap
+                if collect_attribution:
+                    stats.cache_path_cap_check_ns += time.perf_counter_ns() - started
+                if cap_hit:
+                    stats.path_cap_hit = True
             return
         if remaining <= 0:
             stats.budget_cutoffs += 1
             return
-        for parent in parents_func(node):
+
+        if collect_attribution:
+            started = time.perf_counter_ns()
+            parents = list(parents_func(node))
+            stats.parent_lookup_ns += time.perf_counter_ns() - started
+        else:
+            parents = parents_func(node)
+        for parent in parents:
             stats.edges_examined += 1
             if parent in visited:
                 stats.cycle_skips += 1
@@ -761,7 +801,7 @@ def build_boundary_cache(
     return cache, parametric_cache, rows
 
 
-def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time):
+def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time, collect_attribution=False):
     l1, cdf = histogram_distribution_error(full_hist, cached_hist)
     full_paths = sum(full_hist.values())
     cached_paths = sum(cached_hist.values())
@@ -800,6 +840,18 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "parametric_bins_spliced": cached_stats.parametric_bins_spliced,
         "cache_payload_bytes_read": cached_stats.cache_payload_bytes_read,
         "cache_decode_ns": cached_stats.cache_decode_ns,
+        "cache_probe_ns": cached_stats.cache_probe_ns,
+        "cache_splice_ns": cached_stats.cache_splice_ns,
+        "cache_path_cap_check_ns": cached_stats.cache_path_cap_check_ns,
+        "cached_parent_lookup_ns": cached_stats.parent_lookup_ns,
+        "cached_attributed_ns": (
+            cached_stats.cache_decode_ns
+            + cached_stats.cache_probe_ns
+            + cached_stats.cache_splice_ns
+            + cached_stats.cache_path_cap_check_ns
+            + cached_stats.parent_lookup_ns
+        ),
+        "collect_attribution": bool(collect_attribution),
         "full_path_cap_hit": full_stats.path_cap_hit,
         "full_expansion_cap_hit": full_stats.expansion_cap_hit,
         "cached_path_cap_hit": cached_stats.path_cap_hit,
@@ -898,6 +950,7 @@ def run_benchmark(args):
             "parametric_support_source": args.parametric_support_source,
             "parametric_mass_model": args.parametric_mass_model,
             "parametric_mass_cap": args.parametric_mass_cap,
+            "collect_attribution": args.collect_attribution,
         }]
         records.extend(cache_rows)
         for target in targets:
@@ -922,6 +975,7 @@ def run_benchmark(args):
                     args.path_cap,
                     args.expansion_cap,
                     parametric_cache,
+                    args.collect_attribution,
                 )
                 cached_time = time.perf_counter_ns() - cached_started
                 records.append(
@@ -937,6 +991,7 @@ def run_benchmark(args):
                         cached_hist,
                         cached_stats,
                         cached_time,
+                        args.collect_attribution,
                     )
                 )
         return records, summarize(records)
@@ -1175,8 +1230,17 @@ def summarize(records):
         parametric_bins_spliced = [int(row["parametric_bins_spliced"]) for row in rows]
         payload_bytes_read = [int(row["cache_payload_bytes_read"]) for row in rows]
         decode_ns = [int(row["cache_decode_ns"]) for row in rows]
+        splice_ns = [int(row.get("cache_splice_ns", 0)) for row in rows]
+        parent_lookup_ns = [int(row.get("cached_parent_lookup_ns", 0)) for row in rows]
+        probe_ns = [int(row.get("cache_probe_ns", 0)) for row in rows]
+        path_cap_check_ns = [int(row.get("cache_path_cap_check_ns", 0)) for row in rows]
+        attributed_ns = [int(row.get("cached_attributed_ns", 0)) for row in rows]
         full_times = [int(row["full_time_ns"]) for row in rows]
         cached_times = [int(row["cached_time_ns"]) for row in rows]
+        unattributed_ns = [
+            max(0, int(row["cached_time_ns"]) - int(row.get("cached_attributed_ns", 0)))
+            for row in rows
+        ]
         time_ratios = [
             0.0 if int(row["full_time_ns"]) == 0 else int(row["cached_time_ns"]) / int(row["full_time_ns"])
             for row in rows
@@ -1201,10 +1265,61 @@ def summarize(records):
                 mean_param_bins=statistics.mean(parametric_bins_spliced) if parametric_bins_spliced else 0.0,
                 mean_payload_bytes=statistics.mean(payload_bytes_read) if payload_bytes_read else 0.0,
                 mean_decode_ns=statistics.mean(decode_ns) if decode_ns else 0.0,
+                mean_splice_ns=statistics.mean(splice_ns) if splice_ns else 0.0,
+                mean_parent_lookup_ns=statistics.mean(parent_lookup_ns) if parent_lookup_ns else 0.0,
+                mean_probe_ns=statistics.mean(probe_ns) if probe_ns else 0.0,
+                mean_path_cap_check_ns=statistics.mean(path_cap_check_ns) if path_cap_check_ns else 0.0,
+                mean_attributed_ns=statistics.mean(attributed_ns) if attributed_ns else 0.0,
+                mean_unattributed_ns=statistics.mean(unattributed_ns) if unattributed_ns else 0.0,
                 full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
                 cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
             )
         )
+    if any(row.get("collect_attribution") for row in comparison_rows):
+        lines.extend([
+            "",
+            "## Cached Runtime Attribution",
+            "",
+            "These columns attribute only the cached search path. `unattributed` is the remaining cached wall time after decode, splice, cache-probe, path-cap check, and parent lookup timing buckets.",
+            "",
+            "| budget | rows | mean_cached_time_ns | mean_decode_ns | mean_splice_ns | mean_parent_lookup_ns | mean_probe_ns | mean_path_cap_check_ns | mean_attributed_ns | mean_unattributed_ns | decode_share | splice_share | parent_lookup_share |",
+            "|--------|-----:|--------------------:|---------------:|---------------:|----------------------:|--------------:|-----------------------:|-------------------:|---------------------:|-------------:|-------------:|--------------------:|",
+        ])
+        for budget in sorted(by_budget):
+            rows = by_budget[budget]
+            cached_times = [int(row["cached_time_ns"]) for row in rows]
+            decode_ns = [int(row.get("cache_decode_ns", 0)) for row in rows]
+            splice_ns = [int(row.get("cache_splice_ns", 0)) for row in rows]
+            parent_lookup_ns = [int(row.get("cached_parent_lookup_ns", 0)) for row in rows]
+            probe_ns = [int(row.get("cache_probe_ns", 0)) for row in rows]
+            path_cap_check_ns = [int(row.get("cache_path_cap_check_ns", 0)) for row in rows]
+            attributed_ns = [int(row.get("cached_attributed_ns", 0)) for row in rows]
+            unattributed_ns = [
+                max(0, int(row["cached_time_ns"]) - int(row.get("cached_attributed_ns", 0)))
+                for row in rows
+            ]
+            mean_cached = statistics.mean(cached_times) if cached_times else 0.0
+            mean_decode = statistics.mean(decode_ns) if decode_ns else 0.0
+            mean_splice = statistics.mean(splice_ns) if splice_ns else 0.0
+            mean_parent_lookup = statistics.mean(parent_lookup_ns) if parent_lookup_ns else 0.0
+            lines.append(
+                "| {budget} | {rows} | {cached:.1f} | {decode:.1f} | {splice:.1f} | {parent_lookup:.1f} | {probe:.1f} | {path_cap:.1f} | {attributed:.1f} | {unattributed:.1f} | {decode_share:.3f} | {splice_share:.3f} | {parent_lookup_share:.3f} |".format(
+                    budget=budget,
+                    rows=len(rows),
+                    cached=mean_cached,
+                    decode=mean_decode,
+                    splice=mean_splice,
+                    parent_lookup=mean_parent_lookup,
+                    probe=statistics.mean(probe_ns) if probe_ns else 0.0,
+                    path_cap=statistics.mean(path_cap_check_ns) if path_cap_check_ns else 0.0,
+                    attributed=statistics.mean(attributed_ns) if attributed_ns else 0.0,
+                    unattributed=statistics.mean(unattributed_ns) if unattributed_ns else 0.0,
+                    decode_share=0.0 if mean_cached <= 0.0 else mean_decode / mean_cached,
+                    splice_share=0.0 if mean_cached <= 0.0 else mean_splice / mean_cached,
+                    parent_lookup_share=0.0 if mean_cached <= 0.0 else mean_parent_lookup / mean_cached,
+                )
+            )
+
     return "\n".join(lines) + "\n"
 
 
@@ -1262,6 +1377,7 @@ def main(argv=None):
     parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root paths.")
     parser.add_argument("--expansion-cap", type=int, default=250000, help="Stop a row after this many expanded nodes.")
     parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
+    parser.add_argument("--collect-attribution", action="store_true", help="Collect cached-search timing attribution for cache probes, splicing, parent lookups, and path-cap checks.")
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     args = parser.parse_args(argv)
 
