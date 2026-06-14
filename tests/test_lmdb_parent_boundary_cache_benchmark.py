@@ -17,6 +17,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     parametric_shape_distribution,
     parametric_support_interval,
     scaled_distribution_histogram,
+    search_stop_reason,
     select_targets_by_boundary_descendants,
     support_binomial_mean,
 )
@@ -194,9 +195,18 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             cached_stats,
             80,
             collect_attribution=True,
+            path_count_cap=10,
+            expansion_cap=20,
         )
 
         self.assertTrue(record["collect_attribution"])
+        self.assertEqual(record["path_length_budget"], 3)
+        self.assertEqual(record["path_count_cap"], 10)
+        self.assertEqual(record["expansion_cap"], 20)
+        self.assertEqual(record["full_length_budget_cutoffs"], 0)
+        self.assertEqual(record["cached_length_budget_cutoffs"], 0)
+        self.assertEqual(record["full_stop_reason"], "complete")
+        self.assertEqual(record["cached_stop_reason"], "complete")
         self.assertEqual(record["mean_cache_hit_depth"], 1.0)
         self.assertEqual(record["mean_cache_hit_remaining_budget"], 2.0)
         self.assertEqual(record["mean_cache_hit_suffix_path_count"], 1.0)
@@ -217,6 +227,13 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             + record["cached_parent_lookup_ns"],
         )
         self.assertEqual(record["cached_path_count_tracked"], record["cached_path_count"])
+
+    def test_search_stop_reason_names_path_count_cap_separately(self):
+        self.assertEqual(search_stop_reason(True, False, 0), "path_count_cap")
+        self.assertEqual(search_stop_reason(False, True, 0), "expansion_cap")
+        self.assertEqual(search_stop_reason(True, True, 3), "path_count_cap+expansion_cap")
+        self.assertEqual(search_stop_reason(False, False, 2), "path_length_budget")
+        self.assertEqual(search_stop_reason(False, False, 0), "complete")
 
     def test_boundary_cache_can_differ_when_suffix_violates_visited_state(self):
         parents = {
