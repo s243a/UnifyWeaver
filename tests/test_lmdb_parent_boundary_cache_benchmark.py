@@ -135,7 +135,11 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(first_stats.cache_hit_depth_sum, 1)
         self.assertEqual(first_stats.cache_hit_remaining_budget_sum, 2)
         self.assertEqual(first_stats.cache_hit_suffix_path_count_sum, 3)
+        self.assertEqual(first_stats.first_cache_hit_depth, 1)
+        self.assertEqual(first_stats.first_cache_hit_remaining_budget, 2)
+        self.assertEqual(first_stats.max_cache_hit_remaining_budget, 2)
         self.assertEqual(first_stats.cache_hits_by_depth, {1: 1})
+        self.assertEqual(first_stats.cache_hits_by_remaining_budget, {2: 1})
 
     def test_cached_parent_histogram_collects_runtime_attribution(self):
         parents = {
@@ -196,7 +200,11 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(record["mean_cache_hit_depth"], 1.0)
         self.assertEqual(record["mean_cache_hit_remaining_budget"], 2.0)
         self.assertEqual(record["mean_cache_hit_suffix_path_count"], 1.0)
+        self.assertEqual(record["first_cache_hit_depth"], 1)
+        self.assertEqual(record["first_cache_hit_remaining_budget"], 2)
+        self.assertEqual(record["max_cache_hit_remaining_budget"], 2)
         self.assertEqual(record["cache_hits_by_depth"], {1: 1})
+        self.assertEqual(record["cache_hits_by_remaining_budget"], {2: 1})
         self.assertIn("cache_probe_ns", record)
         self.assertIn("cache_splice_ns", record)
         self.assertIn("cached_parent_lookup_ns", record)
