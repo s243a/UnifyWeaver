@@ -36,6 +36,7 @@
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %      { if ($1 == "ERROR") { errors++ } else { warnings++ } } END { print errors, warnings }
+%      { if ($1 == "ERROR") { print $2, $3 } else { counts[$1]++ } } END { print counts["WARN"] }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -91,7 +92,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
-    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
     plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls, NextPhiIR),
@@ -123,7 +124,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
-    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator, RuleGlobalIR, RuleChainIR, RuleCount),
     plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
     plawk_scalar_rule_controls(Rules, ScalarRuleControls),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, NextPhiIR),
@@ -184,6 +185,8 @@ plawk_combine_entry_ir(FirstIR, SecondIR, CombinedIR) :-
 plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
+@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 ~w
@@ -535,6 +538,8 @@ plawk_mixed_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_mixed_update_action(Action) :-
     plawk_assoc_update_action(Action).
+plawk_mixed_update_action(Action) :-
+    plawk_rule_body_print_action(Action).
 plawk_mixed_update_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -565,11 +570,11 @@ plawk_assoc_increment_spec_in_action(if(_Pattern, ThenActions, ElseActions), Spe
     ; plawk_assoc_increment_spec_in_actions(ElseActions, Spec)
     ).
 
-plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
+plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparator, OutputSeparator, GlobalIR, ChainIR, RuleCount) :-
     length(Rules, RuleCount),
     RuleCount > 0,
     plawk_mixed_rule_controls(mixed_plan(ScalarPlan, AssocPlan, Rules), Controls),
-    phrase(plawk_mixed_rule_chain_lines(Rules, Controls, ScalarPlan, AssocPlan, FieldSeparator, 0), Pairs),
+    phrase(plawk_mixed_rule_chain_lines(Rules, Controls, ScalarPlan, AssocPlan, FieldSeparator, OutputSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
@@ -577,9 +582,9 @@ plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparat
 plawk_mixed_rule_controls(mixed_plan(_ScalarPlan, _AssocPlan, Rules), Controls) :-
     findall(Control, member(mixed_rule(_Index, _Pattern, _ScalarActions, _AssocActions, Control), Rules), Controls).
 
-plawk_mixed_rule_chain_lines([], _Controls, _ScalarPlan, _AssocPlan, _FieldSeparator, _) -->
+plawk_mixed_rule_chain_lines([], _Controls, _ScalarPlan, _AssocPlan, _FieldSeparator, _OutputSeparator, _) -->
     [].
-plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions, Control) | Rest], Controls, ScalarPlan, AssocPlan, FieldSeparator, Index) -->
+plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions, Control) | Rest], Controls, ScalarPlan, AssocPlan, FieldSeparator, OutputSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -592,7 +597,7 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions,
       plawk_mixed_scalar_rule_input_phi_ir(ScalarPlan, Index, Controls, InputPhiIR),
       plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
           NextLabel, InputPhiIR, FieldSeparator, GuardGlobalIR-GuardIR),
-      plawk_native_match_update_ir(ScalarPlan, AssocPlan, Actions, FieldSeparator, Index,
+      plawk_native_match_update_ir(ScalarPlan, AssocPlan, Actions, FieldSeparator, OutputSeparator, Index,
           ActionGlobalIR-ActionIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
@@ -612,7 +617,7 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions,
       Pair = CombinedGlobalIR-RuleIR
     },
     [Pair],
-    plawk_mixed_rule_chain_lines(Rest, Controls, ScalarPlan, AssocPlan, FieldSeparator, NextIndex).
+    plawk_mixed_rule_chain_lines(Rest, Controls, ScalarPlan, AssocPlan, FieldSeparator, OutputSeparator, NextIndex).
 
 plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
     InputPhiIR, _FieldSeparator, ''-IR) :-
@@ -1133,11 +1138,11 @@ plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, Outpu
 
 plawk_scalar_print_expr(var(Name), Name).
 
-plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
+plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator, GlobalIR, ChainIR, RuleCount) :-
     plawk_scalar_planned_rules(Rules, PlannedRules, Controls),
     length(PlannedRules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_scalar_rule_chain_lines(PlannedRules, Controls, StatePlan, FieldSeparator, 0), Pairs),
+    phrase(plawk_scalar_rule_chain_lines(PlannedRules, Controls, StatePlan, FieldSeparator, OutputSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
@@ -1156,9 +1161,9 @@ plawk_scalar_planned_rule_lines([rule(Pattern, Actions) | Rest], Index) -->
     [scalar_rule(Index, Pattern, BodyActions, Control)],
     plawk_scalar_planned_rule_lines(Rest, NextIndex).
 
-plawk_scalar_rule_chain_lines([], _Controls, _StatePlan, _FieldSeparator, _) -->
+plawk_scalar_rule_chain_lines([], _Controls, _StatePlan, _FieldSeparator, _OutputSeparator, _) -->
     [].
-plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | Rest], Controls, StatePlan, FieldSeparator, Index) -->
+plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | Rest], Controls, StatePlan, FieldSeparator, OutputSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -1173,9 +1178,10 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
       plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
-      include(plawk_scalar_update_action, Actions, ScalarActions),
+      maplist(plawk_scalar_rule_body_action, Actions),
+      BodyActions = Actions,
       plawk_scalar_rule_input_phi_ir(StatePlan, Index, Controls, InputPhiIR),
-      plawk_scalar_match_update_ir(StatePlan, ScalarActions, FieldSeparator, Index,
+      plawk_scalar_match_update_ir(StatePlan, BodyActions, FieldSeparator, OutputSeparator, Index,
           MatchUpdateGlobalIR-MatchUpdateIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
@@ -1199,7 +1205,7 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
       Pair = CombinedGlobalIR-BranchIR
     },
     [Pair],
-    plawk_scalar_rule_chain_lines(Rest, Controls, StatePlan, FieldSeparator, NextIndex).
+    plawk_scalar_rule_chain_lines(Rest, Controls, StatePlan, FieldSeparator, OutputSeparator, NextIndex).
 
 plawk_scalar_rule_input_phi_ir(_StatePlan, 0, _Controls, '') :-
     !.
@@ -1262,14 +1268,14 @@ plawk_scalar_loop_phi_lines([_Slot | Rest], Index) -->
     [Line],
     plawk_scalar_loop_phi_lines(Rest, NextIndex).
 
-plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, RuleIndex, GlobalIR-IR) :-
-    plawk_native_match_update_ir(StatePlan, none, Actions, FieldSeparator, RuleIndex, GlobalIR-IR).
+plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, OutputSeparator, RuleIndex, GlobalIR-IR) :-
+    plawk_native_match_update_ir(StatePlan, none, Actions, FieldSeparator, OutputSeparator, RuleIndex, GlobalIR-IR).
 
-plawk_native_match_update_ir(StatePlan, AssocPlan, Actions, FieldSeparator, RuleIndex, GlobalIR-IR) :-
+plawk_native_match_update_ir(StatePlan, AssocPlan, Actions, FieldSeparator, OutputSeparator, RuleIndex, GlobalIR-IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     phrase(plawk_scalar_initial_slot_values(RuleIndex, Slots, 0), InitialValues),
     format(atom(Prefix), 'rule_~w_body', [RuleIndex]),
-    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan, FieldSeparator,
+    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
         Prefix, Prefix, RuleIndex, 0, InitialValues, FinalValues, _NextOpIndex, _ExitLabel), Pairs0),
     phrase(plawk_scalar_final_slot_pairs(FinalValues, RuleIndex, 0), FinalPairs),
     append(Pairs0, FinalPairs, Pairs),
@@ -1301,6 +1307,32 @@ plawk_scalar_update_action(Action) :-
 plawk_scalar_update_action(Action) :-
     plawk_scalar_conditional_action(Action).
 
+plawk_scalar_rule_body_action(Action) :-
+    plawk_scalar_action_update(Action, _Name, _Operation).
+plawk_scalar_rule_body_action(Action) :-
+    plawk_rule_body_print_action(Action).
+plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
+    append(ThenActions, ElseActions, Actions),
+    Actions \== [],
+    maplist(plawk_scalar_rule_body_plain_action, Actions).
+
+plawk_scalar_rule_body_plain_action(Action) :-
+    plawk_scalar_action_update(Action, _Name, _Operation).
+plawk_scalar_rule_body_plain_action(Action) :-
+    plawk_rule_body_print_action(Action).
+
+plawk_rule_body_print_action(print(Fields)) :-
+    Fields = [_ | _],
+    maplist(plawk_rule_body_print_field, Fields).
+
+plawk_rule_body_print_field(field(_)).
+plawk_rule_body_print_field(special('NF')).
+plawk_rule_body_print_field(length(field(_))).
+plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
+plawk_rule_body_print_field(index(field(_), string(_))).
+plawk_rule_body_print_field(tolower(field(_))).
+plawk_rule_body_print_field(toupper(field(_))).
+
 plawk_scalar_update_action_name(Action, Name) :-
     plawk_scalar_action_update(Action, Name, _Operation).
 plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
@@ -1321,10 +1353,10 @@ plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) 
 plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
     FieldIndex >= 0.
 
-plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _Prefix, CurrentLabel, _RuleIndex,
+plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel) -->
     [].
-plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, Prefix, CurrentLabel, RuleIndex,
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
     { plawk_scalar_action_update(Action, Name, Operation),
       nth0(SlotIndex, Slots, scalar_counter(Name)),
@@ -1335,9 +1367,9 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
       NextOpIndex is OpIndex + 1
     },
     [Pair],
-    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, CurrentLabel, RuleIndex,
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel).
-plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, Prefix, _CurrentLabel, RuleIndex,
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
     { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
@@ -1346,19 +1378,29 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
       NextOpIndex is OpIndex + 1
     },
     [Pair],
-    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, AssocExitLabel, RuleIndex,
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AssocExitLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel).
+plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
+    { plawk_rule_body_print_action(print(Fields)),
+      format(atom(PrintPrefix), '~w_print_~w', [Prefix, OpIndex]),
+      plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel).
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
-        Slots, AssocPlan, FieldSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
       format(atom(CondValue), '%~w_if_~w_cond', [Prefix, OpIndex]),
       plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
       format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
-      phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, AssocPlan, FieldSeparator,
+      phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
           ThenLabel, ThenLabel, RuleIndex, 0, Values0, ThenValues, _ThenOpIndex, ThenExitLabel), ThenPairs),
-      phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, AssocPlan, FieldSeparator,
+      phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
           ElseLabel, ElseLabel, RuleIndex, 0, Values0, ElseValues, _ElseOpIndex, ElseExitLabel), ElsePairs),
       pairs_keys_values(ThenPairs, ThenGlobalParts, ThenLineParts),
       pairs_keys_values(ElsePairs, ElseGlobalParts, ElseLineParts),
@@ -1393,7 +1435,7 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
-    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, Prefix, DoneLabel, RuleIndex,
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, DoneLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel).
 
 plawk_scalar_update_operation_ir(add(const(Value)), _FieldSeparator, Prefix, SlotIndex,
@@ -1617,6 +1659,17 @@ plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(BodyParts, '\n', IR).
 
+plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Prefix, ''-IR) :-
+    !,
+    format(atom(IR),
+        '  %~w_line_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0~n  %~w_printed_line = call i32 (i8*, ...) @printf(i8* %~w_line_fmt, i8* %line_s)',
+        [Prefix, Prefix, Prefix]).
+plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, GlobalIR-IR) :-
+    phrase(plawk_prefixed_print_fields_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 0), Pairs),
+    plawk_print_ir_parts(Pairs, GlobalParts, BodyParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(BodyParts, '\n', IR).
+
 plawk_print_ir_parts([], [], []).
 plawk_print_ir_parts([GlobalIR-BodyIR | Parts], [GlobalIR | GlobalParts], [BodyIR | BodyParts]) :-
     plawk_print_ir_parts(Parts, GlobalParts, BodyParts).
@@ -1637,6 +1690,21 @@ plawk_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Index) --
     { NextIndex is Index + 1 },
     plawk_print_fields_ir(Rest, FieldSeparator, OutputSeparator, NextIndex).
 
+plawk_prefixed_print_fields_ir([], _FieldSeparator, _OutputSeparator, Prefix, _) -->
+    { format(atom(NewlineFmt),
+          '  %~w_newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+          [Prefix]),
+      format(atom(NewlineCall),
+          '  %~w_printed_newline = call i32 (i8*, ...) @printf(i8* %~w_newline_fmt)',
+          [Prefix, Prefix])
+    },
+    [''-NewlineFmt, ''-NewlineCall].
+plawk_prefixed_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Prefix, Index) -->
+    plawk_prefixed_print_separator_ir(Index, OutputSeparator, Prefix),
+    plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index),
+    { NextIndex is Index + 1 },
+    plawk_prefixed_print_fields_ir(Rest, FieldSeparator, OutputSeparator, Prefix, NextIndex).
+
 plawk_print_separator_ir(0, _OutputSeparator) -->
     !,
     [].
@@ -1647,9 +1715,29 @@ plawk_print_separator_ir(Index, OutputSeparator) -->
     },
     [''-SpaceCall].
 
+plawk_prefixed_print_separator_ir(0, _OutputSeparator, _Prefix) -->
+    !,
+    [].
+plawk_prefixed_print_separator_ir(Index, OutputSeparator, Prefix) -->
+    { format(atom(SpaceCall),
+          '  %~w_printed_separator_~w = call i32 @putchar(i32 ~w)',
+          [Prefix, Index, OutputSeparator])
+    },
+    [''-SpaceCall].
+
 plawk_print_field_ir(Field, FieldSeparator, Index) -->
     { plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts),
       plawk_print_expr_output_ir(Type, Index, PrintParts),
+      plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+      append(SetupParts, PrintParts, BodyParts),
+      atomic_list_concat(BodyParts, '\n', BodyIR)
+    },
+    [GlobalIR-BodyIR].
+
+plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
+    { plawk_emit_prefixed_print_expr_ir(Field, FieldSeparator, Prefix, Index,
+          Type, GlobalParts, SetupParts),
+      plawk_prefixed_print_expr_output_ir(Type, Prefix, Index, PrintParts),
       plawk_join_nonempty_ir(GlobalParts, GlobalIR),
       append(SetupParts, PrintParts, BodyParts),
       atomic_list_concat(BodyParts, '\n', BodyIR)
@@ -1716,6 +1804,64 @@ plawk_emit_print_expr_ir(field(FieldIndex), FieldSeparator, Index,
     format(atom(LenIR), '%~w_len', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
 
+plawk_emit_prefixed_print_expr_ir(special('NF'), FieldSeparator, Prefix, Index,
+        i64(Base, Base, ValueIR), [], [CountIR]) :-
+    format(atom(Base), '~w_nf_~w', [Prefix, Index]),
+    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
+    format(atom(ValueIR), '%~w', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(length(field(FieldIndex)), FieldSeparator, Prefix, Index,
+        i64(Base, Base, ValueIR), [], [LengthIR]) :-
+    format(atom(Base), '~w_length_~w', [Prefix, Index]),
+    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
+    format(atom(ValueIR), '%~w', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(substr(field(FieldIndex), Start, Len), FieldSeparator, Prefix, Index,
+        slice(Base, Base, LenIR, PtrIR), [], [SliceIR]) :-
+    format(atom(Base), '~w_substr_~w', [Prefix, Index]),
+    llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Prefix, Index,
+        i64(Base, Base, ValueIR), [GlobalIR], [CallIR]) :-
+    format(atom(Base), '~w_index_~w', [Prefix, Index]),
+    format(atom(GlobalBase), '~w_index_needle_~w', [Prefix, Index]),
+    llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
+        Base, GlobalIR-CallIR),
+    format(atom(ValueIR), '%~w', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(tolower(field(FieldIndex)), FieldSeparator, Prefix, Index,
+        case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
+    format(atom(LowerBase), '~w_tolower_~w', [Prefix, Index]),
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, LowerBase, LenIR, PtrIR,
+        SetupParts).
+
+plawk_emit_prefixed_print_expr_ir(toupper(field(FieldIndex)), FieldSeparator, Prefix, Index,
+        case_slice(upper, UpperBase, LenIR, PtrIR), [], SetupParts) :-
+    format(atom(UpperBase), '~w_toupper_~w', [Prefix, Index]),
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
+        SetupParts).
+
+plawk_emit_prefixed_print_expr_ir(field(0), _FieldSeparator, Prefix, Index,
+        slice(Base, Base, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
+    format(atom(Base), '~w_line_~w', [Prefix, Index]),
+    format(atom(LineLen64),
+        '  %~w_len64 = call i64 @strlen(i8* %line_s)',
+        [Base]),
+    format(atom(LineLen),
+        '  %~w_len = trunc i64 %~w_len64 to i32',
+        [Base, Base]),
+    format(atom(LenIR), '%~w_len', [Base]).
+
+plawk_emit_prefixed_print_expr_ir(field(FieldIndex), FieldSeparator, Prefix, Index,
+        slice(Base, Base, LenIR, PtrIR), [], [SliceIR]) :-
+    FieldIndex > 0,
+    format(atom(Base), '~w_field_~w', [Prefix, Index]),
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
 plawk_emit_case_source_slice_ir(0, _FieldSeparator, Base, LenIR, '%line_s', [LineLen64]) :-
     format(atom(LineLen64),
         '  %~w_len64 = call i64 @strlen(i8* %line_s)',
@@ -1744,4 +1890,13 @@ plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, [
         [PrintPrefix, Index, FmtPrefix, Index, LenIR, PtrIR]).
 
 plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
+    llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
+
+plawk_prefixed_print_expr_output_ir(i64(FmtPrefix, PrintPrefix, ValueIR), _Prefix, Index, Parts) :-
+    plawk_print_expr_output_ir(i64(FmtPrefix, PrintPrefix, ValueIR), Index, Parts).
+
+plawk_prefixed_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), _Prefix, Index, Parts) :-
+    plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, Parts).
+
+plawk_prefixed_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Prefix, _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).

@@ -96,12 +96,12 @@ integer literals and `length($N)`.
 Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports
-field-equality conditions, scalar updates, and field-key associative increments
-inside branches. The native lowering evaluates each source `if` guard once,
-threads every scalar slot through the then/else bodies, emits associative table
-increments only on the selected branch, and rejoins scalar slots with per-slot
-LLVM phis. Branch-local `print`, `next`, and `break` remain outside this
-boundary.
+field-equality conditions, scalar updates, field-key associative increments,
+and selected-field `print` inside branches. The native lowering evaluates each
+source `if` guard once, threads every scalar slot through the then/else bodies,
+emits associative table increments and branch-local prints only on the selected
+branch, and rejoins scalar slots with per-slot LLVM phis. Branch-local `next`,
+`break`, and `NR` printing remain outside this boundary.
 Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. Terminal `break` is supported in the same native
