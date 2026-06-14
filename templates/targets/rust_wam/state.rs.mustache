@@ -38,7 +38,9 @@ impl std::hash::Hasher for FxHasher {
 pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
 pub type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
 pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -63,6 +65,75 @@ pub trait LookupSource: Send + Sync {
     fn atom_for_key(&self, key: i32) -> Option<String>;
 }
 
+/// Cached-side runtime attribution for the graph-search hot path.
+///
+/// Rust-side analog of the Python boundary-cache attribution added in
+/// `scripts/lmdb_parent_boundary_cache_benchmark.py` (PR #3120). That
+/// benchmark found cached search dominated by "residual cached
+/// traversal/interpreter overhead"; the compiled Rust kernel removes the
+/// interpreter, so what remains on the cached path is cache-tier
+/// distribution plus the inner LMDB cursor-seek ("parent lookup" +
+/// "decode" buckets). This sink measures exactly those: which tier served
+/// each `lookup_parents`, and how long the inner source took on a miss.
+///
+/// Opt-in via `UW_WAM_CACHE_ATTRIBUTION=1`. When disabled the hot path
+/// takes no extra timer calls — every record site is behind an
+/// `Option<Arc<CacheAttribution>>` branch — so the default cached mode
+/// stays a clean benchmark baseline (the PR #3120 instrumentation caveat).
+#[derive(Default)]
+pub struct CacheAttribution {
+    /// Served from the per-thread L1 cache (lock-free).
+    pub l1_hits: AtomicU64,
+    /// Served from the shared sharded L2 cache.
+    pub l2_hits: AtomicU64,
+    /// Fell through both tiers to the inner source.
+    pub misses: AtomicU64,
+    /// Wall-clock nanoseconds spent inside `inner.lookup_parents` on misses.
+    pub inner_lookup_nanos: AtomicU64,
+}
+
+impl CacheAttribution {
+    /// Render `key=value` diagnostic lines in the same stderr style the
+    /// benchmark `main` already emits (`load_ms=...`, `query_ms=...`).
+    pub fn report_lines(&self) -> Vec<String> {
+        let l1 = self.l1_hits.load(Ordering::Relaxed);
+        let l2 = self.l2_hits.load(Ordering::Relaxed);
+        let miss = self.misses.load(Ordering::Relaxed);
+        let total = l1 + l2 + miss;
+        let inner_ns = self.inner_lookup_nanos.load(Ordering::Relaxed);
+        let hit_rate = if total > 0 {
+            (l1 + l2) as f64 / total as f64
+        } else {
+            0.0
+        };
+        vec![
+            format!("cache_attr_lookups={}", total),
+            format!("cache_attr_l1_hits={}", l1),
+            format!("cache_attr_l2_hits={}", l2),
+            format!("cache_attr_misses={}", miss),
+            format!("cache_attr_hit_rate={:.4}", hit_rate),
+            format!("cache_attr_inner_lookup_ms={:.3}", inner_ns as f64 / 1.0e6),
+        ]
+    }
+}
+
+/// Process-global attribution sink, initialized once from
+/// `UW_WAM_CACHE_ATTRIBUTION`. `CachedLookup::new` pulls its sink from
+/// here and the benchmark `main` reads the same `Arc` back to print the
+/// report, so construction and surfacing stay decoupled (the cache may be
+/// built deep inside materialisation setup). Returns `None` when disabled.
+static CACHE_ATTRIBUTION: OnceLock<Option<Arc<CacheAttribution>>> = OnceLock::new();
+
+/// Shared attribution sink for this process, or `None` when disabled.
+pub fn cache_attribution() -> Option<Arc<CacheAttribution>> {
+    CACHE_ATTRIBUTION
+        .get_or_init(|| match std::env::var("UW_WAM_CACHE_ATTRIBUTION") {
+            Ok(v) if !v.is_empty() && v != "0" => Some(Arc::new(CacheAttribution::default())),
+            _ => None,
+        })
+        .clone()
+}
+
 /// R8: Decorator over any `LookupSource` that adds a bounded
 /// per-key result cache. Implements `LookupSource` itself so the
 /// kernel can't tell whether it's hitting a cache or the underlying
@@ -82,6 +153,8 @@ pub struct CachedLookup<S: LookupSource> {
     inner: S,
     shards: Vec<Mutex<CacheShard>>,
     cap_per_shard: usize,
+    /// Opt-in runtime attribution sink; `None` keeps the hot path clean.
+    attribution: Option<Arc<CacheAttribution>>,
 }
 
 struct CacheShard {
@@ -107,13 +180,26 @@ impl<S: LookupSource> CachedLookup<S> {
                 order: VecDeque::with_capacity(cap_per_shard),
             }))
             .collect();
-        CachedLookup { inner, shards, cap_per_shard }
+        CachedLookup { inner, shards, cap_per_shard, attribution: cache_attribution() }
     }
 
     #[inline]
     fn shard_for(&self, key: i32) -> &Mutex<CacheShard> {
         let idx = (key as u32 as usize) % self.shards.len();
         &self.shards[idx]
+    }
+
+    /// Attach an explicit attribution sink (used by tests and by callers
+    /// that enable attribution programmatically rather than via the env
+    /// var). Overrides whatever `new` resolved from the global.
+    pub fn with_attribution(mut self, sink: Arc<CacheAttribution>) -> Self {
+        self.attribution = Some(sink);
+        self
+    }
+
+    /// The attribution sink in effect for this cache, if any.
+    pub fn attribution_sink(&self) -> Option<Arc<CacheAttribution>> {
+        self.attribution.clone()
     }
 }
 
@@ -144,6 +230,9 @@ impl<S: LookupSource> LookupSource for CachedLookup<S> {
             Some((k, v)) if *k == key => Some(v.clone()),
             _ => None,
         }) {
+            if let Some(a) = &self.attribution {
+                a.l1_hits.fetch_add(1, Ordering::Relaxed);
+            }
             return hit;
         }
         // L2 fast path: shared sharded cache hit. Clone the cached Vec
@@ -154,11 +243,26 @@ impl<S: LookupSource> LookupSource for CachedLookup<S> {
                 shard.map.get(&key).cloned()
             };
             match cached {
-                Some(vs) => vs,
+                Some(vs) => {
+                    if let Some(a) = &self.attribution {
+                        a.l2_hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    vs
+                }
                 None => {
                     // Miss: fetch from inner without holding the shard
                     // lock, then re-acquire and insert (FIFO eviction).
-                    let vs = self.inner.lookup_parents(key);
+                    let vs = match &self.attribution {
+                        Some(a) => {
+                            a.misses.fetch_add(1, Ordering::Relaxed);
+                            let t = Instant::now();
+                            let r = self.inner.lookup_parents(key);
+                            a.inner_lookup_nanos
+                                .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                            r
+                        }
+                        None => self.inner.lookup_parents(key),
+                    };
                     let mut shard = self.shard_for(key).lock().unwrap();
                     if !shard.map.contains_key(&key) {
                         if shard.map.len() >= self.cap_per_shard {
@@ -1643,5 +1747,86 @@ pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
                 Some(result)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod cache_attribution_tests {
+    use super::*;
+
+    /// Inner source that records how many times the (expensive) parent
+    /// lookup was actually executed, so tests can prove the cache tiers
+    /// served hits without touching it.
+    struct CountingSource {
+        calls: AtomicU64,
+    }
+    impl LookupSource for CountingSource {
+        fn lookup_key_for_atom(&self, _atom: &str) -> Option<i32> {
+            None
+        }
+        fn lookup_parents(&self, key: i32) -> Vec<i32> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            vec![key + 1]
+        }
+        fn atom_for_key(&self, _key: i32) -> Option<String> {
+            None
+        }
+    }
+
+    fn cache_with_sink() -> (CachedLookup<CountingSource>, Arc<CacheAttribution>) {
+        let sink = Arc::new(CacheAttribution::default());
+        let cache = CachedLookup::new(CountingSource { calls: AtomicU64::new(0) }, 64, 4)
+            .with_attribution(sink.clone());
+        (cache, sink)
+    }
+
+    #[test]
+    fn miss_then_l1_hit_is_attributed() {
+        let (cache, sink) = cache_with_sink();
+        // Distinct per-test key: the L1 cache is a thread_local shared
+        // across CachedLookup instances, so unique keys avoid cross-test
+        // false hits on a reused test thread.
+        let key = 1_000_001;
+
+        let first = cache.lookup_parents(key);
+        assert_eq!(first, vec![key + 1]);
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1, "first lookup is a miss");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner hit once");
+
+        // Same key, same thread -> L1 serves it; inner is not touched again.
+        let second = cache.lookup_parents(key);
+        assert_eq!(second, vec![key + 1]);
+        assert_eq!(sink.l1_hits.load(Ordering::Relaxed), 1, "second lookup is an L1 hit");
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1, "still one miss");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner not called again");
+    }
+
+    #[test]
+    fn l2_hit_from_fresh_thread_is_attributed() {
+        let (cache, sink) = cache_with_sink();
+        let key = 2_000_002;
+
+        // Warm both tiers on this thread (a miss).
+        let _ = cache.lookup_parents(key);
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1);
+
+        // A fresh thread has an empty L1, so the warm shared L2 serves it.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let got = cache.lookup_parents(key);
+                assert_eq!(got, vec![key + 1]);
+            });
+        });
+        assert_eq!(sink.l2_hits.load(Ordering::Relaxed), 1, "fresh-thread lookup is an L2 hit");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner still called only once");
+    }
+
+    #[test]
+    fn report_lines_render_expected_keys() {
+        let empty = CacheAttribution::default();
+        let lines = empty.report_lines();
+        assert!(lines.iter().any(|l| l == "cache_attr_lookups=0"));
+        assert!(lines.iter().any(|l| l == "cache_attr_hit_rate=0.0000"));
+        assert!(lines.iter().any(|l| l.starts_with("cache_attr_inner_lookup_ms=")));
     }
 }

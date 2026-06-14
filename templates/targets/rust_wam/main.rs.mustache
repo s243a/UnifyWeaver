@@ -258,4 +258,13 @@ fn main() {
     writeln!(err, "seed_count={}", seed_cats.len()).unwrap();
     writeln!(err, "tuple_count={}", seed_weight_sums.len()).unwrap();
     writeln!(err, "article_count={}", results.len()).unwrap();
+
+    // Cached-side runtime attribution (PR #3120 analog), opt-in via
+    // UW_WAM_CACHE_ATTRIBUTION. The sink is the same Arc that CachedLookup
+    // recorded into, resolved from the process-global accessor.
+    if let Some(attr) = {{crate_name}}::state::cache_attribution() {
+        for line in attr.report_lines() {
+            writeln!(err, "{}", line).unwrap();
+        }
+    }
 }
