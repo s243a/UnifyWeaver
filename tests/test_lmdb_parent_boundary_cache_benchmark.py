@@ -10,14 +10,18 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     build_boundary_cache,
     build_boundary_histogram,
     build_boundary_lookup,
+    build_root_cone_depths,
     cached_parent_histogram,
     collect_target_ancestor_boundaries,
     comparison_record,
     estimate_parametric_total_count,
+    filtered_bounded_parent_histogram,
     histogram_distribution_error,
     histogram_aggregate_metrics,
     parametric_shape_distribution,
     parametric_support_interval,
+    RootConeParentFilter,
+    RootReachabilityParentFilter,
     scaled_distribution_histogram,
     search_stop_reason,
     select_targets_by_boundary_descendants,
@@ -52,6 +56,71 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(full, cached)
         self.assertEqual(stats.cache_hits, 1)
+
+    def test_filtered_bounded_histogram_rejects_off_root_parent(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B", "X"],
+            "X": ["Y"],
+            "Y": [],
+        }
+        root_filter = RootReachabilityParentFilter(lambda node: parents.get(node, []), "R")
+
+        hist, stats = filtered_bounded_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            parent_filter=root_filter,
+        )
+
+        self.assertEqual(hist, {3: 1})
+        self.assertEqual(stats.root_unreachable_parent_skips, 1)
+
+    def test_cached_parent_histogram_uses_root_reachable_filter(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B", "X"],
+            "X": ["Y"],
+            "Y": [],
+        }
+        root_filter = RootReachabilityParentFilter(lambda node: parents.get(node, []), "R")
+        cache = {"B": {2: 1}}
+
+        hist, stats = cached_parent_histogram(
+            lambda node: parents.get(node, []),
+            "C",
+            "R",
+            3,
+            cache,
+            parent_filter=root_filter,
+        )
+
+        self.assertEqual(hist, {3: 1})
+        self.assertEqual(stats.cache_hits, 1)
+        self.assertEqual(stats.root_unreachable_parent_skips, 1)
+
+    def test_root_cone_filter_uses_remaining_budget_depth_bound(self):
+        children = {
+            "R": ["A"],
+            "A": ["B"],
+        }
+        depth_by_node, counts = build_root_cone_depths(
+            lambda node: children.get(node, []),
+            "R",
+            2,
+            children_per_node=0,
+            frontier_limit=0,
+            seed="fixture",
+        )
+        root_filter = RootConeParentFilter(depth_by_node)
+
+        self.assertEqual(counts, {0: 1, 1: 1, 2: 1})
+        self.assertTrue(root_filter.accepts("C", "B", 2))
+        self.assertFalse(root_filter.accepts("C", "B", 1))
+        self.assertFalse(root_filter.accepts("C", "X", 4))
 
     def test_histogram_aggregate_metrics_support_path_value_kernels(self):
         hist = {2: 2, 3: 1}

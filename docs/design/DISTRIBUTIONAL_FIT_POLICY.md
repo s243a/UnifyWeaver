@@ -596,6 +596,19 @@ plain exact DFS enumeration is already too expensive on the MTC cone, so enwiki
 needs recurrence/materialized boundaries, cycle-aware validation, and fitted or
 cached approximations much earlier than SimpleWiki.
 
+`docs/reports/lmdb_parent_boundary_cache_benchmark_summary_enwiki_mtc_boundary_aggregate_root_cone_b2_t4_bp_decay_smoke_20260614T212819Z.md`
+adds the matching root-cone-filtered aggregate smoke on enwiki MTC.  The
+benchmark now supports `parent_filter=root-cone`, so full DFS, cached DFS, and
+boundary-state construction all reject parent edges outside the bounded
+root-cone scope.  In this small run the root cone contains `8,897` nodes, the
+boundary cache materializes `22` recurrence-built exact sparse states, and
+`4` sampled targets complete under budgets `6` and `8` with zero histogram,
+path-count, selected-aggregate, and mean-path-length error.  The report also
+shows why this filter matters: full search skips a mean `4.5` off-scope parents
+per row and cached search skips a mean `2.5`.  The run is too small to claim a
+performance win (`0.25` mean cache hits per row), but it validates the scoped
+boundary-condition semantics needed before deeper enwiki sweeps.
+
 `PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
 small excess parent branching is binomial-like, while larger parent branching is
 better treated as a compound/convolution model before fitting a closed form.
