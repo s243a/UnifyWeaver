@@ -24,6 +24,7 @@
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
+%      { if ($1 == "ERROR") { errors++ } else { warnings++ } } END { print errors, warnings }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -215,6 +216,9 @@ actions_rest([]) -->
     [].
 
 action(Action) -->
+    if_action(Action),
+    !.
+action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
@@ -232,6 +236,20 @@ action(Action) -->
 action(Action) -->
     increment_action(Action),
     !.
+
+if_action(if(Pattern, ThenActions, ElseActions)) -->
+    "if",
+    ws,
+    "(",
+    ws,
+    field_eq_pattern(Pattern),
+    ws,
+    ")",
+    ws,
+    action_block(ThenActions),
+    "else",
+    required_ws,
+    action_block(ElseActions).
 
 increment_action(inc_assoc(var(Name), KeyExpr)) -->
     identifier(Name),
