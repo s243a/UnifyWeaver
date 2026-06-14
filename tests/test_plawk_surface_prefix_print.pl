@@ -109,6 +109,20 @@ test(parses_terminal_next_mixed_rule) :-
             assoc(var(counts), string("DEBUG")), assoc(var(counts), string("ERROR"))
         ])])])).
 
+test(parses_terminal_next_only_rule) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next } { total++ } END { print total }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "DEBUG"), [next]),
+         rule(always, [inc(var(total))])],
+        [end([print([var(total)])])])).
+
+test(parses_nonterminal_next_rule) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "DEBUG"), [next, inc(var(skipped))]),
+         rule(always, [inc(var(total))])],
+        [end([print([var(total), var(skipped)])])])).
+
 test(parses_field_eq_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -291,6 +305,21 @@ test(surface_terminal_next_skips_remaining_mixed_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; by_kind[$2]++; next } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2 2 0 1\n").
+
+test(surface_terminal_next_only_skips_remaining_scalar_rules) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++ } END { print total }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "2\n").
+
+test(surface_terminal_next_only_skips_remaining_assoc_rules) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next } { counts[$1]++ } END { print counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "0 1\n").
+
+test(surface_terminal_next_only_skips_remaining_mixed_rules) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++; counts[$1]++ } END { print total, counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "2 0 1\n").
 
 test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n",
@@ -526,6 +555,28 @@ test(surface_mixed_terminal_next_uses_native_continue_phi) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '[%rule_0_slot_0, %rule_0_done]'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
+
+test(surface_terminal_next_only_uses_native_continue_branch) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next } { total++ } END { print total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_match:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %continue_loop'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_1_in_slot_0 = phi i64 [%slot_0, %rule_0_match]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_nonterminal_next_scalar_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_nonterminal_next_assoc_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next; skipped[$2]++ } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_nonterminal_next_mixed_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
 test(surface_end_string_literals_use_indexed_globals) :-
     plawk_parse_string("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n", Program),

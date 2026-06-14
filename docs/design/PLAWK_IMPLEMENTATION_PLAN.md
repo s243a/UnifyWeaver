@@ -271,7 +271,10 @@ programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print b
 stay in the compiled stream loop. Native rule chains also support terminal
 `next` by branching directly to the stream-loop continuation; scalar and mixed
 chains add the early-exit rule's scalar values to the loop phi inputs, while
-assoc-only chains update tables before the continuation branch. The current
+assoc-only chains update tables before the continuation branch. This native
+slice deliberately supports terminal `next` only; non-terminal `next` needs a
+future control-flow lowering rather than implicit fall-through after the skipped
+record. The current
 associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`
