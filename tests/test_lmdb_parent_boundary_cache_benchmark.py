@@ -6,6 +6,7 @@
 import unittest
 
 from scripts.lmdb_parent_boundary_cache_benchmark import (
+    aggregate_path_value,
     build_boundary_cache,
     build_boundary_histogram,
     build_boundary_lookup,
@@ -14,6 +15,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     comparison_record,
     estimate_parametric_total_count,
     histogram_distribution_error,
+    histogram_aggregate_metrics,
     parametric_shape_distribution,
     parametric_support_interval,
     scaled_distribution_histogram,
@@ -50,6 +52,21 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(full, cached)
         self.assertEqual(stats.cache_hits, 1)
+
+    def test_histogram_aggregate_metrics_support_path_value_kernels(self):
+        hist = {2: 2, 3: 1}
+
+        count_metrics = histogram_aggregate_metrics(hist, "count")
+        decay_metrics = histogram_aggregate_metrics(hist, "bp-decay", branching_factor=2.0)
+        power_metrics = histogram_aggregate_metrics(hist, "weighted-power", power=2.0)
+
+        self.assertEqual(count_metrics["path_count"], 3)
+        self.assertEqual(count_metrics["path_length_sum"], 7)
+        self.assertAlmostEqual(count_metrics["mean_path_length"], 7.0 / 3.0)
+        self.assertAlmostEqual(count_metrics["aggregate_value_sum"], 3.0)
+        self.assertAlmostEqual(decay_metrics["aggregate_value_sum"], 2 * 0.25 + 0.125)
+        self.assertAlmostEqual(power_metrics["aggregate_value_sum"], 2 * (1.0 / 9.0) + (1.0 / 16.0))
+        self.assertAlmostEqual(aggregate_path_value(3, "weighted-power", power=2.0), 1.0 / 16.0)
 
     def test_boundary_descendant_target_selection_uses_selected_boundaries(self):
         graph = DictGraph(
@@ -197,6 +214,8 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             collect_attribution=True,
             path_count_cap=10,
             expansion_cap=20,
+            aggregate_kernel="bp-decay",
+            aggregate_branching_factor=2.0,
         )
 
         self.assertTrue(record["collect_attribution"])
@@ -227,6 +246,14 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
             + record["cached_parent_lookup_ns"],
         )
         self.assertEqual(record["cached_path_count_tracked"], record["cached_path_count"])
+        self.assertEqual(record["aggregate_kernel"], "bp-decay")
+        self.assertAlmostEqual(record["full_aggregate_value_sum"], 0.125)
+        self.assertAlmostEqual(record["cached_aggregate_value_sum"], 0.125)
+        self.assertAlmostEqual(record["aggregate_value_relative_error"], 0.0)
+        self.assertEqual(record["full_path_length_sum"], 3)
+        self.assertEqual(record["cached_path_length_sum"], 3)
+        self.assertAlmostEqual(record["full_mean_path_length"], 3.0)
+        self.assertAlmostEqual(record["cached_mean_path_length"], 3.0)
 
     def test_search_stop_reason_names_path_count_cap_separately(self):
         self.assertEqual(search_stop_reason(True, False, 0), "path_count_cap")
