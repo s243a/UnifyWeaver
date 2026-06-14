@@ -243,7 +243,18 @@ END { print hits, last_len }
 
 The current assignment expression subset is integer literals and `length($N)`.
 
-The first `if/else` surface lowers scalar updates behind field-equality guards:
+Numeric field guards are also native:
+
+```awk
+$3 >= 100 { big++ }
+END { print big }
+```
+
+The selected field is parsed as a signed decimal `i64`; missing or non-numeric
+fields simply do not match the guard.
+
+The first `if/else` surface lowers scalar updates behind field-equality and
+numeric field guards:
 
 ```awk
 {

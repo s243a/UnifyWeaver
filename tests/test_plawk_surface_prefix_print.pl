@@ -29,6 +29,23 @@ test(parses_field_eq_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print $0 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [print([field(0)])])], [])).
 
+test(parses_field_numeric_cmp_print_rule) :-
+    plawk_parse_string("$3 > 100 { print $1, $3 }\n", Program),
+    assertion(Program == program([], [rule(field_cmp(3, gt, 100),
+        [print([field(1), field(3)])])], [])).
+
+test(parses_field_numeric_cmp_negative_rule) :-
+    plawk_parse_string("$2 <= -5 { cold++ } END { print cold }\n", Program),
+    assertion(Program == program([], [rule(field_cmp(2, le, -5), [inc(var(cold))])],
+        [end([print([var(cold)])])])).
+
+test(parses_field_numeric_eq_and_ne_rules) :-
+    plawk_parse_string("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n", Program),
+    assertion(Program == program([],
+        [rule(field_cmp(2, eq, 0), [inc(var(zeros))]),
+         rule(field_cmp(2, ne, 0), [inc(var(nonzeros))])],
+        [end([print([var(zeros), var(nonzeros)])])])).
+
 test(parses_field_eq_print_fields_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print $2, $3 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [print([field(2), field(3)])])], [])).
@@ -190,6 +207,14 @@ test(parses_scalar_if_else_end_print_rule) :-
             [inc(var(non_errors))])])],
         [end([print([var(total), var(errors), var(non_errors), var(last_len)])])])).
 
+test(parses_numeric_if_else_scalar_rule) :-
+    plawk_parse_string("{ if ($3 >= 100) { big++ } else { small++ } } END { print big, small }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [if(field_cmp(3, ge, 100),
+            [inc(var(big))],
+            [inc(var(small))])])],
+        [end([print([var(big), var(small)])])])).
+
 test(parses_scalar_if_else_without_keyword_space) :-
     plawk_parse_string("{ if($1 == \"ERROR\") { errors++ } else { non_errors++ } } END { print errors, non_errors }\n", Program),
     assertion(Program == program([], [rule(always,
@@ -318,6 +343,11 @@ test(surface_field_eq_prints_selected_fields) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "disk full\nnet down\n").
 
+test(surface_field_numeric_cmp_prints_matching_records) :-
+    run_surface_print_smoke("$3 > 100 { print $1, $3 }\n",
+        "disk used 95\ncpu used 101\nnet used 120\nbad used nope\nmem used -3\n",
+        "cpu 101\nnet 120\n").
+
 test(surface_field_eq_prints_nr_and_selected_fields) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print NR, $2, $3 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -362,6 +392,21 @@ test(surface_field_eq_counts_matching_records) :-
     run_surface_print_smoke("$1 == \"ERROR\" { count++ } END { print count }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "2\n").
+
+test(surface_field_numeric_cmp_counts_matching_records) :-
+    run_surface_print_smoke("$3 >= 100 { big++ } END { print big }\n",
+        "disk used 95\ncpu used 100\nnet used 120\nbad used nope\nmem used -3\n",
+        "2\n").
+
+test(surface_field_numeric_cmp_handles_negative_values) :-
+    run_surface_print_smoke("$2 < -5 { cold++ } END { print cold }\n",
+        "a -6\nb -5\nc 0\nd -10\n",
+        "2\n").
+
+test(surface_field_numeric_eq_and_ne_counts) :-
+    run_surface_print_smoke("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n",
+        "a 0\nb 1\nc nope\nd -1\n",
+        "1 2\n").
 
 test(surface_field_eq_counts_multiple_scalar_slots) :-
     run_surface_print_smoke("$1 == \"ERROR\" { errors++; matches++ } END { print errors, matches }\n",
@@ -932,6 +977,23 @@ test(surface_begin_field_separator_uses_configured_delimiter) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
+    !.
+
+test(surface_numeric_guard_uses_native_i64_field_cmp) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $3 >= 100 { print $1, $3 }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 58, i64 100, i32 5)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 1, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_numeric_eq_ne_guards_use_numeric_op_codes) :-
+    plawk_parse_string("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 0)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 1)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
 test(surface_begin_output_separator_uses_configured_delimiter) :-
