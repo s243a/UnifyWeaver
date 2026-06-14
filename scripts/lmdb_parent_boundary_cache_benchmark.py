@@ -53,6 +53,7 @@ from scripts.parent_histogram_recurrence import recurrence_parent_histogram
 
 DEFAULT_BUDGETS = [6, 8]
 AGGREGATE_VALUE_KERNELS = ["count", "bp-decay", "weighted-power"]
+PARENT_FILTERS = ["all", "root-reachable", "root-cone"]
 
 
 @dataclass
@@ -83,6 +84,7 @@ class CachedSearchStats:
     cache_splice_ns: int = 0
     cache_path_cap_check_ns: int = 0
     parent_lookup_ns: int = 0
+    root_unreachable_parent_skips: int = 0
     path_cap_hit: bool = False
     expansion_cap_hit: bool = False
 
@@ -144,10 +146,182 @@ def serialized_histogram_cache_entry(hist, representation="packed_sparse_histogr
     return SerializedHistogramCacheEntry(payload=payload, metadata=metadata)
 
 
-def build_boundary_histogram(parents_func, node, root, budget, path_cap, expansion_cap, boundary_builder):
+class RootReachabilityParentFilter:
+    """Finite-horizon parent filter for root-reaching candidate parents."""
+
+    def __init__(self, parents_func, root):
+        self.parents_func = parents_func
+        self.root = root
+        self.memo = {}
+        self.checks = 0
+        self.memo_hits = 0
+        self.cycle_skips = 0
+
+    def accepts(self, _node, parent, remaining):
+        return self.can_reach(parent, remaining)
+
+    def accepts_without_remaining(self, parent, horizon):
+        return self.can_reach(parent, horizon)
+
+    def can_reach(self, node, remaining):
+        return self._can_reach(node, int(remaining), set())
+
+    def _can_reach(self, node, remaining, visiting):
+        self.checks += 1
+        if node == self.root:
+            return True
+        if remaining <= 0:
+            return False
+        key = (node, int(remaining))
+        if key in self.memo:
+            self.memo_hits += 1
+            return self.memo[key]
+        if node in visiting:
+            self.cycle_skips += 1
+            return False
+
+        visiting.add(node)
+        reachable = False
+        for parent in self.parents_func(node):
+            if self._can_reach(parent, remaining - 1, visiting):
+                reachable = True
+                break
+        visiting.remove(node)
+        self.memo[key] = reachable
+        return reachable
+
+
+class RootConeParentFilter:
+    """Parent filter backed by a precomputed child-depth cone from the root."""
+
+    def __init__(self, depth_by_node):
+        self.depth_by_node = dict(depth_by_node)
+        self.checks = 0
+        self.depth_misses = 0
+        self.remaining_misses = 0
+
+    def accepts(self, _node, parent, remaining):
+        self.checks += 1
+        depth = self.depth_by_node.get(parent)
+        if depth is None:
+            self.depth_misses += 1
+            return False
+        if int(depth) > int(remaining):
+            self.remaining_misses += 1
+            return False
+        return True
+
+    def accepts_without_remaining(self, parent, _horizon):
+        self.checks += 1
+        if parent not in self.depth_by_node:
+            self.depth_misses += 1
+            return False
+        return True
+
+
+def normalize_positive_limit(value):
+    return None if value is None or int(value) <= 0 else int(value)
+
+
+def build_root_cone_depths(children_func, root, max_depth, children_per_node, frontier_limit, seed):
+    """Build a bounded child-reachable cone from root with minimum depths."""
+    max_depth = int(max_depth)
+    children_limit = normalize_positive_limit(children_per_node)
+    frontier_limit = normalize_positive_limit(frontier_limit)
+    depth_by_node = {root: 0}
+    frontier = [root]
+    counts = {0: 1}
+
+    for depth in range(1, max_depth + 1):
+        next_nodes = []
+        for node in frontier:
+            children = deterministic_sample(
+                children_func(node),
+                children_limit,
+                "{}:root-cone:children:{}:{}".format(seed, depth, node),
+            )
+            next_nodes.extend(children)
+        sampled = deterministic_sample(
+            list(dict.fromkeys(next_nodes)),
+            frontier_limit,
+            "{}:root-cone:frontier:{}".format(seed, depth),
+        )
+        new_frontier = []
+        for child in sampled:
+            if child in depth_by_node:
+                continue
+            depth_by_node[child] = depth
+            new_frontier.append(child)
+        counts[depth] = len(new_frontier)
+        frontier = new_frontier
+        if not frontier:
+            break
+
+    return depth_by_node, counts
+
+
+def filtered_parents_func(parents_func, parent_filter, horizon):
+    if parent_filter is None:
+        return parents_func
+
+    def parents(node):
+        return [
+            parent
+            for parent in parents_func(node)
+            if parent_filter.accepts_without_remaining(parent, horizon)
+        ]
+
+    return parents
+
+
+def filtered_bounded_parent_histogram(parents_func, target, root, budget, path_cap=None, expansion_cap=None, parent_filter=None):
+    """Count simple root paths while optionally rejecting off-scope parents."""
+    if parent_filter is None:
+        hist, stats = bounded_parent_histogram(parents_func, target, root, budget, path_cap, expansion_cap)
+        stats.root_unreachable_parent_skips = 0
+        return hist, stats
+
+    hist = Counter()
+    stats = HistogramStats()
+    stats.root_unreachable_parent_skips = 0
+
+    def dfs(node, remaining, depth, visited):
+        if expansion_cap is not None and stats.nodes_expanded >= expansion_cap:
+            stats.expansion_cap_hit = True
+            return
+        stats.nodes_expanded += 1
+        if node == root:
+            hist[depth] += 1
+            if path_cap is not None and sum(hist.values()) >= path_cap:
+                stats.path_cap_hit = True
+            return
+        if remaining <= 0:
+            stats.budget_cutoffs += 1
+            return
+        for parent in parents_func(node):
+            stats.edges_examined += 1
+            if parent in visited:
+                stats.cycle_skips += 1
+                continue
+            if not parent_filter.accepts(node, parent, remaining - 1):
+                stats.root_unreachable_parent_skips += 1
+                continue
+            if stats.path_cap_hit or stats.expansion_cap_hit:
+                return
+            visited.add(parent)
+            dfs(parent, remaining - 1, depth + 1, visited)
+            visited.remove(parent)
+            if stats.path_cap_hit or stats.expansion_cap_hit:
+                return
+
+    dfs(target, int(budget), 0, {target})
+    return dict(sorted(hist.items())), stats
+
+
+def build_boundary_histogram(parents_func, node, root, budget, path_cap, expansion_cap, boundary_builder, parent_filter=None):
     """Build one boundary histogram by search or shifted parent recurrence."""
     if boundary_builder == "search":
-        hist, stats = bounded_parent_histogram(parents_func, node, root, budget, path_cap, expansion_cap)
+        hist, stats = filtered_bounded_parent_histogram(parents_func, node, root, budget, path_cap, expansion_cap, parent_filter)
         return BoundaryBuildResult(
             histogram=hist,
             nodes_expanded=stats.nodes_expanded,
@@ -157,7 +331,8 @@ def build_boundary_histogram(parents_func, node, root, budget, path_cap, expansi
             expansion_cap_hit=stats.expansion_cap_hit,
         )
     if boundary_builder == "recurrence":
-        hist, stats = recurrence_parent_histogram(parents_func, node, root, budget, path_cap, expansion_cap)
+        recurrence_parents = filtered_parents_func(parents_func, parent_filter, budget)
+        hist, stats = recurrence_parent_histogram(recurrence_parents, node, root, budget, path_cap, expansion_cap)
         return BoundaryBuildResult(
             histogram=hist,
             nodes_expanded=stats.states_evaluated,
@@ -383,6 +558,7 @@ def cached_parent_histogram(
     collect_attribution=False,
     boundary_lookup=None,
     decoded_cache_memo=None,
+    parent_filter=None,
 ):
     if boundary_lookup is None:
         boundary_lookup = build_boundary_lookup(boundary_cache, parametric_boundary_cache)
@@ -470,6 +646,9 @@ def cached_parent_histogram(
             stats.edges_examined += 1
             if parent in visited:
                 stats.cycle_skips += 1
+                continue
+            if parent_filter is not None and not parent_filter.accepts(node, parent, remaining - 1):
+                stats.root_unreachable_parent_skips += 1
                 continue
             if stats.path_cap_hit or stats.expansion_cap_hit:
                 return
@@ -731,6 +910,7 @@ def build_boundary_cache(
     boundary_builder="search",
     max_recurrence_states=0,
     max_effective_bins_after_trim=0,
+    parent_filter=None,
 ):
     cache = {}
     parametric_cache = {}
@@ -738,7 +918,16 @@ def build_boundary_cache(
     distance_memo = {}
     for node in boundary_nodes:
         started = time.perf_counter_ns()
-        built = build_boundary_histogram(graph.parents, node, root, boundary_budget, path_cap, expansion_cap, boundary_builder)
+        built = build_boundary_histogram(
+            graph.parents,
+            node,
+            root,
+            boundary_budget,
+            path_cap,
+            expansion_cap,
+            boundary_builder,
+            parent_filter,
+        )
         elapsed = time.perf_counter_ns() - started
         hist = built.histogram
         distances = root_distances(node, root, graph.parents, max_parent_depth, distance_memo)
@@ -1063,6 +1252,8 @@ def comparison_record(
         "cached_edges_examined": cached_stats.edges_examined,
         "full_cycle_skips": full_stats.cycle_skips,
         "cached_cycle_skips": cached_stats.cycle_skips,
+        "full_root_unreachable_parent_skips": int(getattr(full_stats, "root_unreachable_parent_skips", 0)),
+        "cached_root_unreachable_parent_skips": int(cached_stats.root_unreachable_parent_skips),
         "full_length_budget_cutoffs": full_stats.budget_cutoffs,
         "cached_length_budget_cutoffs": cached_stats.budget_cutoffs,
         "cache_hits": cached_stats.cache_hits,
@@ -1115,6 +1306,35 @@ def run_benchmark(args):
         budgets = parse_int_list(args.budgets)
         boundary_depths = parse_int_list(args.boundary_depths)
         target_depths = parse_int_list(args.target_depths)
+        root_cone_depth_by_node = None
+        root_cone_counts = {}
+        root_cone_depth = int(args.root_cone_depth or 0)
+        if args.parent_filter == "root-cone":
+            if root_cone_depth <= 0:
+                root_cone_depth = max(
+                    [int(args.boundary_budget)]
+                    + [int(depth) for depth in budgets]
+                    + [int(depth) for depth in boundary_depths]
+                    + [int(depth) for depth in target_depths]
+                )
+            root_cone_depth_by_node, root_cone_counts = build_root_cone_depths(
+                graph.children,
+                args.root,
+                root_cone_depth,
+                args.root_cone_children_per_node,
+                args.root_cone_frontier_limit,
+                args.seed,
+            )
+            parent_filter = RootConeParentFilter(root_cone_depth_by_node)
+        elif args.parent_filter == "root-reachable":
+            parent_filter = RootReachabilityParentFilter(graph.parents, args.root)
+        else:
+            parent_filter = None
+        ancestor_parents = filtered_parents_func(
+            graph.parents,
+            parent_filter,
+            max([int(args.max_parent_depth)] + [int(depth) for depth in budgets] + [int(args.boundary_budget)]),
+        )
         boundary_nodes, boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
             graph,
             args.root,
@@ -1148,7 +1368,7 @@ def run_benchmark(args):
         target_ancestor_boundary_nodes = []
         if args.include_target_ancestor_boundaries:
             target_ancestor_boundary_nodes = collect_target_ancestor_boundaries(
-                graph.parents,
+                ancestor_parents,
                 args.root,
                 targets,
                 boundary_depths,
@@ -1180,6 +1400,7 @@ def run_benchmark(args):
             args.boundary_builder,
             args.max_recurrence_states,
             args.max_effective_bins_after_trim,
+            parent_filter,
         )
         boundary_lookup = build_boundary_lookup(cache, parametric_cache)
         decoded_cache_memo = {}
@@ -1198,6 +1419,12 @@ def run_benchmark(args):
             "boundary_lookup_nodes": len(boundary_lookup),
             "targets": len(targets),
             "target_selection": args.target_selection,
+            "parent_filter": args.parent_filter,
+            "root_cone_depth": root_cone_depth if args.parent_filter == "root-cone" else None,
+            "root_cone_nodes": None if root_cone_depth_by_node is None else len(root_cone_depth_by_node),
+            "root_cone_counts": root_cone_counts,
+            "root_cone_children_per_node": args.root_cone_children_per_node,
+            "root_cone_frontier_limit": args.root_cone_frontier_limit,
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
             "path_count_cap": args.path_cap,
@@ -1224,13 +1451,14 @@ def run_benchmark(args):
         for target in targets:
             for budget in budgets:
                 full_started = time.perf_counter_ns()
-                full_hist, full_stats = bounded_parent_histogram(
+                full_hist, full_stats = filtered_bounded_parent_histogram(
                     graph.parents,
                     target,
                     args.root,
                     budget,
                     args.path_cap,
                     args.expansion_cap,
+                    parent_filter,
                 )
                 full_time = time.perf_counter_ns() - full_started
                 cached_started = time.perf_counter_ns()
@@ -1246,6 +1474,7 @@ def run_benchmark(args):
                     args.collect_attribution,
                     boundary_lookup,
                     decoded_cache_memo,
+                    parent_filter,
                 )
                 cached_time = time.perf_counter_ns() - cached_started
                 records.append(
@@ -1287,6 +1516,8 @@ def summarize(records):
         "",
         "Target selection: `{}`".format(selection.get("target_selection", "child-depth")),
         "",
+        "Parent filter: `{}`".format(selection.get("parent_filter", "all")),
+        "",
         "Path length budgets: `{}`".format(",".join(str(value) for value in selection.get("budgets", []))),
         "",
         "Path count cap: `{}`".format(selection.get("path_count_cap")),
@@ -1308,6 +1539,23 @@ def summarize(records):
         lines.append("| boundary | {} | {} |".format(depth, count))
     for depth, count in sorted(selection.get("target_counts", {}).items()):
         lines.append("| target | {} | {} |".format(depth, count))
+    if selection.get("parent_filter") == "root-cone":
+        lines.extend([
+            "",
+            "| root_cone_depth | root_cone_nodes | root_cone_children_per_node | root_cone_frontier_limit |",
+            "|----------------:|----------------:|----------------------------:|-------------------------:|",
+            "| {} | {} | {} | {} |".format(
+                selection.get("root_cone_depth"),
+                selection.get("root_cone_nodes"),
+                selection.get("root_cone_children_per_node"),
+                selection.get("root_cone_frontier_limit"),
+            ),
+            "",
+            "| root_cone_child_depth | nodes |",
+            "|----------------------:|------:|",
+        ])
+        for depth, count in sorted(selection.get("root_cone_counts", {}).items()):
+            lines.append("| {} | {} |".format(depth, count))
     lines.extend([
         "",
         "| boundary_nodes | selected_boundary_nodes | target_ancestor_boundary_nodes_added | cached_boundary_nodes | parametric_boundary_nodes | targets | boundary_budget | boundary_builder |",
@@ -1502,8 +1750,8 @@ def summarize(records):
         "",
         "Here `path_length_budget` is the maximum parent hops in a path. `path_count_cap` is the maximum number of root-reaching paths enumerated before stopping a row.",
         "",
-        "| path_length_budget | rows | path_count_cap | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_aggregate_relative_error | mean_abs_aggregate_delta | mean_abs_mean_length_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | full_path_count_cap_hits | full_expansion_cap_hits | cached_path_count_cap_hits | cached_expansion_cap_hits |",
-        "|-------------------:|-----:|---------------:|---------|--------|--------|----------|-------------------------------:|--------------------:|------------------------------:|-------------------------:|---------------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------------------:|------------------------:|---------------------------:|--------------------------:|",
+        "| path_length_budget | rows | path_count_cap | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_aggregate_relative_error | mean_abs_aggregate_delta | mean_abs_mean_length_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | mean_full_filtered_parent_skips | mean_cached_filtered_parent_skips | full_path_count_cap_hits | full_expansion_cap_hits | cached_path_count_cap_hits | cached_expansion_cap_hits |",
+        "|-------------------:|-----:|---------------:|---------|--------|--------|----------|-------------------------------:|--------------------:|------------------------------:|-------------------------:|---------------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------------------------:|---------------------------------:|-------------------------:|------------------------:|---------------------------:|--------------------------:|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -1533,6 +1781,8 @@ def summarize(records):
         payload_bytes_read = [int(row["cache_payload_bytes_read"]) for row in rows]
         decode_ns = [int(row["cache_decode_ns"]) for row in rows]
         decode_memo_hits = [int(row.get("cache_decode_memo_hits", 0)) for row in rows]
+        full_filtered_skips = [int(row.get("full_root_unreachable_parent_skips", 0)) for row in rows]
+        cached_filtered_skips = [int(row.get("cached_root_unreachable_parent_skips", 0)) for row in rows]
         splice_ns = [int(row.get("cache_splice_ns", 0)) for row in rows]
         parent_lookup_ns = [int(row.get("cached_parent_lookup_ns", 0)) for row in rows]
         probe_ns = [int(row.get("cache_probe_ns", 0)) for row in rows]
@@ -1549,7 +1799,7 @@ def summarize(records):
             for row in rows
         ]
         lines.append(
-            "| {budget} | {rows} | {path_count_cap} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_aggregate_relative:.6f} | {mean_aggregate_delta:.6f} | {mean_length_delta:.6f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {full_path_count_cap_hits} | {full_expansion_cap_hits} | {cached_path_count_cap_hits} | {cached_expansion_cap_hits} |".format(
+            "| {budget} | {rows} | {path_count_cap} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_aggregate_relative:.6f} | {mean_aggregate_delta:.6f} | {mean_length_delta:.6f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {mean_full_filtered_skips:.3f} | {mean_cached_filtered_skips:.3f} | {full_path_count_cap_hits} | {full_expansion_cap_hits} | {cached_path_count_cap_hits} | {cached_expansion_cap_hits} |".format(
                 budget=budget,
                 rows=len(rows),
                 path_count_cap="n/a" if rows[0].get("path_count_cap") is None else rows[0].get("path_count_cap"),
@@ -1573,6 +1823,8 @@ def summarize(records):
                 mean_payload_bytes=statistics.mean(payload_bytes_read) if payload_bytes_read else 0.0,
                 mean_decode_ns=statistics.mean(decode_ns) if decode_ns else 0.0,
                 mean_decode_memo_hits=statistics.mean(decode_memo_hits) if decode_memo_hits else 0.0,
+                mean_full_filtered_skips=statistics.mean(full_filtered_skips) if full_filtered_skips else 0.0,
+                mean_cached_filtered_skips=statistics.mean(cached_filtered_skips) if cached_filtered_skips else 0.0,
                 mean_splice_ns=statistics.mean(splice_ns) if splice_ns else 0.0,
                 mean_parent_lookup_ns=statistics.mean(parent_lookup_ns) if parent_lookup_ns else 0.0,
                 mean_probe_ns=statistics.mean(probe_ns) if probe_ns else 0.0,
@@ -1748,6 +2000,10 @@ def main(argv=None):
     parser.add_argument("--target-selection", choices=["child-depth", "boundary-descendants"], default="child-depth", help="Target sampling mode. boundary-descendants samples targets below selected boundary nodes so cache hits are intentional.")
     parser.add_argument("--include-target-ancestor-boundaries", action="store_true", help="Add ancestors of sampled targets whose root distance matches requested boundary depths.")
     parser.add_argument("--target-ancestor-boundary-limit", type=int, default=500, help="Maximum target-ancestor boundary nodes to add; non-positive means no extra cap.")
+    parser.add_argument("--parent-filter", choices=PARENT_FILTERS, default="all", help="Optional parent-edge filter used for boundary construction and target search.")
+    parser.add_argument("--root-cone-depth", type=int, default=0, help="Child-depth horizon for --parent-filter root-cone; non-positive derives a horizon from budgets and sampled depths.")
+    parser.add_argument("--root-cone-children-per-node", type=int, default=128, help="Child sample cap while building the root cone for --parent-filter root-cone.")
+    parser.add_argument("--root-cone-frontier-limit", type=int, default=2000, help="Frontier cap while building the root cone for --parent-filter root-cone.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
     parser.add_argument("--boundary-builder", choices=["search", "recurrence"], default="search", help="Method used to build boundary histograms before admission.")
     parser.add_argument("--max-recurrence-states", type=int, default=0, help="If positive, use a parametric boundary state when recurrence state count exceeds this limit.")
