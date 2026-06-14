@@ -91,7 +91,9 @@ also support native `+=` with integer constants and field lengths, e.g.
 `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`.
 Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
-rule for matching records. The first
+rule for matching records. In the current surface slice, `next` must be the
+last action in its rule body; non-terminal `next` is intentionally rejected by
+the native codegen boundary. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
 Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per

@@ -242,6 +242,7 @@ END { print total, skipped }
 ```
 
 The same terminal `next` behavior works for associative arrays and mixed scalar/array rules.
+For now, `next` must be the last action in the rule body.
 
 `BEGIN` can emit literal report headers before the first input record is read:
 
