@@ -556,6 +556,73 @@ def collect_target_ancestor_boundaries(
     )
 
 
+def descendant_frontier(graph, start, suffix_depth, children_per_node, frontier_limit, seed):
+    frontier = [start]
+    for depth in range(1, int(suffix_depth) + 1):
+        next_nodes = []
+        for node in frontier:
+            children = deterministic_sample(
+                graph.children(node),
+                children_per_node,
+                "{}:children:{}:{}".format(seed, depth, node),
+            )
+            next_nodes.extend(children)
+        frontier = deterministic_sample(
+            list(dict.fromkeys(next_nodes)),
+            frontier_limit,
+            "{}:frontier:{}".format(seed, depth),
+        )
+        if not frontier:
+            break
+    return frontier
+
+
+def select_targets_by_boundary_descendants(
+    graph,
+    boundary_depth_by_node,
+    target_depths,
+    children_per_node,
+    frontier_limit,
+    targets_per_depth,
+    seed,
+):
+    """Sample targets below selected boundaries so cache hits are intentional."""
+    target_depths = [int(depth) for depth in target_depths]
+    candidates_by_depth = {depth: [] for depth in target_depths}
+    for boundary in sorted(boundary_depth_by_node):
+        boundary_depth = int(boundary_depth_by_node[boundary])
+        for target_depth in target_depths:
+            suffix_depth = target_depth - boundary_depth
+            if suffix_depth <= 0:
+                continue
+            descendants = descendant_frontier(
+                graph,
+                boundary,
+                suffix_depth,
+                children_per_node,
+                frontier_limit,
+                "{}:boundary:{}:target-depth:{}".format(seed, boundary, target_depth),
+            )
+            candidates_by_depth.setdefault(target_depth, []).extend(descendants)
+
+    targets = []
+    target_child_depth = {}
+    selection_counts = {}
+    for target_depth in sorted(candidates_by_depth):
+        unique_candidates = list(dict.fromkeys(candidates_by_depth[target_depth]))
+        selection_counts[target_depth] = len(unique_candidates)
+        sampled = deterministic_sample(
+            unique_candidates,
+            targets_per_depth,
+            "{}:targets:{}".format(seed, target_depth),
+        )
+        for node in sampled:
+            if node not in target_child_depth:
+                targets.append(node)
+                target_child_depth[node] = target_depth
+    return targets, target_child_depth, selection_counts
+
+
 def build_boundary_cache(
     graph,
     root,
@@ -884,7 +951,7 @@ def run_benchmark(args):
         budgets = parse_int_list(args.budgets)
         boundary_depths = parse_int_list(args.boundary_depths)
         target_depths = parse_int_list(args.target_depths)
-        boundary_nodes, _boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
+        boundary_nodes, boundary_depth_by_node, boundary_counts = select_targets_by_child_depth(
             graph,
             args.root,
             boundary_depths,
@@ -893,15 +960,26 @@ def run_benchmark(args):
             args.boundaries_per_depth,
             args.seed + ":boundary",
         )
-        targets, target_depth_by_node, target_counts = select_targets_by_child_depth(
-            graph,
-            args.root,
-            target_depths,
-            args.children_per_node,
-            args.frontier_limit,
-            args.targets_per_depth,
-            args.seed + ":target",
-        )
+        if args.target_selection == "child-depth":
+            targets, target_depth_by_node, target_counts = select_targets_by_child_depth(
+                graph,
+                args.root,
+                target_depths,
+                args.children_per_node,
+                args.frontier_limit,
+                args.targets_per_depth,
+                args.seed + ":target",
+            )
+        else:
+            targets, target_depth_by_node, target_counts = select_targets_by_boundary_descendants(
+                graph,
+                boundary_depth_by_node,
+                target_depths,
+                args.children_per_node,
+                args.frontier_limit,
+                args.targets_per_depth,
+                args.seed + ":boundary-descendant-target",
+            )
         selected_boundary_nodes = set(boundary_nodes)
         target_ancestor_boundary_nodes = []
         if args.include_target_ancestor_boundaries:
@@ -955,6 +1033,7 @@ def run_benchmark(args):
             "parametric_boundary_nodes": len(parametric_cache),
             "boundary_lookup_nodes": len(boundary_lookup),
             "targets": len(targets),
+            "target_selection": args.target_selection,
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
             "admission_policy": args.admission_policy,
@@ -1031,6 +1110,8 @@ def summarize(records):
         "Graph: `{}`".format(selection.get("graph", "")),
         "",
         "Root: `{}`".format(selection.get("root", "")),
+        "",
+        "Target selection: `{}`".format(selection.get("target_selection", "child-depth")),
         "",
         "## Selection",
         "",
@@ -1381,6 +1462,7 @@ def main(argv=None):
     parser.add_argument("--frontier-limit", type=int, default=2000, help="Deterministic cap for each sampled child-depth frontier.")
     parser.add_argument("--boundaries-per-depth", type=int, default=100, help="Boundary cache candidates per requested boundary depth.")
     parser.add_argument("--targets-per-depth", type=int, default=30, help="Targets per requested target depth.")
+    parser.add_argument("--target-selection", choices=["child-depth", "boundary-descendants"], default="child-depth", help="Target sampling mode. boundary-descendants samples targets below selected boundary nodes so cache hits are intentional.")
     parser.add_argument("--include-target-ancestor-boundaries", action="store_true", help="Add ancestors of sampled targets whose root distance matches requested boundary depths.")
     parser.add_argument("--target-ancestor-boundary-limit", type=int, default=500, help="Maximum target-ancestor boundary nodes to add; non-positive means no extra cap.")
     parser.add_argument("--boundary-budget", type=int, default=6, help="Path budget used to precompute boundary histograms.")
