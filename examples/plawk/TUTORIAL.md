@@ -241,6 +241,8 @@ $1 == "DEBUG" { skipped++; next }
 END { print total, skipped }
 ```
 
+The same terminal `next` behavior works for associative arrays and mixed scalar/array rules.
+
 `BEGIN` can emit literal report headers before the first input record is read:
 
 ```awk

@@ -268,9 +268,10 @@ Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The same
 native slots now support `+=` with integer constants and field lengths, so
 programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`
-stay in the compiled stream loop. Scalar native rule chains also support
-terminal `next` by branching directly to the stream-loop continuation and adding
-the early-exit rule's scalar values to the loop phi inputs. The current
+stay in the compiled stream loop. Native rule chains also support terminal
+`next` by branching directly to the stream-loop continuation; scalar and mixed
+chains add the early-exit rule's scalar values to the loop phi inputs, while
+assoc-only chains update tables before the continuation branch. The current
 associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`

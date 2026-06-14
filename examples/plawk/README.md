@@ -89,8 +89,8 @@ compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. Scalar slots
 also support native `+=` with integer constants and field lengths, e.g.
 `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`.
-Terminal `next` is supported in scalar native rule chains, so `$1 == "DEBUG"
-{ skipped++; next } { total++ } END { print total, skipped }` skips the later
+Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
+skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
