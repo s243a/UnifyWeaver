@@ -97,19 +97,20 @@ Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports
 field-equality conditions, scalar updates, field-key associative increments,
-and selected-field `print` including `NR` inside branches. The native lowering
-evaluates each source `if` guard once, threads every scalar slot through the
-then/else bodies, emits associative table increments and branch-local prints
-only on the selected branch, and rejoins scalar slots with per-slot LLVM phis.
-Branch-local `next` and `break` remain outside this boundary.
+selected-field `print` including `NR`, and terminal `next` inside branches. The
+native lowering evaluates each source `if` guard once, threads every scalar slot
+through the then/else bodies, emits associative table increments and
+branch-local prints only on the selected branch, rejoins scalar slots with
+per-slot LLVM phis, and routes selected branch-local `next` paths to the stream
+loop continuation. Branch-local `break` remains outside this boundary.
 Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. Terminal `break` is supported in the same native
 rule-chain shape and closes the stream before running `END`, e.g. `$1 == "ERROR"
 { hits++; break } { total++ } END { print hits, total }`. In the current surface
-slice, `next` and `break` must be the last action in their rule body;
-non-terminal loop control is intentionally rejected by the native codegen
-boundary. The first
+slice, `next` and `break` must be the last action in their rule body; branch
+`next` must also be terminal in that branch. Non-terminal loop control is
+intentionally rejected by the native codegen boundary. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
 Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per

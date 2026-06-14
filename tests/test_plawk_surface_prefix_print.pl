@@ -495,6 +495,16 @@ test(surface_scalar_if_else_prints_branch_nr) :-
         "ERROR disk full\nWARN cpu hot\nERROR net down\n",
         "1 disk\n3 net\n4\n").
 
+test(surface_scalar_if_else_branch_next_skips_later_actions) :-
+    run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; next } else { seen++ }; total++ } END { print total, seen, skipped }\n",
+        "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
+        "2 2 2\n").
+
+test(surface_mixed_if_else_branch_next_skips_later_rules) :-
+    run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; by_kind[$2]++; next } else { seen++ } } { total++; counts[$1]++ } END { print total, seen, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
+        "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
+        "2 2 2 2 0 1\n").
+
 test(surface_scalar_end_prints_string_literals) :-
     run_surface_print_smoke("{ total++ } END { print \"total\", total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -706,9 +716,14 @@ test(surface_scalar_if_else_uses_native_branch_phi) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
-test(surface_if_else_rejects_nested_next, [fail]) :-
+test(surface_if_else_branch_next_uses_native_continue_phi) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { next } else { total++ } } END { print total }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %continue_loop'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64 [%slot_0, %rule_0_match], [%rule_0_slot_0, %rule_0_done], [%slot_0, %rule_0_body_if_0_then]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_if_else_assoc_branch_updates_use_native_tables) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { counts[$1]++ } else { counts[$2]++ } } END { print counts[\"ERROR\"] }\n", Program),
@@ -794,6 +809,10 @@ test(surface_nonterminal_next_assoc_rejected_by_native_codegen, [fail]) :-
 
 test(surface_nonterminal_next_mixed_rejected_by_native_codegen, [fail]) :-
     plawk_parse_string("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_branch_nonterminal_next_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("{ if ($1 == \"DEBUG\") { next; skipped++ } else { total++ } } END { print total, skipped }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
 test(surface_terminal_break_uses_close_path_and_final_state_phi) :-

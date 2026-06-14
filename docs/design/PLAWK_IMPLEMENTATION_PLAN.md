@@ -280,12 +280,14 @@ mixed, and assoc-only branch bodies now share the same rule-body action walker;
 branch phis use each branch's actual exit block, including assoc side-effect
 `_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
 prints do not collide; branch-local `NR` printing uses the same native record
-counter threaded through the stream loop as top-level `print NR`. Branch-local
-`next` and `break` still need a broader intra-rule CFG. Native rule chains also
-support terminal
-`next` by branching directly to the stream-loop continuation; scalar and mixed
-chains add the early-exit rule's scalar values to the loop phi inputs, while
-assoc-only chains update tables before the continuation branch. Terminal
+counter threaded through the stream loop as top-level `print NR`. Terminal
+branch-local `next` branches directly to the stream-loop continuation and adds
+the selected branch's scalar values to the loop phi inputs. Branch-local
+`break` still needs the broader close/end-print CFG. Native rule chains also
+support terminal `next` by branching directly to the stream-loop continuation;
+scalar and mixed chains add the early-exit rule's scalar values to the loop phi
+inputs, while assoc-only chains update tables before the continuation branch.
+Terminal
 `break` uses the sibling path: matching rules branch to a dedicated stream-close
 block and scalar/mixed programs feed `END` through final-state phis. This native
 slice deliberately supports terminal `next`/`break` only; non-terminal loop
