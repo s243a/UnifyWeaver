@@ -569,6 +569,19 @@ child-depth result: max path mass `3`, mean effective support `1.447`, and max
 effective support `3`.  This makes `Category:Articles` a useful low-branching
 validation cone, but not a stress case for deep parent-distance histograms.
 
+`docs/reports/lmdb_parent_boundary_cache_benchmark_summary_simplewiki_articles_boundary_aggregate_b1_child_depth_bp_decay_smoke_20260614T183325Z.md`
+is the first boundary-aware aggregate smoke.  It materializes exact sparse
+boundary histograms at depth `1` with the recurrence builder, then compares
+full DFS against boundary-stopped evaluation on `12` SimpleWiki
+`Category:Articles` targets under budgets `6` and `8`.  The selected aggregate
+kernel is `bp-decay` with `b=1.029`.  Both budgets have zero histogram error,
+zero path-count error, zero selected-aggregate error, and zero mean-path-length
+delta.  The cached path expands about `58.5%` as many nodes as full DFS, while
+the Python smoke is still wall-clock slower because serialized-payload decode
+and per-row overhead dominate at this shallow scale.  The semantic result is
+the important one: an exact boundary histogram can be used as a suffix
+aggregate boundary condition when the root, budget, and cycle policy match.
+
 `docs/reports/lmdb_exact_sparse_depth_sweep_enwiki_mtc_exact_sparse_parent_distance_lmin_sweep_b10_20_smoke_20260614T175202Z.md`
 is the first comparable enwiki stress smoke.  It uses a constrained
 `Category:Main_topic_classifications` root cone (`4,944` sampled nodes, max

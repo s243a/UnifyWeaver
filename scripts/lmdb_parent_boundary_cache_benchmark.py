@@ -52,6 +52,7 @@ from scripts.parent_histogram_recurrence import recurrence_parent_histogram
 
 
 DEFAULT_BUDGETS = [6, 8]
+AGGREGATE_VALUE_KERNELS = ["count", "bp-decay", "weighted-power"]
 
 
 @dataclass
@@ -514,6 +515,59 @@ def histogram_effective_bins(hist, tail_epsilon):
     return effective_support_bins(probabilities, tail_epsilon)
 
 
+def aggregate_path_value(length, kernel="count", branching_factor=None, power=1.0):
+    """Evaluate a path-length aggregate kernel."""
+    length = int(length)
+    kernel = str(kernel or "count").strip().lower().replace("_", "-")
+    if kernel == "count":
+        return 1.0
+    if kernel == "bp-decay":
+        if branching_factor is None or float(branching_factor) <= 0.0:
+            raise ValueError("bp-decay aggregate requires a positive branching factor")
+        return float(branching_factor) ** (-length)
+    if kernel == "weighted-power":
+        power = 1.0 if power is None else float(power)
+        if power < 0.0:
+            raise ValueError("weighted-power aggregate requires a non-negative power")
+        return (length + 1.0) ** (-power)
+    raise ValueError("unknown aggregate kernel: {}".format(kernel))
+
+
+def histogram_value_sum(hist, kernel="count", branching_factor=None, power=1.0):
+    return sum(
+        int(count) * aggregate_path_value(length, kernel, branching_factor, power)
+        for length, count in hist.items()
+    )
+
+
+def histogram_length_sum(hist):
+    return sum(int(length) * int(count) for length, count in hist.items())
+
+
+def histogram_mean_length(hist):
+    path_count = sum(int(count) for count in hist.values())
+    return None if path_count <= 0 else histogram_length_sum(hist) / path_count
+
+
+def aggregate_relative_error(full_value, cached_value):
+    full_value = float(full_value)
+    cached_value = float(cached_value)
+    if full_value == 0.0:
+        return 0.0 if cached_value == 0.0 else None
+    return abs(cached_value - full_value) / abs(full_value)
+
+
+def histogram_aggregate_metrics(hist, kernel="count", branching_factor=None, power=1.0):
+    path_count = sum(int(count) for count in hist.values())
+    length_sum = histogram_length_sum(hist)
+    return {
+        "path_count": path_count,
+        "path_length_sum": length_sum,
+        "mean_path_length": None if path_count <= 0 else length_sum / path_count,
+        "aggregate_value_sum": histogram_value_sum(hist, kernel, branching_factor, power),
+    }
+
+
 def recurrence_threshold_decision(row, max_recurrence_states, max_effective_bins_after_trim):
     states_limit = max(0, int(max_recurrence_states or 0))
     bins_limit = max(0, int(max_effective_bins_after_trim or 0))
@@ -915,10 +969,47 @@ def build_boundary_cache(
     return cache, parametric_cache, rows
 
 
-def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time, collect_attribution=False, path_count_cap=None, expansion_cap=None):
+def comparison_record(
+    graph_name,
+    root,
+    target,
+    child_depth,
+    budget,
+    full_hist,
+    full_stats,
+    full_time,
+    cached_hist,
+    cached_stats,
+    cached_time,
+    collect_attribution=False,
+    path_count_cap=None,
+    expansion_cap=None,
+    aggregate_kernel="count",
+    aggregate_branching_factor=None,
+    aggregate_power=1.0,
+):
     l1, cdf = histogram_distribution_error(full_hist, cached_hist)
     full_paths = sum(full_hist.values())
     cached_paths = sum(cached_hist.values())
+    full_aggregates = histogram_aggregate_metrics(
+        full_hist,
+        aggregate_kernel,
+        aggregate_branching_factor,
+        aggregate_power,
+    )
+    cached_aggregates = histogram_aggregate_metrics(
+        cached_hist,
+        aggregate_kernel,
+        aggregate_branching_factor,
+        aggregate_power,
+    )
+    aggregate_delta = cached_aggregates["aggregate_value_sum"] - full_aggregates["aggregate_value_sum"]
+    path_length_delta = cached_aggregates["path_length_sum"] - full_aggregates["path_length_sum"]
+    mean_length_delta = (
+        None
+        if full_aggregates["mean_path_length"] is None or cached_aggregates["mean_path_length"] is None
+        else cached_aggregates["mean_path_length"] - full_aggregates["mean_path_length"]
+    )
     cache_hits = int(cached_stats.cache_hits)
     mean_cache_hit_depth = None if cache_hits <= 0 else cached_stats.cache_hit_depth_sum / cache_hits
     mean_cache_hit_remaining_budget = None if cache_hits <= 0 else cached_stats.cache_hit_remaining_budget_sum / cache_hits
@@ -940,6 +1031,25 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "path_count_delta": cached_paths - full_paths,
         "abs_path_count_delta": abs(cached_paths - full_paths),
         "path_count_relative_error": 0.0 if full_paths == 0 else abs(cached_paths - full_paths) / full_paths,
+        "aggregate_kernel": aggregate_kernel,
+        "aggregate_branching_factor": aggregate_branching_factor,
+        "aggregate_power": aggregate_power,
+        "full_aggregate_value_sum": full_aggregates["aggregate_value_sum"],
+        "cached_aggregate_value_sum": cached_aggregates["aggregate_value_sum"],
+        "aggregate_value_delta": aggregate_delta,
+        "abs_aggregate_value_delta": abs(aggregate_delta),
+        "aggregate_value_relative_error": aggregate_relative_error(
+            full_aggregates["aggregate_value_sum"],
+            cached_aggregates["aggregate_value_sum"],
+        ),
+        "full_path_length_sum": full_aggregates["path_length_sum"],
+        "cached_path_length_sum": cached_aggregates["path_length_sum"],
+        "path_length_sum_delta": path_length_delta,
+        "abs_path_length_sum_delta": abs(path_length_delta),
+        "full_mean_path_length": full_aggregates["mean_path_length"],
+        "cached_mean_path_length": cached_aggregates["mean_path_length"],
+        "mean_path_length_delta": mean_length_delta,
+        "abs_mean_path_length_delta": None if mean_length_delta is None else abs(mean_length_delta),
         "full_L_min": min(full_hist) if full_hist else None,
         "cached_L_min": min(cached_hist) if cached_hist else None,
         "full_L_max": max(full_hist) if full_hist else None,
@@ -1106,6 +1216,9 @@ def run_benchmark(args):
             "parametric_mass_model": args.parametric_mass_model,
             "parametric_mass_cap": args.parametric_mass_cap,
             "collect_attribution": args.collect_attribution,
+            "aggregate_kernel": args.aggregate_kernel,
+            "aggregate_branching_factor": args.aggregate_branching_factor,
+            "aggregate_power": args.aggregate_power,
         }]
         records.extend(cache_rows)
         for target in targets:
@@ -1151,6 +1264,9 @@ def run_benchmark(args):
                         args.collect_attribution,
                         args.path_cap,
                         args.expansion_cap,
+                        args.aggregate_kernel,
+                        args.aggregate_branching_factor,
+                        args.aggregate_power,
                     )
                 )
         return records, summarize(records)
@@ -1176,6 +1292,12 @@ def summarize(records):
         "Path count cap: `{}`".format(selection.get("path_count_cap")),
         "",
         "Expansion cap: `{}`".format(selection.get("expansion_cap")),
+        "",
+        "Aggregate kernel: `{}`".format(selection.get("aggregate_kernel", "count")),
+        "",
+        "Aggregate branching factor: `{}`".format(selection.get("aggregate_branching_factor")),
+        "",
+        "Aggregate power: `{}`".format(selection.get("aggregate_power")),
         "",
         "## Selection",
         "",
@@ -1380,8 +1502,8 @@ def summarize(records):
         "",
         "Here `path_length_budget` is the maximum parent hops in a path. `path_count_cap` is the maximum number of root-reaching paths enumerated before stopping a row.",
         "",
-        "| path_length_budget | rows | path_count_cap | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | full_path_count_cap_hits | full_expansion_cap_hits | cached_path_count_cap_hits | cached_expansion_cap_hits |",
-        "|-------------------:|-----:|---------------:|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------------------:|------------------------:|---------------------------:|--------------------------:|",
+        "| path_length_budget | rows | path_count_cap | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_aggregate_relative_error | mean_abs_aggregate_delta | mean_abs_mean_length_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | full_path_count_cap_hits | full_expansion_cap_hits | cached_path_count_cap_hits | cached_expansion_cap_hits |",
+        "|-------------------:|-----:|---------------:|---------|--------|--------|----------|-------------------------------:|--------------------:|------------------------------:|-------------------------:|---------------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------------------:|------------------------:|---------------------------:|--------------------------:|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -1392,6 +1514,17 @@ def summarize(records):
         cdf = [float(row["max_cdf_error"]) for row in rows]
         path_relative = [float(row["path_count_relative_error"]) for row in rows]
         path_delta = [int(row["abs_path_count_delta"]) for row in rows]
+        aggregate_relative = [
+            float(row["aggregate_value_relative_error"])
+            for row in rows
+            if row.get("aggregate_value_relative_error") is not None
+        ]
+        aggregate_delta = [float(row["abs_aggregate_value_delta"]) for row in rows]
+        mean_length_delta = [
+            float(row["abs_mean_path_length_delta"])
+            for row in rows
+            if row.get("abs_mean_path_length_delta") is not None
+        ]
         ratios = [float(row["node_expansion_ratio"]) for row in rows]
         histogram_hits = [int(row["histogram_cache_hits"]) for row in rows]
         parametric_hits = [int(row["parametric_cache_hits"]) for row in rows]
@@ -1416,7 +1549,7 @@ def summarize(records):
             for row in rows
         ]
         lines.append(
-            "| {budget} | {rows} | {path_count_cap} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {full_path_count_cap_hits} | {full_expansion_cap_hits} | {cached_path_count_cap_hits} | {cached_expansion_cap_hits} |".format(
+            "| {budget} | {rows} | {path_count_cap} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_aggregate_relative:.6f} | {mean_aggregate_delta:.6f} | {mean_length_delta:.6f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {full_path_count_cap_hits} | {full_expansion_cap_hits} | {cached_path_count_cap_hits} | {cached_expansion_cap_hits} |".format(
                 budget=budget,
                 rows=len(rows),
                 path_count_cap="n/a" if rows[0].get("path_count_cap") is None else rows[0].get("path_count_cap"),
@@ -1426,6 +1559,9 @@ def summarize(records):
                 mean_cdf=statistics.mean(cdf) if cdf else 0.0,
                 mean_path_relative=statistics.mean(path_relative) if path_relative else 0.0,
                 mean_path_delta=statistics.mean(path_delta) if path_delta else 0.0,
+                mean_aggregate_relative=statistics.mean(aggregate_relative) if aggregate_relative else 0.0,
+                mean_aggregate_delta=statistics.mean(aggregate_delta) if aggregate_delta else 0.0,
+                mean_length_delta=statistics.mean(mean_length_delta) if mean_length_delta else 0.0,
                 mean_ratio=statistics.mean(ratios) if ratios else 0.0,
                 mean_time_ratio=statistics.mean(time_ratios) if time_ratios else 0.0,
                 mean_full_time=statistics.mean(full_times) if full_times else 0.0,
@@ -1631,6 +1767,9 @@ def main(argv=None):
     parser.add_argument("--max-parent-depth", type=int, default=24, help="Parent depth cap for root-reaching parent degree signals.")
     parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root-reaching paths; this is a path-count cap, not the path-length budget.")
     parser.add_argument("--expansion-cap", type=int, default=250000, help="Stop a row after this many expanded nodes.")
+    parser.add_argument("--aggregate-kernel", choices=AGGREGATE_VALUE_KERNELS, default="count", help="Path-value aggregate to compare between full DFS and boundary-stopped histograms.")
+    parser.add_argument("--aggregate-branching-factor", type=float, default=2.0, help="Branching factor used by --aggregate-kernel bp-decay.")
+    parser.add_argument("--aggregate-power", type=float, default=1.0, help="Power used by --aggregate-kernel weighted-power.")
     parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
     parser.add_argument("--collect-attribution", action="store_true", help="Collect cached-search timing attribution for cache probes, splicing, parent lookups, and path-count-cap checks.")
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
