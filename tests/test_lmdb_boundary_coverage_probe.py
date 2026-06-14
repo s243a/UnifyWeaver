@@ -11,6 +11,7 @@ from scripts.lmdb_boundary_coverage_probe import (
     build_root_cone,
     exact_boundary_coverage,
     sample_boundary_coverage,
+    sample_root_path_space,
     select_nodes_by_root_cone_depth,
 )
 
@@ -164,6 +165,35 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertGreater(record["estimated_boundary_hit_prefixes"], 0.0)
         self.assertGreater(record["estimated_root_paths"], 0.0)
         self.assertIsNotNone(record["estimated_boundary_hit_fraction"])
+
+    def test_sample_boundary_coverage_splices_boundary_suffix_mass(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+
+        record = sample_boundary_coverage(graph.parents, "C", "R", 3, {"B"}, samples=10, seed="fixture")
+
+        self.assertEqual(record["boundary_hit_prefixes"], 10)
+        self.assertEqual(record["estimated_boundary_hit_prefixes"], 1.0)
+        self.assertEqual(record["estimated_boundary_spliced_root_paths"], 1.0)
+        self.assertEqual(record["estimated_spliced_total_root_paths"], 1.0)
+
+    def test_sample_root_path_space_estimates_root_count_and_mean_length(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+        })
+
+        record = sample_root_path_space(graph.parents, "C", "R", 3, set(), samples=200, seed="fixture")
+
+        self.assertEqual(record["samples"], 200)
+        self.assertEqual(record["root_paths"], 200)
+        self.assertAlmostEqual(record["estimated_root_paths"], 2.0)
+        self.assertAlmostEqual(record["estimated_mean_root_path_length"], 2.0)
+        self.assertAlmostEqual(record["estimated_root_path_length_sum"], 4.0)
 
 
 if __name__ == "__main__":
