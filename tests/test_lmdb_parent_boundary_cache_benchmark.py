@@ -17,17 +17,22 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     parametric_shape_distribution,
     parametric_support_interval,
     scaled_distribution_histogram,
+    select_targets_by_boundary_descendants,
     support_binomial_mean,
 )
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
 
 
 class DictGraph:
-    def __init__(self, parents):
+    def __init__(self, parents, children=None):
         self._parents = parents
+        self._children = children or {}
 
     def parents(self, node):
         return self._parents.get(node, [])
+
+    def children(self, node):
+        return self._children.get(node, [])
 
 
 class BoundaryCacheBenchmarkTests(unittest.TestCase):
@@ -44,6 +49,32 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(full, cached)
         self.assertEqual(stats.cache_hits, 1)
+
+    def test_boundary_descendant_target_selection_uses_selected_boundaries(self):
+        graph = DictGraph(
+            {},
+            {
+                "B1": ["C1", "C2"],
+                "C1": ["D1"],
+                "C2": ["D2"],
+                "B2": ["C3"],
+                "C3": ["D3"],
+            },
+        )
+
+        targets, target_depth_by_node, counts = select_targets_by_boundary_descendants(
+            graph,
+            {"B1": 2, "B2": 2},
+            [4],
+            children_per_node=10,
+            frontier_limit=10,
+            targets_per_depth=10,
+            seed="fixture",
+        )
+
+        self.assertEqual(set(targets), {"D1", "D2", "D3"})
+        self.assertEqual(target_depth_by_node, {"D1": 4, "D2": 4, "D3": 4})
+        self.assertEqual(counts, {4: 3})
 
     def test_collect_target_ancestor_boundaries_matches_root_distance(self):
         graph = DictGraph({"A": ["R"], "B": ["A"], "C": ["B"]})
