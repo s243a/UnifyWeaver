@@ -274,10 +274,12 @@ later `++`/`+=` updates, so programs such as `$1 == "ERROR" { last_len =
 length($0); hits++ } END { print hits, last_len }` also stay native. The first
 native `if/else` action slice lowers field-equality conditions once at rule-body
 scope, threads the whole scalar slot vector through then/else action sequences,
-emits per-slot phis at the branch join, and joins scalar rules through an
-explicit `rule_N_done` label so downstream loop phis have stable predecessors.
-Branch-local associative updates, `print`, `next`, and `break` still need a
-broader intra-rule CFG. Native rule chains also support terminal
+emits per-slot phis at the branch join, and can run field-key associative
+increments as branch-local side effects. Scalar, mixed, and assoc-only branch
+bodies now share the same rule-body action walker; branch phis use each branch's
+actual exit block, including assoc side-effect `_done` blocks. Branch-local
+`print`, `next`, and `break` still need a broader intra-rule CFG. Native rule
+chains also support terminal
 `next` by branching directly to the stream-loop continuation; scalar and mixed
 chains add the early-exit rule's scalar values to the loop phi inputs, while
 assoc-only chains update tables before the continuation branch. Terminal
