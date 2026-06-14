@@ -423,7 +423,18 @@ WamRuntime$append_build_arg <- function(state, val) {
     new_struct <- StructTerm(top$fid, top$args)
     cur <- WamRuntime$get_reg(state, top$target_reg)
     cur <- WamRuntime$deref(state, cur)
-    if (!is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
+    # A-REGISTER EXCEPTION (M139/M140 bind-through class): the cycle
+    # check below is NOT sufficient on its own. A registers
+    # (idx < 101; X = 101+, Y = 201+) are argument staging -- their old
+    # occupant is an unrelated live variable (often a clause-head
+    # argument), and binding it to a structure that does NOT contain it
+    # silently aliases the variable to that term (the non-cyclic
+    # variant the sweep probe aliasfree/1 exposed:
+    # `p(X) :- q(g(7)), var(X)` wrong-failed). Build placeholders only
+    # ever live in X/Y registers, so the bind is additionally gated on
+    # the register class -- the same fix the other targets carry.
+    if (top$target_reg >= 101L &&
+        !is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
       # Skip the bind if cur appears anywhere inside new_struct -- the
       # bind would create a self-cycle. This happens when the WAM
       # emits sequences like

@@ -89,14 +89,22 @@ register class.
    (infinite loop at runtime, no generation-time warning). Distinct
    from the documented compound-term stubs; pin for the ILasm
    campaign resumption.
-4. **F# theoretical divergence**: F# guards its bind-through with a
-   cycle check (`containsVid`) rather than a register-class condition.
-   A NON-cyclic variant — building a goal structure that does not
-   contain X into an A register whose occupant is the live head var X
-   — would still alias X to that structure. Not exercised by these
-   probes; worth one targeted probe in the F# stream. **R shares this
-   exact shape** (`wam_term_contains_var` cycle check in
-   `runtime.R.mustache:426-443`).
+4. **F#/R non-cyclic aliasing divergence — PROBED AND CONFIRMED REAL
+   in both** (follow-up commits). Probe:
+   `aliasfree(X) :- mk1(g(7), _W), var(X)` wrong-failed on both — the
+   cycle check does not stop a head variable being aliased to a
+   structure that does not contain it. **R: FIXED** (register-class
+   gate added alongside the cycle check in `runtime.R.mustache`;
+   alias probe flips to true, original battery 12/12, generator-suite
+   failure set identical to the parent tree). **F#: CONFIRMED but
+   LEFT OPEN** — the register-class guard regressed the compiled
+   parser smoke from 42/42 to 1/42 (the F# pipeline, unlike the other
+   eight fixed targets, stages legitimate build placeholders in A
+   registers), so the guard was reverted with the bug documented at
+   the bind site (`fsharp_wam_bindings.pl`, addToBuilder). Needs
+   F#-specific occupant-provenance tracking; probe harness preserved
+   at /tmp/probe_fsharp/gen_alias.pl shape (reproduce from this
+   report).
 5. **Elixir interpreter mode structurally cannot cross-call**: each
    predicate module embeds only its own code/labels, and the
    call/execute fallbacks resolve against the module-local map and
@@ -129,7 +137,14 @@ register class.
    structural comparison; the previously confounded probe battery now
    passes in full). The broader Rust-P3-style builtin parity sweep
    still applies to Elixir.
-9. **Elixir target suite: 6 pre-existing failures on main**
+9. **R generator suite: 16 pre-existing failures on current main**
+   (kernel_* e2e rscript set, fact_table e2e, dcg, bagof/setof,
+   catch_throw aggregator, cli_arg_parser, enumerable_builtins,
+   negation_meta_call) — verified IDENTICAL with the parent
+   runtime template, so unrelated to the R aliasing fix; degraded
+   from 1 known failure at M152 to 16 since. Flag to the R/T-tier
+   stream to bisect.
+10. **Elixir target suite: 6 pre-existing failures on main**
    (unify/3 compound-clause check, LMDB e2e via :elmdb, three
    atom-interning literal checks, cons-tag aliasing) — verified
    identical on the unmodified parent tree; flag to the Elixir
