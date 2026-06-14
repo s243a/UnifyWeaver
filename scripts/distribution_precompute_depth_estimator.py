@@ -10,7 +10,9 @@ for expected query hits with a simple measured-unit cost model:
         > build + fit + storage + amortized decode
 
 The parent-branching prior uses b = E[p^2] / E[p].  If query traffic is spread
-across each layer, per-node hits fall by about 1 / b per depth step.
+across each layer, per-node hits fall by about 1 / b per depth step.  Optional
+path-value sweep input can also scale those hits by measured boundary value
+coverage, which separates raw economic reuse from value-weighted planning.
 """
 
 from __future__ import annotations
@@ -48,6 +50,17 @@ def mean(values):
 
 def positive_mean(values):
     return mean(value for value in values if value is not None and value > 0.0)
+
+
+def present_mean(values):
+    present = [value for value in values if value is not None]
+    return None if not present else mean(present)
+
+
+def format_optional(value, digits=3):
+    if value is None:
+        return "n/a"
+    return ("{:." + str(digits) + "f}").format(float(value))
 
 
 def safe_ratio(numerator, denominator):
@@ -341,6 +354,100 @@ def validation_measurements_from_jsonl(paths):
     return validation_measurements_from_records(load_jsonl_records(paths))
 
 
+def path_value_sweep_measurements_from_records(
+    records,
+    mode="root-sample",
+    budget=None,
+    variants=None,
+):
+    """Aggregate path-value kernel sweep rows by variant and boundary depth."""
+    variants = None if not variants else set(variants)
+    selections_by_graph = {}
+    target_rows = []
+    target_rows_by_key = {}
+    for record in records:
+        variant = record.get("kernel_variant")
+        if variants is not None and variant not in variants:
+            continue
+        if record.get("record_type") == "boundary_coverage_selection":
+            boundary_depth = max_int_key(record.get("boundary_counts"))
+            target_depth = max_int_key(record.get("target_counts"))
+            selections_by_graph[record.get("graph")] = {
+                "variant": variant,
+                "boundary_depth": boundary_depth,
+                "target_depth": target_depth,
+                "path_value_kernel": record.get("path_value_kernel"),
+                "path_value_branching_factor": record.get("path_value_branching_factor"),
+                "path_value_branching_factor_source": record.get("path_value_branching_factor_source"),
+                "path_value_power": record.get("path_value_power"),
+                "path_value_branching_stats": record.get("path_value_branching_stats"),
+                "selection_graph": record.get("graph"),
+                "selection_mode": record.get("mode"),
+                "selection_source": record.get("selection_source"),
+                "parent_filter": record.get("parent_filter"),
+            }
+        elif record.get("record_type") == "boundary_coverage_target" and record.get("mode") == mode:
+            target_rows.append(record)
+
+    for record in target_rows:
+        selection = selections_by_graph.get(record.get("graph"))
+        if selection is None:
+            continue
+        variant = selection["variant"]
+        boundary_depth = selection.get("boundary_depth")
+        if boundary_depth is None:
+            continue
+        row_budget = int(record.get("path_length_budget", 0))
+        if budget is not None and row_budget != int(budget):
+            continue
+        target_rows_by_key.setdefault((variant, int(boundary_depth), row_budget), []).append(record)
+
+    measurements = {}
+    for (variant, boundary_depth, row_budget), rows in sorted(target_rows_by_key.items()):
+        selection = selections_by_graph.get(rows[0].get("graph"), {})
+        key = (variant, int(boundary_depth))
+        previous = measurements.get(key)
+        if previous is not None and int(previous["budget"]) >= int(row_budget):
+            continue
+        measurements[key] = {
+            "record_type": "path_value_sweep_measurement",
+            "variant": variant,
+            "mode": mode,
+            "budget": int(row_budget),
+            "boundary_depth": int(boundary_depth),
+            "target_depth": selection.get("target_depth"),
+            "rows": len(rows),
+            "path_value_kernel": selection.get("path_value_kernel"),
+            "path_value_branching_factor": selection.get("path_value_branching_factor"),
+            "path_value_branching_factor_source": selection.get("path_value_branching_factor_source"),
+            "path_value_power": selection.get("path_value_power"),
+            "path_value_branching_stats": selection.get("path_value_branching_stats"),
+            "selection_graph": selection.get("selection_graph"),
+            "selection_mode": selection.get("selection_mode"),
+            "selection_source": selection.get("selection_source"),
+            "parent_filter": selection.get("parent_filter"),
+            "mean_estimated_boundary_hit_fraction": present_mean(row.get("estimated_boundary_hit_fraction") for row in rows),
+            "mean_estimated_root_boundary_hit_fraction": present_mean(row.get("estimated_root_boundary_hit_fraction") for row in rows),
+            "mean_estimated_root_value_boundary_hit_fraction": present_mean(row.get("estimated_root_value_boundary_hit_fraction") for row in rows),
+            "mean_estimated_root_paths": present_mean(row.get("estimated_root_paths") for row in rows),
+            "mean_estimated_root_value_sum": present_mean(row.get("estimated_root_value_sum") for row in rows),
+            "mean_estimated_spliced_total_root_paths": present_mean(row.get("estimated_spliced_total_root_paths") for row in rows),
+            "mean_estimated_spliced_total_value_sum": present_mean(row.get("estimated_spliced_total_value_sum") for row in rows),
+        }
+    return measurements
+
+
+def path_value_sweep_measurements_from_jsonl(paths, mode, budget=None, variants=None):
+    if not paths:
+        return {}
+    return path_value_sweep_measurements_from_records(
+        load_jsonl_records(paths),
+        mode=mode,
+        budget=budget,
+        variants=variants,
+    )
+
+
 def calibration_from_payload_recurrence_summaries(paths, args):
     """Derive cost constants from payload recurrence summary JSON files."""
     summaries = load_payload_recurrence_summaries(paths)
@@ -456,9 +563,27 @@ def default_representations(depth, args):
     ]
 
 
-def estimate_row(boundary_depth, target_depth, representation, args, depth_branching, query_reach_prob, validation_measurement=None):
+def estimate_row(
+    boundary_depth,
+    target_depth,
+    representation,
+    args,
+    depth_branching,
+    query_reach_prob,
+    validation_measurement=None,
+    kernel_variant="unweighted",
+    path_value_measurement=None,
+):
     cumulative_b = cumulative_branching(boundary_depth, args.branching_factor, depth_branching)
     expected_hits = args.expected_queries * query_reach_prob / max(cumulative_b, 1.0)
+    path_value_hit_scale = float(args.path_value_default_hit_scale)
+    path_value_hit_scale_source = "default"
+    if path_value_measurement is not None:
+        measured_scale = path_value_measurement.get(args.path_value_hit_scale_field)
+        if measured_scale is not None:
+            path_value_hit_scale = max(0.0, float(measured_scale))
+            path_value_hit_scale_source = args.path_value_hit_scale_field
+    planning_hits = expected_hits * path_value_hit_scale
     build_states = estimated_path_states(boundary_depth, args.branching_factor, depth_branching, args.min_path_states)
     suffix_hops = max(0, int(target_depth) - int(boundary_depth))
     suffix_states = estimated_suffix_states(boundary_depth, target_depth, args.branching_factor, depth_branching, args.min_path_states)
@@ -504,11 +629,14 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
     amortized_decode_cost = representation.bytes_estimate * args.decode_cost_per_byte
     one_time_cost = build_cost + fit_cost + storage_cost + amortized_decode_cost
     hits_to_break_even = math.inf if saved_per_hit <= 0.0 else one_time_cost / saved_per_hit
-    net_value = expected_hits * saved_per_hit - one_time_cost
+    economic_net_value = expected_hits * saved_per_hit - one_time_cost
+    value_weighted_net_value = planning_hits * saved_per_hit - one_time_cost
+    recommendation_net_value = value_weighted_net_value if args.recommendation_score == "value-weighted" else economic_net_value
 
     row = {
         "record_type": "distribution_precompute_depth_estimate",
         "cap_mode": args.cap_mode,
+        "kernel_variant": kernel_variant,
         "boundary_depth": int(boundary_depth),
         "target_depth": int(target_depth),
         "suffix_hops": suffix_hops,
@@ -519,6 +647,9 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         "cumulative_branching": cumulative_b,
         "query_reach_probability": query_reach_prob,
         "expected_hits": expected_hits,
+        "path_value_hit_scale": path_value_hit_scale,
+        "path_value_hit_scale_source": path_value_hit_scale_source,
+        "planning_hits": planning_hits,
         "expected_build_states": build_states,
         "expected_suffix_states": suffix_states,
         "cap_mode": args.cap_mode,
@@ -535,9 +666,25 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
         "amortized_decode_cost": amortized_decode_cost,
         "one_time_cost": one_time_cost,
         "hits_to_break_even": None if math.isinf(hits_to_break_even) else hits_to_break_even,
-        "expected_net_value": net_value,
-        "precompute_pays": net_value > 0.0,
+        "expected_net_value": economic_net_value,
+        "value_weighted_net_value": value_weighted_net_value,
+        "recommendation_net_value": recommendation_net_value,
+        "precompute_pays": recommendation_net_value > 0.0,
     }
+    if path_value_measurement is not None:
+        row.update({
+            "path_value_measurement_mode": path_value_measurement["mode"],
+            "path_value_measurement_budget": path_value_measurement["budget"],
+            "path_value_measurement_rows": path_value_measurement["rows"],
+            "path_value_kernel": path_value_measurement.get("path_value_kernel"),
+            "path_value_branching_factor": path_value_measurement.get("path_value_branching_factor"),
+            "path_value_power": path_value_measurement.get("path_value_power"),
+            "path_value_mean_boundary_hit_fraction": path_value_measurement.get("mean_estimated_boundary_hit_fraction"),
+            "path_value_mean_root_boundary_hit_fraction": path_value_measurement.get("mean_estimated_root_boundary_hit_fraction"),
+            "path_value_mean_root_value_boundary_hit_fraction": path_value_measurement.get("mean_estimated_root_value_boundary_hit_fraction"),
+            "path_value_mean_estimated_root_paths": path_value_measurement.get("mean_estimated_root_paths"),
+            "path_value_mean_estimated_root_value_sum": path_value_measurement.get("mean_estimated_root_value_sum"),
+        })
     if validation_measurement is not None:
         row.update({
             "validation_rows": validation_measurement["rows"],
@@ -555,15 +702,28 @@ def estimate_row(boundary_depth, target_depth, representation, args, depth_branc
             "validation_measured_saved_per_hit_ns": validation_measurement["measured_saved_per_hit_ns"],
             "validation_clipped_saved_per_hit_ns": validation_measurement["clipped_saved_per_hit_ns"],
             "validation_effective_suffix_states": validation_effective_suffix_states,
-            "validation_prediction_matches_measured": None if not validation_measurement["validation_usable_for_cap"] else (net_value > 0.0) == validation_measurement["measured_pays"],
+            "validation_prediction_matches_measured": None if not validation_measurement["validation_usable_for_cap"] else (recommendation_net_value > 0.0) == validation_measurement["measured_pays"],
         })
     return row
 
 
-def build_records(args, calibration=None, validation_measurements=None, branching_profile=None):
+def build_records(
+    args,
+    calibration=None,
+    validation_measurements=None,
+    branching_profile=None,
+    path_value_measurements=None,
+):
     depth_branching = parse_depth_float_map(args.depth_branching)
     query_reach = parse_depth_float_map(args.query_reach_probability)
     validation_measurements = validation_measurements or {}
+    path_value_measurements = path_value_measurements or {}
+    if args.path_value_variant:
+        kernel_variants = list(dict.fromkeys(args.path_value_variant))
+    elif path_value_measurements:
+        kernel_variants = sorted({variant for variant, _depth in path_value_measurements})
+    else:
+        kernel_variants = ["unweighted"]
     target_depth = args.max_depth if args.target_depth is None else int(args.target_depth)
     records = [{
         "record_type": "distribution_precompute_depth_estimator_selection",
@@ -581,7 +741,13 @@ def build_records(args, calibration=None, validation_measurements=None, branchin
             validation_measurements[depth]
             for depth in sorted(validation_measurements)
         ],
+        "path_value_measurements": [
+            path_value_measurements[key]
+            for key in sorted(path_value_measurements, key=lambda item: (str(item[0]), int(item[1])))
+        ],
+        "kernel_variants": kernel_variants,
         "cost_model": {
+            "recommendation_score": args.recommendation_score,
             "cap_mode": args.cap_mode,
             "path_cap": args.path_cap,
             "expansion_cap": args.expansion_cap,
@@ -598,22 +764,36 @@ def build_records(args, calibration=None, validation_measurements=None, branchin
             "decode_cost_per_byte": args.decode_cost_per_byte,
             "sample_fit_cost_per_point": args.sample_fit_cost_per_point,
             "parametric_fit_cost": args.parametric_fit_cost,
+            "path_value_hit_scale_field": args.path_value_hit_scale_field,
+            "path_value_default_hit_scale": args.path_value_default_hit_scale,
         },
     }]
-    for depth in range(0, int(args.max_depth) + 1):
-        reach_probability = query_reach.get(depth, args.default_query_reach_probability)
-        validation_measurement = validation_measurements.get(depth)
-        for representation in default_representations(depth, args):
-            records.append(estimate_row(depth, target_depth, representation, args, depth_branching, reach_probability, validation_measurement))
+    for kernel_variant in kernel_variants:
+        for depth in range(0, int(args.max_depth) + 1):
+            reach_probability = query_reach.get(depth, args.default_query_reach_probability)
+            validation_measurement = validation_measurements.get(depth)
+            path_value_measurement = path_value_measurements.get((kernel_variant, depth))
+            for representation in default_representations(depth, args):
+                records.append(estimate_row(
+                    depth,
+                    target_depth,
+                    representation,
+                    args,
+                    depth_branching,
+                    reach_probability,
+                    validation_measurement,
+                    kernel_variant,
+                    path_value_measurement,
+                ))
     return records
 
 
 def summarize(records):
     selection = next(row for row in records if row["record_type"] == "distribution_precompute_depth_estimator_selection")
     estimate_rows = [row for row in records if row["record_type"] == "distribution_precompute_depth_estimate"]
-    by_depth = {}
+    by_variant_depth = {}
     for row in estimate_rows:
-        by_depth.setdefault(row["boundary_depth"], []).append(row)
+        by_variant_depth.setdefault((row["kernel_variant"], row["boundary_depth"]), []).append(row)
 
     lines = [
         "# Distribution Precompute Depth Estimator",
@@ -627,6 +807,22 @@ def summarize(records):
         "Target depth: `{}`".format(selection["target_depth"]),
         "",
         "Cap mode: `{}`".format(selection["cost_model"]["cap_mode"]),
+        "",
+        "Recommendation score: `{}`".format(selection["cost_model"]["recommendation_score"]),
+        "",
+        "## Cost Model",
+        "",
+        "| uncached_cost_per_state | cached_eval_base_cost | cached_eval_cost_per_point | splice_cost_per_point | decode_cost_per_byte | storage_cost_per_byte | build_cost_per_state |",
+        "|------------------------:|----------------------:|---------------------------:|----------------------:|---------------------:|----------------------:|---------------------:|",
+        "| {uncached:.6f} | {cached_base:.6f} | {cached_point:.6f} | {splice:.6f} | {decode:.6f} | {storage:.6f} | {build:.6f} |".format(
+            uncached=selection["cost_model"]["uncached_cost_per_state"],
+            cached_base=selection["cost_model"]["cached_eval_base_cost"],
+            cached_point=selection["cost_model"]["cached_eval_cost_per_point"],
+            splice=selection["cost_model"]["splice_cost_per_point"],
+            decode=selection["cost_model"]["decode_cost_per_byte"],
+            storage=selection["cost_model"]["storage_cost_per_byte"],
+            build=selection["cost_model"]["build_cost_per_state"],
+        ),
         "",
     ]
     if selection.get("branching_profile"):
@@ -717,22 +913,52 @@ def summarize(records):
                 )
             )
         lines.append("")
+    if selection.get("path_value_measurements"):
+        lines.extend([
+            "## Path-Value Sweep Measurements",
+            "",
+            "Planning hit scale field: `{}`".format(selection["cost_model"]["path_value_hit_scale_field"]),
+            "",
+            "| variant | mode | budget | boundary_depth | target_depth | rows | kernel | b_p | power | boundary_hit_fraction | root_boundary_hit_fraction | root_value_boundary_hit_fraction |",
+            "|---------|------|-------:|---------------:|-------------:|-----:|--------|----:|------:|----------------------:|---------------------------:|---------------------------------:|",
+        ])
+        for measurement in selection["path_value_measurements"]:
+            lines.append(
+                "| {variant} | {mode} | {budget} | {boundary_depth} | {target_depth} | {rows} | {kernel} | {branching} | {power} | {boundary_fraction} | {root_fraction} | {root_value_fraction} |".format(
+                    variant=measurement["variant"],
+                    mode=measurement["mode"],
+                    budget=measurement["budget"],
+                    boundary_depth=measurement["boundary_depth"],
+                    target_depth=measurement.get("target_depth"),
+                    rows=measurement["rows"],
+                    kernel=measurement.get("path_value_kernel") or "n/a",
+                    branching=format_optional(measurement.get("path_value_branching_factor"), 6),
+                    power=format_optional(measurement.get("path_value_power"), 3),
+                    boundary_fraction=format_optional(measurement.get("mean_estimated_boundary_hit_fraction"), 6),
+                    root_fraction=format_optional(measurement.get("mean_estimated_root_boundary_hit_fraction"), 6),
+                    root_value_fraction=format_optional(measurement.get("mean_estimated_root_value_boundary_hit_fraction"), 6),
+                )
+            )
+        lines.append("")
     lines.extend([
         "## Depth Recommendation",
         "",
-        "| boundary_depth | suffix_hops | expected_hits | suffix_states | cap_limited_suffix_states | build_states | best_representation | validation_time_ratio | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|--------------:|--------------:|--------------------------:|-------------:|--------------------|----------------------:|-------------------:|----------:|------|",
+        "| variant | boundary_depth | suffix_hops | expected_hits | hit_scale | planning_hits | suffix_states | cap_limited_suffix_states | build_states | best_representation | validation_time_ratio | hits_to_break_even | economic_net | value_weighted_net | recommendation_net | pays |",
+        "|---------|---------------:|------------:|--------------:|----------:|--------------:|--------------:|--------------------------:|-------------:|--------------------|----------------------:|-------------------:|-------------:|-------------------:|-------------------:|------|",
     ])
     recommendation_rows = []
-    for depth in sorted(by_depth):
-        rows = by_depth[depth]
-        best = max(rows, key=lambda item: item["expected_net_value"])
+    for variant, depth in sorted(by_variant_depth, key=lambda item: (str(item[0]), int(item[1]))):
+        rows = by_variant_depth[(variant, depth)]
+        best = max(rows, key=lambda item: item["recommendation_net_value"])
         recommendation_rows.append(best)
         lines.append(
-            "| {depth} | {suffix_hops} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {build_states:.3f} | {rep} | {ratio} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {variant} | {depth} | {suffix_hops} | {hits:.3f} | {hit_scale:.6f} | {planning_hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {build_states:.3f} | {rep} | {ratio} | {breakeven} | {economic_net:.3f} | {value_net:.3f} | {recommendation_net:.3f} | {pays} |".format(
+                variant=best["kernel_variant"],
                 depth=depth,
                 suffix_hops=best["suffix_hops"],
                 hits=best["expected_hits"],
+                hit_scale=best["path_value_hit_scale"],
+                planning_hits=best["planning_hits"],
                 suffix_states=best["expected_suffix_states"],
                 cap_suffix_states=best["cap_limited_suffix_states"],
                 build_states=best["expected_build_states"],
@@ -743,7 +969,9 @@ def summarize(records):
                     else "{:.3f}".format(best["validation_mean_time_ratio"])
                 ),
                 breakeven="n/a" if best["hits_to_break_even"] is None else "{:.3f}".format(best["hits_to_break_even"]),
-                net=best["expected_net_value"],
+                economic_net=best["expected_net_value"],
+                value_net=best["value_weighted_net_value"],
+                recommendation_net=best["recommendation_net_value"],
                 pays="yes" if best["precompute_pays"] else "no",
             )
         )
@@ -752,18 +980,21 @@ def summarize(records):
         "",
         "## Representation Detail",
         "",
-        "| boundary_depth | suffix_hops | representation | points | bytes | expected_hits | suffix_states | cap_limited_suffix_states | saved_per_hit | validation_time_ratio | per_hit_decode | splice_cost | one_time_cost | hits_to_break_even | net_value | pays |",
-        "|---------------:|------------:|----------------|-------:|------:|--------------:|--------------:|--------------------------:|--------------:|----------------------:|---------------:|------------:|--------------:|-------------------:|----------:|------|",
+        "| variant | boundary_depth | suffix_hops | representation | points | bytes | expected_hits | hit_scale | planning_hits | suffix_states | cap_limited_suffix_states | saved_per_hit | validation_time_ratio | per_hit_decode | splice_cost | one_time_cost | hits_to_break_even | economic_net | value_weighted_net | recommendation_net | pays |",
+        "|---------|---------------:|------------:|----------------|-------:|------:|--------------:|----------:|--------------:|--------------:|--------------------------:|--------------:|----------------------:|---------------:|------------:|--------------:|-------------------:|-------------:|-------------------:|-------------------:|------|",
     ])
     for row in estimate_rows:
         lines.append(
-            "| {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {saved:.3f} | {ratio} | {decode:.3f} | {splice:.3f} | {cost:.3f} | {breakeven} | {net:.3f} | {pays} |".format(
+            "| {variant} | {depth} | {suffix_hops} | {rep} | {points} | {bytes:.1f} | {hits:.3f} | {hit_scale:.6f} | {planning_hits:.3f} | {suffix_states:.3f} | {cap_suffix_states:.3f} | {saved:.3f} | {ratio} | {decode:.3f} | {splice:.3f} | {cost:.3f} | {breakeven} | {economic_net:.3f} | {value_net:.3f} | {recommendation_net:.3f} | {pays} |".format(
+                variant=row["kernel_variant"],
                 depth=row["boundary_depth"],
                 suffix_hops=row["suffix_hops"],
                 rep=row["representation"],
                 points=row["points"],
                 bytes=row["bytes_estimate"],
                 hits=row["expected_hits"],
+                hit_scale=row["path_value_hit_scale"],
+                planning_hits=row["planning_hits"],
                 suffix_states=row["expected_suffix_states"],
                 cap_suffix_states=row["cap_limited_suffix_states"],
                 saved=row["saved_per_hit"],
@@ -776,7 +1007,9 @@ def summarize(records):
                 splice=row["splice_cost"],
                 cost=row["one_time_cost"],
                 breakeven="n/a" if row["hits_to_break_even"] is None else "{:.3f}".format(row["hits_to_break_even"]),
-                net=row["expected_net_value"],
+                economic_net=row["expected_net_value"],
+                value_net=row["value_weighted_net_value"],
+                recommendation_net=row["recommendation_net_value"],
                 pays="yes" if row["precompute_pays"] else "no",
             )
         )
@@ -787,7 +1020,7 @@ def summarize(records):
         "## Summary",
         "",
         "- deepest recommended boundary depth: `{}`".format(max(paying_depths) if paying_depths else "none"),
-        "- mean best net value: `{:.3f}`".format(mean(row["expected_net_value"] for row in recommendation_rows)),
+        "- mean best recommendation net value: `{:.3f}`".format(mean(row["recommendation_net_value"] for row in recommendation_rows)),
         "- note: point count is a representation cost input, not the break-even hit count.",
     ])
     return "\n".join(lines) + "\n"
@@ -812,6 +1045,7 @@ def parse_args(argv=None):
     parser.add_argument("--depth-branching", default="", help="Optional depth-specific b values, e.g. 1:1,2:1.67,3:4.25.")
     parser.add_argument("--query-reach-probability", default="", help="Optional depth-specific query reach probabilities.")
     parser.add_argument("--default-query-reach-probability", type=float, default=1.0)
+    parser.add_argument("--recommendation-score", choices=["economic", "value-weighted"], default="economic", help="Recommendation objective. economic uses raw expected hits; value-weighted scales hits by path-value sweep coverage.")
     parser.add_argument("--max-depth", type=int, default=8, help="Maximum boundary depth to evaluate.")
     parser.add_argument("--target-depth", type=int, default=None, help="Depth of the query target. Defaults to --max-depth.")
     parser.add_argument("--min-path-states", type=float, default=1.0)
@@ -841,6 +1075,13 @@ def parse_args(argv=None):
     parser.add_argument("--calibration-summary", action="append", type=Path, default=[], help="Payload recurrence layer summary JSON used to derive timing costs. Can be repeated.")
     parser.add_argument("--validation-jsonl", action="append", type=Path, default=[], help="Boundary-cache validation JSONL used to derive per-depth measured saved-per-hit. Can be repeated.")
     parser.add_argument("--validation-jsonl-glob", action="append", default=[], help="Glob pattern for boundary-cache validation JSONL files. Can be repeated.")
+    parser.add_argument("--path-value-sweep-jsonl", action="append", type=Path, default=[], help="Path-value kernel sweep JSONL used to value-weight expected boundary hits. Can be repeated.")
+    parser.add_argument("--path-value-sweep-jsonl-glob", action="append", default=[], help="Glob pattern for path-value kernel sweep JSONL files. Can be repeated.")
+    parser.add_argument("--path-value-mode", choices=["sample", "root-sample"], default="root-sample", help="Path-value sweep mode to aggregate.")
+    parser.add_argument("--path-value-budget", type=int, help="Path-length budget to read from path-value sweep rows. Defaults to the largest matching budget.")
+    parser.add_argument("--path-value-variant", action="append", default=[], help="Path-value variant to include. Can be repeated; defaults to every variant in the sweep, or unweighted without a sweep.")
+    parser.add_argument("--path-value-hit-scale-field", choices=["mean_estimated_boundary_hit_fraction", "mean_estimated_root_boundary_hit_fraction", "mean_estimated_root_value_boundary_hit_fraction"], default="mean_estimated_root_value_boundary_hit_fraction", help="Measurement field used to scale planning hits.")
+    parser.add_argument("--path-value-default-hit-scale", type=float, default=1.0, help="Planning-hit scale used when no path-value measurement matches a boundary depth.")
     parser.add_argument("--branching-profile-jsonl", action="append", type=Path, default=[], help="Root-conditioned branching profile JSONL used to seed default and depth-specific branching priors. Can be repeated.")
     parser.add_argument("--branching-profile-degree-scope", choices=["root_conditioned_parent_degree", "full_parent_degree", "outside_root_parent_degree"], default="root_conditioned_parent_degree", help="Degree scope to read from --branching-profile-jsonl.")
     return parser.parse_args(argv)
@@ -849,10 +1090,17 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     args.validation_jsonl.extend(expand_globs(args.validation_jsonl_glob))
+    args.path_value_sweep_jsonl.extend(expand_globs(args.path_value_sweep_jsonl_glob))
     branching_profile = apply_branching_profile(args)
     calibration = apply_calibration(args)
     validation_measurements = validation_measurements_from_jsonl(args.validation_jsonl)
-    records = build_records(args, calibration, validation_measurements, branching_profile)
+    path_value_measurements = path_value_sweep_measurements_from_jsonl(
+        args.path_value_sweep_jsonl,
+        args.path_value_mode,
+        args.path_value_budget,
+        args.path_value_variant,
+    )
+    records = build_records(args, calibration, validation_measurements, branching_profile, path_value_measurements)
     summary = summarize(records)
     summary_json, summary_md = write_outputs(records, summary, args.output_dir, args.graph_name)
     print(summary, end="")

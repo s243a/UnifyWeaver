@@ -13,6 +13,7 @@ from scripts.distribution_precompute_depth_estimator import (
     cumulative_branching,
     parse_args,
     parse_depth_float_map,
+    path_value_sweep_measurements_from_records,
     validation_measurements_from_records,
 )
 
@@ -369,6 +370,106 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         self.assertGreater(calibration["uncached_cost_per_state"], 0.0)
         self.assertGreater(calibration["cached_eval_cost_per_point"], 0.0)
         self.assertGreater(calibration["decode_cost_per_byte"], 0.0)
+
+    def test_path_value_sweep_measurements_group_by_variant_and_depth(self):
+        measurements = path_value_sweep_measurements_from_records([
+            {
+                "record_type": "boundary_coverage_selection",
+                "kernel_variant": "bp_decay_auto",
+                "graph": "fixture",
+                "mode": "all",
+                "parent_filter": "all",
+                "selection_source": "root-cone",
+                "boundary_counts": {"1": 4},
+                "target_counts": {"3": 2},
+                "path_value_kernel": "bp-decay",
+                "path_value_branching_factor": 2.0,
+                "path_value_branching_factor_source": "test",
+                "path_value_power": None,
+            },
+            {
+                "record_type": "boundary_coverage_target",
+                "kernel_variant": "bp_decay_auto",
+                "graph": "fixture",
+                "mode": "root-sample",
+                "path_length_budget": 6,
+                "estimated_boundary_hit_fraction": 0.5,
+                "estimated_root_boundary_hit_fraction": 0.25,
+                "estimated_root_value_boundary_hit_fraction": 0.125,
+                "estimated_root_paths": 8.0,
+                "estimated_root_value_sum": 2.0,
+            },
+            {
+                "record_type": "boundary_coverage_target",
+                "kernel_variant": "bp_decay_auto",
+                "graph": "fixture",
+                "mode": "root-sample",
+                "path_length_budget": 6,
+                "estimated_boundary_hit_fraction": 0.25,
+                "estimated_root_boundary_hit_fraction": 0.5,
+                "estimated_root_value_boundary_hit_fraction": 0.25,
+                "estimated_root_paths": 4.0,
+                "estimated_root_value_sum": 1.0,
+            },
+        ])
+
+        measurement = measurements[("bp_decay_auto", 1)]
+        self.assertEqual(measurement["boundary_depth"], 1)
+        self.assertEqual(measurement["target_depth"], 3)
+        self.assertEqual(measurement["rows"], 2)
+        self.assertEqual(measurement["path_value_kernel"], "bp-decay")
+        self.assertAlmostEqual(measurement["mean_estimated_boundary_hit_fraction"], 0.375)
+        self.assertAlmostEqual(measurement["mean_estimated_root_boundary_hit_fraction"], 0.375)
+        self.assertAlmostEqual(measurement["mean_estimated_root_value_boundary_hit_fraction"], 0.1875)
+        self.assertAlmostEqual(measurement["mean_estimated_root_paths"], 6.0)
+        self.assertAlmostEqual(measurement["mean_estimated_root_value_sum"], 1.5)
+
+    def test_value_weighted_score_scales_planning_hits(self):
+        args = parse_args([
+            "--expected-queries", "100",
+            "--branching-factor", "2",
+            "--max-depth", "1",
+            "--target-depth", "3",
+            "--recommendation-score", "value-weighted",
+            "--uncached-cost-per-state", "1",
+            "--cached-eval-cost-per-point", "0",
+            "--storage-cost-per-byte", "0",
+            "--decode-cost-per-byte", "0",
+            "--sample-fit-cost-per-point", "0",
+            "--parametric-fit-cost", "0",
+        ])
+        path_value_measurements = {
+            ("bp_decay_auto", 1): {
+                "mode": "root-sample",
+                "budget": 6,
+                "boundary_depth": 1,
+                "target_depth": 3,
+                "rows": 2,
+                "path_value_kernel": "bp-decay",
+                "path_value_branching_factor": 2.0,
+                "path_value_power": None,
+                "mean_estimated_boundary_hit_fraction": 0.5,
+                "mean_estimated_root_boundary_hit_fraction": 0.25,
+                "mean_estimated_root_value_boundary_hit_fraction": 0.1,
+                "mean_estimated_root_paths": 8.0,
+                "mean_estimated_root_value_sum": 2.0,
+            }
+        }
+
+        row = next(
+            row for row in build_records(args, path_value_measurements=path_value_measurements)
+            if row["record_type"] == "distribution_precompute_depth_estimate"
+            and row["kernel_variant"] == "bp_decay_auto"
+            and row["boundary_depth"] == 1
+            and row["representation"] == "exact_sparse_histogram"
+        )
+
+        self.assertAlmostEqual(row["expected_hits"], 50.0)
+        self.assertAlmostEqual(row["path_value_hit_scale"], 0.1)
+        self.assertAlmostEqual(row["planning_hits"], 5.0)
+        self.assertGreater(row["expected_net_value"], row["value_weighted_net_value"])
+        self.assertEqual(row["recommendation_net_value"], row["value_weighted_net_value"])
+        self.assertEqual(row["path_value_hit_scale_source"], "mean_estimated_root_value_boundary_hit_fraction")
 
 
 if __name__ == "__main__":
