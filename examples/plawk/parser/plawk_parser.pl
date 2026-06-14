@@ -23,6 +23,7 @@
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
+%      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -226,6 +227,9 @@ action(Action) -->
     add_assign_action(Action),
     !.
 action(Action) -->
+    assignment_action(Action),
+    !.
+action(Action) -->
     increment_action(Action),
     !.
 
@@ -255,6 +259,16 @@ add_assign_action(add(var(Name), Delta)) -->
     "+=",
     ws,
     scalar_delta_expr(Delta).
+
+assignment_action(set(var(Name), Value)) -->
+    identifier(Name),
+    ws,
+    "=",
+    ws,
+    scalar_value_expr(Value).
+
+scalar_value_expr(Value) -->
+    scalar_delta_expr(Value).
 
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),

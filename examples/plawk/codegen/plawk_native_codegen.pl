@@ -34,6 +34,7 @@
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
+%      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -504,13 +505,13 @@ plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Ac
     plawk_mixed_planned_rules(Rest, assoc_plan(Tables, Actions0), NextIndex).
 
 plawk_mixed_rule_actions(Actions, ScalarActions, AssocSpecs) :-
-    maplist(plawk_mixed_increment_action, Actions, TypedActions),
+    maplist(plawk_mixed_update_action, Actions, TypedActions),
     findall(Action, member(scalar(Action), TypedActions), ScalarActions),
     findall(Spec, member(assoc(Spec), TypedActions), AssocSpecs).
 
-plawk_mixed_increment_action(Action, scalar(Action)) :-
-    plawk_scalar_action_delta(Action, _Name, _Delta).
-plawk_mixed_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), assoc(ArrayName-KeyIndex)) :-
+plawk_mixed_update_action(Action, scalar(Action)) :-
+    plawk_scalar_action_update(Action, _Name, _Operation).
+plawk_mixed_update_action(inc_assoc(var(ArrayName), field(KeyIndex)), assoc(ArrayName-KeyIndex)) :-
     KeyIndex > 0.
 
 plawk_mixed_rule_chain_ir(mixed_plan(ScalarPlan, AssocPlan, Rules), FieldSeparator, GlobalIR, ChainIR, RuleCount) :-
@@ -1218,62 +1219,78 @@ plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, RuleIndex, IR) 
 plawk_scalar_match_update_lines([], _Actions, _FieldSeparator, _RuleIndex, _) -->
     [].
 plawk_scalar_match_update_lines([scalar_counter(Name) | Rest], Actions, FieldSeparator, RuleIndex, SlotIndex) -->
-    { plawk_scalar_action_deltas(Name, Actions, Deltas),
-      plawk_scalar_const_delta_sum(Deltas, ConstDelta),
+    { plawk_scalar_action_operations(Name, Actions, Operations),
       plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, InputValue),
-      format(atom(BaseValue), '%rule_~w_slot_~w_const', [RuleIndex, SlotIndex]),
-      format(atom(ConstLine),
-          '  ~w = add i64 ~w, ~w',
-          [BaseValue, InputValue, ConstDelta]),
-      phrase(plawk_scalar_dynamic_delta_lines(Deltas, FieldSeparator, RuleIndex,
-          SlotIndex, 0, BaseValue, OutputValue), DynamicLines),
+      phrase(plawk_scalar_update_operation_lines(Operations, FieldSeparator, RuleIndex,
+          SlotIndex, 0, InputValue, OutputValue), OperationLines),
       format(atom(Line),
           '  %rule_~w_slot_~w = add i64 ~w, 0',
           [RuleIndex, SlotIndex, OutputValue]),
       NextIndex is SlotIndex + 1
     },
-    [ConstLine],
-    DynamicLines,
+    OperationLines,
     [Line],
     plawk_scalar_match_update_lines(Rest, Actions, FieldSeparator, RuleIndex, NextIndex).
 
 plawk_scalar_update_action(Action) :-
-    plawk_scalar_action_delta(Action, _Name, _Delta).
+    plawk_scalar_action_update(Action, _Name, _Operation).
 
 plawk_scalar_update_action_name(Action, Name) :-
-    plawk_scalar_action_delta(Action, Name, _Delta).
+    plawk_scalar_action_update(Action, Name, _Operation).
 
-plawk_scalar_action_delta(inc(var(Name)), Name, const(1)).
-plawk_scalar_action_delta(add(var(Name), int(Value)), Name, const(Value)) :-
+plawk_scalar_action_update(inc(var(Name)), Name, add(const(1))).
+plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) :-
     integer(Value),
     Value >= 0.
-plawk_scalar_action_delta(add(var(Name), length(field(FieldIndex))), Name, length(FieldIndex)) :-
+plawk_scalar_action_update(add(var(Name), length(field(FieldIndex))), Name, add(length(FieldIndex))) :-
+    FieldIndex >= 0.
+plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
+    integer(Value),
+    Value >= 0.
+plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
     FieldIndex >= 0.
 
-plawk_scalar_action_deltas(Name, Actions, Deltas) :-
-    findall(Delta,
+plawk_scalar_action_operations(Name, Actions, Operations) :-
+    findall(Operation,
         ( member(Action, Actions),
-          plawk_scalar_action_delta(Action, Name, Delta)
+          plawk_scalar_action_update(Action, Name, Operation)
         ),
-        Deltas).
+        Operations).
 
-plawk_scalar_const_delta_sum(Deltas, Sum) :-
-    findall(Value, member(const(Value), Deltas), Values),
-    sum_list(Values, Sum).
-
-plawk_scalar_dynamic_delta_lines([], _FieldSeparator, _RuleIndex, _SlotIndex, _DeltaIndex, Value, Value) -->
+plawk_scalar_update_operation_lines([], _FieldSeparator, _RuleIndex, _SlotIndex, _OpIndex, Value, Value) -->
     [].
-plawk_scalar_dynamic_delta_lines([const(_Value) | Rest], FieldSeparator, RuleIndex, SlotIndex, DeltaIndex, InputValue, OutputValue) -->
-    plawk_scalar_dynamic_delta_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, DeltaIndex, InputValue, OutputValue).
-plawk_scalar_dynamic_delta_lines([length(FieldIndex) | Rest], FieldSeparator, RuleIndex, SlotIndex, DeltaIndex, InputValue, OutputValue) -->
-    { format(atom(LengthBase), 'plawk_rule_~w_slot_~w_delta_~w_len', [RuleIndex, SlotIndex, DeltaIndex]),
+plawk_scalar_update_operation_lines([add(const(Value)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, InputValue, OutputValue) -->
+    { format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
+      format(atom(AddLine), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, Value]),
+      NextOpIndex is OpIndex + 1
+    },
+    [AddLine],
+    plawk_scalar_update_operation_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
+plawk_scalar_update_operation_lines([add(length(FieldIndex)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, InputValue, OutputValue) -->
+    { format(atom(LengthBase), 'plawk_rule_~w_slot_~w_op_~w_len', [RuleIndex, SlotIndex, OpIndex]),
       llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
-      format(atom(NextValue), '%rule_~w_slot_~w_delta_~w', [RuleIndex, SlotIndex, DeltaIndex]),
+      format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
       format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
-      NextDeltaIndex is DeltaIndex + 1
+      NextOpIndex is OpIndex + 1
     },
     [LengthCall, AddLine],
-    plawk_scalar_dynamic_delta_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, NextDeltaIndex, NextValue, OutputValue).
+    plawk_scalar_update_operation_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
+plawk_scalar_update_operation_lines([set(const(Value)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, _InputValue, OutputValue) -->
+    { format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
+      format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, Value]),
+      NextOpIndex is OpIndex + 1
+    },
+    [SetLine],
+    plawk_scalar_update_operation_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
+plawk_scalar_update_operation_lines([set(length(FieldIndex)) | Rest], FieldSeparator, RuleIndex, SlotIndex, OpIndex, _InputValue, OutputValue) -->
+    { format(atom(LengthBase), 'plawk_rule_~w_slot_~w_op_~w_len', [RuleIndex, SlotIndex, OpIndex]),
+      llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, LengthBase, LengthCall),
+      format(atom(NextValue), '%rule_~w_slot_~w_op_~w', [RuleIndex, SlotIndex, OpIndex]),
+      format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
+      NextOpIndex is OpIndex + 1
+    },
+    [LengthCall, SetLine],
+    plawk_scalar_update_operation_lines(Rest, FieldSeparator, RuleIndex, SlotIndex, NextOpIndex, NextValue, OutputValue).
 
 plawk_scalar_next_phi_ir(StatePlan, RuleCount, Controls, IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
