@@ -73,7 +73,11 @@ class CachedSearchStats:
     cache_hit_depth_sum: int = 0
     cache_hit_remaining_budget_sum: int = 0
     cache_hit_suffix_path_count_sum: int = 0
+    first_cache_hit_depth: int | None = None
+    first_cache_hit_remaining_budget: int | None = None
+    max_cache_hit_remaining_budget: int = 0
     cache_hits_by_depth: Counter = field(default_factory=Counter)
+    cache_hits_by_remaining_budget: Counter = field(default_factory=Counter)
     cache_probe_ns: int = 0
     cache_splice_ns: int = 0
     cache_path_cap_check_ns: int = 0
@@ -427,10 +431,17 @@ def cached_parent_histogram(
             if collect_attribution:
                 stats.cache_splice_ns += time.perf_counter_ns() - started
             stats.path_count += added_paths
-            stats.cache_hit_depth_sum += int(depth)
-            stats.cache_hit_remaining_budget_sum += int(remaining)
+            hit_depth = int(depth)
+            hit_remaining = int(remaining)
+            if stats.first_cache_hit_depth is None:
+                stats.first_cache_hit_depth = hit_depth
+                stats.first_cache_hit_remaining_budget = hit_remaining
+            stats.max_cache_hit_remaining_budget = max(stats.max_cache_hit_remaining_budget, hit_remaining)
+            stats.cache_hit_depth_sum += hit_depth
+            stats.cache_hit_remaining_budget_sum += hit_remaining
             stats.cache_hit_suffix_path_count_sum += int(added_paths)
-            stats.cache_hits_by_depth[int(depth)] += 1
+            stats.cache_hits_by_depth[hit_depth] += 1
+            stats.cache_hits_by_remaining_budget[hit_remaining] += 1
             stats.cache_bins_spliced += added_bins
             if cache_kind == "histogram":
                 stats.histogram_bins_spliced += added_bins
@@ -933,7 +944,11 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "mean_cache_hit_depth": mean_cache_hit_depth,
         "mean_cache_hit_remaining_budget": mean_cache_hit_remaining_budget,
         "mean_cache_hit_suffix_path_count": mean_cache_hit_suffix_path_count,
+        "first_cache_hit_depth": cached_stats.first_cache_hit_depth,
+        "first_cache_hit_remaining_budget": cached_stats.first_cache_hit_remaining_budget,
+        "max_cache_hit_remaining_budget": cached_stats.max_cache_hit_remaining_budget,
         "cache_hits_by_depth": dict(sorted(cached_stats.cache_hits_by_depth.items())),
+        "cache_hits_by_remaining_budget": dict(sorted(cached_stats.cache_hits_by_remaining_budget.items())),
         "histogram_cache_hits": cached_stats.histogram_cache_hits,
         "parametric_cache_hits": cached_stats.parametric_cache_hits,
         "cache_bins_spliced": cached_stats.cache_bins_spliced,
@@ -1404,8 +1419,8 @@ def summarize(records):
             "",
             "## Cache Hit Geometry",
             "",
-            "| budget | rows | mean_cache_hits | mean_hit_depth | mean_remaining_budget | mean_suffix_path_count | hit_depth_histogram |",
-            "|--------|-----:|----------------:|---------------:|----------------------:|-----------------------:|---------------------|",
+            "| budget | rows | mean_cache_hits | mean_hit_depth | mean_remaining_budget | mean_suffix_path_count | mean_first_remaining_budget | mean_max_remaining_budget | hits_rem_ge_2 | hits_rem_ge_4 | hits_rem_ge_6 | hit_depth_histogram | remaining_budget_histogram |",
+            "|--------|-----:|----------------:|---------------:|----------------------:|-----------------------:|----------------------------:|--------------------------:|--------------:|--------------:|--------------:|---------------------|----------------------------|",
         ])
         for budget in sorted(by_budget):
             rows = by_budget[budget]
@@ -1414,18 +1429,37 @@ def summarize(records):
             remaining_sum = sum(int(row.get("cache_hit_remaining_budget_sum", 0)) for row in rows)
             suffix_path_sum = sum(int(row.get("cache_hit_suffix_path_count_sum", 0)) for row in rows)
             hit_depths = Counter()
+            hit_remaining = Counter()
+            first_remaining = [
+                int(row["first_cache_hit_remaining_budget"])
+                for row in rows
+                if row.get("first_cache_hit_remaining_budget") is not None
+            ]
+            max_remaining = [
+                int(row.get("max_cache_hit_remaining_budget", 0))
+                for row in rows
+                if int(row.get("cache_hits", 0)) > 0
+            ]
             for row in rows:
                 for depth, count in row.get("cache_hits_by_depth", {}).items():
                     hit_depths[int(depth)] += int(count)
+                for remaining, count in row.get("cache_hits_by_remaining_budget", {}).items():
+                    hit_remaining[int(remaining)] += int(count)
             lines.append(
-                "| {budget} | {rows} | {mean_hits:.3f} | {mean_depth} | {mean_remaining} | {mean_suffix_paths} | `{hist}` |".format(
+                "| {budget} | {rows} | {mean_hits:.3f} | {mean_depth} | {mean_remaining} | {mean_suffix_paths} | {mean_first_remaining} | {mean_max_remaining} | {hits_ge_2} | {hits_ge_4} | {hits_ge_6} | `{depth_hist}` | `{remaining_hist}` |".format(
                     budget=budget,
                     rows=len(rows),
                     mean_hits=statistics.mean(int(row.get("cache_hits", 0)) for row in rows) if rows else 0.0,
                     mean_depth="n/a" if total_hits <= 0 else "{:.3f}".format(depth_sum / total_hits),
                     mean_remaining="n/a" if total_hits <= 0 else "{:.3f}".format(remaining_sum / total_hits),
                     mean_suffix_paths="n/a" if total_hits <= 0 else "{:.3f}".format(suffix_path_sum / total_hits),
-                    hist=json.dumps(dict(sorted(hit_depths.items())), sort_keys=True),
+                    mean_first_remaining="n/a" if not first_remaining else "{:.3f}".format(statistics.mean(first_remaining)),
+                    mean_max_remaining="n/a" if not max_remaining else "{:.3f}".format(statistics.mean(max_remaining)),
+                    hits_ge_2=sum(count for remaining, count in hit_remaining.items() if remaining >= 2),
+                    hits_ge_4=sum(count for remaining, count in hit_remaining.items() if remaining >= 4),
+                    hits_ge_6=sum(count for remaining, count in hit_remaining.items() if remaining >= 6),
+                    depth_hist=json.dumps(dict(sorted(hit_depths.items())), sort_keys=True),
+                    remaining_hist=json.dumps(dict(sorted(hit_remaining.items())), sort_keys=True),
                 )
             )
 
