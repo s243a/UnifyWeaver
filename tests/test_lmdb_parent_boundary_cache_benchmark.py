@@ -90,7 +90,6 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(boundaries, ["A"])
 
-
     def test_boundary_lookup_prefers_exact_histogram_over_parametric(self):
         lookup = build_boundary_lookup({"B": {2: 1}}, {"B": {5: 10}, "C": {1: 2}})
 
@@ -133,6 +132,10 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(second_stats.cache_decode_memo_hits, 1)
         self.assertEqual(first_stats.path_count, sum(first_hist.values()))
         self.assertEqual(second_stats.path_count, sum(second_hist.values()))
+        self.assertEqual(first_stats.cache_hit_depth_sum, 1)
+        self.assertEqual(first_stats.cache_hit_remaining_budget_sum, 2)
+        self.assertEqual(first_stats.cache_hit_suffix_path_count_sum, 3)
+        self.assertEqual(first_stats.cache_hits_by_depth, {1: 1})
 
     def test_cached_parent_histogram_collects_runtime_attribution(self):
         parents = {
@@ -190,6 +193,10 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         )
 
         self.assertTrue(record["collect_attribution"])
+        self.assertEqual(record["mean_cache_hit_depth"], 1.0)
+        self.assertEqual(record["mean_cache_hit_remaining_budget"], 2.0)
+        self.assertEqual(record["mean_cache_hit_suffix_path_count"], 1.0)
+        self.assertEqual(record["cache_hits_by_depth"], {1: 1})
         self.assertIn("cache_probe_ns", record)
         self.assertIn("cache_splice_ns", record)
         self.assertIn("cached_parent_lookup_ns", record)

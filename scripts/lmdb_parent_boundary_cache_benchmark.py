@@ -20,7 +20,7 @@ import statistics
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,6 +70,10 @@ class CachedSearchStats:
     cache_decode_ns: int = 0
     cache_decode_memo_hits: int = 0
     path_count: int = 0
+    cache_hit_depth_sum: int = 0
+    cache_hit_remaining_budget_sum: int = 0
+    cache_hit_suffix_path_count_sum: int = 0
+    cache_hits_by_depth: Counter = field(default_factory=Counter)
     cache_probe_ns: int = 0
     cache_splice_ns: int = 0
     cache_path_cap_check_ns: int = 0
@@ -423,6 +427,10 @@ def cached_parent_histogram(
             if collect_attribution:
                 stats.cache_splice_ns += time.perf_counter_ns() - started
             stats.path_count += added_paths
+            stats.cache_hit_depth_sum += int(depth)
+            stats.cache_hit_remaining_budget_sum += int(remaining)
+            stats.cache_hit_suffix_path_count_sum += int(added_paths)
+            stats.cache_hits_by_depth[int(depth)] += 1
             stats.cache_bins_spliced += added_bins
             if cache_kind == "histogram":
                 stats.histogram_bins_spliced += added_bins
@@ -887,6 +895,10 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
     l1, cdf = histogram_distribution_error(full_hist, cached_hist)
     full_paths = sum(full_hist.values())
     cached_paths = sum(cached_hist.values())
+    cache_hits = int(cached_stats.cache_hits)
+    mean_cache_hit_depth = None if cache_hits <= 0 else cached_stats.cache_hit_depth_sum / cache_hits
+    mean_cache_hit_remaining_budget = None if cache_hits <= 0 else cached_stats.cache_hit_remaining_budget_sum / cache_hits
+    mean_cache_hit_suffix_path_count = None if cache_hits <= 0 else cached_stats.cache_hit_suffix_path_count_sum / cache_hits
     return {
         "record_type": "boundary_cache_comparison",
         "graph": graph_name,
@@ -915,6 +927,13 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "full_cycle_skips": full_stats.cycle_skips,
         "cached_cycle_skips": cached_stats.cycle_skips,
         "cache_hits": cached_stats.cache_hits,
+        "cache_hit_depth_sum": cached_stats.cache_hit_depth_sum,
+        "cache_hit_remaining_budget_sum": cached_stats.cache_hit_remaining_budget_sum,
+        "cache_hit_suffix_path_count_sum": cached_stats.cache_hit_suffix_path_count_sum,
+        "mean_cache_hit_depth": mean_cache_hit_depth,
+        "mean_cache_hit_remaining_budget": mean_cache_hit_remaining_budget,
+        "mean_cache_hit_suffix_path_count": mean_cache_hit_suffix_path_count,
+        "cache_hits_by_depth": dict(sorted(cached_stats.cache_hits_by_depth.items())),
         "histogram_cache_hits": cached_stats.histogram_cache_hits,
         "parametric_cache_hits": cached_stats.parametric_cache_hits,
         "cache_bins_spliced": cached_stats.cache_bins_spliced,
@@ -1380,6 +1399,36 @@ def summarize(records):
                 cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
             )
         )
+    if any(int(row.get("cache_hits", 0)) > 0 for row in comparison_rows):
+        lines.extend([
+            "",
+            "## Cache Hit Geometry",
+            "",
+            "| budget | rows | mean_cache_hits | mean_hit_depth | mean_remaining_budget | mean_suffix_path_count | hit_depth_histogram |",
+            "|--------|-----:|----------------:|---------------:|----------------------:|-----------------------:|---------------------|",
+        ])
+        for budget in sorted(by_budget):
+            rows = by_budget[budget]
+            total_hits = sum(int(row.get("cache_hits", 0)) for row in rows)
+            depth_sum = sum(int(row.get("cache_hit_depth_sum", 0)) for row in rows)
+            remaining_sum = sum(int(row.get("cache_hit_remaining_budget_sum", 0)) for row in rows)
+            suffix_path_sum = sum(int(row.get("cache_hit_suffix_path_count_sum", 0)) for row in rows)
+            hit_depths = Counter()
+            for row in rows:
+                for depth, count in row.get("cache_hits_by_depth", {}).items():
+                    hit_depths[int(depth)] += int(count)
+            lines.append(
+                "| {budget} | {rows} | {mean_hits:.3f} | {mean_depth} | {mean_remaining} | {mean_suffix_paths} | `{hist}` |".format(
+                    budget=budget,
+                    rows=len(rows),
+                    mean_hits=statistics.mean(int(row.get("cache_hits", 0)) for row in rows) if rows else 0.0,
+                    mean_depth="n/a" if total_hits <= 0 else "{:.3f}".format(depth_sum / total_hits),
+                    mean_remaining="n/a" if total_hits <= 0 else "{:.3f}".format(remaining_sum / total_hits),
+                    mean_suffix_paths="n/a" if total_hits <= 0 else "{:.3f}".format(suffix_path_sum / total_hits),
+                    hist=json.dumps(dict(sorted(hit_depths.items())), sort_keys=True),
+                )
+            )
+
     if any(row.get("collect_attribution") for row in comparison_rows):
         lines.extend([
             "",
