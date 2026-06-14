@@ -268,6 +268,14 @@ test(atom_field_i64_emitter) :-
     assertion(sub_atom(CallIR, _, _, _, '%plawk_value_value = extractvalue %WamI64Parse %plawk_value, 0')),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_value_ok = extractvalue %WamI64Parse %plawk_value, 1')).
 
+test(atom_field_i64_or_default_emitter) :-
+    llvm_emit_atom_field_i64_or_default('%line', 3, 58, 0, plawk_value,
+        '%plawk_number', CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 58)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_value = extractvalue %WamI64Parse %plawk_value, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_ok = extractvalue %WamI64Parse %plawk_value, 1')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_number = select i1 %plawk_value_ok, i64 %plawk_value_value, i64 0')).
+
 test(ascii_case_slice_print_emitter) :-
     llvm_emit_ascii_case_slice_print(lower, '%ptr', '%len', plawk_lower, LowerIR),
     llvm_emit_ascii_case_slice_print(upper, '%ptr', '%len', plawk_upper, UpperIR),

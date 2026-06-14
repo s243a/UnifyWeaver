@@ -270,7 +270,10 @@ as a strict signed decimal `i64` and compares with numeric op codes.
 The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
 plus success flag, so the same machinery also feeds scalar expressions such as
 `bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
-those scalar arithmetic contexts.
+those scalar arithmetic contexts. That coercion is emitted through the
+target-side `llvm_emit_atom_field_i64_or_default/7` helper so future native
+numeric consumers can share the parse-plus-default lowering instead of
+rebuilding it in PLAWK-specific code.
 The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.
