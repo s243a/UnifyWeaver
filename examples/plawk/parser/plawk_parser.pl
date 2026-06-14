@@ -21,6 +21,7 @@
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      { count++ } END { print "count", count }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
@@ -215,6 +216,9 @@ action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
+    next_action(Action),
+    !.
+action(Action) -->
     add_assign_action(Action),
     !.
 action(Action) -->
@@ -234,6 +238,9 @@ increment_action(inc_assoc(var(Name), KeyExpr)) -->
 increment_action(inc(var(Name))) -->
     identifier(Name),
     "++".
+
+next_action(next) -->
+    "next".
 
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),

@@ -233,6 +233,14 @@ $1 == "ERROR" { bytes += length($0); hits += 2 }
 END { print bytes, hits }
 ```
 
+A terminal `next` skips the remaining rules for the current record:
+
+```awk
+$1 == "DEBUG" { skipped++; next }
+{ total++ }
+END { print total, skipped }
+```
+
 `BEGIN` can emit literal report headers before the first input record is read:
 
 ```awk

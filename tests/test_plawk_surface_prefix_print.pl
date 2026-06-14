@@ -81,6 +81,13 @@ test(parses_multi_rule_scalar_end_print_rule) :-
          rule(field_eq(1, "WARN"), [inc(var(warnings))])],
         [end([print([var(errors), var(warnings)])])])).
 
+test(parses_terminal_next_scalar_rule) :-
+    plawk_parse_string("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "DEBUG"), [inc(var(skipped)), next]),
+         rule(always, [inc(var(total))])],
+        [end([print([var(total), var(skipped)])])])).
+
 test(parses_field_eq_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -248,6 +255,11 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
     run_surface_print_smoke("$1 == \"ERROR\" { hits++ } /^ERROR/ { hits++ } END { print hits }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4\n").
+
+test(surface_terminal_next_skips_remaining_scalar_rules) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "2 2\n").
 
 test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n",
@@ -450,6 +462,17 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_rule_0_slot_0_delta_0_len = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_slot_1_const = add i64 %slot_1, 2'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_terminal_next_uses_native_continue_phi) :-
+    plawk_parse_string("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_1_match:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %continue_loop'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_1_in_slot_0 = phi i64 [%slot_0, %rule_0_match]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64 [%rule_1_in_slot_0, %rule_1_match], [%rule_0_slot_0, %rule_0_apply], [%rule_1_slot_0, %rule_1_apply]'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
