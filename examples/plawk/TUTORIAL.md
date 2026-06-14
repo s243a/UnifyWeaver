@@ -233,6 +233,16 @@ $1 == "ERROR" { bytes += length($0); hits += 2 }
 END { print bytes, hits }
 ```
 
+They can also be assigned in the native loop. Assignment preserves source order
+with later updates:
+
+```awk
+$1 == "ERROR" { last_len = length($0); hits++ }
+END { print hits, last_len }
+```
+
+The current assignment expression subset is integer literals and `length($N)`.
+
 A terminal `next` skips the remaining rules for the current record:
 
 ```awk

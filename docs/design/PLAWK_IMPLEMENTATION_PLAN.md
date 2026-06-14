@@ -268,7 +268,11 @@ Scalar counters lower through an explicit codegen state plan that keeps
 source-level state recognition separate from LLVM slot numbering. The same
 native slots now support `+=` with integer constants and field lengths, so
 programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`
-stay in the compiled stream loop. Native rule chains also support terminal
+stay in the compiled stream loop. Plain scalar assignment to integer literals or
+field lengths uses the same native slot path and is folded in source order with
+later `++`/`+=` updates, so programs such as `$1 == "ERROR" { last_len =
+length($0); hits++ } END { print hits, last_len }` also stay native. Native rule
+chains also support terminal
 `next` by branching directly to the stream-loop continuation; scalar and mixed
 chains add the early-exit rule's scalar values to the loop phi inputs, while
 assoc-only chains update tables before the continuation branch. Terminal
