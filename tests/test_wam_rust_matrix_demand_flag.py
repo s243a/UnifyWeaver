@@ -70,6 +70,16 @@ class TestMatrixDemandFlag(unittest.TestCase):
         self.assertIn("CachedLookup", src)
         self.assertIn("set_demand_set", src)
 
+    def test_cached_surfaces_cache_attribution(self):
+        # The cached/LMDB bench main reads back the process-global attribution
+        # sink and prints cache_attr_* lines (opt-in via
+        # UW_WAM_CACHE_ATTRIBUTION). Rust-side analog of PR #3120; a drop here
+        # would silently stop the cached graph-search bench from reporting
+        # cache hit/miss attribution.
+        src = self._generate("cached")
+        self.assertIn("wam_lib::state::cache_attribution()", src)
+        self.assertIn("report_lines()", src)
+
     def test_auto_branch_and_is_scoped(self):
         # WAM_DEMAND=auto consults the DB scoped marker via is_scoped().
         src = self._generate("lazy")

@@ -1655,5 +1655,14 @@ fn main() {
     eprintln!("tuple_count={}", seed_weight_sums.len());
     eprintln!("total_steps={}", total_steps);
     eprintln!("total_backtracks={}", total_backtracks);
+
+    // Cached-side runtime attribution (PR #3120 analog), opt-in via
+    // UW_WAM_CACHE_ATTRIBUTION. Reads back the same Arc that CachedLookup
+    // recorded into; in lazy (uncached) mode this reports zeros.
+    if let Some(attr) = wam_lib::state::cache_attribution() {
+        for line in attr.report_lines() {
+            eprintln!("{}", line);
+        }
+    }
 }
 ').
