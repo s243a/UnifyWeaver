@@ -53,6 +53,7 @@
     llvm_emit_atom_field_subslice/7,     % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
     llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
     llvm_emit_atom_field_i64_cmp_guard/7,% +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR
+    llvm_emit_atom_field_i64/5,          % +ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR
     llvm_emit_c_string_global/5,         % +GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen
     llvm_emit_printf_i64/5,              % +FmtGlobal, +FmtVar, +PrintVar, +ValueIR, -Parts
     llvm_emit_printf_slice/6,            % +FmtGlobal, +FmtVar, +PrintVar, +LenIR, +PtrIR, -Parts
@@ -5156,8 +5157,10 @@ afi.zero:
   ret i64 0
 }
 
-define i1 @wam_slice_i64_cmp_value(i8* %source_ptr, i64 %source_len, i64 %expected, i32 %op) {
+define %WamI64Parse @wam_slice_i64_parse_value(i8* %source_ptr, i64 %source_len) {
 entry:
+  %si64.no0 = insertvalue %WamI64Parse undef, i64 0, 0
+  %si64.no_value = insertvalue %WamI64Parse %si64.no0, i1 false, 1
   %si64.null = icmp eq i8* %source_ptr, null
   br i1 %si64.null, label %si64.no, label %si64.check_len
 
@@ -5179,7 +5182,7 @@ si64.loop:
   %si64.pos = phi i64 [ %si64.start, %si64.first ], [ %si64.next_pos, %si64.digit_step ]
   %si64.acc = phi i64 [ 0, %si64.first ], [ %si64.next_acc, %si64.digit_step ]
   %si64.done = icmp uge i64 %si64.pos, %source_len
-  br i1 %si64.done, label %si64.compare, label %si64.read_digit
+  br i1 %si64.done, label %si64.yes, label %si64.read_digit
 
 si64.read_digit:
   %si64.ch_ptr = getelementptr i8, i8* %source_ptr, i64 %si64.pos
@@ -5197,40 +5200,26 @@ si64.digit_step:
   %si64.next_pos = add i64 %si64.pos, 1
   br label %si64.loop
 
-si64.compare:
+si64.yes:
   %si64.value = mul i64 %si64.acc, %si64.sign
-  switch i32 %op, label %si64.no [
-    i32 0, label %si64.cmp_eq
-    i32 1, label %si64.cmp_ne
-    i32 2, label %si64.cmp_lt
-    i32 3, label %si64.cmp_le
-    i32 4, label %si64.cmp_gt
-    i32 5, label %si64.cmp_ge
-  ]
+  %si64.yes0 = insertvalue %WamI64Parse undef, i64 %si64.value, 0
+  %si64.yes_value = insertvalue %WamI64Parse %si64.yes0, i1 true, 1
+  ret %WamI64Parse %si64.yes_value
 
-si64.cmp_eq:
-  %si64.eq = icmp eq i64 %si64.value, %expected
-  br i1 %si64.eq, label %si64.yes, label %si64.no
+si64.no:
+  ret %WamI64Parse %si64.no_value
+}
 
-si64.cmp_ne:
-  %si64.ne = icmp ne i64 %si64.value, %expected
-  br i1 %si64.ne, label %si64.yes, label %si64.no
+define i1 @wam_slice_i64_cmp_value(i8* %source_ptr, i64 %source_len, i64 %expected, i32 %op) {
+entry:
+  %si64.cmp.parse = call %WamI64Parse @wam_slice_i64_parse_value(i8* %source_ptr, i64 %source_len)
+  %si64.cmp.value = extractvalue %WamI64Parse %si64.cmp.parse, 0
+  %si64.cmp.ok = extractvalue %WamI64Parse %si64.cmp.parse, 1
+  br i1 %si64.cmp.ok, label %si64.compare, label %si64.no
 
-si64.cmp_lt:
-  %si64.lt = icmp slt i64 %si64.value, %expected
-  br i1 %si64.lt, label %si64.yes, label %si64.no
-
-si64.cmp_le:
-  %si64.le = icmp sle i64 %si64.value, %expected
-  br i1 %si64.le, label %si64.yes, label %si64.no
-
-si64.cmp_gt:
-  %si64.gt = icmp sgt i64 %si64.value, %expected
-  br i1 %si64.gt, label %si64.yes, label %si64.no
-
-si64.cmp_ge:
-  %si64.ge = icmp sge i64 %si64.value, %expected
-  br i1 %si64.ge, label %si64.yes, label %si64.no
+si64.compare:
+  %si64.cmp.result = call i1 @wam_i64_cmp_value(i64 %si64.cmp.value, i64 %expected, i32 %op)
+  br i1 %si64.cmp.result, label %si64.yes, label %si64.no
 
 si64.yes:
   ret i1 true
@@ -5239,41 +5228,103 @@ si64.no:
   ret i1 false
 }
 
+define i1 @wam_i64_cmp_value(i64 %value, i64 %expected, i32 %op) {
+entry:
+  switch i32 %op, label %cmp.no [
+    i32 0, label %cmp.eq
+    i32 1, label %cmp.ne
+    i32 2, label %cmp.lt
+    i32 3, label %cmp.le
+    i32 4, label %cmp.gt
+    i32 5, label %cmp.ge
+  ]
+
+cmp.eq:
+  %cmp.eq_result = icmp eq i64 %value, %expected
+  br i1 %cmp.eq_result, label %cmp.yes, label %cmp.no
+
+cmp.ne:
+  %cmp.ne_result = icmp ne i64 %value, %expected
+  br i1 %cmp.ne_result, label %cmp.yes, label %cmp.no
+
+cmp.lt:
+  %cmp.lt_result = icmp slt i64 %value, %expected
+  br i1 %cmp.lt_result, label %cmp.yes, label %cmp.no
+
+cmp.le:
+  %cmp.le_result = icmp sle i64 %value, %expected
+  br i1 %cmp.le_result, label %cmp.yes, label %cmp.no
+
+cmp.gt:
+  %cmp.gt_result = icmp sgt i64 %value, %expected
+  br i1 %cmp.gt_result, label %cmp.yes, label %cmp.no
+
+cmp.ge:
+  %cmp.ge_result = icmp sge i64 %value, %expected
+  br i1 %cmp.ge_result, label %cmp.yes, label %cmp.no
+
+cmp.yes:
+  ret i1 true
+
+cmp.no:
+  ret i1 false
+}
+
+define %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %afv.no0 = insertvalue %WamI64Parse undef, i64 0, 0
+  %afv.no_value = insertvalue %WamI64Parse %afv.no0, i1 false, 1
+  %afv.whole = icmp eq i64 %field_index, 0
+  br i1 %afv.whole, label %afv.whole_record, label %afv.field
+
+afv.whole_record:
+  %afv.t = call i32 @value_tag(%Value %atom_value)
+  %afv.is_atom = icmp eq i32 %afv.t, 0
+  br i1 %afv.is_atom, label %afv.lookup, label %afv.no
+
+afv.lookup:
+  %afv.aid = call i64 @value_payload(%Value %atom_value)
+  %afv.str = call i8* @wam_atom_to_string(i64 %afv.aid)
+  %afv.null = icmp eq i8* %afv.str, null
+  br i1 %afv.null, label %afv.no, label %afv.measure
+
+afv.measure:
+  %afv.len = call i64 @strlen(i8* %afv.str)
+  %afv.whole_value = call %WamI64Parse @wam_slice_i64_parse_value(i8* %afv.str, i64 %afv.len)
+  ret %WamI64Parse %afv.whole_value
+
+afv.field:
+  %afv.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %afv.index_ok, label %afv.field_slice, label %afv.no
+
+afv.field_slice:
+  %afv.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afv.source_ptr = extractvalue %WamSlice %afv.source, 0
+  %afv.source_len = extractvalue %WamSlice %afv.source, 1
+  %afv.source_has_ptr = icmp ne i8* %afv.source_ptr, null
+  br i1 %afv.source_has_ptr, label %afv.parse, label %afv.no
+
+afv.parse:
+  %afv.field_value = call %WamI64Parse @wam_slice_i64_parse_value(i8* %afv.source_ptr, i64 %afv.source_len)
+  ret %WamI64Parse %afv.field_value
+
+afv.no:
+  ret %WamI64Parse %afv.no_value
+}
+
 define i1 @wam_atom_field_i64_cmp_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
 entry:
-  %afc.whole = icmp eq i64 %field_index, 0
-  br i1 %afc.whole, label %afc.whole_record, label %afc.field
-
-afc.whole_record:
-  %afc.t = call i32 @value_tag(%Value %atom_value)
-  %afc.is_atom = icmp eq i32 %afc.t, 0
-  br i1 %afc.is_atom, label %afc.lookup, label %afc.no
-
-afc.lookup:
-  %afc.aid = call i64 @value_payload(%Value %atom_value)
-  %afc.str = call i8* @wam_atom_to_string(i64 %afc.aid)
-  %afc.null = icmp eq i8* %afc.str, null
-  br i1 %afc.null, label %afc.no, label %afc.measure
-
-afc.measure:
-  %afc.len = call i64 @strlen(i8* %afc.str)
-  %afc.whole_ok = call i1 @wam_slice_i64_cmp_value(i8* %afc.str, i64 %afc.len, i64 %expected, i32 %op)
-  ret i1 %afc.whole_ok
-
-afc.field:
-  %afc.index_ok = icmp sgt i64 %field_index, 0
-  br i1 %afc.index_ok, label %afc.field_slice, label %afc.no
-
-afc.field_slice:
-  %afc.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
-  %afc.source_ptr = extractvalue %WamSlice %afc.source, 0
-  %afc.source_len = extractvalue %WamSlice %afc.source, 1
-  %afc.source_has_ptr = icmp ne i8* %afc.source_ptr, null
-  br i1 %afc.source_has_ptr, label %afc.compare, label %afc.no
+  %afc.parse = call %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afc.value = extractvalue %WamI64Parse %afc.parse, 0
+  %afc.ok = extractvalue %WamI64Parse %afc.parse, 1
+  br i1 %afc.ok, label %afc.compare, label %afc.no
 
 afc.compare:
-  %afc.field_ok = call i1 @wam_slice_i64_cmp_value(i8* %afc.source_ptr, i64 %afc.source_len, i64 %expected, i32 %op)
-  ret i1 %afc.field_ok
+  %afc.result = call i1 @wam_i64_cmp_value(i64 %afc.value, i64 %expected, i32 %op)
+  br i1 %afc.result, label %afc.yes, label %afc.no
+
+afc.yes:
+  ret i1 true
 
 afc.no:
   ret i1 false
@@ -16832,6 +16883,19 @@ llvm_emit_atom_field_i64_cmp_guard(ValueIR, FieldIndex, OpCode, Expected, SepCod
     format(atom(CallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value ~w, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [ResultIR, ValueIR, FieldIndex, SepCode, Expected, OpCode]).
+
+%% llvm_emit_atom_field_i64(+ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR)
+%
+%  Emit a native signed-decimal i64 parse over an atom-backed text record.
+%  Field 0 parses the whole record; positive fields parse the projected field
+%  slice. CallIR defines %ParseBase, %ParseBase_value, and %ParseBase_ok.
+llvm_emit_atom_field_i64(ValueIR, FieldIndex, SepCode, ParseBase, CallIR) :-
+    integer(FieldIndex),
+    format(atom(CallIR),
+        '  %~w = call %WamI64Parse @wam_atom_field_i64_value(%Value ~w, i64 ~w, i8 ~w)~n  %~w_value = extractvalue %WamI64Parse %~w, 0~n  %~w_ok = extractvalue %WamI64Parse %~w, 1',
+        [ParseBase, ValueIR, FieldIndex, SepCode,
+         ParseBase, ParseBase,
+         ParseBase, ParseBase]).
 
 %% llvm_emit_c_string_global(+GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen)
 %

@@ -10,6 +10,7 @@
 
 ; === Byte slice ===
 %WamSlice = type { i8*, i64 }             ; pointer, length
+%WamI64Parse = type { i64, i1 }           ; parsed value, success flag
 
 ; === Compound and List (linear memory offsets) ===
 ; On wasm32, pointers are i32 offsets into linear memory

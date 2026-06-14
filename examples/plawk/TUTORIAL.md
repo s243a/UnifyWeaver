@@ -233,6 +233,14 @@ $1 == "ERROR" { bytes += length($0); hits += 2 }
 END { print bytes, hits }
 ```
 
+They can also accumulate numeric fields. The field parser is strict, but scalar
+arithmetic uses zero when a field is missing or non-numeric:
+
+```awk
+$1 == "ERROR" { bytes += $3; last = $3 }
+END { print bytes, last }
+```
+
 They can also be assigned in the native loop. Assignment preserves source order
 with later updates:
 
@@ -241,7 +249,8 @@ $1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }
 ```
 
-The current assignment expression subset is integer literals and `length($N)`.
+The current assignment expression subset is integer literals, `length($N)`, and
+numeric `$N`.
 
 Numeric field guards are also native:
 

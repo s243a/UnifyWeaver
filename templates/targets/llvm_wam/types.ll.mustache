@@ -8,6 +8,7 @@
 
 ; === Byte slice ===
 %WamSlice = type { i8*, i64 }             ; pointer, length
+%WamI64Parse = type { i64, i1 }           ; parsed value, success flag
 
 ; === Compound and List (heap-allocated) ===
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args

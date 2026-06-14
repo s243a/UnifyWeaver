@@ -181,6 +181,12 @@ test(parses_field_eq_scalar_add_assign_end_print_rule) :-
         [add(var(bytes), length(field(0))), add(var(hits), int(2))])],
         [end([print([var(bytes), var(hits)])])])).
 
+test(parses_field_numeric_scalar_add_assign_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [add(var(bytes), field(3)), set(var(last), field(3))])],
+        [end([print([var(bytes), var(last)])])])).
+
 test(parses_always_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("{ total += 3 } END { print total }\n", Program),
     assertion(Program == program([], [rule(always, [add(var(total), int(3))])],
@@ -478,6 +484,16 @@ test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down\n",
         "33 4\n").
 
+test(surface_field_numeric_scalar_add_assign_accumulates_values) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n",
+        "INFO boot 7\nERROR disk 10\nWARN cpu 20\nERROR net -3\nERROR bad nope\n",
+        "7 0\n").
+
+test(surface_begin_field_separator_drives_numeric_scalar_values) :-
+    run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n",
+        "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
+        "7 0\n").
+
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -759,6 +775,17 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_len'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 %slot_1, 2'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi i64'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_value = extractvalue %WamI64Parse'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_ok = extractvalue %WamI64Parse'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_0_op_0_field_i64_ok'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_1_op_1_field_i64_ok'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
