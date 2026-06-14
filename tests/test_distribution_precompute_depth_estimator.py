@@ -14,6 +14,7 @@ from scripts.distribution_precompute_depth_estimator import (
     parse_args,
     parse_depth_float_map,
     path_value_sweep_measurements_from_records,
+    summarize,
     validation_measurements_from_records,
 )
 
@@ -301,6 +302,41 @@ class DistributionPrecomputeDepthEstimatorTests(unittest.TestCase):
         self.assertIsNone(row["hits_to_break_even"])
         self.assertFalse(row["precompute_pays"])
         self.assertTrue(row["validation_prediction_matches_measured"])
+
+    def test_summarize_includes_validation_agreement(self):
+        args = parse_args([
+            "--expected-queries", "1000",
+            "--branching-factor", "2",
+            "--max-depth", "1",
+            "--target-depth", "3",
+            "--cap-mode", "validation",
+        ])
+        validation = {
+            1: {
+                "boundary_depth": 1,
+                "rows": 1,
+                "mean_time_ratio": 1.2,
+                "mean_full_time_ns": 100.0,
+                "mean_cached_time_ns": 120.0,
+                "mean_cache_hits": 5.0,
+                "positive_cache_hit_rows": 1,
+                "zero_cache_hit_rows": 0,
+                "validation_usable_for_cap": True,
+                "all_rows_mean_cache_hits": 5.0,
+                "mean_payload_bytes_read": 64.0,
+                "mean_decode_ns": 8.0,
+                "measured_pays": False,
+                "measured_saved_per_hit_ns": -4.0,
+                "clipped_saved_per_hit_ns": 0.0,
+            },
+        }
+
+        summary = summarize(build_records(args, validation_measurements=validation))
+
+        self.assertIn("## Validation Agreement", summary)
+        self.assertIn("predicted_pays", summary)
+        self.assertIn("measured_pays", summary)
+        self.assertIn("validation agreement: `1/1`", summary)
 
     def test_measured_cap_limits_suffix_work(self):
         args = parse_args([
