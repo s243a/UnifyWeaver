@@ -54,6 +54,99 @@ from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram, sa
 
 DEFAULT_BOUNDARY_DEPTHS = [2]
 DEFAULT_TARGET_DEPTHS = [4]
+PATH_VALUE_KERNELS = ["count", "bp-decay", "weighted-power"]
+
+
+@dataclass(frozen=True)
+class PathValueKernel:
+    name: str = "count"
+    branching_factor: float | None = None
+    branching_factor_source: str | None = None
+    power: float | None = None
+
+
+def normalize_path_value_kernel_name(name):
+    return str(name or "count").strip().lower().replace("_", "-")
+
+
+def make_path_value_kernel(name="count", branching_factor=None, branching_factor_source=None, power=None):
+    name = normalize_path_value_kernel_name(name)
+    if name not in PATH_VALUE_KERNELS:
+        raise ValueError("unknown path-value kernel: {}".format(name))
+    if name == "bp-decay":
+        if branching_factor is None or float(branching_factor) <= 0.0:
+            raise ValueError("bp-decay requires a positive branching factor")
+        return PathValueKernel(
+            name=name,
+            branching_factor=float(branching_factor),
+            branching_factor_source=branching_factor_source,
+            power=None,
+        )
+    if name == "weighted-power":
+        power = 1.0 if power is None else float(power)
+        if power < 0.0:
+            raise ValueError("weighted-power requires a non-negative power")
+        return PathValueKernel(name=name, branching_factor=None, branching_factor_source=None, power=power)
+    return PathValueKernel(name="count", branching_factor=None, branching_factor_source=None, power=None)
+
+
+def path_value(length, kernel):
+    """Evaluate the configured value kernel for a complete root path length."""
+    length = int(length)
+    if kernel.name == "count":
+        return 1.0
+    if kernel.name == "bp-decay":
+        return float(kernel.branching_factor) ** (-length)
+    if kernel.name == "weighted-power":
+        return (length + 1.0) ** (-float(kernel.power))
+    raise ValueError("unknown path-value kernel: {}".format(kernel.name))
+
+
+def estimate_parent_branching_factor(parents_func, nodes, parent_accept=None):
+    """Estimate b_p = E[p^2] / E[p] from eligible parent counts."""
+    seen = set()
+    measured = 0
+    parent_sum = 0.0
+    parent_sq_sum = 0.0
+    max_parent_degree = 0
+    for node in nodes:
+        if node in seen:
+            continue
+        seen.add(node)
+        parents = list(parents_func(node))
+        if parent_accept is not None:
+            parents = [parent for parent in parents if parent_accept(node, parent)]
+        degree = len(parents)
+        measured += 1
+        parent_sum += degree
+        parent_sq_sum += degree * degree
+        max_parent_degree = max(max_parent_degree, degree)
+
+    if measured <= 0 or parent_sum <= 0.0:
+        return {
+            "branching_factor": 1.0,
+            "nodes": measured,
+            "mean_parent_degree": 0.0,
+            "second_parent_degree_moment": 0.0,
+            "max_parent_degree": max_parent_degree,
+        }
+
+    mean_parent_degree = parent_sum / measured
+    second_parent_degree_moment = parent_sq_sum / measured
+    return {
+        "branching_factor": parent_sq_sum / parent_sum,
+        "nodes": measured,
+        "mean_parent_degree": mean_parent_degree,
+        "second_parent_degree_moment": second_parent_degree_moment,
+        "max_parent_degree": max_parent_degree,
+    }
+
+
+def suffix_path_value(suffix, prefix_depth, kernel):
+    return sum(
+        count * path_value(int(prefix_depth) + int(length), kernel)
+        for length, count in suffix["histogram"].items()
+    )
 
 
 @dataclass
@@ -73,6 +166,7 @@ class CoverageStats:
     boundary_hit_depth_sum: int = 0
     boundary_hit_remaining_budget_sum: int = 0
     boundary_suffix_path_mass_sum: int = 0
+    boundary_suffix_path_value_sum: float = 0.0
     boundary_hits_by_depth: Counter | None = None
     boundary_hits_by_remaining_budget: Counter | None = None
     boundary_hits_by_node: Counter | None = None
@@ -224,6 +318,7 @@ def suffix_path_mass(parents_func, boundary_node, root, remaining, memo):
     if key not in memo:
         hist, stats = bounded_parent_histogram(parents_func, boundary_node, root, int(remaining))
         memo[key] = {
+            "histogram": hist,
             "path_count": sum(hist.values()),
             "support_bins": len(hist),
             "path_count_cap_hit": stats.path_cap_hit,
@@ -244,12 +339,14 @@ def exact_boundary_coverage(
     reachability_filter=None,
     parent_filter_name="all",
     measure_suffix_mass=True,
+    path_value_kernel=None,
 ):
     """Enumerate simple parent prefixes until root, boundary, or budget."""
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
     path_count_cap = None if path_count_cap is None or int(path_count_cap) <= 0 else int(path_count_cap)
     expansion_cap = None if expansion_cap is None or int(expansion_cap) <= 0 else int(expansion_cap)
+    kernel = path_value_kernel or PathValueKernel()
     stats = CoverageStats()
     suffix_memo = {}
     suffix_measure_compatible = measure_suffix_mass and reachability_filter is None
@@ -283,6 +380,7 @@ def exact_boundary_coverage(
             if suffix_measure_compatible:
                 suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
                 stats.boundary_suffix_path_mass_sum += int(suffix["path_count"])
+                stats.boundary_suffix_path_value_sum += suffix_path_value(suffix, depth, kernel)
             terminal_reached()
             return
 
@@ -331,6 +429,7 @@ def exact_boundary_coverage(
         elapsed_ns=None,
         parent_filter_name=parent_filter_name,
         measure_suffix_mass=suffix_measure_compatible,
+        path_value_kernel=kernel,
     )
 
 
@@ -378,6 +477,7 @@ def sample_boundary_coverage(
     reachability_filter=None,
     parent_filter_name="all",
     measure_suffix_mass=True,
+    path_value_kernel=None,
 ):
     """Sample random parent walks and estimate prefix counts by proposal correction.
 
@@ -387,17 +487,21 @@ def sample_boundary_coverage(
     """
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
+    kernel = path_value_kernel or PathValueKernel()
     rng = random.Random(str(seed))
     stats = CoverageStats()
     suffix_memo = {}
     suffix_measure_compatible = measure_suffix_mass and reachability_filter is None
     terminal_weights = []
     root_weights = []
+    root_value_weights = []
     boundary_weights = []
     boundary_spliced_weights = []
+    boundary_spliced_value_weights = []
     budget_weights = []
     dead_end_weights = []
     suffix_mass_weights = []
+    suffix_value_weights = []
 
     for _sample in range(int(samples)):
         node = target
@@ -411,13 +515,17 @@ def sample_boundary_coverage(
             if node == root:
                 stats.terminal_prefixes += 1
                 stats.root_paths += 1
+                root_value = weight * path_value(depth, kernel)
                 terminal_weights.append(weight)
                 root_weights.append(weight)
+                root_value_weights.append(root_value)
                 boundary_weights.append(0.0)
                 boundary_spliced_weights.append(0.0)
+                boundary_spliced_value_weights.append(0.0)
                 budget_weights.append(0.0)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(0.0)
+                suffix_value_weights.append(0.0)
                 break
 
             if depth > 0 and node in boundary_nodes:
@@ -429,17 +537,23 @@ def sample_boundary_coverage(
                 stats.boundary_hits_by_remaining_budget[int(remaining)] += 1
                 stats.boundary_hits_by_node[node] += 1
                 suffix_mass = 0
+                suffix_value = 0.0
                 if suffix_measure_compatible:
                     suffix = suffix_path_mass(parents_func, node, root, remaining, suffix_memo)
                     suffix_mass = int(suffix["path_count"])
+                    suffix_value = suffix_path_value(suffix, depth, kernel)
                     stats.boundary_suffix_path_mass_sum += suffix_mass
+                    stats.boundary_suffix_path_value_sum += suffix_value
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
+                root_value_weights.append(0.0)
                 boundary_weights.append(weight)
                 boundary_spliced_weights.append(weight * suffix_mass)
+                boundary_spliced_value_weights.append(weight * suffix_value)
                 budget_weights.append(0.0)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(weight * suffix_mass)
+                suffix_value_weights.append(weight * suffix_value)
                 break
 
             if remaining <= 0:
@@ -447,11 +561,14 @@ def sample_boundary_coverage(
                 stats.budget_exhausted_prefixes += 1
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
+                root_value_weights.append(0.0)
                 boundary_weights.append(0.0)
                 boundary_spliced_weights.append(0.0)
+                boundary_spliced_value_weights.append(0.0)
                 budget_weights.append(weight)
                 dead_end_weights.append(0.0)
                 suffix_mass_weights.append(0.0)
+                suffix_value_weights.append(0.0)
                 break
 
             parents = list(parents_func(node))
@@ -474,11 +591,14 @@ def sample_boundary_coverage(
                     stats.dead_end_prefixes += 1
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
+                root_value_weights.append(0.0)
                 boundary_weights.append(0.0)
                 boundary_spliced_weights.append(0.0)
+                boundary_spliced_value_weights.append(0.0)
                 budget_weights.append(0.0)
                 dead_end_weights.append(weight)
                 suffix_mass_weights.append(0.0)
+                suffix_value_weights.append(0.0)
                 break
 
             weight *= len(eligible)
@@ -493,27 +613,41 @@ def sample_boundary_coverage(
         "estimated_terminal_prefixes_se": standard_error(terminal_weights),
         "estimated_root_paths": weighted_mean(root_weights),
         "estimated_root_paths_se": standard_error(root_weights),
+        "estimated_root_value_sum": weighted_mean(root_value_weights),
+        "estimated_root_value_sum_se": standard_error(root_value_weights),
         "estimated_boundary_hit_prefixes": weighted_mean(boundary_weights),
         "estimated_boundary_hit_prefixes_se": standard_error(boundary_weights),
         "estimated_boundary_spliced_root_paths": weighted_mean(boundary_spliced_weights),
         "estimated_boundary_spliced_root_paths_se": standard_error(boundary_spliced_weights),
+        "estimated_boundary_spliced_value_sum": weighted_mean(boundary_spliced_value_weights),
+        "estimated_boundary_spliced_value_sum_se": standard_error(boundary_spliced_value_weights),
         "estimated_budget_exhausted_prefixes": weighted_mean(budget_weights),
         "estimated_budget_exhausted_prefixes_se": standard_error(budget_weights),
         "estimated_dead_end_prefixes": weighted_mean(dead_end_weights),
         "estimated_dead_end_prefixes_se": standard_error(dead_end_weights),
         "estimated_boundary_suffix_path_mass": weighted_mean(suffix_mass_weights),
         "estimated_boundary_suffix_path_mass_se": standard_error(suffix_mass_weights),
+        "estimated_boundary_suffix_path_value": weighted_mean(suffix_value_weights),
+        "estimated_boundary_suffix_path_value_se": standard_error(suffix_value_weights),
     }
     if suffix_measure_compatible:
         weighted["estimated_spliced_total_root_paths"] = (
             weighted["estimated_root_paths"] + weighted["estimated_boundary_spliced_root_paths"]
         )
+        weighted["estimated_spliced_total_value_sum"] = (
+            weighted["estimated_root_value_sum"] + weighted["estimated_boundary_spliced_value_sum"]
+        )
     else:
         weighted["estimated_boundary_spliced_root_paths"] = None
         weighted["estimated_boundary_spliced_root_paths_se"] = None
+        weighted["estimated_boundary_spliced_value_sum"] = None
+        weighted["estimated_boundary_spliced_value_sum_se"] = None
         weighted["estimated_spliced_total_root_paths"] = None
+        weighted["estimated_spliced_total_value_sum"] = None
         weighted["estimated_boundary_suffix_path_mass"] = None
         weighted["estimated_boundary_suffix_path_mass_se"] = None
+        weighted["estimated_boundary_suffix_path_value"] = None
+        weighted["estimated_boundary_suffix_path_value_se"] = None
     total_estimate = weighted["estimated_terminal_prefixes"]
     boundary_estimate = weighted["estimated_boundary_hit_prefixes"]
     weighted["estimated_boundary_hit_fraction"] = None if total_estimate <= 0.0 else boundary_estimate / total_estimate
@@ -531,6 +665,7 @@ def sample_boundary_coverage(
         elapsed_ns=None,
         parent_filter_name=parent_filter_name,
         measure_suffix_mass=suffix_measure_compatible,
+        path_value_kernel=kernel,
     )
 
 
@@ -544,6 +679,7 @@ def sample_root_path_space(
     seed,
     reachability_filter=None,
     parent_filter_name="all",
+    path_value_kernel=None,
 ):
     """Sample full simple parent walks and estimate root-path search space.
 
@@ -555,13 +691,17 @@ def sample_root_path_space(
     """
     budget = int(budget)
     boundary_nodes = set(boundary_nodes)
+    kernel = path_value_kernel or PathValueKernel()
     rng = random.Random(str(seed))
     stats = CoverageStats()
     terminal_weights = []
     root_weights = []
+    root_value_weights = []
     boundary_weights = []
     root_boundary_weights = []
+    root_boundary_value_weights = []
     root_length_weights = []
+    root_value_length_weights = []
     budget_weights = []
     dead_end_weights = []
 
@@ -587,11 +727,15 @@ def sample_root_path_space(
             if node == root:
                 stats.terminal_prefixes += 1
                 stats.root_paths += 1
+                root_value = weight * path_value(depth, kernel)
                 terminal_weights.append(weight)
                 root_weights.append(weight)
+                root_value_weights.append(root_value)
                 boundary_weights.append(weight if boundary_seen else 0.0)
                 root_boundary_weights.append(weight if boundary_seen else 0.0)
+                root_boundary_value_weights.append(root_value if boundary_seen else 0.0)
                 root_length_weights.append(weight * depth)
+                root_value_length_weights.append(root_value * depth)
                 budget_weights.append(0.0)
                 dead_end_weights.append(0.0)
                 break
@@ -601,9 +745,12 @@ def sample_root_path_space(
                 stats.budget_exhausted_prefixes += 1
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
+                root_value_weights.append(0.0)
                 boundary_weights.append(weight if boundary_seen else 0.0)
                 root_boundary_weights.append(0.0)
+                root_boundary_value_weights.append(0.0)
                 root_length_weights.append(0.0)
+                root_value_length_weights.append(0.0)
                 budget_weights.append(weight)
                 dead_end_weights.append(0.0)
                 break
@@ -628,9 +775,12 @@ def sample_root_path_space(
                     stats.dead_end_prefixes += 1
                 terminal_weights.append(weight)
                 root_weights.append(0.0)
+                root_value_weights.append(0.0)
                 boundary_weights.append(weight if boundary_seen else 0.0)
                 root_boundary_weights.append(0.0)
+                root_boundary_value_weights.append(0.0)
                 root_length_weights.append(0.0)
+                root_value_length_weights.append(0.0)
                 budget_weights.append(0.0)
                 dead_end_weights.append(weight)
                 break
@@ -647,12 +797,18 @@ def sample_root_path_space(
         "estimated_terminal_prefixes_se": standard_error(terminal_weights),
         "estimated_root_paths": weighted_mean(root_weights),
         "estimated_root_paths_se": standard_error(root_weights),
+        "estimated_root_value_sum": weighted_mean(root_value_weights),
+        "estimated_root_value_sum_se": standard_error(root_value_weights),
         "estimated_boundary_hit_prefixes": weighted_mean(boundary_weights),
         "estimated_boundary_hit_prefixes_se": standard_error(boundary_weights),
         "estimated_root_boundary_hit_paths": weighted_mean(root_boundary_weights),
         "estimated_root_boundary_hit_paths_se": standard_error(root_boundary_weights),
+        "estimated_root_boundary_hit_value_sum": weighted_mean(root_boundary_value_weights),
+        "estimated_root_boundary_hit_value_sum_se": standard_error(root_boundary_value_weights),
         "estimated_root_path_length_sum": weighted_mean(root_length_weights),
         "estimated_root_path_length_sum_se": standard_error(root_length_weights),
+        "estimated_root_value_path_length_sum": weighted_mean(root_value_length_weights),
+        "estimated_root_value_path_length_sum_se": standard_error(root_value_length_weights),
         "estimated_budget_exhausted_prefixes": weighted_mean(budget_weights),
         "estimated_budget_exhausted_prefixes_se": standard_error(budget_weights),
         "estimated_dead_end_prefixes": weighted_mean(dead_end_weights),
@@ -661,11 +817,19 @@ def sample_root_path_space(
     total_estimate = weighted["estimated_terminal_prefixes"]
     boundary_estimate = weighted["estimated_boundary_hit_prefixes"]
     root_estimate = weighted["estimated_root_paths"]
+    root_value_estimate = weighted["estimated_root_value_sum"]
     root_boundary_estimate = weighted["estimated_root_boundary_hit_paths"]
+    root_boundary_value_estimate = weighted["estimated_root_boundary_hit_value_sum"]
     weighted["estimated_boundary_hit_fraction"] = None if total_estimate <= 0.0 else boundary_estimate / total_estimate
     weighted["estimated_root_boundary_hit_fraction"] = None if root_estimate <= 0.0 else root_boundary_estimate / root_estimate
+    weighted["estimated_root_value_boundary_hit_fraction"] = (
+        None if root_value_estimate <= 0.0 else root_boundary_value_estimate / root_value_estimate
+    )
     weighted["estimated_mean_root_path_length"] = (
         None if root_estimate <= 0.0 else weighted["estimated_root_path_length_sum"] / root_estimate
+    )
+    weighted["estimated_kernel_mean_root_path_length"] = (
+        None if root_value_estimate <= 0.0 else weighted["estimated_root_value_path_length_sum"] / root_value_estimate
     )
     ci_low, ci_high = bootstrap_ratio(boundary_weights, terminal_weights, str(seed) + ":bootstrap")
     weighted["estimated_boundary_hit_fraction_ci95_low"] = ci_low
@@ -681,6 +845,7 @@ def sample_root_path_space(
         elapsed_ns=None,
         parent_filter_name=parent_filter_name,
         measure_suffix_mass=False,
+        path_value_kernel=kernel,
     )
 
 
@@ -694,12 +859,18 @@ def coverage_record(
     elapsed_ns=None,
     parent_filter_name="all",
     measure_suffix_mass=True,
+    path_value_kernel=None,
 ):
     boundary_hits = int(stats.boundary_hits)
+    kernel = path_value_kernel or PathValueKernel()
     record = {
         "record_type": "boundary_coverage_target",
         "mode": mode,
         "parent_filter": parent_filter_name,
+        "path_value_kernel": kernel.name,
+        "path_value_branching_factor": kernel.branching_factor,
+        "path_value_branching_factor_source": kernel.branching_factor_source,
+        "path_value_power": kernel.power,
         "target_node": target,
         "path_length_budget": int(budget),
         "samples": samples,
@@ -724,6 +895,8 @@ def coverage_record(
         "boundary_suffix_mass_measured": bool(measure_suffix_mass),
         "mean_boundary_suffix_path_mass": None if not measure_suffix_mass or boundary_hits <= 0 else stats.boundary_suffix_path_mass_sum / boundary_hits,
         "boundary_suffix_path_mass_sum": int(stats.boundary_suffix_path_mass_sum),
+        "mean_boundary_suffix_path_value": None if not measure_suffix_mass or boundary_hits <= 0 else stats.boundary_suffix_path_value_sum / boundary_hits,
+        "boundary_suffix_path_value_sum": float(stats.boundary_suffix_path_value_sum),
         "boundary_hits_by_depth": dict(sorted(stats.boundary_hits_by_depth.items())),
         "boundary_hits_by_remaining_budget": dict(sorted(stats.boundary_hits_by_remaining_budget.items())),
         "boundary_hits_by_node": dict(sorted(stats.boundary_hits_by_node.items())),
@@ -750,6 +923,7 @@ def aggregate_rows(rows):
     budget = sum(int(row["budget_exhausted_prefixes"]) for row in rows)
     filtered_dead = sum(int(row.get("filtered_dead_end_prefixes", 0)) for row in rows)
     suffix_mass = sum(int(row["boundary_suffix_path_mass_sum"]) for row in rows)
+    suffix_value = sum(float(row.get("boundary_suffix_path_value_sum", 0.0)) for row in rows)
     suffix_mass_measured = all(bool(row.get("boundary_suffix_mass_measured", True)) for row in rows)
     return {
         "targets": len(rows),
@@ -762,8 +936,10 @@ def aggregate_rows(rows):
         "root_path_fraction": fraction(root, terminal),
         "budget_exhausted_fraction": fraction(budget, terminal),
         "boundary_suffix_path_mass_sum": suffix_mass,
+        "boundary_suffix_path_value_sum": suffix_value,
         "boundary_suffix_mass_measured": suffix_mass_measured,
         "mean_boundary_suffix_path_mass": None if not suffix_mass_measured or boundary <= 0 else suffix_mass / boundary,
+        "mean_boundary_suffix_path_value": None if not suffix_mass_measured or boundary <= 0 else suffix_value / boundary,
         "completed_targets": sum(1 for row in rows if row.get("completed")),
         "path_count_cap_hit_targets": sum(1 for row in rows if row.get("path_count_cap_hit")),
         "expansion_cap_hit_targets": sum(1 for row in rows if row.get("expansion_cap_hit")),
@@ -809,6 +985,12 @@ def summarize(records):
         "",
         "Boundary suffix mass measured: `{}`".format(selection.get("measure_boundary_suffix_mass", True)),
         "",
+        "Path value kernel: `{}`".format(selection.get("path_value_kernel", "count")),
+        "",
+        "Path value branching factor: `{}`".format(format_optional(selection.get("path_value_branching_factor"), 6)),
+        "",
+        "Path value power: `{}`".format(format_optional(selection.get("path_value_power"), 3)),
+        "",
         "Boundary nodes: `{}`".format(selection.get("boundary_nodes", 0)),
         "",
         "Targets: `{}`".format(selection.get("targets", 0)),
@@ -843,13 +1025,13 @@ def summarize(records):
         "",
         "For sample and root-sample modes, these are observed random-walk outcomes. Use the estimate sections below for branch-product weighted path-space estimates.",
         "",
-        "| mode | path_length_budget | targets | completed_targets | observed_terminal_prefixes | observed_root_paths | observed_boundary_hit_prefixes | observed_boundary_hit_fraction | observed_budget_exhausted_prefixes | observed_filtered_dead_ends | mean_boundary_suffix_path_mass | path_count_cap_hit_targets | expansion_cap_hit_targets | cycle_skips | root_unreachable_parent_skips |",
-        "|------|-------------------:|--------:|------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|----------------------------:|-------------------------------:|---------------------------:|--------------------------:|------------:|------------------------------:|",
+        "| mode | path_length_budget | targets | completed_targets | observed_terminal_prefixes | observed_root_paths | observed_boundary_hit_prefixes | observed_boundary_hit_fraction | observed_budget_exhausted_prefixes | observed_filtered_dead_ends | mean_boundary_suffix_path_mass | mean_boundary_suffix_path_value | path_count_cap_hit_targets | expansion_cap_hit_targets | cycle_skips | root_unreachable_parent_skips |",
+        "|------|-------------------:|--------:|------------------:|------------------:|-----------:|----------------------:|----------------------:|--------------------------:|----------------------------:|-------------------------------:|--------------------------------:|---------------------------:|--------------------------:|------------:|------------------------------:|",
     ])
     for (mode, budget), rows in sorted(by_mode_budget.items()):
         aggregate = aggregate_rows(rows)
         lines.append(
-            "| {mode} | {budget} | {targets} | {completed} | {terminal} | {root} | {boundary} | {boundary_fraction} | {budget_exhausted} | {filtered_dead} | {suffix_mean} | {path_cap} | {expansion_cap} | {cycle_skips} | {root_unreachable} |".format(
+            "| {mode} | {budget} | {targets} | {completed} | {terminal} | {root} | {boundary} | {boundary_fraction} | {budget_exhausted} | {filtered_dead} | {suffix_mean} | {suffix_value_mean} | {path_cap} | {expansion_cap} | {cycle_skips} | {root_unreachable} |".format(
                 mode=mode,
                 budget=budget,
                 targets=aggregate["targets"],
@@ -861,6 +1043,7 @@ def summarize(records):
                 budget_exhausted=aggregate["budget_exhausted_prefixes"],
                 filtered_dead=aggregate["filtered_dead_end_prefixes"],
                 suffix_mean=format_optional(aggregate["mean_boundary_suffix_path_mass"], 3),
+                suffix_value_mean=format_optional(aggregate["mean_boundary_suffix_path_value"], 6),
                 path_cap=aggregate["path_count_cap_hit_targets"],
                 expansion_cap=aggregate["expansion_cap_hit_targets"],
                 cycle_skips=aggregate["cycle_skips"],
@@ -874,23 +1057,24 @@ def summarize(records):
             "",
             "## Boundary Sample Estimates",
             "",
-            "Boundary sample mode stops at the first boundary. `estimated_spliced_total_root_paths` adds direct root-path weight to boundary-prefix weight multiplied by the remaining-budget suffix mass.",
+            "Boundary sample mode stops at the first boundary. `estimated_spliced_total_root_paths` adds direct root-path weight to boundary-prefix weight multiplied by the remaining-budget suffix mass. `estimated_spliced_total_value_sum` uses the selected path-value kernel over the full prefix-plus-suffix length.",
             "",
-            "| path_length_budget | targets | samples_per_target | mean_estimated_terminal_prefixes | mean_estimated_boundary_hit_fraction | mean_estimated_spliced_total_root_paths | mean_ci95_low | mean_ci95_high |",
-            "|-------------------:|--------:|-------------------:|---------------------------------:|------------------------------------:|---------------------------------------:|--------------:|---------------:|",
+            "| path_length_budget | targets | samples_per_target | mean_estimated_terminal_prefixes | mean_estimated_boundary_hit_fraction | mean_estimated_spliced_total_root_paths | mean_estimated_spliced_total_value_sum | mean_ci95_low | mean_ci95_high |",
+            "|-------------------:|--------:|-------------------:|---------------------------------:|------------------------------------:|---------------------------------------:|--------------------------------------:|--------------:|---------------:|",
         ])
         by_budget = {}
         for row in sampled:
             by_budget.setdefault(row["path_length_budget"], []).append(row)
         for budget, rows in sorted(by_budget.items()):
             lines.append(
-                "| {budget} | {targets} | {samples} | {terminal} | {fraction} | {spliced} | {lo} | {hi} |".format(
+                "| {budget} | {targets} | {samples} | {terminal} | {fraction} | {spliced} | {value_sum} | {lo} | {hi} |".format(
                     budget=budget,
                     targets=len(rows),
                     samples=rows[0].get("samples"),
                     terminal=format_optional(mean_optional_field(rows, "estimated_terminal_prefixes"), 3),
                     fraction=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction"), 6),
                     spliced=format_optional(mean_optional_field(rows, "estimated_spliced_total_root_paths"), 3),
+                    value_sum=format_optional(mean_optional_field(rows, "estimated_spliced_total_value_sum"), 6),
                     lo=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction_ci95_low"), 6),
                     hi=format_optional(mean_optional_field(rows, "estimated_boundary_hit_fraction_ci95_high"), 6),
                 )
@@ -902,23 +1086,26 @@ def summarize(records):
             "",
             "## Root Path Sample Estimates",
             "",
-            "Root-sample mode ignores boundary stopping and walks until root, budget exhaustion, or dead end. `estimated_root_paths` estimates the root-reaching search-space size from the branch-product weight. `estimated_mean_root_path_length` is the corresponding weighted mean path length.",
+            "Root-sample mode ignores boundary stopping and walks until root, budget exhaustion, or dead end. `estimated_root_paths` estimates the root-reaching search-space size from the branch-product weight. `estimated_root_value_sum` applies the selected path-value kernel, and `estimated_kernel_mean_root_path_length` is the corresponding value-weighted mean path length.",
             "",
-            "| path_length_budget | targets | samples_per_target | mean_estimated_root_paths | mean_estimated_mean_root_path_length | mean_estimated_root_boundary_hit_fraction |",
-            "|-------------------:|--------:|-------------------:|--------------------------:|-------------------------------------:|------------------------------------------:|",
+            "| path_length_budget | targets | samples_per_target | mean_estimated_root_paths | mean_estimated_root_value_sum | mean_estimated_mean_root_path_length | mean_estimated_kernel_mean_root_path_length | mean_estimated_root_boundary_hit_fraction | mean_estimated_root_value_boundary_hit_fraction |",
+            "|-------------------:|--------:|-------------------:|--------------------------:|------------------------------:|-------------------------------------:|--------------------------------------------:|------------------------------------------:|------------------------------------------------:|",
         ])
         by_budget = {}
         for row in root_sampled:
             by_budget.setdefault(row["path_length_budget"], []).append(row)
         for budget, rows in sorted(by_budget.items()):
             lines.append(
-                "| {budget} | {targets} | {samples} | {root_paths} | {mean_len} | {boundary_fraction} |".format(
+                "| {budget} | {targets} | {samples} | {root_paths} | {value_sum} | {mean_len} | {kernel_mean_len} | {boundary_fraction} | {value_boundary_fraction} |".format(
                     budget=budget,
                     targets=len(rows),
                     samples=rows[0].get("samples"),
                     root_paths=format_optional(mean_optional_field(rows, "estimated_root_paths"), 3),
+                    value_sum=format_optional(mean_optional_field(rows, "estimated_root_value_sum"), 6),
                     mean_len=format_optional(mean_optional_field(rows, "estimated_mean_root_path_length"), 3),
+                    kernel_mean_len=format_optional(mean_optional_field(rows, "estimated_kernel_mean_root_path_length"), 3),
                     boundary_fraction=format_optional(mean_optional_field(rows, "estimated_root_boundary_hit_fraction"), 6),
+                    value_boundary_fraction=format_optional(mean_optional_field(rows, "estimated_root_value_boundary_hit_fraction"), 6),
                 )
             )
 
@@ -949,6 +1136,43 @@ def summarize(records):
         )
 
     return "\n".join(lines) + "\n"
+
+
+def resolve_path_value_kernel(args, graph, root, targets, boundary_nodes, root_cone_depth_by_node):
+    name = normalize_path_value_kernel_name(args.path_value_kernel)
+    branching_stats = None
+    branching_factor = args.path_value_branching_factor
+    branching_factor_source = None
+
+    if name == "bp-decay":
+        if branching_factor is not None and float(branching_factor) > 0.0:
+            branching_factor = float(branching_factor)
+            branching_factor_source = "user"
+        else:
+            root_cone_depth_by_node = root_cone_depth_by_node or {}
+            if root_cone_depth_by_node:
+                root_cone_nodes = [node for node in root_cone_depth_by_node if node != root]
+                root_cone_set = set(root_cone_depth_by_node)
+                if args.parent_filter == "root-cone" or args.selection_source == "root-cone":
+                    parent_accept = lambda _node, parent: parent in root_cone_set
+                    branching_factor_source = "root_cone_eligible_parent_e_p2_over_e_p"
+                else:
+                    parent_accept = None
+                    branching_factor_source = "root_cone_full_parent_e_p2_over_e_p"
+                branching_stats = estimate_parent_branching_factor(graph.parents, root_cone_nodes, parent_accept)
+            else:
+                scope_nodes = list(dict.fromkeys(list(targets) + list(boundary_nodes)))
+                branching_factor_source = "selected_nodes_full_parent_e_p2_over_e_p"
+                branching_stats = estimate_parent_branching_factor(graph.parents, scope_nodes)
+            branching_factor = branching_stats["branching_factor"]
+
+    kernel = make_path_value_kernel(
+        name,
+        branching_factor=branching_factor,
+        branching_factor_source=branching_factor_source,
+        power=args.path_value_power,
+    )
+    return kernel, branching_stats
 
 
 def run_probe(args):
@@ -1051,12 +1275,25 @@ def run_probe(args):
         elif args.parent_filter == "root-cone":
             reachability = RootConeFilter(root_cone_depth_by_node)
         measure_suffix_mass = not args.skip_boundary_suffix_mass and reachability is None
+        path_value_kernel, path_value_branching_stats = resolve_path_value_kernel(
+            args,
+            graph,
+            args.root,
+            targets,
+            boundary_nodes,
+            root_cone_depth_by_node,
+        )
 
         records = [{
             "record_type": "boundary_coverage_selection",
             "graph": args.graph_name,
             "root": args.root,
             "parent_filter": args.parent_filter,
+            "path_value_kernel": path_value_kernel.name,
+            "path_value_branching_factor": path_value_kernel.branching_factor,
+            "path_value_branching_factor_source": path_value_kernel.branching_factor_source,
+            "path_value_power": path_value_kernel.power,
+            "path_value_branching_stats": path_value_branching_stats,
             "selection_source": args.selection_source,
             "root_cone_depth": root_cone_depth if root_cone_depth_by_node is not None else None,
             "root_cone_nodes": len(root_cone_depth_by_node or {}),
@@ -1093,6 +1330,7 @@ def run_probe(args):
                         None if reachability is None else reachability.can_reach,
                         args.parent_filter,
                         measure_suffix_mass,
+                        path_value_kernel,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -1109,6 +1347,7 @@ def run_probe(args):
                         None if reachability is None else reachability.can_reach,
                         args.parent_filter,
                         measure_suffix_mass,
+                        path_value_kernel,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -1124,6 +1363,7 @@ def run_probe(args):
                         "{}:{}:{}:root-sample".format(args.seed, target, budget),
                         None if reachability is None else reachability.can_reach,
                         args.parent_filter,
+                        path_value_kernel,
                     )))
                     records[-1]["child_sample_depth"] = target_depth_by_node[target]
                     records[-1]["graph"] = args.graph_name
@@ -1175,6 +1415,9 @@ def main(argv=None):
     parser.add_argument("--path-count-cap", type=int, default=0, help="Exact mode safety cap on terminal prefixes; non-positive disables it.")
     parser.add_argument("--expansion-cap", type=int, default=0, help="Exact mode safety cap on expanded nodes; non-positive disables it.")
     parser.add_argument("--samples", type=int, default=200, help="Sampled mode random walks per target.")
+    parser.add_argument("--path-value-kernel", choices=PATH_VALUE_KERNELS, default="count", help="Path-value kernel for value-sum estimates: count, bp-decay, or weighted-power.")
+    parser.add_argument("--path-value-branching-factor", type=float, help="Branching factor b_p for bp-decay. Omit or pass a non-positive value to estimate E[p^2]/E[p] from the current root-cone or selected-node scope.")
+    parser.add_argument("--path-value-power", type=float, default=1.0, help="Power n for weighted-power: g(L) = (L + 1)^(-n).")
     parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     args = parser.parse_args(argv)

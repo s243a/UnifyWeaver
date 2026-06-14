@@ -3,16 +3,20 @@
 # Copyright (c) 2026 John William Creighton (s243a)
 """Tests for boundary coverage probe helpers."""
 
+from types import SimpleNamespace
 import unittest
 
 from scripts.lmdb_boundary_coverage_probe import (
+    PathValueKernel,
     RootConeFilter,
     RootReachabilityFilter,
     build_root_cone,
+    estimate_parent_branching_factor,
     exact_boundary_coverage,
     sample_boundary_coverage,
     sample_root_path_space,
     select_nodes_by_root_cone_depth,
+    resolve_path_value_kernel,
 )
 
 
@@ -151,6 +155,47 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(len(selected), 2)
         self.assertEqual(set(depths.values()), {1, 2})
 
+    def test_estimate_parent_branching_factor_uses_e_p2_over_e_p(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+        })
+
+        stats = estimate_parent_branching_factor(graph.parents, ["A", "B", "C"])
+
+        self.assertAlmostEqual(stats["mean_parent_degree"], 4.0 / 3.0)
+        self.assertAlmostEqual(stats["second_parent_degree_moment"], 2.0)
+        self.assertAlmostEqual(stats["branching_factor"], 1.5)
+
+    def test_resolve_path_value_kernel_defaults_bp_from_root_cone(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+        })
+        args = SimpleNamespace(
+            path_value_kernel="bp-decay",
+            path_value_branching_factor=None,
+            path_value_power=1.0,
+            parent_filter="root-cone",
+            selection_source="root-cone",
+        )
+
+        kernel, stats = resolve_path_value_kernel(
+            args,
+            graph,
+            "R",
+            ["C"],
+            [],
+            {"R": 0, "A": 1, "B": 1, "C": 2},
+        )
+
+        self.assertEqual(kernel.name, "bp-decay")
+        self.assertEqual(kernel.branching_factor_source, "root_cone_eligible_parent_e_p2_over_e_p")
+        self.assertAlmostEqual(kernel.branching_factor, 1.5)
+        self.assertAlmostEqual(stats["branching_factor"], 1.5)
+
     def test_sample_boundary_coverage_estimates_weighted_prefix_counts(self):
         graph = DictGraph({
             "A": ["R"],
@@ -179,6 +224,51 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(record["estimated_boundary_hit_prefixes"], 1.0)
         self.assertEqual(record["estimated_boundary_spliced_root_paths"], 1.0)
         self.assertEqual(record["estimated_spliced_total_root_paths"], 1.0)
+
+    def test_sample_boundary_coverage_splices_bp_decay_value_sum(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        kernel = PathValueKernel(name="bp-decay", branching_factor=2.0, branching_factor_source="test")
+
+        record = sample_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            samples=10,
+            seed="fixture",
+            path_value_kernel=kernel,
+        )
+
+        self.assertEqual(record["estimated_spliced_total_root_paths"], 1.0)
+        self.assertAlmostEqual(record["estimated_boundary_spliced_value_sum"], 0.125)
+        self.assertAlmostEqual(record["estimated_spliced_total_value_sum"], 0.125)
+        self.assertAlmostEqual(record["mean_boundary_suffix_path_value"], 0.125)
+
+    def test_sample_boundary_coverage_splices_weighted_power_value_sum(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        })
+        kernel = PathValueKernel(name="weighted-power", power=2.0)
+
+        record = sample_boundary_coverage(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            {"B"},
+            samples=10,
+            seed="fixture",
+            path_value_kernel=kernel,
+        )
+
+        self.assertAlmostEqual(record["estimated_spliced_total_value_sum"], 1.0 / 16.0)
 
     def test_sample_boundary_coverage_disables_suffix_splice_with_filter(self):
         graph = DictGraph({
@@ -219,6 +309,29 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertAlmostEqual(record["estimated_root_paths"], 2.0)
         self.assertAlmostEqual(record["estimated_mean_root_path_length"], 2.0)
         self.assertAlmostEqual(record["estimated_root_path_length_sum"], 4.0)
+
+    def test_sample_root_path_space_estimates_bp_decay_value_sum(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["R"],
+            "C": ["A", "B"],
+        })
+        kernel = PathValueKernel(name="bp-decay", branching_factor=2.0, branching_factor_source="test")
+
+        record = sample_root_path_space(
+            graph.parents,
+            "C",
+            "R",
+            3,
+            set(),
+            samples=200,
+            seed="fixture",
+            path_value_kernel=kernel,
+        )
+
+        self.assertAlmostEqual(record["estimated_root_paths"], 2.0)
+        self.assertAlmostEqual(record["estimated_root_value_sum"], 0.5)
+        self.assertAlmostEqual(record["estimated_kernel_mean_root_path_length"], 2.0)
 
 
 if __name__ == "__main__":

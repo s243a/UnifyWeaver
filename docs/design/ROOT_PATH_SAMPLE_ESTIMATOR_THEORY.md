@@ -184,6 +184,33 @@ queries, or any custom functional: the boundary cache must store enough suffix
 mass or suffix numerator state for that functional.  A plain mass CDF is enough
 for reachability/count queries, but not for arbitrary functions of the suffix.
 
+For kernels that are not multiplicatively separable across prefix and suffix,
+the suffix value is parameterised by the prefix length.  For example:
+
+```text
+weighted_power_n(ell, R) = sum_{k <= R} H_b[k] * (ell + k + 1)^(-n)
+```
+
+This can still be computed exactly by scanning the boundary histogram, and it
+can be accelerated later by storing shifted cumulative bases or a small table of
+prefix-conditioned bases.  The important requirement is that the report names
+which kernel was used; a count CDF and a weighted-power basis answer different
+queries.
+
+The first executable probe interface exposes three kernels:
+
+```text
+--path-value-kernel count           # g(L) = 1
+--path-value-kernel bp-decay        # g(L) = b_p^(-L)
+--path-value-kernel weighted-power  # g(L) = (L + 1)^(-n)
+```
+
+For `bp-decay`, `--path-value-branching-factor` can set `b_p` explicitly.  If it
+is omitted, the probe estimates `b_p = E[p^2] / E[p]` from the current root-cone
+scope when available, using parent counts under the same root-cone eligibility
+rule.  This keeps `b_p` configurable while preserving the default planning prior
+we use elsewhere.  For `weighted-power`, `--path-value-power` sets `n`.
+
 ## 6. Compatibility requirements
 
 A boundary splice is exact only when the suffix histogram was built under the
