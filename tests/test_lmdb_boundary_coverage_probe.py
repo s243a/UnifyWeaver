@@ -6,9 +6,12 @@
 import unittest
 
 from scripts.lmdb_boundary_coverage_probe import (
+    RootConeFilter,
     RootReachabilityFilter,
+    build_root_cone,
     exact_boundary_coverage,
     sample_boundary_coverage,
+    select_nodes_by_root_cone_depth,
 )
 
 
@@ -97,6 +100,55 @@ class BoundaryCoverageProbeTests(unittest.TestCase):
         self.assertEqual(record["root_paths"], 1)
         self.assertEqual(record["dead_end_prefixes"], 1)
         self.assertEqual(record["root_unreachable_parent_skips"], 0)
+
+    def test_root_cone_filter_uses_precomputed_depth_bound(self):
+        depth_by_node = {"R": 0, "A": 1, "B": 2}
+        root_filter = RootConeFilter(depth_by_node)
+
+        self.assertTrue(root_filter.can_reach("B", 2))
+        self.assertFalse(root_filter.can_reach("B", 1))
+        self.assertFalse(root_filter.can_reach("X", 3))
+        self.assertEqual(root_filter.remaining_misses, 1)
+        self.assertEqual(root_filter.depth_misses, 1)
+
+    def test_build_root_cone_records_minimum_child_depths(self):
+        graph = DictGraph({
+            "R": ["A", "B"],
+            "A": ["C"],
+            "B": ["C", "D"],
+            "C": ["E"],
+        })
+
+        depth_by_node, counts = build_root_cone(
+            graph.parents,
+            "R",
+            3,
+            children_per_node=0,
+            frontier_limit=0,
+            seed="fixture",
+        )
+
+        self.assertEqual(depth_by_node["R"], 0)
+        self.assertEqual(depth_by_node["A"], 1)
+        self.assertEqual(depth_by_node["B"], 1)
+        self.assertEqual(depth_by_node["C"], 2)
+        self.assertEqual(depth_by_node["D"], 2)
+        self.assertEqual(depth_by_node["E"], 3)
+        self.assertEqual(counts[0], 1)
+        self.assertEqual(counts[1], 2)
+        self.assertEqual(counts[2], 2)
+
+    def test_select_nodes_by_root_cone_depth_samples_requested_depths(self):
+        selected, depths, counts = select_nodes_by_root_cone_depth(
+            {"R": 0, "A": 1, "B": 1, "C": 2},
+            [1, 2],
+            nodes_per_depth=1,
+            seed="fixture",
+        )
+
+        self.assertEqual(counts, {1: 2, 2: 1})
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(set(depths.values()), {1, 2})
 
     def test_sample_boundary_coverage_estimates_weighted_prefix_counts(self):
         graph = DictGraph({
