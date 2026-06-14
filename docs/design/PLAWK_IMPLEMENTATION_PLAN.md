@@ -267,6 +267,10 @@ case mapping streams bytes without allocating a transformed atom.
 Numeric field guards such as `$3 > 100` lower through the shared
 `@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
 as a strict signed decimal `i64` and compares with numeric op codes.
+The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
+plus success flag, so the same machinery also feeds scalar expressions such as
+`bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
+those scalar arithmetic contexts.
 The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.

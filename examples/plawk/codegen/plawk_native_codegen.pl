@@ -14,6 +14,7 @@
      llvm_emit_atom_field_subslice/7,
      llvm_emit_atom_field_index/7,
      llvm_emit_atom_field_i64_cmp_guard/7,
+     llvm_emit_atom_field_i64/5,
      llvm_emit_c_string_global/5,
      llvm_emit_printf_i64/5,
      llvm_emit_printf_slice/6,
@@ -41,6 +42,7 @@
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      $3 > 100 { big++ } END { print big }
+%      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
@@ -1318,10 +1320,14 @@ plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) 
     Value >= 0.
 plawk_scalar_action_update(add(var(Name), length(field(FieldIndex))), Name, add(length(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i64(FieldIndex))) :-
+    FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
 plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
+    FieldIndex >= 0.
+plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
@@ -1430,6 +1436,16 @@ plawk_scalar_update_operation_ir(add(length(FieldIndex)), FieldSeparator, Prefix
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(AddLine), '  ~w = add i64 ~w, %~w', [NextValue, InputValue, LengthBase]),
     format(atom(IR), '~w~n~w', [LengthCall, AddLine]).
+plawk_scalar_update_operation_ir(add(field_i64(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, InputValue, NextValue, ''-IR) :-
+    format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64', [Prefix, SlotIndex, OpIndex]),
+    llvm_emit_atom_field_i64('%line', FieldIndex, FieldSeparator, ParseBase, ParseCall),
+    format(atom(DeltaValue), '%~w_delta', [ParseBase]),
+    format(atom(DeltaLine), '  ~w = select i1 %~w_ok, i64 %~w_value, i64 0',
+        [DeltaValue, ParseBase, ParseBase]),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(AddLine), '  ~w = add i64 ~w, ~w', [NextValue, InputValue, DeltaValue]),
+    format(atom(IR), '~w~n~w~n~w', [ParseCall, DeltaLine, AddLine]).
 plawk_scalar_update_operation_ir(set(const(Value)), _FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, ''-Line) :-
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
@@ -1441,6 +1457,14 @@ plawk_scalar_update_operation_ir(set(length(FieldIndex)), FieldSeparator, Prefix
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 %~w, 0', [NextValue, LengthBase]),
     format(atom(IR), '~w~n~w', [LengthCall, SetLine]).
+plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, _InputValue, NextValue, ''-IR) :-
+    format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64', [Prefix, SlotIndex, OpIndex]),
+    llvm_emit_atom_field_i64('%line', FieldIndex, FieldSeparator, ParseBase, ParseCall),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(SetLine), '  ~w = select i1 %~w_ok, i64 %~w_value, i64 0',
+        [NextValue, ParseBase, ParseBase]),
+    format(atom(IR), '~w~n~w', [ParseCall, SetLine]).
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.

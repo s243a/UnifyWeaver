@@ -92,10 +92,12 @@ compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
 guarded rules can update shared scalar slots before an `END` print. Scalar slots
 also support native `+=` with integer constants and field lengths, e.g.
 `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`.
+They also support numeric field expressions through the same shared field parser,
+e.g. `$1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }`.
 Plain scalar assignment uses the same native slot path and preserves source
 order with later updates, e.g. `$1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }`. The current assignment expression subset is
-integer literals and `length($N)`.
+integer literals, `length($N)`, and numeric `$N`.
 Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports

@@ -203,6 +203,9 @@ test(full_runtime_generation) :-
     assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_subslice_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_slice_index_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_index_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamI64Parse @wam_slice_i64_parse_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamI64Parse @wam_atom_field_i64_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_i64_cmp_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_slice_i64_cmp_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_i64_cmp_value')),
     assertion(sub_atom(RuntimeCode, _, _, _, 'define void @wam_print_ascii_lower_slice')),
@@ -258,6 +261,12 @@ test(atom_field_index_emitter) :-
 test(atom_field_i64_cmp_guard_emitter) :-
     llvm_emit_atom_field_i64_cmp_guard('%line', 3, 4, 100, 32, '%ok', CallIR),
     assertion(CallIR == '  %ok = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 32, i64 100, i32 4)').
+
+test(atom_field_i64_emitter) :-
+    llvm_emit_atom_field_i64('%line', 3, 58, plawk_value, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 58)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_value = extractvalue %WamI64Parse %plawk_value, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_ok = extractvalue %WamI64Parse %plawk_value, 1')).
 
 test(ascii_case_slice_print_emitter) :-
     llvm_emit_ascii_case_slice_print(lower, '%ptr', '%len', plawk_lower, LowerIR),

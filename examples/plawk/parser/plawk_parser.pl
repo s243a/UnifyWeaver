@@ -21,6 +21,7 @@
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      { count++ } END { print "count", count }
 %      $3 > 100 { big++ } END { print big }
+%      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -349,6 +350,13 @@ scalar_delta_expr(int(Value)) -->
     { ValueCodes \== [],
       number_codes(Value, ValueCodes),
       Value >= 0 }.
+scalar_delta_expr(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
 scalar_delta_expr(length(Field)) -->
     "length",
     ws,
