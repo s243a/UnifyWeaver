@@ -15,11 +15,20 @@ rpaw_fact(1). rpaw_fact(2). rpaw_fact(3).
 rpaw_down(0, []).
 rpaw_down(N, [N|T]) :- N > 0, M is N - 1, rpaw_down(M, T).
 rpaw_cheap(X, Y) :- Y is X * 2.
+% recursive numeric body (expensive tier): rpaw_rsum(X,S) = X*(X+1)/2
+rpaw_rsum(0, 0).
+rpaw_rsum(N, S) :- N > 0, M is N - 1, rpaw_rsum(M, S0), S is S0 + N.
 
 % single clause = a parallel-eligible aggregate (recursive body)
 rpaw_collect(L) :- findall(D, (rpaw_fact(X), rpaw_down(X, D)), L).
 % count variant
 rpaw_count(N)   :- aggregate_all(count, (rpaw_fact(X), rpaw_down(X, _D)), N).
+% max/min/set/bag/sum variants over a recursive numeric body
+rpaw_max(M) :- aggregate_all(max(S), (rpaw_fact(X), rpaw_rsum(X, S)), M).
+rpaw_min(M) :- aggregate_all(min(S), (rpaw_fact(X), rpaw_rsum(X, S)), M).
+rpaw_set(L) :- aggregate_all(set(S), (rpaw_fact(X), rpaw_rsum(X, S)), L).
+rpaw_bag(L) :- aggregate_all(bag(S), (rpaw_fact(X), rpaw_rsum(X, S)), L).
+rpaw_sum(S) :- aggregate_all(sum(S0), (rpaw_fact(X), rpaw_rsum(X, S0)), S).
 % NOT parallel-eligible (cheap body) -> wrapper should decline
 rpaw_cheapagg(L) :- findall(Y, (rpaw_fact(X), rpaw_cheap(X, Y)), L).
 % multi-clause -> decline
@@ -51,6 +60,29 @@ test(helpers_are_enum_and_body) :-
 test(count_wrapper_uses_len_reduce) :-
     wrap(rpaw_count/1, _, W),
     assertion(sub_string(W, _, _, _, "__vals.len() as i64")).
+
+test(max_wrapper_uses_minmax_fold) :-
+    wrap(rpaw_max/1, _, W),
+    assertion(sub_string(W, _, _, _, "__best")),
+    assertion(sub_string(W, _, _, _, "a > b")).
+
+test(min_wrapper_uses_minmax_fold) :-
+    wrap(rpaw_min/1, _, W),
+    assertion(sub_string(W, _, _, _, "__best")),
+    assertion(sub_string(W, _, _, _, "a < b")).
+
+test(set_wrapper_sorts_and_dedups) :-
+    wrap(rpaw_set/1, _, W),
+    assertion(sub_string(W, _, _, _, "term_compare")),
+    assertion(sub_string(W, _, _, _, "dedup_by")).
+
+test(bag_wrapper_is_collect_list) :-
+    wrap(rpaw_bag/1, _, W),
+    assertion(sub_string(W, _, _, _, "Value::List(__vals)")).
+
+test(sum_wrapper_folds) :-
+    wrap(rpaw_sum/1, _, W),
+    assertion(sub_string(W, _, _, _, "Value::Float(sf)")).
 
 test(declines_cheap_aggregate) :-
     assertion(\+ wrap(rpaw_cheapagg/1, _, _)).

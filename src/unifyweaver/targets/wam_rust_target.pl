@@ -4541,6 +4541,19 @@ rust_agg_reduce(collect, "Value::List(__vals)") :- !.
 rust_agg_reduce(count, "Value::Integer(__vals.len() as i64)") :- !.
 rust_agg_reduce(sum, Expr) :- !,
     Expr = "{ let mut si: i64 = 0; let mut sf: f64 = 0.0; let mut isf = false; for v in &__vals { match v { Value::Integer(n) => { si += *n; sf += *n as f64; }, Value::Float(f) => { isf = true; sf += *f; }, _ => {} } } if isf { Value::Float(sf) } else { Value::Integer(si) } }".
+rust_agg_reduce(max, Expr) :- !, rust_agg_minmax_reduce(">", Expr).
+rust_agg_reduce(min, Expr) :- !, rust_agg_minmax_reduce("<", Expr).
+% set: sorted, duplicate-free (standard order of terms via the runtime's
+% term_compare; dedup adjacent equals after sort).
+rust_agg_reduce(set, Expr) :- !,
+    Expr = "{ let mut __s = __vals; __s.sort_by(|a, b| vm.term_compare(a, b)); __s.dedup_by(|a, b| vm.term_compare(a, b) == std::cmp::Ordering::Equal); Value::List(__s) }".
+
+% max/min share a fold; Cmp is the Rust comparison operator (">" or "<").
+% Mirrors the interpreter's aggregate_frame max/min (Integer/Float mixed).
+rust_agg_minmax_reduce(Cmp, Expr) :-
+    format(string(Expr),
+"{ let mut __best: Option<Value> = None; for v in &__vals { let __take = match &__best { None => true, Some(p) => match (v, p) { (Value::Integer(a), Value::Integer(b)) => a ~w b, (Value::Float(a), Value::Float(b)) => a ~w b, (Value::Integer(a), Value::Float(b)) => (*a as f64) ~w *b, (Value::Float(a), Value::Integer(b)) => *a ~w (*b as f64), _ => false } }; if __take { __best = Some(v.clone()); } } __best.unwrap_or(Value::List(vec![])) }",
+           [Cmp, Cmp, Cmp, Cmp]).
 
 % Partition the project predicate list: predicates whose body is a
 % parallel-eligible aggregate are replaced by (a) their synthesised enum/body

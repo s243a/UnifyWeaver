@@ -216,6 +216,7 @@ agg_value_type(aggregate_all(sum(V), _, _),   sum, V) :- !.
 agg_value_type(aggregate_all(max(V), _, _),   max, V) :- !.
 agg_value_type(aggregate_all(min(V), _, _),   min, V) :- !.
 agg_value_type(aggregate_all(bag(V), _, _),   collect, V) :- !.
+agg_value_type(aggregate_all(set(V), _, _),   set, V) :- !.
 
 aggregate_result(findall(_, _, R), R) :- !.
 aggregate_result(aggregate_all(_, _, R), R).
