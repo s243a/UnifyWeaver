@@ -16,8 +16,9 @@ For each sampled target and path-length budget it compares:
 The summary treats a point cap such as 50 as an upper bound, not a cost paid by
 every histogram.  The observed support, tail-pruned support, path mass, DFS
 expansions, recurrence states, and state-based break-even hits are reported by
-target bucket and path-length budget.  The bucket can be either child-depth
-from the chosen root or maximum parent-path distance `L_max` back to that root.
+target bucket and path-length budget.  The bucket can be child-depth from the
+chosen root, minimum parent-path distance `L_min`, or maximum parent-path
+distance `L_max` back to that root.
 """
 
 from __future__ import annotations
@@ -214,14 +215,22 @@ def select_root_reachable_parent_distance_targets(graph, root, buckets, args):
     distance_memo = {}
     candidates_by_bucket = {bucket: [] for bucket in sorted(wanted)}
     filtered = []
+    field = args.parent_distance_field
     for node, child_depth in sorted(depth_by_node.items(), key=lambda item: (item[1], item[0])):
         distances = root_distances(node, root, graph.parents, args.max_parent_depth, distance_memo)
         row = child_depth_target_row(node, child_depth, distances)
-        row["selection_bucket"] = distances["L_max"]
-        if distances["L_min"] is None or distances["truncated"]:
+        row["selection_bucket"] = distances[field]
+        if distances["L_min"] is None:
             filtered.append(row)
             continue
-        bucket = int(distances["L_max"])
+        if field == "L_max" and distances["truncated"]:
+            filtered.append(row)
+            continue
+        bucket_value = distances[field]
+        if bucket_value is None:
+            filtered.append(row)
+            continue
+        bucket = int(bucket_value)
         if bucket in wanted:
             candidates_by_bucket.setdefault(bucket, []).append(row)
     kept = []
@@ -364,6 +373,7 @@ def build_summary(records, args):
         "graph": args.graph_name,
         "root": args.root,
         "target_selection": args.target_selection,
+        "parent_distance_field": getattr(args, "parent_distance_field", "L_max"),
         "point_cap": args.point_cap,
         "tail_epsilon": args.tail_epsilon,
         "selection": selection,
@@ -373,7 +383,10 @@ def build_summary(records, args):
 
 def markdown_summary(summary):
     selection = summary["selection"]
-    bucket_label = "child_depth" if summary.get("target_selection") == "child-depth" else "L_max_bucket"
+    if summary.get("target_selection") == "child-depth":
+        bucket_label = "child_depth"
+    else:
+        bucket_label = "{}_bucket".format(summary.get("parent_distance_field", "L_max"))
     lines = [
         "# LMDB Exact Sparse Depth Sweep",
         "",
@@ -386,6 +399,8 @@ def markdown_summary(summary):
         "Tail epsilon: `{}`".format(summary["tail_epsilon"]),
         "",
         "Target selection: `{}`".format(summary.get("target_selection", "child-depth")),
+        "",
+        "Parent distance field: `{}`".format(summary.get("parent_distance_field", "n/a")),
         "",
         "## Selection",
         "",
@@ -424,17 +439,20 @@ def markdown_summary(summary):
         "",
         "## Depth And Budget Buckets",
         "",
-        "| {} | budget | rows | exact_sparse | exact_matches | mean_child_depth | mean_L_min | mean_L_max | mean_paths | max_paths | mean_eff_bins | max_eff_bins | pct_eff_bins_le_cap | mean_dfs_nodes | mean_rec_states | mean_state_ratio | mean_time_ratio | mean_break_even_hits |".format(bucket_label),
-        "|------------:|-------:|-----:|-------------:|--------------:|-----------------:|-----------:|-----------:|-----------:|----------:|--------------:|-------------:|--------------------:|---------------:|----------------:|-----------------:|----------------:|---------------------:|",
+        "| {} | budget | rows | exact_sparse | exact_matches | cycle_approx | dfs_capped | recurrence_capped | mean_child_depth | mean_L_min | mean_L_max | mean_paths | max_paths | mean_eff_bins | max_eff_bins | pct_eff_bins_le_cap | mean_dfs_nodes | mean_rec_states | mean_state_ratio | mean_time_ratio | mean_break_even_hits |".format(bucket_label),
+        "|------------:|-------:|-----:|-------------:|--------------:|-------------:|-----------:|------------------:|-----------------:|-----------:|-----------:|-----------:|----------:|--------------:|-------------:|--------------------:|---------------:|----------------:|-----------------:|----------------:|---------------------:|",
     ])
     for row in summary["buckets"]:
         lines.append(
-            "| {bucket} | {budget} | {rows} | {exact_sparse} | {exact} | {mean_child:.3f} | {mean_lmin:.3f} | {mean_lmax:.3f} | {mean_paths:.3f} | {max_paths} | {mean_bins:.3f} | {max_bins} | {pct_bins:.3f} | {dfs_nodes:.3f} | {rec_states:.3f} | {state_ratio:.3f} | {time_ratio:.3f} | {break_even:.3f} |".format(
+            "| {bucket} | {budget} | {rows} | {exact_sparse} | {exact} | {cycle} | {dfs_capped} | {rec_capped} | {mean_child:.3f} | {mean_lmin:.3f} | {mean_lmax:.3f} | {mean_paths:.3f} | {max_paths} | {mean_bins:.3f} | {max_bins} | {pct_bins:.3f} | {dfs_nodes:.3f} | {rec_states:.3f} | {state_ratio:.3f} | {time_ratio:.3f} | {break_even:.3f} |".format(
                 bucket=row["selection_bucket"],
                 budget=row["budget"],
                 rows=row["rows"],
                 exact_sparse=row["exact_sparse_under_point_cap_rows"],
                 exact=row["exact_match_rows"],
+                cycle=row["cycle_approximation_rows"],
+                dfs_capped=row["dfs_capped_rows"],
+                rec_capped=row["recurrence_capped_rows"],
                 mean_child=row["mean_child_sample_depth"],
                 mean_lmin=row["mean_target_L_min"],
                 mean_lmax=row["mean_target_L_max"],
@@ -458,6 +476,8 @@ def markdown_summary(summary):
         "- `mean_break_even_hits` is state based: recurrence build states divided by saved states per cached hit, using effective bins as the cached evaluation cost.  It is a planning estimate, not a wall-clock guarantee.",
         "- If mean effective bins stay far below the point cap, the cap is not the paid storage cost; exact sparse histograms remain the first representation to consider.",
     ])
+    if any(row["dfs_capped_rows"] or row["recurrence_capped_rows"] or row["cycle_approximation_rows"] for row in summary["buckets"]):
+        lines.append("- Rows with DFS caps, recurrence caps, or cycle approximation are not exact histogram-shape evidence; their support and path-count columns describe only the capped or approximated run.")
     return "\n".join(lines) + "\n"
 
 
@@ -490,6 +510,7 @@ def run_sweep(args):
             "graph": args.graph_name,
             "root": args.root,
             "target_selection": args.target_selection,
+            "parent_distance_field": args.parent_distance_field,
             "target_depths": target_depths,
             "target_buckets": target_buckets,
             "parent_distance_buckets": parent_distance_buckets,
@@ -569,8 +590,9 @@ def parse_args(argv=None):
     parser.add_argument("--root", type=int, required=True, help="Numeric root id.")
     parser.add_argument("--graph-name", default="lmdb_exact_sparse_depth_sweep", help="Graph label used in output filenames.")
     parser.add_argument("--target-selection", choices=["child-depth", "parent-distance"], default="child-depth", help="Target bucket axis.")
+    parser.add_argument("--parent-distance-field", choices=["L_min", "L_max"], default="L_max", help="Parent-distance value to use when `--target-selection parent-distance`.")
     parser.add_argument("--target-depths", default=DEFAULT_TARGET_DEPTHS, help="Child depths to sample, e.g. `1,2,3,4`.")
-    parser.add_argument("--parent-distance-buckets", default=DEFAULT_PARENT_DISTANCE_BUCKETS, help="L_max parent-distance buckets for `--target-selection parent-distance`.")
+    parser.add_argument("--parent-distance-buckets", default=DEFAULT_PARENT_DISTANCE_BUCKETS, help="Selected parent-distance buckets for `--target-selection parent-distance`.")
     parser.add_argument("--children-per-node", type=int, default=50000, help="Child sample cap per frontier node.")
     parser.add_argument("--frontier-limit", type=int, default=50000, help="Depth frontier sample cap.")
     parser.add_argument("--targets-per-depth", type=int, default=12, help="Targets sampled per requested child depth.")

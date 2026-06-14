@@ -54,6 +54,7 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
             max_parent_depth=8,
             root_cone_max_child_depth=0,
             root_cone_max_nodes=0,
+            parent_distance_field="L_max",
         )
 
         kept, filtered, counts = select_root_reachable_parent_distance_targets(
@@ -69,6 +70,47 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
         self.assertEqual(by_node["A"]["selection_bucket"], 1)
         self.assertEqual(by_node["C"]["selection_bucket"], 2)
         self.assertFalse(filtered)
+
+    def test_parent_distance_selector_lmin_keeps_reachable_truncated_lmax(self):
+        graph = FakeGraph(
+            children={"R": ["A"], "A": ["C"]},
+            parents={"A": ["R"], "C": ["A", "T"], "T": ["Z"], "Z": ["Y"]},
+        )
+        args = SimpleNamespace(
+            children_per_node=99,
+            frontier_limit=99,
+            targets_per_depth=10,
+            seed="fixture",
+            max_parent_depth=2,
+            root_cone_max_child_depth=0,
+            root_cone_max_nodes=0,
+            parent_distance_field="L_min",
+        )
+
+        kept, filtered, counts = select_root_reachable_parent_distance_targets(
+            graph,
+            "R",
+            [2],
+            args,
+        )
+
+        self.assertEqual(counts["2"], 1)
+        self.assertEqual([row["target_node"] for row in kept], ["C"])
+        self.assertEqual(kept[0]["selection_bucket"], 2)
+        self.assertTrue(kept[0]["distance_truncated"])
+        self.assertFalse(filtered)
+
+        args.parent_distance_field = "L_max"
+        kept, filtered, counts = select_root_reachable_parent_distance_targets(
+            graph,
+            "R",
+            [2],
+            args,
+        )
+
+        self.assertEqual(counts["2"], 0)
+        self.assertFalse(kept)
+        self.assertEqual([row["target_node"] for row in filtered], ["C"])
 
     def test_summary_bucket_classifies_exact_sparse_rows(self):
         row = {
@@ -107,6 +149,7 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
             "graph": "fixture",
             "root": 1,
             "target_selection": "parent-distance",
+            "parent_distance_field": "L_min",
             "point_cap": 50,
             "tail_epsilon": 0.01,
             "selection": {
@@ -122,6 +165,9 @@ class ExactSparseDepthSweepTests(unittest.TestCase):
                     "rows": 1,
                     "exact_sparse_under_point_cap_rows": 1,
                     "exact_match_rows": 1,
+                    "cycle_approximation_rows": 0,
+                    "dfs_capped_rows": 0,
+                    "recurrence_capped_rows": 0,
                     "mean_child_sample_depth": 2.0,
                     "mean_target_L_min": 2.0,
                     "mean_target_L_max": 2.0,
