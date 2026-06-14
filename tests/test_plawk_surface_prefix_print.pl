@@ -123,6 +123,41 @@ test(parses_nonterminal_next_rule) :-
          rule(always, [inc(var(total))])],
         [end([print([var(total), var(skipped)])])])).
 
+test(parses_terminal_break_scalar_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "ERROR"), [inc(var(hits)), break]),
+         rule(always, [inc(var(total))])],
+        [end([print([var(hits), var(total)])])])).
+
+test(parses_terminal_break_assoc_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "ERROR"), [inc_assoc(var(seen), field(2)), break]),
+         rule(always, [inc_assoc(var(counts), field(1))])],
+        [end([print([
+            assoc(var(seen), string("disk")),
+            assoc(var(counts), string("ERROR")),
+            assoc(var(counts), string("WARN"))
+        ])])])).
+
+test(parses_terminal_break_mixed_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { hits++; seen[$2]++; break } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "ERROR"), [inc(var(hits)), inc_assoc(var(seen), field(2)), break]),
+         rule(always, [inc(var(total)), inc_assoc(var(counts), field(1))])],
+        [end([print([
+            var(hits), var(total), assoc(var(seen), string("disk")),
+            assoc(var(counts), string("ERROR")), assoc(var(counts), string("WARN"))
+        ])])])).
+
+test(parses_nonterminal_break_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { break; hits++ } { total++ } END { print hits, total }\n", Program),
+    assertion(Program == program([],
+        [rule(field_eq(1, "ERROR"), [break, inc(var(hits))]),
+         rule(always, [inc(var(total))])],
+        [end([print([var(hits), var(total)])])])).
+
 test(parses_field_eq_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -320,6 +355,26 @@ test(surface_terminal_next_only_skips_remaining_mixed_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++; counts[$1]++ } END { print total, counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 0 1\n").
+
+test(surface_terminal_break_stops_scalar_rule_chain_and_runs_end) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n",
+        "INFO boot ok\nWARN cpu hot\nERROR disk full\nERROR net down\n",
+        "1 2\n").
+
+test(surface_terminal_break_stops_assoc_rule_chain_and_runs_end) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "WARN cpu hot\nERROR disk full\nERROR net down\n",
+        "1 0 1\n").
+
+test(surface_terminal_break_stops_mixed_rule_chain_and_runs_end) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { hits++; seen[$2]++; break } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "WARN cpu hot\nERROR disk full\nERROR net down\n",
+        "1 1 1 0 1\n").
+
+test(surface_terminal_break_as_last_rule_keeps_continue_phi_valid) :-
+    run_surface_print_smoke("{ total++ } $1 == \"ERROR\" { hits++; break } END { print hits, total }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
+        "1 2\n").
 
 test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += length($0); hits += 2 } END { print bytes, hits }\n",
@@ -576,6 +631,46 @@ test(surface_nonterminal_next_assoc_rejected_by_native_codegen, [fail]) :-
 
 test(surface_nonterminal_next_mixed_rejected_by_native_codegen, [fail]) :-
     plawk_parse_string("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_terminal_break_uses_close_path_and_final_state_phi) :-
+    plawk_parse_string("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_apply]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%final_slot_0 = phi i64 [%slot_0, %close_stream], [%break_slot_0, %break_close_stream]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'i64 %final_slot_0'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_assoc_terminal_break_uses_native_close_path) :-
+    plawk_parse_string("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %break_close_stream'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_mixed_terminal_break_uses_close_path_and_final_state_phi) :-
+    plawk_parse_string("$1 == \"ERROR\" { hits++; seen[$2]++; break } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_done]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%final_slot_0 = phi i64 [%slot_0, %close_stream], [%break_slot_0, %break_close_stream]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_nonterminal_break_scalar_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"ERROR\" { break; hits++ } { total++ } END { print hits, total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_nonterminal_break_assoc_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"ERROR\" { break; seen[$2]++ } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+
+test(surface_nonterminal_break_mixed_rejected_by_native_codegen, [fail]) :-
+    plawk_parse_string("$1 == \"ERROR\" { break; hits++; seen[$2]++ } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
 
 test(surface_end_string_literals_use_indexed_globals) :-

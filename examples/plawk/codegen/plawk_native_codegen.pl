@@ -33,6 +33,7 @@
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -92,6 +93,8 @@ plawk_program_native_driver_ir(
     plawk_state_loop_phi_ir(ScalarPlan, LoopPhiIR),
     plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls, NextPhiIR),
+    plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls, done,
+        BreakCloseIR, FinalStatePhiIR),
     plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
@@ -99,12 +102,12 @@ plawk_program_native_driver_ir(
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
-~w
+~w~w
   ret i32 0',
-        [EndPrintIR]),
+        [FinalStatePhiIR, EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
-            RuleChainIR, NextPhiIR, end_print, CloseOkIR),
+            RuleChainIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -122,18 +125,20 @@ plawk_program_native_driver_ir(
     plawk_state_loop_phi_ir(StatePlan, LoopPhiIR),
     plawk_scalar_rule_controls(Rules, ScalarRuleControls),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, apply,
+        BreakCloseIR, FinalStatePhiIR),
     plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
-~w
+~w~w
   ret i32 0',
-        [EndPrintIR]),
+        [FinalStatePhiIR, EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RuleChainIR,
-            NextPhiIR, end_print, CloseOkIR),
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -150,6 +155,8 @@ plawk_program_native_driver_ir(
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_assoc_end_print_ir(PrintFields, AssocPlan, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
@@ -162,7 +169,7 @@ plawk_program_native_driver_ir(
         [EndPrintIR]),
     plawk_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', end_print, CloseOkIR),
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_combine_entry_ir('', IR, IR) :-
@@ -183,8 +190,9 @@ plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
         [SurfaceGlobals]).
 
 % Shared native streaming skeleton. Surface-specific lowerers provide globals,
-% loop-carried state phis, the per-record lowered block, continuation phis, and
-% the close-success block; file open/read/eof/close stays backend infrastructure.
+% loop-carried state phis, the per-record lowered block, continuation phis, an
+% optional terminal-break close block, and the close-success block; file
+% open/read/eof/close stays backend infrastructure.
 plawk_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
@@ -200,6 +208,17 @@ plawk_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
         ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    plawk_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+plawk_stream_driver_ir(
+    InputPath,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
     DriverIR
 ) :-
     atom_codes(InputPath, PathCodes),
@@ -256,6 +275,7 @@ continue_loop:
 ~w
   br label %loop
 
+~w
 close_stream:
   %close_ok = call i1 @wam_stream_close_value(%Value %handle)
   br i1 %close_ok, label %~w, label %fail_close
@@ -279,7 +299,7 @@ fail_close:
 ',
         [BytesLen, PathBytes, RuntimeGlobals,
          BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
-         LoweredLabel, RecordIR, ContinueIR, CloseOkLabel, CloseOkIR]).
+         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 llvm_c_bytes([], '').
 llvm_c_bytes([Code | Rest], Bytes) :-
@@ -302,20 +322,105 @@ plawk_state_slot_index(StatePlan, Slot, Index) :-
     plawk_state_plan_slots(StatePlan, Slots),
     nth0(Index, Slots, Slot).
 
-plawk_split_terminal_next(Actions, BodyActions, terminal_next) :-
+plawk_split_terminal_control(Actions, BodyActions, terminal_next) :-
     append(BodyActions, [next], Actions),
     !,
-    \+ member(next, BodyActions).
-plawk_split_terminal_next(Actions, Actions, fallthrough) :-
-    \+ member(next, Actions).
+    \+ member(next, BodyActions),
+    \+ member(break, BodyActions).
+plawk_split_terminal_control(Actions, BodyActions, terminal_break) :-
+    append(BodyActions, [break], Actions),
+    !,
+    \+ member(next, BodyActions),
+    \+ member(break, BodyActions).
+plawk_split_terminal_control(Actions, Actions, fallthrough) :-
+    \+ member(next, Actions),
+    \+ member(break, Actions).
 
 plawk_rule_target(fallthrough, NextLabel, NextLabel).
 plawk_rule_target(terminal_next, _NextLabel, continue_loop).
+plawk_rule_target(terminal_break, _NextLabel, break_close_stream).
+
+
+plawk_controls_have_break(Controls) :-
+    member(terminal_break, Controls).
+
+plawk_assoc_break_close_ir(Controls, IR) :-
+    (   plawk_controls_have_break(Controls)
+    ->  IR = 'break_close_stream:
+  %break_close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %break_close_ok, label %end_print, label %fail_close
+'
+    ;   IR = ''
+    ).
+
+plawk_break_close_ir(StatePlan, RuleCount, Controls, BreakPredKind, BreakCloseIR, FinalStatePhiIR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    (   plawk_controls_have_break(Controls)
+    ->  phrase(plawk_break_slot_phi_lines(Slots, RuleCount, Controls, BreakPredKind, 0), BreakSlotPhiLines),
+        atomic_list_concat(BreakSlotPhiLines, '\n', BreakSlotPhiIR),
+        format(atom(BreakCloseIR),
+'break_close_stream:
+~w
+  %break_close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %break_close_ok, label %end_print, label %fail_close
+',
+            [BreakSlotPhiIR]),
+        HasBreak = true
+    ;   BreakCloseIR = '',
+        HasBreak = false
+    ),
+    phrase(plawk_final_state_phi_lines(Slots, HasBreak, 0), FinalStatePhiLines),
+    atomic_list_concat(FinalStatePhiLines, '\n', FinalStatePhiIR0),
+    ( FinalStatePhiIR0 == ''
+    -> FinalStatePhiIR = ''
+    ;  format(atom(FinalStatePhiIR), '~w~n', [FinalStatePhiIR0])
+    ).
+
+plawk_break_slot_phi_lines([], _RuleCount, _Controls, _BreakPredKind, _) -->
+    [].
+plawk_break_slot_phi_lines([_Slot | Rest], RuleCount, Controls, BreakPredKind, SlotIndex) -->
+    { LastRuleIndex is RuleCount - 1,
+      findall(Incoming,
+          ( between(0, LastRuleIndex, RuleIndex),
+            nth0(RuleIndex, Controls, terminal_break),
+            plawk_break_predecessor_label(BreakPredKind, RuleIndex, PredLabel),
+            format(atom(Incoming), '[%rule_~w_slot_~w, %~w]',
+                [RuleIndex, SlotIndex, PredLabel])
+          ),
+          Incomings),
+      Incomings \== [],
+      atomic_list_concat(Incomings, ', ', IncomingIR),
+      format(atom(Line), '  %break_slot_~w = phi i64 ~w', [SlotIndex, IncomingIR]),
+      NextSlotIndex is SlotIndex + 1
+    },
+    [Line],
+    plawk_break_slot_phi_lines(Rest, RuleCount, Controls, BreakPredKind, NextSlotIndex).
+
+plawk_break_predecessor_label(apply, RuleIndex, Label) :-
+    format(atom(Label), 'rule_~w_apply', [RuleIndex]).
+plawk_break_predecessor_label(done, RuleIndex, Label) :-
+    format(atom(Label), 'rule_~w_done', [RuleIndex]).
+
+plawk_final_state_phi_lines([], _HasBreak, _) -->
+    [].
+plawk_final_state_phi_lines([_Slot | Rest], HasBreak, SlotIndex) -->
+    { format(atom(EofIncoming), '[%slot_~w, %close_stream]', [SlotIndex]),
+      ( HasBreak == true
+      -> format(atom(BreakIncoming), '[%break_slot_~w, %break_close_stream]', [SlotIndex]),
+         Incomings = [EofIncoming, BreakIncoming]
+      ;  Incomings = [EofIncoming]
+      ),
+      atomic_list_concat(Incomings, ', ', IncomingIR),
+      format(atom(Line), '  %final_slot_~w = phi i64 ~w', [SlotIndex, IncomingIR]),
+      NextSlotIndex is SlotIndex + 1
+    },
+    [Line],
+    plawk_final_state_phi_lines(Rest, HasBreak, NextSlotIndex).
 
 plawk_scalar_rule_controls(Rules, Controls) :-
     findall(Control,
         ( member(rule(_Pattern, Actions), Rules),
-          plawk_split_terminal_next(Actions, _BodyActions, Control)
+          plawk_split_terminal_control(Actions, _BodyActions, Control)
         ),
         Controls).
 
@@ -381,7 +486,7 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
     [].
 plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Actions0), Index) -->
-    { plawk_split_terminal_next(Actions, BodyActions, Control),
+    { plawk_split_terminal_control(Actions, BodyActions, Control),
       plawk_mixed_rule_actions(BodyActions, ScalarActions, AssocSpecs),
       ( ScalarActions == [], AssocSpecs == [], Control == fallthrough
       -> HasActions = false,
@@ -501,7 +606,7 @@ plawk_mixed_scalar_rule_input_phi_lines([_Slot | Rest], RuleIndex, Controls, Slo
       plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
           [PrevFalseValue, PrevRuleIndex]),
-      (   nth0(PrevRuleIndex, Controls, terminal_next)
+      (   plawk_terminal_control_skips_next_rule(Controls, PrevRuleIndex)
       ->  Incomings = [FalseIncoming]
       ;   format(atom(ApplyIncoming), '[%rule_~w_slot_~w, %rule_~w_done]',
               [PrevRuleIndex, SlotIndex, PrevRuleIndex]),
@@ -529,7 +634,9 @@ plawk_mixed_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, Index) --
           [FalseValue, LastRuleIndex]),
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
-            ( RuleIndex =:= LastRuleIndex
+            ( ( RuleIndex =:= LastRuleIndex,
+                \+ nth0(RuleIndex, Controls, terminal_break)
+              )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),
             format(atom(ApplyIncoming), '[%rule_~w_slot_~w, %rule_~w_done]',
@@ -566,13 +673,16 @@ plawk_assoc_runtime_count_plan(
     sort(ArrayNames0, Tables),
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
 
+plawk_assoc_rule_controls(assoc_plan(_Tables, Rules), Controls) :-
+    findall(Control, member(assoc_rule(_Index, _Pattern, _Actions, Control), Rules), Controls).
+
 plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs, Control)) :-
-    plawk_split_terminal_next(Actions, BodyActions, Control),
+    plawk_split_terminal_control(Actions, BodyActions, Control),
     ( BodyActions == []
     -> ActionSpecs = []
     ;  maplist(plawk_assoc_increment_action, BodyActions, ActionSpecs)
     ),
-    ( ActionSpecs \== [] ; Control == terminal_next ).
+    ( ActionSpecs \== [] ; memberchk(Control, [terminal_next, terminal_break]) ).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -939,7 +1049,7 @@ plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSep
           '  %end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
           [PrintIndex]),
       format(atom(PrintCall),
-          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %slot_~w)',
+          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %final_slot_~w)',
           [PrintIndex, PrintIndex, SlotIndex]),
       NextPrintIndex is PrintIndex + 1
     },
@@ -996,7 +1106,7 @@ plawk_scalar_planned_rules(Rules, PlannedRules, Controls) :-
 plawk_scalar_planned_rule_lines([], _Index) -->
     [].
 plawk_scalar_planned_rule_lines([rule(Pattern, Actions) | Rest], Index) -->
-    { plawk_split_terminal_next(Actions, BodyActions, Control),
+    { plawk_split_terminal_control(Actions, BodyActions, Control),
       NextIndex is Index + 1 },
     [scalar_rule(Index, Pattern, BodyActions, Control)],
     plawk_scalar_planned_rule_lines(Rest, NextIndex).
@@ -1054,7 +1164,7 @@ plawk_scalar_rule_input_phi_lines([_Name | Rest], RuleIndex, Controls, SlotIndex
       plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
           [PrevFalseValue, PrevRuleIndex]),
-      (   nth0(PrevRuleIndex, Controls, terminal_next)
+      (   plawk_terminal_control_skips_next_rule(Controls, PrevRuleIndex)
       ->  Incomings = [FalseIncoming]
       ;   format(atom(ApplyIncoming), '[%rule_~w_slot_~w, %rule_~w_apply]',
               [PrevRuleIndex, SlotIndex, PrevRuleIndex]),
@@ -1067,6 +1177,10 @@ plawk_scalar_rule_input_phi_lines([_Name | Rest], RuleIndex, Controls, SlotIndex
     },
     [Line],
     plawk_scalar_rule_input_phi_lines(Rest, RuleIndex, Controls, NextSlotIndex).
+
+plawk_terminal_control_skips_next_rule(Controls, RuleIndex) :-
+    nth0(RuleIndex, Controls, Control),
+    memberchk(Control, [terminal_next, terminal_break]).
 
 plawk_scalar_rule_input_value(0, SlotIndex, Value) :-
     !,
@@ -1175,7 +1289,9 @@ plawk_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, Index) -->
           [FalseValue, LastRuleIndex]),
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
-            ( RuleIndex =:= LastRuleIndex
+            ( ( RuleIndex =:= LastRuleIndex,
+                \+ nth0(RuleIndex, Controls, terminal_break)
+              )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),
             format(atom(ApplyIncoming), '[%rule_~w_slot_~w, %rule_~w_apply]',
@@ -1204,7 +1320,7 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
           '  %end_i64_fmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
           [PrintIndex]),
       format(atom(PrintCall),
-          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %slot_~w)',
+          '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 %final_slot_~w)',
           [PrintIndex, PrintIndex, SlotIndex]),
       NextPrintIndex is PrintIndex + 1
     },

@@ -242,7 +242,15 @@ END { print total, skipped }
 ```
 
 The same terminal `next` behavior works for associative arrays and mixed scalar/array rules.
-For now, `next` must be the last action in the rule body.
+Terminal `break` stops the input stream before running `END`:
+
+```awk
+$1 == "ERROR" { hits++; break }
+{ total++ }
+END { print hits, total }
+```
+
+For now, `next` and `break` must be the last action in the rule body.
 
 `BEGIN` can emit literal report headers before the first input record is read:
 
