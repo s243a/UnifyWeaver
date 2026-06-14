@@ -96,7 +96,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | ✗ | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
@@ -143,17 +143,22 @@ Verification notes:
 - **T7**: elixir is the only real implementation (`Task.async_stream` +
   `par_wrap_segment`); clojure/python have `_branch` scaffolds (counted `~`).
   go's clause-parallel goroutines live in the *non-WAM* `go_target.pl` direct
-  compiler, not the WAM lowered emitter → go T7 = ✗ here. **rust T7 = ✗ (not
-  built) but benchmark-validated as worth building *with a gate***: parallel
-  fan-out of a forkable aggregate is 2–3.7× on 4 cores for expensive per-branch
-  work, but a 5–200× *regression* on cheap branches (each parallel branch must
-  clone its own WAM machine — the cost backtracking avoids), so a model-based
-  adaptive probe (est_seq vs est_par incl. measured pool overhead) is mandatory
-  to pick small-vs-large workloads and recover best-of-both. Design + evidence +
-  a build plan against the existing `BeginAggregate`/`EndAggregate` substrate are
-  in `docs/reports/wam_rust_t7_parallel_perf.md`. (Like the LLVM T6 decline, the
-  benchmark is what gates the decision — here it says "yes, but only behind the
-  probe.")
+  compiler, not the WAM lowered emitter → go T7 = ✗ here. **rust T7 = `~` (built,
+  gated, whole-body aggregates)**: a forkable aggregate that is a predicate's
+  whole body compiles — behind `parallel_aggregates(true)` and a compile-time
+  cost gate — to a generator/body split (`parallel_aggregate_transform`) plus a
+  native `par_collect` wrapper that runs the body on a cloned WAM machine per
+  input across threads, reducing by type (collect/count/sum/max/min/bag/set). The
+  gate is mandatory: fan-out is 2–3.4× on 4 cores for expensive/recursive
+  per-branch work (**3.39× measured end-to-end**) but a 5–200× *regression* on
+  cheap branches (each branch clones its own machine — the cost backtracking
+  avoids), so only expensive/recursive tiers fan out. `~` not ✓ because
+  aggregates *embedded in a larger clause body* still compile sequentially (the
+  `par_aggregate` WAM-instruction route, not yet built). Design/benchmark/handoff:
+  `docs/reports/wam_rust_t7_parallel_perf.md`,
+  `docs/reports/wam_rust_t7_speedup_benchmark.md`,
+  `docs/reports/wam_rust_t7_RESUME.md`. (Like the LLVM T6 decline, the benchmark
+  is what gated the decision — here it said "yes, but only behind the probe.")
 - **T9**: rust and scala's lowered *emitters* emit no fact tables; scala's
   ✓ is the target-level fact-source backend (auto-inline ≤128 rows, then
   CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's emitter-level
