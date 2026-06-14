@@ -29,7 +29,7 @@
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 % T7 compile-time parallel-aggregate gate (consumer of the cost machinery).
-:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3]).
+:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3, parallel_aggregate_transform/5]).
 :- use_module('../core/cost_analysis', [build_cost_model/2, goal_cost_tier/3]).
 :- use_module('../targets/wam_text_parser', [
     wam_classify_constant_token/2,
@@ -4497,6 +4497,51 @@ rust_parallel_annotation(parallel(Tier), Anno) :- !,
     format(atom(Anno),
            '/// T7: parallel-eligible aggregate (cost gate tier: ~w)~n', [Tier]).
 rust_parallel_annotation(_, '').
+
+% --- T7 route-1 injection: native par_collect wrapper -----------------------
+%
+% When a predicate's single clause body IS a parallel-eligible forkable
+% aggregate, emit it as a native Rust function that calls the runtime
+% orchestrator par_collect over two synthesised helper predicates
+% (__par_enum_*/1, __par_body_*/2) and reduces by aggregate type. The helpers
+% are returned to the caller to add to the project's compile set (they become
+% ordinary WAM predicate functions). Fails (predicate compiled normally) unless
+% the clause is a single forkable aggregate that splits and the gate says
+% parallel. Gated by parallel_aggregates(true).
+
+rust_parallel_aggregate_wrapper(Pred/Arity, Options, Helpers, WrapperRust) :-
+    option(parallel_aggregates(true), Options),
+    option(module_name(Mod0), Options, user),
+    ( atom(Mod0) -> Module = Mod0 ; Module = user ),
+    functor(Head, Pred, Arity),
+    findall(t, clause(Module:Head, _), Marks), Marks = [t],  % exactly one clause
+    clause(Module:Head, Body),                                % bind Head + Body
+    forkable_aggregate(Body, _Tmpl, _Gen),
+    build_cost_model(Module, CM),
+    parallel_aggregate_transform(Body, CM, Pred, Helpers,
+        par_aggregate(AggType, EnumName/1, BodyName/2, Result)),
+    Head =.. [Pred|Args],
+    nth1(ResultIdx, Args, ResultArg), ResultArg == Result, !,
+    rust_safe_function_name(Pred/Arity, FName),
+    rust_safe_function_name(EnumName/1, EnumFn),
+    rust_safe_function_name(BodyName/2, BodyFn),
+    build_rust_wam_arg_list(Arity, ArgList),
+    rust_agg_reduce(AggType, ReduceExpr),
+    format(string(WrapperRust),
+'/// T7 parallel aggregate (route 1): ~w/~w
+pub fn ~w(~w) -> bool {
+    let __base = vm.clone();
+    let __vals = crate::par_aggregate::par_collect(&__base, ~w, ~w);
+    let __res = ~w;
+    vm.unify(&a~w, &__res)
+}', [Pred, Arity, FName, ArgList, EnumFn, BodyFn, ReduceExpr, ResultIdx]).
+
+% Reduce the collected per-branch values by aggregate type (mirrors the
+% aggregate_frame finalisation in the interpreter).
+rust_agg_reduce(collect, "Value::List(__vals)") :- !.
+rust_agg_reduce(count, "Value::Integer(__vals.len() as i64)") :- !.
+rust_agg_reduce(sum, Expr) :- !,
+    Expr = "{ let mut si: i64 = 0; let mut sf: f64 = 0.0; let mut isf = false; for v in &__vals { match v { Value::Integer(n) => { si += *n; sf += *n as f64; }, Value::Float(f) => { isf = true; sf += *f; }, _ => {} } } if isf { Value::Float(sf) } else { Value::Integer(si) } }".
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
