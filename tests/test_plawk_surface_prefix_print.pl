@@ -75,6 +75,11 @@ test(parses_field_eq_print_index_field_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [print([index(field(2), string("sk")), index(field(0), string("disk"))])])], [])).
 
+test(parses_field_eq_print_int_field_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { print $3, int($3) }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [print([field(3), int(field(3))])])], [])).
+
 test(parses_field_eq_print_case_field_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print tolower($2), toupper($0) }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -185,6 +190,12 @@ test(parses_field_numeric_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [add(var(bytes), field(3)), set(var(last), field(3))])],
+        [end([print([var(bytes), var(last)])])])).
+
+test(parses_field_int_scalar_add_assign_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { bytes += int($3); last = int($3) } END { print bytes, last }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [add(var(bytes), int(field(3))), set(var(last), int(field(3)))])],
         [end([print([var(bytes), var(last)])])])).
 
 test(parses_always_scalar_add_assign_end_print_rule) :-
@@ -384,6 +395,11 @@ test(surface_field_eq_prints_native_index_values) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR network down now\n",
         "3 7\n0 0\n").
 
+test(surface_field_eq_prints_native_int_values) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { print $3, int($3) }\n",
+        "INFO boot 7\nERROR disk 10\nWARN cpu 20\nERROR net -3\nERROR bad nope\n",
+        "10 10\n-3 -3\nnope 0\n").
+
 test(surface_field_eq_prints_native_case_values) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print tolower($2), toupper($0) }\n",
         "INFO boot ok\nERROR Disk Full\nWARN cpu hot\nERROR network Down\n",
@@ -493,6 +509,11 @@ test(surface_begin_field_separator_drives_numeric_scalar_values) :-
     run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n",
         "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
         "7 0\n").
+
+test(surface_begin_field_separator_drives_int_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print $3, int($3) }\n",
+        "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
+        "10,10\n-3,-3\nnope,0\n").
 
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
@@ -788,6 +809,17 @@ test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_1_op_1_field_i64_ok'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_int_print_uses_native_field_i64_parse) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print $3, int($3) }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value = extractvalue %WamI64Parse %plawk_int_1, 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_ok = extractvalue %WamI64Parse %plawk_int_1, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value_or_default = select i1 %plawk_int_1_ok, i64 %plawk_int_1_value, i64 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_1 = call i32 (i8*, ...) @printf(i8* %int_fmt_1, i64 %plawk_int_1_value_or_default)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

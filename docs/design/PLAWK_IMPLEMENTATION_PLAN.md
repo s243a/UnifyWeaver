@@ -261,6 +261,9 @@ prints can also call native `length($N)` through the shared
 `@wam_atom_field_length_value` helper, native `substr($N, Start, Len)` through
 the allocation-free `@wam_atom_field_subslice_value` helper, and native
 `index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
+Explicit print-side numeric coercions such as `int($N)` lower through the shared
+`@wam_atom_field_i64_value` parse helper and print zero when the field is
+missing or not a strict signed decimal.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
