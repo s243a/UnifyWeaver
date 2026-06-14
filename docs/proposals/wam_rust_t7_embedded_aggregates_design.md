@@ -237,3 +237,40 @@ undistracted pass (Step-1 — the subtle-correctness half — is already banked)
 
   This is the final increment; everything it needs (the sub-helper labels, the
   reduce logic, the gate) already exists.
+
+## 6. ⚠️ Correctness finding (blocks 2b as planned): head-arg inputs aren't threaded
+
+Proceeding into 2b surfaced a real defect in the `par_collect` machinery:
+
+**`par_collect` does not thread a predicate's head-argument *inputs* into the
+aggregate enumerator.** The wrapper is `fn p(vm, a1.., aR)` and calls
+`par_collect(&base, enum_fn, body_fn)`; `collect_inputs` runs
+`enum_fn(vm, Unbound("__PAR_IN"))` — it never passes `a1..` to the enumerator. So
+for any predicate whose aggregate's inner goal reads a head arg, the enumerator
+runs with that arg **unbound**.
+
+- **Lifted (embedded) helper:** `__lift_agg(Y,R) :- findall(D,(link(Y,Z),down(Z,D)),R)`
+  — `Y` is an input; `__par_enum(ti(Z)) :- link(Y,Z)` has `Y` free, so it
+  enumerates `link(_,Z)` over *all* `Y`. **Wrong.** (The transform's
+  `Input = vars(Enum) ∩ (vars(Body)∪vars(Value))` drops `Y`, since `Y` is only in
+  the enumerator, not the body/value.)
+- **Whole-body (already on `main`):** the *same* latent bug. It hasn't bitten only
+  because every whole-body test/benchmark used an input-less aggregate
+  (`findall(F,(fact(X),body(X,F)),L)` — `X` is inner-goal-local, not a head arg).
+  A predicate like `p(N,L) :- findall(X, between(1,N,X), L)` would mis-enumerate.
+
+### Required fix (precedes 2b runtime dispatch)
+Thread the predicate's head-arg **inputs** through `par_collect`:
+1. The transform's `Input` must also include enum-bound-or-head vars the enumerator
+   needs — i.e. the frontier the *enclosing predicate head* supplies to the inner
+   goal (vars(Enum) ∩ vars(Head)), not just Enum∩(Body∪Value). Concretely: the
+   `__par_enum`/`__par_body` helpers gain leading parameters for the predicate's
+   input args, and the wrapper passes `a1..` into both.
+2. `par_collect(base, enum_fn, body_fn, inputs)` (and `seq_collect`) take the input
+   values and pass them as the enumerator's leading args (and to the body).
+3. Re-verify the whole-body exec + speedup tests still pass, **add an input-taking
+   whole-body test** (`p(N,L)`), then proceed to the embedded 2b dispatch.
+
+**Status:** this is a genuine design/correctness item, not a wiring detail —
+best done deliberately. Step 1 + 2a (compile-time lift wiring, gate-off-safe) are
+banked; 2b runtime dispatch should follow the input-threading fix above.
