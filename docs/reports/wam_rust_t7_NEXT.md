@@ -17,12 +17,23 @@ aggregates stay sequential (no fork regression).
 - **Merge PR #3138** — matrix doc update (`rust T7 ✗ → ~ gated`). The code PRs
   (#3123 route-1, #3135 reduce types) are already merged.
 
-## The one substantial T7 item left
+## The one substantial T7 item left — DONE (2026-06-14)
 
-**Aggregates embedded in a *larger* clause body** (not the whole body). Today
-those still compile sequentially. The native-wrapper trick only works when a
-predicate's whole body IS the aggregate; an embedded aggregate has to run
-mid-clause inside the WAM, which needs a real instruction.
+**Aggregates embedded in a *larger* clause body** (not the whole body), via the
+`par_aggregate` WAM-instruction route below, are now **implemented and
+exec-verified**. A clause with a guard goal before an embedded `findall`
+compiles, with `parallel_aggregates(true)`, to synthesised `__par_enum`/
+`__par_body` helpers (ordinary shared-table WAM predicates) plus a single
+`par_aggregate(AggType, EnumLabel, BodyLabel, ResultReg)` instruction spliced
+over the `begin_aggregate..end_aggregate` block. The handler drives the helpers
+by entry-PC label (`par_collect_labels`, the label-based sibling of
+`par_collect`), reduces by agg type (collect/count/sum/max/min — mirrors the
+sequential `aggregate_frame`), and binds the result in place. Verified by
+`tests/test_wam_rust_par_aggregate_embedded_exec.pl` (parallel result == known
+sequential answer) with the full `test_wam_rust_target.pl` (174) and
+`test_parallel_gate.pl` (25) regressions green and route-1 unaffected.
+
+The original design is retained below for reference.
 
 ### Plan — the `par_aggregate` WAM-instruction route
 
