@@ -976,6 +976,37 @@ def summarize(records):
             )
         )
 
+    validation_rows = [
+        row for row in recommendation_rows
+        if row.get("validation_prediction_matches_measured") is not None
+    ]
+    if validation_rows:
+        matches = sum(1 for row in validation_rows if row["validation_prediction_matches_measured"])
+        lines.extend([
+            "",
+            "## Validation Agreement",
+            "",
+            "| variant | boundary_depth | predicted_pays | measured_pays | matches | validation_time_ratio | measured_saved_per_hit_ns | recommendation_net |",
+            "|---------|---------------:|----------------|---------------|---------|----------------------:|--------------------------:|-------------------:|",
+        ])
+        for row in validation_rows:
+            lines.append(
+                "| {variant} | {depth} | {predicted} | {measured} | {matches} | {ratio} | {saved} | {net:.3f} |".format(
+                    variant=row["kernel_variant"],
+                    depth=row["boundary_depth"],
+                    predicted="yes" if row["precompute_pays"] else "no",
+                    measured="yes" if row.get("validation_measured_pays") else "no",
+                    matches="yes" if row["validation_prediction_matches_measured"] else "no",
+                    ratio=format_optional(row.get("validation_mean_time_ratio"), 3),
+                    saved=format_optional(row.get("validation_measured_saved_per_hit_ns"), 3),
+                    net=row["recommendation_net_value"],
+                )
+            )
+        lines.extend([
+            "",
+            "- validation agreement: `{}/{}` best rows matched measured pay/no-pay.".format(matches, len(validation_rows)),
+        ])
+
     lines.extend([
         "",
         "## Representation Detail",
