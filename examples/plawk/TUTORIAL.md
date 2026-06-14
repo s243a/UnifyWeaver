@@ -255,7 +255,7 @@ END { print total, errors, non_errors, last_len }
 ```
 
 For now, branch bodies support scalar updates, field-key associative increments,
-selected-field `print` including `NR`, terminal `next`/`break`, and
+selected-field and string-literal `print` including `NR`, terminal `next`/`break`, and
 combinations of those actions. The generated native code evaluates the `if`
 condition once, runs the selected branch, rejoins normal scalar slots through
 LLVM phi nodes, routes selected branch-local `next` paths to the next input
@@ -272,11 +272,11 @@ Associative increments can live inside the selected branch:
 END { print by_component["disk"], by_kind["WARN"] }
 ```
 
-Branches can also print selected fields:
+Branches can also print selected fields and string literals:
 
 ```awk
 {
-  if ($1 == "ERROR") { print NR, $2, $3 }
+  if ($1 == "ERROR") { print "error", NR, $2, $3 }
   else { counts[$1]++ }
 }
 END { print counts["WARN"] }

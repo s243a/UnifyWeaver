@@ -37,6 +37,7 @@
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %      { if ($1 == "ERROR") { errors++ } else { warnings++ } } END { print errors, warnings }
 %      { if ($1 == "ERROR") { print $2, $3 } else { counts[$1]++ } } END { print counts["WARN"] }
+%      { if ($1 == "ERROR") { print "error", $2 } else { print "ok", $1 } } END { print "done" }
 %
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
@@ -485,7 +486,8 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
           plawk_scalar_update_action_name(Action, Name)
         ),
         ActionVars),
-    ActionVars \== [],
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    ( ActionVars \== [] ; BodyPrintFields \== [] ),
     findall(Name,
         ( member(Field, PrintFields),
           plawk_scalar_print_expr(Field, Name)
@@ -1416,6 +1418,7 @@ plawk_rule_body_print_action(print(Fields)) :-
     maplist(plawk_rule_body_print_field, Fields).
 
 plawk_rule_body_print_field(field(_)).
+plawk_rule_body_print_field(string(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(length(field(_))).
@@ -1952,6 +1955,21 @@ plawk_emit_prefixed_print_expr_ir(special('NR'), _FieldSeparator, Prefix, Index,
         i64(Base, Base, '%current_nr'), [], []) :-
     format(atom(Base), '~w_nr_~w', [Prefix, Index]).
 
+plawk_emit_prefixed_print_expr_ir(string(Value), _FieldSeparator, Prefix, Index,
+        string(Base, PtrIR), [GlobalIR], [StringPtr]) :-
+    string_codes(Value, Codes),
+    length(Codes, StringLen),
+    BytesLen is StringLen + 1,
+    llvm_c_bytes(Codes, Bytes),
+    format(atom(Base), '~w_string_~w', [Prefix, Index]),
+    format(atom(GlobalIR),
+        '@.~w = private constant [~w x i8] c"~w\\00"',
+        [Base, BytesLen, Bytes]),
+    format(atom(StringPtr),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, BytesLen, BytesLen, Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]).
+
 plawk_emit_prefixed_print_expr_ir(special('NF'), FieldSeparator, Prefix, Index,
         i64(Base, Base, ValueIR), [], [CountIR]) :-
     format(atom(Base), '~w_nf_~w', [Prefix, Index]),
@@ -2048,3 +2066,11 @@ plawk_prefixed_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR),
 
 plawk_prefixed_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Prefix, _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
+
+plawk_prefixed_print_expr_output_ir(string(Base, PtrIR), _Prefix, Index, [FmtPtr, PrintCall]) :-
+    format(atom(FmtPtr),
+        '  %~w_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [Base, Index]),
+    format(atom(PrintCall),
+        '  %printed_~w_~w = call i32 (i8*, ...) @printf(i8* %~w_fmt_~w, i8* ~w)',
+        [Base, Index, Base, Index, PtrIR]).
