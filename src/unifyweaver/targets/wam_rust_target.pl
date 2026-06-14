@@ -4590,6 +4590,34 @@ rust_assert_helper(Module, (Head :- Body), Module:Name/Arity) :-
     copy_term((Head :- Body), (H :- B)),
     assertz(Module:(H :- B)).
 
+% --- T9 fact-table inline: detection + row extraction ----------------------
+%
+% Recognise a predicate whose every clause is a ground unit clause (a fact) and
+% extract its rows (one ground arg-tuple per clause, source order). Above the
+% t9_min_rows threshold this is a candidate for a native fact table + indexed
+% lookup (T9), an optimisation over T4 for large fact sets. Pure analysis — no
+% codegen. Fails (predicate handled by the existing T4/WAM path) when any clause
+% is a rule or non-ground, or when there are fewer than t9_min_rows rows.
+
+rust_fact_table_classify(QPI, Options, fact_info(Arity, Rows)) :-
+    ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
+    Clauses = [_|_],                                  % at least one clause
+    forall(member(CH-CB, Clauses), rust_fact_clause(CH, CB)),
+    findall(Args, ( member(FH-true, Clauses), FH =.. [_|Args] ), Rows),
+    rust_t9_min_rows(Options, Min),
+    length(Rows, NR), NR >= Min.
+
+% a fact clause: body `true`, head args all ground.
+rust_fact_clause(Head, Body) :-
+    Body == true,
+    Head =.. [_|Args],
+    forall(member(A, Args), ground(A)).
+
+rust_t9_min_rows(Options, N) :-
+    ( member(t9_min_rows(N), Options) -> true ; N = 64 ).
+
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
         rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
