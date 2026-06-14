@@ -25,6 +25,7 @@ from scripts.lmdb_parent_boundary_cache_benchmark import (
     scaled_distribution_histogram,
     search_stop_reason,
     select_targets_by_boundary_descendants,
+    summarize,
     support_binomial_mean,
 )
 from scripts.lmdb_parent_histogram_benchmark import bounded_parent_histogram
@@ -330,6 +331,96 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
         self.assertEqual(search_stop_reason(True, True, 3), "path_count_cap+expansion_cap")
         self.assertEqual(search_stop_reason(False, False, 2), "path_length_budget")
         self.assertEqual(search_stop_reason(False, False, 0), "complete")
+
+    def test_summary_explains_generation_columns_and_implications(self):
+        parents = {
+            "A": ["R"],
+            "B": ["A"],
+            "C": ["B"],
+        }
+        cache = {"B": {2: 1}}
+        full, full_stats = bounded_parent_histogram(lambda node: parents.get(node, []), "C", "R", 3)
+        cached, cached_stats = cached_parent_histogram(lambda node: parents.get(node, []), "C", "R", 3, cache)
+        comparison = comparison_record(
+            "fixture",
+            "R",
+            "C",
+            3,
+            3,
+            full,
+            full_stats,
+            100,
+            cached,
+            cached_stats,
+            80,
+            path_count_cap=10,
+            expansion_cap=20,
+            aggregate_kernel="bp-decay",
+            aggregate_branching_factor=2.0,
+        )
+        summary = summarize([
+            {
+                "record_type": "boundary_cache_selection",
+                "graph": "fixture",
+                "root": "R",
+                "seed": "fixture",
+                "boundary_depths": [2],
+                "target_depths": [3],
+                "boundary_counts": {2: 1},
+                "target_counts": {3: 1},
+                "boundary_nodes": 1,
+                "selected_boundary_nodes": 1,
+                "target_ancestor_boundary_nodes_added": 0,
+                "cached_boundary_nodes": 1,
+                "parametric_boundary_nodes": 0,
+                "targets": 1,
+                "target_selection": "child-depth",
+                "parent_filter": "root-cone",
+                "root_cone_depth": 3,
+                "root_cone_nodes": 4,
+                "root_cone_counts": {0: 1, 1: 1, 2: 1, 3: 1},
+                "root_cone_children_per_node": 10,
+                "root_cone_frontier_limit": 100,
+                "children_per_node": 10,
+                "frontier_limit": 100,
+                "boundaries_per_depth": 1,
+                "targets_per_depth": 1,
+                "budgets": [3],
+                "boundary_budget": 3,
+                "path_count_cap": 10,
+                "expansion_cap": 20,
+                "admission_policy": "baseline",
+                "boundary_builder": "recurrence",
+                "aggregate_kernel": "bp-decay",
+                "aggregate_branching_factor": 2.0,
+                "aggregate_power": 1.0,
+            },
+            {
+                "record_type": "boundary_cache_entry",
+                "cache_admission_action": "materialize_exact",
+                "cache_admission_reason": "baseline_uncapped_histogram",
+                "cached": True,
+                "parametric_cached": False,
+                "path_count": 1,
+                "support_bins": 1,
+                "nodes_expanded": 3,
+                "edges_examined": 2,
+                "boundary_builder": "recurrence",
+                "path_cap_hit": False,
+                "expansion_cap_hit": False,
+            },
+            comparison,
+        ])
+
+        self.assertIn("## How This Was Generated", summary)
+        self.assertIn("## Table Guide", summary)
+        self.assertIn("## Result Implications", summary)
+        self.assertIn("requested child depth(s) `2`", summary)
+        self.assertIn("`boundary_budget=3`", summary)
+        self.assertIn("`path_length_budget`", summary)
+        self.assertIn("`mean_l1`", summary)
+        self.assertIn("`mean_node_ratio`", summary)
+        self.assertIn("root-cone filtered-skip counts", summary.lower())
 
     def test_boundary_cache_can_differ_when_suffix_violates_visited_state(self):
         parents = {
