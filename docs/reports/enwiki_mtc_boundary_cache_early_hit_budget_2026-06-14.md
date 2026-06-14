@@ -2,11 +2,13 @@
 
 Date: 2026-06-14
 
+Terminology note: `path_count_cap` is the maximum number of root-reaching paths enumerated before stopping a row; it is not the maximum parent-hop length. The path-length budget is the `budget`/`path_length_budget` value.
+
 This probe adds cache-hit geometry to the boundary-cache benchmark so a run can distinguish "the search hit a cached boundary" from "the search hit it early enough for the splice to matter."  The new row-level fields record the first cached hit depth, first remaining budget, maximum remaining budget, and a histogram of cache hits by remaining budget.
 
 ## Smoke Runs
 
-| graph | target_depth | targets | budget | path_cap | mean_cache_hits | mean_remaining_budget | mean_first_remaining_budget | mean_max_remaining_budget | hits_rem_ge_2 | hits_rem_ge_4 | hits_rem_ge_6 | full_capped | cached_capped | mean_time_ratio |
+| graph | target_depth | targets | budget | path_count_cap | mean_cache_hits | mean_remaining_budget | mean_first_remaining_budget | mean_max_remaining_budget | hits_rem_ge_2 | hits_rem_ge_4 | hits_rem_ge_6 | full_capped | cached_capped | mean_time_ratio |
 |-------|-------------:|--------:|-------:|---------:|----------------:|----------------------:|----------------------------:|--------------------------:|--------------:|--------------:|--------------:|------------:|--------------:|----------------:|
 | enwiki_mtc_boundary_descendant_early_hit_budget8_smoke | 7 | 4 | 8 | 50000 | 17.000 | 0.956 | 2.667 | 3.333 | 20 | 4 | 0 | 4 | 4 | 1.089 |
 | enwiki_mtc_boundary_descendant_early_hit_budget12_smoke | 7 | 4 | 12 | 50000 | 0.000 | n/a | n/a | n/a | 0 | 0 | 0 | 4 | 4 | 1.171 |
@@ -14,7 +16,7 @@ This probe adds cache-hit geometry to the boundary-cache benchmark so a run can 
 
 The budget-8 run confirms the original concern: cache hits are common, but most arrive with little budget left.  Its remaining-budget histogram was `{0: 35, 1: 13, 2: 12, 3: 4, 4: 4}`, so only 20 of 68 hits had at least two hops remaining and none had at least six.  Mean suffix path count was 0.662 paths per hit, which means many boundary hits splice little or no useful suffix mass under the current path-length constraint.
 
-The budget-12 probes show a second failure mode.  Raising the starting search budget increases the theoretical value of a boundary splice, but these sampled rows hit the path cap before the selected boundary appeared in parent traversal order.  In that regime a larger budget does not help unless the search also reaches the cached boundary before the cap or expansion limit fires.
+The budget-12 probes show a second failure mode.  Raising the starting search budget increases the theoretical value of a boundary splice, but these sampled rows hit the path-count cap before the selected boundary appeared in parent traversal order.  In that regime a larger budget does not help unless the search also reaches the cached boundary before the cap or expansion limit fires.  Because capped runs only observe an enumerated prefix, full-run cache impact still requires an estimate of the unvisited path mass or an explicit assumption that the unvisited paths have similar boundary-hit statistics.
 
 ## Interpretation
 

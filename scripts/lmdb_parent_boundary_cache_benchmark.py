@@ -494,6 +494,19 @@ def histogram_distribution_error(full_hist, cached_hist):
     return l1_error(full_dist, cached_dist), max_cdf_error(full_dist, cached_dist)
 
 
+def search_stop_reason(path_count_cap_hit, expansion_cap_hit, length_budget_cutoffs):
+    reasons = []
+    if path_count_cap_hit:
+        reasons.append("path_count_cap")
+    if expansion_cap_hit:
+        reasons.append("expansion_cap")
+    if reasons:
+        return "+".join(reasons)
+    if int(length_budget_cutoffs or 0) > 0:
+        return "path_length_budget"
+    return "complete"
+
+
 def histogram_effective_bins(hist, tail_epsilon):
     probabilities, _origin = exact_excess_distribution(hist)
     if not probabilities:
@@ -902,7 +915,7 @@ def build_boundary_cache(
     return cache, parametric_cache, rows
 
 
-def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time, collect_attribution=False):
+def comparison_record(graph_name, root, target, child_depth, budget, full_hist, full_stats, full_time, cached_hist, cached_stats, cached_time, collect_attribution=False, path_count_cap=None, expansion_cap=None):
     l1, cdf = histogram_distribution_error(full_hist, cached_hist)
     full_paths = sum(full_hist.values())
     cached_paths = sum(cached_hist.values())
@@ -917,6 +930,9 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "target_node": target,
         "child_sample_depth": child_depth,
         "budget": budget,
+        "path_length_budget": budget,
+        "path_count_cap": path_count_cap,
+        "expansion_cap": expansion_cap,
         "full_histogram": full_hist,
         "cached_histogram": cached_hist,
         "full_path_count": full_paths,
@@ -937,6 +953,8 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "cached_edges_examined": cached_stats.edges_examined,
         "full_cycle_skips": full_stats.cycle_skips,
         "cached_cycle_skips": cached_stats.cycle_skips,
+        "full_length_budget_cutoffs": full_stats.budget_cutoffs,
+        "cached_length_budget_cutoffs": cached_stats.budget_cutoffs,
         "cache_hits": cached_stats.cache_hits,
         "cache_hit_depth_sum": cached_stats.cache_hit_depth_sum,
         "cache_hit_remaining_budget_sum": cached_stats.cache_hit_remaining_budget_sum,
@@ -974,6 +992,8 @@ def comparison_record(graph_name, root, target, child_depth, budget, full_hist, 
         "full_expansion_cap_hit": full_stats.expansion_cap_hit,
         "cached_path_cap_hit": cached_stats.path_cap_hit,
         "cached_expansion_cap_hit": cached_stats.expansion_cap_hit,
+        "full_stop_reason": search_stop_reason(full_stats.path_cap_hit, full_stats.expansion_cap_hit, full_stats.budget_cutoffs),
+        "cached_stop_reason": search_stop_reason(cached_stats.path_cap_hit, cached_stats.expansion_cap_hit, cached_stats.budget_cutoffs),
         "full_time_ns": full_time,
         "cached_time_ns": cached_time,
     }
@@ -1070,6 +1090,8 @@ def run_benchmark(args):
             "target_selection": args.target_selection,
             "budgets": budgets,
             "boundary_budget": args.boundary_budget,
+            "path_count_cap": args.path_cap,
+            "expansion_cap": args.expansion_cap,
             "admission_policy": args.admission_policy,
             "boundary_builder": args.boundary_builder,
             "max_recurrence_states": args.max_recurrence_states,
@@ -1127,6 +1149,8 @@ def run_benchmark(args):
                         cached_stats,
                         cached_time,
                         args.collect_attribution,
+                        args.path_cap,
+                        args.expansion_cap,
                     )
                 )
         return records, summarize(records)
@@ -1146,6 +1170,12 @@ def summarize(records):
         "Root: `{}`".format(selection.get("root", "")),
         "",
         "Target selection: `{}`".format(selection.get("target_selection", "child-depth")),
+        "",
+        "Path length budgets: `{}`".format(",".join(str(value) for value in selection.get("budgets", []))),
+        "",
+        "Path count cap: `{}`".format(selection.get("path_count_cap")),
+        "",
+        "Expansion cap: `{}`".format(selection.get("expansion_cap")),
         "",
         "## Selection",
         "",
@@ -1348,8 +1378,10 @@ def summarize(records):
         "",
         "## Full Search Versus Boundary Cache",
         "",
-        "| budget | rows | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | full_capped | cached_capped |",
-        "|--------|------|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------|---------------|",
+        "Here `path_length_budget` is the maximum parent hops in a path. `path_count_cap` is the maximum number of root-reaching paths enumerated before stopping a row.",
+        "",
+        "| path_length_budget | rows | path_count_cap | mean_l1 | p95_l1 | max_l1 | mean_cdf | mean_path_count_relative_error | mean_abs_path_delta | mean_node_ratio | mean_time_ratio | mean_full_time_ns | mean_cached_time_ns | mean_hist_hits | mean_param_hits | mean_hist_bins_spliced | mean_param_bins_spliced | mean_payload_bytes_read | mean_decode_ns | mean_decode_memo_hits | full_path_count_cap_hits | full_expansion_cap_hits | cached_path_count_cap_hits | cached_expansion_cap_hits |",
+        "|-------------------:|-----:|---------------:|---------|--------|--------|----------|-------------------------------:|--------------------:|-----------------|----------------:|------------------:|--------------------:|---------------:|----------------:|-----------------------:|------------------------:|------------------------:|---------------:|----------------------:|-------------------------:|------------------------:|---------------------------:|--------------------------:|",
     ])
     by_budget = {}
     for row in comparison_rows:
@@ -1384,9 +1416,10 @@ def summarize(records):
             for row in rows
         ]
         lines.append(
-            "| {budget} | {rows} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {full_capped} | {cached_capped} |".format(
+            "| {budget} | {rows} | {path_count_cap} | {mean_l1:.6f} | {p95_l1:.6f} | {max_l1:.6f} | {mean_cdf:.6f} | {mean_path_relative:.6f} | {mean_path_delta:.3f} | {mean_ratio:.3f} | {mean_time_ratio:.3f} | {mean_full_time:.1f} | {mean_cached_time:.1f} | {mean_hist_hits:.3f} | {mean_param_hits:.3f} | {mean_hist_bins:.3f} | {mean_param_bins:.3f} | {mean_payload_bytes:.3f} | {mean_decode_ns:.1f} | {mean_decode_memo_hits:.3f} | {full_path_count_cap_hits} | {full_expansion_cap_hits} | {cached_path_count_cap_hits} | {cached_expansion_cap_hits} |".format(
                 budget=budget,
                 rows=len(rows),
+                path_count_cap="n/a" if rows[0].get("path_count_cap") is None else rows[0].get("path_count_cap"),
                 mean_l1=statistics.mean(l1) if l1 else 0.0,
                 p95_l1=percentile(l1, 95),
                 max_l1=max(l1, default=0.0),
@@ -1407,20 +1440,51 @@ def summarize(records):
                 mean_splice_ns=statistics.mean(splice_ns) if splice_ns else 0.0,
                 mean_parent_lookup_ns=statistics.mean(parent_lookup_ns) if parent_lookup_ns else 0.0,
                 mean_probe_ns=statistics.mean(probe_ns) if probe_ns else 0.0,
-                mean_path_cap_check_ns=statistics.mean(path_cap_check_ns) if path_cap_check_ns else 0.0,
+                mean_path_count_cap_check_ns=statistics.mean(path_cap_check_ns) if path_cap_check_ns else 0.0,
                 mean_attributed_ns=statistics.mean(attributed_ns) if attributed_ns else 0.0,
                 mean_unattributed_ns=statistics.mean(unattributed_ns) if unattributed_ns else 0.0,
-                full_capped=sum(1 for row in rows if row.get("full_path_cap_hit") or row.get("full_expansion_cap_hit")),
-                cached_capped=sum(1 for row in rows if row.get("cached_path_cap_hit") or row.get("cached_expansion_cap_hit")),
+                full_path_count_cap_hits=sum(1 for row in rows if row.get("full_path_cap_hit")),
+                full_expansion_cap_hits=sum(1 for row in rows if row.get("full_expansion_cap_hit")),
+                cached_path_count_cap_hits=sum(1 for row in rows if row.get("cached_path_cap_hit")),
+                cached_expansion_cap_hits=sum(1 for row in rows if row.get("cached_expansion_cap_hit")),
             )
         )
+    if comparison_rows:
+        lines.extend([
+            "",
+            "## Search Termination Diagnostics",
+            "",
+            "`path_count_cap` is a root-reaching path-count cap. It is distinct from `path_length_budget`, which is the maximum number of parent hops allowed in a path.",
+            "",
+            "If a path-count or expansion cap fires, timing and cache-hit statistics describe only the enumerated prefix. Treat full-run cache benefit as an extrapolation unless the unvisited path mass is estimated and assumed to have comparable boundary-hit statistics.",
+            "",
+            "| path_length_budget | rows | path_count_cap | full_stop_reasons | cached_stop_reasons | full_length_budget_cutoff_rows | cached_length_budget_cutoff_rows | full_cycle_skips | cached_cycle_skips |",
+            "|-------------------:|-----:|---------------:|-------------------|---------------------|-------------------------------:|---------------------------------:|-----------------:|-------------------:|",
+        ])
+        for budget in sorted(by_budget):
+            rows = by_budget[budget]
+            full_reasons = Counter(row.get("full_stop_reason", "unknown") for row in rows)
+            cached_reasons = Counter(row.get("cached_stop_reason", "unknown") for row in rows)
+            lines.append(
+                "| {budget} | {rows} | {path_count_cap} | `{full_reasons}` | `{cached_reasons}` | {full_budget_cutoffs} | {cached_budget_cutoffs} | {full_cycle_skips} | {cached_cycle_skips} |".format(
+                    budget=budget,
+                    rows=len(rows),
+                    path_count_cap="n/a" if rows[0].get("path_count_cap") is None else rows[0].get("path_count_cap"),
+                    full_reasons=json.dumps(dict(sorted(full_reasons.items())), sort_keys=True),
+                    cached_reasons=json.dumps(dict(sorted(cached_reasons.items())), sort_keys=True),
+                    full_budget_cutoffs=sum(1 for row in rows if int(row.get("full_length_budget_cutoffs", 0)) > 0),
+                    cached_budget_cutoffs=sum(1 for row in rows if int(row.get("cached_length_budget_cutoffs", 0)) > 0),
+                    full_cycle_skips=sum(int(row.get("full_cycle_skips", 0)) for row in rows),
+                    cached_cycle_skips=sum(int(row.get("cached_cycle_skips", 0)) for row in rows),
+                )
+            )
     if any(int(row.get("cache_hits", 0)) > 0 for row in comparison_rows):
         lines.extend([
             "",
             "## Cache Hit Geometry",
             "",
-            "| budget | rows | mean_cache_hits | mean_hit_depth | mean_remaining_budget | mean_suffix_path_count | mean_first_remaining_budget | mean_max_remaining_budget | hits_rem_ge_2 | hits_rem_ge_4 | hits_rem_ge_6 | hit_depth_histogram | remaining_budget_histogram |",
-            "|--------|-----:|----------------:|---------------:|----------------------:|-----------------------:|----------------------------:|--------------------------:|--------------:|--------------:|--------------:|---------------------|----------------------------|",
+            "| path_length_budget | rows | mean_cache_hits | mean_hit_depth | mean_remaining_budget | mean_suffix_path_count | mean_first_remaining_budget | mean_max_remaining_budget | hits_rem_ge_2 | hits_rem_ge_4 | hits_rem_ge_6 | hit_depth_histogram | remaining_budget_histogram |",
+            "|-------------------:|-----:|----------------:|---------------:|----------------------:|-----------------------:|----------------------------:|--------------------------:|--------------:|--------------:|--------------:|---------------------|----------------------------|",
         ])
         for budget in sorted(by_budget):
             rows = by_budget[budget]
@@ -1468,10 +1532,10 @@ def summarize(records):
             "",
             "## Cached Runtime Attribution",
             "",
-            "These columns attribute only the cached search path. `unattributed` is the remaining cached wall time after decode, splice, cache-probe, path-cap check, and parent lookup timing buckets.",
+            "These columns attribute only the cached search path. `unattributed` is the remaining cached wall time after decode, splice, cache-probe, path-count-cap check, and parent lookup timing buckets.",
             "",
-            "| budget | rows | mean_cached_time_ns | mean_decode_ns | mean_decode_memo_hits | mean_splice_ns | mean_parent_lookup_ns | mean_probe_ns | mean_path_cap_check_ns | mean_attributed_ns | mean_unattributed_ns | decode_share | splice_share | parent_lookup_share |",
-            "|--------|-----:|--------------------:|---------------:|----------------------:|---------------:|----------------------:|--------------:|-----------------------:|-------------------:|---------------------:|-------------:|-------------:|--------------------:|",
+            "| path_length_budget | rows | mean_cached_time_ns | mean_decode_ns | mean_decode_memo_hits | mean_splice_ns | mean_parent_lookup_ns | mean_probe_ns | mean_path_count_cap_check_ns | mean_attributed_ns | mean_unattributed_ns | decode_share | splice_share | parent_lookup_share |",
+            "|-------------------:|-----:|--------------------:|---------------:|----------------------:|---------------:|----------------------:|--------------:|-----------------------:|-------------------:|---------------------:|-------------:|-------------:|--------------------:|",
         ])
         for budget in sorted(by_budget):
             rows = by_budget[budget]
@@ -1565,10 +1629,10 @@ def main(argv=None):
     parser.add_argument("--parametric-mass-cap", type=int, default=1000000, help="Maximum estimated path mass for non-oracle parametric states; non-positive disables the cap.")
     parser.add_argument("--tail-epsilon", type=float, default=0.001, help="Tail epsilon used when estimating depth-prior effective support.")
     parser.add_argument("--max-parent-depth", type=int, default=24, help="Parent depth cap for root-reaching parent degree signals.")
-    parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root paths.")
+    parser.add_argument("--path-cap", type=int, default=100000, help="Stop a row after this many root-reaching paths; this is a path-count cap, not the path-length budget.")
     parser.add_argument("--expansion-cap", type=int, default=250000, help="Stop a row after this many expanded nodes.")
     parser.add_argument("--seed", default="0", help="Deterministic sampling seed.")
-    parser.add_argument("--collect-attribution", action="store_true", help="Collect cached-search timing attribution for cache probes, splicing, parent lookups, and path-cap checks.")
+    parser.add_argument("--collect-attribution", action="store_true", help="Collect cached-search timing attribution for cache probes, splicing, parent lookups, and path-count-cap checks.")
     parser.add_argument("--output-dir", type=Path, help="Optional directory for JSONL and markdown output.")
     args = parser.parse_args(argv)
 
