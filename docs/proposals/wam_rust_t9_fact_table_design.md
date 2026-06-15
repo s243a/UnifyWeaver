@@ -5,11 +5,14 @@
 (classification seam in `classify_predicates`, gated by `fact_table_inline(true)`;
 `fact_table` arm in `generate_predicate_codes`), and Step 4 (query-mode exec
 matrix + emission tests + matrix doc) are landed. Enumeration uses a generic
-`fact_table_attempt` runtime method + a `"fact_table"` `resume_builtin` arm.
-Follow-ons: a real first-arg hash index (current code prefilters by a bound
-atomic first arg, then linear-scans) and `call`-site integration so other
-predicates can invoke a fact-table predicate via WAM dispatch (the exec matrix
-calls the generated `pub fn` directly).
+`fact_table_attempt` runtime method + a `"fact_table"` `resume_builtin` arm. The
+table is built once via `OnceLock` with a **first-argument hash index**
+(`Value::fact_index_key` keys both rows and the query arg): a bound atomic first
+arg selects its bucket in O(1), otherwise a full scan. Within-bucket order is
+source order, so the solution sequence matches the T4/WAM path.
+Follow-on: `call`-site integration so other predicates can invoke a fact-table
+predicate via WAM dispatch (the exec matrix calls the generated `pub fn`
+directly).
 
 Original design / spec / implementation plan below. Survey of the reference
 targets (R / Haskell / Lua) + the Rust target's current fact handling is folded in.

@@ -21,13 +21,16 @@ gen(Opts, Dir, Src) :-
 
 :- begin_tests(wam_rust_fact_table_emit).
 
-% the value-literal emitter maps each ground term kind to its Value variant.
+% the value-literal emitter maps each ground term kind to its Value variant, and
+% the fn builds a OnceLock-cached table + first-arg hash index.
 test(value_literals) :-
     emit_fact_table_rust(p/2, fact_info(2, [[foo, 7], [bar, -3]]), [], Code),
     assertion(sub_string(Code, _, _, _, "Value::Atom(\"foo\".to_string())")),
     assertion(sub_string(Code, _, _, _, "Value::Integer(7)")),
     assertion(sub_string(Code, _, _, _, "Value::Integer(-3)")),
     assertion(sub_string(Code, _, _, _, "pub fn p_2(vm: &mut WamState, a1: Value, a2: Value) -> bool")),
+    assertion(sub_string(Code, _, _, _, "std::sync::OnceLock")),
+    assertion(sub_string(Code, _, _, _, "fact_index_key()")),
     assertion(sub_string(Code, _, _, _, "vm.fact_table_attempt(__args, __cands)")).
 
 % nested terms / lists / floats lower correctly.
@@ -40,14 +43,14 @@ test(value_literals_compound) :-
 test(opt_in_classifies_fact_table, [cleanup(safe_rmdir('output/test_t9_emit_on'))]) :-
     gen([fact_table_inline(true), t9_min_rows(4)], 'output/test_t9_emit_on', Src),
     assertion(sub_string(Src, _, _, _, "Strategy: fact_table")),
-    assertion(sub_string(Src, _, _, _, "fn edge_2_rows() -> Vec<Vec<Value>>")),
+    assertion(sub_string(Src, _, _, _, "fn edge_2_table()")),
     assertion(sub_string(Src, _, _, _, "vm.fact_table_attempt")).
 
 % default (no option): unchanged, no fact table emitted.
 test(default_off_no_fact_table, [cleanup(safe_rmdir('output/test_t9_emit_off'))]) :-
     gen([], 'output/test_t9_emit_off', Src),
     assertion(\+ sub_string(Src, _, _, _, "Strategy: fact_table")),
-    assertion(\+ sub_string(Src, _, _, _, "edge_2_rows")).
+    assertion(\+ sub_string(Src, _, _, _, "edge_2_table")).
 
 % below threshold even with the option: not a fact table.
 test(below_threshold_off, [cleanup(safe_rmdir('output/test_t9_emit_thresh'))]) :-
