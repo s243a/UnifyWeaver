@@ -4753,11 +4753,40 @@ rust_embedded_par_aggregate(QPI, _Options, Helpers,
     clause(Module:Head, Body),
     \+ forkable_aggregate(Body, _, _),           % not whole-body (that is route 1)
     rust_body_embedded_aggregate(Body, AggGoal),
+    % Correctness gate: only parallelise when the embedded aggregate's inner goal
+    % reads NO variable bound by the enclosing clause (head/other goals). Such
+    % "external inputs" are not yet threaded into the __par_enum/__par_body
+    % helpers (they would enumerate unbound -> wrong results, e.g. eg_p(1,R)
+    % returning every link's body instead of link(1)'s). With inputs present we
+    % decline, so the aggregate compiles SEQUENTIALLY (correct). Threading them
+    % into par_collect_labels via the container's input registers is a follow-on.
+    rust_embedded_aggregate_inputs(Head, Body, AggGoal, []),
     build_cost_model(Module, CM),
     parallel_aggregate_transform(AggGoal, CM, Pred, Helpers,
         par_aggregate(AggType, EnumName/1, BodyName/2, _Result)),
     rust_supported_par_agg_type(AggType),
     !.
+
+% External inputs of an embedded aggregate: variables its inner goal reads that
+% are bound by the enclosing clause (head or the other body goals), excluding the
+% result var. Non-empty ⇒ the aggregate depends on caller bindings the helpers
+% can't yet receive ⇒ decline parallelisation (compile sequentially).
+rust_embedded_aggregate_inputs(Head, Body, AggGoal, Ext) :-
+    forkable_aggregate(AggGoal, _Tmpl, InnerGoal),
+    aggregate_result(AggGoal, Result),
+    rust_conj_list(Body, Goals),
+    exclude(==(AggGoal), Goals, OtherGoals),
+    term_variables([Head|OtherGoals], OuterVars),
+    term_variables(InnerGoal, InnerVars),
+    % NB: a yall lambda would copy OuterVars/Result per call (breaking var
+    % identity); rust_is_ext_input/3 (defined above for route 1) is a named
+    % helper so == compares the real clause variables. It is symmetric in its
+    % first two list/var roles, so reusing it here is correct.
+    include(rust_is_ext_input(OuterVars, Result), InnerVars, Ext0),
+    rust_dedup_vars(Ext0, Ext).
+
+rust_conj_list((A, B), L) :- !, rust_conj_list(A, LA), rust_conj_list(B, LB), append(LA, LB, L).
+rust_conj_list(G, [G]).
 
 % Find the first forkable aggregate goal inside a (possibly nested) conjunction.
 rust_body_embedded_aggregate((A, B), Agg) :-
