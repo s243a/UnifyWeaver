@@ -75,11 +75,21 @@ scalar aggregate is just *one extraction* from it. So the optimization is a
 | the path-length **distribution** | return `H` directly | `List` of counts |
 | (future) CDF / quantiles / moments | the corresponding read of `H` | as needed |
 
-Both the scalar and histogram results emit through the existing
+Both the scalar and distribution results emit through the existing
 `finish_foreign_results` **`deterministic`** mode (one result, no choice point) —
-no new result machinery. The histogram is the fundamental object; everything else
-is a cheap read of it. Designing for "scalar only" would be a premature
-specialisation that the histogram output (your point) rightly rejects.
+no new result machinery. Designing for "scalar only" would be a premature
+specialisation that the distribution output rightly rejects.
+
+More precisely (see the specification §1): the fundamental object is not "a
+histogram" but **a form from which we can read a PMF or CDF** — i.e. the *mass
+between two points* (a **sum** for a discrete histogram, an **integral** for a
+continuous one). A scalar aggregate, the distribution itself, a CDF, a quantile,
+or a windowed/truncated mass are all reads of that form. Discreteness is a
+computational convenience (it makes the splice an FFT-able convolution), not
+intrinsic; at very large scale a continuous/parametric form convolves by parameter
+arithmetic and answers ranges from a closed-form CDF — so the spec is written
+against the *form*, with the discrete histogram as the exact default and a
+continuous/cumulative form as the large-scale / O(1)-read alternative.
 
 ## 5. Principles
 

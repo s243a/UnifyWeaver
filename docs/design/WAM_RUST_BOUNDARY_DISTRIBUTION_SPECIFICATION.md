@@ -4,29 +4,64 @@ Precise semantics of the boundary distribution optimization. See
 `WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` (rationale) and
 `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phasing/status).
 
-## 1. Objects
+## 1. The object: a path-length distribution *form*
 
-- **Path-length histogram** `H: [u64]`, `H[L]` = number of root-anchored paths of
-  edge-length `L` (within budget). Trailing zeros insignificant. Represented in
-  Rust as `Vec<u64>` (`boundary_cache::Hist`).
-- **Boundary set** `Bset ⊆ V`: nodes near the root at which suffix histograms are
-  cached. `boundary_suffix: FxMap<u32, Vec<u64>>` on `WamState` maps each boundary
-  node `B` to `H_B→root`.
+The fundamental cached object is not "a histogram" specifically — it is a
+**path-length distribution form**: any representation from which we can compute
+the **mass between two lengths** (the PMF/CDF). The one operation everything else
+is built on is
+
+```
+range_mass(a, b) = (sum or integral) over [a, b] of the path-length distribution
+```
+
+— a *sum* for a discrete form, an *integral* for a continuous one. From
+`range_mass` (equivalently, a cumulative `F(x) = range_mass(0, x)` and its
+differences) we get the PMF, the CDF, any bounded/constrained functional, and the
+truncations below. A concrete `H` (histogram) is the default backing, but the
+spec is written against the *form*, so a continuous or transformed backing drops
+in without changing the consumers.
+
+### 1a. Backing forms (representations)
+
+| form | `range_mass` | splice (compose over a cut) | when |
+|------|--------------|------------------------------|------|
+| **discrete histogram** (PMF) `H[L]:u64` | partial sum | convolution — O(m²) direct, **O(m log m) FFT** | default; exact; small/medium support |
+| **continuous / parametric** (density: normal, binomial, GMM…) | integral / closed-form CDF | parameter arithmetic (e.g. variances add) — often O(1) | **very large scale**, where the discrete grid is the cost; approximate |
+| **cumulative / transformed** (CDF table, or a pre-weighted basis `g_B`) | O(1) difference of cumulatives | depends; for a fixed functional the basis is a dot product (~1 ns) | hot `(functional, budget)`; O(1) range queries |
+| **truncated** (any of the above restricted to `[lo, hi]`) | as parent | as parent | constrained functionals (budget caps, thresholds) need only the relevant window — still a valid form |
+
+Discreteness is a *computational* choice (it makes the splice an FFT-able
+convolution); it is not intrinsic. At very large scales a continuous/parametric
+form convolves by parameter arithmetic and answers range queries from a closed-form
+CDF, avoiding the grid entirely — at the cost of being approximate (gated on a
+CDF/W1 error bound, per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
+
+- **Boundary set** `Bset ⊆ V`: nodes near the root at which suffix forms are
+  cached. The default backing is `boundary_suffix: FxMap<u32, Vec<u64>>` on
+  `WamState` (each boundary node `B` → `H_B→root`); an alternate backing stores a
+  CDF/basis/parametric form instead.
 - **Budget** `max_depth: usize`: the path-length bound, as in the production
   `category_ancestor` kernel.
 
-## 2. Aggregate functionals (linear in `H`)
+## 2. Aggregate functionals (range/cumulative reads of the form)
+
+A functional is a weighted sum/integral over the distribution — i.e. a read of the
+form:
 
 ```
-f(H) = Σ_L w(L) · H[L]
-  mass          : w(L) = 1
+f = Σ_L w(L) · H[L]   (discrete)   or   ∫ w(ℓ) dH(ℓ)   (continuous)
+  mass           : w = 1                  (= range_mass(0, budget))
   moment1        : w(L) = L
-  weighted_power : w(L) = L^(-N)   (L>0)   -> WeightSum; d_eff = WeightSum^(-1/N)
+  weighted_power : w(L) = L^(-N)  (L>0)    -> WeightSum; d_eff = WeightSum^(-1/N)
+  bounded variants: integrate w only over [lo, hi]  (the truncated form suffices)
 ```
 
-Linearity is what makes the splice exact for *all* functionals simultaneously,
-and what lets the histogram be cached once and read many ways
-(`boundary_cache::{f_mass,f_moment1,f_weighted_power}`).
+Linearity makes the splice exact for *all* functionals at once, so the form is
+cached once and read many ways (`boundary_cache::{f_mass,f_moment1,f_weighted_power}`,
+or `range_mass` for arbitrary windows). A **pre-weighted cumulative basis** `g_B`
+(the "transformed form") folds `w` into the cached object so the read is a dot
+product — the right backing when one `(functional, budget)` dominates.
 
 ## 3. The splice identity
 
@@ -64,20 +99,26 @@ Conformance is verified against the production kernel
 
 ## 5. Result modes (the output family)
 
-The boundary kernel produces `H`; a **result extractor** maps `H` to the foreign
-predicate's result. All use the existing `finish_foreign_results` **`deterministic`**
-mode (one result, no choice point, `tuple(1)` layout):
+The boundary kernel produces the **form** (default: `H`); a **result extractor**
+reads it into the foreign predicate's result. All use the existing
+`finish_foreign_results` **`deterministic`** mode (one result, no choice point,
+`tuple(1)` layout):
 
-| mode | result `Value` | extractor |
-|------|----------------|-----------|
-| `scalar(functional)` | `Float` (or `Integer`) | `f(H)` for the named functional |
-| `histogram` | `List([Integer(H[0]), …])` | identity |
+| mode | result `Value` | extractor (a read of the form) |
+|------|----------------|--------------------------------|
+| `scalar(functional)` | `Float`/`Integer` | `f` = weighted sum/integral (e.g. `weighted_power`) |
 | `effective_distance` | `Float` | `WeightSum^(-1/N)` |
+| `distribution` | `List` of counts (PMF) — or the parametric/CDF encoding for a non-discrete backing | the form itself (possibly truncated) |
+| `range_mass(a, b)` | `Float`/`Integer` | `range_mass(a, b)` — sum/integral between two lengths |
+| `cdf(x)` / `quantile(p)` | `Float`/`Integer` | cumulative reads of the form |
 
-This is the generalisation over a scalar-only design: `histogram` returns the full
-distribution (e.g. for downstream distribution-compression consumers); `scalar`
-returns an aggregate. Adding CDF/quantile/moment modes is a new extractor over the
-same `H`, not new kernel work.
+This is the generalisation the histogram/PMF-vs-CDF view makes explicit: the
+result is *any* read of the distribution form. `distribution` returns the whole
+thing (for downstream distribution-compression consumers); `scalar` an aggregate;
+`range_mass`/`cdf`/`quantile` are the "mass between two points" reads (a single
+sum/integral, or an O(1) difference when the cached backing is already a cumulative
+/ CDF form). Each is a new extractor over the same form, not new kernel work — and
+for the cumulative/parametric backings the read is O(1).
 
 ## 6. Foreign-predicate interface
 
@@ -119,10 +160,15 @@ kernel is used and output is identical — the basis for the disablability guara
 
 ## 9. Storage / approximation
 
-Exact histograms by default. When a node's histogram exceeds a storage budget, a
-fitted form (binomial / discretised GMM, per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`)
-may replace it, gated on a CDF/W1 error bound. Because the exact splice is ~ns,
-approximation is a **storage** decision only.
+Exact discrete histograms by default. The §1a backings are the storage/scale
+ladder: when a node's histogram exceeds a storage budget — or when the support is
+so large that the discrete grid itself is the cost — a **continuous/parametric
+form** (binomial / discretised or continuous GMM, per
+`DISTRIBUTIONAL_COMPRESSION_THEORY.md`) replaces it, gated on a CDF/W1 error bound;
+or a **cumulative/CDF/basis** form replaces it when O(1) range/aggregate reads
+dominate. Because the exact discrete splice is ~ns, choosing a non-exact form is a
+**storage / very-large-scale** decision, not a compute one — at normal scale,
+exact discrete is both fastest and simplest.
 
 ## 10. Non-goals (this spec)
 
