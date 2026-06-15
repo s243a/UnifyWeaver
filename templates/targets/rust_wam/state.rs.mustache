@@ -1646,6 +1646,11 @@ impl WamState {
                 Some(Instruction::BeginAggregate(args[0].clone(), args[1].clone(), args[2].clone())),
             "end_aggregate" if args.len() == 1 =>
                 Some(Instruction::EndAggregate(args[0].clone())),
+            // T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
+            "par_aggregate" if args.len() >= 4 =>
+                Some(Instruction::ParAggregate(
+                    args[0].clone(), args[1].clone(), args[2].clone(), args[3].clone(),
+                    args[4..].iter().cloned().collect())),
 
             // Choice points
             "try_me_else" if args.len() == 1 =>
