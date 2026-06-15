@@ -4999,18 +4999,18 @@ rust_t9_min_rows(Options, N) :-
 % --- T9 fact-table inline: emission -----------------------------------------
 %
 % emit_fact_table_rust(+Pred/Arity, +fact_info(Arity,Rows), +Options, -RustCode):
-% emit a row-builder fn + a public enumeration fn for a ground-fact predicate.
-% The enumeration fn dereferences its args, prefilters rows by a bound atomic
-% first argument (a cheap first-arg index; unbound/compound first arg => full
-% scan), then drives crate fact_table_attempt, which unifies every column and
-% leaves a choice point per remaining candidate so backtrack() yields the next
-% matching row — same solution sequence and order as the T4/WAM path.
+% emit a lazily-built (OnceLock) row table + first-argument hash index, and a
+% public enumeration fn. The fn dereferences its args; when the first arg is a
+% bound atomic value it selects that index bucket (O(1) lookup), otherwise it
+% scans all rows; it then drives crate fact_table_attempt, which unifies every
+% column and leaves a choice point per remaining candidate so backtrack() yields
+% the next matching row — same solution sequence/order as the T4/WAM path.
 emit_fact_table_rust(Pred/Arity, fact_info(Arity, Rows), _Options, RustCode) :-
     Arity >= 1,
     rust_safe_function_name(Pred/Arity, FName),
-    % row-builder: vec![ vec![<col literals>], ... ] in source order
+    % row literals: vec![ vec![<col literals>], ... ] in source order
     maplist(rust_fact_row_literal, Rows, RowLiterals),
-    atomic_list_concat(RowLiterals, ',\n        ', RowsBody),
+    atomic_list_concat(RowLiterals, ',\n            ', RowsBody),
     % public fn signature: (vm, a1: Value, .., aN: Value)
     numlist(1, Arity, Idxs),
     findall(AD, ( member(I, Idxs), format(atom(AD), 'a~w: Value', [I]) ), ArgDecls),
@@ -5019,23 +5019,32 @@ emit_fact_table_rust(Pred/Arity, fact_info(Arity, Rows), _Options, RustCode) :-
     atomic_list_concat(ArgNames, ', ', ArgsVec),
     length(Rows, NRows),
     format(string(RustCode),
-'fn ~w_rows() -> Vec<Vec<Value>> {
-    vec![
-        ~w
-    ]
+'#[allow(clippy::type_complexity)]
+fn ~w_table() -> &''static (Vec<Vec<Value>>, std::collections::HashMap<String, Vec<usize>>) {
+    static T: std::sync::OnceLock<(Vec<Vec<Value>>, std::collections::HashMap<String, Vec<usize>>)> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let rows: Vec<Vec<Value>> = vec![
+            ~w
+        ];
+        let mut idx: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+        for (i, r) in rows.iter().enumerate() {
+            if let Some(k) = r[0].fact_index_key() {
+                idx.entry(k).or_default().push(i);
+            }
+        }
+        (rows, idx)
+    })
 }
 
-/// T9 fact table: ~w/~w (~w rows). First-arg prefilter + choice-point enumeration.
+/// T9 fact table: ~w/~w (~w rows). First-arg hash index + choice-point enumeration.
 pub fn ~w(~w) -> bool {
     let __args: Vec<Value> = vec![~w].iter().map(|v| vm.deref_var(&vm.deref_heap(v))).collect();
-    let __rows = ~w_rows();
-    let __cands: Vec<Value> = __rows.into_iter()
-        .filter(|r| match &__args[0] {
-            Value::Atom(_) | Value::Integer(_) | Value::Float(_) => r.get(0) == Some(&__args[0]),
-            _ => true,
-        })
-        .map(Value::List)
-        .collect();
+    let (__rows, __idx) = ~w_table();
+    // Bound atomic first arg -> that index bucket; otherwise full scan.
+    let __cands: Vec<Value> = match __args[0].fact_index_key() {
+        Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::List(__rows[i].clone())).collect()).unwrap_or_default(),
+        None => __rows.iter().map(|r| Value::List(r.clone())).collect(),
+    };
     vm.fact_table_attempt(__args, __cands)
 }',
         [FName, RowsBody, Pred, Arity, NRows, FName, SigArgs, ArgsVec, FName]),

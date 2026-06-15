@@ -29,6 +29,20 @@ pub enum Value {
 }
 
 impl Value {
+    /// First-argument index key for T9 fact tables: a type-tagged canonical
+    /// string for an atomic value (atom / integer / float), or None for
+    /// compound / list / unbound / ref values (which can only match via a full
+    /// scan). The same function keys both the stored rows and the query arg, so
+    /// a bound atomic first argument selects exactly the matching index bucket.
+    pub fn fact_index_key(&self) -> Option<String> {
+        match self {
+            Value::Atom(s) => Some(format!("a:{}", s)),
+            Value::Integer(n) => Some(format!("i:{}", n)),
+            Value::Float(f) => Some(format!("f:{}", f)),
+            _ => None,
+        }
+    }
+
     /// Check if this value is an unbound WAM variable.
     /// Corresponds to is_unbound_var/1 in wam_runtime.pl.
     pub fn is_unbound(&self) -> bool {
