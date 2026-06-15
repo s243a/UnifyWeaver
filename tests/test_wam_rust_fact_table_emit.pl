@@ -31,7 +31,7 @@ test(value_literals) :-
     assertion(sub_string(Code, _, _, _, "pub fn p_2(vm: &mut WamState, a1: Value, a2: Value) -> bool")),
     assertion(sub_string(Code, _, _, _, "std::sync::OnceLock")),
     assertion(sub_string(Code, _, _, _, "fact_index_key()")),
-    assertion(sub_string(Code, _, _, _, "vm.fact_table_attempt(__args, __cands)")).
+    assertion(sub_string(Code, _, _, _, "vm.fact_table_attempt(__args, __cands, cont_pc)")).
 
 % nested terms / lists / floats lower correctly.
 test(value_literals_compound) :-

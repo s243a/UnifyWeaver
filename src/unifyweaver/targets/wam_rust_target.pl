@@ -674,6 +674,11 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                         self.pc = self.cp;
                         true
                     } else { false }
+                } else if let Some(__ftr) = crate::fact_table_call(self, p, self.pc + 1) {
+                    // T9 fact table called as a deterministic-position goal:
+                    // continuation is the next instruction; the fact enumerator
+                    // sets pc/cp and leaves a choice point for further rows.
+                    __ftr
                 } else if Self::is_iso_meta_builtin(p) {
                     // ISO meta-builtins (catch/3, throw/1, succ/2) are
                     // emitted by the shared WAM compiler as Call rather
@@ -732,6 +737,10 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     true
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
+                } else if let Some(__ftr) = crate::fact_table_call(self, p, self.cp) {
+                    // T9 fact table in tail position: continuation is the saved
+                    // cp (the caller resumes there when the fact pred succeeds).
+                    __ftr
                 } else if Self::is_iso_meta_builtin(p) {
                     // Tail-position ISO meta-builtin: dispatch, then honor
                     // return semantics by jumping to the continuation.
@@ -3009,8 +3018,11 @@ compile_collect_native_astar_shortest_path_to_rust(Code) :-
 % next matching row. Mirrors builtin_between_attempt for choice-point bookkeeping.
 compile_fact_table_attempt_to_rust(Code) :-
     Code = '    /// T9: try each candidate fact row against the query args, leaving a
-    /// choice point for the rest so backtrack() enumerates further matches.
-    pub fn fact_table_attempt(&mut self, args: Vec<Value>, cands: Vec<Value>) -> bool {
+    /// choice point for the rest so backtrack() enumerates further matches. On
+    /// success the pc is set to cont_pc (the call site continuation: pc+1 for a
+    /// `call`, or the saved cp for a tail-call `execute`). The continuation is
+    /// stashed as the first data slot so resume_builtin can restore it.
+    pub fn fact_table_attempt(&mut self, args: Vec<Value>, cands: Vec<Value>, cont_pc: usize) -> bool {
         let mut rest = cands;
         while !rest.is_empty() {
             let row = rest.remove(0);
@@ -3028,8 +3040,11 @@ compile_fact_table_attempt_to_rust(Code) :-
             }
             if ok {
                 if !rest.is_empty() {
+                    let mut data = Vec::with_capacity(rest.len() + 1);
+                    data.push(Value::Integer(cont_pc as i64));
+                    data.append(&mut rest);
                     self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
+                        next_pc: cont_pc,
                         saved_args: cp_regs,
                         stack: cp_stack,
                         cp: self.cp,
@@ -3038,12 +3053,12 @@ compile_fact_table_attempt_to_rust(Code) :-
                         builtin_state: Some(BuiltinState {
                             name: "fact_table".to_string(),
                             args: args.clone(),
-                            data: rest,
+                            data,
                         }),
                         cut_barrier: self.cut_barrier,
                     });
                 }
-                self.pc += 1;
+                self.pc = cont_pc;
                 return true;
             }
             // This row failed: undo any partial bindings/heap and try the next.
@@ -3058,8 +3073,12 @@ compile_resume_builtin_to_rust(Code) :-
         match state.name.as_str() {
             "fact_table" => {
                 // T9: resume a fact-table scan at the next candidate row. The
-                // machine has already been restored to the pre-row snapshot.
-                self.fact_table_attempt(state.args, state.data)
+                // machine has already been restored to the pre-row snapshot. The
+                // continuation pc is data[0]; the remaining candidates follow.
+                if state.data.is_empty() { return false; }
+                let cont_pc = match &state.data[0] { Value::Integer(n) => *n as usize, _ => return false };
+                let rest: Vec<Value> = state.data[1..].to_vec();
+                self.fact_table_attempt(state.args, rest, cont_pc)
             }
             "aggregate_frame" => {
                 if state.args.len() != 3 { return false; }
@@ -5037,17 +5056,24 @@ fn ~w_table() -> &''static (Vec<Vec<Value>>, std::collections::HashMap<String, V
 }
 
 /// T9 fact table: ~w/~w (~w rows). First-arg hash index + choice-point enumeration.
-pub fn ~w(~w) -> bool {
-    let __args: Vec<Value> = vec![~w].iter().map(|v| vm.deref_var(&vm.deref_heap(v))).collect();
+/// cont_pc is the call-site continuation (pc+1 for `call`, saved cp for `execute`).
+fn ~w_run(vm: &mut WamState, args: Vec<Value>, cont_pc: usize) -> bool {
+    let __args: Vec<Value> = args.iter().map(|v| vm.deref_var(&vm.deref_heap(v))).collect();
     let (__rows, __idx) = ~w_table();
     // Bound atomic first arg -> that index bucket; otherwise full scan.
     let __cands: Vec<Value> = match __args[0].fact_index_key() {
         Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::List(__rows[i].clone())).collect()).unwrap_or_default(),
         None => __rows.iter().map(|r| Value::List(r.clone())).collect(),
     };
-    vm.fact_table_attempt(__args, __cands)
+    vm.fact_table_attempt(__args, __cands, cont_pc)
+}
+
+/// Public entry: direct callers get the next-instruction continuation (pc+1).
+pub fn ~w(~w) -> bool {
+    let __cont = vm.pc + 1;
+    ~w_run(vm, vec![~w], __cont)
 }',
-        [FName, RowsBody, Pred, Arity, NRows, FName, SigArgs, ArgsVec, FName]),
+        [FName, RowsBody, Pred, Arity, NRows, FName, FName, FName, SigArgs, FName, ArgsVec]),
     !.
 
 % One row -> `vec![<col1>, <col2>, ...]`.
@@ -6008,11 +6034,53 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
         format(string(Body0), "~w\n\n~w", [SharedCode, PredCodesStr])
     ),
     (   ParWrappers == []
-    ->  Code = Body0
+    ->  Body1 = Body0
     ;   atomic_list_concat(ParWrappers, '\n\n', WrapStr),
-        format(string(Code), "~w\n\n// --- T7 parallel-aggregate wrappers (route 1) ---\n~w",
+        format(string(Body1), "~w\n\n// --- T7 parallel-aggregate wrappers (route 1) ---\n~w",
                [Body0, WrapStr])
-    ).
+    ),
+    % T9 call-site dispatch: a crate-level fact_table_call referenced by the
+    % Call/Execute handlers (always emitted; empty match when no fact tables).
+    rust_fact_table_dispatch_fn(Classified, DispatchCode),
+    format(string(Code), "~w\n\n~w", [Body1, DispatchCode]).
+
+%% rust_fact_table_dispatch_fn(+Classified, -Code)
+%  Emit `fact_table_call(vm, pred, cont_pc) -> Option<bool>`: a match over the
+%  fact-table predicates routing a WAM call/execute to the right `<fn>_run`,
+%  reading args from the A registers. Some(ok) if pred is a fact table, else None.
+rust_fact_table_dispatch_fn(Classified, Code) :-
+    findall(P/A,
+            member(classified(_, P, A, fact_table, _), Classified),
+            FactPIs),
+    maplist(rust_fact_dispatch_arm, FactPIs, Arms),
+    atomic_list_concat(Arms, '\n', ArmsStr),
+    format(string(Code),
+'/// T9 call-site dispatch: route a WAM call/execute of a fact-table predicate to
+/// its enumerator. Some(ok) if `pred` is a fact table, None otherwise.
+#[allow(unused_variables)]
+pub fn fact_table_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<bool> {
+    match pred {
+~w        _ => None,
+    }
+}', [ArmsStr]).
+
+rust_fact_dispatch_arm(Pred/Arity, Arm) :-
+    rust_safe_function_name(Pred/Arity, FName),
+    numlist(1, Arity, Idxs),
+    findall(Read,
+            ( member(I, Idxs),
+              format(atom(Read),
+                '            let a~w = vm.get_reg_raw("A~w").unwrap_or(Value::Unbound("_A~w".to_string()));',
+                [I, I, I]) ),
+            Reads),
+    atomic_list_concat(Reads, '\n', ReadsStr),
+    findall(AN, ( member(I, Idxs), format(atom(AN), 'a~w', [I]) ), ANs),
+    atomic_list_concat(ANs, ', ', ArgsVec),
+    format(string(Arm),
+'        "~w/~w" => {
+~w
+            Some(~w_run(vm, vec![~w], cont_pc))
+        }', [Pred, Arity, ReadsStr, FName, ArgsVec]).
 
 %% rust_pred_has_control_constructs(+Module:Pred/Arity)
 %  True if any clause body uses a backtracking-driven control construct

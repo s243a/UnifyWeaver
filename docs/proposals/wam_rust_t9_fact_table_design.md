@@ -10,9 +10,13 @@ table is built once via `OnceLock` with a **first-argument hash index**
 (`Value::fact_index_key` keys both rows and the query arg): a bound atomic first
 arg selects its bucket in O(1), otherwise a full scan. Within-bucket order is
 source order, so the solution sequence matches the T4/WAM path.
-Follow-on: `call`-site integration so other predicates can invoke a fact-table
-predicate via WAM dispatch (the exec matrix calls the generated `pub fn`
-directly).
+**Call-site integration is done:** a WAM `call`/`execute` of a fact-table
+predicate is routed (by the Call/Execute instruction handlers) to a generated
+crate-level `fact_table_call(vm, pred, cont_pc)` dispatcher, which reads the A
+registers and drives the enumerator with the right continuation (`pc+1` for
+`call`, the saved `cp` for a tail-call `execute`). So an ordinary predicate can
+call a fact-table predicate and backtrack through it (incl. backtracking into the
+fact-table choice point from a downstream goal). No remaining T9 follow-ons.
 
 Original design / spec / implementation plan below. Survey of the reference
 targets (R / Haskell / Lua) + the Rust target's current fact handling is folded in.
