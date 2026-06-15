@@ -1,0 +1,257 @@
+// boundary_cache.rs — generated {{date}}
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//
+// Boundary distribution cache — P1 core: the exact path-length-histogram splice.
+// See docs/design/WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md.
+//
+// The effective-distance aggregate WeightSum = sum_L H[L]*L^-N is a *linear
+// functional* of the path-length histogram H[L] = #{paths of length L}. Path
+// histograms compose by convolution over a cut node B:
+//     H_seed->root = H_seed->B  (*)  H_B->root
+// so caching the suffix histogram H_B->root at root-near boundaries lets a query
+// that reaches B splice the cached suffix instead of re-walking B->root. Because
+// the functional is linear, the splice is exact for ALL functionals at once —
+// this module caches the raw histogram (general); a hot path may later pre-weight
+// it for a single (functional, budget) (a dot product). FFT convolution is a
+// future option for large supports; at length <= budget (~10-20) direct is best.
+//
+// This P1 module is self-contained and exercised by the unit tests below (the
+// Rust analog of the Python exact-match splice validation). The kernel wiring
+// that calls it during a live query is P2.
+
+/// Path-length histogram: counts indexed by length. `h[L]` = number of paths of
+/// length L. Trailing zeros are not significant.
+pub type Hist = Vec<u64>;
+
+/// Shift a histogram up by one length (prepend one edge) and accumulate into
+/// `out`, capped at `max_len`.
+fn add_shifted(out: &mut Hist, src: &Hist, max_len: usize) {
+    for (l, &c) in src.iter().enumerate() {
+        let l2 = l + 1;
+        if l2 <= max_len {
+            if out.len() <= l2 {
+                out.resize(l2 + 1, 0);
+            }
+            out[l2] += c;
+        }
+    }
+}
+
+/// Exact suffix histogram `H_node->root` via the recurrence
+/// `H_root = [1]`, `H_v[L] = sum_{p in parents(v)} H_p[L-1]`, capped at `max_len`.
+/// Memoised. Cycle-safe: a node already on the current DFS stack contributes no
+/// completed path (matching the bounded/visited search oracle).
+pub fn suffix_histogram(
+    node: u32,
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    max_len: usize,
+    memo: &mut std::collections::HashMap<u32, Hist>,
+    on_stack: &mut Vec<u32>,
+) -> Hist {
+    if node == root {
+        return vec![1];
+    }
+    if let Some(h) = memo.get(&node) {
+        return h.clone();
+    }
+    if on_stack.contains(&node) {
+        return vec![];
+    }
+    on_stack.push(node);
+    let mut out: Hist = vec![];
+    if let Some(ps) = parents.get(&node) {
+        for &p in ps {
+            let ph = suffix_histogram(p, root, parents, max_len, memo, on_stack);
+            add_shifted(&mut out, &ph, max_len);
+        }
+    }
+    on_stack.pop();
+    memo.insert(node, out.clone());
+    out
+}
+
+/// Truncated convolution `(prefix (*) suffix)` keeping total length <= budget.
+/// This is the splice: combine a seed->boundary prefix histogram with a cached
+/// boundary->root suffix histogram.
+pub fn splice_truncated(prefix: &Hist, suffix: &Hist, budget: usize) -> Hist {
+    let mut out: Hist = vec![];
+    for (a, &pa) in prefix.iter().enumerate() {
+        if pa == 0 {
+            continue;
+        }
+        for (b, &sb) in suffix.iter().enumerate() {
+            if sb == 0 {
+                continue;
+            }
+            let l = a + b;
+            if l <= budget {
+                if out.len() <= l {
+                    out.resize(l + 1, 0);
+                }
+                out[l] += pa * sb;
+            }
+        }
+    }
+    out
+}
+
+// Aggregate functionals — all linear in the histogram, so all are preserved
+// exactly by the splice. Extract whichever the query needs from the (spliced or
+// full) histogram: "compute the convolution, then take the part of interest."
+
+/// Total path mass (path count).
+pub fn f_mass(h: &Hist) -> f64 {
+    h.iter().map(|&c| c as f64).sum()
+}
+
+/// First moment sum: sum_L L * h[L].
+pub fn f_moment1(h: &Hist) -> f64 {
+    h.iter().enumerate().map(|(l, &c)| l as f64 * c as f64).sum()
+}
+
+/// Weighted-power sum: sum_{L>0} h[L] * L^-n  (the `effective_distance`
+/// WeightSum; d_eff = WeightSum^(-1/n)).
+pub fn f_weighted_power(h: &Hist, n: f64) -> f64 {
+    h.iter()
+        .enumerate()
+        .filter(|(l, _)| *l > 0)
+        .map(|(l, &c)| c as f64 * (l as f64).powf(-n))
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // Sample DAG (child -> parents), root = 0. Diamonds produce multiple paths
+    // of multiple lengths, so the full histogram (not just a scalar) is tested.
+    fn graph() -> HashMap<u32, Vec<u32>> {
+        let mut p = HashMap::new();
+        p.insert(1, vec![0]);
+        p.insert(2, vec![0]);
+        p.insert(3, vec![1, 2]);
+        p.insert(4, vec![3, 1]);
+        p.insert(5, vec![4, 2]); // seed
+        p
+    }
+
+    fn norm(mut h: Hist) -> Hist {
+        while h.last() == Some(&0) {
+            h.pop();
+        }
+        h
+    }
+
+    // Oracle: full enumeration of seed->root path-length histogram.
+    fn full_hist(node: u32, root: u32, parents: &HashMap<u32, Vec<u32>>, budget: usize) -> Hist {
+        let mut h: Hist = vec![];
+        let mut stack = vec![(node, 0usize, vec![node])];
+        while let Some((n, len, vis)) = stack.pop() {
+            if n == root {
+                if h.len() <= len {
+                    h.resize(len + 1, 0);
+                }
+                h[len] += 1;
+                continue;
+            }
+            if len >= budget {
+                continue;
+            }
+            if let Some(ps) = parents.get(&n) {
+                for &p in ps {
+                    if vis.contains(&p) {
+                        continue;
+                    }
+                    let mut v2 = vis.clone();
+                    v2.push(p);
+                    stack.push((p, len + 1, v2));
+                }
+            }
+        }
+        h
+    }
+
+    // Splice path: enumerate seed->boundary prefixes, splice each boundary's
+    // cached suffix histogram, sum.
+    fn spliced_hist(
+        seed: u32, root: u32, parents: &HashMap<u32, Vec<u32>>, boundary: &[u32], budget: usize,
+    ) -> Hist {
+        let mut memo = HashMap::new();
+        let suffix: HashMap<u32, Hist> = boundary
+            .iter()
+            .map(|&b| {
+                let mut on_stack = vec![];
+                (b, suffix_histogram(b, root, parents, budget, &mut memo, &mut on_stack))
+            })
+            .collect();
+        let mut out: Hist = vec![];
+        let mut stack = vec![(seed, 0usize, vec![seed])];
+        while let Some((n, len, vis)) = stack.pop() {
+            if n == root {
+                if out.len() <= len {
+                    out.resize(len + 1, 0);
+                }
+                out[len] += 1;
+                continue;
+            }
+            if let Some(sh) = suffix.get(&n) {
+                let pre = {
+                    let mut v = vec![0u64; len + 1];
+                    v[len] = 1;
+                    v
+                };
+                let sp = splice_truncated(&pre, sh, budget);
+                for (l, &c) in sp.iter().enumerate() {
+                    if c > 0 {
+                        if out.len() <= l {
+                            out.resize(l + 1, 0);
+                        }
+                        out[l] += c;
+                    }
+                }
+                continue; // stop at the boundary
+            }
+            if len >= budget {
+                continue;
+            }
+            if let Some(ps) = parents.get(&n) {
+                for &p in ps {
+                    if vis.contains(&p) {
+                        continue;
+                    }
+                    let mut v2 = vis.clone();
+                    v2.push(p);
+                    stack.push((p, len + 1, v2));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn splice_equals_full_dfs_histogram() {
+        let g = graph();
+        let budget = 8;
+        for boundary in &[vec![1u32, 2], vec![3, 1, 2], vec![4]] {
+            let full = norm(full_hist(5, 0, &g, budget));
+            let spl = norm(spliced_hist(5, 0, &g, boundary, budget));
+            assert_eq!(full, spl, "boundary {:?}: histogram mismatch", boundary);
+            // therefore every functional matches
+            assert_eq!(f_mass(&full), f_mass(&spl));
+            assert!((f_weighted_power(&full, 2.0) - f_weighted_power(&spl, 2.0)).abs() < 1e-12);
+            assert!((f_moment1(&full) - f_moment1(&spl)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn budget_truncation_is_respected() {
+        let g = graph();
+        for budget in [2usize, 3, 4, 5] {
+            let full = norm(full_hist(5, 0, &g, budget));
+            let spl = norm(spliced_hist(5, 0, &g, &[3u32, 1, 2], budget));
+            assert_eq!(full, spl, "budget {}", budget);
+        }
+    }
+}

@@ -708,6 +708,7 @@ pub mod value;
 pub mod instructions;
 pub mod state;
 pub mod par_aggregate;
+pub mod boundary_cache;
 {{#use_lmdb_zero}}pub mod lmdb_fact_source;
 {{/use_lmdb_zero}}{{#use_heed}}pub mod lmdb_fact_source;
 {{/use_heed}}{{#use_csr}}pub mod csr_fact_source;
