@@ -503,6 +503,12 @@ pub struct WamState {
     /// whole branch is skipped (and a node absent from the table can't reach
     /// root at all). Empty = prune disabled (default). Never changes results.
     pub min_dist: FxMap<i32, i32>,
+    /// Boundary distribution cache (P2): node -> path-length histogram of
+    /// node->root paths (counts indexed by length). When non-empty, the
+    /// boundary kernel splices the cached suffix at these nodes instead of
+    /// re-enumerating node->root — turning exponential path enumeration into a
+    /// histogram splice. Empty = boundary mode off (default).
+    pub boundary_suffix: FxMap<u32, Vec<u64>>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -605,6 +611,7 @@ impl WamState {
             int_native_edges: false,
             demand_set: FxSet::default(),
             min_dist: FxMap::default(),
+            boundary_suffix: FxMap::default(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -817,6 +824,105 @@ impl WamState {
     /// used by the kernel's admissible prune. Empty = prune disabled.
     pub fn set_min_dist(&mut self, dist: &HashMap<i32, i32>) {
         self.min_dist = dist.iter().map(|(&k, &v)| (k, v)).collect();
+    }
+
+    /// P2: load a precomputed boundary suffix table (node -> node->root
+    /// path-length histogram). When set, the boundary kernel splices these
+    /// instead of recursing. See WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md.
+    pub fn set_boundary_suffix(&mut self, table: &HashMap<u32, Vec<u64>>) {
+        self.boundary_suffix = table.iter().map(|(&k, v)| (k, v.clone())).collect();
+    }
+
+    /// Enumerate every simple cat_id->root path length (within budget) into a
+    /// histogram (counts indexed by length). Identical walk to
+    /// `collect_native_category_ancestor_hops` — same min_dist prune, same
+    /// `depth+1` emit at root, same `visited.len() >= max_depth` budget — but
+    /// emitting into a histogram and WITHOUT the boundary short-circuit. Used to
+    /// precompute boundary suffix histograms and as the full-enumeration oracle.
+    pub fn enum_ancestor_hist(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, hist: &mut Vec<u64>,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as usize;
+            if hist.len() <= l { hist.resize(l + 1, 0); }
+            hist[l] += 1;
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.enum_ancestor_hist(*parent_id, root_id, visited, max_depth, acc, depth + 1, hist);
+            visited.pop();
+        }
+    }
+
+    /// Boundary-spliced variant of the ancestor walk. Identical to
+    /// `enum_ancestor_hist` except: at a node carrying a cached suffix
+    /// histogram, splice it (shifted by the current `depth`, truncated at
+    /// `max_depth`) and stop instead of recursing — replacing the exponential
+    /// node->root enumeration with an O(budget) histogram add. On a DAG with a
+    /// proper boundary cut this yields exactly the same path-length histogram as
+    /// `enum_ancestor_hist`, so any aggregate (a linear functional of the
+    /// histogram) matches full enumeration. The `d + b <= max_depth` truncation
+    /// mirrors the production `visited.len() >= max_depth` budget at the cut.
+    pub fn collect_native_category_ancestor_boundary_hist(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, hist: &mut Vec<u64>,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        if let Some(suffix) = self.boundary_suffix.get(&cat_id) {
+            let d = depth as usize;
+            for (b, &c) in suffix.iter().enumerate() {
+                let l = d + b;
+                if l <= max_depth && c > 0 {
+                    if hist.len() <= l { hist.resize(l + 1, 0); }
+                    hist[l] += c;
+                }
+            }
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as usize;
+            if hist.len() <= l { hist.resize(l + 1, 0); }
+            hist[l] += 1;
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_boundary_hist(*parent_id, root_id, visited, max_depth, acc, depth + 1, hist);
+            visited.pop();
+        }
+    }
+
+    /// Precompute boundary suffix histograms for `boundary` nodes (each node's
+    /// node->root path-length histogram) via full enumeration, and install them.
+    pub fn build_boundary_suffix(&mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str) {
+        let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+        {
+            let acc = self.resolve_edge_accessor(edge_pred);
+            for &b in boundary {
+                let mut hist: Vec<u64> = vec![];
+                let mut visited: Vec<u32> = vec![b];
+                self.enum_ancestor_hist(b, root_id, &mut visited, max_depth, &acc, 0, &mut hist);
+                table.insert(b, hist);
+            }
+        }
+        self.boundary_suffix = table.into_iter().collect();
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
@@ -1839,5 +1945,76 @@ mod cache_attribution_tests {
         assert!(lines.iter().any(|l| l == "cache_attr_lookups=0"));
         assert!(lines.iter().any(|l| l == "cache_attr_hit_rate=0.0000"));
         assert!(lines.iter().any(|l| l.starts_with("cache_attr_inner_lookup_ms=")));
+    }
+}
+
+#[cfg(test)]
+mod boundary_kernel_tests {
+    // P2: the boundary-spliced ancestor kernel produces the same path-length
+    // histogram (hence the same aggregate) as full enumeration, exercised
+    // through the real edge-access path (register_ffi_fact_pairs / edge_parents_via).
+    use super::*;
+    use std::collections::HashMap;
+
+    // child -> parents DAG, root = "0":
+    //   5->{4,2}  4->{3,1}  3->{1,2}  1->{0}  2->{0}
+    // Diamonds give multiple paths of multiple lengths.
+    fn dag() -> WamState {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("5", "4"), ("5", "2"), ("4", "3"), ("4", "1"),
+            ("3", "1"), ("3", "2"), ("1", "0"), ("2", "0"),
+        ]);
+        vm
+    }
+
+    fn norm(mut h: Vec<u64>) -> Vec<u64> { while h.last() == Some(&0) { h.pop(); } h }
+
+    fn full_hist(vm: &WamState, seed: u32, root: u32, budget: usize) -> Vec<u64> {
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let mut h = vec![];
+        let mut vis = vec![seed];
+        vm.enum_ancestor_hist(seed, root, &mut vis, budget, &acc, 0, &mut h);
+        h
+    }
+
+    fn boundary_hist(vm: &WamState, seed: u32, root: u32, budget: usize) -> Vec<u64> {
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let mut h = vec![];
+        let mut vis = vec![seed];
+        vm.collect_native_category_ancestor_boundary_hist(seed, root, &mut vis, budget, &acc, 0, &mut h);
+        h
+    }
+
+    #[test]
+    fn boundary_splice_equals_full_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "boundary {:?}: histogram mismatch", bnames);
+            let wf = crate::boundary_cache::f_weighted_power(&full, 2.0);
+            let ws = crate::boundary_cache::f_weighted_power(&spl, 2.0);
+            assert!((wf - ws).abs() < 1e-12, "weighted_power mismatch for {:?}", bnames);
+        }
+    }
+
+    #[test]
+    fn budget_truncation_matches() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let bnodes: Vec<u32> = ["3", "1", "2"].iter().map(|s| vm.intern_atom(s)).collect();
+        for budget in [2usize, 3, 4, 5] {
+            let full = norm(full_hist(&vm, seed, root, budget));
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "budget {}", budget);
+        }
     }
 }
