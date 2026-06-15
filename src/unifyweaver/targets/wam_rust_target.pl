@@ -960,29 +960,33 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
     Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
-                        // Binary search for Atom keys (table is sorted from BTreeMap)
-                        if let Value::Atom(ref needle) = val {
+                        // Find the matching key''s target label.
+                        let target: Option<&str> = if let Value::Atom(ref needle) = val {
+                            // Binary search for Atom keys (table is sorted from BTreeMap)
                             match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
                                 if let Value::Atom(s) = k { s.as_str() } else { "" }
                             }) {
-                                Ok(idx) => {
-                                    if let Some(&pc) = self.labels.get(&table[idx].1) {
-                                        self.pc = pc; return true;
-                                    }
-                                }
-                                Err(_) => {}
+                                Ok(idx) => Some(table[idx].1.as_str()),
+                                Err(_) => None,
                             }
                         } else {
-                            // Fallback linear scan for non-Atom values
-                            for (key, label) in table {
-                                if *key == val {
-                                    if let Some(&pc) = self.labels.get(label) {
-                                        self.pc = pc; return true;
-                                    }
+                            // Linear scan for non-Atom (e.g. integer) keys
+                            table.iter().find(|(k, _)| *k == val).map(|(_, l)| l.as_str())
+                        };
+                        match target {
+                            // A key with multiple clauses maps to the "default"
+                            // sentinel: fall through to the try_me_else chain that
+                            // immediately follows the switch. (Treating it as a real
+                            // label silently failed, dropping every such clause.)
+                            Some("default") => { self.pc += 1; return true; }
+                            Some(label) => {
+                                if let Some(&pc) = self.labels.get(label) {
+                                    self.pc = pc; return true;
                                 }
+                                return false;
                             }
+                            None => return false, // no clause indexes this key
                         }
-                        return false;
                     }
                 }
                 // Unbound A1: skip dispatch, advance to next instruction
