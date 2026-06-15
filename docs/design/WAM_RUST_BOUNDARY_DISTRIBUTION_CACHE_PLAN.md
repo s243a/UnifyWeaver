@@ -1,17 +1,22 @@
-# WAM-Rust Boundary Distribution Cache — Implementation Plan
+# WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: design / groundwork. Scopes porting the **boundary-splice / suffix-distribution
-cache** (prototyped and validated correct in Python by the `codex/*` distribution
-line) into the Rust WAM graph-search target. Companion to
-`DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`, `DISTRIBUTIONAL_COMPRESSION_THEORY.md`,
-`RECURRENCE_EVALUATION_STRATEGY_*.md`, and the EnWiki splice-validation reports.
+Status: in progress (P1, P2a, P2c-parity DONE). The implementation-plan member of
+the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
+disablable complexity-reduction compiler optimization, caching secondary),
+**`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
+scalar/histogram result-mode family, invariants, interface), and this plan (phased
+work + status). Also companion to `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`,
+`DISTRIBUTIONAL_COMPRESSION_THEORY.md`, `RECURRENCE_EVALUATION_STRATEGY_*.md`, and
+the EnWiki splice-validation reports.
 
-This plan deliberately **re-derives the cost tradeoffs for compiled Rust** rather
-than inheriting the Python prototype's performance conclusions — because, as with
-the edge cache (see below), several of those conclusions are interpreter-overhead
-artifacts, not properties of the algorithm.
+It ports the **boundary-splice / suffix-distribution** approach (prototyped and
+validated correct in Python by the `codex/*` line) into the Rust WAM graph-search
+target, as a gated compiler optimization. It deliberately **re-derives the cost
+tradeoffs for compiled Rust** rather than inheriting the Python prototype's
+performance conclusions — because, as with the edge cache, several of those
+conclusions are interpreter-overhead artifacts, not properties of the algorithm.
 
-## 1. What the boundary cache is, and why the splice is valid
+## 1. What the boundary distribution is, and why the splice is valid
 
 The effective-distance query aggregates over all bounded paths from a seed to a
 root up `category_parent`:
@@ -209,14 +214,18 @@ Phasing:
     the **production** `collect_native_category_ancestor_hops` aggregate across
     seeds (incl. deep ones through a root-near boundary band) — closing the gap
     that P2a compared only against an in-module oracle.
-  - **P2c-wiring [next].** Make it callable from a query: register a
+  - **P2c-wiring [next].** Make it callable from a query as a gated compiler
+    optimization (`boundary_optimization`, default off): register a
     `category_ancestor_boundary` native kind + dispatch arm, populate the
-    side-table at setup, gate it, and an end-to-end LMDB run. **Design note:** the
-    production kernel emits a *stream* of hops aggregated downstream; to preserve
-    the complexity win the boundary kernel must emit the *aggregate* (a scalar
-    `weighted_power`/`d_eff`), not re-expand the histogram into a hop stream — so
-    the wiring introduces a scalar-result foreign predicate rather than reusing the
-    stream result mode.
+    side-table at setup, and an end-to-end LMDB run. **Result-mode family** (spec
+    §5): the boundary kernel produces the histogram `H`; a *result extractor* emits
+    a single result via the existing `finish_foreign_results` **`deterministic`**
+    mode (`tuple(1)`, no choice point) — either a **scalar** (`f(H)` for a
+    functional, e.g. `weighted_power`/`d_eff`) **or the histogram itself**
+    (`Value::List` of counts) for distribution-output consumers. This must *not*
+    re-expand `H` into a hop stream (that re-introduces the exponential). So the
+    wiring adds extractors over one histogram kernel, not a scalar-only predicate —
+    the histogram-output generalisation keeps it from being built too narrowly.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.
