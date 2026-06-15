@@ -59,28 +59,65 @@ Single-threaded; the working set (102k / 256k) far exceeds every L2 size tried.
 | 262 144 | 0.9960 | 256 462 | 23 310 |
 | 4 000 000 | 0.9960 | 256 462 | 21 831 |
 
-**L2 capacity is largely insensitive.** A 1024-entry L2 (4 KB) is within ~0.1
-point of a 4 M-entry L2; by ~65 536 the hit rate is saturated. Oversizing L2
-buys nothing and can slightly hurt (allocation/locality — the 4 M case is
-no faster, sometimes slower). The reason is the same skew: the L2-cacheable
-benefit is only the small tail of keys evicted from L1 and re-accessed soon;
-once that tail fits, more L2 is dead weight.
+**Single-threaded, L2 capacity is largely insensitive.** A 1024-entry L2 (4 KB)
+is within ~0.1 point of a 4 M-entry L2; by ~65 536 the hit rate is saturated.
+The reason is skew: with one thread, the single per-thread L1 (65 536 slots)
+holds the hot hub ancestors, so the L2-cacheable benefit is only the thin tail of
+keys evicted from L1 and re-accessed soon. Once that tail fits, more L2 is dead
+weight (the 4 M case is no faster, sometimes slower).
+
+## Multi-threaded: the shared L2 carries cross-thread reuse
+
+The single-threaded picture above is misleading for real multi-core use. The L1
+is **per-thread**: with N worker threads each starts with a cold L1, so reuse of
+a hub ancestor *across* threads cannot hit any thread's L1 — it must hit the
+**shared L2**. So L2 capacity, irrelevant single-threaded, becomes load-bearing.
+Same 200k graph (working set 102 188), L2 capacity sweep at 1 vs 4 threads:
+
+| L2 capacity | 1 thread hit | 1 thread inner misses | 4 threads hit | 4 threads inner misses |
+|-------------|--------------|-----------------------|---------------|------------------------|
+| 1 024 | 0.9841 | 109 863 | **0.9745** | **176 944** |
+| 16 384 | 0.9851 | 103 179 | 0.9806 | 134 083 |
+| 65 536 | 0.9852 | 102 687 | 0.9838 | 112 303 |
+| 262 144 | 0.9853 | 102 188 | 0.9853 | 102 189 |
+| 4 000 000 | 0.9853 | 102 188 | 0.9853 | 102 188 |
+
+At 4 threads, shrinking L2 from the working-set size (262 144) to 1024 raises
+inner LMDB seeks from 102 k to **177 k (+73%)** and drops the hit rate a full
+point (98.5% → 97.5%); the shared-L2 hit count grows 16 k → 93 k across the
+sweep (vs only 23 k → 30 k single-threaded). The L2 recovers the single-threaded
+hit rate once it reaches roughly the cross-thread working set (~262 144 ≈ 2.5×
+the L1 here).
+
+(On this RAM-warm fixture those extra 75 k seeks barely move wall time — 589 vs
+678 ms — because parallelism hides them and a "seek" is a µs page-cache read. On
+a disk-bound graph each extra seek is a page fault, so under-sizing L2 would cost
+real time, not just I/O work.)
 
 ## Actionable conclusion
 
-For this graph-search workload the per-thread L1 plus skewed hub access do the
-work; **a modest L2 (on the order of the L1, not the working set) is sufficient**.
-This supports the R8b cost-model approach of clamping cache capacity rather than
-sizing to the full demand set — the demand set can be 4× L1 with no hit-rate
-penalty. Sizing L2 to the working set wastes memory for ~0.1 point of hit rate.
+The cache is **L1-dominated per thread, L2-dominated across threads**:
+
+- **Single-threaded / per-thread streams:** the L1 does the work; L2 can be tiny.
+- **Multi-core (the real deployment):** the shared L2 carries the cross-thread
+  hub reuse, so it should be sized to roughly the cross-thread working set, not
+  minimised — under-sizing it costs ~1 point of hit rate and ~73% more LMDB seeks
+  here (and proportionally more wall time when disk-bound). This matches the
+  earlier observation that the L2 provides most of the cache benefit: that holds
+  whenever reuse is cross-thread or cross-query (the L1 is per-thread and does not
+  persist across either).
+
+So the R8b cost-model clamp is right to bound capacity, but the floor it clamps
+*to* should track the cross-thread working set on multi-core runs — not shrink to
+L1 size, which is only safe single-threaded.
 
 ## Caveats
 
 - **Synthetic, not real wiki.** The structure is chosen to be cache-realistic
-  (hub ancestors + depth), but it is not a real category graph. Conclusions about
-  the cache architecture (L1-dominance, L2-insensitivity, the persistent ~2.5×
-  win) are structural and should carry over; exact numbers would differ on a real
-  dump.
+  (hub ancestors + depth), but it is not a real category graph. The architectural
+  conclusions (per-thread L1 dominance, shared-L2 cross-thread reuse, the
+  persistent ~2.5× win) are structural and should carry over; exact numbers would
+  differ on a real dump.
 - **Not disk-bound.** The LMDB is RAM-resident here, so an inner "seek" is a ~µs
   page-cache read. On a graph too large for RAM each lazy miss would be a real
   page fault, so the cache advantage measured here is a *lower bound* — it would
