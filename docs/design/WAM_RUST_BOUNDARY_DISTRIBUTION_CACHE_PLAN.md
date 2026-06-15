@@ -125,6 +125,41 @@ the two concerns the Python policy had to entangle.
 (Keep the raw suffix histogram cacheable too, for cold/ad-hoc functionals; the
 `g_B` vectors are the hot-path optimisation.)
 
+### 4a. Two convolution modes: full vs budget-specialised
+
+There is a real tradeoff between caching the **raw suffix histogram** and the
+**pre-weighted `g_B`** vector, and the right default depends on query shape:
+
+- **Raw histogram → full (truncated) convolution.** Splice yields the entire
+  `H_seed→root` length distribution (up to budget), from which **any functional
+  and any budget** can be read afterward — "compute the convolution once, then
+  take the part of the distribution you care about." This is the general form and
+  amortises when a node is queried under several functionals/budgets. It is also
+  the form whose correctness is easiest to validate (P1 below). The aggregate is a
+  *family* of weighting functions (`mass`, `moment(1)`, `weighted_power(N)`, …),
+  not one — caching the histogram keeps all of them available.
+- **Pre-weighted `g_B` → dot product.** Specialised to one `(functional, budget)`;
+  cheapest at query time (~1 ns) but must be rebuilt per functional/budget.
+
+So: cache the **histogram** by default (general, multi-functional); derive `g_B`
+only for hot `(functional, budget)` pairs.
+
+Two structural notes for the general case (when supports grow or many boundaries
+combine):
+
+- **FFT.** A length-`m` truncated convolution is `O(m²)` direct; for the small
+  `m ≤ budget` (~10–20) here, direct wins (no FFT setup cost). But if supports grow
+  (deep budgets, fitted continuous tails) or a query composes **several** boundary
+  suffixes, the convolutions become an `O(m log m)` FFT / frequency-space multiply —
+  worth it past a crossover to measure, not assume.
+- **Multiple boundaries = a system, one boundary = a single equation.** With a
+  single cut node the splice is one convolution (one multiply in frequency space,
+  sub-quadratic). With several boundary cut nodes on the seed→root frontier it is a
+  linear system over the per-boundary suffix distributions (matrix form in
+  frequency space); the P1 enumeration handles the multi-boundary case by summing
+  per-boundary spliced contributions, which is the explicit (non-FFT) solution of
+  that system.
+
 ## 5. Rust integration (reuses existing scaffolding)
 
 From the runtime map, the plug-in points already exist:
@@ -147,10 +182,27 @@ From the runtime map, the plug-in points already exist:
 4. **Value/side-table** — no `Value` change needed; the basis lives in a native
    side-table (like `min_dist`), not as heap `Value::List`.
 
-Phasing: (P1) exact `g_B` side-table + boundary kernel arm + exec test asserting
-boundary-spliced result == full-DFS result on a synthetic graph (the splice
-identity, in Rust). (P2) wire the LMDB `boundary_basis` sub-db + a precompute pass.
-(P3) the measurement in §6. (P4) storage-gated approximate bases.
+Phasing:
+
+- **P1 — splice identity in Rust [DONE].** A self-contained runtime module,
+  `templates/targets/rust_wam/boundary_cache.rs.mustache`, implements the exact
+  histogram form: `suffix_histogram` (the recurrence), `splice_truncated` (the
+  truncated convolution), and the linear functionals (`f_mass`, `f_moment1`,
+  `f_weighted_power`). Its `#[cfg(test)]` proves **boundary-spliced histogram ==
+  full-DFS histogram**, bin-for-bin, across multiple boundary cut-sets and budgets
+  (hence all functionals match) — the Rust analog of the Python exact-match splice
+  validation. Compiled into every generated crate (`pub mod boundary_cache`) and
+  verified via `cargo test --lib`. Deliberately the histogram (general) form, not
+  the specialised `g_B`, so it validates all functionals at once (§4a). No kernel
+  is wired to it yet — that is P2.
+- **P2 — make it live.** A `category_ancestor_boundary` kernel arm that, on
+  reaching a cached boundary node, splices instead of recursing; the
+  `boundary_basis` side-table + LMDB sub-db + precompute pass; gated so default
+  output is identical.
+- **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
+  cache, and from what `D_pre`). Gates whether P4 is worth building.
+- **P4 — storage-gated approximate/specialised bases** (`g_B` dot-product for hot
+  functionals; fitted forms when a basis exceeds the storage budget).
 
 ## 6. What to measure (re-derive, don't inherit)
 

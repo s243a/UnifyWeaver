@@ -5701,6 +5701,13 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'par_aggregate.rs', ParAggPath),
     write_file(ParAggPath, ParAggCode),
 
+    % Write boundary_cache.rs (P1: exact path-length-histogram splice core) from
+    % template file. See WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md.
+    read_template_file('templates/targets/rust_wam/boundary_cache.rs.mustache', BoundaryTemplate),
+    render_template(BoundaryTemplate, [date=Date], BoundaryCode),
+    directory_file_path(SrcDir, 'boundary_cache.rs', BoundaryPath),
+    write_file(BoundaryPath, BoundaryCode),
+
     % Generate setup_foreign_predicates function for detected kernels
     generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
 
