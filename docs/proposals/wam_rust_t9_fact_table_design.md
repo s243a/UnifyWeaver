@@ -1,7 +1,18 @@
 # rust T9 — fact-table inline (design)
 
-**Status:** design / spec / implementation plan. Survey of the reference targets
-(R / Haskell / Lua) + the Rust target's current fact handling is folded in.
+**Status:** IMPLEMENTED (opt-in). Step 1 (detection/extraction), Step 2
+(emission: `emit_fact_table_rust/4` + `rust_term_to_value_literal/2`), Step 3
+(classification seam in `classify_predicates`, gated by `fact_table_inline(true)`;
+`fact_table` arm in `generate_predicate_codes`), and Step 4 (query-mode exec
+matrix + emission tests + matrix doc) are landed. Enumeration uses a generic
+`fact_table_attempt` runtime method + a `"fact_table"` `resume_builtin` arm.
+Follow-ons: a real first-arg hash index (current code prefilters by a bound
+atomic first arg, then linear-scans) and `call`-site integration so other
+predicates can invoke a fact-table predicate via WAM dispatch (the exec matrix
+calls the generated `pub fn` directly).
+
+Original design / spec / implementation plan below. Survey of the reference
+targets (R / Haskell / Lua) + the Rust target's current fact handling is folded in.
 
 ---
 
