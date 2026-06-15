@@ -96,7 +96,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | ✗ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | `~` opt-in | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
@@ -159,10 +159,14 @@ Verification notes:
   `docs/reports/wam_rust_t7_speedup_benchmark.md`,
   `docs/reports/wam_rust_t7_RESUME.md`. (Like the LLVM T6 decline, the benchmark
   is what gated the decision — here it said "yes, but only behind the probe.")
-- **T9**: rust and scala's lowered *emitters* emit no fact tables; scala's
-  ✓ is the target-level fact-source backend (auto-inline ≤128 rows, then
-  CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's emitter-level
-  inline tables, but it is fact-table inlining, so ✓. rust = ✗.
+- **T9**: scala's ✓ is the target-level fact-source backend (auto-inline ≤128
+  rows, then CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's
+  emitter-level inline tables, but it is fact-table inlining, so ✓. **rust = `~`
+  (opt-in):** `fact_table_inline(true)` lowers an all-ground-facts predicate
+  above `t9_min_rows` (default 64) to a static row table + a first-arg-prefiltered
+  choice-point enumerator (`fact_table_attempt`); off by default. Query-mode
+  matrix + emission tests: `tests/test_wam_rust_fact_table_exec.pl`,
+  `tests/test_wam_rust_fact_table_emit.pl`.
 - **T8** (native kernels) is a curated library feature dispatched via shared
   `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
   the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /

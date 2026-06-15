@@ -20,7 +20,9 @@
     detect_kernels/2,                    % +Predicates, -DetectedKernels
     generate_setup_foreign_predicates_rust/2, % +DetectedKernels, -RustCode
     escape_rust_string/2,
-    resolve_lmdb_crate/2                 % +Spec, -Crate  (lmdb_zero|heed|auto -> concrete)
+    resolve_lmdb_crate/2,                % +Spec, -Crate  (lmdb_zero|heed|auto -> concrete)
+    rust_fact_table_classify/3,          % +Module:Pred/Arity, +Options, -fact_info(Arity,Rows)
+    emit_fact_table_rust/4               % +Pred/Arity, +fact_info, +Options, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -1119,6 +1121,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
+    compile_fact_table_attempt_to_rust(FactTableAttemptCode),
     compile_foreign_result_helpers_to_rust(ForeignResultHelpersCode),
     compile_parse_foreign_tuple_layout_to_rust(ForeignTupleLayoutCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
@@ -1145,6 +1148,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         MetaBuiltinCode, '\n\n',
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
+        FactTableAttemptCode, '\n\n',
         ForeignResultHelpersCode, '\n\n',
         ForeignTupleLayoutCode, '\n\n',
         NativeAncestorCode, '\n\n',
@@ -2998,9 +3002,65 @@ compile_collect_native_astar_shortest_path_to_rust(Code) :-
         }
     }'.
 
+% T9 fact-table enumeration helper (generic, predicate-independent). Each
+% candidate is a Value::List of column values; unify all columns with the query
+% args. On the first match leave a choice point carrying the remaining candidates
+% (resumed via the "fact_table" arm of resume_builtin) so backtrack() yields the
+% next matching row. Mirrors builtin_between_attempt for choice-point bookkeeping.
+compile_fact_table_attempt_to_rust(Code) :-
+    Code = '    /// T9: try each candidate fact row against the query args, leaving a
+    /// choice point for the rest so backtrack() enumerates further matches.
+    pub fn fact_table_attempt(&mut self, args: Vec<Value>, cands: Vec<Value>) -> bool {
+        let mut rest = cands;
+        while !rest.is_empty() {
+            let row = rest.remove(0);
+            let cols = match &row { Value::List(c) => c.clone(), _ => continue };
+            if cols.len() != args.len() { continue; }
+            // Snapshot the machine BEFORE this row binds anything, so a later
+            // backtrack restores exactly here and resume_builtin retries on rest.
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            let mut ok = true;
+            for (a, c) in args.iter().zip(cols.iter()) {
+                if !self.unify(a, c) { ok = false; break; }
+            }
+            if ok {
+                if !rest.is_empty() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "fact_table".to_string(),
+                            args: args.clone(),
+                            data: rest,
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc += 1;
+                return true;
+            }
+            // This row failed: undo any partial bindings/heap and try the next.
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+        }
+        false
+    }'.
+
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
         match state.name.as_str() {
+            "fact_table" => {
+                // T9: resume a fact-table scan at the next candidate row. The
+                // machine has already been restored to the pre-row snapshot.
+                self.fact_table_attempt(state.args, state.data)
+            }
             "aggregate_frame" => {
                 if state.args.len() != 3 { return false; }
                 let agg_type = match &state.args[0] {
@@ -4936,6 +4996,80 @@ rust_fact_clause(Head, Body) :-
 rust_t9_min_rows(Options, N) :-
     ( member(t9_min_rows(N), Options) -> true ; N = 64 ).
 
+% --- T9 fact-table inline: emission -----------------------------------------
+%
+% emit_fact_table_rust(+Pred/Arity, +fact_info(Arity,Rows), +Options, -RustCode):
+% emit a row-builder fn + a public enumeration fn for a ground-fact predicate.
+% The enumeration fn dereferences its args, prefilters rows by a bound atomic
+% first argument (a cheap first-arg index; unbound/compound first arg => full
+% scan), then drives crate fact_table_attempt, which unifies every column and
+% leaves a choice point per remaining candidate so backtrack() yields the next
+% matching row — same solution sequence and order as the T4/WAM path.
+emit_fact_table_rust(Pred/Arity, fact_info(Arity, Rows), _Options, RustCode) :-
+    Arity >= 1,
+    rust_safe_function_name(Pred/Arity, FName),
+    % row-builder: vec![ vec![<col literals>], ... ] in source order
+    maplist(rust_fact_row_literal, Rows, RowLiterals),
+    atomic_list_concat(RowLiterals, ',\n        ', RowsBody),
+    % public fn signature: (vm, a1: Value, .., aN: Value)
+    numlist(1, Arity, Idxs),
+    findall(AD, ( member(I, Idxs), format(atom(AD), 'a~w: Value', [I]) ), ArgDecls),
+    atomic_list_concat(['vm: &mut WamState'|ArgDecls], ', ', SigArgs),
+    findall(AN, ( member(I, Idxs), format(atom(AN), 'a~w', [I]) ), ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgsVec),
+    length(Rows, NRows),
+    format(string(RustCode),
+'fn ~w_rows() -> Vec<Vec<Value>> {
+    vec![
+        ~w
+    ]
+}
+
+/// T9 fact table: ~w/~w (~w rows). First-arg prefilter + choice-point enumeration.
+pub fn ~w(~w) -> bool {
+    let __args: Vec<Value> = vec![~w].iter().map(|v| vm.deref_var(&vm.deref_heap(v))).collect();
+    let __rows = ~w_rows();
+    let __cands: Vec<Value> = __rows.into_iter()
+        .filter(|r| match &__args[0] {
+            Value::Atom(_) | Value::Integer(_) | Value::Float(_) => r.get(0) == Some(&__args[0]),
+            _ => true,
+        })
+        .map(Value::List)
+        .collect();
+    vm.fact_table_attempt(__args, __cands)
+}',
+        [FName, RowsBody, Pred, Arity, NRows, FName, SigArgs, ArgsVec, FName]),
+    !.
+
+% One row -> `vec![<col1>, <col2>, ...]`.
+rust_fact_row_literal(Row, Literal) :-
+    maplist(rust_term_to_value_literal, Row, ColLits),
+    atomic_list_concat(ColLits, ', ', Inner),
+    format(string(Literal), 'vec![~w]', [Inner]).
+
+% A ground Prolog term -> a Rust `Value::...` literal (matches the runtime Value
+% enum: Atom/Integer/Float/Str/List). [] maps to an empty Value::List.
+rust_term_to_value_literal(T, Lit) :- integer(T), !,
+    format(string(Lit), 'Value::Integer(~w)', [T]).
+rust_term_to_value_literal(T, Lit) :- float(T), !,
+    format(string(Lit), 'Value::Float(~w)', [T]).
+rust_term_to_value_literal(T, Lit) :- is_list(T), !,
+    maplist(rust_term_to_value_literal, T, Es),
+    atomic_list_concat(Es, ', ', Inner),
+    format(string(Lit), 'Value::List(vec![~w])', [Inner]).
+rust_term_to_value_literal(T, Lit) :- atom(T), !,
+    escape_rust_string(T, E),
+    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+rust_term_to_value_literal(T, Lit) :- string(T), !,
+    escape_rust_string(T, E),
+    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+rust_term_to_value_literal(T, Lit) :- compound(T), !,
+    T =.. [F|Args],
+    escape_rust_string(F, EF),
+    maplist(rust_term_to_value_literal, Args, Es),
+    atomic_list_concat(Es, ', ', Inner),
+    format(string(Lit), 'Value::Str("~w".to_string(), vec![~w])', [EF, Inner]).
+
 % --- T7 embedded-aggregate wiring, step 1: pure clause-lifting pass ----------
 %
 % Apply lift_embedded_aggregate across a predicate's clauses, lifting every
@@ -5903,7 +6037,16 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    (   % Check for auto-detectable FFI kernel FIRST (unless suppressed)
+    (   % T9 fact-table inline (opt-in): a large all-ground-facts predicate
+        % compiles to a static row table + first-arg-prefiltered choice-point
+        % enumeration, instead of T4 instruction sequences. Checked first so it
+        % wins for eligible predicates; off by default (fact_table_inline(true)).
+        option(fact_table_inline(true), Options),
+        rust_fact_table_classify(Module:Pred/Arity, Options, FInfo),
+        catch(emit_fact_table_rust(Pred/Arity, FInfo, Options, FactCode), _, fail)
+    ->  format(user_error, '  ~w/~w: fact table (T9)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, fact_table, FactCode)
+    ;   % Check for auto-detectable FFI kernel FIRST (unless suppressed)
         \+ option(no_kernels(true), Options),
         \+ rust_runtime_parser_support_module(Module),
         functor(KHead, Pred, Arity),
@@ -6041,6 +6184,10 @@ generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel, Kernel)|Rest],
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
                          WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: native\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, fact_table, PredCode)|Rest],
+                         WamEntries, Options, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: fact_table (T9)\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
                          WamEntries, Options, [Code|RestCodes]) :-
