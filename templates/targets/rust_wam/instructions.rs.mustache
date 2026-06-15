@@ -108,10 +108,14 @@ pub enum Instruction {
     /// Record one aggregate solution and force backtracking.
     EndAggregate(String),
     /// T7 route 2: parallel aggregate embedded in a larger clause body.
-    /// (agg_type, enum_entry_label, body_entry_label, result_reg). Drives the
-    /// `__par_enum`/`__par_body` helper predicates by label and reduces by
-    /// agg_type, binding result_reg in place (no choice point left behind).
-    ParAggregate(String, String, String, String),
+    /// (agg_type, enum_entry_label, body_entry_label, result_reg, input_regs).
+    /// Drives the `__par_enum`/`__par_body` helper predicates by label and
+    /// reduces by agg_type, binding result_reg in place (no choice point left
+    /// behind). `input_regs` are the container registers holding the aggregate's
+    /// external (enclosing-clause) inputs, in helper-parameter order; their values
+    /// are captured and threaded into the helpers so the enumerator runs with them
+    /// bound. Empty for an input-less embedded aggregate.
+    ParAggregate(String, String, String, String, Vec<String>),
 
     // === Choice Points ===
     /// Create choice point, try current clause, alternative at Label.

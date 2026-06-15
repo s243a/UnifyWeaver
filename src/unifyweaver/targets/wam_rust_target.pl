@@ -824,9 +824,15 @@ wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
 % agg_type (mirrors the aggregate_frame finalisation), binds result_reg in
 % place, and advances to the next instruction (no choice point left behind, so
 % the surrounding clause keeps running normally).
-wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label, result_reg)', Body) :-
+wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label, result_reg, input_regs)', Body) :-
     Body = '                let __base = self.clone();
-                let __vals = crate::par_aggregate::par_collect_labels(&__base, enum_label, body_label);
+                // Capture the external-input values from the container''s registers
+                // (Y-aware, fully dereferenced) so the helpers run with them bound.
+                let __ivals: Vec<Value> = input_regs.iter().map(|__r| {
+                    let __raw = self.get_reg(__r).unwrap_or(Value::Unbound(__r.clone()));
+                    self.deref_var(&self.deref_heap(&__raw))
+                }).collect();
+                let __vals = crate::par_aggregate::par_collect_labels(&__base, enum_label, body_label, &__ivals);
                 let __result = match agg_type.as_str() {
                     "count" => Value::Integer(__vals.len() as i64),
                     "sum" => {
@@ -4746,31 +4752,34 @@ rust_partition_embedded([PI|Rest], Options, HelperPIs, Rewrites) :-
 % itself) a forkable aggregate that the cost gate sends parallel and whose
 % reduce type the par_aggregate handler supports.
 rust_embedded_par_aggregate(QPI, _Options, Helpers,
-        rewrite(Pred/Arity, EnumName, BodyName)) :-
+        rewrite(Pred/Arity, EnumName, BodyName, EnumArity)) :-
     ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
     functor(Head, Pred, Arity),
     findall(t, clause(Module:Head, _), [t]),     % exactly one clause
     clause(Module:Head, Body),
     \+ forkable_aggregate(Body, _, _),           % not whole-body (that is route 1)
     rust_body_embedded_aggregate(Body, AggGoal),
-    % Correctness gate: only parallelise when the embedded aggregate's inner goal
-    % reads NO variable bound by the enclosing clause (head/other goals). Such
-    % "external inputs" are not yet threaded into the __par_enum/__par_body
-    % helpers (they would enumerate unbound -> wrong results, e.g. eg_p(1,R)
-    % returning every link's body instead of link(1)'s). With inputs present we
-    % decline, so the aggregate compiles SEQUENTIALLY (correct). Threading them
-    % into par_collect_labels via the container's input registers is a follow-on.
-    rust_embedded_aggregate_inputs(Head, Body, AggGoal, []),
+    % External inputs: variables the aggregate's inner goal reads that the
+    % enclosing clause binds (head args / preceding goals). They become LEADING
+    % params of the __par_enum/__par_body helpers (via the /6 transform) and, at
+    % the WAM-text splice, their container registers are recorded on the
+    % par_aggregate line so the ParAggregate handler captures their values and
+    % threads them in — so e.g. eg_p(1,R) enumerates only link(1), not every link.
+    % Order is inner-goal first-appearance, matching the block's first-read order
+    % the splice uses for the register list. (If the splice can't line the
+    % registers up 1:1 with these inputs it leaves the aggregate sequential.)
+    rust_embedded_aggregate_inputs(Head, Body, AggGoal, ExternalInputs),
     build_cost_model(Module, CM),
-    parallel_aggregate_transform(AggGoal, CM, Pred, Helpers,
-        par_aggregate(AggType, EnumName/1, BodyName/2, _Result)),
+    parallel_aggregate_transform(AggGoal, ExternalInputs, CM, Pred, Helpers,
+        par_aggregate(AggType, EnumName/EnumArity, BodyName/_BodyArity, _Result)),
     rust_supported_par_agg_type(AggType),
     !.
 
 % External inputs of an embedded aggregate: variables its inner goal reads that
 % are bound by the enclosing clause (head or the other body goals), excluding the
-% result var. Non-empty ⇒ the aggregate depends on caller bindings the helpers
-% can't yet receive ⇒ decline parallelisation (compile sequentially).
+% result var, in inner-goal first-appearance order. These are threaded into the
+% parallel helpers (see rust_embedded_par_aggregate); [] for an input-less
+% embedded aggregate.
 rust_embedded_aggregate_inputs(Head, Body, AggGoal, Ext) :-
     forkable_aggregate(AggGoal, _Tmpl, InnerGoal),
     aggregate_result(AggGoal, Result),
@@ -4806,33 +4815,98 @@ rust_supported_par_agg_type(T) :- memberchk(T, [collect, count, sum, max, min]).
 % splice a single `par_aggregate` line over its begin_aggregate..end_aggregate
 % block. No-op (Lines unchanged) when there is no matching rewrite directive.
 rust_rewrite_embedded_aggregate(Lines0, PI, Rewrites, Lines) :-
-    memberchk(rewrite(PI, EnumName, BodyName), Rewrites),
+    memberchk(rewrite(PI, EnumName, BodyName, EnumArity), Rewrites),
     !,
-    rust_splice_par_aggregate(Lines0, EnumName, BodyName, Lines).
+    rust_splice_par_aggregate(Lines0, EnumName, BodyName, EnumArity, Lines).
 rust_rewrite_embedded_aggregate(Lines, _, _, Lines).
 
-rust_splice_par_aggregate(Lines0, EnumName, BodyName, Lines) :-
-    rust_find_begin_agg(Lines0, Before, Type, ResultReg, AfterBegin),
-    rust_drop_to_end_agg(AfterBegin, AfterEnd),
-    format(string(ParLine), '    par_aggregate ~w, ~w/1, ~w/2, ~w',
-           [Type, EnumName, BodyName, ResultReg]),
-    append(Before, [ParLine|AfterEnd], Lines).
+% Splice a single par_aggregate line over the begin_aggregate..end_aggregate
+% block. The external-input registers are recovered from the block: Y-registers
+% READ inside it but NOT written there (so bound by the enclosing clause), minus
+% the value and result registers, in first-read order. That order matches the
+% helpers' leading-param order (inner-goal first-appearance), so register i feeds
+% param i. The transform's K (= EnumArity-1) must equal the register count; if
+% not, we leave the block sequential (correct fallback) rather than mis-thread.
+rust_splice_par_aggregate(Lines0, EnumName, BodyName, EnumArity, Lines) :-
+    rust_find_begin_agg(Lines0, Before, Type, ValueReg, ResultReg, AfterBegin),
+    rust_take_to_end_agg(AfterBegin, BlockLines, AfterEnd),
+    rust_block_input_regs(BlockLines, ValueReg, ResultReg, InputRegs),
+    length(InputRegs, K),
+    ExpectedK is EnumArity - 1,
+    (   K =:= ExpectedK
+    ->  BodyArity is EnumArity + 1,
+        (   InputRegs == []
+        ->  format(string(ParLine), '    par_aggregate ~w, ~w/~w, ~w/~w, ~w',
+                   [Type, EnumName, EnumArity, BodyName, BodyArity, ResultReg])
+        ;   atomic_list_concat(InputRegs, ', ', RegsStr),
+            format(string(ParLine), '    par_aggregate ~w, ~w/~w, ~w/~w, ~w, ~w',
+                   [Type, EnumName, EnumArity, BodyName, BodyArity, ResultReg, RegsStr])
+        ),
+        append(Before, [ParLine|AfterEnd], Lines)
+    ;   Lines = Lines0                            % count mismatch -> stay sequential
+    ).
 
-rust_find_begin_agg([Line|Rest], [], Type, ResultReg, Rest) :-
+rust_find_begin_agg([Line|Rest], [], Type, ValueReg, ResultReg, Rest) :-
     wam_tokenize_line(Line, Parts),
-    Parts = ["begin_aggregate", Type0, _ValueReg, ResultReg0|_],
+    Parts = ["begin_aggregate", Type0, ValueReg0, ResultReg0|_],
     clean_comma(Type0, Type),
+    clean_comma(ValueReg0, ValueReg),
     clean_comma(ResultReg0, ResultReg),
     !.
-rust_find_begin_agg([Line|Rest], [Line|Before], Type, ResultReg, After) :-
-    rust_find_begin_agg(Rest, Before, Type, ResultReg, After).
+rust_find_begin_agg([Line|Rest], [Line|Before], Type, ValueReg, ResultReg, After) :-
+    rust_find_begin_agg(Rest, Before, Type, ValueReg, ResultReg, After).
 
-rust_drop_to_end_agg([Line|Rest], Rest) :-
+% Capture the block lines between begin_aggregate and end_aggregate (exclusive),
+% returning the lines after end_aggregate as the tail.
+rust_take_to_end_agg([Line|Rest], [], Rest) :-
     wam_tokenize_line(Line, Parts),
     Parts = ["end_aggregate"|_],
     !.
-rust_drop_to_end_agg([_|Rest], After) :-
-    rust_drop_to_end_agg(Rest, After).
+rust_take_to_end_agg([Line|Rest], [Line|Block], After) :-
+    rust_take_to_end_agg(Rest, Block, After).
+
+% External-input registers of an aggregate block: Y-registers read but not
+% written inside it (bound by the enclosing clause), minus the value/result
+% registers, deduplicated in first-read order.
+rust_block_input_regs(BlockLines, ValueReg, ResultReg, InputRegs) :-
+    rust_block_rw(BlockLines, Reads, Writes),
+    include(rust_not_in(Writes), Reads, R1),
+    include(rust_not_in([ValueReg, ResultReg]), R1, R2),
+    rust_string_dedup(R2, InputRegs).
+
+rust_not_in(List, X) :- \+ memberchk(X, List).
+
+% Reads (first-appearance order) and Writes of Y-registers across a block.
+rust_block_rw([], [], []).
+rust_block_rw([Line|Rest], Reads, Writes) :-
+    wam_tokenize_line(Line, Parts0),
+    maplist(clean_comma, Parts0, Parts),
+    rust_line_rw(Parts, LReads, LWrites),
+    rust_block_rw(Rest, Reads0, Writes0),
+    append(LReads, Reads0, Reads),
+    append(LWrites, Writes0, Writes).
+
+% Y-register reads (source operand) / writes (destination operand) per instr.
+rust_line_rw(["put_value", Src, _],     R, []) :- ( rust_is_yreg(Src) -> R = [Src] ; R = [] ), !.
+rust_line_rw(["get_value", Src, _],     R, []) :- ( rust_is_yreg(Src) -> R = [Src] ; R = [] ), !.
+rust_line_rw(["set_value", Src],        R, []) :- ( rust_is_yreg(Src) -> R = [Src] ; R = [] ), !.
+rust_line_rw(["unify_value", Src],      R, []) :- ( rust_is_yreg(Src) -> R = [Src] ; R = [] ), !.
+rust_line_rw(["put_variable", Dst, _],  [], W) :- ( rust_is_yreg(Dst) -> W = [Dst] ; W = [] ), !.
+rust_line_rw(["get_variable", Dst, _],  [], W) :- ( rust_is_yreg(Dst) -> W = [Dst] ; W = [] ), !.
+rust_line_rw(["set_variable", Dst],     [], W) :- ( rust_is_yreg(Dst) -> W = [Dst] ; W = [] ), !.
+rust_line_rw(["unify_variable", Dst],   [], W) :- ( rust_is_yreg(Dst) -> W = [Dst] ; W = [] ), !.
+rust_line_rw(_, [], []).
+
+% A Y-register token: 'Y' followed by >= 1 digits (e.g. "Y2"). A-registers and
+% structure/atom operands are not external-input slots.
+rust_is_yreg(S) :-
+    atom_string(A, S),
+    atom_chars(A, ['Y'|Ds]),
+    Ds = [_|_],
+    forall(member(D, Ds), char_type(D, digit)).
+
+rust_string_dedup([], []).
+rust_string_dedup([X|Xs], [X|R]) :- exclude(==(X), Xs, Xs1), rust_string_dedup(Xs1, R).
 
 % --- T9 fact-table inline: detection + row extraction ----------------------
 %
@@ -5131,17 +5205,22 @@ wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
         'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
-% T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg
+% T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
 % (EnumLabel/BodyLabel are predicate-indicator entry labels, e.g.
-% __par_enum_foo/1). Emitted by rust_rewrite_embedded_aggregates.
-wam_line_to_rust_instr(["par_aggregate", Type, EnumLabel, BodyLabel, ResultReg], _, _, Rust) :-
+% __par_enum_foo/2). Any trailing tokens are the container registers holding the
+% aggregate's external inputs, in helper-parameter order (empty for input-less).
+% Emitted by rust_rewrite_embedded_aggregates.
+wam_line_to_rust_instr(["par_aggregate", Type, EnumLabel, BodyLabel, ResultReg | InRegs0], _, _, Rust) :-
     clean_comma(Type, CType),
     clean_comma(EnumLabel, CEnumLabel),
     clean_comma(BodyLabel, CBodyLabel),
     clean_comma(ResultReg, CResultReg),
+    maplist(clean_comma, InRegs0, InRegs),
+    findall(Q, ( member(R, InRegs), format(atom(Q), '"~w".to_string()', [R]) ), QuotedRegs),
+    atomic_list_concat(QuotedRegs, ', ', RegsInner),
     format(string(Rust),
-        'Instruction::ParAggregate("~w".to_string(), "~w".to_string(), "~w".to_string(), "~w".to_string())',
-        [CType, CEnumLabel, CBodyLabel, CResultReg]).
+        'Instruction::ParAggregate("~w".to_string(), "~w".to_string(), "~w".to_string(), "~w".to_string(), vec![~w])',
+        [CType, CEnumLabel, CBodyLabel, CResultReg, RegsInner]).
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).

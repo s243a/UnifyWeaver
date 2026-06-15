@@ -147,12 +147,21 @@ where E: Fn(&mut WamState, Value) -> bool,
 // clone before running, so a `backtrack()` past the helper's own choice points
 // stops (returns false) instead of escaping into the container clause.
 
-fn collect_inputs_labeled(base: &WamState, enum_pc: usize) -> Vec<Value> {
+// `input_vals` are the aggregate's external (enclosing-clause) inputs, in helper
+// parameter order. The enum/body helpers were synthesised with those inputs as
+// LEADING params, so they expect them in A1..AK with the tuple (and value) in the
+// trailing arg registers. For an input-less embedded aggregate `input_vals` is
+// empty and the tuple/value land in A1/A2 exactly as before.
+fn collect_inputs_labeled(base: &WamState, enum_pc: usize, input_vals: &[Value]) -> Vec<Value> {
     let mut vm = base.clone();
     vm.choice_points.clear();
     vm.aggregate_acc.clear();
     vm.pc = enum_pc;
-    vm.set_reg("A1", Value::Unbound(IN_VAR.to_string()));
+    let k = input_vals.len();
+    for (i, v) in input_vals.iter().enumerate() {
+        vm.set_reg(&format!("A{}", i + 1), v.clone());
+    }
+    vm.set_reg(&format!("A{}", k + 1), Value::Unbound(IN_VAR.to_string()));
     let mut out = Vec::new();
     if vm.run() {
         loop {
@@ -167,13 +176,17 @@ fn collect_inputs_labeled(base: &WamState, enum_pc: usize) -> Vec<Value> {
     out
 }
 
-fn run_body_labeled(base: &WamState, m: &mut WamState, body_pc: usize, input: Value) -> Vec<Value> {
+fn run_body_labeled(base: &WamState, m: &mut WamState, body_pc: usize, input_vals: &[Value], input: Value) -> Vec<Value> {
     *m = base.clone();
     m.choice_points.clear();
     m.aggregate_acc.clear();
     m.pc = body_pc;
-    m.set_reg("A1", input);
-    m.set_reg("A2", Value::Unbound(VAL_VAR.to_string()));
+    let k = input_vals.len();
+    for (i, v) in input_vals.iter().enumerate() {
+        m.set_reg(&format!("A{}", i + 1), v.clone());
+    }
+    m.set_reg(&format!("A{}", k + 1), input);
+    m.set_reg(&format!("A{}", k + 2), Value::Unbound(VAL_VAR.to_string()));
     let mut vals = Vec::new();
     if m.run() {
         loop {
@@ -188,14 +201,14 @@ fn run_body_labeled(base: &WamState, m: &mut WamState, body_pc: usize, input: Va
     vals
 }
 
-fn map_bodies_labeled(base: &WamState, inputs: &[Value], body_pc: usize) -> Vec<Value> {
+fn map_bodies_labeled(base: &WamState, inputs: &[Value], body_pc: usize, input_vals: &[Value]) -> Vec<Value> {
     let n = inputs.len();
     let cores = thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n);
     if n < 2 || cores < 2 {
         let mut out = Vec::new();
         let mut m = base.clone();
         for inp in inputs {
-            out.extend(run_body_labeled(base, &mut m, body_pc, inp.clone()));
+            out.extend(run_body_labeled(base, &mut m, body_pc, input_vals, inp.clone()));
         }
         return out;
     }
@@ -213,7 +226,7 @@ fn map_bodies_labeled(base: &WamState, inputs: &[Value], body_pc: usize) -> Vec<
                 let mut m = base.clone();
                 let mut local = Vec::new();
                 for inp in slice {
-                    local.extend(run_body_labeled(base, &mut m, body_pc, inp.clone()));
+                    local.extend(run_body_labeled(base, &mut m, body_pc, input_vals, inp.clone()));
                 }
                 (lo, local)
             }));
@@ -233,8 +246,10 @@ fn map_bodies_labeled(base: &WamState, inputs: &[Value], body_pc: usize) -> Vec<
 /// (parallel when worthwhile). Returns the ordered body-value sequence; the
 /// `ParAggregate` instruction handler reduces it by aggregate type. Returns an
 /// empty vec if either label is unknown (the handler then reduces an empty set,
-/// matching an aggregate over no solutions).
-pub fn par_collect_labels(base: &WamState, enum_label: &str, body_label: &str) -> Vec<Value> {
+/// matching an aggregate over no solutions). `input_vals` carries the aggregate's
+/// external (enclosing-clause) inputs, captured from the container's registers by
+/// the handler, so the enumerator runs with them bound rather than free.
+pub fn par_collect_labels(base: &WamState, enum_label: &str, body_label: &str, input_vals: &[Value]) -> Vec<Value> {
     let enum_pc = match base.labels.get(enum_label) {
         Some(p) => *p,
         None => return Vec::new(),
@@ -243,6 +258,6 @@ pub fn par_collect_labels(base: &WamState, enum_label: &str, body_label: &str) -
         Some(p) => *p,
         None => return Vec::new(),
     };
-    let inputs = collect_inputs_labeled(base, enum_pc);
-    map_bodies_labeled(base, &inputs, body_pc)
+    let inputs = collect_inputs_labeled(base, enum_pc, input_vals);
+    map_bodies_labeled(base, &inputs, body_pc, input_vals)
 }
