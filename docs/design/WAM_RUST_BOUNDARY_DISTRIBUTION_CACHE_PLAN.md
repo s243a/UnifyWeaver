@@ -195,10 +195,29 @@ Phasing:
   verified via `cargo test --lib`. Deliberately the histogram (general) form, not
   the specialised `g_B`, so it validates all functionals at once (§4a). No kernel
   is wired to it yet — that is P2.
-- **P2 — make it live.** A `category_ancestor_boundary` kernel arm that, on
-  reaching a cached boundary node, splices instead of recursing; the
-  `boundary_basis` side-table + LMDB sub-db + precompute pass; gated so default
-  output is identical.
+- **P2 — make it live.**
+  - **P2a [DONE].** The runtime boundary kernel on `WamState` (`state.rs`):
+    `boundary_suffix` side-table + `set_boundary_suffix`; `enum_ancestor_hist`
+    (full enumeration, an exact mirror of the production
+    `collect_native_category_ancestor_hops` walk); `collect_native_category_
+    ancestor_boundary_hist` (splice-and-stop at boundary nodes, `d+b<=max_depth`
+    truncation matching the production budget at the cut); `build_boundary_suffix`
+    (precompute). Unit-tested through the real `register_ffi_fact_pairs` /
+    `edge_parents_via` path (boundary splice == full enumeration).
+  - **P2c-parity [DONE].** Exec test `test_wam_rust_boundary_kernel_exec.pl`:
+    in a generated crate, the boundary kernel's `weighted_power` aggregate equals
+    the **production** `collect_native_category_ancestor_hops` aggregate across
+    seeds (incl. deep ones through a root-near boundary band) — closing the gap
+    that P2a compared only against an in-module oracle.
+  - **P2c-wiring [next].** Make it callable from a query: register a
+    `category_ancestor_boundary` native kind + dispatch arm, populate the
+    side-table at setup, gate it, and an end-to-end LMDB run. **Design note:** the
+    production kernel emits a *stream* of hops aggregated downstream; to preserve
+    the complexity win the boundary kernel must emit the *aggregate* (a scalar
+    `weighted_power`/`d_eff`), not re-expand the histogram into a hop stream — so
+    the wiring introduces a scalar-result foreign predicate rather than reusing the
+    stream result mode.
+  - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.
 - **P4 — storage-gated approximate/specialised bases** (`g_B` dot-product for hot
