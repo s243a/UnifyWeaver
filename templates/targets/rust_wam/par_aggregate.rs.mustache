@@ -21,13 +21,14 @@ use crate::state::WamState;
 const IN_VAR: &str = "__PAR_IN";
 const VAL_VAR: &str = "__PAR_VAL";
 
-/// Drive a unary predicate to exhaustion, collecting the binding of its argument
-/// across all solutions (the WAM result convention: pass `Unbound(name)`, read
-/// `bindings[name]`).
-fn collect_inputs(base: &WamState, enum_fn: fn(&mut WamState, Value) -> bool) -> Vec<Value> {
+/// Drive a unary enumerator to exhaustion, collecting the binding of its tuple
+/// argument across all solutions. `enum_c` is a closure so callers can bind the
+/// aggregate's external (head-arg) inputs before the tuple arg.
+fn collect_inputs<E>(base: &WamState, enum_c: &E) -> Vec<Value>
+where E: Fn(&mut WamState, Value) -> bool {
     let mut vm = base.clone();
     let mut out = Vec::new();
-    if enum_fn(&mut vm, Value::Unbound(IN_VAR.to_string())) {
+    if enum_c(&mut vm, Value::Unbound(IN_VAR.to_string())) {
         loop {
             if let Some(raw) = vm.bindings.get(IN_VAR).cloned() {
                 // resolve heap refs / nested terms, as EndAggregate does
@@ -46,15 +47,11 @@ fn collect_inputs(base: &WamState, enum_fn: fn(&mut WamState, Value) -> bool) ->
 
 /// Run the body for one input on machine `m` (reset to `base` first), collecting
 /// the value binding across all of the body's solutions.
-fn run_body(
-    base: &WamState,
-    m: &mut WamState,
-    body_fn: fn(&mut WamState, Value, Value) -> bool,
-    input: Value,
-) -> Vec<Value> {
+fn run_body<B>(base: &WamState, m: &mut WamState, body_c: &B, input: Value) -> Vec<Value>
+where B: Fn(&mut WamState, Value, Value) -> bool {
     *m = base.clone(); // each branch starts from a clean machine
     let mut vals = Vec::new();
-    if body_fn(m, input, Value::Unbound(VAL_VAR.to_string())) {
+    if body_c(m, input, Value::Unbound(VAL_VAR.to_string())) {
         loop {
             if let Some(raw) = m.bindings.get(VAL_VAR).cloned() {
                 vals.push(m.deref_var(&m.deref_heap(&raw)));
@@ -69,11 +66,8 @@ fn run_body(
 
 /// Run the body over all inputs, in parallel when there is enough to fan out,
 /// preserving generator order (chunks concatenated by input index).
-fn map_bodies(
-    base: &WamState,
-    inputs: &[Value],
-    body_fn: fn(&mut WamState, Value, Value) -> bool,
-) -> Vec<Value> {
+fn map_bodies<B>(base: &WamState, inputs: &[Value], body_c: &B) -> Vec<Value>
+where B: Fn(&mut WamState, Value, Value) -> bool + Sync {
     let n = inputs.len();
     let cores = thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n);
     if n < 2 || cores < 2 {
@@ -81,7 +75,7 @@ fn map_bodies(
         let mut out = Vec::new();
         let mut m = base.clone();
         for inp in inputs {
-            out.extend(run_body(base, &mut m, body_fn, inp.clone()));
+            out.extend(run_body(base, &mut m, body_c, inp.clone()));
         }
         return out;
     }
@@ -99,7 +93,7 @@ fn map_bodies(
                 let mut m = base.clone(); // one clone per worker, reset per branch
                 let mut local = Vec::new();
                 for inp in slice {
-                    local.extend(run_body(base, &mut m, body_fn, inp.clone()));
+                    local.extend(run_body(base, &mut m, body_c, inp.clone()));
                 }
                 (lo, local)
             }));
@@ -115,30 +109,27 @@ fn map_bodies(
 }
 
 /// Parallel `collect` (findall/bag): the ordered sequence of body values over
-/// all enumerated inputs. The compile-time gate already decided this aggregate
-/// is worth parallelising; `map_bodies` falls back to sequential for tiny input
-/// sets so there is never a fan-out regression.
-pub fn par_collect(
-    base: &WamState,
-    enum_fn: fn(&mut WamState, Value) -> bool,
-    body_fn: fn(&mut WamState, Value, Value) -> bool,
-) -> Vec<Value> {
-    let inputs = collect_inputs(base, enum_fn);
-    map_bodies(base, &inputs, body_fn)
+/// all enumerated inputs. `enum_c`/`body_c` are closures (callers bind the
+/// aggregate's external inputs); a bare `fn` pointer is also a valid closure, so
+/// input-less aggregates pass their helper fns directly. `map_bodies` falls back
+/// to sequential for tiny input sets so there is never a fan-out regression.
+pub fn par_collect<E, B>(base: &WamState, enum_c: E, body_c: B) -> Vec<Value>
+where E: Fn(&mut WamState, Value) -> bool,
+      B: Fn(&mut WamState, Value, Value) -> bool + Sync {
+    let inputs = collect_inputs(base, &enum_c);
+    map_bodies(base, &inputs, &body_c)
 }
 
 /// The same collection done strictly sequentially — the reference the parallel
 /// path must match (used by tests and available as a fallback).
-pub fn seq_collect(
-    base: &WamState,
-    enum_fn: fn(&mut WamState, Value) -> bool,
-    body_fn: fn(&mut WamState, Value, Value) -> bool,
-) -> Vec<Value> {
-    let inputs = collect_inputs(base, enum_fn);
+pub fn seq_collect<E, B>(base: &WamState, enum_c: E, body_c: B) -> Vec<Value>
+where E: Fn(&mut WamState, Value) -> bool,
+      B: Fn(&mut WamState, Value, Value) -> bool {
+    let inputs = collect_inputs(base, &enum_c);
     let mut out = Vec::new();
     let mut m = base.clone();
     for inp in &inputs {
-        out.extend(run_body(base, &mut m, body_fn, inp.clone()));
+        out.extend(run_body(base, &mut m, &body_c, inp.clone()));
     }
     out
 }

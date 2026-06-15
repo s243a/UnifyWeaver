@@ -28,6 +28,7 @@
     parallel_aggregate_transform/5,  % +AggGoal, +Model, +Seed, -Helpers, -Plan
     parallel_aggregate_transform/6,  % +AggGoal, +ExternalInputs, +Model, +Seed, -Helpers, -Plan
     lift_embedded_aggregate/6,       % +Head, +Body, +Model, +Seed, -NewBody, -HelperClause
+    aggregate_result/2,              % +AggGoal, -ResultVar
     parallel_worthy_tier/1           % ?Tier   (multifile, overridable policy)
 ]).
 

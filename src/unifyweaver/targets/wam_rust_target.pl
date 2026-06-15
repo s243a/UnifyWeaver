@@ -29,7 +29,7 @@
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 % T7 compile-time parallel-aggregate gate (consumer of the cost machinery).
-:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3, parallel_aggregate_transform/5, lift_embedded_aggregate/6]).
+:- use_module('../core/parallel_gate', [forkable_aggregate/3, goal_parallel_decision/3, parallel_aggregate_transform/5, parallel_aggregate_transform/6, lift_embedded_aggregate/6, aggregate_result/2]).
 :- use_module('../core/cost_analysis', [build_cost_model/2, goal_cost_tier/3]).
 :- use_module('../targets/wam_text_parser', [
     wam_classify_constant_token/2,
@@ -4598,25 +4598,61 @@ rust_parallel_aggregate_wrapper(QPI, Options, Helpers, WrapperRust) :-
     functor(Head, Pred, Arity),
     findall(t, clause(Module:Head, _), Marks), Marks = [t],  % exactly one clause
     clause(Module:Head, Body),                                % bind Head + Body
-    forkable_aggregate(Body, _Tmpl, _Gen),
-    build_cost_model(Module, CM),
-    parallel_aggregate_transform(Body, CM, Pred, Helpers,
-        par_aggregate(AggType, EnumName/1, BodyName/2, Result)),
+    forkable_aggregate(Body, _Tmpl, InnerGoal),
     Head =.. [Pred|Args],
+    build_cost_model(Module, CM),
+    aggregate_result(Body, Result0),
+    % External inputs = head args the aggregate's inner goal reads (minus result):
+    % they must be bound when the enum/body helpers run.
+    rust_external_inputs(InnerGoal, Args, Result0, ExternalInputs),
+    parallel_aggregate_transform(Body, ExternalInputs, CM, Pred, Helpers,
+        par_aggregate(AggType, EnumName/EnumArity, BodyName/BodyArity, Result)),
     nth1(ResultIdx, Args, ResultArg), ResultArg == Result, !,
     rust_safe_function_name(Pred/Arity, FName),
-    rust_safe_function_name(EnumName/1, EnumFn),
-    rust_safe_function_name(BodyName/2, BodyFn),
+    rust_safe_function_name(EnumName/EnumArity, EnumFn),
+    rust_safe_function_name(BodyName/BodyArity, BodyFn),
     build_rust_wam_arg_list(Arity, ArgList),
     rust_agg_reduce(AggType, ReduceExpr),
+    % Closure call-args: external-input clones (by head-arg position) then the
+    % tuple var (enum) / tuple var + value var (body).
+    rust_ext_clone_args(ExternalInputs, Args, CloneList),
+    append(CloneList, ['__in'], EnumCA), atomic_list_concat(EnumCA, ', ', EnumCallArgs),
+    append(CloneList, ['__in', '__v'], BodyCA), atomic_list_concat(BodyCA, ', ', BodyCallArgs),
     format(string(WrapperRust),
 '/// T7 parallel aggregate (route 1): ~w/~w
 pub fn ~w(~w) -> bool {
     let __base = vm.clone();
-    let __vals = crate::par_aggregate::par_collect(&__base, ~w, ~w);
+    let __vals = crate::par_aggregate::par_collect(&__base,
+        |__m, __in| crate::~w(__m, ~w),
+        |__m, __in, __v| crate::~w(__m, ~w));
     let __res = ~w;
     vm.unify(&a~w, &__res)
-}', [Pred, Arity, FName, ArgList, EnumFn, BodyFn, ReduceExpr, ResultIdx]).
+}', [Pred, Arity, FName, ArgList, EnumFn, EnumCallArgs, BodyFn, BodyCallArgs, ReduceExpr, ResultIdx]).
+
+% External inputs: distinct head-arg variables the inner goal reads, excluding
+% the result var. (Vars the aggregate enumerator/body need bound from the caller.)
+rust_external_inputs(InnerGoal, Args, Result, ExternalInputs) :-
+    term_variables(InnerGoal, IGVars),
+    % include/3 (not findall) so the collected vars stay IDENTICAL to the head
+    % args — rust_ext_clone_args/3 then finds each by ==.
+    include(rust_is_ext_input(IGVars, Result), Args, Raw),
+    rust_dedup_vars(Raw, ExternalInputs).
+
+rust_is_ext_input(IGVars, Result, A) :-
+    var(A), A \== Result, rust_var_member(IGVars, A).
+
+rust_var_member([V|_], A) :- V == A, !.
+rust_var_member([_|T], A) :- rust_var_member(T, A).
+
+rust_dedup_vars([], []).
+rust_dedup_vars([V|Vs], [V|R]) :- exclude(==(V), Vs, Vs1), rust_dedup_vars(Vs1, R).
+
+% Map each external-input var to "a<HeadIndex>.clone()".
+rust_ext_clone_args([], _, []).
+rust_ext_clone_args([V|Vs], Args, [Clone|Rest]) :-
+    nth1(Idx, Args, A), A == V, !,
+    format(atom(Clone), 'a~w.clone()', [Idx]),
+    rust_ext_clone_args(Vs, Args, Rest).
 
 % Reduce the collected per-branch values by aggregate type (mirrors the
 % aggregate_frame finalisation in the interpreter).
