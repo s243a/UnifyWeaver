@@ -30,6 +30,9 @@ pg_heavy(X, R) :-
 pg_down(0, []).
 pg_down(N, [N|T]) :- N > 0, M is N - 1, pg_down(M, T).
 
+% link facts, for an aggregate whose enumerator reads an EXTERNAL input
+pg_link(10, 1). pg_link(10, 2). pg_link(20, 3).
+
 :- begin_tests(parallel_gate).
 
 build(M) :- build_cost_model(user, M).
@@ -214,5 +217,35 @@ test(transform_declines_all_cheap) :-
 test(transform_declines_non_aggregate) :-
     build(M),
     assertion(\+ parallel_aggregate_transform(pg_down(3, _L), M, dseed6, _, _)).
+
+% --- external-input threading (the fix for head-arg inputs to the enumerator) --
+
+test(transform_with_no_external_inputs_is_unchanged) :-
+    build(M),
+    % /5 and /6-with-[] produce identical helpers/plan (arity 1/2)
+    parallel_aggregate_transform(findall(L, (pg_fact(X), pg_down(X, L)), _), M, e0a, H5, P5),
+    parallel_aggregate_transform(findall(L, (pg_fact(X2), pg_down(X2, L)), _), [], M, e0a, H6, P6),
+    P5 = par_aggregate(_, _/EA5, _/BA5, _), assertion(EA5 == 1), assertion(BA5 == 2),
+    P6 = par_aggregate(_, _/EA6, _/BA6, _), assertion(EA6 == 1), assertion(BA6 == 2),
+    assertion(H5 =@= H6).
+
+test(transform_threads_external_input) :-
+    build(M),
+    AggGoal = findall(D, (pg_link(Y, Z), pg_down(Z, D)), _R),
+    parallel_aggregate_transform(AggGoal, [Y], M, ext1, Helpers, Plan),
+    % helpers gain a leading param for the external input Y: arity 1+1 / 2+1
+    Plan = par_aggregate(collect, EN/EA, BN/BA, _),
+    assertion(EA == 2), assertion(BA == 3),
+    Helpers = [(EnumHead :- _), (_BodyHead :- _)],
+    EnumHead =.. [EN, EY, _Tuple], assertion(EY == Y),   % Y is the leading enum arg
+    % decisive: run the helpers with Y bound -> exactly the original aggregate
+    findall(D, (pg_link(10, Z), pg_down(Z, D)), Ref),
+    assertion(Ref == [[1], [2,1]]),
+    copy_term(Helpers, HC), forall(member(C, HC), assertz(user:C)),
+    EnumG =.. [EN, 10, IT], findall(IT, user:EnumG, ITs),
+    findall(DV, ( member(I, ITs), BG =.. [BN, 10, I, DV], call(user:BG) ), Got),
+    functor(EClean, EN, EA), retractall(user:EClean),
+    functor(BClean, BN, BA), retractall(user:BClean),
+    assertion(Got == Ref).
 
 :- end_tests(parallel_gate).
