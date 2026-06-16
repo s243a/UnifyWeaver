@@ -705,6 +705,21 @@ test(builtins_execution) :-
                 get_char(E1), E1 = end_of_file,
                 get_code(ECode), ECode =:= -1
             )),
+          assertz(user:test_stream_char_io_builtin :-
+            (   open('chars_in.txt', read, In),
+                peek_char(In, C0), C0 = a,
+                get_char(In, C1), C1 = a,
+                get_code(In, Code), Code =:= 98,
+                peek_char(In, E0), E0 = end_of_file,
+                get_char(In, E1), E1 = end_of_file,
+                get_code(In, ECode), ECode =:= -1,
+                close(In),
+                open('chars_out.txt', write, Out),
+                put_char(Out, x),
+                put_code(Out, 121),
+                put_code(Out, 10),
+                close(Out)
+            )),
           assertz(user:test_format_builtin :-
             (   format('fmt_one ~~ ok~n'),
                 format('fmt_two ~w ~w~~~n', [go, 42]),
@@ -776,6 +791,7 @@ test(builtins_execution) :-
           retractall(user:test_atom_string_builtin),
           retractall(user:test_output_builtin),
           retractall(user:test_char_input_builtin),
+          retractall(user:test_stream_char_io_builtin),
           retractall(user:test_format_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
@@ -786,7 +802,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_char_input_builtin/0, test_format_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_char_input_builtin/0, test_stream_char_io_builtin/0, test_format_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -857,9 +873,16 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "write_canonical/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "put_char/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "put_code/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "put_char/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "put_code/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "get_char/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "peek_char/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "get_code/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "get_char/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "peek_char/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "get_code/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "open/3"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "close/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
@@ -1250,6 +1273,22 @@ func main() {
 	os.Stdin = oldStdin
 	_ = readPipe.Close()
 
+	if writeErr := os.WriteFile("chars_in.txt", []byte("ab"), 0644); writeErr != nil {
+		panic(writeErr)
+	}
+	streamVM := wam.NewWamState(wam.Test_stream_char_io_builtinCode, wam.Test_stream_char_io_builtinLabels)
+	streamVM.PC = wam.Test_stream_char_io_builtinStartPC
+	if streamVM.Run() {
+		fmt.Println("STREAM_CHAR_IO_SUCCESS")
+	} else {
+		fmt.Println("STREAM_CHAR_IO_FAILURE")
+	}
+	streamOut, readErr := os.ReadFile("chars_out.txt")
+	if readErr != nil {
+		panic(readErr)
+	}
+	fmt.Printf("STREAM_CHAR_IO_OUTPUT=%q\\n", string(streamOut))
+
 	formatVM := wam.NewWamState(wam.Test_format_builtinCode, wam.Test_format_builtinLabels)
 	formatVM.PC = wam.Test_format_builtinStartPC
 	if formatVM.Run() {
@@ -1349,6 +1388,8 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "ATOM_STRING_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "OUTPUT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "CHAR_INPUT_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STREAM_CHAR_IO_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STREAM_CHAR_IO_OUTPUT=\"xy\\n\"")),
         assertion(sub_string(FullOutput, _, _, _, "'Hello World'")),
         assertion(sub_string(FullOutput, _, _, _, "[a, 'two words', 42]")),
         assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)")),
