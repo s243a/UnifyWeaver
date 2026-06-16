@@ -1265,6 +1265,33 @@ impl WamState {
         self.boundary_basis_wp = basis.into_iter().collect();
     }
 
+    /// OPT-IN storage-gated compression of the cached `boundary_suffix` histograms
+    /// (P4, the exact->approximate ladder). Applies `boundary_cache::compress_
+    /// histogram` to each entry: the support count `> min_points` is the WORK
+    /// TRIGGER, and acceptance is the `epsilon_k` Kolmogorov certificate (so a kept
+    /// histogram is exact and a compressed one differs by at most `epsilon_k` tail
+    /// mass — making the splice APPROXIMATE within that bound for the affected
+    /// nodes). The cache stays exact unless this is called. Returns
+    /// `(entries_compressed, buckets_removed)`. For typical small-budget boundary
+    /// histograms (support <= budget+1) nothing triggers; this is for large-budget
+    /// / deep-path graphs. Defaults: `DEFAULT_COMPRESS_MIN_POINTS` (50),
+    /// `DEFAULT_COMPRESS_EPSILON_K` (0.001).
+    pub fn compress_boundary_suffix(&mut self, min_points: usize, epsilon_k: f64) -> (usize, usize) {
+        let mut compressed = 0usize;
+        let mut removed = 0usize;
+        let nodes: Vec<u32> = self.boundary_suffix.keys().copied().collect();
+        for node in nodes {
+            let h = self.boundary_suffix.get(&node).cloned().unwrap_or_default();
+            let c = crate::boundary_cache::compress_histogram(&h, min_points, epsilon_k);
+            if c.len() < h.len() {
+                compressed += 1;
+                removed += h.len() - c.len();
+                self.boundary_suffix.insert(node, c);
+            }
+        }
+        (compressed, removed)
+    }
+
     /// Direct `weighted_power(N)` WeightSum via the pre-weighted basis (P4).
     /// Walks `cat_id -> root` exactly like `collect_native_category_ancestor_
     /// boundary_hist`, but instead of building a histogram it accumulates the
@@ -2583,6 +2610,30 @@ mod boundary_kernel_tests {
             assert!((wref - wsp).abs() < 1e-12, "frontier seed {}: {} != {}", s, wref, wsp);
             assert!(wref > 0.0, "seed {} should reach root", s);
         }
+    }
+
+    // P4: opt-in storage-gated compression of the boundary table — work-triggered
+    // by support count, certified by epsilon_K, and a no-op on short histograms.
+    #[test]
+    fn compress_boundary_suffix_is_opt_in_and_certified() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // one long low-tail histogram (compressible), one short one (untouched).
+        let mut long = vec![0u64; 60];
+        long[0] = 1_000_000;
+        for i in 50..60 { long[i] = 1; }
+        let short = vec![900u64, 1, 1];
+        let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+        table.insert(1, long.clone());
+        table.insert(2, short.clone());
+        vm.set_boundary_suffix(&table);
+        let (compressed, removed) = vm.compress_boundary_suffix(50, 0.001);
+        assert_eq!(compressed, 1, "only the long low-tail histogram compresses");
+        assert!(removed > 0);
+        let got_long = vm.boundary_suffix.get(&1).unwrap();
+        assert!(got_long.len() < long.len(), "long histogram shortened");
+        assert!(crate::boundary_cache::cdf_max_error(&long, got_long) <= 0.001 + 1e-9,
+            "compression stays within epsilon_K");
+        assert_eq!(vm.boundary_suffix.get(&2).unwrap(), &short, "short histogram untouched");
     }
 
     // P4: the pre-weighted weighted_power basis (g_B dot-product splice) yields the

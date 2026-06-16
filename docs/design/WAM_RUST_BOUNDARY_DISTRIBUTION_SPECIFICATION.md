@@ -335,6 +335,34 @@ dominate. Because the exact discrete splice is ~ns, choosing a non-exact form is
 **storage / very-large-scale** decision, not a compute one — at normal scale,
 exact discrete is both fastest and simplest.
 
+### 9a. The exact→approximate ladder (ported policy + defaults)
+
+Ported from the Python distribution-cache line (`DISTRIBUTIONAL_COMPRESSION_
+THEORY.md`); two principles that doc is emphatic about are carried over verbatim:
+
+- **The point count is a *work trigger*, not an acceptance gate.** "Is this over 50
+  points?" is *not* the decision rule — it only decides *when to try* compressing.
+  Acceptance is an **error certificate** on the CDF: Kolmogorov
+  `ε_K = max_t|F_exact(t) − F_approx(t)|` (and optionally Wasserstein-1
+  `ε_W1 = Σ_t|ΔF|`, which bounds Lipschitz-functional error). Defaults:
+  `min_points = 50` (trigger), `ε_K = 0.001` (certificate).
+- **Discrete-first ladder**, cheapest representation within the error budget:
+  exact histogram → **tail-pruned exact** → quantised CDF table → binomial →
+  beta-/mixture-of-binomials → discretised GMM (*escalation only* — bounded integer
+  path-length data favour binomial families; GMM is not the default fallback).
+
+Implemented (Rust, `boundary_cache.rs`): the **error metrics** (`cdf_max_error`,
+`cdf_w1_error`) and the **first rung — tail pruning** (`tail_prune`: drop the
+longest suffix whose cumulative mass ≤ the budget; the dropped fraction *is* the
+Kolmogorov error). `compress_histogram` is the work-triggered + certified default;
+`WamState::compress_boundary_suffix(min_points, ε_K)` applies it across the cached
+table. **All of this is OPT-IN** — the boundary cache is exact unless it is called,
+and even then a compressed node differs by at most `ε_K` (the splice becomes
+approximate within that certified bound for the affected nodes only). For typical
+small-budget boundary histograms (support ≤ `budget`+1) the trigger never fires;
+this matters at **large budget / deep paths**. Later rungs (binomial / mixture
+fits, with the same CDF/W1 gate) are future work.
+
 ## 10. Non-goals (this spec)
 
 - Changing the production kernel or the default (un-optimized) semantics.
