@@ -4990,11 +4990,14 @@ rust_string_dedup([X|Xs], [X|R]) :- exclude(==(X), Xs, Xs1), rust_string_dedup(X
 % --- T9 fact-table inline: detection + row extraction ----------------------
 %
 % Recognise a predicate whose every clause is a ground unit clause (a fact) and
-% extract its rows (one ground arg-tuple per clause, source order). Above the
-% t9_min_rows threshold this is a candidate for a native fact table + indexed
-% lookup (T9), an optimisation over T4 for large fact sets. Pure analysis — no
+% extract its rows (one ground arg-tuple per clause, source order). When the row
+% count is in the inline window [t9_min_rows, t9_max_rows] this is a native fact
+% table + indexed lookup (T9), an optimisation over T4. Pure analysis — no
 % codegen. Fails (predicate handled by the existing T4/WAM path) when any clause
-% is a rule or non-ground, or when there are fewer than t9_min_rows rows.
+% is a rule or non-ground, or when the row count is outside the window. Below
+% t9_min_rows the T4 inline cost is negligible; above t9_max_rows inlining (T4 or
+% T9) bloats compile time / the binary, so the fact set should come from an
+% EXTERNAL source (LMDB/TSV) instead — see rust_maybe_warn_oversized_facts/2.
 
 rust_fact_table_classify(QPI, Options, fact_info(Arity, Rows)) :-
     ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
@@ -5004,7 +5007,10 @@ rust_fact_table_classify(QPI, Options, fact_info(Arity, Rows)) :-
     forall(member(CH-CB, Clauses), rust_fact_clause(CH, CB)),
     findall(Args, ( member(FH-true, Clauses), FH =.. [_|Args] ), Rows),
     rust_t9_min_rows(Options, Min),
-    length(Rows, NR), NR >= Min.
+    rust_t9_max_rows(Options, Max),
+    length(Rows, NR),
+    NR >= Min,
+    NR =< Max.
 
 % a fact clause: body `true`, head args all ground.
 rust_fact_clause(Head, Body) :-
@@ -5014,6 +5020,37 @@ rust_fact_clause(Head, Body) :-
 
 rust_t9_min_rows(Options, N) :-
     ( member(t9_min_rows(N), Options) -> true ; N = 64 ).
+
+% Upper bound on inlining a fact predicate. Above this many rows, inlining (T9
+% data table or T4 instructions) is declined and the fact set should be provided
+% by an external source. Configurable via t9_max_rows.
+rust_t9_max_rows(Options, N) :-
+    ( member(t9_max_rows(N), Options) -> true ; N = 256 ).
+
+% True when QPI is an all-ground-facts predicate whose row count exceeds the
+% inline cap (so it is too large to inline). NR is its row count, Max the cap.
+rust_fact_table_oversized(QPI, Options, NR, Max) :-
+    ( QPI = Module:Pred/Arity -> true ; QPI = Pred/Arity, Module = user ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
+    Clauses = [_|_],
+    forall(member(CH-CB, Clauses), rust_fact_clause(CH, CB)),
+    length(Clauses, NR),
+    rust_t9_max_rows(Options, Max),
+    NR > Max.
+
+% Emit a one-line warning when a large ground-fact predicate is being inlined
+% (T4) because it exceeds the T9 inline cap — recommending an external fact
+% source. Silent when fact-table inlining is explicitly disabled. Always succeeds.
+rust_maybe_warn_oversized_facts(QPI, Options) :-
+    (   \+ option(fact_table_inline(false), Options),
+        rust_fact_table_oversized(QPI, Options, NR, Max)
+    ->  ( QPI = M:P/A -> true ; QPI = P/A, M = user ),
+        format(user_error,
+            '  ~w:~w/~w: ~w ground facts exceed t9_max_rows (~w) — not inlined; use an external fact source (e.g. LMDB/TSV)~n',
+            [M, P, A, NR, Max])
+    ;   true
+    ).
 
 % --- T9 fact-table inline: emission -----------------------------------------
 %
@@ -6114,11 +6151,16 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    (   % T9 fact-table inline (opt-in): a large all-ground-facts predicate
-        % compiles to a static row table + first-arg-prefiltered choice-point
-        % enumeration, instead of T4 instruction sequences. Checked first so it
-        % wins for eligible predicates; off by default (fact_table_inline(true)).
-        option(fact_table_inline(true), Options),
+    % Warn (once, here) if this is a large ground-fact predicate we will NOT
+    % inline because it exceeds the cap — it falls through to T4 below, but the
+    % right fix is an external fact source.
+    rust_maybe_warn_oversized_facts(Module:Pred/Arity, Options),
+    (   % T9 fact-table inline: an all-ground-facts predicate whose row count is
+        % in the inline window [t9_min_rows, t9_max_rows] compiles to a static
+        % row table + first-arg hash index + choice-point enumeration, instead of
+        % T4 instruction sequences. Default in-range (faster compile + correct vs
+        % T4); opt out with fact_table_inline(false). Checked first so it wins.
+        \+ option(fact_table_inline(false), Options),
         rust_fact_table_classify(Module:Pred/Arity, Options, FInfo),
         catch(emit_fact_table_rust(Pred/Arity, FInfo, Options, FactCode), _, fail)
     ->  format(user_error, '  ~w/~w: fact table (T9)~n', [Pred, Arity]),

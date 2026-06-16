@@ -39,22 +39,29 @@ test(value_literals_compound) :-
     assertion(sub_string(Code, _, _, _, "Value::Str(\"f\".to_string(), vec![Value::Atom(\"a\".to_string()), Value::List(vec![Value::Integer(1), Value::Integer(2)])])")),
     assertion(sub_string(Code, _, _, _, "Value::Float(3.5)")).
 
-% with the option: eligible predicate is classified fact_table.
-test(opt_in_classifies_fact_table, [cleanup(safe_rmdir('output/test_t9_emit_on'))]) :-
-    gen([fact_table_inline(true), t9_min_rows(4)], 'output/test_t9_emit_on', Src),
+% default in-range (no inline option): an all-ground-facts predicate whose row
+% count is within [t9_min_rows, t9_max_rows] is T9 by default.
+test(default_in_range_classifies, [cleanup(safe_rmdir('output/test_t9_emit_on'))]) :-
+    gen([t9_min_rows(4)], 'output/test_t9_emit_on', Src),
     assertion(sub_string(Src, _, _, _, "Strategy: fact_table")),
     assertion(sub_string(Src, _, _, _, "fn edge_2_table()")),
     assertion(sub_string(Src, _, _, _, "vm.fact_table_attempt")).
 
-% default (no option): unchanged, no fact table emitted.
-test(default_off_no_fact_table, [cleanup(safe_rmdir('output/test_t9_emit_off'))]) :-
-    gen([], 'output/test_t9_emit_off', Src),
+% explicit opt-out: fact_table_inline(false) forces the T4/WAM path.
+test(explicit_disable_off, [cleanup(safe_rmdir('output/test_t9_emit_off'))]) :-
+    gen([fact_table_inline(false), t9_min_rows(4)], 'output/test_t9_emit_off', Src),
     assertion(\+ sub_string(Src, _, _, _, "Strategy: fact_table")),
     assertion(\+ sub_string(Src, _, _, _, "edge_2_table")).
 
-% below threshold even with the option: not a fact table.
-test(below_threshold_off, [cleanup(safe_rmdir('output/test_t9_emit_thresh'))]) :-
-    gen([fact_table_inline(true), t9_min_rows(100)], 'output/test_t9_emit_thresh', Src),
+% below t9_min_rows: not inlined as a fact table (T4 cost is negligible there).
+test(below_min_off, [cleanup(safe_rmdir('output/test_t9_emit_min'))]) :-
+    gen([t9_min_rows(100)], 'output/test_t9_emit_min', Src),
+    assertion(\+ sub_string(Src, _, _, _, "Strategy: fact_table")).
+
+% above t9_max_rows: not inlined (steered to an external source); here the cap is
+% set below the fixture's row count to exercise the upper bound.
+test(above_cap_off, [cleanup(safe_rmdir('output/test_t9_emit_cap'))]) :-
+    gen([t9_min_rows(2), t9_max_rows(5)], 'output/test_t9_emit_cap', Src),
     assertion(\+ sub_string(Src, _, _, _, "Strategy: fact_table")).
 
 :- end_tests(wam_rust_fact_table_emit).
