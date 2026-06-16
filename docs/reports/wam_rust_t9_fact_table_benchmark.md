@@ -71,13 +71,17 @@ timed as a sound baseline; see below).
 
 ## Correctness — why T4 is not a sound baseline
 
-The default T4 shared-table path **silently drops some keys**. With 500 distinct
-keys, `findall(X, edge(k5, X), L)` returned `L = []` while `k0`, `k1`, `k250`,
-`k499` resolved correctly — a pre-existing first-argument `switch_on_constant`
-indexing defect that surfaces at scale (related to, but not fixed by, the
-repeated-key fix in #3188, which addressed multi-clause keys). Because the T4
-baseline returns wrong results for these workloads, a like-for-like speed ratio
-is not meaningful; the comparison is correctness + code size + compile time.
+At the time of this benchmark the default T4 shared-table path **silently dropped
+some keys**. With 500 distinct keys, `findall(X, edge(k5, X), L)` returned
+`L = []` while `k0`, `k1`, `k250`, `k499` resolved correctly — a first-argument
+`switch_on_constant` indexing defect: the runtime binary-searched Atom keys
+assuming a lexically sorted table, but the table is emitted in clause order
+(`k0,k1,..,k9,k10,..`, which is not lexically sorted), so it mis-navigated and
+dropped keys whose clause order differed from lexical order. **Fixed** (the
+`SwitchOnConstant`/`SwitchOnConstantPc` handlers now linear-scan by value
+equality; regression: `tests/test_wam_rust_switch_on_constant_keydrop_exec.pl`).
+At the time, this meant a like-for-like T4 speed ratio was not meaningful, so the
+comparison here is correctness + code size + compile time.
 
 The committed throughput test asserts every one of 200 keys resolves to its
 exact row (and that no extra solution remains), so it also guards against this
@@ -92,5 +96,6 @@ minutes-to-never, emits no interpreter code, and is correct at scale**, at a
 point-lookup latency of ~8 µs/query. Recommended for any sizeable ground-fact
 predicate; gated behind `fact_table_inline(true)` so default output is unchanged.
 
-Follow-on (separate from T9): fix the T4 `switch_on_constant` key-dropping defect
-so the WAM path is also correct for large many-key fact sets.
+The T4 `switch_on_constant` key-dropping defect surfaced here has since been
+fixed (linear scan by value equality), so the WAM path is now correct for
+many-key fact sets too.

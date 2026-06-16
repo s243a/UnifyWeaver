@@ -977,19 +977,13 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
     Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
-                        // Find the matching key''s target label.
-                        let target: Option<&str> = if let Value::Atom(ref needle) = val {
-                            // Binary search for Atom keys (table is sorted from BTreeMap)
-                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
-                                if let Value::Atom(s) = k { s.as_str() } else { "" }
-                            }) {
-                                Ok(idx) => Some(table[idx].1.as_str()),
-                                Err(_) => None,
-                            }
-                        } else {
-                            // Linear scan for non-Atom (e.g. integer) keys
-                            table.iter().find(|(k, _)| *k == val).map(|(_, l)| l.as_str())
-                        };
+                        // Linear scan by value equality. (A binary search would
+                        // require the table to be sorted by the search key; it is
+                        // emitted in clause order — e.g. k0,k1,..,k9,k10 — which
+                        // is NOT lexicographically sorted, so binary search
+                        // dropped keys whose clause order != lexical order.)
+                        let target: Option<&str> =
+                            table.iter().find(|(k, _)| *k == val).map(|(_, l)| l.as_str());
                         match target {
                             // A key with multiple clauses maps to the "default"
                             // sentinel: fall through to the try_me_else chain that
@@ -1034,22 +1028,13 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
     Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
-                        if let Value::Atom(ref needle) = val {
-                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
-                                if let Value::Atom(s) = k { s.as_str() } else { "" }
-                            }) {
-                                Ok(idx) => {
-                                    self.pc = table[idx].1;
-                                    return true;
-                                }
-                                Err(_) => {}
-                            }
-                        } else {
-                            for (key, target_pc) in table {
-                                if *key == val {
-                                    self.pc = *target_pc;
-                                    return true;
-                                }
+                        // Linear scan by value equality (see SwitchOnConstant:
+                        // the table is in clause order, not lexically sorted, so a
+                        // binary search dropped keys).
+                        for (key, target_pc) in table {
+                            if *key == val {
+                                self.pc = *target_pc;
+                                return true;
                             }
                         }
                         return false;
