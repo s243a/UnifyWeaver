@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement, eviction-spill DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -308,15 +308,19 @@ Phasing:
     tips back to lazy; bigger datasets shift toward lazy. Guarded by
     `lazy_boundary_caches_on_demand_and_matches_eager`; the harness prints the
     per-config winner.
-  - **P2c-wiring/precompute/eviction/spill [later, NOT default].** Spill the *live*
-    frontier (and optionally evicted dead interiors) to the `boundary_basis` sub-db
-    mid-sweep when even the live budget is exceeded — turning the §8b stop-at-depth
-    into spill-and-continue-against-storage. **Design decision: spill is off by
-    default**; it engages only when the in-memory cache is too small for the problem,
-    and only after checking LMDB is actually available (installed / a writable env),
-    falling back to stop-at-depth otherwise. Then an end-to-end LMDB run wiring the
-    harness to `load_boundary_basis` at setup / `save_boundary_basis` after
-    precompute.
+  - **P2c-wiring/precompute/eviction/spill [DONE, NOT default].** When the live
+    frontier exceeds its budget, `build_boundary_suffix_sweep_with_spill(..., spill:
+    &mut dyn SpillSink)` spills live entries (deepest-first) to the sink and reloads
+    them on demand — turning the §8b stop-at-depth into spill-and-continue-against-
+    storage, so the whole cone is swept (`stopped_early` false, `spilled` counts the
+    writes). **Off by default** (the plain `build_boundary_suffix_sweep` passes no
+    sink); engages only when a sink is supplied AND the in-memory live budget is
+    exceeded; falls back to stop-at-depth otherwise. `SpillSink` backends: an
+    in-memory map and the `boundary_spill` LMDB sub-db (`impl SpillSink for
+    LmdbFactSource`). Exact paging — results match the unbudgeted sweep. Tests:
+    `sweep_spill_completes_and_matches` (in-memory: no-sink stops early, with-sink
+    completes + spills + identical results) and cargo-gated
+    `test_wam_rust_boundary_spill_lmdb.pl` (the LMDB backend end to end).
 - **P3 — the measurement in §6 [DONE].** Measured on the **real emitted kernels**
   (`build_boundary_suffix_sweep` + `collect_native_category_ancestor_boundary_hist`
   vs the production `collect_native_category_ancestor_hops`), harness

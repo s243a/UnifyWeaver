@@ -297,15 +297,25 @@ limits**:
    not yet spillable). This bounds the sweep's irreducible working set ≈ the cone's
    *frontier antichain width* at the current depth.
 
-When the **live budget** is hit there is nothing to evict — the recourse is to **stop
-deepening**: freeze the precompute frontier at the current depth, treat everything
-below it as un-cached (those seeds fall back to enumeration, still correct), and
-retain what was computed. This makes the effective `D_pre` **dynamically bounded by
-memory**, not a fixed a-priori choice (philosophy §5 / plan §3): deepen the band only
-while the live frontier fits, then stop. (If the frontier may instead be *spilled* to
-the `boundary_basis` LMDB sub-db, the live budget is the in-memory portion and the
-sweep can continue against storage; stop-at-depth is the recourse when neither memory
-nor storage can hold a wider frontier.)
+When the **live budget** is hit there is nothing to evict, and there are two
+recourses:
+
+- **Stop-at-depth (default).** Freeze the precompute frontier at the current depth,
+  treat everything below it as un-cached (those seeds fall back to enumeration, still
+  correct), and retain what was computed. This makes the effective `D_pre`
+  **dynamically bounded by memory**, not a fixed a-priori choice (philosophy §5 /
+  plan §3): deepen the band only while the live frontier fits, then stop.
+- **Spill-and-continue (non-default, implemented).** Given a `SpillSink`,
+  `build_boundary_suffix_sweep_with_spill` instead **spills** live frontier entries
+  (deepest-first — keep the root-near hubs resident) to the sink, removing them from
+  the memo, and **reloads** each on demand when a child consumes it. The whole cone
+  is swept (`stopped_early` stays false); `spilled` counts the writes. It is **exact
+  paging** — a spilled `H_p` reloads identically — so results match the unbudgeted
+  sweep. The sink is an in-memory map (RAM-overflow / testing) or the
+  `boundary_spill` LMDB sub-db (`impl SpillSink for LmdbFactSource`, one short txn per
+  put/get — a fallback path, not a hot loop). Spill is **off unless a sink is
+  supplied**, and engages only when the in-memory live budget is exceeded; stop-at-
+  depth remains the recourse when neither memory nor a sink can hold a wider frontier.
 
 ### 8c. Why exact (vs path sampling)
 

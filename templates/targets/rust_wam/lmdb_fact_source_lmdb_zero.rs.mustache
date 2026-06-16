@@ -387,6 +387,48 @@ impl LmdbFactSource {
     }
 }
 
+/// LMDB-backed `SpillSink` (the `boundary_spill` sub-db): the real storage target
+/// for the non-default mid-sweep spill (spec §8b). `spill_put` writes a histogram
+/// in its own short transaction; `spill_get` reads it back. Values packed by
+/// `boundary_cache::encode_hist`. One transaction per call — acceptable for a
+/// memory-overflow fallback path, not a hot loop.
+impl crate::state::SpillSink for LmdbFactSource {
+    fn spill_put(&mut self, node: u32, hist: &[u64]) {
+        let db = match lmdb::Database::open(
+            Arc::clone(&self.env),
+            Some("boundary_spill"),
+            &lmdb::DatabaseOptions::new(lmdb::db::CREATE),
+        ) {
+            Ok(db) => db,
+            Err(_) => return,
+        };
+        if let Ok(txn) = lmdb::WriteTransaction::new(&*self.env) {
+            {
+                let mut access = txn.access();
+                let key = node.to_le_bytes();
+                let val = crate::boundary_cache::encode_hist(&hist.to_vec());
+                let _ = access.put(&db, &key[..], &val[..], lmdb::put::Flags::empty());
+            }
+            let _ = txn.commit();
+        }
+    }
+
+    fn spill_get(&mut self, node: u32) -> Option<Vec<u64>> {
+        let db = lmdb::Database::open(
+            Arc::clone(&self.env),
+            Some("boundary_spill"),
+            &lmdb::DatabaseOptions::new(lmdb::db::Flags::empty()),
+        ).ok()?;
+        let txn = lmdb::ReadTransaction::new(&*self.env).ok()?;
+        let access = txn.access();
+        let key = node.to_le_bytes();
+        match access.get::<[u8], [u8]>(&db, &key[..]) {
+            Ok(v) => Some(crate::boundary_cache::decode_hist(v)),
+            Err(_) => None,
+        }
+    }
+}
+
 fn decode_i32(bytes: &[u8]) -> i32 {
     // Phase 1 layout stores int32 values little-endian.
     let mut buf = [0u8; 4];

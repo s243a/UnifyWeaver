@@ -593,7 +593,9 @@ pub enum EdgeAccessor<'a> {
 /// the side-table; `evicted` = dead interior entries dropped under budget pressure;
 /// `peak_resident` = max simultaneous memo entries (the working-set high-water mark);
 /// `stopped_early` = the live budget forced stop-at-depth before the whole cone was
-/// swept. See WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8a/§8b.
+/// swept; `spilled` = live entries written to a `SpillSink` under pressure (the
+/// non-default spill fallback, instead of stop-at-depth).
+/// See WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8a/§8b.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BoundarySweepStats {
     pub computed: usize,
@@ -601,6 +603,18 @@ pub struct BoundarySweepStats {
     pub evicted: usize,
     pub peak_resident: usize,
     pub stopped_early: bool,
+    pub spilled: usize,
+}
+
+/// Sink for **spilling** a live boundary histogram out of memory during the
+/// precompute sweep, then reloading it on demand — the non-default storage fallback
+/// for when the live (non-evictable) frontier exceeds its budget (spec §8b:
+/// spill-and-continue instead of stop-at-depth). Implementations: an in-memory map
+/// (testing / RAM overflow) or the LMDB `boundary_spill` sub-db
+/// (`LmdbFactSource`). Spill is OFF unless a sink is supplied.
+pub trait SpillSink {
+    fn spill_put(&mut self, node: u32, hist: &[u64]);
+    fn spill_get(&mut self, node: u32) -> Option<Vec<u64>>;
 }
 
 impl WamState {
@@ -1174,6 +1188,27 @@ impl WamState {
         &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
         evict_budget: usize, live_budget: usize,
     ) -> Option<BoundarySweepStats> {
+        self.boundary_sweep_impl(boundary, root_id, max_depth, edge_pred, evict_budget, live_budget, None)
+    }
+
+    /// Like `build_boundary_suffix_sweep`, but the NON-DEFAULT spill fallback: when
+    /// the **live** frontier exceeds `live_budget`, instead of stop-at-depth the
+    /// sweep SPILLS live entries to `spill` (deepest-first) and CONTINUES, reloading
+    /// each on demand when a child consumes it (spec §8b: spill-and-continue). So the
+    /// whole cone is swept even when the frontier does not fit in memory — at the
+    /// cost of `spill` round-trips. `spilled` counts the writes; `stopped_early` stays
+    /// false. Results are identical to the unbudgeted sweep (spill is exact paging).
+    pub fn build_boundary_suffix_sweep_with_spill(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize, spill: &mut dyn SpillSink,
+    ) -> Option<BoundarySweepStats> {
+        self.boundary_sweep_impl(boundary, root_id, max_depth, edge_pred, evict_budget, live_budget, Some(spill))
+    }
+
+    fn boundary_sweep_impl(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize, mut spill: Option<&mut dyn SpillSink>,
+    ) -> Option<BoundarySweepStats> {
         use std::collections::VecDeque;
         let (table, stats) = {
             let parents = self.ffi_facts.get(edge_pred)?;
@@ -1213,6 +1248,7 @@ impl WamState {
 
             // 3. Kahn topological sweep from the root.
             let mut memo: HashMap<u32, Vec<u64>> = HashMap::new();
+            let mut spilled: std::collections::HashSet<u32> = std::collections::HashSet::new();
             let mut depth: HashMap<u32, usize> = HashMap::new();
             let mut dead: Vec<u32> = Vec::new();
             let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
@@ -1239,6 +1275,17 @@ impl WamState {
                                     if l2 <= max_depth {
                                         if out.len() <= l2 { out.resize(l2 + 1, 0); }
                                         out[l2] += c;
+                                    }
+                                }
+                            } else if spilled.contains(&p) {
+                                // a spilled live parent: reload from the sink for this child.
+                                if let Some(ph) = spill.as_deref_mut().and_then(|s| s.spill_get(p)) {
+                                    for (l, &c) in ph.iter().enumerate() {
+                                        let l2 = l + 1;
+                                        if l2 <= max_depth {
+                                            if out.len() <= l2 { out.resize(l2 + 1, 0); }
+                                            out[l2] += c;
+                                        }
                                     }
                                 }
                             }
@@ -1297,14 +1344,33 @@ impl WamState {
                     }
                 }
 
-                // stop-at-depth: if the live (refs>0) frontier exceeds its budget,
-                // there is nothing to evict -> stop deepening.
+                // live-budget recourse: the live (refs>0) frontier cannot be evicted.
+                // With a spill sink, SPILL live entries (deepest-first) and continue;
+                // otherwise stop-at-depth.
                 if live_budget > 0 {
-                    let live = refs.iter()
-                        .filter(|(k, &r)| r > 0 && memo.contains_key(k)).count();
-                    if live > live_budget {
-                        stats.stopped_early = true;
-                        ready.clear();
+                    let live_count = |memo: &HashMap<u32, Vec<u64>>| {
+                        refs.iter().filter(|(k, &r)| r > 0 && memo.contains_key(k)).count()
+                    };
+                    if live_count(&memo) > live_budget {
+                        if spill.is_some() {
+                            let mut victims: Vec<u32> = refs.iter()
+                                .filter(|(k, &r)| r > 0 && memo.contains_key(k))
+                                .map(|(&k, _)| k).collect();
+                            victims.sort_by_key(|nd| std::cmp::Reverse(depth.get(nd).copied().unwrap_or(0)));
+                            let mut i = 0;
+                            while live_count(&memo) > live_budget && i < victims.len() {
+                                let victim = victims[i];
+                                i += 1;
+                                if let Some(h) = memo.remove(&victim) {
+                                    if let Some(s) = spill.as_deref_mut() { s.spill_put(victim, &h); }
+                                    spilled.insert(victim);
+                                    stats.spilled += 1;
+                                }
+                            }
+                        } else {
+                            stats.stopped_early = true;
+                            ready.clear();
+                        }
                     }
                 }
             }
@@ -2666,6 +2732,36 @@ mod boundary_kernel_tests {
         let b = vm.intern_atom("1");
         assert!(vm.build_boundary_suffix_sweep(&[b], root, 8, "no_such_pred", 0, 0).is_none(),
                 "no eager table -> sweep is a no-op");
+    }
+
+    // In-memory spill sink for testing the spill mechanism without LMDB.
+    struct MemSpill { map: HashMap<u32, Vec<u64>>, puts: usize, gets: usize }
+    impl SpillSink for MemSpill {
+        fn spill_put(&mut self, node: u32, hist: &[u64]) { self.map.insert(node, hist.to_vec()); self.puts += 1; }
+        fn spill_get(&mut self, node: u32) -> Option<Vec<u64>> { self.gets += 1; self.map.get(&node).cloned() }
+    }
+
+    // Spill fallback: a tiny live budget WITHOUT a sink stops early; WITH a sink the
+    // sweep spills live entries and COMPLETES with identical band results.
+    #[test]
+    fn sweep_spill_completes_and_matches() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let bnodes: Vec<u32> = ["1", "2", "3", "4"].iter().map(|s| vm.intern_atom(s)).collect();
+        // reference: unbudgeted sweep
+        vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0).unwrap();
+        let ref_tbl = snapshot_table(&vm);
+        // tiny live budget, NO spill -> stop-at-depth (frontier can't fit)
+        let no_spill = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 1).unwrap();
+        assert!(no_spill.stopped_early, "live_budget=1 without spill should stop early");
+        // tiny live budget, WITH spill -> completes, spills, identical results
+        let mut spill = MemSpill { map: HashMap::new(), puts: 0, gets: 0 };
+        let s = vm.build_boundary_suffix_sweep_with_spill(&bnodes, root, budget, "category_parent", 0, 1, &mut spill).unwrap();
+        assert!(!s.stopped_early, "spill must not stop early");
+        assert!(s.spilled > 0, "spill should have written live entries");
+        assert!(spill.puts > 0 && spill.gets > 0, "sink should see puts and reload gets");
+        assert_eq!(snapshot_table(&vm), ref_tbl, "spill must produce identical band results");
     }
 
     // The entry-frontier band is a thin cut (region surface, not volume) yet the
