@@ -2360,6 +2360,63 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 self.finish_foreign_results(&pred_key, vec![value_reg], results)
             }
+            "category_ancestor_boundary" => {
+                // P2c: the boundary-distribution optimization as a foreign kernel.
+                // Runs the boundary-spliced ancestor walk (collect_native_category_
+                // ancestor_boundary_hist) over the cached boundary side-table, then
+                // reads the path-length measure into ONE result (deterministic mode)
+                // per the configured extractor. With an empty side-table it degrades
+                // to full enumeration (still correct). See
+                // WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §5/§6.
+                let cat = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(c)) => c,
+                    _ => return false,
+                };
+                let root = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(r)) => r,
+                    _ => return false,
+                };
+                let out_reg = match self.get_reg_raw("A3") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let max_depth = match self.foreign_usize_config(&pred_key, "max_depth") {
+                    Some(limit) => limit,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(p) => p.to_string(),
+                    None => return false,
+                };
+                let n = self.foreign_f64_config(&pred_key, "weight_n").unwrap_or(2.0);
+                let extractor = self.foreign_string_config(&pred_key, "result_extractor")
+                    .map(|s| s.to_string()).unwrap_or_else(|| "scalar".to_string());
+                let cat_id = self.intern_atom(&cat);
+                let root_id = self.intern_atom(&root);
+                let mut hist: Vec<u64> = Vec::new();
+                let mut visited: Vec<u32> = vec![cat_id];
+                let acc = self.resolve_edge_accessor(&edge_pred);
+                self.collect_native_category_ancestor_boundary_hist(
+                    cat_id, root_id, &mut visited, max_depth, &acc, 0, &mut hist);
+                // weighted_power read: WeightSum = sum_{L>0} H[L] * L^-n
+                let weight_sum = || -> f64 {
+                    hist.iter().enumerate().filter(|(l, _)| *l > 0)
+                        .map(|(l, &c)| c as f64 * (l as f64).powf(-n)).sum()
+                };
+                let result: Value = match extractor.as_str() {
+                    "distribution" => Value::List(
+                        hist.iter().map(|&c| Value::Integer(c as i64)).collect()),
+                    "effective_distance" => {
+                        let ws = weight_sum();
+                        if ws > 0.0 { Value::Float(ws.powf(-1.0 / n)) } else { return false; }
+                    }
+                    // default: scalar(weighted_power)
+                    _ => Value::Float(weight_sum()),
+                };
+                self.finish_foreign_results(
+                    &pred_key, vec![out_reg],
+                    vec![Value::Str("__tuple__".to_string(), vec![result])])
+            }
             _ => false,
         }
     }'.

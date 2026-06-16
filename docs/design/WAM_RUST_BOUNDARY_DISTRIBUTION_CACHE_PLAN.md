@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -214,18 +214,30 @@ Phasing:
     the **production** `collect_native_category_ancestor_hops` aggregate across
     seeds (incl. deep ones through a root-near boundary band) — closing the gap
     that P2a compared only against an in-module oracle.
-  - **P2c-wiring [next].** Make it callable from a query as a gated compiler
-    optimization (`boundary_optimization`, default off): register a
-    `category_ancestor_boundary` native kind + dispatch arm, populate the
-    side-table at setup, and an end-to-end LMDB run. **Result-mode family** (spec
-    §5): the boundary kernel produces the histogram `H`; a *result extractor* emits
-    a single result via the existing `finish_foreign_results` **`deterministic`**
-    mode (`tuple(1)`, no choice point) — either a **scalar** (`f(H)` for a
-    functional, e.g. `weighted_power`/`d_eff`) **or the histogram itself**
-    (`Value::List` of counts) for distribution-output consumers. This must *not*
-    re-expand `H` into a hop stream (that re-introduces the exponential). So the
-    wiring adds extractors over one histogram kernel, not a scalar-only predicate —
-    the histogram-output generalisation keeps it from being built too narrowly.
+  - **P2c-wiring/dispatch [DONE].** The boundary kernel is now reachable as a
+    **foreign kernel** through `execute_foreign_predicate`: a
+    `"category_ancestor_boundary"` dispatch arm in
+    `compile_execute_foreign_predicate_to_rust` reads `A1`/`A2` (cat/root) and the
+    `max_depth`/`edge_pred`/`weight_n`/`result_extractor` foreign config, runs
+    `collect_native_category_ancestor_boundary_hist` over the cached side-table, and
+    emits **one** result via `finish_foreign_results` **`deterministic`** mode
+    (`tuple(1)`, no choice point). **Result-mode family** (spec §5): the kernel
+    produces the histogram `H`; the `result_extractor` selects `scalar`
+    (`f(H)`, e.g. `weighted_power`), `effective_distance` (`d_eff = WeightSum^(-1/N)`),
+    or `distribution` (the histogram itself, `Value::List` of counts). It does *not*
+    re-expand `H` into a hop stream (that re-introduces the exponential) — so the
+    wiring adds extractors over one histogram kernel, not a scalar-only predicate.
+    Exec test `test_wam_rust_boundary_foreign_dispatch.pl`: in a generated crate,
+    registering the kernel as a foreign predicate and driving it through
+    `execute_foreign_predicate` reproduces the **production** kernel's aggregate for
+    both `scalar` and `effective_distance` across seeds.
+  - **P2c-wiring/lowering [next].** Make the compiler *choose* this lowering for a
+    recognized query shape (an aggregate of a path-length functional over
+    root-anchored paths, or a request for the path-length distribution) under the
+    gate `boundary_optimization` (default off): kernel-shape detection in
+    `recursive_kernel_detection.pl` emits the `register_foreign_native_kind(...,
+    category_ancestor_boundary)` + config, and a setup hook populates the side-table
+    via `build_boundary_suffix`. Then an end-to-end LMDB run.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.
