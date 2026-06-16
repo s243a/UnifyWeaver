@@ -254,7 +254,12 @@ Phasing:
   - **P2c-wiring/precompute [next].** Choose *which* boundary nodes to precompute
     (root-near band per §3) and populate the side-table at setup — the step that
     turns the correct-but-unaccelerated lowering into the measured speedup — then an
-    end-to-end LMDB run.
+    end-to-end LMDB run. Run the precompute as a root-down topological sweep with the
+    **liveness/eviction rule** (spec §8a): a parent distribution `H_p` is live only
+    until its last child consumes it, so interior (non-`Bset`) scratch distributions
+    can be evicted from the side-table / `boundary_basis` LMDB sub-db once their
+    consumer count hits zero — bounding the working set to the cone's frontier width
+    and giving a correctness-preserving cache/storage eviction signal.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.

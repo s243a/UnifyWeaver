@@ -226,6 +226,41 @@ kernel is used and output is identical — the basis for the disablability guara
 - Persistence (later): a `boundary_basis` LMDB sub-db (node → packed histogram),
   loaded at setup like `s2i`/`min_dist`, so the precompute is not repeated per run.
 
+### 8a. Precompute liveness & eviction
+
+The suffix recurrence builds a node's distribution **from its parents'** (the nodes
+one step *closer to the root*):
+
+```
+H_root = δ_0            (the empty path: atom of mass 1 at length 0)
+H_v[L] = Σ_{p ∈ parents(v)} H_p[L−1]            (boundary_cache.rs:suffix_histogram)
+```
+
+So `H_p` is a *consumed input* to every child `v` with `p ∈ parents(v)`, and nothing
+else. This gives an exact **liveness rule** for the precompute sweep:
+
+> **`H_p` is live only from when it is first computed until its last child consumes
+> it.** Once the distributions of *all* descendants that name `p` as a parent have
+> been computed, `H_p` can be **evicted** — unless `p` is itself a retained boundary
+> node (`p ∈ Bset`), whose distribution is kept for query-time splicing.
+
+Equivalently, run the precompute as a root-down topological sweep with a per-node
+consumer count `refs(p) = #{v : p ∈ parents(v)} within the precomputed cone`;
+decrement on each child completion and free at zero. Consequences:
+
+- **Bounded working set.** The simultaneously-resident scratch distributions are
+  bounded by the cone's *frontier antichain width*, not by the number of nodes
+  swept — the precompute streams instead of holding every node at once.
+- **Storage/cache eviction hint.** The same count is an eviction signal for the
+  backing store: an interior (non-`Bset`) node's entry in the in-memory side-table
+  *or* in the `boundary_basis` LMDB sub-db is safe to drop once its consumer count
+  reaches zero. Only the retained boundary band must persist; the intermediates
+  above the band (between `Bset` and the root) are pure scratch.
+- **Exactness preserved.** Eviction frees an entry *after* its last read, so it
+  changes only resource use, never any spliced result. (Re-deriving an evicted `p`
+  later — e.g. a new `Bset` member appears below it — simply recomputes it; the
+  rule is a cache policy, not a one-shot deletion.)
+
 ## 9. Storage / approximation
 
 Exact discrete histograms by default. The §1a backings are the storage/scale
