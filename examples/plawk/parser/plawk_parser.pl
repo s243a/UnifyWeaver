@@ -23,6 +23,7 @@
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
+%      $1 == "ERROR" { print int($3) - 1 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
@@ -352,15 +353,8 @@ scalar_delta_expr(int(Value)) -->
     { ValueCodes \== [],
       number_codes(Value, ValueCodes),
       Value >= 0 }.
-scalar_delta_expr(add_i64(Left, int(Value))) -->
-    int_field_expr(Left),
-    ws,
-    "+",
-    ws,
-    integer_codes(ValueCodes),
-    { ValueCodes \== [],
-      number_codes(Value, ValueCodes),
-      Value >= 0 }.
+scalar_delta_expr(Expr) -->
+    i64_field_const_binary_expr(Expr).
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -403,15 +397,8 @@ field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
-field_expr(add_i64(Left, int(Value))) -->
-    int_field_expr(Left),
-    ws,
-    "+",
-    ws,
-    integer_codes(ValueCodes),
-    { ValueCodes \== [],
-      number_codes(Value, ValueCodes),
-      Value >= 0 }.
+field_expr(Expr) -->
+    i64_field_const_binary_expr(Expr).
 field_expr(int(Field)) -->
     int_field_expr(int(Field)).
 field_expr(length(Field)) -->
@@ -508,6 +495,22 @@ int_field_expr(int(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+
+i64_field_const_binary_expr(Expr) -->
+    int_field_expr(Left),
+    ws,
+    i64_binary_surface_operator(Functor),
+    ws,
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes),
+      Value >= 0,
+      Expr =.. [Functor, Left, int(Value)] }.
+
+i64_binary_surface_operator(add_i64) -->
+    "+".
+i64_binary_surface_operator(sub_i64) -->
+    "-".
 
 assoc_key_expr(field(Index)) -->
     "$",
