@@ -156,6 +156,111 @@ pub fn decode_hist(b: &[u8]) -> Hist {
     out
 }
 
+// --- Storage-gated approximation (the exact->approximate ladder, first rung) ---
+//
+// Ported from the Python distribution-cache line (DISTRIBUTIONAL_COMPRESSION_
+// THEORY.md). Two things that doc is emphatic about, preserved here:
+//   * The point count is a WORK TRIGGER (when to TRY compressing), NOT an
+//     acceptance gate. The doc explicitly replaces "is it over 50 points?" with
+//     "which representation is cheapest at the requested error tolerance?".
+//   * Acceptance is an ERROR CERTIFICATE on the CDF — Kolmogorov epsilon_K (and
+//     optionally Wasserstein-1) — not a heuristic. Approximation only ever drops
+//     mass within that certified budget; everything kept stays exact.
+//
+// This is OPT-IN: the boundary cache is exact by default. These are the tools a
+// storage-budgeted precompute uses when an exact histogram does not fit. The
+// first ladder rung (tail-pruned exact) is implemented; binomial / mixture /
+// discretised-GMM fits are the later rungs (future).
+//
+// Note: typical boundary histograms have support <= budget+1 (the path-length
+// budget), so for the small-budget effective-distance query the work trigger
+// rarely fires — this matters for large-budget / deep-path graph search where the
+// histograms are long.
+
+/// Default work trigger: only TRY compressing a histogram with more than this many
+/// support points (DISTRIBUTIONAL_COMPRESSION_THEORY.md `max_recurrence_states`).
+pub const DEFAULT_COMPRESS_MIN_POINTS: usize = 50;
+/// Default acceptance certificate: max Kolmogorov CDF error (epsilon_K).
+pub const DEFAULT_COMPRESS_EPSILON_K: f64 = 0.001;
+
+/// Kolmogorov error `max_t |F_a(t) - F_b(t)|` between two histograms, each
+/// normalised to a PMF by its own total mass. Bounds prefix-mass / CDF query
+/// error. Two zero-mass histograms compare as 0.
+pub fn cdf_max_error(a: &Hist, b: &Hist) -> f64 {
+    let ta: f64 = a.iter().map(|&c| c as f64).sum();
+    let tb: f64 = b.iter().map(|&c| c as f64).sum();
+    if ta == 0.0 && tb == 0.0 { return 0.0; }
+    let n = a.len().max(b.len());
+    let (mut ca, mut cb, mut worst) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        ca += *a.get(i).unwrap_or(&0) as f64;
+        cb += *b.get(i).unwrap_or(&0) as f64;
+        let fa = if ta > 0.0 { ca / ta } else { 0.0 };
+        let fb = if tb > 0.0 { cb / tb } else { 0.0 };
+        worst = worst.max((fa - fb).abs());
+    }
+    worst
+}
+
+/// Wasserstein-1 error `sum_t |F_a(t) - F_b(t)|` between two histograms (PMF-
+/// normalised). Bounds Lipschitz functional error:
+/// `|E_a[g] - E_b[g]| <= Lip(g) * w1`.
+pub fn cdf_w1_error(a: &Hist, b: &Hist) -> f64 {
+    let ta: f64 = a.iter().map(|&c| c as f64).sum();
+    let tb: f64 = b.iter().map(|&c| c as f64).sum();
+    if ta == 0.0 && tb == 0.0 { return 0.0; }
+    let n = a.len().max(b.len());
+    let (mut ca, mut cb, mut total) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        ca += *a.get(i).unwrap_or(&0) as f64;
+        cb += *b.get(i).unwrap_or(&0) as f64;
+        let fa = if ta > 0.0 { ca / ta } else { 0.0 };
+        let fb = if tb > 0.0 { cb / tb } else { 0.0 };
+        total += (fa - fb).abs();
+    }
+    total
+}
+
+/// Tail-prune: drop the longest suffix of `h` whose cumulative count mass stays
+/// within `max_drop` (a FRACTION of the total mass). Exact where kept. Returns the
+/// pruned histogram and the actual dropped fraction — which equals the pruned
+/// histogram's Kolmogorov error vs `h` (the CDF is exact up to the cut, then flat).
+/// Never drops the whole histogram (keeps at least the leading bucket).
+pub fn tail_prune(h: &Hist, max_drop: f64) -> (Hist, f64) {
+    let total: u64 = h.iter().sum();
+    if total == 0 || h.is_empty() {
+        return (h.clone(), 0.0);
+    }
+    let cap = (max_drop.max(0.0) * total as f64).floor() as u64;
+    let mut dropped: u64 = 0;
+    let mut cut = h.len(); // exclusive end of the kept prefix
+    for i in (0..h.len()).rev() {
+        if cut <= 1 { break; } // always keep at least one bucket
+        if dropped + h[i] > cap { break; }
+        dropped += h[i];
+        cut -= 1;
+    }
+    let mut pruned = h[..cut].to_vec();
+    while pruned.len() > 1 && pruned.last() == Some(&0) {
+        pruned.pop();
+    }
+    (pruned, dropped as f64 / total as f64)
+}
+
+/// Default storage-gated compression of one histogram. The support count
+/// `> min_points` is the WORK TRIGGER; when triggered, tail-prune within the
+/// `epsilon_k` certificate and return the result only if it actually shortens the
+/// support, else return `h` unchanged. So the output is exact unless the histogram
+/// is both long *and* has a >`epsilon_k`-prunable tail, and even then it differs by
+/// at most `epsilon_k` Kolmogorov mass.
+pub fn compress_histogram(h: &Hist, min_points: usize, epsilon_k: f64) -> Hist {
+    if h.len() <= min_points {
+        return h.clone();
+    }
+    let (pruned, _drop) = tail_prune(h, epsilon_k);
+    if pruned.len() < h.len() { pruned } else { h.clone() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +279,51 @@ mod tests {
         // empty / sub-header buffers decode to empty
         assert_eq!(decode_hist(&[]), Vec::<u64>::new());
         assert_eq!(decode_hist(&[1, 0]), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn cdf_errors_basic() {
+        let a = vec![1u64, 2, 3, 4];
+        assert_eq!(cdf_max_error(&a, &a), 0.0);
+        assert_eq!(cdf_w1_error(&a, &a), 0.0);
+        let empty: Hist = vec![];
+        assert_eq!(cdf_max_error(&empty, &empty), 0.0);
+        // shift all mass one bucket later -> nonzero CDF error
+        let b = vec![0u64, 1, 2, 3, 4];
+        assert!(cdf_max_error(&a, &b) > 0.0);
+        assert!(cdf_w1_error(&a, &b) >= cdf_max_error(&a, &b)); // w1 >= sup
+    }
+
+    #[test]
+    fn tail_prune_drops_low_mass_tail_within_budget() {
+        // 96% in the head bucket, a long 4% tail.
+        let h = vec![960u64, 10, 10, 10, 10];
+        let (p, drop) = tail_prune(&h, 0.05); // allow up to 5% dropped
+        assert!(drop <= 0.05 + 1e-9, "dropped {} exceeds budget", drop);
+        assert!(p.len() < h.len(), "should shorten support");
+        // the dropped fraction is exactly the Kolmogorov error vs the original.
+        assert!((cdf_max_error(&h, &p) - drop).abs() < 1e-9);
+        // a zero budget prunes nothing; a full-mass head is never fully dropped.
+        assert_eq!(tail_prune(&h, 0.0).0, h);
+        assert!(!tail_prune(&h, 1.0).0.is_empty());
+    }
+
+    #[test]
+    fn compress_histogram_is_work_triggered_and_certified() {
+        // short histogram (<= min_points): returned exact regardless of tail.
+        let short = vec![900u64, 1, 1];
+        assert_eq!(compress_histogram(&short, 50, 0.001), short);
+        // long histogram with a tiny prunable tail: compressed within epsilon.
+        let mut long = vec![0u64; 60];
+        long[0] = 1_000_000;
+        for i in 50..60 { long[i] = 1; } // 10 ppm tail
+        let c = compress_histogram(&long, 50, 0.001);
+        assert!(c.len() < long.len(), "long low-tail histogram should compress");
+        assert!(cdf_max_error(&long, &c) <= 0.001 + 1e-9, "error within epsilon_K");
+        // long histogram whose tail mass exceeds epsilon: left exact.
+        let mut heavy = vec![0u64; 60];
+        for i in 0..60 { heavy[i] = 100; } // uniform -> tail is heavy
+        assert_eq!(compress_histogram(&heavy, 50, 0.001), heavy);
     }
 
     // Sample DAG (child -> parents), root = 0. Diamonds produce multiple paths

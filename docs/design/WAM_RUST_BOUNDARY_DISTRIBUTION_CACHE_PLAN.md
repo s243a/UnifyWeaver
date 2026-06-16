@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1 DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -296,11 +296,15 @@ Phasing:
     and `test_wam_rust_boundary_basis_lmdb.pl` — in a generated lmdb_zero crate,
     save -> load -> fresh re-open all return the identical table (cross-run
     persistence). lmdb_zero backend; heed parity is a follow-up.
-  - **P2c-wiring/precompute/eviction/spill [next].** Spill the *live* frontier (and
-    optionally evicted dead interiors) to the `boundary_basis` sub-db mid-sweep when
-    even the live budget is exceeded — turning the §8b stop-at-depth into spill-and-
-    continue-against-storage. Then an end-to-end LMDB run wiring the harness to
-    `load_boundary_basis` at setup / `save_boundary_basis` after precompute.
+  - **P2c-wiring/precompute/eviction/spill [later, NOT default].** Spill the *live*
+    frontier (and optionally evicted dead interiors) to the `boundary_basis` sub-db
+    mid-sweep when even the live budget is exceeded — turning the §8b stop-at-depth
+    into spill-and-continue-against-storage. **Design decision: spill is off by
+    default**; it engages only when the in-memory cache is too small for the problem,
+    and only after checking LMDB is actually available (installed / a writable env),
+    falling back to stop-at-depth otherwise. Then an end-to-end LMDB run wiring the
+    harness to `load_boundary_basis` at setup / `save_boundary_basis` after
+    precompute.
 - **P3 — the measurement in §6 [DONE].** Measured on the **real emitted kernels**
   (`build_boundary_suffix_sweep` + `collect_native_category_ancestor_boundary_hist`
   vs the production `collect_native_category_ancestor_hops`), harness
@@ -332,8 +336,18 @@ Phasing:
     same `D_pre`, same-order speedup at the intended periphery-seed operating point).
     Any band is exact, so this is a storage/coverage choice. The whole-region band
     remains for maximal coverage when storage is not the constraint.
-  - **Fitted forms [next].** binomial / discretised-GMM bases when a basis exceeds the
-    storage budget (per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
+  - **Approximation ladder, rung 1 [DONE].** Ported the Python distribution-cache
+    policy (spec §9a): the support count is a **work trigger** (default 50), NOT an
+    acceptance gate — acceptance is the CDF **error certificate** (`ε_K` Kolmogorov,
+    default 0.001; `ε_W1` Wasserstein available). `boundary_cache::{cdf_max_error,
+    cdf_w1_error, tail_prune, compress_histogram}` + the opt-in
+    `WamState::compress_boundary_suffix`. Tail-pruned-exact is rung 1 (the dropped
+    fraction *is* the Kolmogorov error). OPT-IN: the cache stays exact unless called;
+    triggers only for large-budget/deep-path histograms (support > min_points).
+  - **Fitted forms [next].** binomial / beta-binomial / mixture-of-binomials bases
+    (discretised-GMM as escalation only), same CDF/W1 gate, when an exact or
+    tail-pruned histogram still exceeds the storage budget (per
+    `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
 
 ## 6. What to measure (re-derive, don't inherit)
 
