@@ -85,6 +85,11 @@ test(parses_field_eq_print_int_add_field_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [print([add_i64(int(field(3)), int(1))])])], [])).
 
+test(parses_field_eq_print_int_sub_field_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { print int($3) - 1 }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [print([sub_i64(int(field(3)), int(1))])])], [])).
+
 test(parses_field_eq_print_case_field_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print tolower($2), toupper($0) }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -208,6 +213,13 @@ test(parses_field_int_add_scalar_add_assign_end_print_rule) :-
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [add(var(bytes), add_i64(int(field(3)), int(1))),
          set(var(last), add_i64(int(field(3)), int(1)))])],
+        [end([print([var(bytes), var(last)])])])).
+
+test(parses_field_int_sub_scalar_add_assign_end_print_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { bytes += int($3) - 1; last = int($3) - 1 } END { print bytes, last }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [add(var(bytes), sub_i64(int(field(3)), int(1))),
+         set(var(last), sub_i64(int(field(3)), int(1)))])],
         [end([print([var(bytes), var(last)])])])).
 
 test(parses_always_scalar_add_assign_end_print_rule) :-
@@ -537,10 +549,20 @@ test(surface_begin_field_separator_drives_int_add_printing) :-
         "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
         "10,11\n-3,-2\nnope,1\n").
 
+test(surface_begin_field_separator_drives_int_sub_printing) :-
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print $3, int($3) - 1 }\n",
+        "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
+        "10,9\n-3,-4\nnope,-1\n").
+
 test(surface_field_int_add_scalar_accumulates_values) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += int($3) + 1; last = int($3) + 1 } END { print bytes, last }\n",
         "INFO boot 7\nERROR disk 10\nWARN cpu 20\nERROR net -3\nERROR bad nope\n",
         "10 1\n").
+
+test(surface_field_int_sub_scalar_accumulates_values) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { bytes += int($3) - 1; last = int($3) - 1 } END { print bytes, last }\n",
+        "INFO boot 7\nERROR disk 10\nWARN cpu 20\nERROR net -3\nERROR bad nope\n",
+        "4 -1\n").
 
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
@@ -860,6 +882,16 @@ test(surface_int_add_print_uses_shared_i64_add_lowering) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+test(surface_int_sub_print_uses_shared_i64_sub_lowering) :-
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print int($3) - 1 }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0_lhs_value_or_default = select i1 %plawk_int_sub_0_lhs_ok, i64 %plawk_int_sub_0_lhs_value, i64 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %plawk_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_sub_0 = call i32 (i8*, ...) @printf(i8* %int_sub_fmt_0, i64 %plawk_int_sub_0)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
 test(surface_scalar_assignment_uses_ordered_native_state_ops) :-
     plawk_parse_string("$1 == \"ERROR\" { last_len = length($0); last_len += 2 } END { print last_len }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
@@ -943,6 +975,18 @@ test(surface_if_else_branch_print_uses_shared_prefixed_expr_lowering) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fif_5F0_5Fthen_5Fprint_5F0_5Findex_5Fneedle_5F2 = private constant [3 x i8] c"is\\00"'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_index_2 = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 32'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_nf_0 = call i64 @wam_atom_field_count_value(%Value %line, i8 32)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_if_else_branch_print_uses_shared_prefixed_i64_binary_lowering) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { print int($3) - 1 } else { print int($3) + 1 } } END { print \"done\" }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0 = sub i64 %rule_0_body_if_0_then_print_0_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_then_print_0_int_sub_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_then_print_0_int_sub_0_fmt_0, i64 %rule_0_body_if_0_then_print_0_int_sub_0)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0 = add i64 %rule_0_body_if_0_else_print_0_int_add_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_else_print_0_int_add_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_else_print_0_int_add_0_fmt_0, i64 %rule_0_body_if_0_else_print_0_int_add_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
