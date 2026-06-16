@@ -178,6 +178,39 @@ class BoundaryCacheBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(boundaries, ["A"])
 
+    def test_collect_target_ancestor_boundaries_can_prune_to_root_cone(self):
+        graph = DictGraph({
+            "A": ["R"],
+            "B": ["A"],
+            "X": ["A"],
+            "C": ["B", "X"],
+        })
+        depth_by_node = {"R": 0, "A": 1, "B": 2, "C": 3}
+
+        unfiltered = collect_target_ancestor_boundaries(
+            graph.parents,
+            "R",
+            ["C"],
+            [2],
+            max_hops=3,
+            max_parent_depth=4,
+        )
+        filtered = collect_target_ancestor_boundaries(
+            graph.parents,
+            "R",
+            ["C"],
+            [2],
+            max_hops=3,
+            max_parent_depth=4,
+            parent_accept=lambda _node, parent, remaining: (
+                parent in depth_by_node and depth_by_node[parent] <= remaining
+            ),
+            depth_by_node=depth_by_node,
+        )
+
+        self.assertEqual(set(unfiltered), {"B", "X"})
+        self.assertEqual(filtered, ["B"])
+
     def test_boundary_lookup_prefers_exact_histogram_over_parametric(self):
         lookup = build_boundary_lookup({"B": {2: 1}}, {"B": {5: 10}, "C": {1: 2}})
 
