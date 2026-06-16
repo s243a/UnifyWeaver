@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -327,8 +327,17 @@ Phasing:
   precompute is sub-ms (amortizes within a single 500-seed batch); and the boundary
   aggregate equals production **exactly** at every `D_pre` (the §6 exact-match
   invariant, guarded by `tests/test_wam_rust_boundary_integrated_scale.pl`). The
-  shallow crossover confirms philosophy §3 (Python overhead had masked it). Boundary-
-  hit-fraction vs `D_pre` and the LMDB-lazy-path variant remain to be measured.
+  shallow crossover confirms philosophy §3 (Python overhead had masked it).
+  - **LMDB lazy-edge path [DONE].** `wam_rust_boundary_lazy_edge_measurement.pl`
+    writes the synthetic graph into a real LMDB env and registers it as the lazy
+    `category_parent/2` `LookupSource` (each lookup an LMDB seek through the L1/L2
+    edge cache), measuring production vs boundary there side by side with the eager
+    path. Result: production is ~4–5× slower on LMDB (85–108 ms vs 17–23 ms), and the
+    boundary win **persists and is often larger** (20–25× lazy vs 10–25× eager) —
+    the cache removes the *walk*, so the more each avoided lookup costs, the more it
+    saves (~82 ms removed per batch on LMDB vs ~16 ms in memory). Exact on both paths.
+    Closes the §6 "to be confirmed on the LMDB run" caveat.
+  - Boundary-hit-fraction vs `D_pre` remains a minor open measurement.
 - **P4 — storage-gated approximate/specialised bases.**
   - **`g_B` pre-weighted basis [DONE].** `build_boundary_basis_weighted_power(max_depth,
     n)` collapses each cached histogram into `g_B[a] = Σ_b H_B[b]·(a+b)^(-N)`, and
