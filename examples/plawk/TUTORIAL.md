@@ -124,9 +124,10 @@ The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
 fields, native field lengths such as `length($2)`, native byte substrings such as
 `substr($2, 1, 3)`, and `OFS`, matching the first awk-style example above. It can
 also print explicit numeric field coercions with `int($N)`, where missing or
-non-numeric fields become `0`, and the first arithmetic composition forms
-`int($N) + K` and `int($N) - K`. It can also compile a scalar counter and an
-`END` action:
+non-numeric fields become `0`, and the first arithmetic composition forms add
+or subtract a non-negative integer constant from native `i64` primaries such as
+`NR`, `NF`, `length($N)`, and `int($N)`. It can also compile a scalar counter
+and an `END` action:
 
 ```awk
 $1 == "ERROR" { count++ } END { print count }
@@ -252,8 +253,9 @@ $1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }
 ```
 
-The current assignment expression subset is integer literals, `length($N)`, and
-numeric `$N`.
+The current assignment expression subset is integer literals, `length($N)`,
+numeric `$N`, explicit `int($N)`, and native scalar `i64` primary `+/- K` forms
+such as `NF + K`, `length($N) - K`, and `int($N) + K`.
 
 Numeric field guards are also native:
 
@@ -382,9 +384,10 @@ $1 == "ERROR" { print $3, int($3) }
 ```
 
 The current arithmetic print subset can add or subtract a non-negative integer
-constant from that coerced value:
+constant from native `i64` primaries:
 
 ```awk
+$1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 $1 == "ERROR" { print int($3) + 1 }
 $1 == "ERROR" { print int($3) - 1 }
 ```

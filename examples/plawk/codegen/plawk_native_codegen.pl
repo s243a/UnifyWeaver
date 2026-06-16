@@ -44,8 +44,11 @@
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
+%      $1 == "ERROR" { print int($3) - 1 }
+%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      { adjusted += length($0) - 3; width = NF + 1 } END { print adjusted, width }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %      { if ($1 == "ERROR") { errors++ } else { warnings++ } } END { print errors, warnings }
@@ -1304,18 +1307,37 @@ plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
 plawk_rule_body_print_field(Expr) :-
-    plawk_i64_field_const_binary_expr(Expr).
+    plawk_i64_const_binary_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
 plawk_rule_body_print_field(tolower(field(_))).
 plawk_rule_body_print_field(toupper(field(_))).
 
-plawk_i64_field_const_binary_expr(Expr) :-
-    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, int(field(FieldIndex)), int(Value)),
-    FieldIndex >= 0,
+plawk_i64_const_binary_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, int(Value)),
+    plawk_i64_binary_primary_expr(Left),
     integer(Value),
     Value >= 0.
+
+plawk_i64_binary_primary_expr(special('NR')).
+plawk_i64_binary_primary_expr(special('NF')).
+plawk_i64_binary_primary_expr(int(field(FieldIndex))) :-
+    FieldIndex >= 0.
+plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
+    FieldIndex >= 0.
+
+plawk_i64_scalar_const_binary_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, int(Value)),
+    plawk_i64_scalar_binary_primary_expr(Left),
+    integer(Value),
+    Value >= 0.
+
+plawk_i64_scalar_binary_primary_expr(special('NF')).
+plawk_i64_scalar_binary_primary_expr(int(field(FieldIndex))) :-
+    FieldIndex >= 0.
+plawk_i64_scalar_binary_primary_expr(length(field(FieldIndex))) :-
+    FieldIndex >= 0.
 
 plawk_i64_binary_expr(add_i64(Left, Right), add, add, Left, Right).
 plawk_i64_binary_expr(sub_i64(Left, Right), sub, sub, Left, Right).
@@ -1342,7 +1364,7 @@ plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i6
 plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
-    plawk_i64_field_const_binary_expr(Expr).
+    plawk_i64_scalar_const_binary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -1353,7 +1375,7 @@ plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i6
 plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
-    plawk_i64_field_const_binary_expr(Expr).
+    plawk_i64_scalar_const_binary_expr(Expr).
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
@@ -1503,6 +1525,18 @@ plawk_i64_expr_ir(nr, _FieldSeparator, _Base, _GlobalBase, '%current_nr', [], []
 plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR]) :-
     llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
     format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(special('NR'), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(nr, FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
+plawk_i64_expr_ir(special('NF'), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(nf, FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
+plawk_i64_expr_ir(length(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [LengthIR]) :-
     llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
     format(atom(ValueIR), '%~w', [Base]).
@@ -1776,12 +1810,21 @@ plawk_field_cmp_op_code(gt, 4).
 plawk_field_cmp_op_code(ge, 5).
 
 plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR) :-
-    (   member(special('NR'), Fields)
+    (   plawk_fields_include_nr(Fields)
     ->  LoopPhiIR = '  %plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]',
         RecordCounterIR = '  %current_nr = add i64 %plawk_nr, 1'
     ;   LoopPhiIR = '',
         RecordCounterIR = ''
     ).
+
+plawk_fields_include_nr(Fields) :-
+    member(Field, Fields),
+    plawk_expr_uses_nr(Field).
+
+plawk_expr_uses_nr(special('NR')).
+plawk_expr_uses_nr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, _Right),
+    plawk_expr_uses_nr(Left).
 
 plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, ''-IR) :-
     !,
