@@ -301,8 +301,18 @@ Phasing:
     even the live budget is exceeded — turning the §8b stop-at-depth into spill-and-
     continue-against-storage. Then an end-to-end LMDB run wiring the harness to
     `load_boundary_basis` at setup / `save_boundary_basis` after precompute.
-- **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
-  cache, and from what `D_pre`). Gates whether P4 is worth building.
+- **P3 — the measurement in §6 [DONE].** Measured on the **real emitted kernels**
+  (`build_boundary_suffix_sweep` + `collect_native_category_ancestor_boundary_hist`
+  vs the production `collect_native_category_ancestor_hops`), harness
+  `examples/benchmark/wam_rust_boundary_measurement.pl`, report
+  `WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`. Result: **yes — the boundary cache
+  adds wall-time on top of the warm edge cache, and the crossover is shallow** —
+  ~3× at `D_pre=1`, 16–26× at `D_pre=2`, >100× at `D_pre=3` on a dense-core graph;
+  precompute is sub-ms (amortizes within a single 500-seed batch); and the boundary
+  aggregate equals production **exactly** at every `D_pre` (the §6 exact-match
+  invariant, guarded by `tests/test_wam_rust_boundary_integrated_scale.pl`). The
+  shallow crossover confirms philosophy §3 (Python overhead had masked it). Boundary-
+  hit-fraction vs `D_pre` and the LMDB-lazy-path variant remain to be measured.
 - **P4 — storage-gated approximate/specialised bases** (`g_B` dot-product for hot
   functionals; fitted forms when a basis exceeds the storage budget).
 
