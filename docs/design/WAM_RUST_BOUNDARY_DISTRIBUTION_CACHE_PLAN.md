@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -352,6 +352,12 @@ Phasing:
     is a hard reject: validated that a true binomial is fit + chosen (smaller) and a
     bimodal histogram is rejected back to exact. Bounded integer path-length data
     favour binomials.
+  - **CDF-space fit [DONE].** `fit_binomial_cdf` chooses `p` by minimising the
+    Wasserstein-1 (integral CDF) distance via a 1-D search, instead of moment-
+    matching — optimising the same cumulative space the gate judges in (smoother /
+    lower-bandwidth). `choose_representation` tries both fits and keeps the
+    lower-error one. Validated: the CDF fit is ≤ the moment fit on W1 and strictly
+    better when the mean is pulled by local PMF contamination.
   - **Fitted forms [next].** beta-binomial (over-dispersion) and
     mixture-of-binomials (EM), discretised-GMM as escalation only, same CDF/W1 gate;
     plus wiring `choose_representation` into the persisted `boundary_basis` (store

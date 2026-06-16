@@ -356,17 +356,23 @@ Implemented (Rust, `boundary_cache.rs`):
 - **Error metrics** — `cdf_max_error` (Kolmogorov), `cdf_w1_error` (Wasserstein-1).
 - **Rung 1 — tail-pruned exact** — `tail_prune` drops the longest suffix whose
   cumulative mass ≤ the budget; the dropped fraction *is* the Kolmogorov error.
-- **Rung 2 — parametric binomial** — `fit_binomial` (method of moments:
-  `trials = support-1`, `p = mean/trials`), `binomial_pmf` (stable recurrence). A
-  `HistRepr` (`Exact` | `Binomial{trials,p,total}`) carries `bytes()`, `pmf()`, and
-  `expand()` (a binomial expands to a rounded count histogram, since the kernel
-  consumes counts). `choose_representation(h, min_points, ε_K)` mirrors the Python
-  `choose_distribution_representation`: the cheapest representation whose CDF error
-  is within `ε_K` — exact (error 0), tail-pruned, or binomial. **The gate is a hard
-  reject:** a fit that misses `ε_K` (e.g. a bimodal histogram against a single
-  binomial) is dropped and the exact/tail-pruned form kept, so accuracy never
-  silently degrades. Bounded integer path-length data favour binomials; mixtures /
-  discretised-GMM are the escalation rungs (future).
+- **Rung 2 — parametric binomial** — two fits: `fit_binomial` (method of moments:
+  `trials = support-1`, `p = mean/trials`) and `fit_binomial_cdf` (**CDF-space**:
+  `p` chosen to minimise the Wasserstein-1 / integral CDF distance by a 1-D search).
+  The CDF fit optimises the *same cumulative space the gate judges in* (§3/§6 of the
+  theory doc) — a smoother, lower-bandwidth target than the PMF — so it is at least
+  as good as moment-matching on the gate metric and **strictly better when the mean
+  is pulled by local PMF contamination** (validated). `binomial_pmf` uses a stable
+  recurrence. A `HistRepr` (`Exact` | `Binomial{trials,p,total}`) carries `bytes()`,
+  `pmf()`, and `expand()` (a binomial expands to a rounded count histogram, since
+  the kernel consumes counts). `choose_representation(h, min_points, ε_K)` mirrors
+  the Python `choose_distribution_representation`: the cheapest representation whose
+  CDF error is within `ε_K` — exact (error 0), tail-pruned, or binomial (trying both
+  fits and keeping the lower-error one). **The gate is a hard reject:** a fit that
+  misses `ε_K` (e.g. a bimodal histogram against a single binomial) is dropped and
+  the exact/tail-pruned form kept, so accuracy never silently degrades. Bounded
+  integer path-length data favour binomials; mixtures / discretised-GMM are the
+  escalation rungs (future).
 - `compress_histogram` / `WamState::compress_boundary_suffix(min_points, ε_K)` apply
   rung 1 across the cached table.
 

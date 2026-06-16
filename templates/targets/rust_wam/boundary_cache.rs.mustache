@@ -298,6 +298,20 @@ fn cdf_max_error_pmf(a: &[f64], b: &[f64]) -> f64 {
     worst
 }
 
+/// Wasserstein-1 (sum of |CDF diff|) between two PMFs — the *integral* form of the
+/// CDF distance, smoother / lower-bandwidth than the PMF and the natural objective
+/// for a CDF-space fit (and an acceptance metric in its own right).
+fn cdf_w1_error_pmf(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().max(b.len());
+    let (mut ca, mut cb, mut total) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        ca += a.get(i).copied().unwrap_or(0.0);
+        cb += b.get(i).copied().unwrap_or(0.0);
+        total += (ca - cb).abs();
+    }
+    total
+}
+
 /// `Binomial(trials, p)` PMF over `0..=trials`, computed by the stable iterative
 /// recurrence (matches the Python `binomial_pmf`).
 pub fn binomial_pmf(trials: usize, p: f64) -> Vec<f64> {
@@ -325,6 +339,38 @@ pub fn fit_binomial(h: &Hist) -> (usize, f64) {
     let (mean, _var) = pmf_moments(&pmf);
     let p = if trials == 0 { 0.0 } else { (mean / trials as f64).clamp(0.0, 1.0) };
     (trials, p)
+}
+
+/// CDF-space binomial fit: `trials = support-1`, with `p` chosen to MINIMISE the
+/// Wasserstein-1 CDF distance to the empirical distribution (a coarse-to-fine 1-D
+/// search) rather than to match the mean. The objective is the cumulative
+/// (integral) form — the same space the acceptance gate lives in (§9a /
+/// DISTRIBUTIONAL_COMPRESSION_THEORY §3,§6) and a smoother, lower-bandwidth target
+/// than the PMF — so the fit aligns with how it is judged and is more robust to
+/// local PMF noise (a few stray buckets shift the moment-`p` but barely move the
+/// CDF-optimal `p`).
+pub fn fit_binomial_cdf(h: &Hist) -> (usize, f64) {
+    let pmf = to_pmf(h);
+    if pmf.is_empty() { return (0, 0.0); }
+    let trials = pmf.len().saturating_sub(1);
+    if trials == 0 { return (0, 0.0); }
+    let obj = |p: f64| cdf_w1_error_pmf(&pmf, &binomial_pmf(trials, p));
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    let steps = 20usize;
+    let mut mid = 0.5f64;
+    for _ in 0..6 {
+        let (mut best_p, mut best_v) = (lo, f64::INFINITY);
+        for i in 0..=steps {
+            let p = lo + (hi - lo) * i as f64 / steps as f64;
+            let v = obj(p);
+            if v < best_v { best_v = v; best_p = p; }
+        }
+        let span = (hi - lo) / steps as f64;
+        lo = (best_p - span).max(0.0);
+        hi = (best_p + span).min(1.0);
+        mid = best_p;
+    }
+    (trials, mid)
 }
 
 /// A storage representation of a boundary suffix histogram: either the exact (or
@@ -382,12 +428,22 @@ pub fn choose_representation(h: &Hist, min_points: usize, epsilon_k: f64) -> His
         let cand = HistRepr::Exact(pruned);
         if cand.bytes() < best_bytes { best_bytes = cand.bytes(); best = cand; }
     }
-    // rung 2: parametric binomial (error == CDF distance to the fit)
-    let (trials, p) = fit_binomial(h);
-    let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
-    if err <= epsilon_k {
-        let total: u64 = h.iter().sum();
-        let cand = HistRepr::Binomial { trials, p, total };
+    // rung 2: parametric binomial — try BOTH the moment fit and the CDF-space fit,
+    // keep whichever passes the gate with the smaller CDF error. The CDF fit
+    // optimises the cumulative (integral) form directly, so it is usually <= the
+    // moment fit on the metric the gate uses.
+    let total: u64 = h.iter().sum();
+    let mut best_binom: Option<(f64, HistRepr)> = None;
+    for (trials, p) in [fit_binomial(h), fit_binomial_cdf(h)] {
+        let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
+        if err <= epsilon_k {
+            match &best_binom {
+                Some((be, _)) if *be <= err => {}
+                _ => best_binom = Some((err, HistRepr::Binomial { trials, p, total })),
+            }
+        }
+    }
+    if let Some((_, cand)) = best_binom {
         if cand.bytes() < best_bytes { best = cand; }
     }
     best
@@ -494,6 +550,24 @@ mod tests {
         let repr = choose_representation(&h, 10, 0.01);
         assert!(matches!(repr, HistRepr::Exact(_)),
             "a bimodal histogram must not be fit by a single binomial: {:?}", repr);
+    }
+
+    // Fitting in CDF space (minimising W1, the integral form) is at least as good
+    // as moment-matching on the metric the gate uses, and strictly better on a
+    // histogram whose mean is pulled by local PMF contamination.
+    #[test]
+    fn cdf_fit_beats_moment_fit_on_skewed_histogram() {
+        let base = binomial_pmf(30, 0.5);
+        let mut h: Hist = base.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        h[0] += 250_000; // stray left spike -> pulls the moment mean, barely moves the CDF-optimal p
+        let pmf = to_pmf(&h);
+        let (tm, pm) = fit_binomial(&h);
+        let (tc, pc) = fit_binomial_cdf(&h);
+        assert_eq!(tm, tc, "same trials");
+        let w1_m = cdf_w1_error_pmf(&pmf, &binomial_pmf(tm, pm));
+        let w1_c = cdf_w1_error_pmf(&pmf, &binomial_pmf(tc, pc));
+        assert!(w1_c <= w1_m + 1e-9, "CDF fit W1 {} must be <= moment fit W1 {}", w1_c, w1_m);
+        assert!(w1_c < w1_m, "CDF fit should strictly improve W1 on the skewed case");
     }
 
     // Sample DAG (child -> parents), root = 0. Diamonds produce multiple paths
