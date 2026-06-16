@@ -143,3 +143,57 @@ be re-truncated per query. `g_B` is the fixed-budget/fixed-functional specialisa
 the histogram is the general, budget-flexible form. (Validated:
 `weighted_power_basis_equals_histogram` — `g_B` WeightSum == histogram
 `weighted_power` == full enumeration, same fixed budget.)
+
+## Addendum — lazy (demand-driven) vs eager boundary cache
+
+The eager `build_boundary_suffix_*` precompute materialises the whole band up front
+(the *fixed-point / eager* strategy of `RECURRENCE_EVALUATION_STRATEGY`).
+`WamState::lazy_boundary_weightsum` is the *per-query / lazy* alternative: start
+empty and compute each band node's `node->root` histogram **on first demand**,
+memoizing it — only the band-entry nodes the workload actually touches are computed.
+
+Which wins is **not** a single number — it depends on **workload sparsity** (how
+much of the band the queries touch) and **query count K** (how many rounds amortize
+the warmup). Eager precomputes the *whole region band* — it does not know which
+seeds will be queried — then each round splices; lazy warms only the touched subset
+during round 1, then splices. Apples-to-apples on the same `min_dist <= D_pre = 2`
+band, total cost = (precompute or warmup) + K × steady-round:
+
+```
+                              eager        lazy        winner by K
+config  workload   band  pre_ms touched  warm_ms   K=1     K=10    K=100
+core120 dense 500   65   0.80    54      1.93      eager   eager   LAZY
+core120 sparse 20   65   0.80    33      0.28      LAZY    LAZY    LAZY
+core240 dense 500   71   0.94    51      3.36      eager   eager   LAZY
+core240 sparse 20   71   0.94    45      0.85      LAZY    LAZY    LAZY
+```
+
+**Findings (this corrects the earlier "lazy is just slower" note).**
+
+- **Steady-state is identical.** Once both caches are warm, a query round is a plain
+  splice for both (eager ≈ lazy per round, e.g. 0.60 vs 0.58 ms) — so K rounds
+  amortize the *same* way. The strategy choice is entirely about the *warmup* cost.
+- **Sparse workload -> lazy wins at every K.** When the queries touch little of the
+  band (20 seeds, ~33 of 65 nodes), eager wastes precompute on the whole region
+  (0.80 ms) while lazy warms only what's asked (0.28 ms) — lazy is 3× cheaper at K=1
+  and stays ahead as K grows.
+- **Dense workload + few queries -> eager wins.** When the queries touch most of the
+  band, eager's batched precompute (0.80 ms for 65 nodes) beats lazy's interleaved
+  on-demand warmup (1.93 ms) — so for K=1..~50 eager is cheaper.
+- **Dense workload + many queries -> lazy edges ahead** (K=100): lazy's smaller warm
+  cache (54 vs 65) gives marginally faster steady rounds, and the upfront-precompute
+  gap washes out. So even in the dense case the crossover is finite.
+- **Dataset size shifts it toward lazy.** The eager band is the whole root-near
+  region, which grows with the graph; the touched subset is bounded by the workload.
+  So a bigger graph with the same query workload widens lazy's precompute saving.
+
+**Takeaway:** lazy is the right strategy for **sparse or unknown** query
+distributions (don't precompute a band you won't use), for streaming/interactive
+workloads (self-warming, no precompute moment), and on the **lazy/LMDB edge path**
+(it enumerates via the `EdgeAccessor`; the eager shared-memo sweep needs the
+in-memory `ffi_facts`). Eager is the right strategy for a **known, densely-reused
+band with a modest query count**. Neither dominates — the harness prints the
+per-config winner.
+
+Guarded by `lazy_boundary_caches_on_demand_and_matches_eager` (a query touching one
+seed caches only that seed's entry; results match production).
