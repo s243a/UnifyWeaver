@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -285,11 +285,22 @@ Phasing:
     `evict_budget` evicts a dead interior yet leaves band results identical; tiny
     `live_budget` forces stop-at-depth with partial caching still correct; eager-only
     no-op. Eager-edge only; the lazy/LMDB path keeps the enumeration precompute.
-  - **P2c-wiring/precompute/eviction/LMDB [next].** Spill the retained band (and, if
-    chosen, the live frontier) to the `boundary_basis` LMDB sub-db rather than
-    dropping it, so storage pressure (not just memory) is handled and the precompute
-    is not repeated per run. Then an end-to-end LMDB run.
-  - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
+  - **P2c-wiring/precompute/persistence [DONE].** The precompute persists to a
+    `boundary_basis` LMDB sub-db (u32 node -> packed histogram) so it is **not
+    repeated per run**: `LmdbFactSource::save_boundary_basis(table)` writes it in one
+    transaction and `load_boundary_basis()` reads it back at setup (empty when the
+    sub-db is absent -> kernel degrades to full enumeration). The packing format is
+    crate-independent `boundary_cache::encode_hist`/`decode_hist`
+    (`[len: u32 LE][counts: u64 LE * len]`), shared by both LMDB backends and
+    unit-tested without LMDB. Tests: `encode_decode_hist_roundtrip` (boundary_cache)
+    and `test_wam_rust_boundary_basis_lmdb.pl` — in a generated lmdb_zero crate,
+    save -> load -> fresh re-open all return the identical table (cross-run
+    persistence). lmdb_zero backend; heed parity is a follow-up.
+  - **P2c-wiring/precompute/eviction/spill [next].** Spill the *live* frontier (and
+    optionally evicted dead interiors) to the `boundary_basis` sub-db mid-sweep when
+    even the live budget is exceeded — turning the §8b stop-at-depth into spill-and-
+    continue-against-storage. Then an end-to-end LMDB run wiring the harness to
+    `load_boundary_basis` at setup / `save_boundary_basis` after precompute.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.
 - **P4 — storage-gated approximate/specialised bases** (`g_B` dot-product for hot

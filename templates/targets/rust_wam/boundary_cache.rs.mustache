@@ -120,10 +120,61 @@ pub fn f_weighted_power(h: &Hist, n: f64) -> f64 {
         .sum()
 }
 
+// Serialization — pack a histogram to/from a flat little-endian byte string so a
+// boundary-basis table (node -> histogram) can be persisted (e.g. the LMDB
+// `boundary_basis` sub-db) and reloaded across runs, per spec §8/§9. Format:
+// u32 LE length prefix, then `len` u64 LE bucket counts. Crate-independent (no
+// LMDB), so it is testable everywhere and shared by both LMDB backends.
+
+/// Pack a histogram into `[len: u32 LE][counts: u64 LE * len]`.
+pub fn encode_hist(h: &Hist) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + h.len() * 8);
+    out.extend_from_slice(&(h.len() as u32).to_le_bytes());
+    for &c in h {
+        out.extend_from_slice(&c.to_le_bytes());
+    }
+    out
+}
+
+/// Unpack a histogram produced by `encode_hist`. Tolerant of a short/truncated
+/// buffer (stops at the last whole u64), and of an empty buffer (-> empty).
+pub fn decode_hist(b: &[u8]) -> Hist {
+    if b.len() < 4 {
+        return Vec::new();
+    }
+    let n = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let o = 4 + i * 8;
+        if o + 8 <= b.len() {
+            out.push(u64::from_le_bytes([
+                b[o], b[o + 1], b[o + 2], b[o + 3],
+                b[o + 4], b[o + 5], b[o + 6], b[o + 7],
+            ]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn encode_decode_hist_roundtrip() {
+        for h in [
+            vec![] as Hist,
+            vec![0u64, 1, 0, 2],
+            vec![5, 4, 3, 2, 1],
+            vec![u64::MAX, 0, 7],
+        ] {
+            assert_eq!(decode_hist(&encode_hist(&h)), h, "roundtrip {:?}", h);
+        }
+        // empty / sub-header buffers decode to empty
+        assert_eq!(decode_hist(&[]), Vec::<u64>::new());
+        assert_eq!(decode_hist(&[1, 0]), Vec::<u64>::new());
+    }
 
     // Sample DAG (child -> parents), root = 0. Diamonds produce multiple paths
     // of multiple lengths, so the full histogram (not just a scalar) is tested.
