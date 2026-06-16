@@ -24,8 +24,10 @@
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
 %      $1 == "ERROR" { print int($3) - 1 }
+%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      { adjusted += length($0) - 3; width = NF + 1 } END { print adjusted, width }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
@@ -354,7 +356,7 @@ scalar_delta_expr(int(Value)) -->
       number_codes(Value, ValueCodes),
       Value >= 0 }.
 scalar_delta_expr(Expr) -->
-    i64_field_const_binary_expr(Expr).
+    i64_const_binary_expr(Expr).
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -393,12 +395,12 @@ print_fields_rest([Field | Fields]) -->
 print_fields_rest([]) -->
     [].
 
+field_expr(Expr) -->
+    i64_const_binary_expr(Expr).
 field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
-field_expr(Expr) -->
-    i64_field_const_binary_expr(Expr).
 field_expr(int(Field)) -->
     int_field_expr(int(Field)).
 field_expr(length(Field)) -->
@@ -496,8 +498,8 @@ int_field_expr(int(Field)) -->
     ")",
     { Field = field(_) }.
 
-i64_field_const_binary_expr(Expr) -->
-    int_field_expr(Left),
+i64_const_binary_expr(Expr) -->
+    i64_binary_primary_expr(Left),
     ws,
     i64_binary_surface_operator(Functor),
     ws,
@@ -511,6 +513,29 @@ i64_binary_surface_operator(add_i64) -->
     "+".
 i64_binary_surface_operator(sub_i64) -->
     "-".
+
+i64_binary_primary_expr(special('NR')) -->
+    "NR".
+i64_binary_primary_expr(special('NF')) -->
+    "NF".
+i64_binary_primary_expr(Expr) -->
+    int_field_expr(Expr).
+i64_binary_primary_expr(length(Field)) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    simple_field_expr(Field),
+    ws,
+    ")".
+
+simple_field_expr(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
 
 assoc_key_expr(field(Index)) -->
     "$",
