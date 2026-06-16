@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -296,6 +296,18 @@ Phasing:
     and `test_wam_rust_boundary_basis_lmdb.pl` — in a generated lmdb_zero crate,
     save -> load -> fresh re-open all return the identical table (cross-run
     persistence). lmdb_zero backend; heed parity is a follow-up.
+  - **Lazy (demand-driven) precompute [DONE].** `lazy_boundary_weightsum` fills the
+    band **on first demand** (per-query / top-down) instead of eagerly up front —
+    only the band-entry nodes the workload touches are computed (spec §8d). Identical
+    results to eager; best for sparse/unknown workloads, streaming queries, or when
+    `D_pre` is hard to pick, and it is the strategy available on the lazy/LMDB edge
+    path (enumerates via the `EdgeAccessor`, no `ffi_facts` needed). Measured (it
+    depends on **workload sparsity × query count K**, steady state being splice-
+    identical): **sparse** workloads favour lazy at every K; **dense + modest K**
+    favours eager (batched precompute beats on-demand warmup); **dense + large K**
+    tips back to lazy; bigger datasets shift toward lazy. Guarded by
+    `lazy_boundary_caches_on_demand_and_matches_eager`; the harness prints the
+    per-config winner.
   - **P2c-wiring/precompute/eviction/spill [later, NOT default].** Spill the *live*
     frontier (and optionally evicted dead interiors) to the `boundary_basis` sub-db
     mid-sweep when even the live budget is exceeded — turning the §8b stop-at-depth

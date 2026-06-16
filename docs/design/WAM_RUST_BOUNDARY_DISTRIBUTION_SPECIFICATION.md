@@ -323,6 +323,33 @@ only be considered if even the polynomial precompute became infeasible — at wh
 point the §9 storage ladder (continuous/parametric measure) is the principled
 exact-in-the-limit fallback, again before sampling.
 
+### 8d. Lazy vs eager precompute (evaluation strategy)
+
+The band can be filled two ways — the lazy/eager axis of
+`RECURRENCE_EVALUATION_STRATEGY` applied to the boundary suffixes:
+
+- **Eager** (`build_boundary_suffix_*`): materialise the whole band up front
+  (fixed-point / bottom-up). One batched shared-memo sweep; amortised across all
+  seeds; needs the in-memory `ffi_facts` edge table for the polynomial variants.
+  Best when the band is known and densely reused.
+- **Lazy** (`lazy_boundary_weightsum`): start empty and compute each band node's
+  suffix histogram **on first demand** (per-query / top-down), memoizing it — only
+  the band-entry nodes the workload touches are ever computed. Identical results
+  (any band is exact). Best when the touched subset is sparse or unknown, when there
+  is no good precompute moment (streaming / interactive), or when `D_pre` is hard to
+  pick a priori — the cache self-warms. Also the strategy available on the
+  **lazy/LMDB edge path** (it enumerates via the `EdgeAccessor`, not `ffi_facts`).
+
+Neither dominates, and the choice depends on **workload sparsity × query count K**,
+not a single number. Steady state is identical (both splice once warm), so the
+decision is entirely the *warmup* cost. Measured (`..._MEASUREMENT_2026-06-16.md`
+lazy addendum): **sparse/unknown** workloads favour lazy at every K (eager wastes
+precompute on a band it won't use); a **dense** workload with a **modest** K favours
+eager (batched precompute beats on-demand warmup); a dense workload with **large** K
+tips back to lazy (its smaller warm cache gives marginally faster rounds). Bigger
+datasets shift it toward lazy (the eager band grows with the graph; the touched
+subset is bounded by the workload).
+
 ## 9. Storage / approximation
 
 Exact discrete histograms by default. The §1a backings are the storage/scale
@@ -396,6 +423,28 @@ then a lossy node differs by at most `ε_K` (the splice becomes approximate with
 that certified bound for the affected nodes only). For typical small-budget boundary
 histograms (support ≤ `budget`+1) the work trigger never fires; this matters at
 **large budget / deep paths**.
+
+### 9b. Remaining ladder rungs (future work)
+
+The error/CDF-gate machinery, the chooser (error- and storage-driven), and the
+persistence path are general — adding a representation is just another candidate in
+`representation_candidates` with a `bytes()` and a `pmf()`/`expand()`. Not yet
+implemented, in rough priority order:
+
+- **Quantised CDF table** — one monotone fixed-point CDF value per retained point
+  (16-bit → error ≤ `2^-16`). Best when prefix-mass / range queries dominate (O(1)
+  reads); a natural fit for the `cdf`/`quantile` result modes (§5).
+- **Beta-binomial** — `(D, α, β)`; the first upgrade when a node is *over-dispersed*
+  for a plain binomial (the CLT regime hasn't fully kicked in). Cheap params, same
+  CDF/W1 gate.
+- **Discretised Gaussian mixture** — `(weight, mean, variance)` per mode; the
+  **escalation-only** family for sharp/narrow modes that the binomial mixture fits
+  poorly. Continuous prior on discrete data, more params per mode — used only after
+  the binomial family fails the gate.
+
+Each rung is justified by **storage at a tolerance**, never compute (the exact
+splice is ~ns), so they are added on demand as large-budget / deep-path workloads
+appear.
 
 ## 10. Non-goals (this spec)
 

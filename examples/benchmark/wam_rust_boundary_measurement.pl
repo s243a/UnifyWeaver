@@ -134,6 +134,67 @@ fn main() {
                 core, cp, dpre, ta, tb, tpre, ta / tb, region_sz, front_sz,
                 if eq { "yes" } else { "NO!" });
         }
+        // LAZY (on-demand warmup) vs EAGER (precompute the whole band), apples to
+        // apples on the SAME min_dist<=d_pre band, exposing the two axes that
+        // decide it: dataset size (the eager band grows; lazy computes only what is
+        // touched) and query count (steady state is splice-only, identical for
+        // both, so it amortizes the same way).
+        let dpre = 2usize;
+        let mut mk = |take: usize| -> (WamState, u32, Vec<u32>) {
+            let mut v = WamState::new(vec![], HashMap::new());
+            v.register_ffi_fact_pairs(edge_pred, &refs);
+            let r = v.intern_atom("0");
+            let mut m: HashMap<i32, i32> = HashMap::new();
+            for (&node, &d) in &md_num { m.insert(v.intern_atom(&node.to_string()) as i32, d); }
+            v.set_min_dist(&m);
+            let ss: Vec<u32> = seed_ids.iter().take(take).map(|&i| v.intern_atom(&i.to_string())).collect();
+            (v, r, ss)
+        };
+        // helper: time one steady-state query round (plain kernel over a warm cache).
+        fn query_round(vm: &WamState, seeds: &[u32], root: u32, budget: usize, edge_pred: &str, n: f64) -> (f64, f64) {
+            let acc = vm.resolve_edge_accessor(edge_pred);
+            let t = Instant::now();
+            let mut s = 0.0;
+            for &x in seeds {
+                let mut h: Vec<u64> = Vec::new();
+                let mut vis = vec![x];
+                vm.collect_native_category_ancestor_boundary_hist(x, root, &mut vis, budget, &acc, 0, &mut h);
+                s += wpow_hist(&h, n);
+            }
+            (t.elapsed().as_secs_f64() * 1e3, s)
+        }
+        // EAGER precomputes the WHOLE region band ONCE — it does not know which
+        // seeds will be queried, so it must materialise the full potential band.
+        let (mut evm, eroot, _) = mk(seed_ids.len());
+        let region = evm.boundary_band_root_near(dpre);
+        let region_n = region.len();
+        let pe = Instant::now();
+        evm.build_boundary_suffix(&region, eroot, budget, edge_pred);
+        let eager_pre = pe.elapsed().as_secs_f64() * 1e3;
+        // Compare two WORKLOADS on the same band: dense (all seeds, touches most of
+        // the band) and sparse (20 seeds, touches little). This is the axis that
+        // decides lazy vs eager.
+        for (wlabel, wsize) in [("dense ", seed_ids.len()), ("sparse", 20usize)] {
+            let wseeds: Vec<u32> = seed_ids.iter().take(wsize).map(|&i| evm.intern_atom(&i.to_string())).collect();
+            let (eq_round, esum) = query_round(&evm, &wseeds, eroot, budget, edge_pred, n);
+            // LAZY: fresh cache, warm it on demand over THIS workload only.
+            let (mut lvm, lroot, _) = mk(seed_ids.len());
+            let lws: Vec<u32> = seed_ids.iter().take(wsize).map(|&i| lvm.intern_atom(&i.to_string())).collect();
+            let pl = Instant::now();
+            let _ = lvm.lazy_boundary_weightsum(&lws, lroot, budget, edge_pred, dpre, n);
+            let lazy_warm = pl.elapsed().as_secs_f64() * 1e3;
+            let touched_n = lvm.boundary_suffix.len();
+            let (lz_round, lsum) = query_round(&lvm, &lws, lroot, budget, edge_pred, n);
+            let eq = (esum - lsum).abs() < 1e-9 * esum.abs().max(1.0);
+            println!("  [{}|{} seeds] eager: band={} pre={:.3}ms | lazy: touched={} warm={:.3}ms | steady eager={:.3}ms lazy={:.3}ms eq={}",
+                wlabel, wsize, region_n, eager_pre, touched_n, lazy_warm, eq_round, lz_round, if eq {"y"} else {"N"});
+            for k in [1usize, 10, 100] {
+                let etot = eager_pre + k as f64 * eq_round;       // eager: full precompute + K rounds
+                let ltot = lazy_warm + (k as f64 - 1.0) * lz_round; // lazy: warm (round 1) + (K-1) rounds
+                println!("       K={:<4} eager={:.2}ms lazy={:.2}ms winner={}",
+                    k, etot, ltot, if ltot < etot { "LAZY" } else { "eager" });
+            }
+        }
     }
 }').
 
