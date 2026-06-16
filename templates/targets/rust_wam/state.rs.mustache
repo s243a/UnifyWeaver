@@ -509,6 +509,14 @@ pub struct WamState {
     /// re-enumerating node->root — turning exponential path enumeration into a
     /// histogram splice. Empty = boundary mode off (default).
     pub boundary_suffix: FxMap<u32, Vec<u64>>,
+    /// Pre-weighted boundary basis (P4): node -> the `weighted_power(N)` basis
+    /// vector `g_B[a] = sum_b H_node->root[b] * (a+b)^(-N)` for prefix length
+    /// `a = 0..=max_depth`. A query reaching this node at prefix depth `a` adds
+    /// `g_B[a]` to WeightSum directly — a fixed-length dot-product splice that
+    /// skips the histogram convolution and the final powf loop, for a fixed
+    /// functional. Smaller (one f64 vector of length <= max_depth+1 vs a
+    /// variable-support histogram) and faster. Empty = basis mode off.
+    pub boundary_basis_wp: FxMap<u32, Vec<f64>>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -627,6 +635,7 @@ impl WamState {
             demand_set: FxSet::default(),
             min_dist: FxMap::default(),
             boundary_suffix: FxMap::default(),
+            boundary_basis_wp: FxMap::default(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -961,6 +970,47 @@ impl WamState {
             .collect()
     }
 
+    /// The thin **entry frontier** of the root-near region: nodes with
+    /// `1 <= min_dist <= d_pre` that have at least one child *outside* the region
+    /// (`min_dist > d_pre`, or no `min_dist` at all). These are exactly the nodes a
+    /// path from the periphery *first* reaches when it crosses into the region — and
+    /// since the boundary kernel splices at the first cached node and stops, they
+    /// are the only band nodes a periphery seed ever uses. Caching just this cut
+    /// (instead of the whole `boundary_band_root_near` region) keeps the band from
+    /// growing with the cumulative root-near node count — it scales with the
+    /// region's *surface*, not its *volume* — while serving the same seeds. Interior
+    /// region nodes (never an entry point) are dropped; seeds that start inside the
+    /// region simply enumerate their short cone to the root (cheap). Requires the
+    /// eager edge table to enumerate children; returns the whole region as a
+    /// fallback if the table is absent.
+    pub fn boundary_band_entry_frontier(&self, d_pre: usize, edge_pred: &str) -> Vec<u32> {
+        let cap = d_pre as i32;
+        let parents = match self.ffi_facts.get(edge_pred) {
+            Some(p) => p,
+            None => return self.boundary_band_root_near(d_pre),
+        };
+        let in_region = |id: u32| -> bool {
+            matches!(self.min_dist.get(&(id as i32)), Some(&d) if d >= 1 && d <= cap)
+        };
+        let outside = |id: u32| -> bool {
+            match self.min_dist.get(&(id as i32)) {
+                Some(&d) => d > cap,
+                None => true,
+            }
+        };
+        let mut entry: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for (&child, ps) in parents.iter() {
+            if outside(child) {
+                for &p in ps {
+                    if in_region(p) {
+                        entry.insert(p);
+                    }
+                }
+            }
+        }
+        entry.into_iter().collect()
+    }
+
     /// Convenience: select the root-near band (`<= d_pre` hops from root, via
     /// `min_dist`) and precompute + install its suffix histograms. A harness calls
     /// this once at setup, after the graph (edges) and `min_dist` are loaded and
@@ -1176,6 +1226,83 @@ impl WamState {
         };
         self.boundary_suffix = table.into_iter().collect();
         Some(stats)
+    }
+
+    /// Build the pre-weighted `weighted_power(N)` basis (P4) from the current
+    /// `boundary_suffix` histograms: for each cached node B, collapse its
+    /// `node->root` histogram `H_B` into the basis vector
+    /// `g_B[a] = sum_b H_B[b] * (a+b)^(-N)`, for prefix length `a = 0..=max_depth`
+    /// (the L>0 weighted-power filter is automatic — B != root so every suffix
+    /// length `b >= 1`, hence `a+b >= 1`). A query that reaches B at prefix depth
+    /// `a` then adds `g_B[a]` to WeightSum directly. Requires `build_boundary_
+    /// suffix*` to have populated `boundary_suffix` first.
+    ///
+    /// **Budget precondition (the §4a "budget-specialised" mode).** `g_B` bakes the
+    /// path-length budget `max_depth` AND the functional `(N)` into a single scalar
+    /// per prefix length — it sums over suffix lengths `b` with `a+b <= max_depth`.
+    /// So it is valid ONLY for queries with the *same* fixed budget and the *same*
+    /// `N`. It CANNOT serve a query with a different/smaller max path length (those
+    /// suffixes were already summed in) or a different functional — for variable
+    /// budgets or multiple functionals, keep the histogram (`boundary_suffix`),
+    /// which preserves the length breakdown and can be re-truncated per query.
+    /// `g_B` is the fixed-budget, fixed-functional specialisation; the histogram is
+    /// the general form.
+    pub fn build_boundary_basis_weighted_power(&mut self, max_depth: usize, n: f64) {
+        let mut basis: HashMap<u32, Vec<f64>> = HashMap::new();
+        for (&node, hist) in self.boundary_suffix.iter() {
+            let mut g = vec![0.0f64; max_depth + 1];
+            for (b, &c) in hist.iter().enumerate() {
+                if c == 0 { continue; }
+                let cf = c as f64;
+                for a in 0..=max_depth {
+                    let l = a + b;
+                    if l == 0 || l > max_depth { continue; }
+                    g[a] += cf * (l as f64).powf(-n);
+                }
+            }
+            basis.insert(node, g);
+        }
+        self.boundary_basis_wp = basis.into_iter().collect();
+    }
+
+    /// Direct `weighted_power(N)` WeightSum via the pre-weighted basis (P4).
+    /// Walks `cat_id -> root` exactly like `collect_native_category_ancestor_
+    /// boundary_hist`, but instead of building a histogram it accumulates the
+    /// scalar WeightSum: at a node carrying a `g_B` basis vector, add `g_B[depth]`
+    /// (the dot-product splice) and stop; at the root, add `(depth+1)^(-N)`. With
+    /// an empty basis it degrades to full enumeration of the weighted sum (still
+    /// exact). Returns the same value as
+    /// `f_weighted_power(collect_native_category_ancestor_boundary_hist(..), n)`.
+    pub fn collect_native_category_ancestor_weightsum(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, n: f64, out: &mut f64,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        if let Some(g) = self.boundary_basis_wp.get(&cat_id) {
+            let a = depth as usize;
+            if a < g.len() {
+                *out += g[a];
+            }
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as f64;
+            *out += l.powf(-n);
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_weightsum(
+                *parent_id, root_id, visited, max_depth, acc, depth + 1, n, out);
+            visited.pop();
+        }
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
@@ -2412,6 +2539,99 @@ mod boundary_kernel_tests {
         let b = vm.intern_atom("1");
         assert!(vm.build_boundary_suffix_sweep(&[b], root, 8, "no_such_pred", 0, 0).is_none(),
                 "no eager table -> sweep is a no-op");
+    }
+
+    // The entry-frontier band is a thin cut (region surface, not volume) yet the
+    // splice through it still matches full enumeration for periphery seeds. Graph
+    // has a genuine periphery (nodes outside the root-near region).
+    #[test]
+    fn entry_frontier_band_is_thin_and_exact() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // core near root 0, plus a periphery (10,11,12) hanging off the core.
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "0"), ("3", "1"), ("4", "2"),
+            ("10", "3"), ("10", "4"), ("11", "3"), ("12", "10"),
+        ]);
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0",0),("1",1),("2",1),("3",2),("4",2),("10",3),("11",3),("12",4)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // d_pre=2: whole region is {1,2,3,4}; entry frontier is just {3,4}
+        // (the region nodes the periphery attaches to).
+        let region = vm.boundary_band_root_near(2);
+        let frontier = vm.boundary_band_entry_frontier(2, "category_parent");
+        assert!(frontier.len() < region.len(),
+            "entry frontier {} should be thinner than region {}", frontier.len(), region.len());
+        let mut fsorted = frontier.clone(); fsorted.sort();
+        let mut expect = vec![vm.intern_atom("3"), vm.intern_atom("4")]; expect.sort();
+        assert_eq!(fsorted, expect, "entry frontier should be exactly {{3,4}}");
+        // splice through the thin frontier == full enumeration for periphery seeds.
+        vm.build_boundary_suffix(&frontier, root, budget, "category_parent");
+        let pseeds: Vec<u32> = ["10", "11", "12"].iter().map(|s| vm.intern_atom(s)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for &s in &pseeds {
+            let mut fh = vec![]; let mut v = vec![s];
+            vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+            let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+            let mut bh = vec![]; let mut v2 = vec![s];
+            vm.collect_native_category_ancestor_boundary_hist(s, root, &mut v2, budget, &acc, 0, &mut bh);
+            let wsp = crate::boundary_cache::f_weighted_power(&bh, n);
+            assert!((wref - wsp).abs() < 1e-12, "frontier seed {}: {} != {}", s, wref, wsp);
+            assert!(wref > 0.0, "seed {} should reach root", s);
+        }
+    }
+
+    // P4: the pre-weighted weighted_power basis (g_B dot-product splice) yields the
+    // SAME WeightSum as the histogram-based weighted_power == full enumeration.
+    #[test]
+    fn weighted_power_basis_equals_histogram() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let seeds: Vec<u32> = ["5", "4", "3"].iter().map(|s| vm.intern_atom(s)).collect();
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            vm.build_boundary_basis_weighted_power(budget, n);
+            let acc = vm.resolve_edge_accessor("category_parent");
+            for &s in &seeds {
+                let mut fh = vec![];
+                let mut v = vec![s];
+                vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+                let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+                let mut ws = 0.0f64;
+                let mut v2 = vec![s];
+                vm.collect_native_category_ancestor_weightsum(s, root, &mut v2, budget, &acc, 0, n, &mut ws);
+                assert!((wref - ws).abs() < 1e-12,
+                    "basis {:?} seed {}: hist {} != basis {}", bnames, s, wref, ws);
+            }
+        }
+    }
+
+    // Empty basis -> the WeightSum kernel degrades to full enumeration (exact).
+    #[test]
+    fn weighted_power_basis_empty_is_full_enum() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let seeds: Vec<u32> = ["5", "4", "3"].iter().map(|s| vm.intern_atom(s)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for &s in &seeds {
+            let mut fh = vec![];
+            let mut v = vec![s];
+            vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+            let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+            let mut ws = 0.0f64;
+            let mut v2 = vec![s];
+            vm.collect_native_category_ancestor_weightsum(s, root, &mut v2, budget, &acc, 0, n, &mut ws);
+            assert!((wref - ws).abs() < 1e-12, "empty-basis seed {}: {} != {}", s, wref, ws);
+        }
     }
 
     // Shared precompute is eager-only: with no eager table it is a no-op (false).

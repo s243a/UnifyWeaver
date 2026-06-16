@@ -81,8 +81,8 @@ fn main() {
     let budget = 8usize;
     let n = 2.0f64;
     let edge_pred = "category_parent";
-    println!("{:<16} {:>4} {:>9} {:>9} {:>9} {:>9} {:>6} {:>7} {:>4}",
-        "config", "Dpre", "prod_ms", "bound_ms", "pre_ms", "speedup", "band", "peakR", "eq");
+    println!("{:<16} {:>4} {:>9} {:>9} {:>9} {:>9} {:>7} {:>7} {:>4}",
+        "config", "Dpre", "prod_ms", "bound_ms", "pre_ms", "speedup", "region", "front", "eq");
     for (core, periph, cp) in [(120u32, 500u32, 3usize), (180, 500, 3), (240, 500, 3)] {
         let (edges, seed_ids) = build(core, periph, cp, 42);
         let md_num = min_dist_to_root(&edges, 0);
@@ -110,9 +110,12 @@ fn main() {
             (t.elapsed().as_secs_f64() * 1e3, sa)
         };
         for dpre in [1usize, 2, 3, 4] {
-            let band = vm.boundary_band_root_near(dpre);
+            // entry-frontier band (thin cut) vs the whole root-near region.
+            let region_sz = vm.boundary_band_root_near(dpre).len();
+            let band = vm.boundary_band_entry_frontier(dpre, edge_pred);
+            let front_sz = band.len();
             let pre = Instant::now();
-            let stats = vm.build_boundary_suffix_sweep(&band, root, budget, edge_pred, 0, 0).unwrap();
+            vm.build_boundary_suffix_sweep(&band, root, budget, edge_pred, 0, 0).unwrap();
             let tpre = pre.elapsed().as_secs_f64() * 1e3;
             let (tb, sb) = {
                 let acc = vm.resolve_edge_accessor(edge_pred);
@@ -127,8 +130,8 @@ fn main() {
                 (t.elapsed().as_secs_f64() * 1e3, sb)
             };
             let eq = (sa - sb).abs() < 1e-6 * sa.abs().max(1.0);
-            println!("core={:<4} cp={:<2}    {:>4} {:>9.2} {:>9.3} {:>9.3} {:>8.1}x {:>6} {:>7} {:>4}",
-                core, cp, dpre, ta, tb, tpre, ta / tb, stats.retained, stats.peak_resident,
+            println!("core={:<4} cp={:<2}    {:>4} {:>9.2} {:>9.3} {:>9.3} {:>8.1}x {:>7} {:>7} {:>4}",
+                core, cp, dpre, ta, tb, tpre, ta / tb, region_sz, front_sz,
                 if eq { "yes" } else { "NO!" });
         }
     }

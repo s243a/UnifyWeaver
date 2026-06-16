@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -313,8 +313,27 @@ Phasing:
   invariant, guarded by `tests/test_wam_rust_boundary_integrated_scale.pl`). The
   shallow crossover confirms philosophy §3 (Python overhead had masked it). Boundary-
   hit-fraction vs `D_pre` and the LMDB-lazy-path variant remain to be measured.
-- **P4 — storage-gated approximate/specialised bases** (`g_B` dot-product for hot
-  functionals; fitted forms when a basis exceeds the storage budget).
+- **P4 — storage-gated approximate/specialised bases.**
+  - **`g_B` pre-weighted basis [DONE].** `build_boundary_basis_weighted_power(max_depth,
+    n)` collapses each cached histogram into `g_B[a] = Σ_b H_B[b]·(a+b)^(-N)`, and
+    `collect_native_category_ancestor_weightsum` accumulates WeightSum directly (a
+    dot-product splice — no convolution, no final `powf` loop). **Budget precondition
+    (§4a "budget-specialised"):** `g_B` bakes in the budget and `N`, so it serves
+    only queries with that *same fixed* budget and functional; variable budgets /
+    multiple functionals keep the histogram (`boundary_suffix`), the general
+    budget-flexible form. Validated `g_B` WeightSum == histogram `weighted_power` ==
+    full enumeration.
+  - **Entry-frontier band [DONE].** `boundary_band_entry_frontier(d_pre, edge_pred)`
+    caches only the region's *surface* — nodes with `1 ≤ min_dist ≤ d_pre` that have a
+    child *outside* the region — instead of the whole `boundary_band_root_near`
+    *volume*. Since the kernel splices at the first cached node and stops, periphery
+    seeds only use this cut, so storage scales with the region surface, not the
+    cumulative root-near node count (measured: band 38–83 vs region 313–711 at the
+    same `D_pre`, same-order speedup at the intended periphery-seed operating point).
+    Any band is exact, so this is a storage/coverage choice. The whole-region band
+    remains for maximal coverage when storage is not the constraint.
+  - **Fitted forms [next].** binomial / discretised-GMM bases when a basis exceeds the
+    storage budget (per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
 
 ## 6. What to measure (re-derive, don't inherit)
 
