@@ -397,6 +397,28 @@ that certified bound for the affected nodes only). For typical small-budget boun
 histograms (support ≤ `budget`+1) the work trigger never fires; this matters at
 **large budget / deep paths**.
 
+### 9b. Remaining ladder rungs (future work)
+
+The error/CDF-gate machinery, the chooser (error- and storage-driven), and the
+persistence path are general — adding a representation is just another candidate in
+`representation_candidates` with a `bytes()` and a `pmf()`/`expand()`. Not yet
+implemented, in rough priority order:
+
+- **Quantised CDF table** — one monotone fixed-point CDF value per retained point
+  (16-bit → error ≤ `2^-16`). Best when prefix-mass / range queries dominate (O(1)
+  reads); a natural fit for the `cdf`/`quantile` result modes (§5).
+- **Beta-binomial** — `(D, α, β)`; the first upgrade when a node is *over-dispersed*
+  for a plain binomial (the CLT regime hasn't fully kicked in). Cheap params, same
+  CDF/W1 gate.
+- **Discretised Gaussian mixture** — `(weight, mean, variance)` per mode; the
+  **escalation-only** family for sharp/narrow modes that the binomial mixture fits
+  poorly. Continuous prior on discrete data, more params per mode — used only after
+  the binomial family fails the gate.
+
+Each rung is justified by **storage at a tolerance**, never compute (the exact
+splice is ~ns), so they are added on demand as large-budget / deep-path workloads
+appear.
+
 ## 10. Non-goals (this spec)
 
 - Changing the production kernel or the default (un-optimized) semantics.
