@@ -80,3 +80,66 @@ peak resident memo entries; `eq` = boundary aggregate == production exactly.
 
 Guarded by `tests/test_wam_rust_boundary_integrated_scale.pl` (the exact-match
 invariant at a moderate synthetic scale, deterministic / debug).
+
+## Addendum — entry-frontier band vs whole region (storage)
+
+The original table used `boundary_band_root_near(D_pre) = {1 ≤ min_dist ≤ D_pre}`,
+the **whole** root-near region. That `band` column grows with the *cumulative*
+node count (313, 599, 711 …) — it caches the region's *volume*. But the boundary
+kernel splices at the **first** cached node a seed reaches and stops, so a periphery
+seed only ever uses the region's **entry frontier** (region nodes with a child
+*outside* the region). `boundary_band_entry_frontier(D_pre, edge_pred)` caches just
+that cut — the region's *surface*:
+
+```
+config           Dpre   prod_ms  bound_ms    pre_ms   speedup  region   front   eq
+core=120  cp=3      1     18.06     5.602     0.052      3.2x       8       8  yes
+core=120  cp=3      2     18.06     0.728     0.108     24.8x      65      38  yes
+core=120  cp=3      3     18.06     2.191     0.130      8.2x     313      38  yes
+core=120  cp=3      4     18.06    11.292     0.094      1.6x     599       8  yes
+core=240  cp=3      2     23.64     1.477     0.179     16.0x      71      51  yes
+core=240  cp=3      3     23.64     1.179     0.233     20.0x     335      83  yes
+core=240  cp=3      4     23.64    14.913     0.161      1.6x     711      10  yes
+```
+
+`region` = whole-region band size; `front` = entry-frontier band size.
+
+**Findings.**
+
+- The entry frontier is the **thin cut** the design intends: at the intended
+  operating point (`D_pre=2`, where most seeds are still in the *periphery*, outside
+  the region) it gets ~16–25× with a band of 38–51 vs the region's 65–71 — same
+  order of speedup, a fraction of the storage. This is the fix for the
+  region-band "blowing up" with cumulative node count.
+- At large `D_pre` the speedup *falls* (8.2×, then 1.6×) — and that is the lesson,
+  not a regression: once `D_pre` is large enough that the region has swallowed the
+  periphery (`region` ≈ all 620 nodes), there is almost nothing *outside* it, so the
+  frontier collapses (8–10 nodes) and the now-in-region seeds enumerate the dense
+  interior cone the frontier does not cache. **A boundary cache wants seeds in the
+  periphery**: pick `D_pre` so the frontier sits between the seeds and the dense
+  core. The whole-region band hides this by caching the interior too — at a storage
+  cost that grows with the graph.
+- Correctness is unchanged (`eq = yes` throughout): any band is exact for the
+  splice, so the region-vs-frontier choice is purely a storage/coverage tradeoff.
+
+So `boundary_band_entry_frontier` is the storage-efficient default for the boundary-
+cache regime; `boundary_band_root_near` remains available when maximal coverage
+(caching the interior too) is wanted and storage is not the constraint.
+
+## Addendum — pre-weighted basis `g_B` (P4) and its budget precondition
+
+For a **fixed** functional and budget, each cached histogram `H_B` collapses to a
+single fixed-length vector `g_B[a] = Σ_b H_B[b]·(a+b)^(-N)` (prefix length `a`);
+a query reaching `B` at depth `a` adds `g_B[a]` to WeightSum directly — a
+dot-product splice that skips the histogram convolution and the final `powf` loop
+(`build_boundary_basis_weighted_power` / `collect_native_category_ancestor_weightsum`).
+
+**Precondition (plan §4a "budget-specialised").** `g_B` bakes the path-length budget
+and `N` into each scalar (it pre-sums suffixes with `a+b ≤ max_depth`), so it is
+valid only for queries with that *same fixed budget and N*. It cannot serve a query
+with a different/smaller max path length, nor a different functional — those need
+the **histogram** (`boundary_suffix`), which preserves the length breakdown and can
+be re-truncated per query. `g_B` is the fixed-budget/fixed-functional specialisation;
+the histogram is the general, budget-flexible form. (Validated:
+`weighted_power_basis_equals_histogram` — `g_B` WeightSum == histogram
+`weighted_power` == full enumeration, same fixed budget.)
