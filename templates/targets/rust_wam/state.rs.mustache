@@ -925,6 +925,40 @@ impl WamState {
         self.boundary_suffix = table.into_iter().collect();
     }
 
+    /// Select the root-near boundary band from the distance-to-root table
+    /// (`min_dist`): every node `n` with `1 <= min_dist(n) <= d_pre`. This is the
+    /// band the boundary-distribution optimization wants (philosophy/spec §3):
+    /// value concentrates near the root, where the cone is largest and reuse
+    /// highest. Requires `min_dist` to be populated (loaded at setup like `s2i`);
+    /// returns an empty band otherwise, which makes the kernel degrade to full
+    /// enumeration (still correct). Excludes the root itself (`min_dist == 0`).
+    ///
+    /// Correctness note: any band is exact for the splice (each node's cached
+    /// suffix is its true node->root histogram and the kernel splices at the FIRST
+    /// band node it reaches, then stops), so the root-near choice is a
+    /// coverage/performance decision, not a correctness one. See
+    /// WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8.
+    pub fn boundary_band_root_near(&self, d_pre: usize) -> Vec<u32> {
+        let cap = d_pre as i32;
+        self.min_dist.iter()
+            .filter(|(_, &d)| d >= 1 && d <= cap)
+            .map(|(&n, _)| n as u32)
+            .collect()
+    }
+
+    /// Convenience: select the root-near band (`<= d_pre` hops from root, via
+    /// `min_dist`) and precompute + install its suffix histograms. A harness calls
+    /// this once at setup, after the graph (edges) and `min_dist` are loaded and
+    /// before queries, to populate the boundary cache the lowered
+    /// category_ancestor_boundary kernel splices against. With an empty `min_dist`
+    /// (no band) it is a no-op and the kernel runs by full enumeration.
+    pub fn build_boundary_suffix_root_near(
+        &mut self, root_id: u32, d_pre: usize, max_depth: usize, edge_pred: &str,
+    ) {
+        let band = self.boundary_band_root_near(d_pre);
+        self.build_boundary_suffix(&band, root_id, max_depth, edge_pred);
+    }
+
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
     /// node id as the raw LMDB key directly, bypassing the wam<->lmdb maps.
     /// For int-native fixtures (raw page-id seeds/root/graph, no s2i).
@@ -2016,5 +2050,54 @@ mod boundary_kernel_tests {
             let spl = norm(boundary_hist(&vm, seed, root, budget));
             assert_eq!(full, spl, "budget {}", budget);
         }
+    }
+
+    // P2c-wiring/precompute: the root-near band is *selected* from the
+    // distance-to-root table (min_dist), and precomputing over that band yields a
+    // populated side-table whose splice matches full enumeration.
+    #[test]
+    fn root_near_band_selection_and_precompute() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        // distance-to-root for the DAG (5->2->0 makes min_dist(5)=2):
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0", 0), ("1", 1), ("2", 1), ("3", 2), ("4", 2), ("5", 2)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // d_pre = 1 selects exactly the root-near band {1, 2}.
+        let n1 = vm.intern_atom("1");
+        let n2 = vm.intern_atom("2");
+        let mut band = vm.boundary_band_root_near(1);
+        band.sort();
+        let mut expect = vec![n1, n2];
+        expect.sort();
+        assert_eq!(band, expect, "root-near band (d_pre=1) should be {{1,2}}");
+        // d_pre = 2 widens to the whole upper cone {1,2,3,4,5}.
+        assert_eq!(vm.boundary_band_root_near(2).len(), 5, "d_pre=2 selects 5 nodes");
+        // precompute over the selected band; the splice must match full enumeration.
+        let full = norm(full_hist(&vm, seed, root, budget));
+        vm.build_boundary_suffix_root_near(root, 1, budget, "category_parent");
+        assert!(!vm.boundary_suffix.is_empty(), "side-table should be populated");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "root-near splice must match full enumeration");
+    }
+
+    // Empty min_dist -> empty band -> no-op precompute -> kernel degrades to full
+    // enumeration (still correct).
+    #[test]
+    fn empty_min_dist_band_is_noop() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        assert!(vm.boundary_band_root_near(3).is_empty(), "no min_dist -> empty band");
+        let full = norm(full_hist(&vm, seed, root, budget));
+        vm.build_boundary_suffix_root_near(root, 3, budget, "category_parent");
+        assert!(vm.boundary_suffix.is_empty(), "empty band -> empty side-table");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "no-op precompute still correct (full enumeration)");
     }
 }

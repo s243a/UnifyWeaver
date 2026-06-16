@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -251,20 +251,32 @@ Phasing:
     precompute — with an empty side-table the kernel degrades to full enumeration
     (still correct), so the lowering is correct by default and the speedup is
     unlocked once boundary nodes are precomputed.
-  - **P2c-wiring/precompute [next].** Choose *which* boundary nodes to precompute
-    (root-near band per §3) and populate the side-table at setup — the step that
-    turns the correct-but-unaccelerated lowering into the measured speedup — then an
-    end-to-end LMDB run. Run the precompute as a root-down topological sweep with the
-    **liveness-prioritised eviction** of spec §8a: eviction from the side-table /
-    `boundary_basis` LMDB sub-db is triggered by a **memory/storage budget**, and the
-    consumer-count liveness signal supplies the *priority order* — dead interior
-    nodes (`refs = 0 ∧ p ∉ Bset`) first and **deepest-first within that class** (root-
-    near distributions are the most-reused hubs, most likely to be hit by a second
-    query, so keep them longer), live interior scratch next, the retained boundary
-    band last (spilled to LMDB, not dropped). This bounds the resident working set
-    under pressure toward the cone's frontier width plus the band, biased to retain
-    the root-near end, and is correctness-preserving (evicted entries are dead or
-    recomputable).
+  - **P2c-wiring/precompute/selection [DONE].** Band *selection* is now automatic:
+    `WamState::boundary_band_root_near(d_pre)` reads the distance-to-root table
+    (`min_dist`, loaded at setup like `s2i`) and returns the root-near band
+    `{ n : 1 <= min_dist(n) <= d_pre }` (§3); `build_boundary_suffix_root_near(root,
+    d_pre, max_depth, edge_pred)` selects that band and precomputes + installs its
+    suffix histograms in one call — the setup hook a harness calls after edges +
+    `min_dist` are loaded. An empty `min_dist` yields an empty band → full
+    enumeration (still correct). Unit tests (`boundary_kernel_tests`): the selection
+    matches the expected band, the precompute populates the side-table, and the
+    splice matches full enumeration; the lowering exec test
+    (`test_wam_rust_boundary_lowering.pl`) drives the emitted 3-ary wrapper through
+    the root-near selection path end-to-end. Any band is exact for the splice
+    (kernel splices at the first band node and stops), so root-near is a
+    coverage/performance choice, not a correctness one.
+  - **P2c-wiring/precompute/eviction [next].** Run the precompute as a root-down
+    topological sweep with the **liveness-prioritised eviction** of spec §8a:
+    eviction from the side-table / `boundary_basis` LMDB sub-db is triggered by a
+    **memory/storage budget**, and the consumer-count liveness signal supplies the
+    *priority order* — dead interior nodes (`refs = 0 ∧ p ∉ Bset`) first and
+    **deepest-first within that class** (root-near distributions are the most-reused
+    hubs, most likely to be hit by a second query, so keep them longer), live
+    interior scratch next, the retained boundary band last (spilled to LMDB, not
+    dropped). This bounds the resident working set under pressure toward the cone's
+    frontier width plus the band, biased to retain the root-near end, and is
+    correctness-preserving (evicted entries are dead or recomputable). Then an
+    end-to-end LMDB run.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.

@@ -5778,9 +5778,11 @@ rust_boundary_wrapper_code(Pred, Kernel, Code) :-
 /// Upgraded from a detected category_ancestor kernel by
 /// boundary_optimization(true). Register parent edges on the VM first
 /// (register_ffi_fact_pairs or a lazy lookup source); precompute the
-/// boundary side-table with vm.build_boundary_suffix to unlock the
-/// splice speedup (an empty side-table degrades to full enumeration,
-/// still correct).
+/// boundary side-table to unlock the splice speedup — call
+/// vm.build_boundary_suffix_root_near(root, d_pre, max_depth, edge_pred)
+/// after loading min_dist to pick + precompute the root-near band, or
+/// vm.build_boundary_suffix(band, ..) for an explicit band. An empty
+/// side-table degrades to full enumeration (still correct).
 pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.code = Vec::new();
     vm.labels = std::collections::HashMap::new();
