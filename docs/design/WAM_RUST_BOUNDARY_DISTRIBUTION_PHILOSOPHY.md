@@ -80,16 +80,22 @@ Both the scalar and distribution results emit through the existing
 no new result machinery. Designing for "scalar only" would be a premature
 specialisation that the distribution output rightly rejects.
 
-More precisely (see the specification §1): the fundamental object is not "a
-histogram" but **a form from which we can read a PMF or CDF** — i.e. the *mass
-between two points* (a **sum** for a discrete histogram, an **integral** for a
-continuous one). A scalar aggregate, the distribution itself, a CDF, a quantile,
-or a windowed/truncated mass are all reads of that form. Discreteness is a
-computational convenience (it makes the splice an FFT-able convolution), not
-intrinsic; at very large scale a continuous/parametric form convolves by parameter
-arithmetic and answers ranges from a closed-form CDF — so the spec is written
-against the *form*, with the discrete histogram as the exact default and a
-continuous/cumulative form as the large-scale / O(1)-read alternative.
+More precisely (see the specification §1): the fundamental object is, in general,
+a **measure over the path-length variable** — the thing that assigns a *weight to
+an interval* of lengths (a **sum** for a discrete/atomic measure, an **integral**
+for a continuous one). A scalar aggregate, the distribution itself, a CDF, a
+quantile, or a windowed/truncated mass are all reads of that measure. This is the
+right abstraction precisely because it gives clean **interface hooks**
+(`interval_mass`, `atom_mass`, splice, truncate) independent of representation, and
+because it handles the awkward cases honestly: an atom / delta on an interval
+endpoint is resolved by a right-continuous CDF (`interval_mass((a,b]) = F(b)−F(a)`,
+`atom_mass(x) = F(x)−F(x⁻)`), so "centered/left/right" point masses are explicit
+rather than ambiguous. Discreteness is a computational convenience (it makes the
+splice an FFT-able convolution), not intrinsic; at very large scale a
+continuous/parametric measure convolves by parameter arithmetic and answers
+interval reads from a closed-form CDF — so the spec is written against the
+*measure*, with the discrete histogram the exact default and continuous/cumulative
+the large-scale / O(1)-read alternatives.
 
 ## 5. Principles
 

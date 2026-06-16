@@ -4,68 +4,134 @@ Precise semantics of the boundary distribution optimization. See
 `WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` (rationale) and
 `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phasing/status).
 
-## 1. The object: a path-length distribution *form*
+## 1. The object: a measure over path length
 
-The fundamental cached object is not "a histogram" specifically — it is a
-**path-length distribution form**: any representation from which we can compute
-the **mass between two lengths** (the PMF/CDF). The one operation everything else
-is built on is
+The cached object is, in general, a **measure** `μ` over the path-length variable
+`ℓ` (the single variable here being the seed→root path length). A measure assigns
+a non-negative **weight to a set** of lengths; everything the optimization needs is
+a *read* of `μ`. This is the abstraction the implementation should expose as an
+**interface** (the hooks), with the concrete representation behind it. It subsumes
+the cases under one idea:
+
+- a **discrete histogram** is an *atomic* measure — a sum of point masses at
+  integer lengths;
+- a **continuous approximation** is an *absolutely-continuous* measure — a density
+  integrated;
+- a **single deterministic length** is a *Dirac* point mass;
+- mixtures of the above are measures too.
+
+### 1a. The interface (one canonical read, and the endpoint care)
+
+Domain: path length `ℓ ∈ [0, budget]` (a non-root seed has `ℓ ≥ 1`; `ℓ = 0` only at
+the root). The interface is defined against a **right-continuous CDF**
+`F(x) = μ([0, x])` (so `F` *includes* the atom at `x`). There is **one canonical
+read** — the half-open interval mass — plus the atom jump:
 
 ```
-range_mass(a, b) = (sum or integral) over [a, b] of the path-length distribution
+interval_mass(a, b) := μ((a, b]) = F(b) − F(a)     // THE method; half-open (a, b] by convention
+atom_mass(x)        := F(x) − F(x⁻)                // the point mass AT x (0 if no atom)
+total_mass          := F(budget)
 ```
 
-— a *sum* for a discrete form, an *integral* for a continuous one. From
-`range_mass` (equivalently, a cumulative `F(x) = range_mass(0, x)` and its
-differences) we get the PMF, the CDF, any bounded/constrained functional, and the
-truncations below. A concrete `H` (histogram) is the default backing, but the
-spec is written against the *form*, so a continuous or transformed backing drops
-in without changing the consumers.
+— a *sum* for an atomic (discrete) measure, an *integral* for a continuous one.
+`interval_mass(a, b)` **always** means `(a, b]`; the closed and other variants are
+*derived*, never second signatures:
 
-### 1a. Backing forms (representations)
+```
+closed_interval_mass(a, b) = interval_mass(a, b) + atom_mass(a)   // [a, b]
+```
 
-| form | `range_mass` | splice (compose over a cut) | when |
-|------|--------------|------------------------------|------|
-| **discrete histogram** (PMF) `H[L]:u64` | partial sum | convolution — O(m²) direct, **O(m log m) FFT** | default; exact; small/medium support |
+**The delta-function caveat, resolved.** A point mass on an endpoint is no longer
+ambiguous: it belongs to the side the half-open convention assigns, and its own
+mass is `atom_mass`. In the discrete case the mass at integer `L` is
+`interval_mass(L−1, L) = F(L) − F(L−1)`. **Invariant:** for a non-root seed
+`atom_mass(0) = 0` (no zero-length path), so `total_mass = interval_mass(0, budget)`
+— stated rather than assumed, so the half-open default never silently drops a
+future zero-length atom.
+
+`truncate(μ, lo, hi)` is the **unnormalized** restriction of `μ` to `[lo, hi]`
+(mass outside the window set to 0); renormalisation to a *conditional* measure, if
+ever wanted, is a **separate** operation. `splice` is convolution (§3).
+
+**Interface sketch (illustrative, not final):**
+
+```rust
+trait Measure {
+    fn interval_mass(&self, a: i64, b: i64) -> f64;  // μ((a,b]); f64 — real mass, not raw u64 counts
+    fn atom_mass(&self, x: i64) -> f64;              // F(x) − F(x⁻)
+    fn total_mass(&self) -> f64;
+    fn truncate(&self, lo: i64, hi: i64) -> Self;    // unnormalized restriction to [lo, hi]
+    // NOTE: splice is deliberately NOT a Self×Self→Self method here. Convolving a
+    // histogram with a parametric measure yields a *third* representation, so the
+    // composition is a separate combinator with its own output type (§3), not a
+    // trait method — this is the associated-type seam to decide at implementation.
+}
+```
+
+The return type is `f64` (real mass) even for the discrete histogram (whose raw
+counts are `u64`): mass is a measure value, and continuous / normalised backings
+need reals. A single `cdf(x)` primitive could derive `interval_mass` and
+`atom_mass` as thin helpers — fewer methods to keep coherent, and `atom_mass`
+returns `0` on a continuous backing with no special path. We keep both explicit for
+efficiency (a histogram answers a window with one partial-sum, not two CDF
+evaluations) and clarity; an implementation MAY back them with a single `cdf`.
+
+### 1b. Backing representations (concrete measures)
+
+| representation | `interval_mass` | splice (compose over a cut) | when |
+|----------------|-----------------|------------------------------|------|
+| **discrete histogram** (atomic) `H[L]:u64` | partial sum | convolution — O(m²) direct, **O(m log m) FFT** | default; exact; small/medium support |
 | **continuous / parametric** (density: normal, binomial, GMM…) | integral / closed-form CDF | parameter arithmetic (e.g. variances add) — often O(1) | **very large scale**, where the discrete grid is the cost; approximate |
-| **cumulative / transformed** (CDF table, or a pre-weighted basis `g_B`) | O(1) difference of cumulatives | depends; for a fixed functional the basis is a dot product (~1 ns) | hot `(functional, budget)`; O(1) range queries |
-| **truncated** (any of the above restricted to `[lo, hi]`) | as parent | as parent | constrained functionals (budget caps, thresholds) need only the relevant window — still a valid form |
+| **cumulative / transformed** (CDF table, or a pre-weighted basis `g_B`) | O(1) difference of cumulatives | depends; for a fixed functional the basis is a dot product (~1 ns) | hot `(functional, budget)`; O(1) reads |
+| **Dirac / truncated** (a point mass, or any of the above restricted to `[lo, hi]`) | trivial / as parent | trivial / as parent | a deterministic length; constrained functionals (budget caps, thresholds) need only the relevant window — still a measure |
 
 Discreteness is a *computational* choice (it makes the splice an FFT-able
 convolution); it is not intrinsic. At very large scales a continuous/parametric
-form convolves by parameter arithmetic and answers range queries from a closed-form
-CDF, avoiding the grid entirely — at the cost of being approximate (gated on a
-CDF/W1 error bound, per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
+measure convolves by parameter arithmetic and answers interval reads from a
+closed-form CDF, avoiding the grid entirely — at the cost of being approximate
+(gated on a CDF/W1 error bound, per `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
 
-- **Boundary set** `Bset ⊆ V`: nodes near the root at which suffix forms are
-  cached. The default backing is `boundary_suffix: FxMap<u32, Vec<u64>>` on
-  `WamState` (each boundary node `B` → `H_B→root`); an alternate backing stores a
-  CDF/basis/parametric form instead.
+- **Boundary set** `Bset ⊆ V`: nodes near the root at which suffix measures are
+  cached. The current backing is `boundary_suffix: FxMap<u32, Vec<u64>>` on
+  `WamState` (each boundary node `B` → `H_B→root`) — which holds **only** the exact
+  discrete histogram. Supporting the non-discrete §1b backings means the value type
+  must evolve into an enum or boxed `dyn Measure`, e.g.
+  `enum MeasureBacking { Histogram(Vec<u64>), Cdf(Box<[f64]>), Parametric(Params), Dirac(i64) }`.
+  `FxMap<u32, Vec<u64>>` is the exact-discrete case, not a universal backing.
 - **Budget** `max_depth: usize`: the path-length bound, as in the production
   `category_ancestor` kernel.
 
-## 2. Aggregate functionals (range/cumulative reads of the form)
+## 2. Aggregate functionals (weighted reads of the measure)
 
-A functional is a weighted sum/integral over the distribution — i.e. a read of the
-form:
+(Terminology bridge: "form", "histogram", and "distribution" in this and later
+sections all denote a concrete §1b backing of the **measure** μ of §1; the
+functionals and result modes are defined against the measure interface of §1a.)
+
+A functional is a weighted integral over the measure — `∫ w(ℓ) dμ(ℓ)` — which for
+the discrete backing is a weighted sum:
 
 ```
-f = Σ_L w(L) · H[L]   (discrete)   or   ∫ w(ℓ) dH(ℓ)   (continuous)
-  mass           : w = 1                  (= range_mass(0, budget))
+f = ∫ w(ℓ) dμ(ℓ)   =   Σ_L w(L) · μ{L}   (discrete: μ{L} is the atom at L)
+  mass           : w = 1                  (= total_mass = interval_mass(0, budget))
   moment1        : w(L) = L
   weighted_power : w(L) = L^(-N)  (L>0)    -> WeightSum; d_eff = WeightSum^(-1/N)
-  bounded variants: integrate w only over [lo, hi]  (the truncated form suffices)
+  bounded variants: integrate w only over [lo, hi]  (truncate(μ, lo, hi) suffices)
 ```
 
-Linearity makes the splice exact for *all* functionals at once, so the form is
+Linearity makes the splice exact for *all* functionals at once, so the measure is
 cached once and read many ways (`boundary_cache::{f_mass,f_moment1,f_weighted_power}`,
-or `range_mass` for arbitrary windows). A **pre-weighted cumulative basis** `g_B`
-(the "transformed form") folds `w` into the cached object so the read is a dot
+or `interval_mass` for arbitrary windows). A **pre-weighted cumulative basis** `g_B`
+(the "transformed" backing) folds `w` into the cached object so the read is a dot
 product — the right backing when one `(functional, budget)` dominates.
 
 ## 3. The splice identity
 
-For any cut node `B` on a seed→root path, lengths add, so histograms convolve:
+The splice is, representation-independently, the **convolution of two measures**
+`μ_seed→root = μ_seed→B ∗ μ_B→root` (path lengths add, so the measure of the sum is
+the convolution). Its realization depends on the §1b backing: for the discrete
+histogram it is histogram convolution (below); for a parametric measure it is
+parameter arithmetic (e.g. normal variances add) — same identity, different cost.
+The discrete realization:
 
 ```
 H_seed→root[L] = Σ_{a+b=L} H_seed→B[a] · H_B→root[b]
@@ -99,26 +165,28 @@ Conformance is verified against the production kernel
 
 ## 5. Result modes (the output family)
 
-The boundary kernel produces the **form** (default: `H`); a **result extractor**
-reads it into the foreign predicate's result. All use the existing
+The boundary kernel produces the **measure** μ (default backing: `H`); a **result
+extractor** reads it into the foreign predicate's result. All use the existing
 `finish_foreign_results` **`deterministic`** mode (one result, no choice point,
 `tuple(1)` layout):
 
-| mode | result `Value` | extractor (a read of the form) |
-|------|----------------|--------------------------------|
-| `scalar(functional)` | `Float`/`Integer` | `f` = weighted sum/integral (e.g. `weighted_power`) |
+| mode | result `Value` | extractor (a read of μ, per §1a) |
+|------|----------------|-----------------------------------|
+| `scalar(functional)` | `Float`/`Integer` | `f` = `∫ w dμ` (e.g. `weighted_power`) |
 | `effective_distance` | `Float` | `WeightSum^(-1/N)` |
-| `distribution` | `List` of counts (PMF) — or the parametric/CDF encoding for a non-discrete backing | the form itself (possibly truncated) |
-| `range_mass(a, b)` | `Float`/`Integer` | `range_mass(a, b)` — sum/integral between two lengths |
-| `cdf(x)` / `quantile(p)` | `Float`/`Integer` | cumulative reads of the form |
+| `distribution` | `List` of counts (PMF) — or the parametric/CDF encoding for a non-discrete backing | μ itself (possibly truncated) |
+| `interval_mass(a, b)` | `Float` | `interval_mass(a, b) = μ((a, b])` (§1a; half-open) |
+| `cdf(x)` / `quantile(p)` | `Float` | cumulative reads of μ |
 
-This is the generalisation the histogram/PMF-vs-CDF view makes explicit: the
-result is *any* read of the distribution form. `distribution` returns the whole
-thing (for downstream distribution-compression consumers); `scalar` an aggregate;
-`range_mass`/`cdf`/`quantile` are the "mass between two points" reads (a single
-sum/integral, or an O(1) difference when the cached backing is already a cumulative
-/ CDF form). Each is a new extractor over the same form, not new kernel work — and
-for the cumulative/parametric backings the read is O(1).
+This is the generalisation the measure view makes explicit: the result is *any*
+read of μ. `distribution` returns the whole measure (for downstream
+distribution-compression consumers); `scalar` an aggregate; `interval_mass` /
+`cdf` / `quantile` are the §1a interval/cumulative reads (a single sum/integral, or
+an O(1) difference when the cached backing is already a cumulative/CDF form). Each
+is a new extractor over the same measure, not new kernel work — and for the
+cumulative/parametric backings the read is O(1). (`interval_mass` here is the §1a
+method; the half-open `(a, b]` convention applies, so this mode is unambiguous at
+its endpoints.)
 
 ## 6. Foreign-predicate interface
 
@@ -128,11 +196,11 @@ result mode `deterministic`, layout `tuple(1)`. Configuration via the existing
 `register_foreign_*_config` channels:
 
 - `edge_pred` (e.g. `category_parent`), `max_depth`, `root`.
-- `result_extractor`: `histogram | scalar(weighted_power(N)) | effective_distance(N) | …`.
+- `result_extractor` (the §5 modes): `distribution | scalar(weighted_power(N)) | effective_distance(N) | interval_mass(a,b) | cdf(x) | …`.
 
 Args (illustrative): `category_ancestor_boundary(Seed, Out)` with `Root`,
 `MaxDepth`, and the extractor bound by config; `Out` unifies with the scalar or the
-histogram list.
+distribution list (PMF counts), per the chosen `result_extractor`.
 
 ## 7. Eligibility (what the optimization recognises)
 
