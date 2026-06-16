@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1 DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -344,10 +344,18 @@ Phasing:
     `WamState::compress_boundary_suffix`. Tail-pruned-exact is rung 1 (the dropped
     fraction *is* the Kolmogorov error). OPT-IN: the cache stays exact unless called;
     triggers only for large-budget/deep-path histograms (support > min_points).
-  - **Fitted forms [next].** binomial / beta-binomial / mixture-of-binomials bases
-    (discretised-GMM as escalation only), same CDF/W1 gate, when an exact or
-    tail-pruned histogram still exceeds the storage budget (per
-    `DISTRIBUTIONAL_COMPRESSION_THEORY.md`).
+  - **Approximation ladder, rung 2 — parametric binomial [DONE].** `fit_binomial`
+    (method of moments), `binomial_pmf` (stable recurrence), a `HistRepr`
+    (`Exact` | `Binomial`) with `bytes`/`pmf`/`expand`, and `choose_representation`
+    — the cheapest representation (exact / tail-pruned / binomial) within the `ε_K`
+    CDF certificate (mirrors Python `choose_distribution_representation`). The gate
+    is a hard reject: validated that a true binomial is fit + chosen (smaller) and a
+    bimodal histogram is rejected back to exact. Bounded integer path-length data
+    favour binomials.
+  - **Fitted forms [next].** beta-binomial (over-dispersion) and
+    mixture-of-binomials (EM), discretised-GMM as escalation only, same CDF/W1 gate;
+    plus wiring `choose_representation` into the persisted `boundary_basis` (store
+    binomial params, `expand` on load) to realise the storage win end-to-end.
 
 ## 6. What to measure (re-derive, don't inherit)
 
