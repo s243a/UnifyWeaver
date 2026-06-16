@@ -143,6 +143,43 @@ fn wrapper_matches_production() {
         checked += 1;
     }
     assert_eq!(checked, 6);
+}
+
+// Same wrapper, but the side-table is populated via the root-near SELECTION path
+// (set_min_dist + build_boundary_suffix_root_near) rather than an explicit band.
+#[test]
+fn wrapper_with_root_near_precompute() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    vm.register_ffi_fact_pairs("bcat_parent", &[
+        ("5","4"),("5","2"),("4","3"),("4","1"),("3","1"),("3","2"),
+        ("1","0"),("2","0"),("6","5"),("7","4"),("8","6"),("8","7"),
+    ]);
+    let root = vm.intern_atom("0");
+    let budget = 10usize;
+    let n = 2.0f64;
+    // distance-to-root for the graph.
+    let mut md: HashMap<i32, i32> = HashMap::new();
+    for (name, d) in [("0",0),("1",1),("2",1),("3",2),("4",2),("5",2),("6",3),("7",3),("8",4)] {
+        md.insert(vm.intern_atom(name) as i32, d);
+    }
+    vm.set_min_dist(&md);
+    // pick + precompute the root-near band (<= 2 hops): {1,2,3,4,5}.
+    vm.build_boundary_suffix_root_near(root, 2, budget, "bcat_parent");
+    assert!(!vm.boundary_suffix.is_empty(), "root-near precompute should populate the side-table");
+    let mut checked = 0;
+    for sname in ["3","4","5","6","7","8"] {
+        let seed = vm.intern_atom(sname);
+        let wp = ws_production(&vm, seed, root, budget, n);
+        let out = Value::Unbound(format!("RnOut{}", checked));
+        let ok = bl::bcat_ancestor(&mut vm, Value::Atom(sname.to_string()),
+                                   Value::Atom("0".to_string()), out);
+        assert!(ok, "wrapper should succeed for seed {}", sname);
+        let got = match vm.deref_var(&vm.get_reg_raw("A3").unwrap()) {
+            Value::Float(f) => f, other => panic!("expected Float, got {:?}", other) };
+        assert!((wp - got).abs() < 1e-12, "seed {}: production {} != root-near {}", sname, wp, got);
+        checked += 1;
+    }
+    assert_eq!(checked, 6);
 }',
     setup_call_cleanup(open(TestPath, write, S),
                        format(S, "~w", [TestSrc]), close(S)),
