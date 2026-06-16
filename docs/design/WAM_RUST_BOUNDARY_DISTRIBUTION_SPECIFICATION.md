@@ -281,6 +281,48 @@ Consequences:
   histogram. So the policy changes resource use, never any spliced result — it is a
   cache policy (recompute / reload on demand), not a one-shot deletion.
 
+### 8b. Two budgets: evictable vs live, and the stop-at-depth recourse
+
+The §8a budget governs entries we *can* drop (dead, or live-but-recomputable). But a
+top-down sweep also holds a **live, not-yet-discardable** set — the current frontier
+of nodes with `refs > 0`, whose parents are done but whose children are not. You
+cannot evict your way out of pressure on *that* set: those distributions are still
+required inputs to children not yet computed. So the precompute carries **two
+limits**:
+
+1. **Evictable budget** (§8a) — the cap on resident *droppable* entries (dead
+   interiors + spillable/recomputable scratch + the retained band). Exceeding it
+   triggers the priority-ordered eviction above.
+2. **Live budget** — a separate cap on the **non-discardable frontier** (`refs > 0`,
+   not yet spillable). This bounds the sweep's irreducible working set ≈ the cone's
+   *frontier antichain width* at the current depth.
+
+When the **live budget** is hit there is nothing to evict — the recourse is to **stop
+deepening**: freeze the precompute frontier at the current depth, treat everything
+below it as un-cached (those seeds fall back to enumeration, still correct), and
+retain what was computed. This makes the effective `D_pre` **dynamically bounded by
+memory**, not a fixed a-priori choice (philosophy §5 / plan §3): deepen the band only
+while the live frontier fits, then stop. (If the frontier may instead be *spilled* to
+the `boundary_basis` LMDB sub-db, the live budget is the in-memory portion and the
+sweep can continue against storage; stop-at-depth is the recourse when neither memory
+nor storage can hold a wider frontier.)
+
+### 8c. Why exact (vs path sampling)
+
+The one alternative that could rival the splice on *speed* is **Monte-Carlo path
+sampling**: estimate `WeightSum = Σ_L H[L]·L^(-N)` from a small random sample of
+seed→root paths instead of the full histogram. It is rejected here on **variance**,
+not speed: a sample estimator carries estimation error that (a) shrinks only as
+`1/√(samples)`, (b) is worst exactly where the functional is most sensitive — the
+short paths that dominate `L^(-N)` for `N>0` are rare in a uniform path sample of a
+diamond-dense cone — and (c) gives a *different* answer per run, breaking
+reproducibility and the linear-functional exactness the whole design rests on. The
+boundary splice computes the **exact** functional at ~ns from the cached histogram,
+so there is no accuracy/speed tradeoff to make: exact is also fast. Sampling would
+only be considered if even the polynomial precompute became infeasible — at which
+point the §9 storage ladder (continuous/parametric measure) is the principled
+exact-in-the-limit fallback, again before sampling.
+
 ## 9. Storage / approximation
 
 Exact discrete histograms by default. The §1a backings are the storage/scale
