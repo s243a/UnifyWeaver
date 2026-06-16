@@ -49,6 +49,7 @@
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      { adjusted += length($0) - 3; width = NF + 1 } END { print adjusted, width }
+%      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
 %      { if ($1 == "ERROR") { errors++ } else { warnings++ } } END { print errors, warnings }
@@ -112,8 +113,10 @@ plawk_program_native_driver_ir(
     plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
-    append(PrintFields, BodyPrintFields, AllPrintFields),
-    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -150,8 +153,10 @@ plawk_program_native_driver_ir(
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
-    append(PrintFields, BodyPrintFields, AllPrintFields),
-    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -188,8 +193,10 @@ plawk_program_native_driver_ir(
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
-    append(PrintFields, BodyPrintFields, AllPrintFields),
-    plawk_print_record_counter_ir(AllPrintFields, RecordLoopPhiIR, RecordCounterIR),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
@@ -452,6 +459,29 @@ plawk_rules_body_print_fields(Rules, Fields) :-
           plawk_actions_body_print_field(Actions, Field)
         ),
         Fields).
+
+plawk_rules_scalar_update_exprs(Rules, Exprs) :-
+    findall(Expr,
+        ( member(rule(_Pattern, Actions), Rules),
+          plawk_actions_scalar_update_expr(Actions, Expr)
+        ),
+        Exprs).
+
+plawk_actions_scalar_update_expr(Actions, Expr) :-
+    member(Action, Actions),
+    plawk_action_scalar_update_expr(Action, Expr).
+
+plawk_action_scalar_update_expr(if(_Pattern, ThenActions, ElseActions), Expr) :-
+    !,
+    (   plawk_actions_scalar_update_expr(ThenActions, Expr)
+    ;   plawk_actions_scalar_update_expr(ElseActions, Expr)
+    ).
+plawk_action_scalar_update_expr(Action, Expr) :-
+    plawk_scalar_action_update(Action, _Name, Operation),
+    plawk_scalar_operation_expr(Operation, Expr).
+
+plawk_scalar_operation_expr(add(Expr), Expr).
+plawk_scalar_operation_expr(set(Expr), Expr).
 
 plawk_actions_body_print_field(Actions, Field) :-
     member(Action, Actions),
@@ -1333,11 +1363,15 @@ plawk_i64_scalar_const_binary_expr(Expr) :-
     integer(Value),
     Value >= 0.
 
-plawk_i64_scalar_binary_primary_expr(special('NF')).
-plawk_i64_scalar_binary_primary_expr(int(field(FieldIndex))) :-
+plawk_i64_scalar_primary_expr(special('NR')).
+plawk_i64_scalar_primary_expr(special('NF')).
+plawk_i64_scalar_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
-plawk_i64_scalar_binary_primary_expr(length(field(FieldIndex))) :-
+plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
+
+plawk_i64_scalar_binary_primary_expr(Expr) :-
+    plawk_i64_scalar_primary_expr(Expr).
 
 plawk_i64_binary_expr(add_i64(Left, Right), add, add, Left, Right).
 plawk_i64_binary_expr(sub_i64(Left, Right), sub, sub, Left, Right).
@@ -1364,6 +1398,8 @@ plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i6
 plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
+    plawk_i64_scalar_primary_expr(Expr).
+plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_const_binary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
@@ -1374,6 +1410,8 @@ plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i6
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
+    plawk_i64_scalar_primary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
     plawk_i64_scalar_const_binary_expr(Expr).
 
@@ -1502,6 +1540,13 @@ plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, Slot
     format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64',
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(field_i64(FieldIndex), FieldSeparator, ParseBase, ParseBase,
+        ValueIR, IR).
+plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, IR) :-
+    plawk_i64_scalar_primary_expr(Expr),
+    format(atom(PrimaryBase), '~w_slot_~w_op_~w_i64_primary',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(Expr, FieldSeparator, PrimaryBase, PrimaryBase,
         ValueIR, IR).
 plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, IR) :-

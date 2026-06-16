@@ -162,6 +162,12 @@ test(parses_nonterminal_next_rule) :-
          rule(always, [inc(var(total))])],
         [end([print([var(total), var(skipped)])])])).
 
+test(parses_keyword_prefix_variable_names) :-
+    plawk_parse_string("{ next_total++; break_count++ } END { print next_total, break_count }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [inc(var(next_total)), inc(var(break_count))])],
+        [end([print([var(next_total), var(break_count)])])])).
+
 test(parses_terminal_break_scalar_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n", Program),
     assertion(Program == program([],
@@ -236,6 +242,15 @@ test(parses_i64_primary_binary_scalar_add_assign_end_print_rule) :-
          set(var(width), add_i64(special('NF'), int(1))),
          add(var(delta), add_i64(int(field(3)), int(1)))])],
         [end([print([var(adjusted), var(width), var(delta)])])])).
+
+test(parses_scalar_nr_add_assign_end_print_rule) :-
+    plawk_parse_string("{ last = NR; total += NR; prev = NR - 1; next_total += NR + 1 } END { print last, total, prev, next_total }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [set(var(last), special('NR')),
+         add(var(total), special('NR')),
+         set(var(prev), sub_i64(special('NR'), int(1))),
+         add(var(next_total), add_i64(special('NR'), int(1)))])],
+        [end([print([var(last), var(total), var(prev), var(next_total)])])])).
 
 test(parses_always_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("{ total += 3 } END { print total }\n", Program),
@@ -589,6 +604,11 @@ test(surface_i64_primary_binary_scalar_accumulates_values) :-
         "ERROR:disk:10\nWARN:cpu:20\nERROR:network:-3\n",
         "31 4 30\n").
 
+test(surface_scalar_nr_accumulates_values) :-
+    run_surface_print_smoke("{ last = NR; total += NR; prev = NR - 1; next_total += NR + 1 } END { print last, total, prev, next_total }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
+        "3 6 2 9\n").
+
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -927,6 +947,17 @@ test(surface_i64_primary_binary_print_uses_shared_lowering) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2 = sub i64 %plawk_int_sub_2_lhs, 3'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs_value_or_default = select i1 %plawk_int_add_3_lhs_ok, i64 %plawk_int_add_3_lhs_value, i64 0'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs_value_or_default, 1'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_nr_uses_native_record_counter) :-
+    plawk_parse_string("{ last = NR; total += NR; prev = NR - 1; next_total += NR + 1 } END { print last, total, prev, next_total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%current_nr = add i64 %plawk_nr, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %current_nr'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= sub i64 %current_nr, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %current_nr, 1'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
