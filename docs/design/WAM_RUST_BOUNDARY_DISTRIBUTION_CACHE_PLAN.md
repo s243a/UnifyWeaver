@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -265,18 +265,30 @@ Phasing:
     the root-near selection path end-to-end. Any band is exact for the splice
     (kernel splices at the first band node and stops), so root-near is a
     coverage/performance choice, not a correctness one.
-  - **P2c-wiring/precompute/eviction [next].** Run the precompute as a root-down
-    topological sweep with the **liveness-prioritised eviction** of spec §8a:
-    eviction from the side-table / `boundary_basis` LMDB sub-db is triggered by a
-    **memory/storage budget**, and the consumer-count liveness signal supplies the
-    *priority order* — dead interior nodes (`refs = 0 ∧ p ∉ Bset`) first and
-    **deepest-first within that class** (root-near distributions are the most-reused
-    hubs, most likely to be hit by a second query, so keep them longer), live
-    interior scratch next, the retained boundary band last (spilled to LMDB, not
-    dropped). This bounds the resident working set under pressure toward the cone's
-    frontier width plus the band, biased to retain the root-near end, and is
-    correctness-preserving (evicted entries are dead or recomputable). Then an
-    end-to-end LMDB run.
+  - **P2c-wiring/precompute/eviction [DONE].** `build_boundary_suffix_sweep(band,
+    root, max_depth, edge_pred, evict_budget, live_budget)` runs the precompute as a
+    root-down topological (Kahn) sweep over the band's ancestor cone — `H_root =
+    δ_0`, `H_v[L] = Σ_{p ∈ parents(v)} H_p[L-1]` — with the **liveness-prioritised
+    eviction** of spec §8a/§8b. A per-node consumer count `refs(p)` marks a node
+    **dead** once all its in-cone children are computed; the two budgets bound the
+    working set: `evict_budget` evicts **dead interior** nodes (`refs = 0 ∧ p ∉ Bset`)
+    **deepest-first** when the resident memo exceeds it (root-near hubs kept longest;
+    a dead node has no future reader so this never changes a result), and
+    `live_budget` caps the non-discardable frontier (`refs > 0`) — when exceeded the
+    sweep **stops deepening** (`stopped_early`), freezing `D_pre` and leaving deeper
+    band nodes uncached (they fall back to enumeration, still correct). Returns
+    `BoundarySweepStats` (computed / retained / evicted / peak_resident /
+    stopped_early) for the §6 measurement. The cone is the *full* upward closure (not
+    `min_dist`-bounded), since a band node's complete histogram can include
+    long-detour routes through parents whose own shortest distance exceeds the band
+    depth. Tests: unbudgeted == enumeration table + full-enum splice; tight
+    `evict_budget` evicts a dead interior yet leaves band results identical; tiny
+    `live_budget` forces stop-at-depth with partial caching still correct; eager-only
+    no-op. Eager-edge only; the lazy/LMDB path keeps the enumeration precompute.
+  - **P2c-wiring/precompute/eviction/LMDB [next].** Spill the retained band (and, if
+    chosen, the live frontier) to the `boundary_basis` LMDB sub-db rather than
+    dropping it, so storage pressure (not just memory) is handled and the precompute
+    is not repeated per run. Then an end-to-end LMDB run.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.

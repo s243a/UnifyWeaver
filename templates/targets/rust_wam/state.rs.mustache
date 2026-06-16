@@ -580,6 +580,21 @@ pub enum EdgeAccessor<'a> {
     Empty,
 }
 
+/// Result of a top-down boundary precompute sweep (build_boundary_suffix_sweep).
+/// `computed` = node histograms evaluated; `retained` = band entries installed in
+/// the side-table; `evicted` = dead interior entries dropped under budget pressure;
+/// `peak_resident` = max simultaneous memo entries (the working-set high-water mark);
+/// `stopped_early` = the live budget forced stop-at-depth before the whole cone was
+/// swept. See WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8a/§8b.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BoundarySweepStats {
+    pub computed: usize,
+    pub retained: usize,
+    pub evicted: usize,
+    pub peak_resident: usize,
+    pub stopped_early: bool,
+}
+
 impl WamState {
     /// Create a new WAM state with the given code and labels.
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
@@ -999,6 +1014,168 @@ impl WamState {
         };
         self.boundary_suffix = table.into_iter().collect();
         true
+    }
+
+    /// Top-down boundary precompute with the liveness-prioritised eviction of spec
+    /// §8a/§8b. Processes the band's ancestor cone in topological order from the
+    /// root (`H_root = delta_0`, `H_v[L] = sum_{p in parents(v)} H_p[L-1]`), tracking
+    /// a per-node consumer count `refs(p)` so a node becomes **dead** once all its
+    /// in-cone children are computed. Two budgets bound the working set:
+    ///
+    /// - `evict_budget` (0 = unlimited): max resident memo entries. When exceeded,
+    ///   evict **dead interior** nodes (`refs == 0`, not in the band) **deepest-first**
+    ///   — root-near distributions are the most-reused hubs, kept longest. A dead
+    ///   node has no future reader in this sweep, so eviction never changes a result.
+    /// - `live_budget` (0 = unlimited): max **live** frontier (`refs > 0`) entries.
+    ///   When exceeded there is nothing droppable, so the sweep **stops deepening**
+    ///   (`stopped_early`), freezing `D_pre` at the current frontier; band nodes not
+    ///   yet computed are simply left uncached and fall back to enumeration at query
+    ///   time (still correct).
+    ///
+    /// Band node histograms are installed in `boundary_suffix`. Eager-edge only;
+    /// returns `None` (no-op) when only a lazy/LMDB source is registered.
+    pub fn build_boundary_suffix_sweep(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize,
+    ) -> Option<BoundarySweepStats> {
+        use std::collections::VecDeque;
+        let (table, stats) = {
+            let parents = self.ffi_facts.get(edge_pred)?;
+            let band: std::collections::HashSet<u32> = boundary.iter().copied().collect();
+
+            // 1. cone = band U all ancestors U root (upward closure via parents).
+            //    Full closure — NOT min_dist-bounded — because a band node's complete
+            //    node->root histogram can include long-detour routes through parents
+            //    whose own shortest distance exceeds the band depth.
+            let mut cone: std::collections::HashSet<u32> = band.iter().copied().collect();
+            cone.insert(root_id);
+            let mut stack: Vec<u32> = boundary.to_vec();
+            while let Some(n) = stack.pop() {
+                if let Some(ps) = parents.get(&n) {
+                    for &p in ps {
+                        if cone.insert(p) { stack.push(p); }
+                    }
+                }
+            }
+
+            // 2. in-cone children, in-degree, consumer counts (refs).
+            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+            let mut indeg: HashMap<u32, usize> = HashMap::new();
+            for &v in &cone { indeg.entry(v).or_insert(0); }
+            for &v in &cone {
+                if let Some(ps) = parents.get(&v) {
+                    for &p in ps {
+                        if cone.contains(&p) {
+                            children.entry(p).or_default().push(v);
+                            *indeg.get_mut(&v).unwrap() += 1;
+                        }
+                    }
+                }
+            }
+            let mut refs: HashMap<u32, usize> =
+                cone.iter().map(|&p| (p, children.get(&p).map_or(0, |c| c.len()))).collect();
+
+            // 3. Kahn topological sweep from the root.
+            let mut memo: HashMap<u32, Vec<u64>> = HashMap::new();
+            let mut depth: HashMap<u32, usize> = HashMap::new();
+            let mut dead: Vec<u32> = Vec::new();
+            let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+            let mut stats = BoundarySweepStats::default();
+            let mut rem_indeg = indeg.clone();
+            let mut ready: VecDeque<u32> = VecDeque::new();
+            for (&v, &d) in &indeg { if d == 0 { ready.push_back(v); } }
+            depth.insert(root_id, 0);
+
+            while let Some(v) = ready.pop_front() {
+                // compute H_v from its in-cone parents (all resident by topo order).
+                let h: Vec<u64> = if v == root_id {
+                    vec![1]
+                } else {
+                    let mut out: Vec<u64> = Vec::new();
+                    let mut dmin = usize::MAX;
+                    if let Some(ps) = parents.get(&v) {
+                        for &p in ps {
+                            if !cone.contains(&p) { continue; }
+                            if let Some(&pd) = depth.get(&p) { dmin = dmin.min(pd + 1); }
+                            if let Some(ph) = memo.get(&p) {
+                                for (l, &c) in ph.iter().enumerate() {
+                                    let l2 = l + 1;
+                                    if l2 <= max_depth {
+                                        if out.len() <= l2 { out.resize(l2 + 1, 0); }
+                                        out[l2] += c;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if dmin != usize::MAX { depth.insert(v, dmin); }
+                    out
+                };
+                stats.computed += 1;
+                memo.insert(v, h.clone());
+                stats.peak_resident = stats.peak_resident.max(memo.len());
+                if band.contains(&v) {
+                    table.insert(v, h);
+                    stats.retained += 1;
+                }
+
+                // v has now consumed its parents -> decrement their refs.
+                if let Some(ps) = parents.get(&v) {
+                    for &p in ps {
+                        if !cone.contains(&p) { continue; }
+                        if let Some(r) = refs.get_mut(&p) {
+                            if *r > 0 { *r -= 1; }
+                            if *r == 0 && !band.contains(&p) && memo.contains_key(&p) {
+                                dead.push(p);
+                            }
+                        }
+                    }
+                }
+
+                // enqueue children that become ready.
+                if let Some(cs) = children.get(&v) {
+                    let cs = cs.clone();
+                    for c in cs {
+                        if let Some(r) = rem_indeg.get_mut(&c) {
+                            if *r > 0 { *r -= 1; }
+                            if *r == 0 { ready.push_back(c); }
+                        }
+                    }
+                }
+
+                // eviction: drop dead interiors deepest-first while over budget.
+                if evict_budget > 0 {
+                    while memo.len() > evict_budget {
+                        while let Some(&d) = dead.last() {
+                            if !memo.contains_key(&d) { dead.pop(); } else { break; }
+                        }
+                        if dead.is_empty() { break; }
+                        let mut best_i = 0usize;
+                        let mut best_depth = 0usize;
+                        for (i, &dn) in dead.iter().enumerate() {
+                            let dd = depth.get(&dn).copied().unwrap_or(0);
+                            if dd >= best_depth { best_depth = dd; best_i = i; }
+                        }
+                        let victim = dead.swap_remove(best_i);
+                        if memo.remove(&victim).is_some() { stats.evicted += 1; }
+                    }
+                }
+
+                // stop-at-depth: if the live (refs>0) frontier exceeds its budget,
+                // there is nothing to evict -> stop deepening.
+                if live_budget > 0 {
+                    let live = refs.iter()
+                        .filter(|(k, &r)| r > 0 && memo.contains_key(k)).count();
+                    if live > live_budget {
+                        stats.stopped_early = true;
+                        ready.clear();
+                    }
+                }
+            }
+            (table, stats)
+        };
+        self.boundary_suffix = table.into_iter().collect();
+        Some(stats)
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
@@ -2155,6 +2332,86 @@ mod boundary_kernel_tests {
             let spl = norm(boundary_hist(&vm, seed, root, budget));
             assert_eq!(full, spl, "shared splice != full enumeration for {:?}", bnames);
         }
+    }
+
+    // snapshot the installed boundary-suffix table, normalised + sorted by key.
+    fn snapshot_table(vm: &WamState) -> Vec<(u32, Vec<u64>)> {
+        let mut t: Vec<(u32, Vec<u64>)> =
+            vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+        t.sort_by_key(|(k, _)| *k);
+        t
+    }
+
+    // The top-down sweep, unbudgeted, produces the SAME band table as enumeration
+    // and the same splice as full enumeration.
+    #[test]
+    fn sweep_unbudgeted_equals_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"], vec!["3", "4", "1", "2"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let enum_tbl = snapshot_table(&vm);
+            let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0)
+                .expect("sweep runs for eager edges");
+            assert_eq!(snapshot_table(&vm), enum_tbl, "sweep != enumeration for {:?}", bnames);
+            assert_eq!(stats.retained, bnodes.len(), "all band nodes retained for {:?}", bnames);
+            assert_eq!(stats.evicted, 0, "no eviction when unbudgeted for {:?}", bnames);
+            assert!(!stats.stopped_early, "no early stop when unbudgeted for {:?}", bnames);
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "sweep splice != full for {:?}", bnames);
+        }
+    }
+
+    // A tight eviction budget drops dead interior nodes but leaves the retained
+    // band results identical, and the splice still matches full enumeration.
+    #[test]
+    fn sweep_eviction_preserves_results() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        let bnodes: Vec<u32> = ["1", "2"].iter().map(|s| vm.intern_atom(s)).collect();
+        // reference (unbudgeted) band table
+        vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0).unwrap();
+        let ref_tbl = snapshot_table(&vm);
+        // tight evict budget forces the interior root node (refs->0) to be evicted
+        let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 1, 0).unwrap();
+        assert!(stats.evicted >= 1, "tight budget should evict a dead interior");
+        assert_eq!(snapshot_table(&vm), ref_tbl, "eviction must not change band results");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "splice correct under eviction");
+    }
+
+    // A tiny live budget forces stop-at-depth; partial caching is still correct
+    // (uncached band nodes fall back to enumeration).
+    #[test]
+    fn sweep_live_budget_stops_early() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        let bnodes: Vec<u32> = ["1", "2", "3", "4", "5"].iter().map(|s| vm.intern_atom(s)).collect();
+        let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 1).unwrap();
+        assert!(stats.stopped_early, "live_budget=1 should force stop-at-depth");
+        assert!(stats.retained < bnodes.len(), "stop-at-depth leaves some band nodes uncached");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "partial-cache splice still matches full enumeration");
+    }
+
+    // Sweep is eager-only: with no eager table it is a no-op (None).
+    #[test]
+    fn sweep_eager_only() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        let root = vm.intern_atom("0");
+        let b = vm.intern_atom("1");
+        assert!(vm.build_boundary_suffix_sweep(&[b], root, 8, "no_such_pred", 0, 0).is_none(),
+                "no eager table -> sweep is a no-op");
     }
 
     // Shared precompute is eager-only: with no eager table it is a no-op (false).
