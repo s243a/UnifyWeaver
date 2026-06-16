@@ -408,11 +408,18 @@ Implemented (Rust, `boundary_cache.rs`):
   fits and keeping the lower-error one). **The gate is a hard reject:** a fit that
   misses `ε_K` is dropped and the exact/tail-pruned form kept, so accuracy never
   silently degrades.
-- **Rung 3 — mixture of binomials** — `fit_binomial_mixture(h, k, iters)` (EM,
-  shared `trials`, PMF-weighted) fits the multimodal nodes a single binomial rejects
-  (a bottleneck / topic-mixture cone). `HistRepr::Mixture{trials,comps,total}` joins
-  the candidate set (`K = 2,3`). Discretised-GMM stays escalation-only — bounded
-  integer path-length data favour binomial families.
+- **Rung 3 — beta-binomial** — `fit_beta_binomial(h)` (method of moments: the
+  intra-class over-dispersion `rho` from the variance gives `alpha+beta = 1/rho-1`)
+  fits a **unimodal but over-dispersed** node — variance above a binomial's
+  `n*p*(1-p)` — that a single binomial rejects but which a mixture would over-model.
+  `beta_binomial_pmf` uses a stable ratio recurrence (no `lgamma`, std-only).
+  `HistRepr::BetaBinomial{trials,alpha,beta,total}` (3 params, cheaper than a
+  mixture's 2K) joins the candidate set.
+- **Rung 4 — mixture of binomials** — `fit_binomial_mixture(h, k, iters)` (EM,
+  shared `trials`, PMF-weighted) fits the **multimodal** nodes a single binomial
+  rejects (a bottleneck / topic-mixture cone). `HistRepr::Mixture{trials,comps,total}`
+  joins the candidate set (`K = 2,3`). Discretised-GMM stays escalation-only —
+  bounded integer path-length data favour binomial families.
 - **Choice is multi-objective.** `choose_representation` is *error-driven* (cheapest
   within `ε_K`); `choose_representation_budget` is the *storage-driven* complement
   (smallest CDF error within a byte budget). Error is not always the binding
@@ -444,9 +451,6 @@ implemented, in rough priority order:
 - **Quantised CDF table** — one monotone fixed-point CDF value per retained point
   (16-bit → error ≤ `2^-16`). Best when prefix-mass / range queries dominate (O(1)
   reads); a natural fit for the `cdf`/`quantile` result modes (§5).
-- **Beta-binomial** — `(D, α, β)`; the first upgrade when a node is *over-dispersed*
-  for a plain binomial (the CLT regime hasn't fully kicked in). Cheap params, same
-  CDF/W1 gate.
 - **Discretised Gaussian mixture** — `(weight, mean, variance)` per mode; the
   **escalation-only** family for sharp/narrow modes that the binomial mixture fits
   poorly. Continuous prior on discrete data, more params per mode — used only after

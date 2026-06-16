@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement, eviction-spill DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement, eviction-spill, P4-approx-beta-binomial DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -395,8 +395,16 @@ Phasing:
     `load_boundary_reprs` (the `boundary_basis_repr` sub-db; expand on load).
     Cargo-gated `test_wam_rust_boundary_repr_lmdb.pl`: a binomial-shaped node persists
     as ~21 bytes and reloads within `ε_K`; a short node round-trips exactly.
-  - **Fitted forms [next].** beta-binomial (over-dispersion), quantised-CDF table;
-    discretised-GMM as escalation only.
+  - **Beta-binomial (over-dispersion) [DONE].** `fit_beta_binomial` (method of
+    moments via the intra-class over-dispersion `rho`) + `beta_binomial_pmf` (stable
+    ratio recurrence, no `lgamma`) + `HistRepr::BetaBinomial` fit a unimodal
+    *over-dispersed* node (variance above a binomial's `n*p*(1-p)`) that a single
+    binomial rejects but which a mixture would over-model — 3 params, cheaper than a
+    mixture. Validated: a true beta-binomial is recovered by MoM, the single binomial
+    misses the gate, and the chooser selects `BetaBinomial` over the costlier mixture.
+    `encode_repr`/`decode_repr` tag 3.
+  - **Fitted forms [next].** quantised-CDF table (O(1) prefix-mass reads; the
+    cdf/quantile result modes); discretised-GMM as escalation only.
 
 ## 6. What to measure (re-derive, don't inherit)
 

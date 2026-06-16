@@ -379,6 +379,10 @@ pub fn fit_binomial_cdf(h: &Hist) -> (usize, f64) {
 pub enum HistRepr {
     Exact(Hist),
     Binomial { trials: usize, p: f64, total: u64 },
+    /// Beta-binomial `(trials, alpha, beta)`: the over-dispersion upgrade for a
+    /// unimodal node whose variance exceeds a binomial's `n*p*(1-p)` — cheaper than
+    /// a mixture (3 params, not 2K).
+    BetaBinomial { trials: usize, alpha: f64, beta: f64, total: u64 },
     /// Mixture of binomials (shared `trials`); `comps` are `(weight, p)` pairs.
     /// The escalation rung for multimodal nodes a single binomial cannot fit.
     Mixture { trials: usize, comps: Vec<(f64, f64)>, total: u64 },
@@ -391,6 +395,7 @@ impl HistRepr {
         match self {
             HistRepr::Exact(h) => 1 + 4 + h.len() * 8,      // tag + u32 len + u64 counts
             HistRepr::Binomial { .. } => 1 + 4 + 8 + 8,     // tag + trials + p + total
+            HistRepr::BetaBinomial { .. } => 1 + 4 + 8 + 8 + 8, // tag + trials + alpha + beta + total
             HistRepr::Mixture { comps, .. } => 1 + 4 + 4 + comps.len() * 16 + 8,
         }
     }
@@ -411,16 +416,63 @@ impl HistRepr {
         match self {
             HistRepr::Exact(h) => to_pmf(h),
             HistRepr::Binomial { trials, p, .. } => binomial_pmf(*trials, *p),
+            HistRepr::BetaBinomial { trials, alpha, beta, .. } => beta_binomial_pmf(*trials, *alpha, *beta),
             HistRepr::Mixture { trials, comps, .. } => mixture_pmf(*trials, comps),
         }
     }
     fn total(&self) -> u64 {
         match self {
             HistRepr::Exact(h) => h.iter().sum(),
-            HistRepr::Binomial { total, .. } | HistRepr::Mixture { total, .. } => *total,
+            HistRepr::Binomial { total, .. }
+            | HistRepr::BetaBinomial { total, .. }
+            | HistRepr::Mixture { total, .. } => *total,
         }
     }
 }
+
+/// PMF of `BetaBinomial(trials, alpha, beta)` over `0..=trials`, by the stable
+/// ratio recurrence (no `lgamma` needed, so std-only):
+/// `P(0) = prod_{j<n} (beta+j)/(alpha+beta+j)`,
+/// `P(k)/P(k-1) = (n-k+1)/k * (alpha+k-1)/(beta+n-k)`.
+pub fn beta_binomial_pmf(trials: usize, alpha: f64, beta: f64) -> Vec<f64> {
+    if trials == 0 { return vec![1.0]; }
+    let a = alpha.max(1e-9);
+    let b = beta.max(1e-9);
+    let n = trials;
+    let mut p = vec![0.0f64; n + 1];
+    let mut p0 = 1.0f64;
+    for j in 0..n { p0 *= (b + j as f64) / (a + b + j as f64); }
+    p[0] = p0;
+    for k in 1..=n {
+        let kf = k as f64;
+        p[k] = p[k - 1] * ((n - k + 1) as f64 / kf) * ((a + kf - 1.0) / (b + (n - k) as f64));
+    }
+    let s: f64 = p.iter().sum();
+    if s > 0.0 { for x in &mut p { *x /= s; } }
+    p
+}
+
+/// Method-of-moments beta-binomial fit: `trials = support-1`, `p = mean/n`, and the
+/// intra-class over-dispersion `rho` from the variance
+/// (`var = n*p*(1-p)*(1 + (n-1)*rho)`), giving `alpha+beta = 1/rho - 1`,
+/// `alpha = p*(alpha+beta)`, `beta = (1-p)*(alpha+beta)`. Under-dispersed inputs
+/// (`rho <= 0`) collapse toward a plain binomial (large `alpha+beta`).
+pub fn fit_beta_binomial(h: &Hist) -> (usize, f64, f64) {
+    let pmf = to_pmf(h);
+    if pmf.is_empty() { return (0, 1.0, 1.0); }
+    let trials = pmf.len().saturating_sub(1);
+    if trials == 0 { return (0, 1.0, 1.0); }
+    let (mean, var) = pmf_moments(&pmf);
+    let n = trials as f64;
+    let p = (mean / n).clamp(1e-6, 1.0 - 1e-6);
+    let binom_var = n * p * (1.0 - p);
+    let rho = if binom_var > 0.0 && n > 1.0 {
+        ((var / binom_var - 1.0) / (n - 1.0)).clamp(0.0, 0.999)
+    } else { 0.0 };
+    let s = if rho > 1e-9 { 1.0 / rho - 1.0 } else { 1e6 };
+    (trials, p * s, (1.0 - p) * s)
+}
+
 
 /// PMF of a binomial mixture: `sum_k w_k * Binomial(trials, p_k)`.
 pub fn mixture_pmf(trials: usize, comps: &[(f64, f64)]) -> Vec<f64> {
@@ -501,6 +553,11 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
         cands.push((HistRepr::Binomial { trials, p, total }, err));
     }
+    {
+        let (trials, alpha, beta) = fit_beta_binomial(h);
+        let err = cdf_max_error_pmf(&exact_pmf, &beta_binomial_pmf(trials, alpha, beta));
+        cands.push((HistRepr::BetaBinomial { trials, alpha, beta, total }, err));
+    }
     for k in [2usize, 3] {
         let (trials, comps) = fit_binomial_mixture(h, k, 60);
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
@@ -540,7 +597,8 @@ pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usiz
 
 /// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
 /// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
-/// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture.
+/// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture,
+/// 3 = BetaBinomial.
 pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
     let mut out = Vec::new();
     match r {
@@ -552,6 +610,13 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
             out.push(1u8);
             out.extend_from_slice(&(*trials as u32).to_le_bytes());
             out.extend_from_slice(&p.to_le_bytes());
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::BetaBinomial { trials, alpha, beta, total } => {
+            out.push(3u8);
+            out.extend_from_slice(&(*trials as u32).to_le_bytes());
+            out.extend_from_slice(&alpha.to_le_bytes());
+            out.extend_from_slice(&beta.to_le_bytes());
             out.extend_from_slice(&total.to_le_bytes());
         }
         HistRepr::Mixture { trials, comps, total } => {
@@ -594,6 +659,12 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             trials: read_u32(b, 1) as usize,
             p: read_f64(b, 5),
             total: read_u64(b, 13),
+        },
+        3 if b.len() >= 1 + 4 + 8 + 8 + 8 => HistRepr::BetaBinomial {
+            trials: read_u32(b, 1) as usize,
+            alpha: read_f64(b, 5),
+            beta: read_f64(b, 13),
+            total: read_u64(b, 21),
         },
         2 if b.len() >= 1 + 4 + 4 => {
             let trials = read_u32(b, 1) as usize;
@@ -752,12 +823,47 @@ mod tests {
         let reprs = [
             HistRepr::Exact(vec![0u64, 3, 1, 0, 5]),
             HistRepr::Binomial { trials: 12, p: 0.37, total: 9999 },
+            HistRepr::BetaBinomial { trials: 30, alpha: 2.5, beta: 1.5, total: 8888 },
             HistRepr::Mixture { trials: 20, comps: vec![(0.6, 0.2), (0.4, 0.8)], total: 12345 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
         }
         assert_eq!(decode_repr(&[]), HistRepr::Exact(vec![]));
+    }
+
+    #[test]
+    fn beta_binomial_pmf_basic() {
+        let bb = beta_binomial_pmf(20, 2.0, 2.0);
+        assert_eq!(bb.len(), 21);
+        assert!((bb.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // over-dispersed: wider than the binomial of the same mean (p=0.5).
+        let bn = binomial_pmf(20, 0.5);
+        let var = |p: &[f64]| -> f64 {
+            let m: f64 = p.iter().enumerate().map(|(i, &x)| i as f64 * x).sum();
+            p.iter().enumerate().map(|(i, &x)| (i as f64 - m).powi(2) * x).sum()
+        };
+        assert!(var(&bb) > var(&bn), "beta-binomial should be over-dispersed vs binomial");
+    }
+
+    // An over-dispersed (but unimodal) histogram: a single binomial fails the gate;
+    // the beta-binomial fits it and is chosen (cheaper than a mixture).
+    #[test]
+    fn beta_binomial_fits_overdispersed() {
+        // a true beta-binomial -> method of moments recovers it.
+        let h: Hist = beta_binomial_pmf(40, 2.0, 2.0).iter()
+            .map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        let (tb, pb) = fit_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01,
+            "single binomial should miss the gate on an over-dispersed histogram");
+        let (tbb, a, b) = fit_beta_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &beta_binomial_pmf(tbb, a, b)) <= 0.01,
+            "beta-binomial should fit the over-dispersed histogram");
+        let repr = choose_representation(&h, 10, 0.01);
+        assert!(matches!(repr, HistRepr::BetaBinomial { .. }),
+            "expected BetaBinomial (cheaper than mixture), got {:?}", repr);
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
     }
 
     // Fitting in CDF space (minimising W1, the integral form) is at least as good
