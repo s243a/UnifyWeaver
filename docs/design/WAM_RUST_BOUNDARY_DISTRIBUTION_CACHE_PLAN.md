@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -231,13 +231,30 @@ Phasing:
     registering the kernel as a foreign predicate and driving it through
     `execute_foreign_predicate` reproduces the **production** kernel's aggregate for
     both `scalar` and `effective_distance` across seeds.
-  - **P2c-wiring/lowering [next].** Make the compiler *choose* this lowering for a
-    recognized query shape (an aggregate of a path-length functional over
-    root-anchored paths, or a request for the path-length distribution) under the
-    gate `boundary_optimization` (default off): kernel-shape detection in
-    `recursive_kernel_detection.pl` emits the `register_foreign_native_kind(...,
-    category_ancestor_boundary)` + config, and a setup hook populates the side-table
-    via `build_boundary_suffix`. Then an end-to-end LMDB run.
+  - **P2c-wiring/lowering [DONE].** The compiler now *chooses* this lowering under
+    the gate `boundary_optimization(true)` (default off), mirroring the
+    `kernel_mode(bidirectional)` opt-in upgrade. A detected `category_ancestor`
+    kernel is upgraded to a `category_ancestor_boundary` kernel
+    (`rust_maybe_upgrade_boundary/3`): the registry in
+    `recursive_kernel_detection.pl` gains the boundary metadata (native kind,
+    `tuple(1)` layout, **`deterministic`** result mode, arity 3), the existing
+    `emit_kernel_registration/1` auto-generates the
+    `register_foreign_native_kind(..., category_ancestor_boundary)` + `max_depth` /
+    `edge_pred` / `weight_n` / `result_extractor` config, and a public 3-ary wrapper
+    `Pred(Cat, Root, Result)` (`rust_boundary_wrapper_code/3`) is emitted.
+    Tunables: `boundary_weight_n(N)` (default 2.0), `boundary_result_extractor`
+    (`scalar` | `effective_distance` | `distribution`, default `scalar`). Exec test
+    `test_wam_rust_boundary_lowering.pl`: the default keeps the 4-ary streaming
+    kernel; the option upgrades to the 3-ary deterministic kernel; tunables flow
+    through; and the emitted wrapper reproduces the production aggregate in a built
+    crate. The boundary side-table (`build_boundary_suffix`) remains a separate
+    precompute — with an empty side-table the kernel degrades to full enumeration
+    (still correct), so the lowering is correct by default and the speedup is
+    unlocked once boundary nodes are precomputed.
+  - **P2c-wiring/precompute [next].** Choose *which* boundary nodes to precompute
+    (root-near band per §3) and populate the side-table at setup — the step that
+    turns the correct-but-unaccelerated lowering into the measured speedup — then an
+    end-to-end LMDB run.
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.

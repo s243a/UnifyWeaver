@@ -5671,12 +5671,54 @@ rust_bidirectional_config_extras(Options, Extras) :-
           option(Term, Options) ),
         Extras).
 
+%% rust_maybe_upgrade_boundary(+Options, +Kernel0, -Kernel)
+%  boundary_optimization(true) upgrades a detected category_ancestor kernel to
+%  the category_ancestor_boundary kernel (the boundary-distribution
+%  optimization). Explicit opt-in, never default — see
+%  WAM_RUST_BOUNDARY_DISTRIBUTION_{PHILOSOPHY,SPECIFICATION,CACHE_PLAN}.md.
+%  The upgraded kernel has a 3-ary interface:
+%      Pred(Cat, Root, Result)
+%  emitting ONE deterministic result (no choice point) read from the
+%  path-length measure of the spliced boundary histogram. The result_extractor
+%  config selects which read: scalar (weighted_power), effective_distance
+%  (d_eff = WeightSum^(-1/N)), or distribution (the raw histogram).
+%
+%  Config extras (project options, with defaults):
+%    boundary_weight_n(N)            — the functional exponent N (default 2.0)
+%    boundary_result_extractor(E)    — scalar | effective_distance | distribution
+%                                      (default scalar)
+%
+%  max_depth and edge_pred carry over from the detected category_ancestor
+%  config. The boundary side-table (build_boundary_suffix) is a separate runtime
+%  precompute; with an empty side-table the kernel degrades to full enumeration
+%  (still correct — the splice is an exact mirror of the production walk), so the
+%  lowering is correct by default and the speedup is unlocked once boundary
+%  nodes are precomputed.
+rust_maybe_upgrade_boundary(Options,
+        recursive_kernel(category_ancestor, Pred/4, Config0),
+        recursive_kernel(category_ancestor_boundary, Pred/3, Config)) :-
+    option(boundary_optimization(true), Options),
+    !,
+    option(boundary_weight_n(N), Options, 2.0),
+    option(boundary_result_extractor(Extractor), Options, scalar),
+    append(Config0, [weight_n(N), result_extractor(Extractor)], Config).
+rust_maybe_upgrade_boundary(_, Kernel, Kernel).
+
+%% rust_maybe_upgrade_kernel(+Options, +Kernel0, -Kernel)
+%  Apply the available opt-in upgrades to a detected category_ancestor kernel.
+%  bidirectional and boundary are mutually exclusive (both rewrite
+%  category_ancestor): if bidirectional fires first, the boundary upgrade no
+%  longer matches; if neither option is set, both are no-ops.
+rust_maybe_upgrade_kernel(Options, Kernel0, Kernel) :-
+    rust_maybe_upgrade_bidirectional(Options, Kernel0, Kernel1),
+    rust_maybe_upgrade_boundary(Options, Kernel1, Kernel).
+
 %% rust_upgrade_kernel_pair(+Options, +Key0-Kernel0, -Key-Kernel)
 %  Apply the bidirectional upgrade to a detected Key-Kernel pair,
 %  rewriting the key to the upgraded predicate indicator (Pred/5) so
 %  registration, dispatch, and the public wrapper stay consistent.
 rust_upgrade_kernel_pair(Options, Key0-Kernel0, Key-Kernel) :-
-    rust_maybe_upgrade_bidirectional(Options, Kernel0, Kernel),
+    rust_maybe_upgrade_kernel(Options, Kernel0, Kernel),
     (   Kernel0 == Kernel
     ->  Key = Key0
     ;   Kernel = recursive_kernel(Kind, Pred/Arity, _),
@@ -5715,6 +5757,38 @@ pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value, a5: Val
     vm.set_reg("A4", a4);
     vm.set_reg("A5", a5);
     vm.execute_foreign_predicate("~w", 5)
+}', [Pred, FuncName, RegLines, Pred]).
+
+%% rust_boundary_wrapper_code(+Pred, +Kernel, -Code)
+%  Public 3-ary wrapper for an upgraded category_ancestor_boundary kernel:
+%  Pred(Cat, Root, Result). Self-registers the kernel metadata + configs (like
+%  the other kernel wrappers) and dispatches through execute_foreign_predicate,
+%  binding A3 to the single deterministic result. Register parent edges on the
+%  VM first (register_ffi_fact_pairs or a lazy lookup source). The boundary
+%  side-table is a separate precompute (vm.build_boundary_suffix); with an empty
+%  side-table the kernel still returns the correct aggregate by full enumeration.
+rust_boundary_wrapper_code(Pred, Kernel, Code) :-
+    Kernel = recursive_kernel(category_ancestor_boundary, Pred/3, _),
+    rust_safe_function_name(Pred, FuncName),
+    format(atom(Key), '~w/3', [Pred]),
+    with_output_to(string(RegLines), emit_kernel_registration(Key-Kernel)),
+    format(string(Code),
+'/// Boundary-distribution ancestor kernel wrapper (3-ary):
+/// ~w(Cat, Root, Result).
+/// Upgraded from a detected category_ancestor kernel by
+/// boundary_optimization(true). Register parent edges on the VM first
+/// (register_ffi_fact_pairs or a lazy lookup source); precompute the
+/// boundary side-table with vm.build_boundary_suffix to unlock the
+/// splice speedup (an empty side-table degrades to full enumeration,
+/// still correct).
+pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    vm.code = Vec::new();
+    vm.labels = std::collections::HashMap::new();
+    vm.pc = 1;
+~w    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.execute_foreign_predicate("~w", 3)
 }', [Pred, FuncName, RegLines, Pred]).
 
 %% generate_setup_foreign_predicates_rust(+DetectedKernels, -RustCode)
@@ -5798,6 +5872,13 @@ emit_kernel_config_ops(Key, [Op|Rest]) :-
 %    kernel_mode(bidirectional) — upgrade detected category_ancestor
 %                          kernels to the 5-ary bidirectional_ancestor
 %                          kernel (see rust_maybe_upgrade_bidirectional/3)
+%    boundary_optimization(Bool) — upgrade detected category_ancestor
+%                          kernels to the 3-ary category_ancestor_boundary
+%                          kernel, the boundary-distribution optimization
+%                          (default false; see rust_maybe_upgrade_boundary/3).
+%                          Tunables: boundary_weight_n(N) (default 2.0),
+%                          boundary_result_extractor(scalar | effective_distance
+%                          | distribution; default scalar).
 %    csr_child_index(Bool) — emit src/csr_fact_source.rs, a LookupSource
 %                          over the reverse-CSR artifact for the
 %                          bidirectional kernel child direction
@@ -6187,7 +6268,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         findall(KHead-KBody, Module:clause(KHead, KBody), KClauses),
         KClauses \= [],
         detect_recursive_kernel(Pred, Arity, KClauses, Kernel0)
-    ->  rust_maybe_upgrade_bidirectional(Options, Kernel0, Kernel),
+    ->  rust_maybe_upgrade_kernel(Options, Kernel0, Kernel),
         format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
         % Besides the CallForeign dispatch route, emit a public Rust wrapper
         % function (bare predicate name) so library consumers can call the
@@ -6198,6 +6279,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
             % (Cat, Root, TotalHops, ParentHops, ChildHops), so the
             % legacy 4-ary spec wrapper does not apply.
             rust_bidirectional_wrapper_code(Pred, Kernel, WrapperCode),
+            Entry = classified(Module, Pred, Arity, ffi_kernel,
+                               kernel_with_wrapper(Kernel, WrapperCode))
+        ;   Kernel = recursive_kernel(category_ancestor_boundary, _, _)
+        ->  % Upgraded boundary kernel: the public interface narrows to 3 args
+            % (Cat, Root, Result) — one deterministic aggregate/distribution.
+            rust_boundary_wrapper_code(Pred, Kernel, WrapperCode),
             Entry = classified(Module, Pred, Arity, ffi_kernel,
                                kernel_with_wrapper(Kernel, WrapperCode))
         ;   catch(rust_target:rust_foreign_lowering_spec(Pred, Arity, KClauses,
