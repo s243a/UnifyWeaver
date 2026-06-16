@@ -96,7 +96,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | `~` opt-in | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | ✓ capped | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
@@ -161,12 +161,19 @@ Verification notes:
   is what gated the decision — here it said "yes, but only behind the probe.")
 - **T9**: scala's ✓ is the target-level fact-source backend (auto-inline ≤128
   rows, then CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's
-  emitter-level inline tables, but it is fact-table inlining, so ✓. **rust = `~`
-  (opt-in):** `fact_table_inline(true)` lowers an all-ground-facts predicate
-  above `t9_min_rows` (default 64) to a static row table + a first-arg-prefiltered
-  choice-point enumerator (`fact_table_attempt`); off by default. Query-mode
-  matrix + emission tests: `tests/test_wam_rust_fact_table_exec.pl`,
-  `tests/test_wam_rust_fact_table_emit.pl`.
+  emitter-level inline tables, but it is fact-table inlining, so ✓. **rust = ✓
+  (default, capped):** an all-ground-facts predicate whose row count is in the
+  inline window `[t9_min_rows, t9_max_rows]` (defaults 64..256) lowers by default
+  to a static `OnceLock` row table + first-arg hash index + choice-point
+  enumerator (`fact_table_attempt`), callable via WAM `call`/`execute`. Below the
+  min, the negligible-cost T4 inline is used; above the cap, inlining is declined
+  with a warning recommending an external fact source (LMDB/TSV), since inlining
+  large fact sets bloats compile time / the binary. Opt out with
+  `fact_table_inline(false)`. Tests: `tests/test_wam_rust_fact_table_exec.pl`,
+  `tests/test_wam_rust_fact_table_emit.pl`,
+  `tests/test_wam_rust_fact_table_callsite_exec.pl`,
+  `tests/test_wam_rust_fact_table_throughput.pl`; benchmark
+  `docs/reports/wam_rust_t9_fact_table_benchmark.md`.
 - **T8** (native kernels) is a curated library feature dispatched via shared
   `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
   the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /

@@ -1,6 +1,13 @@
 # rust T9 — fact-table inline (design)
 
-**Status:** IMPLEMENTED (opt-in). Step 1 (detection/extraction), Step 2
+**Status:** IMPLEMENTED (default in-range, capped). T9 is the default lowering for
+an all-ground-facts predicate whose row count is in the inline window
+`[t9_min_rows, t9_max_rows]` (defaults 64..256). Below the min, T4 inline (tiny)
+is used; above the cap, inlining is declined with a warning recommending an
+external fact source (LMDB/TSV) — inlining large fact sets bloats compile time
+and the binary (see the benchmark: T4's instruction `vec!` is pathological, and
+even T9's data table grows). Opt out entirely with `fact_table_inline(false)`.
+Step 1 (detection/extraction), Step 2
 (emission: `emit_fact_table_rust/4` + `rust_term_to_value_literal/2`), Step 3
 (classification seam in `classify_predicates`, gated by `fact_table_inline(true)`;
 `fact_table` arm in `generate_predicate_codes`), and Step 4 (query-mode exec
