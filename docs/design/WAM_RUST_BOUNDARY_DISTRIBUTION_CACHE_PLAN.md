@@ -258,10 +258,13 @@ Phasing:
     **liveness-prioritised eviction** of spec §8a: eviction from the side-table /
     `boundary_basis` LMDB sub-db is triggered by a **memory/storage budget**, and the
     consumer-count liveness signal supplies the *priority order* — dead interior
-    nodes (`refs = 0 ∧ p ∉ Bset`) first (zero-regret), live interior scratch next,
-    the retained boundary band last (spilled to LMDB, not dropped). This bounds the
-    resident working set under pressure toward the cone's frontier width plus the
-    band, and is correctness-preserving (evicted entries are dead or recomputable).
+    nodes (`refs = 0 ∧ p ∉ Bset`) first and **deepest-first within that class** (root-
+    near distributions are the most-reused hubs, most likely to be hit by a second
+    query, so keep them longer), live interior scratch next, the retained boundary
+    band last (spilled to LMDB, not dropped). This bounds the resident working set
+    under pressure toward the cone's frontier width plus the band, biased to retain
+    the root-near end, and is correctness-preserving (evicted entries are dead or
+    recomputable).
   - The `boundary_basis` LMDB sub-db (persisted precompute) folds in here.
 - **P3 — the measurement in §6** (does it add wall-time *on top of* the edge
   cache, and from what `D_pre`). Gates whether P4 is worth building.

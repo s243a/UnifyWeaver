@@ -254,11 +254,17 @@ in-memory side-table and for the `boundary_basis` LMDB sub-db): entries are evic
 only when the budget is under pressure, *not* eagerly at `refs = 0`. When pressure
 hits, the liveness signal supplies the **priority order**:
 
-1. **Dead interior nodes first** (`refs = 0 ∧ p ∉ Bset`) — these are the nodes
-   identified above; they will never be read again in this sweep, so they are the
-   highest-priority, zero-regret eviction class.
+1. **Dead interior nodes first** (`refs = 0 ∧ p ∉ Bset`) — never read again in *this*
+   sweep, so the highest-priority class. **Within this class, evict deepest-first**
+   (largest depth-from-root): root-near distributions cover the largest cones and are
+   the most-reused hubs (philosophy §3), so they are the most likely to be hit again
+   by a *second query* — keep them resident longer; the deep, narrow-cone nodes have
+   little cross-query reuse value and go first. (So "zero-regret" holds within a
+   single sweep; across queries the regret rises toward the root, which is exactly
+   what depth-first eviction minimises.)
 2. then **still-live interior** scratch (by a secondary metric — e.g. furthest next
-   use / lowest remaining `refs`), accepting a possible recompute;
+   use / lowest remaining `refs`, again breaking ties deepest-first), accepting a
+   possible recompute;
 3. **retained boundary band** (`p ∈ Bset`) last, and even then it spills to the
    `boundary_basis` LMDB sub-db rather than being dropped, since queries still need
    it.
@@ -268,7 +274,8 @@ Consequences:
 - **Bounded working set.** Holding dead interiors until pressure (rather than freeing
   at `refs = 0`) keeps the resident scratch within the budget while preferring to
   keep what might still be reused; under steady pressure the resident set tends
-  toward the cone's *frontier antichain width* plus the retained band.
+  toward the cone's *frontier antichain width* plus the retained band — biased to
+  retain the **root-near** end of that scratch, the part with cross-query reuse.
 - **Exactness preserved.** Eviction only ever removes an entry that is either dead
   (no future read) or recomputable; a spilled/recomputed `H_p` yields the identical
   histogram. So the policy changes resource use, never any spliced result — it is a
