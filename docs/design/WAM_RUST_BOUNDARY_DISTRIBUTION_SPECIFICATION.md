@@ -226,6 +226,61 @@ kernel is used and output is identical — the basis for the disablability guara
 - Persistence (later): a `boundary_basis` LMDB sub-db (node → packed histogram),
   loaded at setup like `s2i`/`min_dist`, so the precompute is not repeated per run.
 
+### 8a. Precompute liveness & eviction
+
+The suffix recurrence builds a node's distribution **from its parents'** (the nodes
+one step *closer to the root*):
+
+```
+H_root = δ_0            (the empty path: atom of mass 1 at length 0)
+H_v[L] = Σ_{p ∈ parents(v)} H_p[L−1]            (boundary_cache.rs:suffix_histogram)
+```
+
+So `H_p` is a *consumed input* to every child `v` with `p ∈ parents(v)`, and nothing
+else. This gives an exact **liveness signal** over the precompute sweep:
+
+> **`H_p` is live only from when it is first computed until its last child consumes
+> it.** Once the distributions of *all* descendants that name `p` as a parent have
+> been computed, `H_p` is **dead** — fully consumed — unless `p` is itself a retained
+> boundary node (`p ∈ Bset`), whose distribution is kept for query-time splicing.
+
+Track it with a per-node consumer count `refs(p) = #{v : p ∈ parents(v)} within the
+precomputed cone`, decremented on each child completion; `refs(p) = 0 ∧ p ∉ Bset`
+marks `p` **dead**.
+
+**The trigger is pressure, the liveness is the priority — they are separate.**
+Eviction is driven by a **memory / storage budget** (the reserved capacity for the
+in-memory side-table and for the `boundary_basis` LMDB sub-db): entries are evicted
+only when the budget is under pressure, *not* eagerly at `refs = 0`. When pressure
+hits, the liveness signal supplies the **priority order**:
+
+1. **Dead interior nodes first** (`refs = 0 ∧ p ∉ Bset`) — never read again in *this*
+   sweep, so the highest-priority class. **Within this class, evict deepest-first**
+   (largest depth-from-root): root-near distributions cover the largest cones and are
+   the most-reused hubs (philosophy §3), so they are the most likely to be hit again
+   by a *second query* — keep them resident longer; the deep, narrow-cone nodes have
+   little cross-query reuse value and go first. (So "zero-regret" holds within a
+   single sweep; across queries the regret rises toward the root, which is exactly
+   what depth-first eviction minimises.)
+2. then **still-live interior** scratch (by a secondary metric — e.g. furthest next
+   use / lowest remaining `refs`, again breaking ties deepest-first), accepting a
+   possible recompute;
+3. **retained boundary band** (`p ∈ Bset`) last, and even then it spills to the
+   `boundary_basis` LMDB sub-db rather than being dropped, since queries still need
+   it.
+
+Consequences:
+
+- **Bounded working set.** Holding dead interiors until pressure (rather than freeing
+  at `refs = 0`) keeps the resident scratch within the budget while preferring to
+  keep what might still be reused; under steady pressure the resident set tends
+  toward the cone's *frontier antichain width* plus the retained band — biased to
+  retain the **root-near** end of that scratch, the part with cross-query reuse.
+- **Exactness preserved.** Eviction only ever removes an entry that is either dead
+  (no future read) or recomputable; a spilled/recomputed `H_p` yields the identical
+  histogram. So the policy changes resource use, never any spliced result — it is a
+  cache policy (recompute / reload on demand), not a one-shot deletion.
+
 ## 9. Storage / approximation
 
 Exact discrete histograms by default. The §1a backings are the storage/scale
