@@ -17,6 +17,10 @@ registers and drives the enumerator with the right continuation (`pc+1` for
 `call`, the saved `cp` for a tail-call `execute`). So an ordinary predicate can
 call a fact-table predicate and backtrack through it (incl. backtracking into the
 fact-table choice point from a downstream goal). No remaining T9 follow-ons.
+**Benchmarked:** see `docs/reports/wam_rust_t9_fact_table_benchmark.md` — T9 emits
+0 interpreter instructions (vs ~4/fact for T4), compiles in seconds (T4: ~14 min
+at 500 facts, did not finish at 2000), point-looks-up at ~8 µs/query, and is
+correct at scale where the T4 shared-table first-arg index drops some keys.
 
 Original design / spec / implementation plan below. Survey of the reference
 targets (R / Haskell / Lua) + the Rust target's current fact handling is folded in.
