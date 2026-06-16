@@ -379,24 +379,31 @@ pub fn fit_binomial_cdf(h: &Hist) -> (usize, f64) {
 pub enum HistRepr {
     Exact(Hist),
     Binomial { trials: usize, p: f64, total: u64 },
+    /// Mixture of binomials (shared `trials`); `comps` are `(weight, p)` pairs.
+    /// The escalation rung for multimodal nodes a single binomial cannot fit.
+    Mixture { trials: usize, comps: Vec<(f64, f64)>, total: u64 },
 }
 
 impl HistRepr {
-    /// Approximate stored size in bytes (the cost the chooser minimises).
+    /// Approximate stored size in bytes (the cost the chooser minimises). Matches
+    /// the `encode_repr` wire size: a 1-byte tag plus the fields.
     pub fn bytes(&self) -> usize {
         match self {
-            HistRepr::Exact(h) => 4 + h.len() * 8,     // u32 len prefix + u64 counts
-            HistRepr::Binomial { .. } => 4 + 8 + 8,    // trials u32 + p f64 + total u64
+            HistRepr::Exact(h) => 1 + 4 + h.len() * 8,      // tag + u32 len + u64 counts
+            HistRepr::Binomial { .. } => 1 + 4 + 8 + 8,     // tag + trials + p + total
+            HistRepr::Mixture { comps, .. } => 1 + 4 + 4 + comps.len() * 16 + 8,
         }
     }
-    /// Reconstruct a count histogram (a binomial is expanded, scaled to `total`,
-    /// and rounded). The kernel always consumes counts, so a fitted node expands
-    /// on load.
+    /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
+    /// `total` and rounded). The kernel always consumes counts, so a fitted node
+    /// expands on load.
     pub fn expand(&self) -> Hist {
         match self {
             HistRepr::Exact(h) => h.clone(),
-            HistRepr::Binomial { trials, p, total } => binomial_pmf(*trials, *p)
-                .iter().map(|&pr| (pr * *total as f64).round() as u64).collect(),
+            _ => {
+                let total = self.total() as f64;
+                self.pmf().iter().map(|&pr| (pr * total).round() as u64).collect()
+            }
         }
     }
     /// The PMF of this representation.
@@ -404,49 +411,205 @@ impl HistRepr {
         match self {
             HistRepr::Exact(h) => to_pmf(h),
             HistRepr::Binomial { trials, p, .. } => binomial_pmf(*trials, *p),
+            HistRepr::Mixture { trials, comps, .. } => mixture_pmf(*trials, comps),
+        }
+    }
+    fn total(&self) -> u64 {
+        match self {
+            HistRepr::Exact(h) => h.iter().sum(),
+            HistRepr::Binomial { total, .. } | HistRepr::Mixture { total, .. } => *total,
         }
     }
 }
 
-/// Choose the cheapest (fewest bytes) representation of `h` whose Kolmogorov CDF
-/// error vs the exact histogram is within `epsilon_k`. Candidates: exact (always
-/// admissible, error 0), tail-pruned exact (rung 1), and the method-of-moments
-/// binomial (rung 2). Mirrors the Python `choose_distribution_representation`:
-/// cheapest within the error policy. The support count `> min_points` is the WORK
-/// TRIGGER for the lossy candidates; below it, exact is returned unchanged.
-pub fn choose_representation(h: &Hist, min_points: usize, epsilon_k: f64) -> HistRepr {
-    let exact = HistRepr::Exact(h.clone());
-    if h.len() <= min_points {
-        return exact;
-    }
-    let exact_pmf = to_pmf(h);
-    let mut best = exact.clone();
-    let mut best_bytes = exact.bytes();
-    // rung 1: tail-pruned exact (error == dropped fraction)
-    let (pruned, drop) = tail_prune(h, epsilon_k);
-    if pruned.len() < h.len() && drop <= epsilon_k {
-        let cand = HistRepr::Exact(pruned);
-        if cand.bytes() < best_bytes { best_bytes = cand.bytes(); best = cand; }
-    }
-    // rung 2: parametric binomial — try BOTH the moment fit and the CDF-space fit,
-    // keep whichever passes the gate with the smaller CDF error. The CDF fit
-    // optimises the cumulative (integral) form directly, so it is usually <= the
-    // moment fit on the metric the gate uses.
-    let total: u64 = h.iter().sum();
-    let mut best_binom: Option<(f64, HistRepr)> = None;
-    for (trials, p) in [fit_binomial(h), fit_binomial_cdf(h)] {
-        let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
-        if err <= epsilon_k {
-            match &best_binom {
-                Some((be, _)) if *be <= err => {}
-                _ => best_binom = Some((err, HistRepr::Binomial { trials, p, total })),
-            }
+/// PMF of a binomial mixture: `sum_k w_k * Binomial(trials, p_k)`.
+pub fn mixture_pmf(trials: usize, comps: &[(f64, f64)]) -> Vec<f64> {
+    let mut out = vec![0.0f64; trials + 1];
+    for &(w, p) in comps {
+        for (i, &bi) in binomial_pmf(trials, p).iter().enumerate() {
+            if i < out.len() { out[i] += w * bi; }
         }
     }
-    if let Some((_, cand)) = best_binom {
-        if cand.bytes() < best_bytes { best = cand; }
+    out
+}
+
+/// Fit a `k`-component binomial mixture by EM (shared `trials = support-1`),
+/// weighted by the empirical PMF. Components start with `p` spread across (0,1) and
+/// equal weights; `iters` EM sweeps. Handles the multimodal nodes a single binomial
+/// rejects. Returns `(trials, [(weight, p)])`.
+pub fn fit_binomial_mixture(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f64, f64)>) {
+    let pmf = to_pmf(h);
+    let trials = pmf.len().saturating_sub(1);
+    let k = k.max(1);
+    if trials == 0 {
+        return (trials, vec![(1.0, 0.0)]);
     }
-    best
+    let mut comps: Vec<(f64, f64)> = (0..k)
+        .map(|j| (1.0 / k as f64, (j as f64 + 0.5) / k as f64))
+        .collect();
+    let n = pmf.len();
+    for _ in 0..iters {
+        let comp_pmfs: Vec<Vec<f64>> = comps.iter().map(|&(_, p)| binomial_pmf(trials, p)).collect();
+        let mut new_w = vec![0.0f64; k];
+        let mut num = vec![0.0f64; k]; // sum_i pmf[i] r_ij (i/trials)
+        for i in 0..n {
+            if pmf[i] <= 0.0 { continue; }
+            let mut resp = vec![0.0f64; k];
+            let mut denom = 0.0f64;
+            for j in 0..k {
+                let v = comps[j].0 * comp_pmfs[j].get(i).copied().unwrap_or(0.0);
+                resp[j] = v;
+                denom += v;
+            }
+            if denom <= 0.0 { continue; }
+            let frac = i as f64 / trials as f64;
+            for j in 0..k {
+                let wj = pmf[i] * (resp[j] / denom);
+                new_w[j] += wj;
+                num[j] += wj * frac;
+            }
+        }
+        let wsum: f64 = new_w.iter().sum();
+        if wsum <= 0.0 { break; }
+        for j in 0..k {
+            let w = new_w[j] / wsum;
+            let p = if new_w[j] > 0.0 { (num[j] / new_w[j]).clamp(0.0, 1.0) } else { comps[j].1 };
+            comps[j] = (w, p);
+        }
+    }
+    (trials, comps)
+}
+
+/// All candidate representations of `h`, each paired with its certified CDF error
+/// vs exact. Always includes `Exact` (error 0). Adds the lossy rungs — tail-pruned
+/// exact, single binomial (both fits), and K=2/3 binomial mixtures — only when the
+/// support count exceeds `min_points` (the work trigger / storage proxy).
+fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)> {
+    let mut cands: Vec<(HistRepr, f64)> = vec![(HistRepr::Exact(h.clone()), 0.0)];
+    if h.len() <= min_points {
+        return cands;
+    }
+    let exact_pmf = to_pmf(h);
+    let total: u64 = h.iter().sum();
+    for thr in [0.0001f64, 0.001, 0.01] {
+        let (pruned, drop) = tail_prune(h, thr);
+        if pruned.len() < h.len() {
+            cands.push((HistRepr::Exact(pruned), drop)); // dropped mass IS the Kolmogorov error
+        }
+    }
+    for (trials, p) in [fit_binomial(h), fit_binomial_cdf(h)] {
+        let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
+        cands.push((HistRepr::Binomial { trials, p, total }, err));
+    }
+    for k in [2usize, 3] {
+        let (trials, comps) = fit_binomial_mixture(h, k, 60);
+        let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
+        cands.push((HistRepr::Mixture { trials, comps, total }, err));
+    }
+    cands
+}
+
+/// ERROR-driven choice: the cheapest (fewest bytes) representation whose CDF error
+/// is within `epsilon_k`. Mirrors the Python `choose_distribution_representation`.
+/// `Exact` is always admissible, so this never fails. The support count
+/// `> min_points` is the work trigger for the lossy rungs.
+pub fn choose_representation(h: &Hist, min_points: usize, epsilon_k: f64) -> HistRepr {
+    representation_candidates(h, min_points).into_iter()
+        .filter(|(_, e)| *e <= epsilon_k)
+        .min_by(|(a, ea), (b, eb)| a.bytes().cmp(&b.bytes()).then(ea.partial_cmp(eb).unwrap()))
+        .map(|(r, _)| r)
+        .unwrap_or_else(|| HistRepr::Exact(h.clone()))
+}
+
+/// STORAGE-driven choice (the multi-objective complement): among candidates that
+/// fit within `max_bytes`, the one with the SMALLEST CDF error — i.e. storage is
+/// the binding constraint and error is what gets minimised, not the other way
+/// round. Falls back to the smallest-byte candidate when nothing fits the budget.
+/// (Memory / storage — or, with a different cost, compute — can be the real
+/// objective; the point count is just a storage proxy for "this is getting big".)
+pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usize) -> HistRepr {
+    let cands = representation_candidates(h, min_points);
+    cands.iter()
+        .filter(|(r, _)| r.bytes() <= max_bytes)
+        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .map(|(r, _)| r.clone())
+        .unwrap_or_else(|| {
+            cands.iter().min_by_key(|(r, _)| r.bytes()).map(|(r, _)| r.clone()).unwrap()
+        })
+}
+
+/// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
+/// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
+/// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture.
+pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
+    let mut out = Vec::new();
+    match r {
+        HistRepr::Exact(h) => {
+            out.push(0u8);
+            out.extend_from_slice(&encode_hist(h));
+        }
+        HistRepr::Binomial { trials, p, total } => {
+            out.push(1u8);
+            out.extend_from_slice(&(*trials as u32).to_le_bytes());
+            out.extend_from_slice(&p.to_le_bytes());
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::Mixture { trials, comps, total } => {
+            out.push(2u8);
+            out.extend_from_slice(&(*trials as u32).to_le_bytes());
+            out.extend_from_slice(&(comps.len() as u32).to_le_bytes());
+            for &(w, p) in comps {
+                out.extend_from_slice(&w.to_le_bytes());
+                out.extend_from_slice(&p.to_le_bytes());
+            }
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+    }
+    out
+}
+
+fn read_u32(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+fn read_f64(b: &[u8], o: usize) -> f64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&b[o..o + 8]);
+    f64::from_le_bytes(a)
+}
+fn read_u64(b: &[u8], o: usize) -> u64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&b[o..o + 8]);
+    u64::from_le_bytes(a)
+}
+
+/// Decode a `HistRepr` produced by `encode_repr`. An empty / unrecognised buffer
+/// decodes to `Exact([])`.
+pub fn decode_repr(b: &[u8]) -> HistRepr {
+    if b.is_empty() {
+        return HistRepr::Exact(Vec::new());
+    }
+    match b[0] {
+        0 => HistRepr::Exact(decode_hist(&b[1..])),
+        1 if b.len() >= 1 + 4 + 8 + 8 => HistRepr::Binomial {
+            trials: read_u32(b, 1) as usize,
+            p: read_f64(b, 5),
+            total: read_u64(b, 13),
+        },
+        2 if b.len() >= 1 + 4 + 4 => {
+            let trials = read_u32(b, 1) as usize;
+            let k = read_u32(b, 5) as usize;
+            let mut comps = Vec::with_capacity(k);
+            let mut o = 9;
+            for _ in 0..k {
+                if o + 16 > b.len() { break; }
+                comps.push((read_f64(b, o), read_f64(b, o + 8)));
+                o += 16;
+            }
+            let total = if o + 8 <= b.len() { read_u64(b, o) } else { 0 };
+            HistRepr::Mixture { trials, comps, total }
+        }
+        _ => HistRepr::Exact(Vec::new()),
+    }
 }
 
 #[cfg(test)]
@@ -541,15 +704,60 @@ mod tests {
         assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
     }
 
-    // A bimodal (non-binomial) histogram fails the gate -> exact/tail-pruned kept.
+    // A bimodal histogram: a single binomial fails the gate, but the mixture rung
+    // (escalation) fits it — and the chooser picks the Mixture (cheaper than exact).
     #[test]
-    fn choose_representation_rejects_bad_fit() {
-        let mut h = vec![0u64; 60];
-        for i in 3..8 { h[i] = 1000; }     // peak near 5
-        for i in 53..58 { h[i] = 1000; }   // peak near 55
+    fn mixture_fits_bimodal_single_binomial_rejects() {
+        // a genuine two-binomial mixture (modes a single binomial cannot span).
+        let trials = 59usize;
+        let lo = binomial_pmf(trials, 0.15);
+        let hi = binomial_pmf(trials, 0.85);
+        let h: Hist = (0..=trials)
+            .map(|i| ((0.5 * lo[i] + 0.5 * hi[i]) * 1_000_000.0).round() as u64)
+            .collect();
+        let exact_pmf = to_pmf(&h);
+        // single binomial cannot fit a bimodal shape
+        let (tb, pb) = fit_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01,
+            "single binomial should miss the gate on a bimodal histogram");
+        // the K=2 mixture does
+        let (tm, comps) = fit_binomial_mixture(&h, 2, 60);
+        assert!(cdf_max_error_pmf(&exact_pmf, &mixture_pmf(tm, &comps)) <= 0.01,
+            "K=2 mixture should fit the bimodal histogram");
+        // and the chooser selects the Mixture (smaller than the exact 60-bucket hist)
         let repr = choose_representation(&h, 10, 0.01);
-        assert!(matches!(repr, HistRepr::Exact(_)),
-            "a bimodal histogram must not be fit by a single binomial: {:?}", repr);
+        assert!(matches!(repr, HistRepr::Mixture { .. }),
+            "expected Mixture for the bimodal histogram, got {:?}", repr);
+        assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
+    }
+
+    // Storage-budget chooser: a tight byte budget forces the smallest representation
+    // even past the error gate; a generous budget recovers the exact form.
+    #[test]
+    fn budget_chooser_respects_storage() {
+        let (trials, p) = (20usize, 0.4f64);
+        let h: Hist = binomial_pmf(trials, p).iter()
+            .map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        // tight budget -> a parametric form (<= 49 bytes), not the exact histogram
+        let tight = choose_representation_budget(&h, 10, 30);
+        assert!(tight.bytes() <= 30, "must fit the byte budget");
+        assert!(!matches!(tight, HistRepr::Exact(_)), "tight budget rejects exact");
+        // huge budget -> exact is admissible and has the smallest error (0)
+        let loose = choose_representation_budget(&h, 10, 1_000_000);
+        assert!(matches!(loose, HistRepr::Exact(_)), "loose budget keeps exact (error 0)");
+    }
+
+    #[test]
+    fn encode_decode_repr_roundtrip() {
+        let reprs = [
+            HistRepr::Exact(vec![0u64, 3, 1, 0, 5]),
+            HistRepr::Binomial { trials: 12, p: 0.37, total: 9999 },
+            HistRepr::Mixture { trials: 20, comps: vec![(0.6, 0.2), (0.4, 0.8)], total: 12345 },
+        ];
+        for r in reprs {
+            assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
+        }
+        assert_eq!(decode_repr(&[]), HistRepr::Exact(vec![]));
     }
 
     // Fitting in CDF space (minimising W1, the integral form) is at least as good

@@ -369,10 +369,25 @@ Implemented (Rust, `boundary_cache.rs`):
   the Python `choose_distribution_representation`: the cheapest representation whose
   CDF error is within `ε_K` — exact (error 0), tail-pruned, or binomial (trying both
   fits and keeping the lower-error one). **The gate is a hard reject:** a fit that
-  misses `ε_K` (e.g. a bimodal histogram against a single binomial) is dropped and
-  the exact/tail-pruned form kept, so accuracy never silently degrades. Bounded
-  integer path-length data favour binomials; mixtures / discretised-GMM are the
-  escalation rungs (future).
+  misses `ε_K` is dropped and the exact/tail-pruned form kept, so accuracy never
+  silently degrades.
+- **Rung 3 — mixture of binomials** — `fit_binomial_mixture(h, k, iters)` (EM,
+  shared `trials`, PMF-weighted) fits the multimodal nodes a single binomial rejects
+  (a bottleneck / topic-mixture cone). `HistRepr::Mixture{trials,comps,total}` joins
+  the candidate set (`K = 2,3`). Discretised-GMM stays escalation-only — bounded
+  integer path-length data favour binomial families.
+- **Choice is multi-objective.** `choose_representation` is *error-driven* (cheapest
+  within `ε_K`); `choose_representation_budget` is the *storage-driven* complement
+  (smallest CDF error within a byte budget). Error is not always the binding
+  constraint — memory / storage (or, with a different cost model, compute) often is —
+  so the `min_points` work trigger is best read as a **storage proxy** ("this is
+  getting big"), not an intrinsic error threshold, and need not be exactly 50.
+- **Persistence (storage win, end to end).** `WamState::boundary_suffix_reprs` chooses
+  a representation per cached node; `encode_repr`/`decode_repr` pack it (self-
+  describing tag + fields); `LmdbFactSource::save_boundary_reprs` / `load_boundary_
+  reprs` persist to the `boundary_basis_repr` sub-db and **expand** on load (a
+  binomial node stores ~21 bytes instead of a histogram; a fitted node reconstructs
+  within its `ε_K` certificate).
 - `compress_histogram` / `WamState::compress_boundary_suffix(min_points, ε_K)` apply
   rung 1 across the cached table.
 

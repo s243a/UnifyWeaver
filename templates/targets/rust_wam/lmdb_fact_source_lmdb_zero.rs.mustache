@@ -225,6 +225,62 @@ impl LmdbFactSource {
         Ok(())
     }
 
+    /// Persist *fitted* boundary representations (exact / tail-pruned / binomial /
+    /// mixture, chosen by `WamState::boundary_suffix_reprs`) to the
+    /// `boundary_basis_repr` sub-db. This realises the storage win: a node that fits
+    /// a binomial stores ~21 bytes instead of a full histogram. Values are packed by
+    /// `boundary_cache::encode_repr` (self-describing tag + fields).
+    pub fn save_boundary_reprs(
+        &self, table: &HashMap<u32, crate::boundary_cache::HistRepr>,
+    ) -> Result<(), lmdb::Error> {
+        let db = lmdb::Database::open(
+            Arc::clone(&self.env),
+            Some("boundary_basis_repr"),
+            &lmdb::DatabaseOptions::new(lmdb::db::CREATE),
+        )?;
+        let txn = lmdb::WriteTransaction::new(&*self.env)?;
+        {
+            let mut access = txn.access();
+            for (&node, repr) in table {
+                let key = node.to_le_bytes();
+                let val = crate::boundary_cache::encode_repr(repr);
+                access.put(&db, &key[..], &val[..], lmdb::put::Flags::empty())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Load the `boundary_basis_repr` sub-db and **expand** each representation back
+    /// to a count histogram (the kernel always consumes counts), ready for
+    /// `WamState::set_boundary_suffix`. Empty when the sub-db is absent. A fitted
+    /// node reconstructs within its `epsilon_k` certificate.
+    pub fn load_boundary_reprs(&self) -> Result<HashMap<u32, Vec<u64>>, lmdb::Error> {
+        let db = match lmdb::Database::open(
+            Arc::clone(&self.env),
+            Some("boundary_basis_repr"),
+            &lmdb::DatabaseOptions::new(lmdb::db::Flags::empty()),
+        ) {
+            Ok(db) => db,
+            Err(_) => return Ok(HashMap::new()),
+        };
+        let txn = lmdb::ReadTransaction::new(&*self.env)?;
+        let access = txn.access();
+        let mut cursor = txn.cursor(&db)?;
+        let mut out = HashMap::new();
+        match cursor.first::<[u8], [u8]>(&access) {
+            Ok((k, v)) => {
+                out.insert(decode_u32(k), crate::boundary_cache::decode_repr(v).expand());
+                while let Ok((k, v)) = cursor.next::<[u8], [u8]>(&access) {
+                    out.insert(decode_u32(k), crate::boundary_cache::decode_repr(v).expand());
+                }
+            }
+            Err(lmdb::Error::Code(lmdb_zero::error::NOTFOUND)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(out)
+    }
+
     /// Look up all parents of `child_id` via cursor MDB_SET + MDB_NEXT_DUP.
     /// Returns an empty Vec if the key is absent.
     pub fn lookup_parents(&self, child_id: i32) -> Result<Vec<i32>, lmdb::Error> {
