@@ -73,7 +73,8 @@ peak resident memo entries; `eq` = boundary aggregate == production exactly.
   is the durable result.
 - This measures the eager (in-memory) edge path. The LMDB-backed lazy path adds
   seek cost to *both* baseline and boundary; the boundary still removes the walk, so
-  the relative win should persist (to be confirmed in the end-to-end LMDB run).
+  the relative win persists — **confirmed** in the LMDB addendum below (20–25× on the
+  lazy path, with production ~4–5× slower there, so the absolute saving is larger).
 - `boundary_splice_complexity_bench.rs` (P3, std-only) remains the complexity-class
   demonstration (splice flat vs full-enum growing); this report is its on-the-real-
   kernels counterpart.
@@ -197,3 +198,43 @@ per-config winner.
 
 Guarded by `lazy_boundary_caches_on_demand_and_matches_eager` (a query touching one
 seed caches only that seed's entry; results match production).
+
+## Addendum — the LMDB (lazy edge) path (closing the §6 caveat)
+
+The original §6 caveat: the measurement used eager in-memory `HashMap` edges, and
+the boundary win "should persist" on the LMDB-backed lazy path "to be confirmed in
+the end-to-end LMDB run." Confirmed. `wam_rust_boundary_lazy_edge_measurement.pl`
+writes the same synthetic graph into a real LMDB env (int-native: node id == LMDB
+key), registers it as the lazy `category_parent/2` `LookupSource` (so each parent
+lookup is an LMDB seek through the two-tier L1/L2 edge cache), and measures
+production vs boundary there — side by side with the eager path on the same graph.
+
+```
+config     | L_prod_ms  L_bnd_ms  L_speed | E_prod_ms  E_bnd_ms  E_speed | eq
+core=120   |    85.54     3.500    24.4x  |   17.16     0.690     24.9x  | yes
+core=180   |    96.64     3.898    24.8x  |   22.60     2.292      9.9x  | yes
+core=240   |   107.92     5.315    20.3x  |   23.45     1.398     16.8x  | yes
+```
+
+`L_*` = lazy/LMDB edge path; `E_*` = eager/in-memory path; same 500-seed workload,
+`D_pre=2` entry-frontier band.
+
+**Findings.**
+
+- **Production is ~4-5x slower on LMDB edges** (85-108 ms vs the eager 17-23 ms):
+  each parent lookup is an LMDB cursor seek through the L1/L2 cache, not a HashMap
+  hit. So the walk the boundary cache removes is *more expensive* on disk.
+- **The boundary win persists — and is comparable or larger on the lazy path**
+  (20-25x vs the eager 10-25x; e.g. core=180 is 24.8x lazy vs 9.9x eager). Because
+  the cache avoids the cone *walk*, the more each avoided lookup costs, the more it
+  saves: the absolute time removed per 500-seed batch is ~82 ms on LMDB vs ~16 ms
+  in memory.
+- **Exact on both paths** (`eq = yes`): lazy production == lazy boundary == eager
+  production == eager boundary.
+- **The boundary precompute runs on the lazy edge path** (`build_boundary_suffix`
+  enumerates via the `EdgeAccessor`), and the kernel splices the same cached
+  histograms — so no eager `ffi_facts` table is needed for the LMDB deployment.
+
+Implementation note: `LmdbFactSource` caches a per-thread read transaction, so the
+harness runs each config's lazy section in its own thread (a fresh env needs a fresh
+txn slot) — relevant for any code that opens multiple LMDB envs per process.
