@@ -1292,6 +1292,20 @@ impl WamState {
         (compressed, removed)
     }
 
+    /// Choose a storage representation (`boundary_cache::choose_representation`) for
+    /// each cached `boundary_suffix` histogram — exact, tail-pruned, binomial, or
+    /// mixture, the cheapest within the `epsilon_k` CDF certificate. The result is
+    /// the persistable form for the `boundary_basis_repr` LMDB sub-db
+    /// (`LmdbFactSource::save_boundary_reprs`); a later run `load_boundary_reprs`
+    /// expands them back to histograms. Does not mutate the in-memory cache.
+    pub fn boundary_suffix_reprs(
+        &self, min_points: usize, epsilon_k: f64,
+    ) -> HashMap<u32, crate::boundary_cache::HistRepr> {
+        self.boundary_suffix.iter()
+            .map(|(&k, h)| (k, crate::boundary_cache::choose_representation(h, min_points, epsilon_k)))
+            .collect()
+    }
+
     /// Direct `weighted_power(N)` WeightSum via the pre-weighted basis (P4).
     /// Walks `cat_id -> root` exactly like `collect_native_category_ancestor_
     /// boundary_hist`, but instead of building a histogram it accumulates the

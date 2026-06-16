@@ -1,6 +1,6 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
@@ -358,10 +358,20 @@ Phasing:
     lower-bandwidth). `choose_representation` tries both fits and keeps the
     lower-error one. Validated: the CDF fit is ≤ the moment fit on W1 and strictly
     better when the mean is pulled by local PMF contamination.
-  - **Fitted forms [next].** beta-binomial (over-dispersion) and
-    mixture-of-binomials (EM), discretised-GMM as escalation only, same CDF/W1 gate;
-    plus wiring `choose_representation` into the persisted `boundary_basis` (store
-    binomial params, `expand` on load) to realise the storage win end-to-end.
+  - **Mixture of binomials + multi-objective choice + persistence [DONE].**
+    `fit_binomial_mixture` (EM, shared trials) + `HistRepr::Mixture` fit the
+    multimodal nodes a single binomial rejects (validated: a true 2-binomial mixture
+    is fit and chosen while a single binomial misses the gate).
+    `choose_representation_budget` adds the **storage-driven** complement to the
+    error-driven `choose_representation` — error is not always the binding
+    constraint; `min_points` is a storage proxy, not an intrinsic error gate (need
+    not be 50). End-to-end storage win wired: `WamState::boundary_suffix_reprs` +
+    `encode_repr`/`decode_repr` + `LmdbFactSource::save_boundary_reprs` /
+    `load_boundary_reprs` (the `boundary_basis_repr` sub-db; expand on load).
+    Cargo-gated `test_wam_rust_boundary_repr_lmdb.pl`: a binomial-shaped node persists
+    as ~21 bytes and reloads within `ε_K`; a short node round-trips exactly.
+  - **Fitted forms [next].** beta-binomial (over-dispersion), quantised-CDF table;
+    discretised-GMM as escalation only.
 
 ## 6. What to measure (re-derive, don't inherit)
 
