@@ -261,6 +261,138 @@ pub fn compress_histogram(h: &Hist, min_points: usize, epsilon_k: f64) -> Hist {
     if pruned.len() < h.len() { pruned } else { h.clone() }
 }
 
+// --- Fitted forms (ladder rung 2): parametric binomial, CDF-gated ---
+//
+// The next rung after tail-pruned-exact: replace a long histogram with a small set
+// of parameters when a *fit* is within the CDF certificate. Ported from the Python
+// line (`fitted_binomial_pmf` / `choose_distribution_representation`): bounded
+// integer path-length data favour the **binomial** family (a GMM is escalation
+// only, not implemented here). The fit is method-of-moments; acceptance is the same
+// epsilon_K Kolmogorov gate as §9a — a fit that misses the gate is REJECTED and the
+// exact (or tail-pruned) form is kept, so this never silently degrades accuracy.
+
+/// Normalise a count histogram to a PMF (sums to 1). Zero-mass -> empty.
+fn to_pmf(h: &Hist) -> Vec<f64> {
+    let total: f64 = h.iter().map(|&c| c as f64).sum();
+    if total <= 0.0 { return Vec::new(); }
+    h.iter().map(|&c| c as f64 / total).collect()
+}
+
+/// Mean and variance of a PMF over its integer index domain (matches the Python
+/// `distribution_moments`).
+fn pmf_moments(pmf: &[f64]) -> (f64, f64) {
+    let mean: f64 = pmf.iter().enumerate().map(|(i, &p)| i as f64 * p).sum();
+    let var: f64 = pmf.iter().enumerate().map(|(i, &p)| (i as f64 - mean).powi(2) * p).sum();
+    (mean, var)
+}
+
+/// Max CDF (Kolmogorov) error between two PMFs (already normalised f64 vectors).
+fn cdf_max_error_pmf(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().max(b.len());
+    let (mut ca, mut cb, mut worst) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        ca += a.get(i).copied().unwrap_or(0.0);
+        cb += b.get(i).copied().unwrap_or(0.0);
+        worst = worst.max((ca - cb).abs());
+    }
+    worst
+}
+
+/// `Binomial(trials, p)` PMF over `0..=trials`, computed by the stable iterative
+/// recurrence (matches the Python `binomial_pmf`).
+pub fn binomial_pmf(trials: usize, p: f64) -> Vec<f64> {
+    if trials == 0 { return vec![1.0]; }
+    let p = p.clamp(0.0, 1.0);
+    if p == 0.0 { let mut v = vec![0.0; trials + 1]; v[0] = 1.0; return v; }
+    if p == 1.0 { let mut v = vec![0.0; trials + 1]; v[trials] = 1.0; return v; }
+    let q = 1.0 - p;
+    let mut v = vec![0.0f64; trials + 1];
+    v[0] = q.powi(trials as i32);
+    for k in 0..trials {
+        v[k + 1] = v[k] * (trials - k) as f64 / (k + 1) as f64 * p / q;
+    }
+    let s: f64 = v.iter().sum();
+    if s > 0.0 { for x in &mut v { *x /= s; } }
+    v
+}
+
+/// Method-of-moments binomial fit of a histogram: `trials = support-1`,
+/// `p = clamp(mean / trials)` (matches the Python `fitted_binomial_pmf`).
+pub fn fit_binomial(h: &Hist) -> (usize, f64) {
+    let pmf = to_pmf(h);
+    if pmf.is_empty() { return (0, 0.0); }
+    let trials = pmf.len().saturating_sub(1);
+    let (mean, _var) = pmf_moments(&pmf);
+    let p = if trials == 0 { 0.0 } else { (mean / trials as f64).clamp(0.0, 1.0) };
+    (trials, p)
+}
+
+/// A storage representation of a boundary suffix histogram: either the exact (or
+/// tail-pruned) counts, or a parametric binomial fit scaled to `total` mass.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HistRepr {
+    Exact(Hist),
+    Binomial { trials: usize, p: f64, total: u64 },
+}
+
+impl HistRepr {
+    /// Approximate stored size in bytes (the cost the chooser minimises).
+    pub fn bytes(&self) -> usize {
+        match self {
+            HistRepr::Exact(h) => 4 + h.len() * 8,     // u32 len prefix + u64 counts
+            HistRepr::Binomial { .. } => 4 + 8 + 8,    // trials u32 + p f64 + total u64
+        }
+    }
+    /// Reconstruct a count histogram (a binomial is expanded, scaled to `total`,
+    /// and rounded). The kernel always consumes counts, so a fitted node expands
+    /// on load.
+    pub fn expand(&self) -> Hist {
+        match self {
+            HistRepr::Exact(h) => h.clone(),
+            HistRepr::Binomial { trials, p, total } => binomial_pmf(*trials, *p)
+                .iter().map(|&pr| (pr * *total as f64).round() as u64).collect(),
+        }
+    }
+    /// The PMF of this representation.
+    pub fn pmf(&self) -> Vec<f64> {
+        match self {
+            HistRepr::Exact(h) => to_pmf(h),
+            HistRepr::Binomial { trials, p, .. } => binomial_pmf(*trials, *p),
+        }
+    }
+}
+
+/// Choose the cheapest (fewest bytes) representation of `h` whose Kolmogorov CDF
+/// error vs the exact histogram is within `epsilon_k`. Candidates: exact (always
+/// admissible, error 0), tail-pruned exact (rung 1), and the method-of-moments
+/// binomial (rung 2). Mirrors the Python `choose_distribution_representation`:
+/// cheapest within the error policy. The support count `> min_points` is the WORK
+/// TRIGGER for the lossy candidates; below it, exact is returned unchanged.
+pub fn choose_representation(h: &Hist, min_points: usize, epsilon_k: f64) -> HistRepr {
+    let exact = HistRepr::Exact(h.clone());
+    if h.len() <= min_points {
+        return exact;
+    }
+    let exact_pmf = to_pmf(h);
+    let mut best = exact.clone();
+    let mut best_bytes = exact.bytes();
+    // rung 1: tail-pruned exact (error == dropped fraction)
+    let (pruned, drop) = tail_prune(h, epsilon_k);
+    if pruned.len() < h.len() && drop <= epsilon_k {
+        let cand = HistRepr::Exact(pruned);
+        if cand.bytes() < best_bytes { best_bytes = cand.bytes(); best = cand; }
+    }
+    // rung 2: parametric binomial (error == CDF distance to the fit)
+    let (trials, p) = fit_binomial(h);
+    let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
+    if err <= epsilon_k {
+        let total: u64 = h.iter().sum();
+        let cand = HistRepr::Binomial { trials, p, total };
+        if cand.bytes() < best_bytes { best = cand; }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +456,44 @@ mod tests {
         let mut heavy = vec![0u64; 60];
         for i in 0..60 { heavy[i] = 100; } // uniform -> tail is heavy
         assert_eq!(compress_histogram(&heavy, 50, 0.001), heavy);
+    }
+
+    #[test]
+    fn binomial_pmf_basic() {
+        let b = binomial_pmf(2, 0.5);
+        assert_eq!(b.len(), 3);
+        for (got, want) in b.iter().zip([0.25, 0.5, 0.25]) {
+            assert!((got - want).abs() < 1e-12);
+        }
+        assert!((binomial_pmf(10, 0.3).iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert_eq!(binomial_pmf(0, 0.5), vec![1.0]);
+    }
+
+    // A histogram that IS a binomial fits within the gate and is chosen (smaller).
+    #[test]
+    fn choose_representation_fits_a_binomial() {
+        let (trials, p) = (20usize, 0.4f64);
+        let h: Hist = binomial_pmf(trials, p).iter()
+            .map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let repr = choose_representation(&h, 10, 0.01);
+        match repr {
+            HistRepr::Binomial { trials: t, .. } => assert_eq!(t, trials),
+            other => panic!("expected Binomial, got {:?}", other),
+        }
+        assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes(), "binomial must be smaller");
+        // expansion stays within the certificate.
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
+    }
+
+    // A bimodal (non-binomial) histogram fails the gate -> exact/tail-pruned kept.
+    #[test]
+    fn choose_representation_rejects_bad_fit() {
+        let mut h = vec![0u64; 60];
+        for i in 3..8 { h[i] = 1000; }     // peak near 5
+        for i in 53..58 { h[i] = 1000; }   // peak near 55
+        let repr = choose_representation(&h, 10, 0.01);
+        assert!(matches!(repr, HistRepr::Exact(_)),
+            "a bimodal histogram must not be fit by a single binomial: {:?}", repr);
     }
 
     // Sample DAG (child -> parents), root = 0. Diamonds produce multiple paths
