@@ -5,7 +5,9 @@ the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
 scalar/histogram result-mode family, invariants, interface), and this plan (phased
-work + status). Also companion to `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`,
+work + status); plus **`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md`** (the operator's
+manual — how to use it) and **`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`** (the
+measured results). Also companion to `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`,
 `DISTRIBUTIONAL_COMPRESSION_THEORY.md`, `RECURRENCE_EVALUATION_STRATEGY_*.md`, and
 the EnWiki splice-validation reports.
 
