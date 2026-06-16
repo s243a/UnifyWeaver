@@ -237,29 +237,42 @@ H_v[L] = Σ_{p ∈ parents(v)} H_p[L−1]            (boundary_cache.rs:suffix_h
 ```
 
 So `H_p` is a *consumed input* to every child `v` with `p ∈ parents(v)`, and nothing
-else. This gives an exact **liveness rule** for the precompute sweep:
+else. This gives an exact **liveness signal** over the precompute sweep:
 
 > **`H_p` is live only from when it is first computed until its last child consumes
 > it.** Once the distributions of *all* descendants that name `p` as a parent have
-> been computed, `H_p` can be **evicted** — unless `p` is itself a retained boundary
-> node (`p ∈ Bset`), whose distribution is kept for query-time splicing.
+> been computed, `H_p` is **dead** — fully consumed — unless `p` is itself a retained
+> boundary node (`p ∈ Bset`), whose distribution is kept for query-time splicing.
 
-Equivalently, run the precompute as a root-down topological sweep with a per-node
-consumer count `refs(p) = #{v : p ∈ parents(v)} within the precomputed cone`;
-decrement on each child completion and free at zero. Consequences:
+Track it with a per-node consumer count `refs(p) = #{v : p ∈ parents(v)} within the
+precomputed cone`, decremented on each child completion; `refs(p) = 0 ∧ p ∉ Bset`
+marks `p` **dead**.
 
-- **Bounded working set.** The simultaneously-resident scratch distributions are
-  bounded by the cone's *frontier antichain width*, not by the number of nodes
-  swept — the precompute streams instead of holding every node at once.
-- **Storage/cache eviction hint.** The same count is an eviction signal for the
-  backing store: an interior (non-`Bset`) node's entry in the in-memory side-table
-  *or* in the `boundary_basis` LMDB sub-db is safe to drop once its consumer count
-  reaches zero. Only the retained boundary band must persist; the intermediates
-  above the band (between `Bset` and the root) are pure scratch.
-- **Exactness preserved.** Eviction frees an entry *after* its last read, so it
-  changes only resource use, never any spliced result. (Re-deriving an evicted `p`
-  later — e.g. a new `Bset` member appears below it — simply recomputes it; the
-  rule is a cache policy, not a one-shot deletion.)
+**The trigger is pressure, the liveness is the priority — they are separate.**
+Eviction is driven by a **memory / storage budget** (the reserved capacity for the
+in-memory side-table and for the `boundary_basis` LMDB sub-db): entries are evicted
+only when the budget is under pressure, *not* eagerly at `refs = 0`. When pressure
+hits, the liveness signal supplies the **priority order**:
+
+1. **Dead interior nodes first** (`refs = 0 ∧ p ∉ Bset`) — these are the nodes
+   identified above; they will never be read again in this sweep, so they are the
+   highest-priority, zero-regret eviction class.
+2. then **still-live interior** scratch (by a secondary metric — e.g. furthest next
+   use / lowest remaining `refs`), accepting a possible recompute;
+3. **retained boundary band** (`p ∈ Bset`) last, and even then it spills to the
+   `boundary_basis` LMDB sub-db rather than being dropped, since queries still need
+   it.
+
+Consequences:
+
+- **Bounded working set.** Holding dead interiors until pressure (rather than freeing
+  at `refs = 0`) keeps the resident scratch within the budget while preferring to
+  keep what might still be reused; under steady pressure the resident set tends
+  toward the cone's *frontier antichain width* plus the retained band.
+- **Exactness preserved.** Eviction only ever removes an entry that is either dead
+  (no future read) or recomputable; a spilled/recomputed `H_p` yields the identical
+  histogram. So the policy changes resource use, never any spliced result — it is a
+  cache policy (recompute / reload on demand), not a one-shot deletion.
 
 ## 9. Storage / approximation
 
