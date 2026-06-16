@@ -956,7 +956,49 @@ impl WamState {
         &mut self, root_id: u32, d_pre: usize, max_depth: usize, edge_pred: &str,
     ) {
         let band = self.boundary_band_root_near(d_pre);
-        self.build_boundary_suffix(&band, root_id, max_depth, edge_pred);
+        // Prefer the polynomial shared-memo precompute (eager edges); fall back to
+        // per-node enumeration for the lazy/LMDB path.
+        if !self.build_boundary_suffix_shared(&band, root_id, max_depth, edge_pred) {
+            self.build_boundary_suffix(&band, root_id, max_depth, edge_pred);
+        }
+    }
+
+    /// Polynomial precompute: compute each band node's `node->root` suffix histogram
+    /// via the SHARED memoised recurrence `H_v[L] = sum_{p in parents(v)} H_p[L-1]`
+    /// (the proven `boundary_cache::suffix_histogram`), reusing ONE memo across all
+    /// band nodes instead of re-enumerating the upper cone per node. This is the
+    /// "polynomial precompute plus O(budget) splice" the optimization promises
+    /// (philosophy §3): independent `enum_ancestor_hist` per band node recomputes
+    /// the shared upper cone once per node; the shared memo computes each node's `H`
+    /// exactly once. Produces the identical histograms — the min_dist prune in the
+    /// enumeration path only drops paths that cannot reach the root within budget,
+    /// which contribute nothing — so it is interchangeable with `build_boundary_
+    /// suffix` (validated in tests). The shared memo is the substrate the liveness
+    /// eviction of spec §8a/§8b operates on.
+    ///
+    /// Eager-edge only: needs the in-memory parents table (`ffi_facts[edge_pred]`).
+    /// Returns `false` (a no-op) when only a lazy/LMDB source is registered, so the
+    /// caller can fall back to the enumeration precompute.
+    pub fn build_boundary_suffix_shared(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+    ) -> bool {
+        let table: HashMap<u32, Vec<u64>> = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            let mut memo: HashMap<u32, crate::boundary_cache::Hist> = HashMap::new();
+            let mut on_stack: Vec<u32> = Vec::new();
+            let mut t: HashMap<u32, Vec<u64>> = HashMap::new();
+            for &b in boundary {
+                let h = crate::boundary_cache::suffix_histogram(
+                    b, root_id, parents, max_depth, &mut memo, &mut on_stack);
+                t.insert(b, h);
+            }
+            t
+        };
+        self.boundary_suffix = table.into_iter().collect();
+        true
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
@@ -2083,6 +2125,46 @@ mod boundary_kernel_tests {
         assert!(!vm.boundary_suffix.is_empty(), "side-table should be populated");
         let spl = norm(boundary_hist(&vm, seed, root, budget));
         assert_eq!(full, spl, "root-near splice must match full enumeration");
+    }
+
+    // The shared-memo polynomial precompute produces the IDENTICAL boundary-suffix
+    // table as per-node enumeration, and the spliced histogram still matches full
+    // enumeration.
+    #[test]
+    fn shared_memo_precompute_equals_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"], vec!["3", "4", "1", "2"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            // enumeration precompute -> snapshot table
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let mut enum_tbl: Vec<(u32, Vec<u64>)> =
+                vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+            enum_tbl.sort_by_key(|(k, _)| *k);
+            // shared-memo precompute -> snapshot table
+            assert!(vm.build_boundary_suffix_shared(&bnodes, root, budget, "category_parent"),
+                    "shared precompute should run for eager edges");
+            let mut shared_tbl: Vec<(u32, Vec<u64>)> =
+                vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+            shared_tbl.sort_by_key(|(k, _)| *k);
+            assert_eq!(enum_tbl, shared_tbl, "shared != enumeration table for {:?}", bnames);
+            // and the spliced result still matches full enumeration
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "shared splice != full enumeration for {:?}", bnames);
+        }
+    }
+
+    // Shared precompute is eager-only: with no eager table it is a no-op (false).
+    #[test]
+    fn shared_memo_precompute_eager_only() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        let root = vm.intern_atom("0");
+        let b = vm.intern_atom("1");
+        assert!(!vm.build_boundary_suffix_shared(&[b], root, 8, "no_such_pred"),
+                "no eager table -> shared precompute is a no-op");
     }
 
     // Empty min_dist -> empty band -> no-op precompute -> kernel degrades to full
