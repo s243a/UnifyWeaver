@@ -102,12 +102,14 @@ difference equations on the graph" is exactly *pick a product semiring and run t
 recurrence*. Exactness is automatic: `⊗` distributing over `⊕` is the defining semiring
 axiom, and that is precisely what makes the splice exact.
 
-> **Important state choice.** Store the **raw moments** `(M, m₁, m₂)`, not `(count,
-> mean, variance)`. Means/variances add under *concatenation* but **not** under *union*
-> (mixing two distributions is not summing two independent variables), so they are not a
-> semiring element. Raw moments are linear under union and Leibniz under convolution —
-> clean for both. `mean = m₁/M`, `var = m₂/M − mean²` are **nonlinear read-outs at the
-> end**, never carried through the recurrence.
+> **NORMATIVE RULE — the single most important implementation invariant.** Carry the
+> **raw moments** `(M, m₁, m₂, …)`; **never** `(count, mean, variance)`. Means/variances
+> add under *concatenation* but **not** under *union* (mixing two distributions is not
+> summing two independent variables), so they are not a semiring element — an implementor
+> who writes the natural mean/variance accumulator gets a non-semiring that is **silently
+> wrong at every node with more than one parent**. Raw moments are linear under union and
+> Leibniz under convolution — clean for both. `mean = m₁/M`, `var = m₂/M − mean²` are
+> **nonlinear read-outs at the end**, computed once, never carried through the recurrence.
 
 > **Odd moments and cancellation (why raw, again).** Because path lengths are
 > non-negative, every *raw* moment is a sum of non-negative terms `Lᵏ·H[L]`, and the
@@ -126,9 +128,59 @@ axiom, and that is precisely what makes the splice exact.
 > the non-negative, linear propagation, so it stays a read-out-time option, not a change
 > to what is carried.)
 
+### Raw moments vs cumulants — an open design fork (the additivity question)
+
+Raw moments are *a* valid carry, not the forced one. The higher raw moments are **not
+additive** — they combine by the `O(K²)` binomial convolution above — but there is a
+representation in which concatenation collapses to plain *addition*: the **cumulants**
+`κ_k`. Under an independent concatenation `A ⊛ B` every cumulant adds:
+
+```
+κ₁(A⊛B) = κ₁(A) + κ₁(B)      (means add)
+κ₂(A⊛B) = κ₂(A) + κ₂(B)      (variances add — i.e. σ adds *in quadrature*)
+κ_k(A⊛B) = κ_k(A) + κ_k(B)   (all orders)
+```
+
+— an `O(K)` additive splice that also sidesteps the central-read-out cancellation of the
+previous note (the large `m₃ ~ μ³` term never forms). So for **concatenation-heavy**
+regions (deep, thin ancestor spines) cumulants are strictly the better carry.
+
+**The catch is the *other* operation.** "Variance adds in quadrature" is a property of an
+*independent sum* — i.e. of `⊗` / concatenation. It does **not** hold under `⊕` / union: a
+node with several parents is a **mixture** of its parents' suffix distributions, not an
+independent sum, and a mixture's variance carries the law-of-total-variance *between*-
+component term `Σ wᵢ(μᵢ − μ̄)²` on top of the within-component variances. So cumulants are
+**not `⊕`-linear** (only `κ₁` is) — they break exactly at the branching, reconvergent,
+root-near nodes the cache most targets. Raw moments *are* `⊕`-linear, which is why they
+are the safe carry for the branching DAG.
+
+The right framing (the "the higher moments aren't additive, but estimators still combine
+them" point): the closed combination rule exists for *both* operations in *both*
+representations — raw moments are `⊕`-linear + `⊗`-binomial, cumulants are `⊗`-additive +
+`⊕`-nonlinear — so the choice is only **which makes both cheap in the region that
+dominates.** Resolution: **raw moments for the branching solve**, converting to cumulants
+at the read-out (Edgeworth, §7, is a cumulant expansion anyway); **cumulants for
+chain-dominated spines** where `⊗` rules and both the quadrature additivity and the
+cancellation-freedom pay. This is also the same chain-vs-branch split that governs
+reconstruction (§7): a concatenation-heavy node tends Gaussian (CLT — cheap moment-jet
+reconstruction works), a branching-heavy node is a genuine mixture (possibly multimodal —
+GMM/histogram territory). `§8.1` freezes the `Elem` type into shipped code, so this trade
+should be **named and measured there, not defaulted silently.**
+
 ### The one that does *not* factor: `WeightSum`
 
-`WeightSum_N` is `⊕`-linear (it adds under union) but **not** `⊗`-multiplicative:
+**The unifying principle: point-evaluation of the GF.** Treat `H(z) = Σ_L H[L] z^L` as a
+formal power series in `R[[z]]` (the *probability* generating function is the normalised
+`H(z)/M`). *Evaluation at a point*, and its derivatives, is a **ring homomorphism**
+`R[[z]] → R`: `M = H(1)`, `m₁ = H'(1)`, and so on. Convolution is multiplication in
+`R[[z]]`, and a ring homomorphism sends products to products — so **every point-evaluation
+functional splices multiplicatively.** That is the one structural reason the mass and the
+moment jet propagate; they are not separate calculations.
+
+`WeightSum_N = Σ_L H[L]·L^{-N}` is the exception precisely because it is **not** a
+point-evaluation of `H` or its derivatives — it is a Mellin / negative-moment functional
+(a pairing against `L^{-N}`), so it is not a ring homomorphism. Concretely it is
+`⊕`-linear (it adds under union) but **not** `⊗`-multiplicative:
 `Σ_{a+b=n} … (a+b)^{-N}` does not separate into `f(prefix)·g(suffix)` because `(a+b)^{-N}`
 is not a product of a-only and b-only terms. So there is no scalar concatenation law for
 the effective-distance weight. The existing `g_B` pre-weighted basis is the partial fix:
@@ -156,6 +208,19 @@ product semiring); the future scalar shortest-distance is a third. The band sele
 shared-memo sweep, eviction, and persistence skeleton are payload-agnostic — only the
 per-node `Elem` changes (from `Vec<u64>` to a 5-scalar tuple, etc.).
 
+> **The trait above is illustrative, not the final contract — three gaps to close at §8.**
+> (1) **Star / closure for cycles.** The "optional truncation hook" cannot encode the
+> per-semiring divergence profile the cyclic increment (§8.2) needs: counting *diverges*
+> without truncation, min-plus *terminates* freely, and the moment jet's star converges
+> only if mass `< 1` (the walk terminates with probability 1; cf. closed/`*`-semirings,
+> Droste–Kuich). A real `star`/closure operation is per-semiring and deserves a dedicated
+> design step, not a boolean flag. (2) **No read-out / decode contract.** There is no typed
+> surface for "project `Elem` → the query answer" — the step both §8.1's bucket-for-bucket
+> validation and the Edgeworth read-out (§7) need. (3) **The `⊕`/`⊗` exactness asymmetry is
+> invisible.** Raw moments are exact under both, but a budget truncation breaks only `⊗`
+> (concatenation), never `⊕` (§2 precondition) — an invariant that currently lives only in
+> prose and will not survive a second implementor through a flat `add`/`mul` interface.
+
 | payload | semiring | cost | answers | exact for |
 |---|---|---|---|---|
 | histogram | convolution `(⊛, +)` | O(budget) | every linear functional (mass, moments, `WeightSum`, CDF) | everything |
@@ -172,7 +237,12 @@ graph. This is the right and load-bearing domain:
 - **Exactness needs only the reachable set to be acyclic**, and the reachable set *is*
   the up-closure. A taxonomic / `is-a` relation is a partial order, so every node's
   ancestor space is a DAG even when the relation reconverges (diamonds). We never needed
-  a globally acyclic graph — only acyclic ancestor spaces.
+  a globally acyclic graph — only acyclic ancestor spaces. *(Scope: this assumes a single
+  bottom-up sweep over the **data** relation's parent graph. Under tabled/SLG resolution
+  the relevant graph is the subgoal-dependency graph, whose SCCs can be cyclic even over
+  acyclic data — verified not the case in this codebase, which has no tabling/SLG machinery
+  — so the argument is sound here but should not be transplanted to a tabled evaluator
+  without re-checking.)*
 - **Ancestor spaces share their root-near core.** Different query nodes' up-closures
   overlap heavily near the root; that shared upper sub-DAG is computed once and spliced
   into many nodes — which is *why* root-near boundary caching pays, and what the
@@ -231,7 +301,10 @@ certified bracket on the real effective-distance metric**, for two integers, exa
 the endpoints and sound everywhere between. It is the cheap surrogate for the
 `WeightSum` functional that §2 showed cannot be carried as a scalar.
 
-## 6. The analogy: the kernel trick
+## 6. Aside: the kernel-trick analogy
+
+*(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
+want the implementation contract.)*
 
 In kernel methods a feature map `φ: X → H` (often infinite-dimensional) is **never
 materialized**, because every algorithm is written to touch only inner products
@@ -299,6 +372,13 @@ histogram without ever building one**: read off `mean`, `var`, and emit a discre
    validated *against the existing histogram* bucket-for-bucket (tropical pair = first/
    last nonzero index; moment jet = the histogram's weighted sums). Wire the moment
    jet → discretised-Normal as a CDF-gated reconstruction rung.
+1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
+   work, characterize each payload's star/closure-or-truncation behaviour — the
+   convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,
+   the moment jet's star needs mass `< 1`. Do it on the acyclic domain where each can be
+   checked against the histogram. This is logically prior to, and separable from, the
+   cyclic increment, so step 2 then confronts **one** unknown (cyclic control flow), not
+   two (control flow *and* per-payload divergence) at once.
 2. **Distance / shortest-path kernels + cyclic closure.** Point the now-generic
    machinery at `transitive_distance3`, then `weighted_shortest_path3` /
    `astar_shortest_path4` (boundary suffixes as ALT landmarks), adding the
