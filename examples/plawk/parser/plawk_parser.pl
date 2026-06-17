@@ -28,6 +28,7 @@
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
 %      { adjusted += length($0) - 3; width = NF + 1 } END { print adjusted, width }
+%      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
 %      $1 == "ERROR" { last_len = length($0); hits++ } END { print hits, last_len }
@@ -328,10 +329,12 @@ increment_action(inc(var(Name))) -->
     "++".
 
 next_action(next) -->
-    "next".
+    "next",
+    identifier_boundary.
 
 break_action(break) -->
-    "break".
+    "break",
+    identifier_boundary.
 
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),
@@ -357,6 +360,8 @@ scalar_delta_expr(int(Value)) -->
       Value >= 0 }.
 scalar_delta_expr(Expr) -->
     i64_const_binary_expr(Expr).
+scalar_delta_expr(special('NR')) -->
+    "NR".
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -568,6 +573,15 @@ identifier_rest([Code | Codes]) -->
     identifier_rest(Codes).
 identifier_rest([]) -->
     [].
+
+identifier_boundary([Code | Rest], [Code | Rest]) :-
+    \+ identifier_continue_code(Code).
+identifier_boundary([], []).
+
+identifier_continue_code(Code) :-
+    code_type(Code, alnum),
+    !.
+identifier_continue_code(0'_).
 
 required_ws -->
     [Code],
