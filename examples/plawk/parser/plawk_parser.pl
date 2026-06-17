@@ -24,10 +24,10 @@
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
 %      $1 == "ERROR" { print int($3) - 1 }
-%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
+%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3, index($2, "sk") + 1 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
-%      { last_pos = index($2, "sk"); total_pos += index($0, "disk") } END { print last_pos, total_pos }
+%      { last_pos = index($2, "sk") + 1; total_pos += index($0, "disk") - 1 } END { print last_pos, total_pos }
 %      { adjusted += length($0) - 3; width = NF; fields += NF } END { print adjusted, width, fields }
 %      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
@@ -551,6 +551,20 @@ i64_binary_primary_expr(length(Field)) -->
     simple_field_expr(Field),
     ws,
     ")".
+i64_binary_primary_expr(index(Field, string(Needle))) -->
+    "index",
+    ws,
+    "(",
+    ws,
+    simple_field_expr(Field),
+    ws,
+    ",",
+    ws,
+    quoted_string(NeedleCodes),
+    ws,
+    ")",
+    { NeedleCodes \== [],
+      string_codes(Needle, NeedleCodes) }.
 
 simple_field_expr(field(Index)) -->
     "$",

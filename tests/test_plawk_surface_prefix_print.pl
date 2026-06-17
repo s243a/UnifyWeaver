@@ -91,11 +91,12 @@ test(parses_field_eq_print_int_sub_field_rule) :-
         [print([sub_i64(int(field(3)), int(1))])])], [])).
 
 test(parses_field_eq_print_i64_primary_binary_rule) :-
-    plawk_parse_string("$1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3 }\n", Program),
+    plawk_parse_string("$1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3, index($2, \"sk\") + 1 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
         [print([sub_i64(special('NR'), int(1)),
                 add_i64(special('NF'), int(1)),
-                sub_i64(length(field(0)), int(3))])])], [])).
+                sub_i64(length(field(0)), int(3)),
+                add_i64(index(field(2), string("sk")), int(1))])])], [])).
 
 test(parses_field_eq_print_case_field_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print tolower($2), toupper($0) }\n", Program),
@@ -266,6 +267,13 @@ test(parses_scalar_index_add_assign_end_print_rule) :-
     assertion(Program == program([], [rule(always,
         [set(var(pos), index(field(2), string("sk"))),
          add(var(total), index(field(0), string("disk")))])],
+        [end([print([var(pos), var(total)])])])).
+
+test(parses_scalar_index_binary_add_assign_end_print_rule) :-
+    plawk_parse_string("{ pos = index($2, \"sk\") + 1; total += index($0, \"disk\") - 1 } END { print pos, total }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [set(var(pos), add_i64(index(field(2), string("sk")), int(1))),
+         add(var(total), sub_i64(index(field(0), string("disk")), int(1)))])],
         [end([print([var(pos), var(total)])])])).
 
 test(parses_always_scalar_add_assign_end_print_rule) :-
@@ -601,9 +609,9 @@ test(surface_begin_field_separator_drives_int_sub_printing) :-
         "10,9\n-3,-4\nnope,-1\n").
 
 test(surface_begin_field_separator_drives_i64_primary_binary_printing) :-
-    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3, int($3) + 1 }\n",
+    run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3, int($3) + 1, index($2, \"work\") + 1 }\n",
         "ERROR:disk:10\nWARN:cpu:20\nERROR:network:-3\n",
-        "0,4,10,11\n2,4,13,-2\n").
+        "0,4,10,11,1\n2,4,13,-2,5\n").
 
 test(surface_field_int_add_scalar_accumulates_values) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += int($3) + 1; last = int($3) + 1 } END { print bytes, last }\n",
@@ -634,6 +642,11 @@ test(surface_scalar_index_accumulates_values) :-
     run_surface_print_smoke("{ pos = index($2, \"sk\"); total += index($0, \"disk\") } END { print pos, total }\n",
         "INFO boot ok\nERROR disk full\nWARN disk issue\n",
         "3 13\n").
+
+test(surface_scalar_index_binary_accumulates_values) :-
+    run_surface_print_smoke("{ pos = index($2, \"sk\") + 1; total += index($0, \"disk\") - 1 } END { print pos, total }\n",
+        "INFO boot ok\nERROR disk full\nWARN disk issue\n",
+        "4 10\n").
 
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
@@ -964,7 +977,7 @@ test(surface_int_sub_print_uses_shared_i64_sub_lowering) :-
     !.
 
 test(surface_i64_primary_binary_print_uses_shared_lowering) :-
-    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3, int($3) + 1 }\n", Program),
+    plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print NR - 1, NF + 1, length($0) - 3, int($3) + 1, index($2, \"work\") + 1 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %current_nr, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_1_lhs = call i64 @wam_atom_field_count_value(%Value %line, i8 58)'))),
@@ -973,6 +986,9 @@ test(surface_i64_primary_binary_print_uses_shared_lowering) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2 = sub i64 %plawk_int_sub_2_lhs, 3'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs_value_or_default = select i1 %plawk_int_add_3_lhs_ok, i64 %plawk_int_add_3_lhs_value, i64 0'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fint_5Fadd_5F4_5Flhs = private constant [5 x i8] c"work\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4_lhs = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4 = add i64 %plawk_int_add_4_lhs, 1'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -1007,6 +1023,20 @@ test(surface_scalar_index_uses_native_field_index_primary) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_i64_primary = call i64 @wam_atom_field_index_value(%Value %line, i64 0, i8 58'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %rule_0_body_slot_0_op_0_i64_primary'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %slot_1, %rule_0_body_slot_1_op_1_i64_primary'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_index_binary_uses_native_field_index_primary) :-
+    plawk_parse_string("BEGIN { FS = \":\" } { pos = index($2, \"work\") + 1; total += index($0, \"network\") - 1 } END { print pos, total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fslot_5F0_5Fop_5F0_5Fi64_5Fadd_5Flhs = private constant [5 x i8] c"work\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fslot_5F1_5Fop_5F1_5Fi64_5Fsub_5Flhs = private constant [8 x i8] c"network\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_i64_add_lhs = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_i64_add = add i64 %rule_0_body_slot_0_op_0_i64_add_lhs, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_i64_sub_lhs = call i64 @wam_atom_field_index_value(%Value %line, i64 0, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_i64_sub = sub i64 %rule_0_body_slot_1_op_1_i64_sub_lhs, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %rule_0_body_slot_0_op_0_i64_add'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %slot_1, %rule_0_body_slot_1_op_1_i64_sub'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
