@@ -362,9 +362,9 @@ d_undirected(u, v)   ≤   d(u→root) + d(v→root)        (composite caret, ro
 is free from the cache (`caret_distance_upper`) — it is the length of a real `∧`-path. A
 **lower bridge** (a common ancestor nearer `u, v`, ultimately the **lowest common
 ancestor**) gives a *tighter* caret; `caret_distance_lca` computes the exact `∧`-distance
-`min_B (d(u→B) + d(v→B))` by a joint upward BFS. The caret **equals** the true shortest
-path on a *tree* (it is the cophenetic / tree distance) and is a **certified upper bound**
-on a DAG (a non-ancestor route can be shorter).
+`min_B (d(u→B) + d(v→B))` by a joint upward BFS. The caret **equals** the true shortest-path
+*length* on a *tree* (the cophenetic / tree distance — a scalar functional, not a route; see
+§5b) and is a **certified upper bound** on a DAG (a non-ancestor route can be shorter).
 
 **No matching lower bound from the cache (the correction).** It is tempting to add
 `|d(u→root) − d(v→root)| ≤ d(u,v)` as a lower bound (the ALT landmark heuristic), but
@@ -386,22 +386,38 @@ Validated by `caret_distance_on_a_tree_equals_true_distance`,
 is the natural *between-nodes* use of the to-root cache — the general companion to
 increment 2's *to-root* query.
 
-### 5b. Two caret measures: auto-LCA (shortest path) vs designated bridge
+### 5b. Two caret measures: auto-LCA (shortest-path length) vs designated bridge
 
 There are **two** ways to pick the bridge, and they answer different questions:
 
 - **Auto-LCA** — `caret_distance_lca` minimises over bridges, so the bridge is *implicit*
   (the lowest common ancestor). But minimising over `B` means it **collapses to the
-  (undirected) shortest path** (on a tree, exactly the tree distance). So it carries **no
-  information beyond distance** — you don't pick a bridge, but you also learn nothing the
-  shortest path wouldn't tell you. `caret_distance_budgeted(u, v, budget)` is this measure
+  (undirected) shortest-path *length*** (on a tree, exactly the tree distance). So it carries
+  **no information beyond distance** — you don't pick a bridge, but you also learn nothing the
+  shortest distance wouldn't tell you. `caret_distance_budgeted(u, v, budget)` is this measure
   *scoped*: the budget admits only bridges within a radius (the support upper bound is the
-  natural value), but within scope it is still the auto-minimising shortest path.
+  natural value), but within scope it is still the auto-minimising shortest distance.
 - **Designated bridge** — `caret_through_bridge(u, v, B) = d(u→B) + d(v→B)` *fixes* the
   bridge to a chosen reference node `B` (defined when `B` is an ancestor of both). It
   measures relatedness **as seen from a chosen level** — "through the physics category", or
   through a node higher up. You pick the bridge, and in exchange it keeps information the
   shortest path discards.
+
+> **A caret distance is a *functional*, not a path (value vs. route).** Saying the auto-LCA
+> caret "is the shortest path" is loose in an important way: it is the shortest-path
+> **length**, a scalar **functional** of the path-length distribution — its support floor
+> `min{L : H_{u↕v}[L] > 0}`, the min-plus / tropical read-out (exactly the `min` of the
+> interval payload). It does **not** single out a route. The same minimal value is realized
+> by a whole **sub-distribution of shortest `∧`-paths** — several shortest `u→B` paths ×
+> several shortest `v→B` paths, summed over any *tying* bridges `B`. Their **multiplicity**
+> (the *number* of shortest paths) is a **different** functional of the same distribution —
+> the histogram's count at the floor, `H[floor]` — that the distance value says nothing
+> about. This is the note's central thesis on the distance side: the shortest distance, the
+> shortest-path count, the mean length, the moments are all functionals of *one* path-length
+> distribution; the caret reads the **floor**, nothing more. (Carrying *(distance, #shortest
+> paths)* together is the min-plus semiring **with multiplicities** — a clean `PathSemiring`
+> instance not yet built: the bare interval gives the floor but not its count, and the moment
+> jet gives mass/moments but not the count *at* the floor.)
 
 **The distance between the two measures.** With the LCA below the chosen bridge `B`, on a
 tree `d(u→B) = d(u→LCA) + d(LCA→B)` (and likewise for `v`), so
