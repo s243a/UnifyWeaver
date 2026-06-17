@@ -468,6 +468,43 @@ yields "relatedness within physics"; raising `B` yields relatedness at a coarser
 multi-level reading the budgeted measure cannot give (it only scopes, never reframes). On a
 DAG both are upper-bound approximations, as the caret itself is.
 
+### 5c. Computing the caret — per-query search, landmark precompute, nested cuts
+
+There is a clean computational spectrum, and it mirrors §5b: the **auto-LCA** measure resists
+caching, the **designated-bridge** measure is cacheable.
+
+- **Per-query joint search (what is built).** `caret_distance_lca` / `_budgeted` /
+  `category_caret_distance` do a joint upward BFS from `u` and `v`, intersect the ancestor
+  sets, take the min-sum. The bridge is found *dynamically* — nothing is stored. So there is
+  **no per-bridge distribution** at query time (no explosion), but also **no reuse**. This is
+  the right tool when the bridge varies per pair (auto-LCA) or for one-off queries.
+- **Why the auto-LCA caret cannot be cached like the to-root distance.** To get "precompute
+  once, O(1) per pair" you would treat the bridge as a **boundary cut** (nothing above it)
+  and enumerate **downward** from it. But the auto-LCA bridge **varies per pair**, so covering
+  all pairs needs one downward distribution **per possible bridge** — the all-pairs blow-up.
+  That is the precise reason the to-root distance is a precompute and the auto-LCA caret is a
+  search.
+- **Designated bridges are a handful of landmarks.** Fix the bridge and the blow-up vanishes:
+  one downward BFS from `physics` gives `d(·→physics)` for the whole subtree once, and then
+  `caret_through_bridge(·, ·, physics)` is O(1) per pair. "A node higher up" is just another
+  field (`d(·→natural_sciences)`, …) — `K` levels = `O(K·V)` storage, not `O(V²)`. The
+  multi-level bridges **are** the landmarks, and there are only a few. This is the
+  boundary-cache *reuse*, finally applied to the caret — and the *computational* reason
+  (beyond §5b's informational one) to prefer the designated bridge: it is the cacheable one.
+- **Nested cuts (the convolution refinement).** A bridge is a **cut**, and distributions
+  *factor* there: `H_{u→root} = H_{u→B} ⊛ H_{B→root}` (counting) / `d(u→root) = d(u→B) +
+  d(B→root)` (min-plus). So one can cache the **suffix above** `B` and treat `B` as a *fresh
+  root* for the subtree below — computing each node's below-`B` part once and reusing the
+  shared above-`B` suffix across all the levels that nest above it. This is the boundary cache
+  generalised to a **hierarchy of cuts** (the route-planning *hub-labeling / highway-
+  hierarchies* structure). It pays off for **deep** hierarchies (many nesting levels, large
+  shared upper part); for the *few*-level case the flat `K`-landmark precompute above is the
+  better cost/complexity point. **Caveat:** the factorisation needs `B` to be a *proper cut*
+  (a **dominator** — every `u→root` path crosses `B`): automatic on a **tree**, but on a
+  **DAG** (real Wikipedia, with cycles) only at dominator nodes, so maintaining the cut
+  property is part of the "complexity" — the same "proper boundary cut" precondition the
+  boundary spec already requires. *Deferred — correct, but only worth it at depth.*
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
@@ -674,9 +711,14 @@ buy diminishing returns and is not carried).
      the root-anchored region (`build_scoped_subtree_lmdb.py`), propagate the support
      interval, and compute multi-level budgeted carets between topics — the end-to-end
      composition on real (cyclic) data, where the 2a/2b cycle-correctness earns its keep.
-   - **[3c, optional]** a between-nodes *kernel* result mode in the Prolog codegen
-     (the caret query has two query nodes, so it needs a kernel shape distinct from the
-     to-root `category_ancestor_boundary`); and periphery-landmark selection for general A*.
+   - **[3f, buildable]** the **landmark-cached designated-bridge caret** (§5c): precompute
+     `d(·→B)` (one downward field) for each designated level `B`, so `caret_through_bridge`
+     is O(1) per pair — the boundary-cache reuse applied to the caret. `O(K·V)` for `K`
+     levels.
+   - **[deferred]** the **nested-cut** hierarchy (§5c) — cache the suffix above each cut and
+     compose by convolution; worth it only for *deep* hierarchies, and needs the
+     dominator/cut property maintained on a DAG. And **[3c, optional]** a between-nodes
+     *kernel* result mode in the codegen; periphery-landmark selection for general A*.
 
 ## 9. Relationship to the other docs
 
