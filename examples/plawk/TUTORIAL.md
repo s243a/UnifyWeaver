@@ -253,9 +253,9 @@ $1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }
 ```
 
-The current assignment expression subset is integer literals, `length($N)`,
-numeric `$N`, explicit `int($N)`, and native scalar `i64` primary `+/- K` forms
-such as `NF + K`, `length($N) - K`, and `int($N) + K`.
+The current assignment expression subset is integer literals, `NR`, `NF`,
+`length($N)`, numeric `$N`, explicit `int($N)`, and native scalar `i64`
+primary `+/- K` forms such as `NF + K`, `length($N) - K`, and `int($N) + K`.
 
 Numeric field guards are also native:
 
