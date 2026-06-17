@@ -485,9 +485,19 @@ future work — `m₃` is now carried, so they are a read-out away.
      generic `suffix_value::<S>`. The cyclic star stays a per-payload free function (only
      min-plus is closed), the ⊕/⊗ asymmetry is on the trait, and the laws are guarded by
      `path_semiring_laws_and_generic_equivalence`.
-   - **[2d-ii next]** wire the distance cache into the `transitive_distance3` /
-     `astar_shortest_path4` kernel *codegen* (the Prolog target) so a compiled query uses
-     it, closing increment 2.
+   - **[2d-ii DONE]** the distance cache is wired into the kernel *codegen*. The faithful
+     home turned out to be the existing **to-a-fixed-root** kernel, not `transitive_distance3`
+     (which is a general *source→any-target* stream with no fixed root — the to-root cache
+     does not apply without artificially pinning the target). So `boundary_optimization`
+     gains a `boundary_result_extractor(shortest_distance)` mode: the upgraded
+     `category_ancestor_boundary` wrapper returns the cycle-correct shortest hop-distance to
+     root via `category_ancestor_boundary_distance` (the min-plus cache), not the histogram.
+     Validated by `option_shortest_distance_extractor` (lowering) and
+     `wrapper_shortest_distance_matches_closure` (cargo-gated exec, incl. the empty-cache
+     fallback). **This closes increment 2.**
+   - *Deferred (own track):* a dedicated fixed-target `transitive_distance3` variant and
+     `astar_shortest_path4` ALT landmarks (`|d(u,L) − d(v,L)|`) — a general *between-nodes*
+     query needs the landmark formulation, not the to-root splice.
 
 ## 9. Relationship to the other docs
 

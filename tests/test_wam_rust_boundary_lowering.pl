@@ -94,6 +94,19 @@ test(option_tunables_flow_through,
     sub_string(Lib, _, _, _, "register_foreign_f64_config(\"bcat_ancestor/3\", \"weight_n\", 3.0)"),
     sub_string(Lib, _, _, _, "register_foreign_string_config(\"bcat_ancestor/3\", \"result_extractor\", \"effective_distance\")").
 
+% shortest_distance extractor (increment 2): the config flows through, and the
+% dispatch routes it through the min-plus distance cache, not the histogram.
+test(option_shortest_distance_extractor,
+     [cleanup(safe_rmdir('output/test_bl_dist'))]) :-
+    Dir = 'output/test_bl_dist',
+    gen([boundary_optimization(true),
+         boundary_result_extractor(shortest_distance)], Dir),
+    read_src(Dir, '/src/lib.rs', Lib),
+    sub_string(Lib, _, _, _, "register_foreign_string_config(\"bcat_ancestor/3\", \"result_extractor\", \"shortest_distance\")"),
+    read_src(Dir, '/src/state.rs', St),
+    sub_string(St, _, _, _, "extractor == \"shortest_distance\""),
+    sub_string(St, _, _, _, "category_ancestor_boundary_distance(cat_id, root_id").
+
 % cargo-gated: the upgraded crate builds and the emitted wrapper reproduces the
 % production hop-stream aggregate.
 test(boundary_wrapper_matches_production,
@@ -193,6 +206,71 @@ fn wrapper_with_root_near_precompute() {
     ( Status == exit(0), sub_string(OutS, _, _, _, "test result: ok")
     ->  true
     ;   format(user_error, "~n[boundary lowering exec FAILED] status=~w~n~w~n~w~n", [Status, OutS, ErrS]),
+        fail ).
+
+% cargo-gated: the shortest_distance wrapper returns the cycle-correct shortest
+% hop-distance to root (the min-plus closure), via the distance cache.
+test(wrapper_shortest_distance_matches_closure,
+     [condition(cargo_ok), cleanup(safe_rmdir('output/test_bl_distexec'))]) :-
+    Dir = 'output/test_bl_distexec',
+    gen([boundary_optimization(true),
+         boundary_result_extractor(shortest_distance)], Dir),
+    atom_concat(Dir, '/tests', TestsDir),
+    make_directory_path(TestsDir),
+    atom_concat(Dir, '/tests/bld_test.rs', TestPath),
+    TestSrc = '
+use bl::state::WamState;
+use bl::value::Value;
+use std::collections::HashMap;
+
+#[test]
+fn wrapper_returns_shortest_distance() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    vm.register_ffi_fact_pairs("bcat_parent", &[
+        ("5","4"),("5","2"),("4","3"),("4","1"),("3","1"),("3","2"),
+        ("1","0"),("2","0"),("6","5"),("7","4"),("8","6"),("8","7"),
+    ]);
+    let root = vm.intern_atom("0");
+    // precompute the distance cache over a root-near band.
+    let bnodes: Vec<u32> = ["1","2"].iter().map(|s| vm.intern_atom(s)).collect();
+    assert!(vm.build_boundary_distances(&bnodes, root, "bcat_parent"));
+    // shortest hop-distances to root for the diamond DAG.
+    let want: HashMap<&str, i64> =
+        [("3",2),("4",2),("5",2),("6",3),("7",3),("8",4)].into_iter().collect();
+    let mut checked = 0;
+    for sname in ["3","4","5","6","7","8"] {
+        let out = Value::Unbound(format!("D{}", checked));
+        let ok = bl::bcat_ancestor(&mut vm, Value::Atom(sname.to_string()),
+                                   Value::Atom("0".to_string()), out);
+        assert!(ok, "wrapper should succeed for seed {}", sname);
+        let got = match vm.deref_var(&vm.get_reg_raw("A3").unwrap()) {
+            Value::Integer(i) => i, other => panic!("expected Integer, got {:?}", other) };
+        assert_eq!(got, want[sname], "seed {}: shortest distance", sname);
+        checked += 1;
+    }
+    assert_eq!(checked, 6);
+    // and it is still correct with NO precompute (empty cache -> plain BFS).
+    let mut vm2 = WamState::new(vec![], HashMap::new());
+    vm2.register_ffi_fact_pairs("bcat_parent", &[("5","2"),("2","0")]);
+    let out = Value::Unbound("E".to_string());
+    assert!(bl::bcat_ancestor(&mut vm2, Value::Atom("5".to_string()),
+                              Value::Atom("0".to_string()), out));
+    match vm2.deref_var(&vm2.get_reg_raw("A3").unwrap()) {
+        Value::Integer(i) => assert_eq!(i, 2, "5->2->0 = 2 with empty cache"),
+        other => panic!("expected Integer, got {:?}", other) };
+}',
+    setup_call_cleanup(open(TestPath, write, S),
+                       format(S, "~w", [TestSrc]), close(S)),
+    format(atom(Cmd), 'cd "~w" && cargo test --test bld_test -- --nocapture 2>&1', [Dir]),
+    setup_call_cleanup(
+        process_create(path(sh), ['-c', Cmd],
+                       [stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+        ( read_string(Out, _, OutS), read_string(Err, _, ErrS) ),
+        ( close(Out), close(Err) )),
+    process_wait(Pid, Status),
+    ( Status == exit(0), sub_string(OutS, _, _, _, "test result: ok")
+    ->  true
+    ;   format(user_error, "~n[shortest_distance exec FAILED] status=~w~n~w~n~w~n", [Status, OutS, ErrS]),
         fail ).
 
 :- end_tests(wam_rust_boundary_lowering).

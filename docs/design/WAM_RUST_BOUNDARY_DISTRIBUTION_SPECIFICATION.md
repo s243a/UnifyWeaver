@@ -178,6 +178,7 @@ extractor** reads it into the foreign predicate's result. All use the existing
 |------|----------------|-----------------------------------|
 | `scalar(functional)` | `Float`/`Integer` | `f` = `∫ w dμ` (e.g. `weighted_power`) |
 | `effective_distance` | `Float` | `WeightSum^(-1/N)` |
+| `shortest_distance` | `Integer` | shortest hop-distance to root (the support floor `min`) — read from the **min-plus distance cache** (cycle-correct), not the histogram; see `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` |
 | `distribution` | `List` of counts (PMF) — or the parametric/CDF encoding for a non-discrete backing | μ itself (possibly truncated) |
 | `interval_mass(a, b)` | `Float` | `interval_mass(a, b) = μ((a, b])` (§1a; half-open) |
 | `cdf(x)` / `quantile(p)` | `Float` | cumulative reads of μ |
