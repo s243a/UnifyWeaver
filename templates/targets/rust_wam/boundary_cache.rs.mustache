@@ -158,6 +158,12 @@ impl MomentJet {
     pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0 } }
     /// ⊕-identity: no path (unreachable / a cycle-pruned branch).
     pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0 } }
+    /// A single path of length `len` — the atom `δ_len` (one path at length `len`):
+    /// `(mass, m1, m2) = (1, len, len²)`. The prefix one walk path contributes.
+    pub fn delta(len: u32) -> Self {
+        let l = len as f64;
+        MomentJet { mass: 1.0, m1: l, m2: l * l }
+    }
     /// ⊕ — union of alternative path sets (a node's several parents): raw moments add.
     pub fn union(self, o: Self) -> Self {
         MomentJet { mass: self.mass + o.mass, m1: self.m1 + o.m1, m2: self.m2 + o.m2 }
@@ -212,6 +218,8 @@ pub struct Interval {
 impl Interval {
     /// ⊗-identity: the empty path at the root (length 0..=0).
     pub fn root() -> Self { Interval { min: 0, max: 0 } }
+    /// A single length: the point interval `[len, len]`.
+    pub fn point(len: u32) -> Self { Interval { min: len, max: len } }
     /// ⊗ by a single edge: extend both ends by one.
     pub fn shift_one(self) -> Self { Interval { min: self.min + 1, max: self.max + 1 } }
     /// ⊕ — union of alternatives: min of mins, max of maxes.
