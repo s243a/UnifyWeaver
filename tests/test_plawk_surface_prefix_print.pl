@@ -252,6 +252,15 @@ test(parses_scalar_nr_add_assign_end_print_rule) :-
          add(var(next_total), add_i64(special('NR'), int(1)))])],
         [end([print([var(last), var(total), var(prev), var(next_total)])])])).
 
+test(parses_scalar_nf_add_assign_end_print_rule) :-
+    plawk_parse_string("{ width = NF; total += NF; adjusted = NF - 1; next_width += NF + 1 } END { print width, total, adjusted, next_width }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [set(var(width), special('NF')),
+         add(var(total), special('NF')),
+         set(var(adjusted), sub_i64(special('NF'), int(1))),
+         add(var(next_width), add_i64(special('NF'), int(1)))])],
+        [end([print([var(width), var(total), var(adjusted), var(next_width)])])])).
+
 test(parses_always_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("{ total += 3 } END { print total }\n", Program),
     assertion(Program == program([], [rule(always, [add(var(total), int(3))])],
@@ -609,6 +618,11 @@ test(surface_scalar_nr_accumulates_values) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
         "3 6 2 9\n").
 
+test(surface_scalar_nf_accumulates_values) :-
+    run_surface_print_smoke("{ width = NF; total += NF; adjusted = NF - 1; next_width += NF + 1 } END { print width, total, adjusted, next_width }\n",
+        "INFO boot ok\nERROR disk full now\nWARN cpu\n",
+        "2 9 1 12\n").
+
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -958,6 +972,17 @@ test(surface_scalar_nr_uses_native_record_counter) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %current_nr'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= sub i64 %current_nr, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %current_nr, 1'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_nf_uses_native_field_count_primary) :-
+    plawk_parse_string("BEGIN { FS = \":\" } { width = NF; total += NF; adjusted = NF - 1; next_width += NF + 1 } END { print width, total, adjusted, next_width }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= call i64 @wam_atom_field_count_value(%Value %line, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %rule_0_body_slot_3_op_0_i64_primary'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %slot_2, %rule_0_body_slot_2_op_1_i64_primary'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= sub i64 %rule_0_body_slot_0_op_2_i64_sub_lhs, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %rule_0_body_slot_1_op_3_i64_add_lhs, 1'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

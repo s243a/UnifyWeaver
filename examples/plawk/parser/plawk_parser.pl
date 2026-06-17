@@ -27,7 +27,7 @@
 %      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
-%      { adjusted += length($0) - 3; width = NF + 1 } END { print adjusted, width }
+%      { adjusted += length($0) - 3; width = NF; fields += NF } END { print adjusted, width, fields }
 %      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -362,6 +362,8 @@ scalar_delta_expr(Expr) -->
     i64_const_binary_expr(Expr).
 scalar_delta_expr(special('NR')) -->
     "NR".
+scalar_delta_expr(special('NF')) -->
+    "NF".
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
