@@ -578,6 +578,103 @@ pub fn caret_distance_lca(
         .min()
 }
 
+/// Composite caret distance with a path-length **budget** on the joint up-walk: the caret
+/// `min_B (d(u→B) + d(v→B))` over shared ancestors `B` reachable within `budget` hops of
+/// *both* `u` and `v`. Returns `None` if they share no ancestor within budget — i.e. they
+/// are not "related within this scope". The **budget is the multi-level-bridge knob**: a
+/// small budget admits only a LOW common ancestor (a tight, local relation), while a
+/// budget ≥ the subtree height always reaches the bridge (at worst the subtree root) and
+/// equals `caret_distance_lca`. Its natural value is the **support upper bound** (`max`
+/// from the interval payload), which bounds depth-to-subtree-root, so the budget says "the
+/// bridge is somewhere in this subtree". (Because the LCA is the *lowest* common ancestor,
+/// growing the budget past the LCA's depth never changes the answer — it only admits
+/// higher, larger-sum bridges that lose the `min`.)
+pub fn caret_distance_budgeted(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    budget: u32,
+) -> Option<u32> {
+    use std::collections::{HashMap, VecDeque};
+    fn up_dist_bounded(
+        src: u32, parents: &HashMap<u32, Vec<u32>>, budget: u32,
+    ) -> HashMap<u32, u32> {
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q: VecDeque<u32> = VecDeque::new();
+        d.insert(src, 0);
+        q.push_back(src);
+        while let Some(x) = q.pop_front() {
+            let dx = d[&x];
+            if dx >= budget { continue; } // nodes at depth `budget` are kept; not expanded
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !d.contains_key(&p) {
+                        d.insert(p, dx + 1);
+                        q.push_back(p);
+                    }
+                }
+            }
+        }
+        d
+    }
+    let du = up_dist_bounded(u, parents, budget);
+    let dv = up_dist_bounded(v, parents, budget);
+    du.iter()
+        .filter_map(|(b, &a)| dv.get(b).map(|&c| a + c))
+        .min()
+}
+
+/// Composite caret distance **through a designated bridge** `bridge`: `d(u→bridge) +
+/// d(v→bridge)`, the length of the `∧`-path forced through a *chosen reference node*.
+/// `None` unless `bridge` is an ancestor of **both** `u` and `v` (the path must exist).
+///
+/// This is the complement of `caret_distance_lca`. The LCA caret minimises over bridges, so
+/// it **collapses to the (undirected) shortest path** — it carries no information beyond
+/// distance. This one *fixes* the bridge, so it measures relatedness **as seen from a chosen
+/// level** (e.g. "through the physics category"). The two relate exactly: with `B` an
+/// ancestor of the LCA, on a tree `d(u→B) = d(u→LCA) + d(LCA→B)`, so
+/// `through(B) = lca + 2·d(LCA→B)` — the shortest-path caret **plus twice the lift of the
+/// reference above the true LCA**. That gap is the extra signal a designated bridge keeps
+/// and the LCA caret discards. (On a DAG it is an upper-bound approximation, like the caret
+/// itself.)
+pub fn caret_through_bridge(
+    u: u32,
+    v: u32,
+    bridge: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    Some(up_distance_to(u, bridge, parents)? + up_distance_to(v, bridge, parents)?)
+}
+
+/// Shortest upward hop-distance `src → target` following `parents` (`target` must be an
+/// ancestor of `src`); `None` if `target` is not reachable upward. A bounded helper for
+/// `caret_through_bridge`.
+pub fn up_distance_to(
+    src: u32,
+    target: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    use std::collections::{HashMap, VecDeque};
+    if src == target { return Some(0); }
+    let mut d: HashMap<u32, u32> = HashMap::new();
+    let mut q: VecDeque<u32> = VecDeque::new();
+    d.insert(src, 0);
+    q.push_back(src);
+    while let Some(x) = q.pop_front() {
+        let dx = d[&x];
+        if let Some(ps) = parents.get(&x) {
+            for &p in ps {
+                if p == target { return Some(dx + 1); }
+                if !d.contains_key(&p) {
+                    d.insert(p, dx + 1);
+                    q.push_back(p);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -2299,6 +2396,74 @@ mod tests {
         assert_eq!(directed_distance_lower(to_root[&5], to_root[&4]), 0);
         // and for 4->5 directed (unreachable, +inf), the bound max(0, 4-1) = 3 holds vacuously.
         assert_eq!(directed_distance_lower(to_root[&4], to_root[&5]), 3);
+    }
+
+    // The budget is the multi-level-bridge knob. Tree: 0; 1->0; 2,3 -> 1; 4,5 -> 2; 6 -> 3.
+    //   4 and 5 share the LOW ancestor 2 (1 hop each) -> caret 2, found within budget 1.
+    //   4 and 6 share only the HIGH ancestor 1 (2 hops each) -> caret 4, NOT within budget 1,
+    //   found at budget 2. A budget >= the subtree height equals the unbudgeted LCA caret.
+    #[test]
+    fn budgeted_caret_scopes_the_bridge_by_level() {
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![1]); t.insert(3, vec![1]);
+        t.insert(4, vec![2]); t.insert(5, vec![2]); t.insert(6, vec![3]);
+        // low bridge: 4 & 5 meet at 2 within budget 1.
+        assert_eq!(caret_distance_budgeted(4, 5, &t, 1), Some(2));
+        // high bridge: 4 & 6 are NOT related within budget 1 (disjoint 1-hop ancestors)...
+        assert_eq!(caret_distance_budgeted(4, 6, &t, 1), None);
+        // ...but a budget of 2 reaches the bridge 1.
+        assert_eq!(caret_distance_budgeted(4, 6, &t, 2), Some(4));
+        // a generous budget equals the unbudgeted LCA caret.
+        assert_eq!(caret_distance_budgeted(4, 6, &t, 100), caret_distance_lca(4, 6, &t));
+    }
+
+    // The composition the physics-subtree idea is built on: propagate the SUPPORT interval
+    // (to the subtree root), take its upper bound `max` as the caret budget, and the
+    // budgeted caret then always finds the bridge for nodes in the subtree (at worst the
+    // root). This wires the increment-1 interval payload into the increment-3 caret.
+    #[test]
+    fn support_upper_bound_is_a_sufficient_caret_budget() {
+        let g = graph(); // diamond DAG, root 0
+        for &(u, v) in &[(3u32, 4u32), (5, 3), (4, 2), (5, 4)] {
+            // support upper bound = the longest path to root, from the interval payload.
+            let max_u = {
+                let mut m = HashMap::new(); let mut s = vec![];
+                suffix_interval(u, 0, &g, &mut m, &mut s).unwrap().max
+            };
+            let max_v = {
+                let mut m = HashMap::new(); let mut s = vec![];
+                suffix_interval(v, 0, &g, &mut m, &mut s).unwrap().max
+            };
+            let budget = max_u.max(max_v); // a bound on either node's depth-to-root
+            // with that budget, the budgeted caret equals the full (unbudgeted) caret.
+            assert_eq!(caret_distance_budgeted(u, v, &g, budget), caret_distance_lca(u, v, &g),
+                "support-bounded budget {} must reach the bridge for ({},{})", budget, u, v);
+        }
+    }
+
+    // The TWO caret measures and the exact gap between them. Tree: 0; 1->0; 2,3 -> 1;
+    // 4,5 -> 2; 6 -> 3. For (4,5) the LCA is 2.
+    #[test]
+    fn caret_through_bridge_vs_lca_and_the_gap() {
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![1]); t.insert(3, vec![1]);
+        t.insert(4, vec![2]); t.insert(5, vec![2]); t.insert(6, vec![3]);
+        // through the LCA (=2) equals the auto-LCA caret (= the shortest path, here 2).
+        assert_eq!(caret_through_bridge(4, 5, 2, &t), Some(2));
+        assert_eq!(caret_distance_lca(4, 5, &t), Some(2));
+        // through a HIGHER bridge carries more: the gap is exactly 2*d(LCA -> B).
+        let lca = caret_distance_lca(4, 5, &t).unwrap();
+        for &(bridge, lift) in &[(2u32, 0u32), (1, 1), (0, 2)] { // d(2->bridge)
+            let through = caret_through_bridge(4, 5, bridge, &t).unwrap();
+            assert_eq!(through, lca + 2 * lift,
+                "through({}) = lca + 2*d(LCA->bridge) = {} + 2*{}", bridge, lca, lift);
+        }
+        // the bridge must be an ancestor of BOTH: 3 is not an ancestor of 4 -> None.
+        assert_eq!(caret_through_bridge(4, 5, 3, &t), None);
+        // and a node that IS a common ancestor (1) but for a cross-branch pair (4,6):
+        // through(1) keeps the shared-physics-level signal that the LCA caret also gives
+        // here (their LCA *is* 1), so they agree — the gap is 0 only when bridge == LCA.
+        assert_eq!(caret_through_bridge(4, 6, 1, &t), caret_distance_lca(4, 6, &t));
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each

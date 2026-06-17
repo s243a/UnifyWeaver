@@ -386,6 +386,40 @@ Validated by `caret_distance_on_a_tree_equals_true_distance`,
 is the natural *between-nodes* use of the to-root cache — the general companion to
 increment 2's *to-root* query.
 
+### 5b. Two caret measures: auto-LCA (shortest path) vs designated bridge
+
+There are **two** ways to pick the bridge, and they answer different questions:
+
+- **Auto-LCA** — `caret_distance_lca` minimises over bridges, so the bridge is *implicit*
+  (the lowest common ancestor). But minimising over `B` means it **collapses to the
+  (undirected) shortest path** (on a tree, exactly the tree distance). So it carries **no
+  information beyond distance** — you don't pick a bridge, but you also learn nothing the
+  shortest path wouldn't tell you. `caret_distance_budgeted(u, v, budget)` is this measure
+  *scoped*: the budget admits only bridges within a radius (the support upper bound is the
+  natural value), but within scope it is still the auto-minimising shortest path.
+- **Designated bridge** — `caret_through_bridge(u, v, B) = d(u→B) + d(v→B)` *fixes* the
+  bridge to a chosen reference node `B` (defined when `B` is an ancestor of both). It
+  measures relatedness **as seen from a chosen level** — "through the physics category", or
+  through a node higher up. You pick the bridge, and in exchange it keeps information the
+  shortest path discards.
+
+**The distance between the two measures.** With the LCA below the chosen bridge `B`, on a
+tree `d(u→B) = d(u→LCA) + d(LCA→B)` (and likewise for `v`), so
+
+```
+through(B)  −  lca   =   2 · d(LCA → B)
+```
+
+— the designated-bridge caret is the **shortest-path caret plus twice the lift of the
+reference above the true LCA** (`caret_through_bridge_vs_lca_and_the_gap`). That gap is
+exactly the signal the auto-LCA throws away: two topic pairs with the *same* shortest path
+get *different* through-`B` distances when their LCAs sit at different depths below `B`. So
+`through(B)` decomposes as **intrinsic distance** (the shortest path) + **2 × (how far the
+pair's meeting point sits below your reference level)**. Choosing `B` = the physics category
+yields "relatedness within physics"; raising `B` yields relatedness at a coarser level — the
+multi-level reading the budgeted measure cannot give (it only scopes, never reframes). On a
+DAG both are upper-bound approximations, as the caret itself is.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
@@ -575,7 +609,24 @@ buy diminishing returns and is not carried).
      ancestor queries; a *general* speedup wants **periphery** landmarks (classic ALT picks
      landmarks "beyond" the targets), which the boundary machinery could precompute but does
      not yet — the honest next measurement-driven step if A* on general graphs is wanted.
-   - **[3c next, optional]** a between-nodes *kernel* result mode in the Prolog codegen
+   - **[3d DONE]** `caret_distance_budgeted(u, v, parents, budget)` — the caret with a
+     path-length **budget** on the joint up-walk, so the **budget is the bridge-level knob**:
+     a small budget admits only a LOW common ancestor (a tight, local relation), a budget ≥
+     the subtree height always reaches the bridge and equals `caret_distance_lca`. Its
+     natural value is the **support upper bound** (`max` from the interval payload, increment
+     1), which bounds depth-to-subtree-root — so the increment-1 payload feeds the
+     increment-3 caret. Validated by `budgeted_caret_scopes_the_bridge_by_level` and
+     `support_upper_bound_is_a_sufficient_caret_budget`.
+   - **[3d′ DONE]** `caret_through_bridge(u, v, B)` — the caret through a *designated*
+     reference `B` (§5b). The complement to the auto-LCA measure: the LCA caret collapses to
+     the shortest path (no info beyond distance), while a fixed bridge keeps the level
+     signal, with the exact gap `through(B) − lca = 2·d(LCA→B)`
+     (`caret_through_bridge_vs_lca_and_the_gap`).
+   - **[3e next]** a **real-data integration** on a Wikipedia subtree (e.g. physics): extract
+     the root-anchored region (`build_scoped_subtree_lmdb.py`), propagate the support
+     interval, and compute multi-level budgeted carets between topics — the end-to-end
+     composition on real (cyclic) data, where the 2a/2b cycle-correctness earns its keep.
+   - **[3c, optional]** a between-nodes *kernel* result mode in the Prolog codegen
      (the caret query has two query nodes, so it needs a kernel shape distinct from the
      to-root `category_ancestor_boundary`); and periphery-landmark selection for general A*.
 
