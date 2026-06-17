@@ -555,10 +555,16 @@ Validated by `gram_charlier_beats_normal_on_a_skewed_unimodal` (a discretised Po
      the *directed* `d(u→v)` — the symmetric `|d_u − d_v|` is NOT a lower bound on the
      undirected distance off a tree (corrected; `alt_lower_bound_is_directed_only`).
      Validated on a tree (caret = true distance) and a DAG (caret = certified upper bound).
-   - **[3b next]** wire it into the live WamState path and a kernel result mode (a
-     between-nodes `caret_distance(u, v)` reading the distance cache); feed
-     `directed_distance_lower` to an A* search as its admissible heuristic for *directed*
-     queries.
+   - **[3b DONE]** the live WamState path: `category_caret_distance(u, v, acc)` (the exact
+     between-nodes `∧`-distance by a joint upward BFS over the edge accessor) and
+     `category_ancestor_astar(u, target, acc)` (directed shortest `u→ancestor` via **A\*
+     with the ALT landmark heuristic** `h(n) = max(0, min_dist[n] − min_dist[target])` from
+     the loaded distance-to-root table — admissible/consistent; degrades to Dijkstra with
+     an empty `min_dist`). Validated by `live_caret_distance_matches_lca` and
+     `astar_ancestor_distance_matches_closure`.
+   - **[3c next, optional]** a between-nodes *kernel* result mode in the Prolog codegen
+     (the caret query has two query nodes, so it needs a kernel shape distinct from the
+     to-root `category_ancestor_boundary`).
 
 ## 9. Relationship to the other docs
 
