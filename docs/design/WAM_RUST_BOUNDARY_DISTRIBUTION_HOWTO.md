@@ -4,7 +4,9 @@ A practical guide to **using** the boundary-distribution optimization in the Rus
 graph-search target. For *why* it works see
 `WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`; for the *precise semantics* see
 `WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`; for *what was measured* see
-`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`. This doc is the operator's manual.
+`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`; for the **functional-payload generalization**
+(moment jet, distance, caret — carry the functionals, not the histogram) see
+`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`. This doc is the operator's manual.
 
 ## What it is, in one paragraph
 
@@ -24,10 +26,10 @@ a cheap splice. It is **exact** (any boundary band gives the same answer) and
 ### The layers (a query flows top to bottom; precompute fills the middle)
 
 ```
-  QUERY KERNELS    histogram splice  │  g_B scalar splice  │  foreign-dispatch wrapper
-                   (boundary_hist)      (weightsum)           (category_ancestor_boundary)
+  QUERY KERNELS    histogram splice  │  g_B scalar splice  │  jet/distance/caret splice  │  foreign-dispatch wrapper
+                   (boundary_hist)      (weightsum)           (functionals, §payloads)      (category_ancestor_boundary)
                           │ read
-  BOUNDARY CACHE   boundary_suffix : node → path-length histogram   (+ boundary_basis_wp : node → g_B)
+  BOUNDARY CACHE   boundary_suffix : node → histogram   (+ boundary_basis_wp : g_B,  boundary_jet : (jet,interval),  boundary_dist : dist→root)
                           │ filled by
   PRECOMPUTE       eager: enum | shared-memo | topological sweep (+evict/spill)   │   lazy: demand-driven
                           │ walks the cone via
@@ -49,9 +51,10 @@ itself. They compose — the boundary win sits on top of a warm edge cache (phil
 | band (the cut) | whole region · entry frontier | frontier (for storage) | `boundary_band_root_near` / `boundary_band_entry_frontier` |
 | precompute strategy | eager (enum / shared-memo / sweep) · lazy (demand-driven) | eager sweep | `build_boundary_suffix*` / `lazy_boundary_weightsum` |
 | working set | unbudgeted · two-budget eviction · spill-and-continue | unbudgeted | `evict_budget` / `live_budget` / `..._with_spill` |
-| representation | exact histogram · g_B pre-weighted basis · fitted (tail-prune/binomial/beta-binomial/mixture/quantised-CDF/discretised-GMM) | exact | `build_boundary_basis_weighted_power` / `boundary_suffix_reprs` |
+| payload (what the cache carries) | path-length histogram · moment jet `(mass,m₁,m₂,m₃)` + interval `(min,max)` · scalar distance-to-root | histogram | `build_boundary_suffix*` / `build_boundary_jets` / `build_boundary_distances` |
+| representation | exact histogram · g_B pre-weighted basis · fitted (tail-prune/binomial/beta-binomial/mixture/quantised-CDF/discretised-GMM/moment-Normal) | exact | `build_boundary_basis_weighted_power` / `boundary_suffix_reprs` |
 | persistence | ephemeral · LMDB histograms · LMDB fitted reprs | ephemeral | `save/load_boundary_basis` / `save/load_boundary_reprs` |
-| result | scalar · effective_distance · distribution · shortest_distance | scalar | `boundary_result_extractor` / the extractor read |
+| result | scalar · effective_distance · distribution · shortest_distance · (mean/variance/skew · caret) | scalar | `boundary_result_extractor` / the extractor read |
 
 They are genuinely independent — e.g. *lazy LMDB edges + entry-frontier band + fitted
 reprs persisted to LMDB* is a valid configuration, as is *eager edges + region band +
@@ -87,6 +90,22 @@ So "eager vs lazy boundary cache" is not a new dichotomy; it is the same lazy/ea
   edge access — persist the side-table regardless of how it was built.
 - **`g_B`** is the fixed-budget / fixed-functional hot path; **fitted reprs** are the
   large-budget storage play. Both are exact-or-certified, never silent approximation.
+
+### Functional payloads — beyond the histogram (the graph-functional-semiring line)
+
+The histogram is one payload; the cache can also carry the **cheap functionals** of the
+path-length distribution *directly*, never forming the histogram. The why and the algebra
+live in **`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`**; the operator surface is:
+
+| you want | precompute | query / read | answers |
+|---|---|---|---|
+| mean / variance / skew of path length, or a cheap distribution reconstruction | `build_boundary_jets(band, root, edge_pred)` | `collect_native_category_ancestor_boundary_jet(...)` → `MomentJet`; `.mean()/.variance()/.skewness()`, `.to_normal_repr(..)` | the moment jet `(mass,m₁,m₂,m₃)` + interval `(min,max)`, budget-free, **exact on the acyclic ancestor space** |
+| shortest hop-distance to root | `build_boundary_distances(band, root, edge_pred)` | `category_ancestor_boundary_distance(seed, root, acc)` → `u32`, or the `shortest_distance` extractor | the **cycle-correct** min-plus distance (the DFS histogram is unsound on cycles) |
+| between-nodes distance | (the to-root distance cache above) | `caret_distance_upper(d_u, d_v)` / `caret_distance_lca(u, v, parents)` | the composite **caret** — an undirected *upper* bound (exact = tree distance); `directed_distance_lower` is the A* heuristic for *directed* queries (no undirected lower bound off a tree) |
+
+All three carry only a handful of scalars per node and degrade gracefully (an empty cache
+falls back to a correct full walk). They are the same boundary-cache architecture with a
+different per-node element — see the note's `PathSemiring` framework.
 
 ---
 
