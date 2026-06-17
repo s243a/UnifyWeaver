@@ -49,7 +49,7 @@ itself. They compose — the boundary win sits on top of a warm edge cache (phil
 | band (the cut) | whole region · entry frontier | frontier (for storage) | `boundary_band_root_near` / `boundary_band_entry_frontier` |
 | precompute strategy | eager (enum / shared-memo / sweep) · lazy (demand-driven) | eager sweep | `build_boundary_suffix*` / `lazy_boundary_weightsum` |
 | working set | unbudgeted · two-budget eviction · spill-and-continue | unbudgeted | `evict_budget` / `live_budget` / `..._with_spill` |
-| representation | exact histogram · g_B pre-weighted basis · fitted (tail-prune/binomial/beta-binomial/mixture) | exact | `build_boundary_basis_weighted_power` / `boundary_suffix_reprs` |
+| representation | exact histogram · g_B pre-weighted basis · fitted (tail-prune/binomial/beta-binomial/mixture/quantised-CDF/discretised-GMM) | exact | `build_boundary_basis_weighted_power` / `boundary_suffix_reprs` |
 | persistence | ephemeral · LMDB histograms · LMDB fitted reprs | ephemeral | `save/load_boundary_basis` / `save/load_boundary_reprs` |
 | result | scalar · effective_distance · distribution | scalar | `boundary_result_extractor` / the extractor read |
 
@@ -248,7 +248,8 @@ let reprs = vm.boundary_suffix_reprs(50, 0.001);   // HashMap<u32, HistRepr>
 ```
 
 The chooser (`boundary_cache::choose_representation`) tries, cheapest-first within the
-Kolmogorov `ε_K` gate: **exact → tail-pruned → binomial → beta-binomial → mixture**.
+Kolmogorov `ε_K` gate: **exact → tail-pruned → binomial → beta-binomial → mixture →
+quantised-CDF → discretised-GMM**.
 `choose_representation_budget(h, min_points, max_bytes)` is the storage-driven
 complement (smallest error within a byte budget). The point count `min_points` is a
 *work trigger* / storage proxy, not an acceptance gate — acceptance is always the CDF
