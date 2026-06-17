@@ -61,15 +61,29 @@ some small algebra `(⊗, ⊕)`. Working them out:
 
 - **mass** `M = H(1)`. Convolution multiplies, union adds:
   `M_{a→c} = M_{a→b} · M_{b→c}`, `M_{v} = Σ_p M_p`. → the **counting semiring** `(+, ×)`.
-- **raw-moment jet** `(M, m₁, m₂)`. Under *union* every raw moment is linear
-  (`m_k(H₁+H₂) = m_k(H₁) + m_k(H₂)`). Under *convolution* the Leibniz/Vandermonde rule:
+- **raw-moment jet** `(M, m₁, …, m_K)`. Under *union* every raw moment is linear
+  (`m_k(H₁+H₂) = m_k(H₁) + m_k(H₂)`). Under *convolution* the **binomial convolution**
+  (because `(a+b)^k` expands binomially):
   ```
-  M_{ac}  = M_ab·M_bc
-  m₁_{ac} = m₁_ab·M_bc + M_ab·m₁_bc
-  m₂_{ac} = m₂_ab·M_bc + 2·m₁_ab·m₁_bc + M_ab·m₂_bc
+  m_k(A ⊛ B) = Σ_{j=0..k} C(k,j) · m_j(A) · m_{k-j}(B)
   ```
-  i.e. `⊗` is **upper-triangular Toeplitz (truncated power series / "jet")
-  multiplication** and `⊕` is componentwise addition. This is a commutative semiring.
+  — for `K = 2` this is `M_ac = M_ab·M_bc`, `m₁_ac = m₁_ab·M_bc + M_ab·m₁_bc`,
+  `m₂_ac = m₂_ab·M_bc + 2·m₁_ab·m₁_bc + M_ab·m₂_bc`. So `⊗` is a triangular
+  (Vandermonde / "jet") multiply, `⊕` is componentwise addition, and the order-`K` jet
+  is a `K+1` vector spliced in `O(K²)`. This is a commutative semiring.
+
+> **Precondition: no path-length budget (the dual of the `g_B` caveat).** The binomial
+> moment law is exact **only for *untruncated* convolution**. A moment is a scalar that
+> has already summed over *all* lengths — unlike a histogram you cannot reach into it and
+> zero the buckets past a budget, so a length cap is simply not representable in moment
+> space. The moment jet therefore propagates the moments of the **full, unbounded**
+> distribution, or nothing exact. This is the mirror image of `g_B`, which needs a
+> *fixed* budget; the moment jet needs *no* budget. The condition is automatic in the
+> **acyclic ancestor space** (§4): there every path length is finite and bounded by the
+> DAG height, so no cap is ever needed and the jet is exact for free. A budget only
+> re-enters for *cyclic* graphs (to keep counts finite) — and there the moment shortcut
+> breaks and you fall back to the bucket-truncatable histogram. So the payloads
+> partition: **acyclic ⇒ moment jet exact; cyclic ⇒ histogram only.**
 - **support interval** `(min, max)`. Convolution adds the extremes, union takes the
   extremes: `min_{ac} = min_ab + min_bc`, `min_v = min_p (1 + min_p)`; symmetrically for
   `max` with `max`. → the **tropical** semirings min-plus and max-plus.
@@ -126,7 +140,7 @@ per-node `Elem` changes (from `Vec<u64>` to a 5-scalar tuple, etc.).
 | payload | semiring | cost | answers | exact for |
 |---|---|---|---|---|
 | histogram | convolution `(⊛, +)` | O(budget) | every linear functional (mass, moments, `WeightSum`, CDF) | everything |
-| moment jet `(M,m₁,m₂)` | truncated power series | 3 scalars | count, mean, variance → CLT distribution (§7) | mass + first two moments |
+| moment jet `(M,m₁,…,m_K)` | truncated power series | `K+1` scalars (3 for mean/var) | count, mean, variance, skew/kurtosis → CLT/Edgeworth distribution (§7); **needs unbounded length** | mass + first `K` moments |
 | interval `(min,max)` | min-plus × max-plus | 2 scalars | shortest + longest; brackets `d_eff` (§5) | both endpoints |
 | shortest scalar `min` | min-plus | 1 scalar | shortest distance (A* heuristic / landmark) | shortest only |
 
@@ -208,6 +222,16 @@ histogram without ever building one**: read off `mean`, `var`, and emit a discre
 - This is the principled three-scalar payload for distribution *reconstruction* —
   `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,
   badly-biased estimator of `σ`; you need the **second moment**, not the extremes.
+- **Raw → central is exact; the model enters only at "moments → CDF."** Converting the
+  propagated raw moments to central ones is pure algebra, no model
+  (`μ₂ = m₂′ − μ²`, `μ₃ = m₃′ − 3μ·m₂′ + 2μ³`, … with `m_k′ = m_k/M`). A *model* is
+  needed only for the last step — a finite moment set does not determine a distribution
+  — and that choice gives a **graded reconstruction family** that extends this rung:
+  `(M,m₁,m₂)` → Gaussian (CLT); `+m₃` → Gram–Charlier / Edgeworth (adds skew); `+m₄` →
+  Edgeworth / Pearson family (adds kurtosis — mild non-normality); the full jet → the
+  histogram. Propagating to order `2n` thus buys a *non*-Gaussian-but-still-cheap deep
+  node before paying for the histogram, and the CDF gate still arbitrates — rejecting
+  the closure wherever it does not fit.
 - It slots into the existing exact→approximate ladder (boundary spec §9) as a new, very
   cheap **CDF-gated reconstruction rung**, *complementary* to the discretised-GMM:
   CLT-Gaussian for deep, well-mixed, unimodal nodes (3 scalars, no EM); GMM for shallow,
