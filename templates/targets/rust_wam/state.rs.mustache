@@ -2680,6 +2680,7 @@ mod boundary_kernel_tests {
             assert!((jet.mass - want_jet.mass).abs() < 1e-9, "{:?} mass", bnames);
             assert!((jet.m1 - want_jet.m1).abs() < 1e-9, "{:?} m1", bnames);
             assert!((jet.m2 - want_jet.m2).abs() < 1e-9, "{:?} m2", bnames);
+            assert!((jet.m3 - want_jet.m3).abs() < 1e-6, "{:?} m3", bnames);
             assert_eq!(iv, want_iv, "{:?} interval", bnames);
             // the read-out reconstruction (a Normal) is constructible from the splice jet.
             let recon = jet.to_normal_repr(want_iv.unwrap().max as usize + 1);
