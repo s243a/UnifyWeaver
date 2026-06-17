@@ -515,6 +515,12 @@ pub struct WamState {
     /// space). A query splices these (`δ_depth ⊗ jet_B`) to read out mean/variance and
     /// the `d_eff` bracket, or reconstruct a Normal — never forming the histogram.
     pub boundary_jet: FxMap<u32, (crate::boundary_cache::MomentJet, crate::boundary_cache::Interval)>,
+    /// Distance boundary cache (increment 2c): boundary node -> its shortest hop-distance
+    /// to root (`dist(B->root)`, the min-plus closure). A shortest-path query walks
+    /// `seed->boundary`, stops at a cached `B`, and adds this cached suffix — the ALT
+    /// landmark splice. Cycle-correct (built from `min_distance_closure`, not the DFS
+    /// recurrence). Empty = distance boundary mode off.
+    pub boundary_dist: FxMap<u32, u32>,
     /// Pre-weighted boundary basis (P4): node -> the `weighted_power(N)` basis
     /// vector `g_B[a] = sum_b H_node->root[b] * (a+b)^(-N)` for prefix length
     /// `a = 0..=max_depth`. A query reaching this node at prefix depth `a` adds
@@ -656,6 +662,7 @@ impl WamState {
             min_dist: FxMap::default(),
             boundary_suffix: FxMap::default(),
             boundary_jet: FxMap::default(),
+            boundary_dist: FxMap::default(),
             boundary_basis_wp: FxMap::default(),
             bindings: HashMap::new(),
             var_counter: 0,
@@ -1241,6 +1248,63 @@ impl WamState {
                 *parent_id, root_id, visited, acc, depth + 1, jet, iv);
             visited.pop();
         }
+    }
+
+    /// Distance boundary precompute (increment 2c): cache `dist(B->root)` — the shortest
+    /// hop-distance — for each boundary node `B`, via the **min-plus closure**
+    /// (`min_distance_closure`), so it is correct even if the graph has cycles (unlike the
+    /// DFS recurrences). Eager-edge only; returns `false` as a no-op when only a lazy
+    /// source is registered.
+    pub fn build_boundary_distances(
+        &mut self, boundary: &[u32], root_id: u32, edge_pred: &str,
+    ) -> bool {
+        let dist = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::min_distance_closure(root_id, parents)
+        };
+        self.boundary_dist = boundary.iter()
+            .filter_map(|&b| dist.get(&b).map(|&d| (b, d)))
+            .collect();
+        true
+    }
+
+    /// Shortest `seed->root` hop-distance via the distance boundary cache: a breadth-first
+    /// search from `seed` over `parents` that **stops at a cached boundary** `B` and adds
+    /// the cached suffix `dist(B->root)` (the ALT landmark splice), and also takes any
+    /// path that reaches the root directly. BFS visit order gives the shortest `seed->B`
+    /// for unit edges, so the minimum candidate is the true shortest distance — and the
+    /// cache prunes the whole `B->root` cone from the search. Returns `None` if the root
+    /// is unreachable. With an empty `boundary_dist` it degrades to a plain BFS (still
+    /// correct), so it is safe by default.
+    pub fn category_ancestor_boundary_distance(
+        &self, seed: u32, root: u32, acc: &EdgeAccessor,
+    ) -> Option<u32> {
+        use std::collections::{HashSet, VecDeque};
+        let mut best: Option<u32> = None;
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut q: VecDeque<(u32, u32)> = VecDeque::new();
+        seen.insert(seed);
+        q.push_back((seed, 0));
+        while let Some((node, d)) = q.pop_front() {
+            if node == root {
+                best = Some(best.map_or(d, |b| b.min(d)));
+                continue;
+            }
+            if let Some(&suffix) = self.boundary_dist.get(&node) {
+                let cand = d + suffix;
+                best = Some(best.map_or(cand, |b| b.min(cand)));
+                continue; // splice the cached suffix; do not expand the B->root cone
+            }
+            for p in self.edge_parents_via(node, acc) {
+                if seen.insert(p) {
+                    q.push_back((p, d + 1));
+                }
+            }
+        }
+        best
     }
 
     /// Top-down boundary precompute with the liveness-prioritised eviction of spec
@@ -2686,6 +2750,36 @@ mod boundary_kernel_tests {
             let recon = jet.to_normal_repr(want_iv.unwrap().max as usize + 1);
             assert!(matches!(recon, crate::boundary_cache::HistRepr::MomentNormal { .. }));
         }
+    }
+
+    // Increment 2c: the distance boundary cache. The seed->root shortest-distance splice
+    // (BFS stopping at cached boundaries + cached suffix) equals the full min-plus closure,
+    // for every band — and degrades to a correct plain BFS with an empty cache.
+    #[test]
+    fn boundary_distance_splice_matches_closure() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        // oracle: full closure dist(seed -> root) = 2 (5->2->0).
+        let want = {
+            let parents = vm.ffi_facts.get("category_parent").unwrap();
+            crate::boundary_cache::min_distance_closure(root, parents)[&seed]
+        };
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            assert!(vm.build_boundary_distances(&bnodes, root, "category_parent"));
+            let got = {
+                let acc = vm.resolve_edge_accessor("category_parent");
+                vm.category_ancestor_boundary_distance(seed, root, &acc)
+            };
+            assert_eq!(got, Some(want), "boundary {:?}: distance splice", bnames);
+        }
+        // empty distance cache -> plain BFS, still the correct shortest distance.
+        let mut vm2 = dag();
+        let r2 = vm2.intern_atom("0");
+        let s2 = vm2.intern_atom("5");
+        let acc = vm2.resolve_edge_accessor("category_parent");
+        assert_eq!(vm2.category_ancestor_boundary_distance(s2, r2, &acc), Some(want));
     }
 
     #[test]
