@@ -468,10 +468,17 @@ future work — `m₃` is now carried, so they are a read-out away.
      (`min_B (dist(seed→B) + dist(B→root))` — the ALT landmark identity, exact when the
      boundary is a cut), validated by `weighted_closure_respects_edge_weights` and
      `distance_splice_equals_full_closure` (unweighted and weighted).
-   - **[2c next]** wire the distance closure + splice into the live WamState path and the
-     `transitive_distance3` / `astar_shortest_path4` kernels (boundary suffixes as A*
-     landmarks). This is where a second concrete instance finally motivates extracting the
-     `PathSemiring` trait (with the now-settled star/closure contract).
+   - **[2c DONE]** the distance closure + splice are fused into the live WamState path:
+     `boundary_dist` (a `node -> dist(B->root)` side-table), `build_boundary_distances`
+     (built from `min_distance_closure`, so cycle-correct), and
+     `category_ancestor_boundary_distance` (a BFS from the seed that stops at a cached
+     boundary and adds its suffix — the ALT-landmark prune; degrades to a plain correct
+     BFS with an empty cache). Validated by `boundary_distance_splice_matches_closure`.
+   - **[2d next]** wire it into the `transitive_distance3` / `astar_shortest_path4` kernel
+     *codegen* (the Prolog target), and extract the `PathSemiring` trait now that two
+     concrete instances (moment-jet, distance) and the star/closure contract exist — a
+     deduplicating refactor of `suffix_moment_jet` / `suffix_interval` behind one generic
+     `suffix_value::<S>`, with the closure as the min-plus `star`.
 
 ## 9. Relationship to the other docs
 
