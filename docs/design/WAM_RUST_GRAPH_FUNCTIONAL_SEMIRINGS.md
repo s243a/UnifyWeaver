@@ -565,9 +565,19 @@ buy diminishing returns and is not carried).
      the loaded distance-to-root table — admissible/consistent; degrades to Dijkstra with
      an empty `min_dist`). Validated by `live_caret_distance_matches_lca` and
      `astar_ancestor_distance_matches_closure`.
+   - **[measured]** the A* prune is **structure-dependent, and that is inherent to a single
+     root landmark.** `h(n) = d(n→root) − d(target→root)` is *exact* exactly when `target`
+     **dominates** the path to root (every `n→root` shortest path crosses `target`) — there
+     A* expands only the optimal path and prunes hard (`astar_alt_prunes_a_dominator_decoy`:
+     ALT expands strictly fewer nodes than Dijkstra). Across a branch that **bypasses**
+     `target`, the same `h` is a loose lower bound and cannot prune (a root landmark sits
+     *behind* an ancestor target). So the distance-cache A* pays off for dominator-shaped
+     ancestor queries; a *general* speedup wants **periphery** landmarks (classic ALT picks
+     landmarks "beyond" the targets), which the boundary machinery could precompute but does
+     not yet — the honest next measurement-driven step if A* on general graphs is wanted.
    - **[3c next, optional]** a between-nodes *kernel* result mode in the Prolog codegen
      (the caret query has two query nodes, so it needs a kernel shape distinct from the
-     to-root `category_ancestor_boundary`).
+     to-root `category_ancestor_boundary`); and periphery-landmark selection for general A*.
 
 ## 9. Relationship to the other docs
 
