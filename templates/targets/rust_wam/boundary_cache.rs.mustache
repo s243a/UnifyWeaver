@@ -257,25 +257,71 @@ impl Interval {
     }
 }
 
-/// `MomentJet` for `node → root` by the moment recurrence — never forming the histogram.
-/// Memoised, cycle-safe (a node on the current DFS stack contributes `zero`). No budget:
-/// exact on an acyclic ancestor space (the moment law requires untruncated convolution).
-pub fn suffix_moment_jet(
+/// The algebraic-path-problem interface a payload implements so the *one* generic
+/// recurrence `suffix_value` can propagate it: `f(root) = one; f(v) = ⊕_p (edge ⊗ f(p))`.
+/// `zero` is the ⊕-identity (unreachable / no path), `one` the ⊗-identity (the root /
+/// empty path), `add` is ⊕ (combine a node's parents), `step` is ⊗ by one edge
+/// (`shift_one`). See docs/design/WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md §2–§3.
+///
+/// Two deliberate scoping notes (the review's trait gaps):
+/// - **The ⊕/⊗ asymmetry.** `step` (⊗ by an edge) is exact only untruncated; a budget cap
+///   would break `step`/⊗ but never `add`/⊕ (§2 precondition). The acyclic recurrence here
+///   never truncates, so it is exact; the cyclic/budgeted case is handled elsewhere.
+/// - **The *star* is not a method here.** The closed-semiring closure (the cyclic solve)
+///   exists only for *closed* payloads: min-plus is closed — its star is the separate
+///   `min_distance_closure` / `weighted_distance_closure` — while counting/moments are NOT
+///   closed (they diverge on a cycle). So `star` lives as a per-payload free function, not
+///   a trait method that some impls could not honour.
+pub trait PathSemiring: Copy {
+    /// ⊕-identity: unreachable / no path.
+    fn zero() -> Self;
+    /// ⊗-identity: the root / empty path.
+    fn one() -> Self;
+    /// ⊕ — combine alternative path sets (a node's several parents).
+    fn add(self, other: Self) -> Self;
+    /// ⊗ by one edge — prepend an edge (`shift_one`). Must keep `zero` inert (`zero.step()`
+    /// stays add-neutral) so unreachable parents contribute nothing.
+    fn step(self) -> Self;
+}
+
+impl PathSemiring for MomentJet {
+    fn zero() -> Self { MomentJet::zero() }
+    fn one() -> Self { MomentJet::root() }
+    fn add(self, o: Self) -> Self { self.union(o) }
+    fn step(self) -> Self { self.shift_one() } // zero-mass jet shifts to itself: inert
+}
+
+impl PathSemiring for Interval {
+    /// Unreachable sentinel `{min: u32::MAX, max: 0}` — an impossible real interval
+    /// (`min > max`), so it never collides with a genuine one and is the `union` identity.
+    fn zero() -> Self { Interval { min: u32::MAX, max: 0 } }
+    fn one() -> Self { Interval::root() }
+    fn add(self, o: Self) -> Self { self.union(o) } // min-of-mins / max-of-maxes; zero is id
+    fn step(self) -> Self {
+        if self == <Interval as PathSemiring>::zero() { self } else { self.shift_one() }
+    }
+}
+
+/// The one generic `node → root` recurrence, parameterised by the payload semiring `S`:
+/// `f(root) = one; f(v) = ⊕_p (edge ⊗ f(p))`. Memoised, cycle-safe (a node on the DFS
+/// stack contributes `zero`), **no budget** — exact on an acyclic ancestor space.
+/// `suffix_moment_jet` and `suffix_interval` are its two instances; the cyclic case needs
+/// the per-payload closure instead (see the trait note).
+pub fn suffix_value<S: PathSemiring>(
     node: u32,
     root: u32,
     parents: &std::collections::HashMap<u32, Vec<u32>>,
-    memo: &mut std::collections::HashMap<u32, MomentJet>,
+    memo: &mut std::collections::HashMap<u32, S>,
     on_stack: &mut Vec<u32>,
-) -> MomentJet {
-    if node == root { return MomentJet::root(); }
-    if let Some(j) = memo.get(&node) { return *j; }
-    if on_stack.contains(&node) { return MomentJet::zero(); }
+) -> S {
+    if node == root { return S::one(); }
+    if let Some(&v) = memo.get(&node) { return v; }
+    if on_stack.contains(&node) { return S::zero(); }
     on_stack.push(node);
-    let mut acc = MomentJet::zero();
+    let mut acc = S::zero();
     if let Some(ps) = parents.get(&node) {
         for &p in ps {
-            let pj = suffix_moment_jet(p, root, parents, memo, on_stack);
-            acc = acc.union(pj.shift_one());
+            acc = acc.add(suffix_value(p, root, parents, memo, on_stack).step());
         }
     }
     on_stack.pop();
@@ -283,32 +329,32 @@ pub fn suffix_moment_jet(
     acc
 }
 
-/// `Interval` for `node → root` by the tropical recurrence. `None` = unreachable.
-/// Memoised, cycle-safe (a node on the stack contributes `None`). No budget.
+/// `MomentJet` for `node → root` — the moment-semiring instance of `suffix_value` (never
+/// forms the histogram). Memoised, cycle-safe, no budget (exact on an acyclic ancestor
+/// space; the moment law requires untruncated convolution).
+pub fn suffix_moment_jet(
+    node: u32,
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    memo: &mut std::collections::HashMap<u32, MomentJet>,
+    on_stack: &mut Vec<u32>,
+) -> MomentJet {
+    suffix_value(node, root, parents, memo, on_stack)
+}
+
+/// `Interval` for `node → root` — the tropical instance of `suffix_value`. `None` =
+/// unreachable (the `zero` sentinel). Memoised, cycle-safe, no budget.
 pub fn suffix_interval(
     node: u32,
     root: u32,
     parents: &std::collections::HashMap<u32, Vec<u32>>,
-    memo: &mut std::collections::HashMap<u32, Option<Interval>>,
+    memo: &mut std::collections::HashMap<u32, Interval>,
     on_stack: &mut Vec<u32>,
 ) -> Option<Interval> {
-    if node == root { return Some(Interval::root()); }
-    if let Some(iv) = memo.get(&node) { return *iv; }
-    if on_stack.contains(&node) { return None; }
-    on_stack.push(node);
-    let mut acc: Option<Interval> = None;
-    if let Some(ps) = parents.get(&node) {
-        for &p in ps {
-            if let Some(pi) = suffix_interval(p, root, parents, memo, on_stack) {
-                let shifted = pi.shift_one();
-                acc = Some(match acc { Some(a) => a.union(shifted), None => shifted });
-            }
-        }
-    }
-    on_stack.pop();
-    memo.insert(node, acc);
-    acc
+    let v = suffix_value(node, root, parents, memo, on_stack);
+    if v == <Interval as PathSemiring>::zero() { None } else { Some(v) }
 }
+
 
 // --- Increment 2: the tropical (min-plus) closure for cyclic graphs ---
 //
@@ -1849,8 +1895,37 @@ mod tests {
         let mut memo = HashMap::new();
         let mut on_stack = vec![];
         let _w = suffix_interval(5, 0, &parents, &mut memo, &mut on_stack);
-        assert_eq!(memo.get(&6), Some(&None),
-            "DFS+memo poisons Z to None on the cycle (the bug the closure avoids)");
+        assert_eq!(memo.get(&6), Some(&<Interval as PathSemiring>::zero()),
+            "DFS+memo poisons Z to the unreachable sentinel on the cycle (the closure avoids it)");
+    }
+
+    // Increment 2d — the PathSemiring laws both payloads must satisfy for the generic
+    // `suffix_value` to be exact: `zero` is the ⊕-identity and stays inert under `step`
+    // (so unreachable parents contribute nothing), and the named recurrences route through
+    // the one generic.
+    #[test]
+    fn path_semiring_laws_and_generic_equivalence() {
+        // MomentJet: zero is add-identity and shifts to itself.
+        let mz = <MomentJet as PathSemiring>::zero();
+        let mx = MomentJet { mass: 3.0, m1: 4.0, m2: 9.0, m3: 27.0 };
+        assert_eq!(mx.add(mz), mx);
+        assert_eq!(mz.add(mx), mx);
+        assert_eq!(mz.step(), mz);
+        assert_eq!(mz.step().add(mx), mx);
+        // Interval: the sentinel zero is union-identity and stays inert under an edge.
+        let iz = <Interval as PathSemiring>::zero();
+        let ix = Interval { min: 2, max: 5 };
+        assert_eq!(ix.add(iz), ix);
+        assert_eq!(iz.add(ix), ix);
+        assert_eq!(iz.step(), iz, "unreachable stays unreachable under an edge");
+        // the named wrappers are exactly the generic instances.
+        let g = graph();
+        let (mut m1, mut s1) = (HashMap::new(), vec![]);
+        let (mut m2, mut s2) = (HashMap::new(), vec![]);
+        assert_eq!(
+            suffix_value::<MomentJet>(5, 0, &g, &mut m1, &mut s1),
+            suffix_moment_jet(5, 0, &g, &mut m2, &mut s2),
+        );
     }
 
     // Increment 2b — the weighted min-plus closure agrees with the unweighted BFS closure
