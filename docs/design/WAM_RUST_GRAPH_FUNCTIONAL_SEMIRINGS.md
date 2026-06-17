@@ -82,8 +82,10 @@ some small algebra `(⊗, ⊕)`. Working them out:
 > **acyclic ancestor space** (§4): there every path length is finite and bounded by the
 > DAG height, so no cap is ever needed and the jet is exact for free. A budget only
 > re-enters for *cyclic* graphs (to keep counts finite) — and there the moment shortcut
-> breaks and you fall back to the bucket-truncatable histogram. So the payloads
-> partition: **acyclic ⇒ moment jet exact; cyclic ⇒ histogram only.**
+> breaks and you fall back to the bucket-truncatable histogram. The governing property
+> is **direction of convergence**, not merely acyclicity (§4): the budget-free jet is at
+> home in the *convergent ancestor direction*, while the *divergent descendant
+> direction* wants a budget even in a pure DAG.
 - **support interval** `(min, max)`. Convolution adds the extremes, union takes the
   extremes: `min_{ac} = min_ab + min_bc`, `min_v = min_p (1 + min_p)`; symmetrically for
   `max` with `max`. → the **tropical** semirings min-plus and max-plus.
@@ -182,8 +184,37 @@ graph. This is the right and load-bearing domain:
   existing **budget + visited-guard** truncation. Exact on poset/taxonomic data;
   truncation-approximate on general graphs.
 
-This staging — **acyclic ancestor space first, cyclic closure second** — orders the
-implementation (§8).
+### Convergence, not just acyclicity: why unbounded length is meaningful here
+
+The deeper reason the ancestor direction tolerates an unbounded path length — the
+precondition the moment jet needs (§2) — is that it **converges to a unique sink, the
+root**. Every path funnels inward and *completes* at the root, so the path set is the
+canonical, finite, *total* set of the node's derivations ("all the ways `v` is-a … is-a
+root"). Completeness is well-defined and length is bounded by the DAG height for free, so
+relaxing the budget is natural, not a patch — and the complete statistics *are* the
+meaning.
+
+The **descendant direction is the opposite geometry**: paths *diverge* toward many leaves
+with **no unique sink**, so "all paths without a length cap" is not a canonical statistic
+— it is dominated by long, indirect routes and explodes with fan-out. There a budget is a
+**semantic filter** (which paths count as meaningful: the short, direct ones), and it is
+needed *even in a pure DAG*. So the precondition for the budget-free moment jet is
+properly the **convergent ancestor direction**, of which "acyclic up-closure" is the
+taxonomic instance — not acyclicity per se.
+
+| direction / structure | unique sink? | unbounded length is… | payload |
+|---|---|---|---|
+| ancestor → root (convergent) | yes (root) | finite **and** meaningful | **moment jet exact** (+ histogram) |
+| descendant (divergent, even acyclic) | no | finite but indirect-path-dominated | budget + histogram (jet breaks under the cap) |
+| cyclic (either way) | — | infinite | budget + histogram (finiteness necessity) |
+
+This is also why the moment-jet idea sits naturally on the existing machinery: the
+boundary cache already stores **suffixes toward the root** — the convergent direction — so
+budget-free moment propagation rides what exists, while descendant / general-direction
+search intrinsically carries the budget and stays on the histogram.
+
+This staging — **convergent ancestor space first, divergent/cyclic closure second** —
+orders the implementation (§8).
 
 ## 5. A certified bracket on `d_eff` from two scalars
 
