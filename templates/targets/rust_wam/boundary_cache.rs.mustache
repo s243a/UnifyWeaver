@@ -143,29 +143,30 @@ pub fn f_weighted_power(h: &Hist, n: f64) -> f64 {
 // only at the end. (Cumulants would add under ⊗ but also break under ⊕; raw moments are
 // the safe carry for a branching DAG. See the note's "raw moments vs cumulants" fork.)
 
-/// Path-length **moment jet** toward the root: total path mass and the first three raw
-/// moments `(M, m1, m2, m3) = (Σ H[L], Σ L·H[L], Σ L²·H[L], Σ L³·H[L])`. `f64` because
-/// moments grow large; mass is integer-valued but kept real for the read-outs. `m3`
-/// carries the **skew** (the third moment), which unlocks a method-of-moments binomial
-/// fit and the Edgeworth/Gram-Charlier reconstruction.
+/// Path-length **moment jet** toward the root: total path mass and the first four raw
+/// moments `(M, m1, m2, m3, m4) = (Σ H[L], Σ L·H[L], … , Σ L⁴·H[L])`. `f64` because
+/// moments grow large; mass is integer-valued but kept real for the read-outs. `m3` carries
+/// the **skew** and `m4` the **kurtosis** — together they drive the Gram–Charlier/Edgeworth
+/// reconstruction (Normal → +skew → +kurtosis); `m3` also unlocks the mean+variance binomial.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MomentJet {
     pub mass: f64,
     pub m1: f64,
     pub m2: f64,
     pub m3: f64,
+    pub m4: f64,
 }
 
 impl MomentJet {
     /// ⊗-identity: the empty path at the root — one path of length 0.
-    pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0, m3: 0.0 } }
+    pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0, m3: 0.0, m4: 0.0 } }
     /// ⊕-identity: no path (unreachable / a cycle-pruned branch).
-    pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0, m3: 0.0 } }
+    pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0, m3: 0.0, m4: 0.0 } }
     /// A single path of length `len` — the atom `δ_len` (one path at length `len`):
-    /// `(mass, m1, m2, m3) = (1, len, len², len³)`. The prefix one walk path contributes.
+    /// `(mass, m1..m4) = (1, len, len², len³, len⁴)`. The prefix one walk path contributes.
     pub fn delta(len: u32) -> Self {
         let l = len as f64;
-        MomentJet { mass: 1.0, m1: l, m2: l * l, m3: l * l * l }
+        MomentJet { mass: 1.0, m1: l, m2: l * l, m3: l * l * l, m4: l * l * l * l }
     }
     /// ⊕ — union of alternative path sets (a node's several parents): raw moments add.
     pub fn union(self, o: Self) -> Self {
@@ -174,27 +175,32 @@ impl MomentJet {
             m1: self.m1 + o.m1,
             m2: self.m2 + o.m2,
             m3: self.m3 + o.m3,
+            m4: self.m4 + o.m4,
         }
     }
     /// ⊗ — concatenation of two independent segments (the splice): the binomial
-    /// convolution of raw moments, `m_k = Σ_j C(k,j) m_j(a) m_{k-j}(b)` for k ≤ 3.
+    /// convolution of raw moments, `m_k = Σ_j C(k,j) m_j(a) m_{k-j}(b)` for k ≤ 4.
     pub fn convolve(self, o: Self) -> Self {
         MomentJet {
             mass: self.mass * o.mass,
             m1: self.m1 * o.mass + self.mass * o.m1,
             m2: self.m2 * o.mass + 2.0 * self.m1 * o.m1 + self.mass * o.m2,
             m3: self.m3 * o.mass + 3.0 * self.m2 * o.m1 + 3.0 * self.m1 * o.m2 + self.mass * o.m3,
+            m4: self.m4 * o.mass + 4.0 * self.m3 * o.m1 + 6.0 * self.m2 * o.m2
+                + 4.0 * self.m1 * o.m3 + self.mass * o.m4,
         }
     }
     /// ⊗ by a single edge: prepend one edge, shifting every path length by +1. This is
-    /// `convolve` with the length-1 atom `(1, 1, 1, 1)`, specialised via `(λ+1)^k`:
-    /// `m1' = m1 + mass`, `m2' = m2 + 2·m1 + mass`, `m3' = m3 + 3·m2 + 3·m1 + mass`.
+    /// `convolve` with the length-1 atom `(1,1,1,1,1)`, specialised via `(λ+1)^k`:
+    /// `m2' = m2 + 2·m1 + mass`, `m3' = m3 + 3·m2 + 3·m1 + mass`,
+    /// `m4' = m4 + 4·m3 + 6·m2 + 4·m1 + mass`.
     pub fn shift_one(self) -> Self {
         MomentJet {
             mass: self.mass,
             m1: self.m1 + self.mass,
             m2: self.m2 + 2.0 * self.m1 + self.mass,
             m3: self.m3 + 3.0 * self.m2 + 3.0 * self.m1 + self.mass,
+            m4: self.m4 + 4.0 * self.m3 + 6.0 * self.m2 + 4.0 * self.m1 + self.mass,
         }
     }
     /// Read-out (nonlinear, end of pipeline): mean path length.
@@ -216,6 +222,18 @@ impl MomentJet {
         let mu3 = self.m3 / self.mass - 3.0 * mean * (self.m2 / self.mass) + 2.0 * mean * mean * mean;
         mu3 / var.powf(1.5)
     }
+    /// Read-out: **excess kurtosis** `μ₄ / σ⁴ − 3` (0 for a Gaussian; positive = heavier
+    /// tails / peakier). `0` for a degenerate / zero-variance jet.
+    pub fn excess_kurtosis(self) -> f64 {
+        if self.mass <= 0.0 { return 0.0; }
+        let var = self.variance();
+        if var <= 1e-12 { return 0.0; }
+        let mean = self.mean();
+        // central fourth moment: E[L⁴] − 4μ·E[L³] + 6μ²·E[L²] − 3μ⁴
+        let mu4 = self.m4 / self.mass - 4.0 * mean * (self.m3 / self.mass)
+            + 6.0 * mean * mean * (self.m2 / self.mass) - 3.0 * mean * mean * mean * mean;
+        mu4 / (var * var) - 3.0
+    }
     /// CLT reconstruction: a moment-matched discretised Normal over `0..support`, built
     /// from this jet's `(mass, mean, variance)` **alone** — no histogram. `support` is the
     /// integer domain length (e.g. `max + 1` from the support interval, or the budget).
@@ -230,18 +248,19 @@ impl MomentJet {
             total: self.mass.round() as u64,
         }
     }
-    /// Gram–Charlier / Edgeworth reconstruction: the moment-Normal **plus a skew
-    /// correction** from the carried `m₃` — a Gaussian times `1 + (γ₁/6)·He₃(z)`. The
-    /// next rung of the graded family (§7), for *mildly skewed but unimodal* nodes the
-    /// symmetric Normal misses. It is a perturbation of a Gaussian, so it is NOT for
-    /// strongly multimodal nodes — but the CDF gate rejects it there, falling back to the
-    /// mixture/GMM/histogram. Built from this jet's `(mass, mean, variance, skewness)`.
+    /// Gram–Charlier / Edgeworth reconstruction: the moment-Normal **plus skew and
+    /// kurtosis corrections** from the carried `m₃, m₄` — a Gaussian times
+    /// `1 + (γ₁/6)·He₃(z) + (γ₂/24)·He₄(z)`. The full graded-family reconstruction (§7),
+    /// for *mildly non-normal but unimodal* nodes the symmetric Normal misses. It is a
+    /// perturbation of a Gaussian, so it is NOT for strongly multimodal nodes — the CDF
+    /// gate rejects it there. Built from this jet's `(mass, mean, var, skew, kurtosis)`.
     pub fn to_gram_charlier_repr(self, support: usize) -> HistRepr {
         HistRepr::GramCharlier {
             support,
             mean: self.mean(),
             std: self.variance().sqrt().max(SIGMA_FLOOR),
             skew: self.skewness(),
+            kurtosis: self.excess_kurtosis(),
             total: self.mass.round() as u64,
         }
     }
@@ -570,6 +589,7 @@ pub fn hist_moment_jet(h: &Hist) -> MomentJet {
         j.m1 += l * c;
         j.m2 += l * l * c;
         j.m3 += l * l * l * c;
+        j.m4 += l * l * l * l * c;
     }
     j
 }
@@ -898,11 +918,12 @@ pub enum HistRepr {
     /// Gated like every rung: a multimodal node misses `ε_K` and is rejected.
     MomentNormal { support: usize, mean: f64, std: f64, total: u64 },
     /// Gram–Charlier / Edgeworth reconstruction over `0..support` — the moment-Normal
-    /// **plus a skew correction** from `m₃` (`1 + (skew/6)·He₃(z)`). The next rung of the
-    /// graded family for *mildly skewed, unimodal* nodes; constructible from the moment
-    /// jet alone (`MomentJet::to_gram_charlier_repr`). A perturbation of a Gaussian, so
-    /// NOT for strongly multimodal nodes — and the CDF gate rejects it there.
-    GramCharlier { support: usize, mean: f64, std: f64, skew: f64, total: u64 },
+    /// **plus skew and kurtosis corrections** from `m₃, m₄`
+    /// (`1 + (skew/6)·He₃(z) + (kurtosis/24)·He₄(z)`). The full graded-family rung for
+    /// *mildly non-normal, unimodal* nodes; constructible from the moment jet alone
+    /// (`MomentJet::to_gram_charlier_repr`). A perturbation of a Gaussian, so NOT for
+    /// strongly multimodal nodes — and the CDF gate rejects it there.
+    GramCharlier { support: usize, mean: f64, std: f64, skew: f64, kurtosis: f64, total: u64 },
 }
 
 impl HistRepr {
@@ -917,7 +938,7 @@ impl HistRepr {
             HistRepr::QuantCdf { qcdf, .. } => 1 + 4 + qcdf.len() * 2 + 8, // tag + u32 len + u16 cdf + total
             HistRepr::DiscGmm { comps, .. } => 1 + 4 + 4 + comps.len() * 24 + 8, // tag + support + k + (w,mu,sigma) + total
             HistRepr::MomentNormal { .. } => 1 + 4 + 8 + 8 + 8, // tag + support + mean + std + total
-            HistRepr::GramCharlier { .. } => 1 + 4 + 8 + 8 + 8 + 8, // tag + support + mean + std + skew + total
+            HistRepr::GramCharlier { .. } => 1 + 4 + 8 + 8 + 8 + 8 + 8, // tag + support + mean + std + skew + kurtosis + total
         }
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
@@ -948,8 +969,8 @@ impl HistRepr {
             HistRepr::DiscGmm { support, comps, .. } => discretised_gmm_pmf(*support, comps),
             HistRepr::MomentNormal { support, mean, std, .. } =>
                 discretised_gmm_pmf(*support, &[(1.0, *mean, *std)]),
-            HistRepr::GramCharlier { support, mean, std, skew, .. } =>
-                gram_charlier_pmf(*support, *mean, *std, *skew),
+            HistRepr::GramCharlier { support, mean, std, skew, kurtosis, .. } =>
+                gram_charlier_pmf(*support, *mean, *std, *skew, *kurtosis),
         }
     }
     fn total(&self) -> u64 {
@@ -967,11 +988,12 @@ impl HistRepr {
 }
 
 /// PMF of a **Gram–Charlier / Edgeworth** reconstruction over `0..support`: a discretised
-/// Gaussian times the skew correction `1 + (skew/6)·He₃(z)` (`He₃(z) = z³ − 3z`,
-/// `z = (i−mean)/std`). The series can dip negative in a tail (a known Gram–Charlier
-/// artefact), so negatives are **clamped to 0** and the result renormalised — the CDF gate
-/// then judges whether the fit is admissible.
-pub fn gram_charlier_pmf(support: usize, mean: f64, std: f64, skew: f64) -> Vec<f64> {
+/// Gaussian times the skew + kurtosis correction
+/// `1 + (skew/6)·He₃(z) + (kurtosis/24)·He₄(z)` (`He₃ = z³−3z`, `He₄ = z⁴−6z²+3`,
+/// `z = (i−mean)/std`; `kurtosis` is the *excess* kurtosis). The series can dip negative
+/// in a tail (a known Gram–Charlier artefact), so negatives are **clamped to 0** and the
+/// result renormalised — the CDF gate then judges whether the fit is admissible.
+pub fn gram_charlier_pmf(support: usize, mean: f64, std: f64, skew: f64, kurtosis: f64) -> Vec<f64> {
     if support == 0 { return Vec::new(); }
     let s = std.max(SIGMA_FLOOR);
     let norm = 1.0 / (s * (2.0 * std::f64::consts::PI).sqrt());
@@ -980,7 +1002,9 @@ pub fn gram_charlier_pmf(support: usize, mean: f64, std: f64, skew: f64) -> Vec<
         let z = (i as f64 - mean) / s;
         let phi = norm * (-0.5 * z * z).exp();
         let he3 = z * z * z - 3.0 * z;
-        out[i] = (phi * (1.0 + (skew / 6.0) * he3)).max(0.0); // clamp the GC negativity
+        let he4 = z * z * z * z - 6.0 * z * z + 3.0;
+        let corr = 1.0 + (skew / 6.0) * he3 + (kurtosis / 24.0) * he4;
+        out[i] = (phi * corr).max(0.0); // clamp the GC negativity
     }
     let sum: f64 = out.iter().sum();
     if sum > 0.0 { for x in &mut out { *x /= sum; } }
@@ -1068,13 +1092,13 @@ pub fn fit_moment_normal(h: &Hist) -> (usize, f64, f64) {
     (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR))
 }
 
-/// Gram–Charlier fit (method of moments): `(support, mean, std, skew)` from
+/// Gram–Charlier fit (method of moments): `(support, mean, std, skew, kurtosis)` from
 /// `hist_moment_jet`, so it agrees bit-for-bit with `to_gram_charlier_repr` of the same
-/// jet. The skew-corrected upgrade of `fit_moment_normal`.
-pub fn fit_gram_charlier(h: &Hist) -> (usize, f64, f64, f64) {
+/// jet. The skew+kurtosis-corrected upgrade of `fit_moment_normal`.
+pub fn fit_gram_charlier(h: &Hist) -> (usize, f64, f64, f64, f64) {
     let jet = hist_moment_jet(h);
-    if jet.mass <= 0.0 { return (0, 0.0, 1.0, 0.0); }
-    (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR), jet.skewness())
+    if jet.mass <= 0.0 { return (0, 0.0, 1.0, 0.0, 0.0); }
+    (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR), jet.skewness(), jet.excess_kurtosis())
 }
 
 /// PMF of a binomial mixture: `sum_k w_k * Binomial(trials, p_k)`.
@@ -1280,11 +1304,12 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         cands.push((HistRepr::MomentNormal { support, mean, std, total }, err));
     }
     {
-        // Gram-Charlier: the moment-Normal + a skew correction (from m3) — for mildly
-        // skewed unimodal nodes the symmetric Normal misses. Gated; rejected if multimodal.
-        let (support, mean, std, skew) = fit_gram_charlier(h);
-        let err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(support, mean, std, skew));
-        cands.push((HistRepr::GramCharlier { support, mean, std, skew, total }, err));
+        // Gram-Charlier: the moment-Normal + skew & kurtosis corrections (m3, m4) — for
+        // mildly non-normal unimodal nodes the symmetric Normal misses. Gated; rejected
+        // if multimodal.
+        let (support, mean, std, skew, kurtosis) = fit_gram_charlier(h);
+        let err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(support, mean, std, skew, kurtosis));
+        cands.push((HistRepr::GramCharlier { support, mean, std, skew, kurtosis, total }, err));
     }
     for k in [2usize, 3] {
         let (trials, comps) = fit_binomial_mixture(h, k, EM_ITERS);
@@ -1398,12 +1423,13 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
             out.extend_from_slice(&std.to_le_bytes());
             out.extend_from_slice(&total.to_le_bytes());
         }
-        HistRepr::GramCharlier { support, mean, std, skew, total } => {
+        HistRepr::GramCharlier { support, mean, std, skew, kurtosis, total } => {
             out.push(7u8);
             out.extend_from_slice(&(*support as u32).to_le_bytes());
             out.extend_from_slice(&mean.to_le_bytes());
             out.extend_from_slice(&std.to_le_bytes());
             out.extend_from_slice(&skew.to_le_bytes());
+            out.extend_from_slice(&kurtosis.to_le_bytes());
             out.extend_from_slice(&total.to_le_bytes());
         }
     }
@@ -1487,12 +1513,13 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             std: read_f64(b, 13),
             total: read_u64(b, 21),
         },
-        7 if b.len() >= 1 + 4 + 8 + 8 + 8 + 8 => HistRepr::GramCharlier {
+        7 if b.len() >= 1 + 4 + 8 + 8 + 8 + 8 + 8 => HistRepr::GramCharlier {
             support: read_u32(b, 1) as usize,
             mean: read_f64(b, 5),
             std: read_f64(b, 13),
             skew: read_f64(b, 21),
-            total: read_u64(b, 29),
+            kurtosis: read_f64(b, 29),
+            total: read_u64(b, 37),
         },
         _ => HistRepr::Exact(Vec::new()),
     }
@@ -1643,7 +1670,7 @@ mod tests {
             HistRepr::QuantCdf { qcdf: vec![0u16, 100, 30000, 65535], total: 7777 },
             HistRepr::DiscGmm { support: 60, comps: vec![(0.5, 20.0, 1.5), (0.5, 40.0, 2.0)], total: 6543 },
             HistRepr::MomentNormal { support: 60, mean: 29.5, std: 6.25, total: 5432 },
-            HistRepr::GramCharlier { support: 60, mean: 18.0, std: 4.0, skew: 0.4, total: 4321 },
+            HistRepr::GramCharlier { support: 60, mean: 18.0, std: 4.0, skew: 0.4, kurtosis: 0.2, total: 4321 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
@@ -1670,15 +1697,15 @@ mod tests {
         // the skew correction reduces the CDF error vs the plain Normal.
         let (s, mean, std) = fit_moment_normal(&h);
         let normal_err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(s, &[(1.0, mean, std)]));
-        let (sg, mg, stdg, skg) = fit_gram_charlier(&h);
-        let gc_err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(sg, mg, stdg, skg));
+        let (sg, mg, stdg, skg, kug) = fit_gram_charlier(&h);
+        let gc_err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(sg, mg, stdg, skg, kug));
         assert!(gc_err < normal_err,
             "Gram-Charlier err {} should beat the Normal err {} on a skewed shape", gc_err, normal_err);
         assert!(skg > 0.0, "Poisson is right-skewed");
         // the jet-built repr equals the histogram fit (single source of truth).
         let from_jet = hist_moment_jet(&h).to_gram_charlier_repr(h.len());
         let total: u64 = h.iter().sum();
-        assert_eq!(from_jet, HistRepr::GramCharlier { support: sg, mean: mg, std: stdg, skew: skg, total });
+        assert_eq!(from_jet, HistRepr::GramCharlier { support: sg, mean: mg, std: stdg, skew: skg, kurtosis: kug, total });
     }
 
     // The skew correction is a Gaussian perturbation — NOT for strongly multimodal nodes.
@@ -1691,17 +1718,39 @@ mod tests {
             .map(|i| ((0.5 * binomial_pmf(trials, 0.2)[i] + 0.5 * binomial_pmf(trials, 0.8)[i]) * 1e6).round() as u64)
             .collect();
         let exact_pmf = to_pmf(&h);
-        let (s, mean, std, skew) = fit_gram_charlier(&h);
-        assert!(cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(s, mean, std, skew)) > 0.01,
-            "a Gaussian+skew perturbation must miss the gate on a bimodal histogram");
+        let (s, mean, std, skew, kurt) = fit_gram_charlier(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(s, mean, std, skew, kurt)) > 0.01,
+            "a Gaussian perturbation must miss the gate on a bimodal histogram");
     }
 
     // gram_charlier_pmf is a valid PMF (non-negative after the clamp, sums to 1).
     #[test]
     fn gram_charlier_pmf_is_a_valid_distribution() {
-        let pmf = gram_charlier_pmf(50, 20.0, 5.0, 0.6);
+        let pmf = gram_charlier_pmf(50, 20.0, 5.0, 0.6, 0.8);
         assert!(pmf.iter().all(|&p| p >= 0.0), "non-negative after clamp");
         assert!((pmf.iter().sum::<f64>() - 1.0).abs() < 1e-9, "sums to 1");
+    }
+
+    // The kurtosis correction (m4) earns its place: on a symmetric LEPTOKURTIC shape (a
+    // scale mixture of two same-mean Gaussians — heavy tails, peaky, skew≈0), the full
+    // Gram-Charlier (skew+kurtosis) beats the skew-only correction, which there equals the
+    // plain Normal. This is the m4 payoff completing the graded family.
+    #[test]
+    fn kurtosis_correction_beats_skew_only_on_leptokurtic() {
+        let support = 60usize;
+        // 0.5*N(30,3) + 0.5*N(30,8): symmetric, same mean, excess kurtosis > 0.
+        let pmf = discretised_gmm_pmf(support, &[(0.5, 30.0, 3.0), (0.5, 30.0, 8.0)]);
+        let h: Hist = pmf.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        let jet = hist_moment_jet(&h);
+        assert!(jet.excess_kurtosis() > 0.1, "scale mixture is leptokurtic");
+        assert!(jet.skewness().abs() < 0.05, "and symmetric (skew ~ 0)");
+        let (s, mean, std, skew, kurt) = fit_gram_charlier(&h);
+        // skew≈0, so skew-only == the plain Normal; the kurtosis term must improve it.
+        let skew_only = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(s, mean, std, skew, 0.0));
+        let full = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(s, mean, std, skew, kurt));
+        assert!(full < skew_only,
+            "kurtosis correction ({}) should beat skew-only ({})", full, skew_only);
     }
 
     // Increment 1b — the CLT reconstruction rung. A wide Gaussian histogram (wider than
@@ -2062,6 +2111,7 @@ mod tests {
             assert!((got_jet.m1 - want_jet.m1).abs() < 1e-9, "node {} m1", node);
             assert!((got_jet.m2 - want_jet.m2).abs() < 1e-9, "node {} m2", node);
             assert!((got_jet.m3 - want_jet.m3).abs() < 1e-9, "node {} m3", node);
+            assert!((got_jet.m4 - want_jet.m4).abs() < 1e-9, "node {} m4", node);
             assert_eq!(got_iv, want_iv, "node {} interval", node);
             // and the read-outs match the histogram's mean / variance.
             assert!((got_jet.mean() - f_moment1(&h) / f_mass(&h)).abs() < 1e-9, "node {} mean", node);
@@ -2111,7 +2161,7 @@ mod tests {
     fn path_semiring_laws_and_generic_equivalence() {
         // MomentJet: zero is add-identity and shifts to itself.
         let mz = <MomentJet as PathSemiring>::zero();
-        let mx = MomentJet { mass: 3.0, m1: 4.0, m2: 9.0, m3: 27.0 };
+        let mx = MomentJet { mass: 3.0, m1: 4.0, m2: 9.0, m3: 27.0, m4: 81.0 };
         assert_eq!(mx.add(mz), mx);
         assert_eq!(mz.add(mx), mx);
         assert_eq!(mz.step(), mz);
@@ -2292,6 +2342,7 @@ mod tests {
         assert!((got.m1 - want.m1).abs() < 1e-9, "m1");
         assert!((got.m2 - want.m2).abs() < 1e-9, "m2");
         assert!((got.m3 - want.m3).abs() < 1e-6, "m3"); // m3 grows large -> looser tol
+        assert!((got.m4 - want.m4).abs() < 1e-3, "m4"); // m4 grows even larger -> looser tol
         // interval route
         let iv_want = hist_interval(&spliced).unwrap();
         let iv_got = hist_interval(&a).unwrap().convolve(hist_interval(&b).unwrap());
@@ -2313,6 +2364,21 @@ mod tests {
         let sym: Hist = binomial_pmf(40, 0.5).iter()
             .map(|&pr| (pr * 10_000_000.0).round() as u64).collect();
         assert!(hist_moment_jet(&sym).skewness().abs() < 1e-3);
+    }
+
+    // The excess-kurtosis read-out (from m4) matches the binomial's analytic value
+    // (1 - 6p(1-p)) / (np(1-p)) — confirming m4 is propagated and read out correctly.
+    #[test]
+    fn excess_kurtosis_matches_binomial() {
+        let (n, p) = (40usize, 0.3f64);
+        let h: Hist = binomial_pmf(n, p).iter()
+            .map(|&pr| (pr * 10_000_000.0).round() as u64).collect();
+        let npq = n as f64 * p * (1.0 - p);
+        let analytic = (1.0 - 6.0 * p * (1.0 - p)) / npq;
+        let got = hist_moment_jet(&h).excess_kurtosis();
+        assert!((got - analytic).abs() < 1e-3, "excess kurtosis {} vs analytic {}", got, analytic);
+        // a binomial is platykurtic (negative excess kurtosis) for these params.
+        assert!(got < 0.0, "binomial(40, 0.3) is platykurtic");
     }
 
     // The mean+variance binomial recovers the true `n` of a binomial embedded in a WIDER
