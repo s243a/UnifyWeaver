@@ -575,7 +575,19 @@ buy diminishing returns and is not carried).
      ancestor queries; a *general* speedup wants **periphery** landmarks (classic ALT picks
      landmarks "beyond" the targets), which the boundary machinery could precompute but does
      not yet — the honest next measurement-driven step if A* on general graphs is wanted.
-   - **[3c next, optional]** a between-nodes *kernel* result mode in the Prolog codegen
+   - **[3d DONE]** `caret_distance_budgeted(u, v, parents, budget)` — the caret with a
+     path-length **budget** on the joint up-walk, so the **budget is the bridge-level knob**:
+     a small budget admits only a LOW common ancestor (a tight, local relation), a budget ≥
+     the subtree height always reaches the bridge and equals `caret_distance_lca`. Its
+     natural value is the **support upper bound** (`max` from the interval payload, increment
+     1), which bounds depth-to-subtree-root — so the increment-1 payload feeds the
+     increment-3 caret. Validated by `budgeted_caret_scopes_the_bridge_by_level` and
+     `support_upper_bound_is_a_sufficient_caret_budget`.
+   - **[3e next]** a **real-data integration** on a Wikipedia subtree (e.g. physics): extract
+     the root-anchored region (`build_scoped_subtree_lmdb.py`), propagate the support
+     interval, and compute multi-level budgeted carets between topics — the end-to-end
+     composition on real (cyclic) data, where the 2a/2b cycle-correctness earns its keep.
+   - **[3c, optional]** a between-nodes *kernel* result mode in the Prolog codegen
      (the caret query has two query nodes, so it needs a kernel shape distinct from the
      to-root `category_ancestor_boundary`); and periphery-landmark selection for general A*.
 
