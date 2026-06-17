@@ -105,7 +105,8 @@ order with later updates, e.g. `$1 == "ERROR" { last_len = length($0); hits++ }
 END { print hits, last_len }`. The current assignment expression subset is
 integer literals, `NR`, `NF`, `length($N)`, `index($N, "literal")`, numeric
 `$N`, explicit `int($N)`, and native scalar `i64` primary `+/- K` forms such as
-`NF + K`, `length($N) - K`, and `int($N) + K`.
+`NF + K`, `length($N) - K`, `int($N) + K`, and
+`index($N, "literal") + K`.
 Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports

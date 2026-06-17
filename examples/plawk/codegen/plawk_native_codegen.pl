@@ -45,10 +45,10 @@
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
 %      $1 == "ERROR" { print int($3) - 1 }
-%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
+%      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3, index($2, "sk") + 1 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
-%      { last_pos = index($2, "sk"); total_pos += index($0, "disk") } END { print last_pos, total_pos }
+%      { last_pos = index($2, "sk") + 1; total_pos += index($0, "disk") - 1 } END { print last_pos, total_pos }
 %      { adjusted += length($0) - 3; width = NF; fields += NF } END { print adjusted, width, fields }
 %      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -1357,6 +1357,9 @@ plawk_i64_binary_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_i64_binary_primary_expr(index(field(FieldIndex), string(Needle))) :-
+    FieldIndex >= 0,
+    string(Needle).
 
 plawk_i64_scalar_const_binary_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, int(Value)),
