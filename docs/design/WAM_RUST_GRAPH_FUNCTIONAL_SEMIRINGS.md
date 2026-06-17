@@ -419,6 +419,22 @@ There are **two** ways to pick the bridge, and they answer different questions:
 > instance not yet built: the bare interval gives the floor but not its count, and the moment
 > jet gives mass/moments but not the count *at* the floor.)
 
+> **Hard vs. soft shortest distance — the admitted paths need not be one length.** The
+> floor functional above is the **hard** minimum (tropical / min-plus): *only* floor-length
+> paths get nonzero weight, so the value is `min L` exactly and the multiplicity `H[floor]`
+> is a separate read-out. But the framework's *original* distance functional is **soft** —
+> the effective distance `d_eff = (Σ_L H[L]·L^{-N})^{-1/N}` (§5) — a weighted sum that admits
+> paths of **all** lengths, weighting shorter ones more (`L^{-N}`). For finite `N` it is a
+> power mean in `[floor, ceiling]` (the §5 bracket), reaching the floor only as `N → ∞`. So
+> "shortest distance" is genuinely two functionals: the **hard** floor (one length, with a
+> separate count) or the **soft** `d_eff` (every length contributes a nonzero weight, short
+> ones dominating). The two even meet at the multiplicity — the large-`N` expansion is
+> `d_eff ≈ floor · H[floor]^{-1/N}`, so the soft functional's *leading term* is the floor and
+> its *first correction* encodes the **number** of shortest paths. A single soft functional
+> thus carries both the floor and (asymptotically) the multiplicity; the hard min carries
+> only the floor. This is why a caret built from `d_eff` rather than the hard min is, exactly
+> as it sounds, a weighted average over `∧`-paths of *different* lengths — not a single route.
+
 **The distance between the two measures.** With the LCA below the chosen bridge `B`, on a
 tree `d(u→B) = d(u→LCA) + d(LCA→B)` (and likewise for `v`), so
 
