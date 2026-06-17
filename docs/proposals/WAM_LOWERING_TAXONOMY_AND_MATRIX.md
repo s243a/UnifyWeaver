@@ -100,7 +100,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✗ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✓ capped | ✗ | ✗ |
 | clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
 | llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
 | lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
@@ -173,7 +173,13 @@ Verification notes:
   `tests/test_wam_rust_fact_table_emit.pl`,
   `tests/test_wam_rust_fact_table_callsite_exec.pl`,
   `tests/test_wam_rust_fact_table_throughput.pl`; benchmark
-  `docs/reports/wam_rust_t9_fact_table_benchmark.md`.
+  `docs/reports/wam_rust_t9_fact_table_benchmark.md`. **fsharp = ✓ (default,
+  capped):** same policy, emitted as a lowered fact-table predicate registered in
+  `loweredPredicates` (so `call`/`execute` reach it like any T4/T5/T6 lowering); a
+  `factTableAttempt` enumerator leaves a `FactTableRetry` choice point per
+  remaining row, mirroring `select/3`. Tests:
+  `tests/test_wam_fsharp_fact_table_exec.pl` (query-mode matrix),
+  `tests/test_wam_fsharp_fact_table_emit.pl`.
 - **T8** (native kernels) is a curated library feature dispatched via shared
   `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
   the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /
