@@ -275,7 +275,14 @@ graph. This is the right and load-bearing domain:
   **closed-semiring** version (`a* = ⊕ aⁱ` must converge — min-plus on nonnegative
   weights does, counting does not without truncation), which in this codebase is the
   existing **budget + visited-guard** truncation. Exact on poset/taxonomic data;
-  truncation-approximate on general graphs.
+  truncation-approximate on general graphs. **The DFS+memo recurrences are themselves
+  unsound on cycles** — the `on_stack` guard makes a node's value depend on the current
+  stack, and that context-dependent value is then memoised (a node first reached inside a
+  cycle can be cached as wrongly `None`/unreachable). The closed-semiring solve is
+  context-free; for min-plus it is `min_distance_closure` (**[2a, implemented]** a BFS
+  fixpoint from the root over the reversed graph, `a* = 0`, O(V+E), cycle-correct).
+  `min_distance_closure_is_cycle_correct_where_dfs_poisons` exhibits exactly the cyclic
+  case where the DFS memo poisons a node and the closure does not.
 
 ### Convergence, not just acyclicity: why unbounded length is meaningful here
 
@@ -451,6 +458,15 @@ future work — `m₃` is now carried, so they are a read-out away.
    `astar_shortest_path4` (boundary suffixes as ALT landmarks), adding the
    closed-semiring / budget-truncation path for cyclic up-sets — the only genuinely new
    correctness work.
+   - **[2a DONE]** the min-plus closure foundation: `min_distance_closure` (a BFS fixpoint,
+     `a* = 0`) computes cycle-correct shortest `node→root` distances, where the DFS+memo
+     recurrences are unsound on cycles (§4). This is also the §1.5 closure characterization
+     for the min-plus payload, settled before the kernel wiring.
+   - **[2b next]** the weighted min-plus payload (edge weights, not hop count) and the
+     distance splice (`min_B (dist(seed→B) + dist(B→root))` — the ALT landmark lower bound),
+     then the `transitive_distance3` / `astar_shortest_path4` kernel wiring. This is also
+     where a second concrete instance finally motivates extracting the `PathSemiring` trait
+     (with the now-settled star/closure contract).
 
 ## 9. Relationship to the other docs
 

@@ -310,6 +310,58 @@ pub fn suffix_interval(
     acc
 }
 
+// --- Increment 2: the tropical (min-plus) closure for cyclic graphs ---
+//
+// The DFS recurrences above (`suffix_histogram`, `suffix_moment_jet`, `suffix_interval`)
+// are exact on a DAG but **unsound on a cyclic graph**: the `on_stack` guard makes a
+// node's value depend on which ancestors are currently on the stack, and that
+// context-dependent value is then *memoised* — so a node first computed inside a cycle
+// can be cached with a wrong (e.g. `None`/unreachable) value. On an acyclic ancestor
+// space this never bites (no node is its own ancestor); on a general graph it does.
+//
+// The fix is the **closed-semiring** solve, which is context-free. For min-plus
+// (shortest distance) on non-negative weights the star is `a* = 0` — looping never
+// shortens a path — so the closure is a plain fixpoint: a breadth-first sweep from the
+// root over the reversed (parent→child) edges. This is the foundation for the distance /
+// shortest-path kernels (the second semiring). Max-plus (longest) and counting are NOT
+// closed on cycles (a cycle makes them diverge) and still require budget truncation.
+
+/// Shortest `node → root` hop-distance for every node that can reach `root`, as the
+/// **min-plus (tropical) closure** — correct even on cyclic graphs, where the DFS
+/// `suffix_interval` recurrence is not. A BFS from `root` over the reversed parent graph
+/// (`parent → child`), O(V+E), cycle-safe by construction. Nodes that cannot reach `root`
+/// are absent from the map (distance `+∞`). `root` maps to `0`.
+pub fn min_distance_closure(
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashMap<u32, u32> {
+    use std::collections::{HashMap, VecDeque};
+    // reverse child->parent into parent->children, so a BFS from root walks *toward* the
+    // nodes (its hop-level = their shortest distance back to root).
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&child, ps) in parents {
+        for &p in ps {
+            children.entry(p).or_default().push(child);
+        }
+    }
+    let mut dist: HashMap<u32, u32> = HashMap::new();
+    let mut q: VecDeque<u32> = VecDeque::new();
+    dist.insert(root, 0);
+    q.push_back(root);
+    while let Some(u) = q.pop_front() {
+        let du = dist[&u];
+        if let Some(cs) = children.get(&u) {
+            for &c in cs {
+                if !dist.contains_key(&c) {
+                    dist.insert(c, du + 1);
+                    q.push_back(c);
+                }
+            }
+        }
+    }
+    dist
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -1703,9 +1755,41 @@ mod tests {
         }
     }
 
-    // The ⊗ laws (binomial moment convolution; interval addition) reproduce the moments
-    // of an explicit splice — so a query may convolve cached jets instead of histograms.
+    // Increment 2a — min-plus closure. On a DAG it agrees with the DFS recurrence's `min`.
     #[test]
+    fn min_distance_closure_matches_dfs_on_dag() {
+        let g = graph();
+        let dist = min_distance_closure(0, &g);
+        for node in [0u32, 1, 2, 3, 4, 5] {
+            let mut memo = HashMap::new();
+            let mut on_stack = vec![];
+            let dfs = suffix_interval(node, 0, &g, &mut memo, &mut on_stack);
+            assert_eq!(dist.get(&node).copied(), dfs.map(|iv| iv.min),
+                "node {} shortest distance", node);
+        }
+    }
+
+    // On a CYCLIC graph the closure is correct, while the DFS+memo recurrence poisons a
+    // node reached inside the cycle to `None` (unreachable). root = 0; W(5) and Z(6) form a
+    // cycle (5→6, 6→5) and W reaches the root (5→0). True shortest-to-root: W=1, Z=2.
+    #[test]
+    fn min_distance_closure_is_cycle_correct_where_dfs_poisons() {
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        parents.insert(5, vec![0, 6]); // W: parents root and Z
+        parents.insert(6, vec![5]);    // Z: parent W  -> the 5↔6 cycle
+        // the closure gets both right.
+        let dist = min_distance_closure(0, &parents);
+        assert_eq!(dist.get(&5), Some(&1), "W shortest = 1");
+        assert_eq!(dist.get(&6), Some(&2), "Z shortest = 2 (6→5→0)");
+        // the DFS recurrence, querying W first, memoises Z as unreachable — the
+        // cyclic-unsound result the closure exists to fix.
+        let mut memo = HashMap::new();
+        let mut on_stack = vec![];
+        let _w = suffix_interval(5, 0, &parents, &mut memo, &mut on_stack);
+        assert_eq!(memo.get(&6), Some(&None),
+            "DFS+memo poisons Z to None on the cycle (the bug the closure avoids)");
+    }
+
     fn convolve_laws_match_spliced_histogram() {
         // two arbitrary length distributions (as histograms).
         let a: Hist = vec![0, 3, 5, 2];     // lengths 1,2,3
