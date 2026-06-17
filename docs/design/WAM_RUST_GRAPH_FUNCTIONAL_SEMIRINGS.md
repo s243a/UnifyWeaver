@@ -348,6 +348,32 @@ sets the *scale*. (`(min, max, mass)` alone, no `m₁`/`m₂` needed for the bra
 validated in `boundary_cache::tests::interval_and_mass_bracket_d_eff`.) It is the cheap
 surrogate for the `WeightSum` functional that §2 showed cannot be carried as a scalar.
 
+### 5a. Composite caret distance — bracketing the *between-nodes* distance
+
+The to-root distance cache (increment 2) answers "how far is `v` from the root". The same
+two cached scalars also bracket the distance **between two nodes**, by the same idea as
+§5. A path `u → v` can always go **up to a shared ancestor (a *bridge*) and back down** —
+a `∧`/caret path `u ↑ B ↓ v` of length `d(u→B) + d(v→B)`. The **root is a universal
+bridge**, so from the cached `d(u→root)`, `d(v→root)` alone, the triangle inequality (root
+as reference point) gives a two-sided bound:
+
+```
+|d(u→root) − d(v→root)|   ≤   d(u,v)   ≤   d(u→root) + d(v→root)
+      A*/ALT lower bound                    composite caret (root bridge, upper)
+```
+
+— `d(u,v)` is **bracketed from the cache**, the same shape as the `d_eff` bracket of §5
+(`caret_distance_bounds`). The lower bound is exactly the **ALT landmark heuristic** an A*
+search consumes; the upper bound is the *caret* (the user's "root bridge"). A **lower
+bridge** — a common ancestor nearer `u, v`, ultimately the **lowest common ancestor** —
+gives a *tighter* caret; `caret_distance_lca` computes that exact `∧`-distance
+`min_B (d(u→B) + d(v→B))` by a joint upward BFS. The caret **equals** the true shortest
+path on a *tree* (it is the cophenetic / tree distance) and is a **certified upper bound**
+on a DAG (a non-ancestor route can be shorter). Validated by
+`caret_distance_on_a_tree_equals_true_distance` and
+`caret_distance_on_a_dag_is_a_bracketed_upper_bound`. This is the natural *between-nodes*
+use of the to-root cache — the general companion to increment 2's *to-root* query.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
@@ -498,6 +524,16 @@ future work — `m₃` is now carried, so they are a read-out away.
    - *Deferred (own track):* a dedicated fixed-target `transitive_distance3` variant and
      `astar_shortest_path4` ALT landmarks (`|d(u,L) − d(v,L)|`) — a general *between-nodes*
      query needs the landmark formulation, not the to-root splice.
+
+3. **Between-nodes distance from the to-root cache (composite caret).** The *between-nodes*
+   companion to increment 2, §5a.
+   - **[3a DONE]** `caret_distance_bounds` (the O(1) two-sided bracket from two cached
+     to-root scalars — ALT lower bound + root-bridge caret upper bound) and
+     `caret_distance_lca` (the exact `∧`-distance through the lowest common ancestor).
+     Validated on a tree (caret = true distance) and a DAG (caret = certified upper bound).
+   - **[3b next]** wire it into the live WamState path and a kernel result mode (a
+     between-nodes `caret_distance(u, v)` reading the distance cache), and the `astar`
+     landmark heuristic that consumes the lower bound.
 
 ## 9. Relationship to the other docs
 

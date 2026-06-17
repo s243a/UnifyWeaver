@@ -471,6 +471,65 @@ pub fn distance_splice(
     best
 }
 
+// --- Increment 3: composite caret distance (between two nodes via a shared bridge) ---
+//
+// A path between u and v can always go UP to a shared ancestor (a "bridge") and back
+// DOWN — a ∧/caret-shaped path `u ↑ B ↓ v` of length `d(u→B) + d(v→B)`. The ROOT is a
+// universal bridge (everything reaches it), so the two cached to-root distances give a
+// between-nodes distance for FREE. Two facts from the triangle inequality, with the root
+// as reference point, bracket the true distance from those same two scalars:
+//     |d(u→root) − d(v→root)|  ≤  d(u,v)  ≤  d(u→root) + d(v→root)
+//         ALT lower bound                     composite caret (root bridge, upper)
+// A LOWER bridge (a common ancestor nearer u,v — ultimately the LCA) gives a tighter
+// caret; `caret_distance_lca` computes that exact ∧-distance. The caret equals the true
+// shortest path on a tree (the cophenetic / tree distance) and is a certified upper bound
+// on a DAG (a non-ancestor route could be shorter).
+
+/// Caret distance **bounds** between two nodes from their cached to-root distances:
+/// `(lower, upper) = (|d_u − d_v|, d_u + d_v)`. O(1). The lower bound is the A*/ALT
+/// landmark heuristic; the upper bound is the root-bridge composite caret. The true
+/// `d(u,v)` lies in `[lower, upper]`.
+pub fn caret_distance_bounds(d_u_root: u32, d_v_root: u32) -> (u32, u32) {
+    (d_u_root.abs_diff(d_v_root), d_u_root + d_v_root)
+}
+
+/// The **tight** composite caret distance: the shortest `∧`-path `u ↑ B ↓ v` over all
+/// shared ancestors `B`, achieved at the lowest common ancestor — `min_B (d(u→B) +
+/// d(v→B))`. A joint upward BFS from `u` and `v` over `parents` (BFS ⇒ shortest up-
+/// distance to each ancestor); the minimum sum over the shared ancestors is the answer.
+/// `None` if `u` and `v` share no ancestor. The root-bridge upper bound is the term at
+/// `B = root`, so this is always `≤ d(u→root) + d(v→root)`.
+pub fn caret_distance_lca(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    use std::collections::{HashMap, VecDeque};
+    fn up_dist(src: u32, parents: &HashMap<u32, Vec<u32>>) -> HashMap<u32, u32> {
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q: VecDeque<u32> = VecDeque::new();
+        d.insert(src, 0);
+        q.push_back(src);
+        while let Some(x) = q.pop_front() {
+            let dx = d[&x];
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !d.contains_key(&p) {
+                        d.insert(p, dx + 1);
+                        q.push_back(p);
+                    }
+                }
+            }
+        }
+        d
+    }
+    let du = up_dist(u, parents);
+    let dv = up_dist(v, parents);
+    du.iter()
+        .filter_map(|(b, &a)| dv.get(b).map(|&c| a + c))
+        .min()
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -1977,6 +2036,72 @@ mod tests {
             assert!((spliced - full[&5]).abs() < 1e-9,
                 "splice {} should equal full dist {}", spliced, full[&5]);
         }
+    }
+
+    // Increment 3a — composite caret distance. A small TREE (each node one parent): the
+    // ∧-path through the LCA IS the unique shortest path, so the tight caret equals the
+    // true undirected distance, and the to-root bounds bracket it.
+    #[test]
+    fn caret_distance_on_a_tree_equals_true_distance() {
+        // root 0; 1,2 -> 0; 3,4 -> 1; 5 -> 2.
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![0]);
+        t.insert(3, vec![1]); t.insert(4, vec![1]); t.insert(5, vec![2]);
+        let to_root = min_distance_closure(0, &t);
+        for &(u, v) in &[(3u32, 4u32), (3, 5), (4, 5), (3, 0), (1, 2)] {
+            let lca = caret_distance_lca(u, v, &t).unwrap();
+            let truth = undirected_dist(u, v, &t).unwrap();
+            assert_eq!(lca, truth, "tree caret({},{})", u, v);
+            let (lo, hi) = caret_distance_bounds(to_root[&u], to_root[&v]);
+            assert!(lo <= truth && truth <= hi, "{} <= d({},{})={} <= {}", lo, u, v, truth, hi);
+        }
+    }
+
+    // On a DAG the ∧-path is an UPPER bound (a non-ancestor route can be shorter), and a
+    // lower bridge strictly beats the root bridge where an LCA below the root exists.
+    #[test]
+    fn caret_distance_on_a_dag_is_a_bracketed_upper_bound() {
+        let g = graph(); // diamond DAG, root 0
+        let to_root = min_distance_closure(0, &g);
+        for &(u, v) in &[(3u32, 4u32), (5, 3), (4, 2), (1, 2)] {
+            let lca = caret_distance_lca(u, v, &g).unwrap();
+            let truth = undirected_dist(u, v, &g).unwrap();
+            let (lo, hi) = caret_distance_bounds(to_root[&u], to_root[&v]);
+            assert!(lca >= truth, "caret {} >= true {} for ({},{})", lca, truth, u, v);
+            assert!(lo <= truth && truth <= hi);
+            assert!(lo <= lca && lca <= hi, "caret in the cached bracket");
+            assert!(lca <= to_root[&u] + to_root[&v], "LCA caret <= root-bridge");
+        }
+        // 3 and 4 share the LCA 3 (4's parent), so the caret (1) strictly beats the
+        // root bridge (d(3)+d(4) = 2+2 = 4).
+        assert_eq!(caret_distance_lca(3, 4, &g), Some(1));
+        assert!(1 < to_root[&3] + to_root[&4]);
+    }
+
+    // Undirected BFS shortest distance — the oracle for the caret tests (treats each
+    // child->parent edge as bidirectional).
+    fn undirected_dist(u: u32, v: u32, parents: &HashMap<u32, Vec<u32>>) -> Option<u32> {
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (&c, ps) in parents {
+            for &p in ps {
+                adj.entry(c).or_default().push(p);
+                adj.entry(p).or_default().push(c);
+            }
+        }
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q = std::collections::VecDeque::new();
+        d.insert(u, 0);
+        q.push_back(u);
+        while let Some(x) = q.pop_front() {
+            if x == v { return Some(d[&x]); }
+            let dx = d[&x];
+            if let Some(ns) = adj.get(&x) {
+                for &n in ns {
+                    if !d.contains_key(&n) { d.insert(n, dx + 1); q.push_back(n); }
+                }
+            }
+        }
+        d.get(&v).copied()
     }
 
     #[test]
