@@ -380,8 +380,17 @@ the cheapest reconstruction (5 scalars, no EM). It is constructible from the jet
 `MomentJet::to_normal_repr`, and `fit_moment_normal(h)` routes through the same
 `hist_moment_jet`, so the jet-built and histogram-fitted forms agree bit-for-bit. It joins
 the candidate ladder under the same CDF gate (a bimodal node misses `ε_K` and is
-rejected). The **higher-order** members of the family below (Edgeworth/Pearson) remain
-future work.
+rejected).
+
+**[Implemented — third moment]** The jet now carries `m₃` (`MomentJet { mass, m1, m2, m3 }`)
+with a `skewness()` read-out. The first payoff is a sharper **binomial**: `fit_binomial_moments`
+fits `(n, p)` from the *mean and variance* (`p = 1 − var/mean`, `n = mean/p`) instead of
+pinning `trials = support−1` and matching only the mean — so it recovers the true `n` of a
+binomial embedded in a wider support, gets the spread right, and the skew corroborates it
+(`moment_binomial_recovers_n_in_wider_support`). It returns `None` for over-dispersed data
+(`var ≥ mean`), cleanly ceding to the beta-binomial. The **higher-order reconstruction**
+members below (the Gram–Charlier/Edgeworth *rung* using `m₃`, and Pearson with `m₄`) remain
+future work — `m₃` is now carried, so they are a read-out away.
 
 - This is the principled three-scalar payload for distribution *reconstruction* —
   `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,
@@ -425,8 +434,11 @@ future work.
    and `collect_native_category_ancestor_boundary_jet` splices it at query time
    (`δ_depth ⊗ jet_B`), validated against the full-enumeration histogram's read-outs
    (`boundary_jet_splice_matches_histogram`). The end-to-end loop — propagate, splice,
-   reconstruct — now runs without ever materialising a histogram. Remaining within
-   increment 1: the higher-order Edgeworth/Pearson reconstruction members (carry `m₃`/`m₄`).
+   reconstruct — now runs without ever materialising a histogram. **[1d DONE]** the jet now
+   carries `m₃` with a `skewness()` read-out, and `fit_binomial_moments` uses mean+variance
+   to recover the true `n` of a binomial (the accurate-binomial payoff of the skew, §7).
+   Remaining within increment 1: the higher-order Edgeworth/Pearson reconstruction *rungs*
+   (use the carried `m₃`, and carry `m₄`).
 1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
    work, characterize each payload's star/closure-or-truncation behaviour — the
    convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,

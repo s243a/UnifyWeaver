@@ -143,45 +143,59 @@ pub fn f_weighted_power(h: &Hist, n: f64) -> f64 {
 // only at the end. (Cumulants would add under ⊗ but also break under ⊕; raw moments are
 // the safe carry for a branching DAG. See the note's "raw moments vs cumulants" fork.)
 
-/// Path-length **moment jet** toward the root: total path mass and the first two raw
-/// moments `(M, m1, m2) = (Σ H[L], Σ L·H[L], Σ L²·H[L])`. `f64` because moments grow
-/// large; mass is integer-valued but kept real for the mean/variance read-out.
+/// Path-length **moment jet** toward the root: total path mass and the first three raw
+/// moments `(M, m1, m2, m3) = (Σ H[L], Σ L·H[L], Σ L²·H[L], Σ L³·H[L])`. `f64` because
+/// moments grow large; mass is integer-valued but kept real for the read-outs. `m3`
+/// carries the **skew** (the third moment), which unlocks a method-of-moments binomial
+/// fit and the Edgeworth/Gram-Charlier reconstruction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MomentJet {
     pub mass: f64,
     pub m1: f64,
     pub m2: f64,
+    pub m3: f64,
 }
 
 impl MomentJet {
     /// ⊗-identity: the empty path at the root — one path of length 0.
-    pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0 } }
+    pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0, m3: 0.0 } }
     /// ⊕-identity: no path (unreachable / a cycle-pruned branch).
-    pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0 } }
+    pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0, m3: 0.0 } }
     /// A single path of length `len` — the atom `δ_len` (one path at length `len`):
-    /// `(mass, m1, m2) = (1, len, len²)`. The prefix one walk path contributes.
+    /// `(mass, m1, m2, m3) = (1, len, len², len³)`. The prefix one walk path contributes.
     pub fn delta(len: u32) -> Self {
         let l = len as f64;
-        MomentJet { mass: 1.0, m1: l, m2: l * l }
+        MomentJet { mass: 1.0, m1: l, m2: l * l, m3: l * l * l }
     }
     /// ⊕ — union of alternative path sets (a node's several parents): raw moments add.
     pub fn union(self, o: Self) -> Self {
-        MomentJet { mass: self.mass + o.mass, m1: self.m1 + o.m1, m2: self.m2 + o.m2 }
+        MomentJet {
+            mass: self.mass + o.mass,
+            m1: self.m1 + o.m1,
+            m2: self.m2 + o.m2,
+            m3: self.m3 + o.m3,
+        }
     }
     /// ⊗ — concatenation of two independent segments (the splice): the binomial
-    /// convolution of raw moments, `m_k = Σ_j C(k,j) m_j(a) m_{k-j}(b)` for k ≤ 2.
+    /// convolution of raw moments, `m_k = Σ_j C(k,j) m_j(a) m_{k-j}(b)` for k ≤ 3.
     pub fn convolve(self, o: Self) -> Self {
         MomentJet {
             mass: self.mass * o.mass,
             m1: self.m1 * o.mass + self.mass * o.m1,
             m2: self.m2 * o.mass + 2.0 * self.m1 * o.m1 + self.mass * o.m2,
+            m3: self.m3 * o.mass + 3.0 * self.m2 * o.m1 + 3.0 * self.m1 * o.m2 + self.mass * o.m3,
         }
     }
     /// ⊗ by a single edge: prepend one edge, shifting every path length by +1. This is
-    /// `convolve` with the length-1 atom `(1, 1, 1)`, specialised: `mass' = mass`,
-    /// `m1' = m1 + mass`, `m2' = m2 + 2·m1 + mass`.
+    /// `convolve` with the length-1 atom `(1, 1, 1, 1)`, specialised via `(λ+1)^k`:
+    /// `m1' = m1 + mass`, `m2' = m2 + 2·m1 + mass`, `m3' = m3 + 3·m2 + 3·m1 + mass`.
     pub fn shift_one(self) -> Self {
-        MomentJet { mass: self.mass, m1: self.m1 + self.mass, m2: self.m2 + 2.0 * self.m1 + self.mass }
+        MomentJet {
+            mass: self.mass,
+            m1: self.m1 + self.mass,
+            m2: self.m2 + 2.0 * self.m1 + self.mass,
+            m3: self.m3 + 3.0 * self.m2 + 3.0 * self.m1 + self.mass,
+        }
     }
     /// Read-out (nonlinear, end of pipeline): mean path length.
     pub fn mean(self) -> f64 { if self.mass > 0.0 { self.m1 / self.mass } else { 0.0 } }
@@ -190,6 +204,17 @@ impl MomentJet {
         if self.mass > 0.0 {
             (self.m2 / self.mass - self.mean() * self.mean()).max(0.0)
         } else { 0.0 }
+    }
+    /// Read-out: skewness `μ₃ / σ³` (the standardised third central moment). Positive =
+    /// right tail. `0` for a degenerate / zero-variance jet.
+    pub fn skewness(self) -> f64 {
+        if self.mass <= 0.0 { return 0.0; }
+        let var = self.variance();
+        if var <= 1e-12 { return 0.0; }
+        let mean = self.mean();
+        // central third moment: E[L³] − 3μ·E[L²] + 2μ³
+        let mu3 = self.m3 / self.mass - 3.0 * mean * (self.m2 / self.mass) + 2.0 * mean * mean * mean;
+        mu3 / var.powf(1.5)
     }
     /// CLT reconstruction: a moment-matched discretised Normal over `0..support`, built
     /// from this jet's `(mass, mean, variance)` **alone** — no histogram. `support` is the
@@ -285,9 +310,9 @@ pub fn suffix_interval(
     acc
 }
 
-/// Oracle read-outs: the `(M, m1, m2)` moment jet of an explicit histogram (`Σ H[L]`,
-/// `Σ L·H[L]`, `Σ L²·H[L]`). The directly-propagated `suffix_moment_jet` must equal this
-/// on an untruncated histogram — the exactness check the tests assert.
+/// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
+/// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
+/// the exactness check the tests assert.
 pub fn hist_moment_jet(h: &Hist) -> MomentJet {
     let mut j = MomentJet::zero();
     for (l, &c) in h.iter().enumerate() {
@@ -295,6 +320,7 @@ pub fn hist_moment_jet(h: &Hist) -> MomentJet {
         j.mass += c;
         j.m1 += l * c;
         j.m2 += l * l * c;
+        j.m3 += l * l * l * c;
     }
     j
 }
@@ -540,6 +566,24 @@ pub fn fit_binomial(h: &Hist) -> (usize, f64) {
     let (mean, _var) = pmf_moments(&pmf);
     let p = if trials == 0 { 0.0 } else { (mean / trials as f64).clamp(0.0, 1.0) };
     (trials, p)
+}
+
+/// Binomial fit from the **mean and variance** (not just the mean): a binomial has
+/// `mean = np`, `var = np(1-p)`, so `p = 1 − var/mean` and `n = round(mean/p)`. Unlike
+/// `fit_binomial` — which pins `trials = support-1` and matches only the mean — this
+/// recovers the true `n` of a binomial embedded in a wider support, and gets the *spread*
+/// right (the variance), which the third moment / skew then corroborates. Returns `None`
+/// when the data is **over-dispersed** (`var ≥ mean` ⇒ `p ≤ 0`): no binomial fits there
+/// (that is the beta-binomial's domain), so the candidate is simply not offered.
+pub fn fit_binomial_moments(h: &Hist) -> Option<(usize, f64)> {
+    let jet = hist_moment_jet(h);
+    if jet.mass <= 0.0 { return None; }
+    let mean = jet.mean();
+    let var = jet.variance();
+    if mean <= 0.0 || var <= 0.0 || var >= mean { return None; } // need 0 < p < 1
+    let p = (1.0 - var / mean).clamp(1e-6, 1.0 - 1e-6);
+    let n = (mean / p).round().max(1.0) as usize;
+    Some((n, p))
 }
 
 /// CDF-space binomial fit: `trials = support-1`, with `p` chosen to MINIMISE the
@@ -926,6 +970,11 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         }
     }
     for (trials, p) in [fit_binomial(h), fit_binomial_cdf(h)] {
+        let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
+        cands.push((HistRepr::Binomial { trials, p, total }, err));
+    }
+    if let Some((trials, p)) = fit_binomial_moments(h) {
+        // mean+variance binomial: recovers the true n of a binomial in a wider support.
         let err = cdf_max_error_pmf(&exact_pmf, &binomial_pmf(trials, p));
         cands.push((HistRepr::Binomial { trials, p, total }, err));
     }
@@ -1647,6 +1696,7 @@ mod tests {
             assert!((got_jet.mass - want_jet.mass).abs() < 1e-9, "node {} mass", node);
             assert!((got_jet.m1 - want_jet.m1).abs() < 1e-9, "node {} m1", node);
             assert!((got_jet.m2 - want_jet.m2).abs() < 1e-9, "node {} m2", node);
+            assert!((got_jet.m3 - want_jet.m3).abs() < 1e-9, "node {} m3", node);
             assert_eq!(got_iv, want_iv, "node {} interval", node);
             // and the read-outs match the histogram's mean / variance.
             assert!((got_jet.mean() - f_moment1(&h) / f_mass(&h)).abs() < 1e-9, "node {} mean", node);
@@ -1667,10 +1717,55 @@ mod tests {
         assert!((got.mass - want.mass).abs() < 1e-9, "mass");
         assert!((got.m1 - want.m1).abs() < 1e-9, "m1");
         assert!((got.m2 - want.m2).abs() < 1e-9, "m2");
+        assert!((got.m3 - want.m3).abs() < 1e-6, "m3"); // m3 grows large -> looser tol
         // interval route
         let iv_want = hist_interval(&spliced).unwrap();
         let iv_got = hist_interval(&a).unwrap().convolve(hist_interval(&b).unwrap());
         assert_eq!(iv_got, iv_want, "interval");
+    }
+
+    // The skewness read-out (from the third moment m3) matches the binomial's analytic
+    // skew (1-2p)/sqrt(np(1-p)) — confirming m3 is propagated and read out correctly.
+    #[test]
+    fn skewness_matches_binomial() {
+        let (n, p) = (40usize, 0.2f64); // right-skewed (p < 0.5)
+        let h: Hist = binomial_pmf(n, p).iter()
+            .map(|&pr| (pr * 10_000_000.0).round() as u64).collect();
+        let analytic = (1.0 - 2.0 * p) / (n as f64 * p * (1.0 - p)).sqrt();
+        let got = hist_moment_jet(&h).skewness();
+        assert!((got - analytic).abs() < 1e-3, "skew {} vs analytic {}", got, analytic);
+        assert!(got > 0.0, "p<0.5 should be right-skewed");
+        // a symmetric binomial reads ~0 skew.
+        let sym: Hist = binomial_pmf(40, 0.5).iter()
+            .map(|&pr| (pr * 10_000_000.0).round() as u64).collect();
+        assert!(hist_moment_jet(&sym).skewness().abs() < 1e-3);
+    }
+
+    // The mean+variance binomial recovers the true `n` of a binomial embedded in a WIDER
+    // support, where the support-pinned `fit_binomial` (trials = support-1) gets the
+    // spread wrong and misses the gate.
+    #[test]
+    fn moment_binomial_recovers_n_in_wider_support() {
+        let (n, p) = (20usize, 0.5f64);
+        // binomial(20, .5) padded with trailing zeros out to support 60.
+        let mut h: Hist = binomial_pmf(n, p).iter()
+            .map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        h.resize(60, 0);
+        let exact_pmf = to_pmf(&h);
+        // support-pinned fit uses trials = 59 -> far too wide -> misses the gate.
+        let (tb, pb) = fit_binomial(&h);
+        assert_eq!(tb, 59);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01,
+            "support-pinned binomial should miss the gate in a padded support");
+        // mean+variance fit recovers n = 20 (and p = 0.5) and fits within the gate.
+        let (tm, pm) = fit_binomial_moments(&h).expect("a binomial is under-dispersed");
+        assert_eq!(tm, n, "moment fit should recover the true n");
+        assert!((pm - p).abs() < 0.02, "and p");
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tm, pm)) <= 0.01,
+            "moment binomial should fit within the gate");
+        // over-dispersed data (a uniform block) yields no binomial candidate.
+        let flat: Hist = vec![100u64; 40];
+        assert!(fit_binomial_moments(&flat).is_none(), "over-dispersed -> no binomial");
     }
 
     // The certified bracket of §5. The NORMALISED effective distance — the power mean
