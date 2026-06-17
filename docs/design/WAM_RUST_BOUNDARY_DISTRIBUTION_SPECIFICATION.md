@@ -422,8 +422,9 @@ Implemented (Rust, `boundary_cache.rs`):
 - **Rung 4 — mixture of binomials** — `fit_binomial_mixture(h, k, iters)` (EM,
   shared `trials`, PMF-weighted) fits the **multimodal** nodes a single binomial
   rejects (a bottleneck / topic-mixture cone). `HistRepr::Mixture{trials,comps,total}`
-  joins the candidate set (`K = 2,3`). Discretised-GMM stays escalation-only —
-  bounded integer path-length data favour binomial families.
+  joins the candidate set (`K = 2,3`). Costlier-per-mode escalation (discretised-GMM)
+  is Rung 6 — bounded integer path-length data favour binomial families, so it is
+  tried last.
 - **Rung 5 — quantised CDF table** — `HistRepr::QuantCdf{qcdf,total}` stores the
   exact CDF as one fixed-point `u16` per support point (`quantize_cdf` /
   `dequantize_cdf`; `F(i) ≈ qcdf[i]/65535`). **Always admissible** (error bounded by
@@ -431,6 +432,19 @@ Implemented (Rust, `boundary_cache.rs`):
   is the fallback when *no* parametric form fits an irregular/multi-spike node — and
   it gives O(1) prefix-mass reads (a natural fit for the `cdf`/`quantile` result
   modes). The chooser still prefers a cheaper parametric form when one passes.
+- **Rung 6 — discretised Gaussian mixture** — `fit_discretised_gmm(h, k, iters)` (EM
+  over the integer support, PMF-weighted) fits a mixture whose components carry a
+  **free** `(weight, mu, sigma)`. Every rung above is a *binomial* family, whose
+  per-component variance is pinned to its mean (`n*p*(1-p)`); that coupling means a
+  binomial mixture cannot place a *narrow* mode in the interior of the support (a tight
+  mode forces `p` toward an edge). The GMM lifts the coupling, so it fits the
+  arbitrarily-placed, arbitrarily-narrow interior modes the binomial families cannot.
+  `discretised_gmm_pmf` evaluates the components at each integer bin and renormalises
+  (truncation at the domain edges absorbed). `HistRepr::DiscGmm{support,comps,total}`
+  costs 3 params/mode — the most of any parametric form — so the chooser selects it
+  only when every cheaper rung misses the gate **and** it still undercuts the
+  quantised-CDF table on bytes. **Escalation only**, present for shapes the binomial
+  families genuinely cannot represent.
 - **Choice is multi-objective.** `choose_representation` is *error-driven* (cheapest
   within `ε_K`); `choose_representation_budget` is the *storage-driven* complement
   (smallest CDF error within a byte budget). Error is not always the binding
@@ -452,17 +466,34 @@ that certified bound for the affected nodes only). For typical small-budget boun
 histograms (support ≤ `budget`+1) the work trigger never fires; this matters at
 **large budget / deep paths**.
 
-### 9b. Remaining ladder rungs (future work)
+### 9b. Ladder status and future work
 
-The error/CDF-gate machinery, the chooser (error- and storage-driven), and the
-persistence path are general — adding a representation is just another candidate in
-`representation_candidates` with a `bytes()` and a `pmf()`/`expand()`. Not yet
-implemented, in rough priority order:
+All six **fitted histogram-approximation rungs** are implemented (Rungs 1–6: tail-pruned
+exact, binomial [moment + CDF fits], beta-binomial, mixture-of-binomials, quantised-CDF,
+discretised-GMM) — i.e. the *histogram-representation* ladder is closed structurally.
+This is a structural closure, not an empirical claim that every rung has been observed
+necessary on a measured workload (the GMM test uses a synthetic ground truth; whether a
+real boundary node escalates past Rung 5 is a measurement question, §6). The error/CDF-
+gate machinery, the chooser (error- and storage-driven), and the persistence path are
+general — adding a representation is just another candidate in
+`representation_candidates` with a `bytes()` and a `pmf()`/`expand()`.
 
-- **Discretised Gaussian mixture** — `(weight, mean, variance)` per mode; the
-  **escalation-only** family for sharp/narrow modes that the binomial mixture fits
-  poorly. Continuous prior on discrete data, more params per mode — used only after
-  the binomial family fails the gate.
+A **separate, cheaper reconstruction rung is still unbuilt**: the moment-jet / CLT
+reconstruction described in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §7 (carry
+`(M, m₁, m₂)`, reconstruct a discretised Normal). It is *not* part of this fitted ladder
+— it propagates without ever materialising the histogram — and per that note's roadmap
+it is the **first** (and cheapest, no-EM) reconstruction increment, even though the
+more-expensive GMM rung shipped first. So "ladder closed" here means the histogram-
+fitting forms; it does not mean the cheapest reconstruction path is done.
+
+Remaining, lower priority and added on demand:
+
+- **Moment-jet / CLT reconstruction rung** — see above and the functional-semiring note.
+- **heed-backend parity** for the `boundary_basis_repr` persistence and the spill
+  sub-db (the `lmdb-zero` backend has both today).
+- **Higher-K / Bayesian model selection** for the mixture and GMM rungs (today `K =
+  2,3` are tried and the gate + byte cost arbitrate); a BIC/MDL term would let the
+  chooser explore more components without overfitting.
 
 Each rung is justified by **storage at a tolerance**, never compute (the exact
 splice is ~ns), so they are added on demand as large-budget / deep-path workloads

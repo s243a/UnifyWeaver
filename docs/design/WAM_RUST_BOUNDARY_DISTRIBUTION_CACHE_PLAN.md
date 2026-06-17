@@ -412,8 +412,20 @@ Phasing:
     prefix-mass). `encode_repr`/`decode_repr` tag 4. Validated:
     `quant_cdf_is_the_no_fit_fallback` (five spikes — binomial/mixture rejected, the
     chooser falls back to QuantCdf, smaller than exact, within `ε_K`).
-  - **Fitted forms [next].** discretised-GMM as escalation only (the last rung;
-    bounded integer data make it lowest priority).
+  - **Discretised-GMM [DONE].** `HistRepr::DiscGmm{support,comps,total}` —
+    `fit_discretised_gmm` (EM over the integer support) fits free-`(weight,mu,sigma)`
+    components, so it places the narrow interior modes the mean-coupled binomial
+    families cannot. Most params/mode of any rung, so the chooser picks it only when
+    every cheaper rung misses the gate AND it still undercuts the quant-CDF table on
+    bytes. `encode_repr`/`decode_repr` tag 5. Validated:
+    `disc_gmm_fits_narrow_interior_modes` (two σ=1.5 modes at 20/40 — binomial, beta-
+    binomial, and K≤3 binomial mixture all rejected; the GMM fits and is chosen).
+    **The fitted histogram-approximation ladder is now closed structurally (Rungs 1–6)**
+    — every *histogram-representation* form is in place. (A separate, cheaper moment-jet
+    / CLT *reconstruction* rung — carry `(M,m₁,m₂)`, no EM — remains unbuilt and is the
+    first increment in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §7–§8; it is not part of
+    this fitted ladder.) "Closed" is structural, not a claim that a measured workload has
+    been shown to need Rung 6.
 
 ## 6. What to measure (re-derive, don't inherit)
 
