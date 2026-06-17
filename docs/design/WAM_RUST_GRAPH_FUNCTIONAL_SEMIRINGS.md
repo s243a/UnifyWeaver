@@ -1,0 +1,244 @@
+# Graph Functional Semirings — distributional functionals without the distribution
+
+*Theory note for the WAM-Rust graph-search target. Generalizes the boundary
+distribution cache (see `WAM_RUST_BOUNDARY_DISTRIBUTION_*`) from "cache the path-length
+histogram" to "propagate the **functionals** of that histogram directly, never forming
+the histogram." Forward-looking: it scopes the next increments rather than describing
+shipped code. Status of what *is* shipped lives in the boundary spec/plan.*
+
+---
+
+## 1. The thesis
+
+The boundary cache exists to answer aggregate questions about the set of paths from a
+node to the root: how many, how long, how short, what is the effective distance. The
+natural object behind all of these is the **path-length histogram**
+
+```
+H_v[L] = number of paths of length L from v to the root   (bounded/visited semantics)
+```
+
+equivalently its generating function `H_v(z) = Σ_L H_v[L] · z^L`. That histogram is a
+*high-dimensional* object — one bucket per achievable length, up to the budget. But the
+quantities a query actually wants are **cheap functionals** of it:
+
+| functional | in terms of `H` / `H(z)` |
+|---|---|
+| mass (path count) | `M = Σ_L H[L] = H(1)` |
+| raw moments | `m_k = Σ_L L^k · H[L]` (so `m₁ = H'(1)`, …) |
+| support floor / ceiling | `min = ` lowest nonzero `L`, `max = ` highest (≤ budget) |
+| effective-distance weight | `WeightSum_N = Σ_{L>0} H[L] · L^{-N}`, `d_eff = WeightSum_N^{-1/N}` |
+
+The central observation: **each of these functionals satisfies its own recurrence over
+the graph and can be propagated node-to-node — and spliced at a boundary — without ever
+materializing `H`.** We compute *with* the distribution without computing the
+distribution. The histogram is the implicit object; the scalars are what move.
+
+This is the same move as the **kernel trick** in machine learning (§6): there the
+feature map `φ(x)` is never formed because every computation factors through inner
+products `⟨φ(x), φ(y)⟩`; here the histogram `H_v` is never formed because every query
+factors through functionals that have their own closed propagation law.
+
+## 2. Why the functionals propagate: the composition law
+
+Two structural facts about paths drive everything.
+
+**Concatenation adds lengths ⇒ histograms convolve.** A path `a → c` through a cut node
+`b` is a prefix `a → b` followed by a suffix `b → c`, with lengths adding. So
+
+```
+H_{a→c} = H_{a→b} ⊛ H_{b→c}        (truncated convolution; the splice)
+H_{a→c}(z) = H_{a→b}(z) · H_{b→c}(z)
+```
+
+**Alternatives union ⇒ histograms add.** A node with several parents reaches the root
+by the union of the per-parent path sets, so `H_v = Σ_{p∈parents(v)} (shift_by_one ∘
+H_p)`.
+
+A functional `F` can therefore be propagated *on its own value* exactly when it respects
+both operations — i.e. `F` is a homomorphism from the histogram algebra `(⊛, +)` into
+some small algebra `(⊗, ⊕)`. Working them out:
+
+- **mass** `M = H(1)`. Convolution multiplies, union adds:
+  `M_{a→c} = M_{a→b} · M_{b→c}`, `M_{v} = Σ_p M_p`. → the **counting semiring** `(+, ×)`.
+- **raw-moment jet** `(M, m₁, m₂)`. Under *union* every raw moment is linear
+  (`m_k(H₁+H₂) = m_k(H₁) + m_k(H₂)`). Under *convolution* the Leibniz/Vandermonde rule:
+  ```
+  M_{ac}  = M_ab·M_bc
+  m₁_{ac} = m₁_ab·M_bc + M_ab·m₁_bc
+  m₂_{ac} = m₂_ab·M_bc + 2·m₁_ab·m₁_bc + M_ab·m₂_bc
+  ```
+  i.e. `⊗` is **upper-triangular Toeplitz (truncated power series / "jet")
+  multiplication** and `⊕` is componentwise addition. This is a commutative semiring.
+- **support interval** `(min, max)`. Convolution adds the extremes, union takes the
+  extremes: `min_{ac} = min_ab + min_bc`, `min_v = min_p (1 + min_p)`; symmetrically for
+  `max` with `max`. → the **tropical** semirings min-plus and max-plus.
+
+Each functional is thus an instance of one algebraic-path-problem recurrence
+
+```
+f(root) = one;     f(v) = ⊕_{p ∈ parents(v)} ( edge ⊗ f(p) )
+```
+
+over a semiring `(S, ⊕, ⊗)`. An **n-tuple** of functionals is just the **product
+semiring** `S₁ × … × Sₖ`, propagated componentwise — so "arbitrary vectors of scalar
+difference equations on the graph" is exactly *pick a product semiring and run the one
+recurrence*. Exactness is automatic: `⊗` distributing over `⊕` is the defining semiring
+axiom, and that is precisely what makes the splice exact.
+
+> **Important state choice.** Store the **raw moments** `(M, m₁, m₂)`, not `(count,
+> mean, variance)`. Means/variances add under *concatenation* but **not** under *union*
+> (mixing two distributions is not summing two independent variables), so they are not a
+> semiring element. Raw moments are linear under union and Leibniz under convolution —
+> clean for both. `mean = m₁/M`, `var = m₂/M − mean²` are **nonlinear read-outs at the
+> end**, never carried through the recurrence.
+
+### The one that does *not* factor: `WeightSum`
+
+`WeightSum_N` is `⊕`-linear (it adds under union) but **not** `⊗`-multiplicative:
+`Σ_{a+b=n} … (a+b)^{-N}` does not separate into `f(prefix)·g(suffix)` because `(a+b)^{-N}`
+is not a product of a-only and b-only terms. So there is no scalar concatenation law for
+the effective-distance weight. The existing `g_B` pre-weighted basis is the partial fix:
+fix the budget and pre-weight, `g_B[a] = Σ_b H_B[b]·(a+b)^{-N}`, giving a *vector indexed
+by prefix length* (not a scalar), valid only at that fixed `N` and budget. In kernel-trick
+terms (§6) this is a kernel that does **not** factor through a finite feature — you either
+carry the whole histogram, or accept the cheap **bracket** of §5 instead.
+
+## 3. The `PathSemiring` framework
+
+```rust
+trait PathSemiring {
+    type Elem: Clone;
+    fn zero() -> Self::Elem;          // ⊕-identity: "no path here" / unreachable
+    fn one()  -> Self::Elem;          // ⊗-identity: the root / empty path
+    fn add(a: &Self::Elem, b: &Self::Elem) -> Self::Elem;   // combine alternatives
+    fn mul(a: &Self::Elem, b: &Self::Elem) -> Self::Elem;   // extend by one edge / concat
+    // optional: edge label for weighted graphs; a degree/budget truncation hook
+}
+// suffix_value::<S>(node, root, parents, budget, memo)  — generic `suffix_histogram`
+```
+
+`suffix_histogram` becomes one instance; `(min, max, mass, m₁, m₂)` becomes another (a
+product semiring); the future scalar shortest-distance is a third. The band selection,
+shared-memo sweep, eviction, and persistence skeleton are payload-agnostic — only the
+per-node `Elem` changes (from `Vec<u64>` to a 5-scalar tuple, etc.).
+
+| payload | semiring | cost | answers | exact for |
+|---|---|---|---|---|
+| histogram | convolution `(⊛, +)` | O(budget) | every linear functional (mass, moments, `WeightSum`, CDF) | everything |
+| moment jet `(M,m₁,m₂)` | truncated power series | 3 scalars | count, mean, variance → CLT distribution (§7) | mass + first two moments |
+| interval `(min,max)` | min-plus × max-plus | 2 scalars | shortest + longest; brackets `d_eff` (§5) | both endpoints |
+| shortest scalar `min` | min-plus | 1 scalar | shortest distance (A* heuristic / landmark) | shortest only |
+
+## 4. The domain: a node's ancestor space
+
+The recurrence is an **up-propagation** — it walks `parents`, toward the root — so its
+support is exactly the **ancestor space (up-closure) of the query node**, not the whole
+graph. This is the right and load-bearing domain:
+
+- **Exactness needs only the reachable set to be acyclic**, and the reachable set *is*
+  the up-closure. A taxonomic / `is-a` relation is a partial order, so every node's
+  ancestor space is a DAG even when the relation reconverges (diamonds). We never needed
+  a globally acyclic graph — only acyclic ancestor spaces.
+- **Ancestor spaces share their root-near core.** Different query nodes' up-closures
+  overlap heavily near the root; that shared upper sub-DAG is computed once and spliced
+  into many nodes — which is *why* root-near boundary caching pays, and what the
+  shared-memo sweep already exploits.
+- **Cyclic up-sets are the general-graph case.** For arbitrary-graph distance queries
+  the up-closure can contain a cycle; then the clean DAG solve is replaced by the
+  **closed-semiring** version (`a* = ⊕ aⁱ` must converge — min-plus on nonnegative
+  weights does, counting does not without truncation), which in this codebase is the
+  existing **budget + visited-guard** truncation. Exact on poset/taxonomic data;
+  truncation-approximate on general graphs.
+
+This staging — **acyclic ancestor space first, cyclic closure second** — orders the
+implementation (§8).
+
+## 5. A certified bracket on `d_eff` from two scalars
+
+`d_eff = WeightSum_N^{-1/N}` with `WeightSum_N / M = E[L^{-N}]` over the path-length
+distribution. That is a **power mean** of the path lengths with exponent `−N`, so by the
+power-mean inequality
+
+```
+min_L  ≤  d_eff  ≤  max_L      always.
+```
+
+So the tropical interval `(min, max)` is not just shortest/longest — it is an **exact,
+certified bracket on the real effective-distance metric**, for two integers, exact at
+the endpoints and sound everywhere between. It is the cheap surrogate for the
+`WeightSum` functional that §2 showed cannot be carried as a scalar.
+
+## 6. The analogy: the kernel trick
+
+In kernel methods a feature map `φ: X → H` (often infinite-dimensional) is **never
+materialized**, because every algorithm is written to touch only inner products
+`K(x, y) = ⟨φ(x), φ(y)⟩`. The structure of `K` (bilinearity, positive-definiteness)
+guarantees the implicit computation is exact. The win is purely *implicitness*: you
+compute in a huge space while only ever handling small quantities.
+
+The correspondence here is tight:
+
+| kernel methods | graph functional semirings |
+|---|---|
+| feature map `φ(x)` (big / ∞-dim) | path-length histogram `H_v(z)` (budget-dim power series) |
+| "never form `φ`" | "never form the histogram" |
+| inner product `K(x,y)=⟨φ(x),φ(y)⟩` | functional `F(H_v)` propagated by its own law |
+| bilinearity / Mercer PSD makes `K` factor | semiring homomorphism makes `F` factor through `(⊕,⊗)` |
+| representer theorem: solution in `span` of data | splice: query value determined by boundary values |
+| a kernel that *is* an inner product (admissible) | a functional that *is* a homomorphism (mass, moments, min/max) |
+| a similarity that is **not** PSD (no RKHS) | `WeightSum_N`, which is **not** `⊗`-multiplicative (§2) — no scalar law |
+
+Two honest limits on the analogy. (a) It is an analogy *by implicitness*, not a literal
+RKHS — the structure exploited is a commuting diagram / semiring homomorphism, not
+positive-definiteness, and `min`/`max` are idempotent-semiring (tropical) read-outs with
+no inner-product counterpart. (b) The analogy even predicts its own failure mode: just as
+a non-PSD similarity has no implicit feature computation, the non-factoring `WeightSum`
+has no scalar splice — and in *both* cases the recourse is to fall back to the explicit
+object (here, the full histogram, or the §5 bracket).
+
+## 7. CLT reconstruction at deep nodes
+
+A deep node's length is a sum over many path stages, so for well-mixed nodes the
+path-length distribution tends to Gaussian (Lindeberg CLT, when the stages are many and
+comparable). That means the **moment jet `(M, m₁, m₂)` can reconstruct an approximate
+histogram without ever building one**: read off `mean`, `var`, and emit a discretised
+`Normal(μ, σ²)` truncated to the `(min, max)` support bracket.
+
+- This is the principled three-scalar payload for distribution *reconstruction* —
+  `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,
+  badly-biased estimator of `σ`; you need the **second moment**, not the extremes.
+- It slots into the existing exact→approximate ladder (boundary spec §9) as a new, very
+  cheap **CDF-gated reconstruction rung**, *complementary* to the discretised-GMM:
+  CLT-Gaussian for deep, well-mixed, unimodal nodes (3 scalars, no EM); GMM for shallow,
+  structured, multimodal nodes (expensive). If a node is multimodal the moment-Gaussian
+  misses the Kolmogorov gate and the chooser rejects it automatically — the correctness
+  certificate already guards the approximation, so it never silently fires where CLT
+  does not hold.
+- The win is exactly the implicitness of §1/§6: the moments propagate by their own
+  scalar recurrence, so the deep-node distribution estimate costs three accumulators and
+  never touches a histogram.
+
+## 8. Roadmap (increments)
+
+1. **Generic payload on the ancestor space (exact, safe).** Generalize the existing
+   `category_ancestor_boundary` cache from histogram to a `PathSemiring` tuple carrying
+   `(min, max, mass, m₁, m₂)`. Same trusted acyclic domain, so the generic solve is
+   validated *against the existing histogram* bucket-for-bucket (tropical pair = first/
+   last nonzero index; moment jet = the histogram's weighted sums). Wire the moment
+   jet → discretised-Normal as a CDF-gated reconstruction rung.
+2. **Distance / shortest-path kernels + cyclic closure.** Point the now-generic
+   machinery at `transitive_distance3`, then `weighted_shortest_path3` /
+   `astar_shortest_path4` (boundary suffixes as ALT landmarks), adding the
+   closed-semiring / budget-truncation path for cyclic up-sets — the only genuinely new
+   correctness work.
+
+## 9. Relationship to the other docs
+
+- `WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` — why the boundary cache exists and
+  what the measurements showed (the histogram instance).
+- `WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md` — the shipped histogram cache, the
+  `g_B` basis, and the §9 approximation ladder this note's CLT rung extends.
+- `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` — phase status of shipped work.
+- This note — the algebraic generalization (product semirings, ancestor-space domain,
+  the implicit-functional / kernel-trick framing) that the next increments build on.

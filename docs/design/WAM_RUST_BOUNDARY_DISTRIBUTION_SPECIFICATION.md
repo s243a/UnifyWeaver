@@ -3,8 +3,10 @@
 Precise semantics of the boundary distribution optimization. See
 `WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` (rationale),
 `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phasing/status),
-`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md` (how to use it), and
-`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md` (measured results).
+`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md` (how to use it),
+`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md` (measured results), and
+`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` (the algebraic generalization — propagating
+*functionals* of the histogram without forming it; the basis for the next increments).
 
 ## 1. The object: a measure over path length
 
