@@ -439,9 +439,19 @@ fits `(n, p)` from the *mean and variance* (`p = 1 − var/mean`, `n = mean/p`) 
 pinning `trials = support−1` and matching only the mean — so it recovers the true `n` of a
 binomial embedded in a wider support, gets the spread right, and the skew corroborates it
 (`moment_binomial_recovers_n_in_wider_support`). It returns `None` for over-dispersed data
-(`var ≥ mean`), cleanly ceding to the beta-binomial. The **higher-order reconstruction**
-members below (the Gram–Charlier/Edgeworth *rung* using `m₃`, and Pearson with `m₄`) remain
-future work — `m₃` is now carried, so they are a read-out away.
+(`var ≥ mean`), cleanly ceding to the beta-binomial.
+
+**[Implemented — Gram–Charlier rung]** The next reconstruction rung now exists:
+`HistRepr::GramCharlier { support, mean, std, skew, total }` (wire tag 7) is the
+moment-Normal **plus a skew correction** from `m₃` — a discretised Gaussian times
+`1 + (γ₁/6)·He₃(z)` (`gram_charlier_pmf`; the tail can dip negative, a known artefact, so
+negatives are clamped and renormalised). Constructible from the jet alone
+(`MomentJet::to_gram_charlier_repr`). It is a *perturbation of a Gaussian*, so it is for
+**mildly skewed, unimodal** nodes — **not** strongly multimodal ones; the CDF gate enforces
+that (it misses `ε_K` on a bimodal node and the chooser falls back to the mixture/GMM).
+Validated by `gram_charlier_beats_normal_on_a_skewed_unimodal` (a discretised Poisson) and
+`gram_charlier_rejected_for_bimodal`. The Pearson member (with `m₄`) remains future work
+— it needs the fourth moment, which the jet does not yet carry.
 
 - This is the principled three-scalar payload for distribution *reconstruction* —
   `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,

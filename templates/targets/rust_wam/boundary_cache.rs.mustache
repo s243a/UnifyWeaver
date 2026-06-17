@@ -230,6 +230,21 @@ impl MomentJet {
             total: self.mass.round() as u64,
         }
     }
+    /// Gram–Charlier / Edgeworth reconstruction: the moment-Normal **plus a skew
+    /// correction** from the carried `m₃` — a Gaussian times `1 + (γ₁/6)·He₃(z)`. The
+    /// next rung of the graded family (§7), for *mildly skewed but unimodal* nodes the
+    /// symmetric Normal misses. It is a perturbation of a Gaussian, so it is NOT for
+    /// strongly multimodal nodes — but the CDF gate rejects it there, falling back to the
+    /// mixture/GMM/histogram. Built from this jet's `(mass, mean, variance, skewness)`.
+    pub fn to_gram_charlier_repr(self, support: usize) -> HistRepr {
+        HistRepr::GramCharlier {
+            support,
+            mean: self.mean(),
+            std: self.variance().sqrt().max(SIGMA_FLOOR),
+            skew: self.skewness(),
+            total: self.mass.round() as u64,
+        }
+    }
 }
 
 /// Path-length **support interval** toward the root: `(min, max)` = the shortest and
@@ -882,6 +897,12 @@ pub enum HistRepr {
     /// form a jet-only propagation — one that never forms the histogram — reconstructs.
     /// Gated like every rung: a multimodal node misses `ε_K` and is rejected.
     MomentNormal { support: usize, mean: f64, std: f64, total: u64 },
+    /// Gram–Charlier / Edgeworth reconstruction over `0..support` — the moment-Normal
+    /// **plus a skew correction** from `m₃` (`1 + (skew/6)·He₃(z)`). The next rung of the
+    /// graded family for *mildly skewed, unimodal* nodes; constructible from the moment
+    /// jet alone (`MomentJet::to_gram_charlier_repr`). A perturbation of a Gaussian, so
+    /// NOT for strongly multimodal nodes — and the CDF gate rejects it there.
+    GramCharlier { support: usize, mean: f64, std: f64, skew: f64, total: u64 },
 }
 
 impl HistRepr {
@@ -896,6 +917,7 @@ impl HistRepr {
             HistRepr::QuantCdf { qcdf, .. } => 1 + 4 + qcdf.len() * 2 + 8, // tag + u32 len + u16 cdf + total
             HistRepr::DiscGmm { comps, .. } => 1 + 4 + 4 + comps.len() * 24 + 8, // tag + support + k + (w,mu,sigma) + total
             HistRepr::MomentNormal { .. } => 1 + 4 + 8 + 8 + 8, // tag + support + mean + std + total
+            HistRepr::GramCharlier { .. } => 1 + 4 + 8 + 8 + 8 + 8, // tag + support + mean + std + skew + total
         }
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
@@ -926,6 +948,8 @@ impl HistRepr {
             HistRepr::DiscGmm { support, comps, .. } => discretised_gmm_pmf(*support, comps),
             HistRepr::MomentNormal { support, mean, std, .. } =>
                 discretised_gmm_pmf(*support, &[(1.0, *mean, *std)]),
+            HistRepr::GramCharlier { support, mean, std, skew, .. } =>
+                gram_charlier_pmf(*support, *mean, *std, *skew),
         }
     }
     fn total(&self) -> u64 {
@@ -936,9 +960,31 @@ impl HistRepr {
             | HistRepr::Mixture { total, .. }
             | HistRepr::QuantCdf { total, .. }
             | HistRepr::DiscGmm { total, .. }
-            | HistRepr::MomentNormal { total, .. } => *total,
+            | HistRepr::MomentNormal { total, .. }
+            | HistRepr::GramCharlier { total, .. } => *total,
         }
     }
+}
+
+/// PMF of a **Gram–Charlier / Edgeworth** reconstruction over `0..support`: a discretised
+/// Gaussian times the skew correction `1 + (skew/6)·He₃(z)` (`He₃(z) = z³ − 3z`,
+/// `z = (i−mean)/std`). The series can dip negative in a tail (a known Gram–Charlier
+/// artefact), so negatives are **clamped to 0** and the result renormalised — the CDF gate
+/// then judges whether the fit is admissible.
+pub fn gram_charlier_pmf(support: usize, mean: f64, std: f64, skew: f64) -> Vec<f64> {
+    if support == 0 { return Vec::new(); }
+    let s = std.max(SIGMA_FLOOR);
+    let norm = 1.0 / (s * (2.0 * std::f64::consts::PI).sqrt());
+    let mut out = vec![0.0f64; support];
+    for i in 0..support {
+        let z = (i as f64 - mean) / s;
+        let phi = norm * (-0.5 * z * z).exp();
+        let he3 = z * z * z - 3.0 * z;
+        out[i] = (phi * (1.0 + (skew / 6.0) * he3)).max(0.0); // clamp the GC negativity
+    }
+    let sum: f64 = out.iter().sum();
+    if sum > 0.0 { for x in &mut out { *x /= sum; } }
+    out
 }
 
 /// Quantise a histogram's CDF to one fixed-point `u16` per support point
@@ -1020,6 +1066,15 @@ pub fn fit_moment_normal(h: &Hist) -> (usize, f64, f64) {
     let jet = hist_moment_jet(h);
     if jet.mass <= 0.0 { return (0, 0.0, 1.0); }
     (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR))
+}
+
+/// Gram–Charlier fit (method of moments): `(support, mean, std, skew)` from
+/// `hist_moment_jet`, so it agrees bit-for-bit with `to_gram_charlier_repr` of the same
+/// jet. The skew-corrected upgrade of `fit_moment_normal`.
+pub fn fit_gram_charlier(h: &Hist) -> (usize, f64, f64, f64) {
+    let jet = hist_moment_jet(h);
+    if jet.mass <= 0.0 { return (0, 0.0, 1.0, 0.0); }
+    (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR), jet.skewness())
 }
 
 /// PMF of a binomial mixture: `sum_k w_k * Binomial(trials, p_k)`.
@@ -1224,6 +1279,13 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         let err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(support, &[(1.0, mean, std)]));
         cands.push((HistRepr::MomentNormal { support, mean, std, total }, err));
     }
+    {
+        // Gram-Charlier: the moment-Normal + a skew correction (from m3) — for mildly
+        // skewed unimodal nodes the symmetric Normal misses. Gated; rejected if multimodal.
+        let (support, mean, std, skew) = fit_gram_charlier(h);
+        let err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(support, mean, std, skew));
+        cands.push((HistRepr::GramCharlier { support, mean, std, skew, total }, err));
+    }
     for k in [2usize, 3] {
         let (trials, comps) = fit_binomial_mixture(h, k, EM_ITERS);
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
@@ -1279,7 +1341,7 @@ pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usiz
 /// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
 /// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
 /// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture,
-/// 3 = BetaBinomial, 4 = QuantCdf, 5 = DiscGmm, 6 = MomentNormal.
+/// 3 = BetaBinomial, 4 = QuantCdf, 5 = DiscGmm, 6 = MomentNormal, 7 = GramCharlier.
 pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
     let mut out = Vec::new();
     match r {
@@ -1334,6 +1396,14 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
             out.extend_from_slice(&(*support as u32).to_le_bytes());
             out.extend_from_slice(&mean.to_le_bytes());
             out.extend_from_slice(&std.to_le_bytes());
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::GramCharlier { support, mean, std, skew, total } => {
+            out.push(7u8);
+            out.extend_from_slice(&(*support as u32).to_le_bytes());
+            out.extend_from_slice(&mean.to_le_bytes());
+            out.extend_from_slice(&std.to_le_bytes());
+            out.extend_from_slice(&skew.to_le_bytes());
             out.extend_from_slice(&total.to_le_bytes());
         }
     }
@@ -1416,6 +1486,13 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             mean: read_f64(b, 5),
             std: read_f64(b, 13),
             total: read_u64(b, 21),
+        },
+        7 if b.len() >= 1 + 4 + 8 + 8 + 8 + 8 => HistRepr::GramCharlier {
+            support: read_u32(b, 1) as usize,
+            mean: read_f64(b, 5),
+            std: read_f64(b, 13),
+            skew: read_f64(b, 21),
+            total: read_u64(b, 29),
         },
         _ => HistRepr::Exact(Vec::new()),
     }
@@ -1566,11 +1643,65 @@ mod tests {
             HistRepr::QuantCdf { qcdf: vec![0u16, 100, 30000, 65535], total: 7777 },
             HistRepr::DiscGmm { support: 60, comps: vec![(0.5, 20.0, 1.5), (0.5, 40.0, 2.0)], total: 6543 },
             HistRepr::MomentNormal { support: 60, mean: 29.5, std: 6.25, total: 5432 },
+            HistRepr::GramCharlier { support: 60, mean: 18.0, std: 4.0, skew: 0.4, total: 4321 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
         }
         assert_eq!(decode_repr(&[]), HistRepr::Exact(vec![]));
+    }
+
+    // Increment 1d-edgeworth — the Gram-Charlier rung. A skewed unimodal histogram (a
+    // discretised Poisson): the skew correction reconstructs it BETTER than the symmetric
+    // moment-Normal, and the jet-built repr equals the histogram fit.
+    #[test]
+    fn gram_charlier_beats_normal_on_a_skewed_unimodal() {
+        // discretised Poisson(lambda=12) over 0..40: right-skewed (skew = 1/sqrt(12) ~ 0.29).
+        let lambda = 12.0f64;
+        let support = 40usize;
+        let mut pois = vec![0.0f64; support];
+        let mut p = (-lambda).exp();
+        for k in 0..support {
+            pois[k] = p;
+            p *= lambda / (k as f64 + 1.0);
+        }
+        let h: Hist = pois.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        // the skew correction reduces the CDF error vs the plain Normal.
+        let (s, mean, std) = fit_moment_normal(&h);
+        let normal_err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(s, &[(1.0, mean, std)]));
+        let (sg, mg, stdg, skg) = fit_gram_charlier(&h);
+        let gc_err = cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(sg, mg, stdg, skg));
+        assert!(gc_err < normal_err,
+            "Gram-Charlier err {} should beat the Normal err {} on a skewed shape", gc_err, normal_err);
+        assert!(skg > 0.0, "Poisson is right-skewed");
+        // the jet-built repr equals the histogram fit (single source of truth).
+        let from_jet = hist_moment_jet(&h).to_gram_charlier_repr(h.len());
+        let total: u64 = h.iter().sum();
+        assert_eq!(from_jet, HistRepr::GramCharlier { support: sg, mean: mg, std: stdg, skew: skg, total });
+    }
+
+    // The skew correction is a Gaussian perturbation — NOT for strongly multimodal nodes.
+    // A genuine 2-binomial mixture: Gram-Charlier misses the gate (so the chooser would
+    // reject it to the mixture/GMM), exactly as a unimodal Normal does.
+    #[test]
+    fn gram_charlier_rejected_for_bimodal() {
+        let trials = 59usize;
+        let h: Hist = (0..=trials)
+            .map(|i| ((0.5 * binomial_pmf(trials, 0.2)[i] + 0.5 * binomial_pmf(trials, 0.8)[i]) * 1e6).round() as u64)
+            .collect();
+        let exact_pmf = to_pmf(&h);
+        let (s, mean, std, skew) = fit_gram_charlier(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &gram_charlier_pmf(s, mean, std, skew)) > 0.01,
+            "a Gaussian+skew perturbation must miss the gate on a bimodal histogram");
+    }
+
+    // gram_charlier_pmf is a valid PMF (non-negative after the clamp, sums to 1).
+    #[test]
+    fn gram_charlier_pmf_is_a_valid_distribution() {
+        let pmf = gram_charlier_pmf(50, 20.0, 5.0, 0.6);
+        assert!(pmf.iter().all(|&p| p >= 0.0), "non-negative after clamp");
+        assert!((pmf.iter().sum::<f64>() - 1.0).abs() < 1e-9, "sums to 1");
     }
 
     // Increment 1b — the CLT reconstruction rung. A wide Gaussian histogram (wider than
