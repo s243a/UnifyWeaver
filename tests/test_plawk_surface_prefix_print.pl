@@ -261,6 +261,13 @@ test(parses_scalar_nf_add_assign_end_print_rule) :-
          add(var(next_width), add_i64(special('NF'), int(1)))])],
         [end([print([var(width), var(total), var(adjusted), var(next_width)])])])).
 
+test(parses_scalar_index_add_assign_end_print_rule) :-
+    plawk_parse_string("{ pos = index($2, \"sk\"); total += index($0, \"disk\") } END { print pos, total }\n", Program),
+    assertion(Program == program([], [rule(always,
+        [set(var(pos), index(field(2), string("sk"))),
+         add(var(total), index(field(0), string("disk")))])],
+        [end([print([var(pos), var(total)])])])).
+
 test(parses_always_scalar_add_assign_end_print_rule) :-
     plawk_parse_string("{ total += 3 } END { print total }\n", Program),
     assertion(Program == program([], [rule(always, [add(var(total), int(3))])],
@@ -623,6 +630,11 @@ test(surface_scalar_nf_accumulates_values) :-
         "INFO boot ok\nERROR disk full now\nWARN cpu\n",
         "2 9 1 12\n").
 
+test(surface_scalar_index_accumulates_values) :-
+    run_surface_print_smoke("{ pos = index($2, \"sk\"); total += index($0, \"disk\") } END { print pos, total }\n",
+        "INFO boot ok\nERROR disk full\nWARN disk issue\n",
+        "3 13\n").
+
 test(surface_always_scalar_add_assign_accumulates_constants) :-
     run_surface_print_smoke("{ total += 3 } END { print total }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
@@ -983,6 +995,18 @@ test(surface_scalar_nf_uses_native_field_count_primary) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %slot_2, %rule_0_body_slot_2_op_1_i64_primary'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= sub i64 %rule_0_body_slot_0_op_2_i64_sub_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %rule_0_body_slot_1_op_3_i64_add_lhs, 1'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_scalar_index_uses_native_field_index_primary) :-
+    plawk_parse_string("BEGIN { FS = \":\" } { pos = index($2, \"work\"); total += index($0, \"network\") } END { print pos, total }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fslot_5F0_5Fop_5F0_5Fi64_5Fprimary = private constant [5 x i8] c"work\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_5F0_5Fbody_5Fslot_5F1_5Fop_5F1_5Fi64_5Fprimary = private constant [8 x i8] c"network\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_i64_primary = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_i64_primary = call i64 @wam_atom_field_index_value(%Value %line, i64 0, i8 58'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 0, %rule_0_body_slot_0_op_0_i64_primary'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '= add i64 %slot_1, %rule_0_body_slot_1_op_1_i64_primary'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

@@ -48,6 +48,7 @@
 %      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      { last_pos = index($2, "sk"); total_pos += index($0, "disk") } END { print last_pos, total_pos }
 %      { adjusted += length($0) - 3; width = NF; fields += NF } END { print adjusted, width, fields }
 %      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "ERROR" { hits++; break } { total++ } END { print hits, total }
@@ -1369,6 +1370,9 @@ plawk_i64_scalar_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
+    FieldIndex >= 0,
+    string(Needle).
 
 plawk_i64_scalar_binary_primary_expr(Expr) :-
     plawk_i64_scalar_primary_expr(Expr).
@@ -1511,57 +1515,62 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
     { append(BranchNextExits, RestNextExits, NextExits) }.
 
 plawk_scalar_update_operation_ir(add(Expr), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, InputValue, NextValue, ''-IR) :-
+        OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, SetupIR),
+        OpIndex, ValueIR, GlobalIR, SetupIR),
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(AddLine), '  ~w = add i64 ~w, ~w',
         [NextValue, InputValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, AddLine], IR).
 plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, _InputValue, NextValue, ''-IR) :-
+        OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, SetupIR),
+        OpIndex, ValueIR, GlobalIR, SetupIR),
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
 
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
-        _OpIndex, ValueIR, IR) :-
+        _OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
-        ValueIR, IR).
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(length(FieldIndex), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, IR) :-
+        OpIndex, ValueIR, GlobalIR, IR) :-
     format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(length(FieldIndex), FieldSeparator, LengthBase, LengthBase,
-        ValueIR, IR).
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, IR) :-
+        OpIndex, ValueIR, GlobalIR, IR) :-
     format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64',
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(field_i64(FieldIndex), FieldSeparator, ParseBase, ParseBase,
-        ValueIR, IR).
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, IR) :-
+        OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_scalar_primary_expr(Expr),
     format(atom(PrimaryBase), '~w_slot_~w_op_~w_i64_primary',
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(Expr, FieldSeparator, PrimaryBase, PrimaryBase,
-        ValueIR, IR).
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
-        OpIndex, ValueIR, IR) :-
+        OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, NamePart, _Left, _Right),
     format(atom(BinaryBase), '~w_slot_~w_op_~w_i64_~w',
         [Prefix, SlotIndex, OpIndex, NamePart]),
     plawk_i64_expr_ir_parts(Expr, FieldSeparator, BinaryBase,
-        BinaryBase, ValueIR, IR).
+        BinaryBase, ValueIR, GlobalIR, IR).
 
 plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase, ValueIR, IR) :-
+    plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalIR, SetupIR),
+    plawk_join_nonempty_ir([GlobalIR, SetupIR], IR).
+
+plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalIR, SetupIR) :-
     plawk_i64_expr_ir(Expr, FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
-    atomic_list_concat(SetupParts, '\n', SetupIR),
-    plawk_join_nonempty_ir([GlobalIR, SetupIR], IR).
+    atomic_list_concat(SetupParts, '\n', SetupIR).
 
 plawk_i64_expr_ir(const(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], []) :-
     integer(Value),
@@ -1593,6 +1602,10 @@ plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, _GlobalBase, Valu
     format(atom(ValueIR), '%~w_value_or_default', [Base]),
     llvm_emit_atom_field_i64_or_default('%line', FieldIndex, FieldSeparator, 0,
         Base, ValueIR, ParseIR).
+plawk_i64_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(Expr, FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     plawk_i64_binary_expr(Expr, LLVMOp, _NamePart, Left, int(Value)),
