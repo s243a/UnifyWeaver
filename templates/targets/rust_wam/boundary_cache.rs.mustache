@@ -877,6 +877,132 @@ pub fn parent_reconvergence(
     (total - distinct) as f64 / total as f64
 }
 
+/// splitmix64 finalizer — a cheap deterministic hash for the ancestor sketch.
+fn mix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// **Ancestor MinHash (KMV) sketch** — a fixed-size, *height-agnostic* summary of each node's
+/// whole lineage to root, so reconvergence overlap is an O(k) read with no depth knob.
+///
+/// The fixed-`up_hops` probe (`parent_reconvergence`) can only see a crossover *within* `k`
+/// hops, but the crossover height is unknown and varies per node — too small misses deep hubs,
+/// too large walks to root (the reachability we refuse). Instead, summarize the *entire*
+/// up-cone once: `sig(B) = ` the `k` smallest hashes of `{B} ∪ ⋃_{p∈parents} sig(p)`, built in
+/// **one** root→leaf topological pass (parents before children). Fixed size `k`; the union is
+/// merge-keep-`k`-smallest, so it stays O(k) regardless of lineage depth. Two parents' overlap
+/// is then read from their sketches at any height — `sketch_jaccard` / `sketch_overlap_lift` —
+/// the §6 kernel-trick move (the ancestor *set* is the never-materialized feature map, the
+/// sketch its inner-product handle). Approximation is sketch error (∝ 1/√k), tunable by `k`,
+/// **not** a hard miss of deep crossovers. `None` on a cyclic graph (no topo order; SCC-
+/// condense first, since a cycle's nodes share their whole up-cone anyway).
+pub fn ancestor_minhash(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    k: usize,
+) -> Option<std::collections::HashMap<u32, Vec<u64>>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut nodes: HashSet<u32> = HashSet::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps {
+            nodes.insert(p);
+            children.entry(p).or_default().push(c);
+        }
+    }
+    // pending[node] = #parents not yet sketched; a node is ready once all its parents are.
+    let mut pending: HashMap<u32, usize> = nodes
+        .iter()
+        .map(|&n| (n, parents.get(&n).map_or(0, |v| v.len())))
+        .collect();
+    let mut q: VecDeque<u32> = pending
+        .iter()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    let mut sig: HashMap<u32, Vec<u64>> = HashMap::new();
+    while let Some(b) = q.pop_front() {
+        let mut cand: Vec<u64> = vec![mix64(b as u64)];
+        if let Some(ps) = parents.get(&b) {
+            for &p in ps {
+                if let Some(s) = sig.get(&p) {
+                    cand.extend_from_slice(s);
+                }
+            }
+        }
+        cand.sort_unstable();
+        cand.dedup();
+        cand.truncate(k); // bottom-k: the k smallest hashes of the up-closure.
+        sig.insert(b, cand);
+        if let Some(cs) = children.get(&b) {
+            for &c in cs {
+                let e = pending.get_mut(&c).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(c);
+                }
+            }
+        }
+    }
+    if sig.len() == nodes.len() { Some(sig) } else { None } // short => a cycle
+}
+
+/// KMV cardinality estimate of the set a bottom-`k` sketch summarizes. Exact (`= s.len()`)
+/// while unsaturated (`< k` elements kept); once saturated, the classic `(k−1)/ĥ_k` estimator
+/// from the `k`-th smallest normalized hash.
+fn sketch_card(s: &[u64], k: usize) -> f64 {
+    if s.len() < k {
+        return s.len() as f64;
+    }
+    let hk = s[k - 1] as f64 / (u64::MAX as f64 + 1.0);
+    if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk }
+}
+
+/// Estimated **Jaccard** overlap of two ancestor sets from their KMV sketches (`|A∩B| /
+/// |A∪B|`), an O(k) read. Exact when both sketches are unsaturated. This is height-agnostic —
+/// it sees a crossover at *any* depth — but it is *not* discriminative on its own in a
+/// small-world graph, where almost every pair overlaps; use `sketch_overlap_lift` for the
+/// hub signal.
+pub fn sketch_jaccard(a: &[u64], b: &[u64], k: usize) -> f64 {
+    let mut m: Vec<u64> = a.iter().chain(b).copied().collect();
+    m.sort_unstable();
+    m.dedup();
+    m.truncate(k);
+    if m.is_empty() {
+        return 0.0;
+    }
+    let aset: std::collections::HashSet<u64> = a.iter().copied().collect();
+    let bset: std::collections::HashSet<u64> = b.iter().copied().collect();
+    let common = m.iter().filter(|x| aset.contains(x) && bset.contains(x)).count();
+    common as f64 / m.len() as f64
+}
+
+/// **Small-world-corrected reconvergence: overlap lift over the chance baseline.** In a
+/// small-world graph any two up-cones overlap with near-certainty, so raw overlap measures
+/// "are we in a small world," not "is `B` a funnel." A real hub reconverges *more than chance
+/// predicts*: against the configuration-model null `E|A∩B| ≈ |A|·|B|/N`, the signal is
+/// `lift = observed |A∩B| / E|A∩B|` — `>1` is an excess funnel, `≈1` is just the small-world
+/// background. All three quantities come from the KMV sketches (`|A|`, `|B|` by
+/// `sketch_card`, `|A∩B|` by `jaccard·|A∪B|`), so the correction is the same O(k) read. `0`
+/// if either cone is empty.
+pub fn sketch_overlap_lift(a: &[u64], b: &[u64], n_total: usize, k: usize) -> f64 {
+    let mut m: Vec<u64> = a.iter().chain(b).copied().collect();
+    m.sort_unstable();
+    m.dedup();
+    m.truncate(k);
+    if m.is_empty() {
+        return 0.0;
+    }
+    let inter = sketch_jaccard(a, b, k) * sketch_card(&m, k);
+    let ca = sketch_card(a, k);
+    let cb = sketch_card(b, k);
+    let expected = ca * cb / (n_total as f64);
+    if expected <= 0.0 { 0.0 } else { inter / expected }
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -2801,6 +2927,53 @@ mod tests {
         let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
         cyc.insert(0, vec![1]); cyc.insert(1, vec![0]); cyc.insert(2, vec![0, 1]);
         let _ = parent_reconvergence(2, &cyc, 10); // terminates; value not asserted
+    }
+
+    // Ancestor MinHash sketch: height-agnostic overlap + the small-world lift correction.
+    // k=16 >> every set here, so the sketches are EXACT (they keep all hashes) and the
+    // Jaccard/cardinality/intersection reads are exact -> deterministic assertions.
+    #[test]
+    fn ancestor_sketch_height_agnostic_and_lift() {
+        const K: usize = 16;
+
+        // DEEP crossover the fixed up_hops=1 probe MISSED: parents 1,2 have distinct
+        // grandparents 10,20 that reconverge only at a shared great-grandparent 0.
+        let mut deep: HashMap<u32, Vec<u32>> = HashMap::new();
+        deep.insert(10, vec![0]); deep.insert(20, vec![0]);
+        deep.insert(1, vec![10]); deep.insert(2, vec![20]); deep.insert(3, vec![1, 2]);
+        let sig = ancestor_minhash(&deep, K).unwrap();
+        // up-closures: sig(1)={1,10,0}, sig(2)={2,20,0}; share {0} -> Jaccard 1/5 = 0.2,
+        // caught with NO depth knob (the fixed probe needed up_hops=2 and read 0 at 1).
+        assert!((sketch_jaccard(&sig[&1], &sig[&2], K) - 0.2).abs() < 1e-12);
+
+        // SMALL-WORLD CORRECTION. Same overlap structure, two universe sizes. Shared-ancestor
+        // graph: parents 1,2 both go through 10 then 0 -> sig(1)={1,10,0}, sig(2)={2,10,0},
+        // intersection {10,0} (size 2), |A|=|B|=3.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(10, vec![0]); g.insert(1, vec![10]); g.insert(2, vec![10]);
+        g.insert(3, vec![1, 2]);
+        let s = ancestor_minhash(&g, K).unwrap();
+        // Jaccard is large (2/4 = 0.5) regardless of N -> NON-discriminative on its own.
+        assert!((sketch_jaccard(&s[&1], &s[&2], K) - 0.5).abs() < 1e-12);
+        // Lift = observed |A∩B| / (|A|·|B|/N) = 2 / (9/N) = 2N/9.
+        // Dense world (N=5): 10/9 ≈ 1.11 -> barely above chance, NOT a hub by the corrected
+        // measure (the overlap is just small-world background).
+        assert!((sketch_overlap_lift(&s[&1], &s[&2], 5, K) - 10.0 / 9.0).abs() < 1e-9);
+        // Sparse world (N=45): 90/9 = 10.0 -> a strong funnel signal. SAME overlap, opposite
+        // verdict -> raw overlap measures the world, lift measures the hub.
+        assert!((sketch_overlap_lift(&s[&1], &s[&2], 45, K) - 10.0).abs() < 1e-9);
+
+        // A single shared root is exactly chance in its own small universe -> lift 1.0.
+        // Diamond 1->0, 2->0, 3->[1,2]: sig(1)={1,0}, sig(2)={2,0}, ∩={0}, |A|=|B|=2, N=4.
+        let mut dia: HashMap<u32, Vec<u32>> = HashMap::new();
+        dia.insert(1, vec![0]); dia.insert(2, vec![0]); dia.insert(3, vec![1, 2]);
+        let d = ancestor_minhash(&dia, K).unwrap();
+        assert!((sketch_overlap_lift(&d[&1], &d[&2], 4, K) - 1.0).abs() < 1e-9);
+
+        // Cyclic graph -> no topo order -> None (SCC-condense first).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        assert_eq!(ancestor_minhash(&cyc, K), None);
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each

@@ -565,8 +565,25 @@ caching, the **designated-bridge** measure is cacheable.
 >   (a 2-hop neighbourhood, no walk to root); `up_hops → ∞` is the exact deficit. `up_hops` is
 >   the cost/sensitivity knob, and the depth bound makes it cycle-safe. (`parent_reconvergence`,
 >   returning the overlap fraction in `[0,1]`.)
+> - **Rung 4 — ancestor sketch + small-world lift (height-agnostic, baseline-corrected).** The
+>   fixed-`up_hops` probe of rung 3 has a fatal flaw: it only sees a crossover *within* `k`
+>   hops, but the **crossover height is unknown and varies per node** — too small misses deep
+>   hubs, too large walks to root (the reachability we refuse). Worse, in a **small-world**
+>   graph the up-cones cover most of the graph within a few hops, so *raw* overlap (at any `k`,
+>   even exact) approaches 1 for **every** pair — it measures "are we in a small world," not "is
+>   `B` a funnel." Two fixes, both O(k): (a) **height-agnosticism** — summarize each node's
+>   *whole* lineage to root once, as a fixed-size **KMV/MinHash ancestor sketch**
+>   `sig(B) = bottom-k( {B} ∪ ⋃_p sig(p) )`, one root→leaf pass; overlap (`sketch_jaccard`) is
+>   then read at *any* depth with no knob (error ∝ 1/√k, not a depth cutoff). (b) **baseline
+>   correction** — a real hub reconverges *more than chance*: against the configuration-model
+>   null `E|A∩B| ≈ |A|·|B|/N`, the signal is `lift = observed |A∩B| / E|A∩B|` (`sketch_overlap_
+>   lift`), `>1` an excess funnel, `≈1` just small-world background. The sketch yields `|A|`,
+>   `|B|` *and* `|A∩B|` from the same reads, so height-agnostic detection and the small-world
+>   correction share one precompute. This is the §6 kernel trick literally applied: the ancestor
+>   *set* is the never-materialized feature map, the sketch its inner-product handle. (`None` on
+>   a cycle — SCC-condense first, since a cycle's nodes share their entire up-cone.)
 > - **The min-over-hubs caret is then quantized-LCA.** With hubs *cheaply* pre-selected (by
->   fan-in / jump / reconvergence, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ
+>   fan-in / jump / reconvergence / lift, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ
 >   caret_through_bridge(u, v, B)` picks the hub giving the least distance. The only distance
 >   work runs over the *already-chosen small* hub set — bounded by hub count, not by ranking the
 >   whole graph — so selection stays free and only the final min-pick costs anything. With
