@@ -288,9 +288,9 @@ source-level state recognition separate from LLVM slot numbering. The same
 native slots now support `+=` with integer constants and field lengths, so
 programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`
 stay in the compiled stream loop. Plain scalar assignment to integer literals,
-`NR`, `NF`, or field lengths uses the same native slot path and is folded in
-source order with later `++`/`+=` updates, so `last_len = length($0)` followed
-by `hits++` also stays native. The first
+`NR`, `NF`, field lengths, or field-index positions uses the same native slot
+path and is folded in source order with later `++`/`+=` updates, so a `last_len`
+assignment followed by `hits++` also stays native. The first
 native `if/else` action slice lowers field-equality conditions once at rule-body
 scope, threads the whole scalar slot vector through then/else action sequences,
 emits per-slot phis at the branch join, and can run field-key associative

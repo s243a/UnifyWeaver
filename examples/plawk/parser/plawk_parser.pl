@@ -27,6 +27,7 @@
 %      $1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
 %      $1 == "ERROR" { bytes += $3; last = $3 } END { print bytes, last }
 %      $1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }
+%      { last_pos = index($2, "sk"); total_pos += index($0, "disk") } END { print last_pos, total_pos }
 %      { adjusted += length($0) - 3; width = NF; fields += NF } END { print adjusted, width, fields }
 %      { last = NR; prev = NR - 1; total += NR + 1 } END { print last, prev, total }
 %      $1 == "DEBUG" { skipped++; next } { total++ } END { print total, skipped }
@@ -382,6 +383,21 @@ scalar_delta_expr(length(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+scalar_delta_expr(index(Field, string(Needle))) -->
+    "index",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ",",
+    ws,
+    quoted_string(NeedleCodes),
+    ws,
+    ")",
+    { Field = field(_),
+      NeedleCodes \== [],
+      string_codes(Needle, NeedleCodes) }.
 
 print_action(print(Fields)) -->
     "print",
