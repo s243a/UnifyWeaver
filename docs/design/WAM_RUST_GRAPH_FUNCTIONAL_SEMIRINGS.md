@@ -433,25 +433,28 @@ the cheapest reconstruction (5 scalars, no EM). It is constructible from the jet
 the candidate ladder under the same CDF gate (a bimodal node misses `ε_K` and is
 rejected).
 
-**[Implemented — third moment]** The jet now carries `m₃` (`MomentJet { mass, m1, m2, m3 }`)
-with a `skewness()` read-out. The first payoff is a sharper **binomial**: `fit_binomial_moments`
+**[Implemented — third moment]** The jet carries `m₃` (and `m₄`, below) with a
+`skewness()` read-out. The first payoff is a sharper **binomial**: `fit_binomial_moments`
 fits `(n, p)` from the *mean and variance* (`p = 1 − var/mean`, `n = mean/p`) instead of
 pinning `trials = support−1` and matching only the mean — so it recovers the true `n` of a
 binomial embedded in a wider support, gets the spread right, and the skew corroborates it
 (`moment_binomial_recovers_n_in_wider_support`). It returns `None` for over-dispersed data
 (`var ≥ mean`), cleanly ceding to the beta-binomial.
 
-**[Implemented — Gram–Charlier rung]** The next reconstruction rung now exists:
-`HistRepr::GramCharlier { support, mean, std, skew, total }` (wire tag 7) is the
-moment-Normal **plus a skew correction** from `m₃` — a discretised Gaussian times
-`1 + (γ₁/6)·He₃(z)` (`gram_charlier_pmf`; the tail can dip negative, a known artefact, so
-negatives are clamped and renormalised). Constructible from the jet alone
-(`MomentJet::to_gram_charlier_repr`). It is a *perturbation of a Gaussian*, so it is for
-**mildly skewed, unimodal** nodes — **not** strongly multimodal ones; the CDF gate enforces
-that (it misses `ε_K` on a bimodal node and the chooser falls back to the mixture/GMM).
-Validated by `gram_charlier_beats_normal_on_a_skewed_unimodal` (a discretised Poisson) and
-`gram_charlier_rejected_for_bimodal`. The Pearson member (with `m₄`) remains future work
-— it needs the fourth moment, which the jet does not yet carry.
+**[Implemented — Gram–Charlier rung, complete]** The graded reconstruction family is now
+fully built. The jet carries `m₄` (`MomentJet { mass, m1, m2, m3, m4 }`) with an
+`excess_kurtosis()` read-out, and `HistRepr::GramCharlier { support, mean, std, skew,
+kurtosis, total }` (wire tag 7) is the moment-Normal **plus skew *and* kurtosis
+corrections** — a discretised Gaussian times `1 + (γ₁/6)·He₃(z) + (γ₂/24)·He₄(z)`
+(`gram_charlier_pmf`; the tail can dip negative, a known artefact, so negatives are clamped
+and renormalised). Constructible from the jet alone (`MomentJet::to_gram_charlier_repr`).
+It is a *perturbation of a Gaussian*, so it is for **mildly non-normal, unimodal** nodes —
+**not** strongly multimodal ones; the CDF gate enforces that. Validated by
+`gram_charlier_beats_normal_on_a_skewed_unimodal` (a skewed Poisson),
+`kurtosis_correction_beats_skew_only_on_leptokurtic` (a symmetric scale-mixture, where the
+`m₄` term earns its place over skew-only), and `gram_charlier_rejected_for_bimodal`. The
+`(M,m₁,m₂) → +m₃ → +m₄` reconstruction ladder is **complete** (the next term, `m₅`, would
+buy diminishing returns and is not carried).
 
 - This is the principled three-scalar payload for distribution *reconstruction* —
   `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,
