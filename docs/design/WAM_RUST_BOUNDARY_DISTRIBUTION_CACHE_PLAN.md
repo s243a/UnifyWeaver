@@ -412,8 +412,15 @@ Phasing:
     prefix-mass). `encode_repr`/`decode_repr` tag 4. Validated:
     `quant_cdf_is_the_no_fit_fallback` (five spikes — binomial/mixture rejected, the
     chooser falls back to QuantCdf, smaller than exact, within `ε_K`).
-  - **Fitted forms [next].** discretised-GMM as escalation only (the last rung;
-    bounded integer data make it lowest priority).
+  - **Discretised-GMM [DONE].** `HistRepr::DiscGmm{support,comps,total}` —
+    `fit_discretised_gmm` (EM over the integer support) fits free-`(weight,mu,sigma)`
+    components, so it places the narrow interior modes the mean-coupled binomial
+    families cannot. Most params/mode of any rung, so the chooser picks it only when
+    every cheaper rung misses the gate AND it still undercuts the quant-CDF table on
+    bytes. `encode_repr`/`decode_repr` tag 5. Validated:
+    `disc_gmm_fits_narrow_interior_modes` (two σ=1.5 modes at 20/40 — binomial, beta-
+    binomial, and K≤3 binomial mixture all rejected; the GMM fits and is chosen).
+    **The approximation ladder is now complete (Rungs 1–6).**
 
 ## 6. What to measure (re-derive, don't inherit)
 

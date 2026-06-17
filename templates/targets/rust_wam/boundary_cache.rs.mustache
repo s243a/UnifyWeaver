@@ -169,8 +169,8 @@ pub fn decode_hist(b: &[u8]) -> Hist {
 //
 // This is OPT-IN: the boundary cache is exact by default. These are the tools a
 // storage-budgeted precompute uses when an exact histogram does not fit. The
-// first ladder rung (tail-pruned exact) is implemented; binomial / mixture /
-// discretised-GMM fits are the later rungs (future).
+// first ladder rung (tail-pruned exact) is implemented, as are the binomial,
+// beta-binomial, mixture, quantised-CDF, and discretised-GMM rungs below.
 //
 // Note: typical boundary histograms have support <= budget+1 (the path-length
 // budget), so for the small-budget effective-distance query the work trigger
@@ -266,8 +266,8 @@ pub fn compress_histogram(h: &Hist, min_points: usize, epsilon_k: f64) -> Hist {
 // The next rung after tail-pruned-exact: replace a long histogram with a small set
 // of parameters when a *fit* is within the CDF certificate. Ported from the Python
 // line (`fitted_binomial_pmf` / `choose_distribution_representation`): bounded
-// integer path-length data favour the **binomial** family (a GMM is escalation
-// only, not implemented here). The fit is method-of-moments; acceptance is the same
+// integer path-length data favour the **binomial** family (a discretised-GMM is the
+// escalation fallback below, tried last). The fit is method-of-moments; acceptance is the same
 // epsilon_K Kolmogorov gate as §9a — a fit that misses the gate is REJECTED and the
 // exact (or tail-pruned) form is kept, so this never silently degrades accuracy.
 
@@ -392,6 +392,10 @@ pub enum HistRepr {
     /// ~1/4 the bytes of the raw `u64` counts. The fallback when no parametric form
     /// fits; also gives O(1) prefix-mass reads.
     QuantCdf { qcdf: Vec<u16>, total: u64 },
+    /// Discretised Gaussian mixture over `0..support`; `comps` are `(weight, mu,
+    /// sigma)` triples. The escalation fallback for nodes with narrow, arbitrarily
+    /// placed interior modes that the mean-coupled binomial families cannot represent.
+    DiscGmm { support: usize, comps: Vec<(f64, f64, f64)>, total: u64 },
 }
 
 impl HistRepr {
@@ -404,6 +408,7 @@ impl HistRepr {
             HistRepr::BetaBinomial { .. } => 1 + 4 + 8 + 8 + 8, // tag + trials + alpha + beta + total
             HistRepr::Mixture { comps, .. } => 1 + 4 + 4 + comps.len() * 16 + 8,
             HistRepr::QuantCdf { qcdf, .. } => 1 + 4 + qcdf.len() * 2 + 8, // tag + u32 len + u16 cdf + total
+            HistRepr::DiscGmm { comps, .. } => 1 + 4 + 4 + comps.len() * 24 + 8, // tag + support + k + (w,mu,sigma) + total
         }
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
@@ -426,6 +431,7 @@ impl HistRepr {
             HistRepr::BetaBinomial { trials, alpha, beta, .. } => beta_binomial_pmf(*trials, *alpha, *beta),
             HistRepr::Mixture { trials, comps, .. } => mixture_pmf(*trials, comps),
             HistRepr::QuantCdf { qcdf, .. } => dequantize_cdf(qcdf),
+            HistRepr::DiscGmm { support, comps, .. } => discretised_gmm_pmf(*support, comps),
         }
     }
     fn total(&self) -> u64 {
@@ -434,7 +440,8 @@ impl HistRepr {
             HistRepr::Binomial { total, .. }
             | HistRepr::BetaBinomial { total, .. }
             | HistRepr::Mixture { total, .. }
-            | HistRepr::QuantCdf { total, .. } => *total,
+            | HistRepr::QuantCdf { total, .. }
+            | HistRepr::DiscGmm { total, .. } => *total,
         }
     }
 }
@@ -568,6 +575,96 @@ pub fn fit_binomial_mixture(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f6
     (trials, comps)
 }
 
+// --- Discretised Gaussian mixture (ladder rung 6): the escalation fallback ---
+//
+// Every parametric rung above is a *binomial* family, whose per-component variance
+// is pinned to its mean (`n*p*(1-p)`). That is exactly right for bounded path-length
+// data and is why the binomials are tried first. It also means a binomial mixture
+// CANNOT place a *narrow* mode in the interior of the support: a tight mode needs `p`
+// near 0/1, which drags the mode to an edge. The discretised-GMM lifts that coupling
+// — each component carries a FREE `(weight, mu, sigma)` — so it can fit arbitrarily
+// placed, arbitrarily narrow interior modes. It is the most expensive parametric form
+// (3 params/component vs the mixture's 2), so the chooser only ever selects it when
+// every cheaper rung misses the CDF gate AND it still undercuts the quantised-CDF
+// fallback on bytes. Hence "escalation only": present for the shapes the binomial
+// families genuinely cannot represent, never the default.
+
+/// Unit Gaussian density at `x` for `N(mu, sigma)` (sigma floored away from 0).
+fn gauss_density(x: f64, mu: f64, sigma: f64) -> f64 {
+    let s = sigma.max(1e-3);
+    let z = (x - mu) / s;
+    (-0.5 * z * z).exp() / (s * (2.0 * std::f64::consts::PI).sqrt())
+}
+
+/// PMF of a discretised Gaussian mixture over the integer domain `0..support`:
+/// `sum_k w_k * N(i; mu_k, sigma_k)`, evaluated at each integer bin and renormalised
+/// to sum to 1 (so truncation at the domain edges is absorbed exactly).
+pub fn discretised_gmm_pmf(support: usize, comps: &[(f64, f64, f64)]) -> Vec<f64> {
+    if support == 0 { return Vec::new(); }
+    let mut out = vec![0.0f64; support];
+    for i in 0..support {
+        let mut acc = 0.0f64;
+        for &(w, mu, sigma) in comps {
+            acc += w * gauss_density(i as f64, mu, sigma);
+        }
+        out[i] = acc;
+    }
+    let s: f64 = out.iter().sum();
+    if s > 0.0 { for x in &mut out { *x /= s; } }
+    out
+}
+
+/// Fit a `k`-component discretised Gaussian mixture by EM over the integer support,
+/// weighted by the empirical PMF. Components start spread across the domain with equal
+/// weight; each sweep re-estimates `(weight, mu, sigma)` freely (sigma floored at half
+/// a bin to avoid delta collapse). Returns `(support, [(weight, mu, sigma)])`.
+pub fn fit_discretised_gmm(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f64, f64, f64)>) {
+    let pmf = to_pmf(h);
+    let support = pmf.len();
+    let k = k.max(1);
+    if support <= 1 {
+        return (support, vec![(1.0, 0.0, 1.0)]);
+    }
+    let span = (support - 1) as f64;
+    let sigma0 = (span / (2.0 * k as f64)).max(0.75);
+    let mut comps: Vec<(f64, f64, f64)> = (0..k)
+        .map(|j| (1.0 / k as f64, span * (j as f64 + 0.5) / k as f64, sigma0))
+        .collect();
+    for _ in 0..iters {
+        let mut nw = vec![0.0f64; k];   // sum_i pmf[i] r_ij
+        let mut nmu = vec![0.0f64; k];  // sum_i pmf[i] r_ij i
+        let mut nmu2 = vec![0.0f64; k]; // sum_i pmf[i] r_ij i^2
+        for i in 0..support {
+            if pmf[i] <= 0.0 { continue; }
+            let mut resp = vec![0.0f64; k];
+            let mut denom = 0.0f64;
+            for j in 0..k {
+                let (w, mu, s) = comps[j];
+                let v = w * gauss_density(i as f64, mu, s);
+                resp[j] = v;
+                denom += v;
+            }
+            if denom <= 0.0 { continue; }
+            let xi = i as f64;
+            for j in 0..k {
+                let r = pmf[i] * (resp[j] / denom);
+                nw[j] += r;
+                nmu[j] += r * xi;
+                nmu2[j] += r * xi * xi;
+            }
+        }
+        let wsum: f64 = nw.iter().sum();
+        if wsum <= 0.0 { break; }
+        for j in 0..k {
+            if nw[j] <= 0.0 { continue; } // keep the stale component rather than NaN
+            let mu = nmu[j] / nw[j];
+            let var = (nmu2[j] / nw[j] - mu * mu).max(0.25); // floor sigma at 0.5 bin
+            comps[j] = (nw[j] / wsum, mu, var.sqrt());
+        }
+    }
+    (support, comps)
+}
+
 /// All candidate representations of `h`, each paired with its certified CDF error
 /// vs exact. Always includes `Exact` (error 0). Adds the lossy rungs — tail-pruned
 /// exact, single binomial (both fits), and K=2/3 binomial mixtures — only when the
@@ -598,6 +695,14 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         let (trials, comps) = fit_binomial_mixture(h, k, 60);
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
         cands.push((HistRepr::Mixture { trials, comps, total }, err));
+    }
+    for k in [2usize, 3] {
+        // escalation: free-variance Gaussian modes (narrow interior modes the
+        // binomial families cannot place); costlier than the mixture, so only wins
+        // in that niche.
+        let (support, comps) = fit_discretised_gmm(h, k, 80);
+        let err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(support, &comps));
+        cands.push((HistRepr::DiscGmm { support, comps, total }, err));
     }
     {
         // always-admissible fallback: the exact CDF at u16 precision (~1/4 the bytes
@@ -641,7 +746,7 @@ pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usiz
 /// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
 /// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
 /// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture,
-/// 3 = BetaBinomial, 4 = QuantCdf.
+/// 3 = BetaBinomial, 4 = QuantCdf, 5 = DiscGmm.
 pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
     let mut out = Vec::new();
     match r {
@@ -677,6 +782,17 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
             out.extend_from_slice(&(qcdf.len() as u32).to_le_bytes());
             for &q in qcdf {
                 out.extend_from_slice(&q.to_le_bytes());
+            }
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::DiscGmm { support, comps, total } => {
+            out.push(5u8);
+            out.extend_from_slice(&(*support as u32).to_le_bytes());
+            out.extend_from_slice(&(comps.len() as u32).to_le_bytes());
+            for &(w, mu, sigma) in comps {
+                out.extend_from_slice(&w.to_le_bytes());
+                out.extend_from_slice(&mu.to_le_bytes());
+                out.extend_from_slice(&sigma.to_le_bytes());
             }
             out.extend_from_slice(&total.to_le_bytes());
         }
@@ -741,6 +857,19 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             }
             let total = if o + 8 <= b.len() { read_u64(b, o) } else { 0 };
             HistRepr::Mixture { trials, comps, total }
+        }
+        5 if b.len() >= 1 + 4 + 4 => {
+            let support = read_u32(b, 1) as usize;
+            let k = read_u32(b, 5) as usize;
+            let mut comps = Vec::with_capacity(k);
+            let mut o = 9;
+            for _ in 0..k {
+                if o + 24 > b.len() { break; }
+                comps.push((read_f64(b, o), read_f64(b, o + 8), read_f64(b, o + 16)));
+                o += 24;
+            }
+            let total = if o + 8 <= b.len() { read_u64(b, o) } else { 0 };
+            HistRepr::DiscGmm { support, comps, total }
         }
         _ => HistRepr::Exact(Vec::new()),
     }
@@ -889,6 +1018,7 @@ mod tests {
             HistRepr::BetaBinomial { trials: 30, alpha: 2.5, beta: 1.5, total: 8888 },
             HistRepr::Mixture { trials: 20, comps: vec![(0.6, 0.2), (0.4, 0.8)], total: 12345 },
             HistRepr::QuantCdf { qcdf: vec![0u16, 100, 30000, 65535], total: 7777 },
+            HistRepr::DiscGmm { support: 60, comps: vec![(0.5, 20.0, 1.5), (0.5, 40.0, 2.0)], total: 6543 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
@@ -918,6 +1048,38 @@ mod tests {
         assert!(matches!(repr, HistRepr::QuantCdf { .. }),
             "expected QuantCdf fallback, got {:?}", repr);
         assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
+    }
+
+    // Two NARROW interior modes (sigma well below any binomial's mean-coupled width
+    // at that location): the binomial families and K<=3 binomial mixture all miss the
+    // gate, but the free-variance discretised-GMM fits — and is chosen because it
+    // undercuts the quantised-CDF fallback on bytes at this support.
+    #[test]
+    fn disc_gmm_fits_narrow_interior_modes() {
+        let support = 60usize;
+        // ground truth: 0.5*N(20,1.5) + 0.5*N(40,1.5), discretised.
+        let truth = discretised_gmm_pmf(support, &[(0.5, 20.0, 1.5), (0.5, 40.0, 1.5)]);
+        let h: Hist = truth.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        // a single binomial and the beta-binomial are unimodal -> reject.
+        let (tb, pb) = fit_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01);
+        // even a K=3 BINOMIAL mixture cannot make the interior modes narrow enough.
+        let (tm, comps) = fit_binomial_mixture(&h, 3, 80);
+        assert!(cdf_max_error_pmf(&exact_pmf, &mixture_pmf(tm, &comps)) > 0.01,
+            "binomial mixture cannot place narrow interior modes");
+        // the discretised-GMM (K=2) does fit within the gate.
+        let (sg, gcomps) = fit_discretised_gmm(&h, 2, 80);
+        assert!(cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(sg, &gcomps)) <= 0.01,
+            "discretised-GMM should fit two narrow interior modes");
+        // and the chooser selects it: smaller than exact AND than the quant-CDF table.
+        let repr = choose_representation(&h, 10, 0.01);
+        assert!(matches!(repr, HistRepr::DiscGmm { .. }),
+            "expected DiscGmm escalation, got {:?}", repr);
+        assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
+        assert!(repr.bytes() < HistRepr::QuantCdf { qcdf: quantize_cdf(&h), total: 0 }.bytes(),
+            "GMM must undercut the quant-CDF fallback to be chosen");
         assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
     }
 
