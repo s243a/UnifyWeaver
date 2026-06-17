@@ -1,8 +1,10 @@
 # WAM-Rust Boundary Distribution Optimization — Specification
 
 Precise semantics of the boundary distribution optimization. See
-`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` (rationale) and
-`WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phasing/status).
+`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md` (rationale),
+`WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phasing/status),
+`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md` (how to use it), and
+`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md` (measured results).
 
 ## 1. The object: a measure over path length
 
@@ -420,6 +422,13 @@ Implemented (Rust, `boundary_cache.rs`):
   rejects (a bottleneck / topic-mixture cone). `HistRepr::Mixture{trials,comps,total}`
   joins the candidate set (`K = 2,3`). Discretised-GMM stays escalation-only —
   bounded integer path-length data favour binomial families.
+- **Rung 5 — quantised CDF table** — `HistRepr::QuantCdf{qcdf,total}` stores the
+  exact CDF as one fixed-point `u16` per support point (`quantize_cdf` /
+  `dequantize_cdf`; `F(i) ≈ qcdf[i]/65535`). **Always admissible** (error bounded by
+  the quantisation step, `≤ 2^-16`) at ~1/4 the bytes of the raw `u64` counts, so it
+  is the fallback when *no* parametric form fits an irregular/multi-spike node — and
+  it gives O(1) prefix-mass reads (a natural fit for the `cdf`/`quantile` result
+  modes). The chooser still prefers a cheaper parametric form when one passes.
 - **Choice is multi-objective.** `choose_representation` is *error-driven* (cheapest
   within `ε_K`); `choose_representation_budget` is the *storage-driven* complement
   (smallest CDF error within a byte budget). Error is not always the binding
@@ -448,9 +457,6 @@ persistence path are general — adding a representation is just another candida
 `representation_candidates` with a `bytes()` and a `pmf()`/`expand()`. Not yet
 implemented, in rough priority order:
 
-- **Quantised CDF table** — one monotone fixed-point CDF value per retained point
-  (16-bit → error ≤ `2^-16`). Best when prefix-mass / range queries dominate (O(1)
-  reads); a natural fit for the `cdf`/`quantile` result modes (§5).
 - **Discretised Gaussian mixture** — `(weight, mean, variance)` per mode; the
   **escalation-only** family for sharp/narrow modes that the binomial mixture fits
   poorly. Continuous prior on discrete data, more params per mode — used only after

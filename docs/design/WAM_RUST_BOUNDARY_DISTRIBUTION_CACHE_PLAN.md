@@ -1,11 +1,13 @@
 # WAM-Rust Boundary Distribution Optimization — Implementation Plan
 
-Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement, eviction-spill, P4-approx-beta-binomial DONE). The implementation-plan member of
+Status: in progress (P1, P2a, P2c-parity, P2c-wiring/dispatch, P2c-wiring/lowering, P2c-wiring/precompute/selection, P2c-wiring/precompute/eviction, P2c-wiring/precompute/persistence, P3-measurement, P4-g_B-basis, P4-entry-frontier, P4-approx-rung1, P4-approx-rung2-binomial, P4-approx-cdf-fit, P4-approx-mixture, P4-approx-budget-mode, P4-repr-persistence, lazy-boundary-cache, lmdb-lazy-edge-measurement, eviction-spill, P4-approx-beta-binomial, P4-approx-quant-cdf DONE). The implementation-plan member of
 the design trio: **`WAM_RUST_BOUNDARY_DISTRIBUTION_PHILOSOPHY.md`** (why — a
 disablable complexity-reduction compiler optimization, caching secondary),
 **`WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md`** (precise semantics, the
 scalar/histogram result-mode family, invariants, interface), and this plan (phased
-work + status). Also companion to `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`,
+work + status); plus **`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md`** (the operator's
+manual — how to use it) and **`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`** (the
+measured results). Also companion to `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md`,
 `DISTRIBUTIONAL_COMPRESSION_THEORY.md`, `RECURRENCE_EVALUATION_STRATEGY_*.md`, and
 the EnWiki splice-validation reports.
 
@@ -403,8 +405,15 @@ Phasing:
     mixture. Validated: a true beta-binomial is recovered by MoM, the single binomial
     misses the gate, and the chooser selects `BetaBinomial` over the costlier mixture.
     `encode_repr`/`decode_repr` tag 3.
-  - **Fitted forms [next].** quantised-CDF table (O(1) prefix-mass reads; the
-    cdf/quantile result modes); discretised-GMM as escalation only.
+  - **Quantised-CDF table [DONE].** `HistRepr::QuantCdf{qcdf,total}` stores the exact
+    CDF as one `u16` per support point (`quantize_cdf`/`dequantize_cdf`); always
+    admissible (error ≤ `2^-16`) at ~1/4 the bytes of raw counts, so it is the
+    fallback when no parametric form fits an irregular/multi-spike node (also O(1)
+    prefix-mass). `encode_repr`/`decode_repr` tag 4. Validated:
+    `quant_cdf_is_the_no_fit_fallback` (five spikes — binomial/mixture rejected, the
+    chooser falls back to QuantCdf, smaller than exact, within `ε_K`).
+  - **Fitted forms [next].** discretised-GMM as escalation only (the last rung;
+    bounded integer data make it lowest priority).
 
 ## 6. What to measure (re-derive, don't inherit)
 

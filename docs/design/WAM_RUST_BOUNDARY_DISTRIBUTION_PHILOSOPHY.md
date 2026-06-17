@@ -3,7 +3,9 @@
 Why the Rust WAM graph-search target should grow a **boundary distribution**
 optimization, what kind of thing it is, and the principles that should shape it.
 Companions: `WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md` (precise semantics),
-`WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phased implementation + status).
+`WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` (phased implementation + status),
+`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md` (the operator's manual — how to use it),
+`WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md` (what was measured).
 
 ## 1. The problem
 
@@ -123,3 +125,40 @@ The complexity win is measured (300–700×), the splice identity is proven in R
 (P1), and the runtime kernel exists and matches the production kernel (P2a,
 P2c-parity). What remains is the optimization *wiring* — and the histogram-output
 generalisation above is what keeps that wiring from being built too narrowly.
+
+## 7. What the measurements showed (hypotheses → results)
+
+The wiring is now built and measured end to end (`WAM_RUST_BOUNDARY_MEASUREMENT_
+2026-06-16.md`, `WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md`). The §3/§5 hypotheses held:
+
+- **The win is real *on top of* the edge cache, and the crossover is shallow.** On
+  the real emitted kernels (not the Python prototype, not a std-only model), with the
+  baseline running over warm in-memory edges (= a perfect edge cache): ~3× at
+  `D_pre=1`, 16–26× at `D_pre=2`, >100× at `D_pre=3`. The optimal `D_pre` is *shallow*,
+  exactly as §3 predicted the Python overhead had been masking. Precompute is sub-ms —
+  it amortizes within a single 500-seed batch.
+- **It holds, and grows, on the LMDB lazy edge path.** When each parent lookup is an
+  LMDB seek rather than a HashMap hit, production is ~4–5× slower but the boundary win
+  *persists and is often larger* (20–25×): the cache removes the *walk*, so the more
+  each avoided lookup costs, the more it saves. This confirms §3's "layer on top of the
+  edge cache, not a replacement" — the boundary cache's headroom is exactly the
+  native-DFS time the edge cache leaves behind.
+- **Exact at scale, every time.** The boundary aggregate equals the production
+  hop-stream aggregate exactly across all `D_pre`, scales, and on both edge paths. The
+  "any boundary band is exact" property held under the real integrated path.
+- **The band must be a thin cut, and value concentrates root-near.** The whole-region
+  band blows up with cumulative node count; the *entry frontier* (the region's surface)
+  gets the same speedup at a fraction of the storage — and the speedup *falls* once
+  `D_pre` is large enough that the region swallows the periphery. "A boundary cache
+  wants its seeds in the periphery" is now a measured rule, not just intuition.
+- **Caching is genuinely secondary.** The complexity reduction stands on its own (the
+  precompute pays for itself within one batch); cross-run persistence and the lazy /
+  eager / spill strategy choices are amortization levers on top of an already-winning
+  algorithm — the inverse emphasis of the edge cache, as §3 argued.
+
+The remaining open questions are storage-shaped, not compute-shaped: the
+exact→approximate ladder (tail-prune → binomial/beta-binomial/mixture, CDF-gated) and
+the quantised-CDF / GMM rungs matter only at large budget / deep paths, where
+histograms are long — never for the small-budget effective-distance query, where exact
+is also fastest.
+
