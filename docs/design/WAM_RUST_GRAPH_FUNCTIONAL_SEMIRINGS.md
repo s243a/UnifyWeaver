@@ -351,6 +351,15 @@ comparable). That means the **moment jet `(M, m₁, m₂)` can reconstruct an ap
 histogram without ever building one**: read off `mean`, `var`, and emit a discretised
 `Normal(μ, σ²)` truncated to the `(min, max)` support bracket.
 
+**[Implemented — increment 1b]** `boundary_cache::HistRepr::MomentNormal { support, mean,
+std, total }` (wire tag 6) is exactly this rung — the moment-matched discretised Normal,
+the cheapest reconstruction (5 scalars, no EM). It is constructible from the jet alone via
+`MomentJet::to_normal_repr`, and `fit_moment_normal(h)` routes through the same
+`hist_moment_jet`, so the jet-built and histogram-fitted forms agree bit-for-bit. It joins
+the candidate ladder under the same CDF gate (a bimodal node misses `ε_K` and is
+rejected). The **higher-order** members of the family below (Edgeworth/Pearson) remain
+future work.
+
 - This is the principled three-scalar payload for distribution *reconstruction* —
   `(min, max, mass)` cannot do it, because the range is a sample-size-dependent,
   badly-biased estimator of `σ`; you need the **second moment**, not the extremes.
@@ -386,9 +395,10 @@ histogram without ever building one**: read off `mean`, `var`, and emit a discre
    histogram`, `convolve_laws_match_spliced_histogram`, `interval_and_mass_bracket_d_eff`.
    Concrete functions, not yet a `PathSemiring` trait — the trait is deferred until the
    distance kernel gives a second instance to generalise over (and its star/closure
-   contract is settled, §3). **[1b next]** wire the moment jet → discretised-Normal as a
-   CDF-gated reconstruction rung; **[1c]** fuse the payload into the live precompute/kernel
-   path.
+   contract is settled, §3). **[1b DONE]** the moment jet → discretised-Normal CDF-gated
+   reconstruction rung (`HistRepr::MomentNormal`, §7). **[1c next]** fuse the payload into
+   the live precompute/kernel path (carry `(min, max, mass, m₁, m₂)` through the boundary
+   precompute and reconstruct at the cut), and the higher-order Edgeworth/Pearson members.
 1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
    work, characterize each payload's star/closure-or-truncation behaviour — the
    convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,

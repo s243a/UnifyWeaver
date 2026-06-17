@@ -185,6 +185,20 @@ impl MomentJet {
             (self.m2 / self.mass - self.mean() * self.mean()).max(0.0)
         } else { 0.0 }
     }
+    /// CLT reconstruction: a moment-matched discretised Normal over `0..support`, built
+    /// from this jet's `(mass, mean, variance)` **alone** — no histogram. `support` is the
+    /// integer domain length (e.g. `max + 1` from the support interval, or the budget).
+    /// The result is the cheapest reconstruction rung (`HistRepr::MomentNormal`); whether
+    /// it is *admissible* for a given node is still the CDF gate's call, checked against
+    /// the true distribution wherever one is available.
+    pub fn to_normal_repr(self, support: usize) -> HistRepr {
+        HistRepr::MomentNormal {
+            support,
+            mean: self.mean(),
+            std: self.variance().sqrt().max(SIGMA_FLOOR),
+            total: self.mass.round() as u64,
+        }
+    }
 }
 
 /// Path-length **support interval** toward the root: `(min, max)` = the shortest and
@@ -575,6 +589,13 @@ pub enum HistRepr {
     /// sigma)` triples. The escalation fallback for nodes with narrow, arbitrarily
     /// placed interior modes that the mean-coupled binomial families cannot represent.
     DiscGmm { support: usize, comps: Vec<(f64, f64, f64)>, total: u64 },
+    /// Moment-matched discretised Normal over `0..support` — the **CLT reconstruction**
+    /// rung. The cheapest reconstruction (no EM): a single Gaussian whose `(mean, std)`
+    /// are the node's first two raw moments. Uniquely, it is constructible from the
+    /// `(mass, m1, m2)` **moment jet alone** (`MomentJet::to_normal_repr`), so it is the
+    /// form a jet-only propagation — one that never forms the histogram — reconstructs.
+    /// Gated like every rung: a multimodal node misses `ε_K` and is rejected.
+    MomentNormal { support: usize, mean: f64, std: f64, total: u64 },
 }
 
 impl HistRepr {
@@ -588,6 +609,7 @@ impl HistRepr {
             HistRepr::Mixture { comps, .. } => 1 + 4 + 4 + comps.len() * 16 + 8,
             HistRepr::QuantCdf { qcdf, .. } => 1 + 4 + qcdf.len() * 2 + 8, // tag + u32 len + u16 cdf + total
             HistRepr::DiscGmm { comps, .. } => 1 + 4 + 4 + comps.len() * 24 + 8, // tag + support + k + (w,mu,sigma) + total
+            HistRepr::MomentNormal { .. } => 1 + 4 + 8 + 8 + 8, // tag + support + mean + std + total
         }
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
@@ -616,6 +638,8 @@ impl HistRepr {
             HistRepr::Mixture { trials, comps, .. } => mixture_pmf(*trials, comps),
             HistRepr::QuantCdf { qcdf, .. } => dequantize_cdf(qcdf),
             HistRepr::DiscGmm { support, comps, .. } => discretised_gmm_pmf(*support, comps),
+            HistRepr::MomentNormal { support, mean, std, .. } =>
+                discretised_gmm_pmf(*support, &[(1.0, *mean, *std)]),
         }
     }
     fn total(&self) -> u64 {
@@ -625,7 +649,8 @@ impl HistRepr {
             | HistRepr::BetaBinomial { total, .. }
             | HistRepr::Mixture { total, .. }
             | HistRepr::QuantCdf { total, .. }
-            | HistRepr::DiscGmm { total, .. } => *total,
+            | HistRepr::DiscGmm { total, .. }
+            | HistRepr::MomentNormal { total, .. } => *total,
         }
     }
 }
@@ -700,6 +725,16 @@ pub fn fit_beta_binomial(h: &Hist) -> (usize, f64, f64) {
     (trials, p * s, (1.0 - p) * s)
 }
 
+/// Moment-matched Normal fit of a histogram (method of moments): `support = h.len()`,
+/// `mean`/`std` from the first two moments. The continuous CLT reconstruction. It routes
+/// through `hist_moment_jet` so it uses the *same* `(mean, std)` a propagated moment jet
+/// carries — hence `fit_moment_normal(h)` and `hist_moment_jet(h).to_normal_repr(h.len())`
+/// agree bit-for-bit, not just mathematically.
+pub fn fit_moment_normal(h: &Hist) -> (usize, f64, f64) {
+    let jet = hist_moment_jet(h);
+    if jet.mass <= 0.0 { return (0, 0.0, 1.0); }
+    (h.len(), jet.mean(), jet.variance().sqrt().max(SIGMA_FLOOR))
+}
 
 /// PMF of a binomial mixture: `sum_k w_k * Binomial(trials, p_k)`.
 pub fn mixture_pmf(trials: usize, comps: &[(f64, f64)]) -> Vec<f64> {
@@ -891,6 +926,13 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         let err = cdf_max_error_pmf(&exact_pmf, &beta_binomial_pmf(trials, alpha, beta));
         cands.push((HistRepr::BetaBinomial { trials, alpha, beta, total }, err));
     }
+    {
+        // CLT reconstruction: a moment-matched Normal — the cheapest unimodal
+        // reconstruction, and the one a jet-only propagation produces. Gated like the rest.
+        let (support, mean, std) = fit_moment_normal(h);
+        let err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(support, &[(1.0, mean, std)]));
+        cands.push((HistRepr::MomentNormal { support, mean, std, total }, err));
+    }
     for k in [2usize, 3] {
         let (trials, comps) = fit_binomial_mixture(h, k, EM_ITERS);
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
@@ -946,7 +988,7 @@ pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usiz
 /// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
 /// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
 /// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture,
-/// 3 = BetaBinomial, 4 = QuantCdf, 5 = DiscGmm.
+/// 3 = BetaBinomial, 4 = QuantCdf, 5 = DiscGmm, 6 = MomentNormal.
 pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
     let mut out = Vec::new();
     match r {
@@ -994,6 +1036,13 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
                 out.extend_from_slice(&mu.to_le_bytes());
                 out.extend_from_slice(&sigma.to_le_bytes());
             }
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::MomentNormal { support, mean, std, total } => {
+            out.push(6u8);
+            out.extend_from_slice(&(*support as u32).to_le_bytes());
+            out.extend_from_slice(&mean.to_le_bytes());
+            out.extend_from_slice(&std.to_le_bytes());
             out.extend_from_slice(&total.to_le_bytes());
         }
     }
@@ -1071,6 +1120,12 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             let total = if o + 8 <= b.len() { read_u64(b, o) } else { 0 };
             HistRepr::DiscGmm { support, comps, total }
         }
+        6 if b.len() >= 1 + 4 + 8 + 8 + 8 => HistRepr::MomentNormal {
+            support: read_u32(b, 1) as usize,
+            mean: read_f64(b, 5),
+            std: read_f64(b, 13),
+            total: read_u64(b, 21),
+        },
         _ => HistRepr::Exact(Vec::new()),
     }
 }
@@ -1219,11 +1274,70 @@ mod tests {
             HistRepr::Mixture { trials: 20, comps: vec![(0.6, 0.2), (0.4, 0.8)], total: 12345 },
             HistRepr::QuantCdf { qcdf: vec![0u16, 100, 30000, 65535], total: 7777 },
             HistRepr::DiscGmm { support: 60, comps: vec![(0.5, 20.0, 1.5), (0.5, 40.0, 2.0)], total: 6543 },
+            HistRepr::MomentNormal { support: 60, mean: 29.5, std: 6.25, total: 5432 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
         }
         assert_eq!(decode_repr(&[]), HistRepr::Exact(vec![]));
+    }
+
+    // Increment 1b — the CLT reconstruction rung. A wide Gaussian histogram (wider than
+    // any binomial of the same support, so the binomial rung misses): the moment-matched
+    // Normal reconstructs it within the gate, and is admissible & cheap.
+    #[test]
+    fn moment_normal_reconstructs_a_wide_gaussian() {
+        let support = 60usize;
+        // std 6 is wider than binomial(59, .)'s max std (~3.84), so the binomial misses.
+        let pmf = discretised_gmm_pmf(support, &[(1.0, 30.0, 6.0)]);
+        let h: Hist = pmf.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        let (tb, pb) = fit_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01,
+            "a single binomial is too narrow for a std-6 Gaussian");
+        // the moment-matched Normal reconstructs within the gate.
+        let (s, mean, std) = fit_moment_normal(&h);
+        let recon = discretised_gmm_pmf(s, &[(1.0, mean, std)]);
+        assert!(cdf_max_error_pmf(&exact_pmf, &recon) <= 0.01, "moment Normal should fit");
+        // it is admissible in the chooser (and cheap — 29 bytes, far under the exact hist).
+        let repr = choose_representation(&h, 10, 0.01);
+        assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
+    }
+
+    // The reconstruction is constructible from the (mass, m1, m2) jet ALONE — no
+    // histogram — and that jet-built repr equals the histogram-fitted one bit-for-bit.
+    #[test]
+    fn moment_normal_from_jet_equals_fit() {
+        let support = 50usize;
+        let pmf = discretised_gmm_pmf(support, &[(1.0, 24.0, 5.0)]);
+        let h: Hist = pmf.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        // route A: fit from the histogram.
+        let (s, mean, std) = fit_moment_normal(&h);
+        let total: u64 = h.iter().sum();
+        let from_fit = HistRepr::MomentNormal { support: s, mean, std, total };
+        // route B: from the moment jet, never touching the per-bucket histogram.
+        let from_jet = hist_moment_jet(&h).to_normal_repr(h.len());
+        assert_eq!(from_jet, from_fit, "jet reconstruction must equal the moment fit");
+        // and it reconstructs the original within the gate.
+        assert!(cdf_max_error(&h, &from_jet.expand()) <= 0.01 + 1e-6);
+    }
+
+    // The gate guards the reconstruction: a genuinely bimodal node is REJECTED (the
+    // moment-matched unimodal Normal cannot fit it), so MomentNormal never silently fires
+    // where the CLT does not hold.
+    #[test]
+    fn moment_normal_rejected_for_bimodal() {
+        let trials = 59usize;
+        let lo = binomial_pmf(trials, 0.15);
+        let hi = binomial_pmf(trials, 0.85);
+        let h: Hist = (0..=trials)
+            .map(|i| ((0.5 * lo[i] + 0.5 * hi[i]) * 1_000_000.0).round() as u64)
+            .collect();
+        let exact_pmf = to_pmf(&h);
+        let (s, mean, std) = fit_moment_normal(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(s, &[(1.0, mean, std)])) > 0.01,
+            "a unimodal Normal must miss the gate on a bimodal histogram");
     }
 
     // The quantised-CDF table is always admissible (error ~ the quantisation step)

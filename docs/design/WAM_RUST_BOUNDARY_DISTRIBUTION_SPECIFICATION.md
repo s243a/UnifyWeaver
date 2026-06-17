@@ -478,17 +478,19 @@ gate machinery, the chooser (error- and storage-driven), and the persistence pat
 general — adding a representation is just another candidate in
 `representation_candidates` with a `bytes()` and a `pmf()`/`expand()`.
 
-A **separate, cheaper reconstruction rung is still unbuilt**: the moment-jet / CLT
-reconstruction described in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §7 (carry
-`(M, m₁, m₂)`, reconstruct a discretised Normal). It is *not* part of this fitted ladder
-— it propagates without ever materialising the histogram — and per that note's roadmap
-it is the **first** (and cheapest, no-EM) reconstruction increment, even though the
-more-expensive GMM rung shipped first. So "ladder closed" here means the histogram-
-fitting forms; it does not mean the cheapest reconstruction path is done.
+A **separate, cheaper reconstruction rung** — the moment-jet / CLT reconstruction of
+`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §7 — now exists as `HistRepr::MomentNormal`
+(carry `(mass, m₁, m₂)`, reconstruct a discretised Normal; wire tag 6). It is *not* a
+histogram fit — it is constructible from the moment jet **alone**, so it is the form a
+jet-only propagation reconstructs — but it joins the same candidate set under the same CDF
+gate. What remains is the *propagation* side: carrying the jet through the boundary
+precompute without ever materialising the histogram (functional-semiring note §8, 1c), and
+the higher-order Edgeworth/Pearson members.
 
 Remaining, lower priority and added on demand:
 
-- **Moment-jet / CLT reconstruction rung** — see above and the functional-semiring note.
+- **Jet-only propagation + higher-order reconstruction** — carry `(min,max,mass,m₁,m₂)`
+  through the precompute (never forming the histogram); Edgeworth/Pearson rungs (§7).
 - **heed-backend parity** for the `boundary_basis_repr` persistence and the spill
   sub-db (the `lmdb-zero` backend has both today).
 - **Higher-K / Bayesian model selection** for the mixture and GMM rungs (today `K =
