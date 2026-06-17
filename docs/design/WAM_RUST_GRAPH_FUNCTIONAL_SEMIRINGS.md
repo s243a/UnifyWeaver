@@ -348,31 +348,43 @@ sets the *scale*. (`(min, max, mass)` alone, no `m₁`/`m₂` needed for the bra
 validated in `boundary_cache::tests::interval_and_mass_bracket_d_eff`.) It is the cheap
 surrogate for the `WeightSum` functional that §2 showed cannot be carried as a scalar.
 
-### 5a. Composite caret distance — bracketing the *between-nodes* distance
+### 5a. Composite caret distance — a between-nodes *upper* bound
 
 The to-root distance cache (increment 2) answers "how far is `v` from the root". The same
-two cached scalars also bracket the distance **between two nodes**, by the same idea as
-§5. A path `u → v` can always go **up to a shared ancestor (a *bridge*) and back down** —
-a `∧`/caret path `u ↑ B ↓ v` of length `d(u→B) + d(v→B)`. The **root is a universal
-bridge**, so from the cached `d(u→root)`, `d(v→root)` alone, the triangle inequality (root
-as reference point) gives a two-sided bound:
+two cached scalars give an **upper bound** on the distance **between two nodes**. A path
+`u → v` can always go **up to a shared ancestor (a *bridge*) and back down** — a `∧`/caret
+path `u ↑ B ↓ v` of length `d(u→B) + d(v→B)`. The **root is a universal bridge**, so
 
 ```
-|d(u→root) − d(v→root)|   ≤   d(u,v)   ≤   d(u→root) + d(v→root)
-      A*/ALT lower bound                    composite caret (root bridge, upper)
+d_undirected(u, v)   ≤   d(u→root) + d(v→root)        (composite caret, root bridge)
 ```
 
-— `d(u,v)` is **bracketed from the cache**, the same shape as the `d_eff` bracket of §5
-(`caret_distance_bounds`). The lower bound is exactly the **ALT landmark heuristic** an A*
-search consumes; the upper bound is the *caret* (the user's "root bridge"). A **lower
-bridge** — a common ancestor nearer `u, v`, ultimately the **lowest common ancestor** —
-gives a *tighter* caret; `caret_distance_lca` computes that exact `∧`-distance
+is free from the cache (`caret_distance_upper`) — it is the length of a real `∧`-path. A
+**lower bridge** (a common ancestor nearer `u, v`, ultimately the **lowest common
+ancestor**) gives a *tighter* caret; `caret_distance_lca` computes the exact `∧`-distance
 `min_B (d(u→B) + d(v→B))` by a joint upward BFS. The caret **equals** the true shortest
 path on a *tree* (it is the cophenetic / tree distance) and is a **certified upper bound**
-on a DAG (a non-ancestor route can be shorter). Validated by
-`caret_distance_on_a_tree_equals_true_distance` and
-`caret_distance_on_a_dag_is_a_bracketed_upper_bound`. This is the natural *between-nodes*
-use of the to-root cache — the general companion to increment 2's *to-root* query.
+on a DAG (a non-ancestor route can be shorter).
+
+**No matching lower bound from the cache (the correction).** It is tempting to add
+`|d(u→root) − d(v→root)| ≤ d(u,v)` as a lower bound (the ALT landmark heuristic), but
+**that is false in general.** The reverse triangle inequality needs a *metric* (symmetric
+distances); the cache stores the *directed* up-distance, and the caret distance is
+*undirected*. On a DAG with a shortcut the undirected distance can be far smaller than
+`|d_u − d_v|` — e.g. a chain `4→3→2→1→0` (so `d(4→root)=4`) plus `5→0` and an edge `5—4`
+gives `d(5→root)=1` while `4,5` are *adjacent* (`d=1`), yet `|4−1| = 3 > 1`
+(`alt_lower_bound_is_directed_only`). The symmetric bound holds **only on a tree** (there
+the directed up-distance *is* the undirected metric). The valid cache lower bound is the
+*directed* one — `max(0, d(u→root) − d(v→root)) ≤ d(u→v)`, because `u→v→root` is a walk to
+root (`directed_distance_lower`) — the admissible A* heuristic for the **directed** query,
+a bound on a *different* quantity than the undirected caret. So on a DAG there is a
+certified upper bound (undirected caret) and a directed lower bound, but **not** a single
+two-sided bracket; the bracket is a tree-only special case.
+
+Validated by `caret_distance_on_a_tree_equals_true_distance`,
+`caret_distance_on_a_dag_is_an_upper_bound`, and `alt_lower_bound_is_directed_only`. This
+is the natural *between-nodes* use of the to-root cache — the general companion to
+increment 2's *to-root* query.
 
 ## 6. Aside: the kernel-trick analogy
 
@@ -527,13 +539,16 @@ future work — `m₃` is now carried, so they are a read-out away.
 
 3. **Between-nodes distance from the to-root cache (composite caret).** The *between-nodes*
    companion to increment 2, §5a.
-   - **[3a DONE]** `caret_distance_bounds` (the O(1) two-sided bracket from two cached
-     to-root scalars — ALT lower bound + root-bridge caret upper bound) and
-     `caret_distance_lca` (the exact `∧`-distance through the lowest common ancestor).
+   - **[3a DONE]** `caret_distance_upper` (the O(1) root-bridge caret — an *undirected*
+     upper bound) and `caret_distance_lca` (the exact `∧`-distance through the lowest common
+     ancestor). `directed_distance_lower` is the only valid cache lower bound, and only on
+     the *directed* `d(u→v)` — the symmetric `|d_u − d_v|` is NOT a lower bound on the
+     undirected distance off a tree (corrected; `alt_lower_bound_is_directed_only`).
      Validated on a tree (caret = true distance) and a DAG (caret = certified upper bound).
    - **[3b next]** wire it into the live WamState path and a kernel result mode (a
-     between-nodes `caret_distance(u, v)` reading the distance cache), and the `astar`
-     landmark heuristic that consumes the lower bound.
+     between-nodes `caret_distance(u, v)` reading the distance cache); feed
+     `directed_distance_lower` to an A* search as its admissible heuristic for *directed*
+     queries.
 
 ## 9. Relationship to the other docs
 
