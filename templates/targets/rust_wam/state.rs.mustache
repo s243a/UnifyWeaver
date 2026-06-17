@@ -1307,6 +1307,73 @@ impl WamState {
         best
     }
 
+    /// Between-nodes **composite caret** distance (increment 3b): the exact `∧`-distance
+    /// `u ↑ B ↓ v` through the lowest common ancestor, `min_B (dist(u→B) + dist(v→B))`, by
+    /// a joint upward BFS from `u` and `v` over the live edge accessor. The undirected
+    /// "how related are these two nodes" answer — exact on a tree (the cophenetic
+    /// distance), a certified upper bound on a DAG. `None` if `u` and `v` share no
+    /// ancestor. (Cache-free; the boundary `min_dist` table only gives the looser
+    /// root-bridge bound `dist(u→root) + dist(v→root)`.)
+    pub fn category_caret_distance(&self, u: u32, v: u32, acc: &EdgeAccessor) -> Option<u32> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let up_dist = |src: u32| -> HashMap<u32, u32> {
+            let mut d: HashMap<u32, u32> = HashMap::new();
+            let mut seen: HashSet<u32> = HashSet::new();
+            let mut q: VecDeque<(u32, u32)> = VecDeque::new();
+            d.insert(src, 0);
+            seen.insert(src);
+            q.push_back((src, 0));
+            while let Some((node, dist)) = q.pop_front() {
+                for p in self.edge_parents_via(node, acc) {
+                    if seen.insert(p) {
+                        d.insert(p, dist + 1);
+                        q.push_back((p, dist + 1));
+                    }
+                }
+            }
+            d
+        };
+        let du = up_dist(u);
+        let dv = up_dist(v);
+        du.iter().filter_map(|(b, &a)| dv.get(b).map(|&c| a + c)).min()
+    }
+
+    /// Directed shortest `u → target` hop-distance (following parent edges, so `target`
+    /// must be an ancestor of `u`), via **A\* with the ALT landmark heuristic**
+    /// `h(n) = max(0, min_dist[n] − min_dist[target])` from the loaded distance-to-root
+    /// table (`set_min_dist`) — admissible (and consistent) because `n→target→root` bounds
+    /// `dist(n→root)`. With an empty `min_dist` the heuristic is 0, so it degrades to a
+    /// plain uniform-cost search (Dijkstra/BFS) — still correct. `None` if `target` is not
+    /// reachable upward from `u`. The boundary distance cache (increment 2) is the
+    /// landmark; this is its A* consumer.
+    pub fn category_ancestor_astar(&self, u: u32, target: u32, acc: &EdgeAccessor) -> Option<u32> {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap};
+        let heuristic = |n: u32| -> u32 {
+            if self.min_dist.is_empty() { return 0; }
+            match (self.min_dist.get(&(n as i32)), self.min_dist.get(&(target as i32))) {
+                (Some(&dn), Some(&dt)) => (dn - dt).max(0) as u32,
+                _ => 0,
+            }
+        };
+        let mut g: HashMap<u32, u32> = HashMap::new();
+        let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // (f = g+h, node)
+        g.insert(u, 0);
+        heap.push(Reverse((heuristic(u), u)));
+        while let Some(Reverse((_f, node))) = heap.pop() {
+            let gn = g[&node];
+            if node == target { return Some(gn); } // consistent h: first pop is optimal
+            for p in self.edge_parents_via(node, acc) {
+                let gp = gn + 1;
+                if gp < *g.get(&p).unwrap_or(&u32::MAX) {
+                    g.insert(p, gp);
+                    heap.push(Reverse((gp + heuristic(p), p)));
+                }
+            }
+        }
+        None
+    }
+
     /// Top-down boundary precompute with the liveness-prioritised eviction of spec
     /// §8a/§8b. Processes the band's ancestor cone in topological order from the
     /// root (`H_root = delta_0`, `H_v[L] = sum_{p in parents(v)} H_p[L-1]`), tracking
@@ -2780,6 +2847,59 @@ mod boundary_kernel_tests {
         let s2 = vm2.intern_atom("5");
         let acc = vm2.resolve_edge_accessor("category_parent");
         assert_eq!(vm2.category_ancestor_boundary_distance(s2, r2, &acc), Some(want));
+    }
+
+    // Increment 3b — the between-nodes caret distance in the live path equals the
+    // boundary_cache LCA caret (joint up-BFS over the real accessor).
+    #[test]
+    fn live_caret_distance_matches_lca() {
+        let mut vm = dag();
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // intern all node names BEFORE resolving the accessor (intern is &mut).
+        let pairs: Vec<(u32, u32, &str, &str)> =
+            [("3", "4"), ("5", "3"), ("4", "2"), ("1", "2"), ("5", "0")].iter()
+                .map(|&(un, vn)| (vm.intern_atom(un), vm.intern_atom(vn), un, vn)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for (u, v, un, vn) in pairs {
+            let got = vm.category_caret_distance(u, v, &acc);
+            let want = crate::boundary_cache::caret_distance_lca(u, v, &parents);
+            assert_eq!(got, want, "caret({}, {})", un, vn);
+        }
+    }
+
+    // Increment 3b — the A* ancestor search returns the directed shortest u->ancestor
+    // distance, equal to the min-plus closure rooted at the target. The ALT heuristic
+    // (from min_dist) gives the same answer as the h=0 (Dijkstra) fallback.
+    #[test]
+    fn astar_ancestor_distance_matches_closure() {
+        let mut vm = dag();
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // load distance-to-root so the ALT heuristic is active.
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0", 0), ("1", 1), ("2", 1), ("3", 2), ("4", 2), ("5", 2)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // intern all (u, target) names before borrowing the accessor.
+        let cases: Vec<(u32, u32, &str, &str)> =
+            [("5", "0"), ("5", "2"), ("4", "1"), ("3", "0"), ("4", "0")].iter()
+                .map(|&(un, tn)| (vm.intern_atom(un), vm.intern_atom(tn), un, tn)).collect();
+        let zero = vm.intern_atom("0");
+        let five = vm.intern_atom("5");
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for (u, t, un, tn) in cases {
+            let want = crate::boundary_cache::min_distance_closure(t, &parents).get(&u).copied();
+            assert_eq!(vm.category_ancestor_astar(u, t, &acc), want, "A* {}->{}", un, tn);
+        }
+        // unreachable upward (0 has no ancestors) -> None.
+        assert_eq!(vm.category_ancestor_astar(zero, five, &acc), None, "0 cannot reach 5 upward");
+        drop(acc);
+        // an empty min_dist (h=0) is the Dijkstra fallback — same answer.
+        let mut vm2 = dag();
+        let u = vm2.intern_atom("5");
+        let t = vm2.intern_atom("0");
+        let acc2 = vm2.resolve_edge_accessor("category_parent");
+        assert_eq!(vm2.category_ancestor_astar(u, t, &acc2), Some(2));
     }
 
     #[test]
