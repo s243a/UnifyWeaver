@@ -2378,25 +2378,38 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     .map(|s| s.to_string()).unwrap_or_else(|| "scalar".to_string());
                 let cat_id = self.intern_atom(&cat);
                 let root_id = self.intern_atom(&root);
-                let mut hist: Vec<u64> = Vec::new();
-                let mut visited: Vec<u32> = vec![cat_id];
                 let acc = self.resolve_edge_accessor(&edge_pred);
-                self.collect_native_category_ancestor_boundary_hist(
-                    cat_id, root_id, &mut visited, max_depth, &acc, 0, &mut hist);
-                // weighted_power read: WeightSum = sum_{L>0} H[L] * L^-n
-                let weight_sum = || -> f64 {
-                    hist.iter().enumerate().filter(|(l, _)| *l > 0)
-                        .map(|(l, &c)| c as f64 * (l as f64).powf(-n)).sum()
-                };
-                let result: Value = match extractor.as_str() {
-                    "distribution" => Value::List(
-                        hist.iter().map(|&c| Value::Integer(c as i64)).collect()),
-                    "effective_distance" => {
-                        let ws = weight_sum();
-                        if ws > 0.0 { Value::Float(ws.powf(-1.0 / n)) } else { return false; }
+                let result: Value = if extractor == "shortest_distance" {
+                    // min-plus distance read (graph-functional-semiring increment 2):
+                    // the CYCLE-CORRECT shortest hop-distance to root via the distance
+                    // cache (build_boundary_distances / boundary_dist), splice-pruned at
+                    // cached boundaries. Degrades to a plain (correct) BFS with an empty
+                    // cache, so it is safe without a precompute. Distinct from reading the
+                    // histogram support: that DFS histogram is unsound on cycles.
+                    match self.category_ancestor_boundary_distance(cat_id, root_id, &acc) {
+                        Some(d) => Value::Integer(d as i64),
+                        None => return false, // root unreachable
                     }
-                    // default: scalar(weighted_power)
-                    _ => Value::Float(weight_sum()),
+                } else {
+                    let mut hist: Vec<u64> = Vec::new();
+                    let mut visited: Vec<u32> = vec![cat_id];
+                    self.collect_native_category_ancestor_boundary_hist(
+                        cat_id, root_id, &mut visited, max_depth, &acc, 0, &mut hist);
+                    // weighted_power read: WeightSum = sum_{L>0} H[L] * L^-n
+                    let weight_sum = || -> f64 {
+                        hist.iter().enumerate().filter(|(l, _)| *l > 0)
+                            .map(|(l, &c)| c as f64 * (l as f64).powf(-n)).sum()
+                    };
+                    match extractor.as_str() {
+                        "distribution" => Value::List(
+                            hist.iter().map(|&c| Value::Integer(c as i64)).collect()),
+                        "effective_distance" => {
+                            let ws = weight_sum();
+                            if ws > 0.0 { Value::Float(ws.powf(-1.0 / n)) } else { return false; }
+                        }
+                        // default: scalar(weighted_power)
+                        _ => Value::Float(weight_sum()),
+                    }
                 };
                 self.finish_foreign_results(
                     &pred_key, vec![out_reg],
@@ -5703,12 +5716,14 @@ rust_bidirectional_config_extras(Options, Extras) :-
 %  emitting ONE deterministic result (no choice point) read from the
 %  path-length measure of the spliced boundary histogram. The result_extractor
 %  config selects which read: scalar (weighted_power), effective_distance
-%  (d_eff = WeightSum^(-1/N)), or distribution (the raw histogram).
+%  (d_eff = WeightSum^(-1/N)), distribution (the raw histogram), or
+%  shortest_distance (the cycle-correct min-plus shortest hop-distance to root,
+%  read from the distance cache rather than the histogram — increment 2).
 %
 %  Config extras (project options, with defaults):
 %    boundary_weight_n(N)            — the functional exponent N (default 2.0)
 %    boundary_result_extractor(E)    — scalar | effective_distance | distribution
-%                                      (default scalar)
+%                                      | shortest_distance   (default scalar)
 %
 %  max_depth and edge_pred carry over from the detected category_ancestor
 %  config. The boundary side-table (build_boundary_suffix) is a separate runtime
@@ -5902,7 +5917,7 @@ emit_kernel_config_ops(Key, [Op|Rest]) :-
 %                          (default false; see rust_maybe_upgrade_boundary/3).
 %                          Tunables: boundary_weight_n(N) (default 2.0),
 %                          boundary_result_extractor(scalar | effective_distance
-%                          | distribution; default scalar).
+%                          | distribution | shortest_distance; default scalar).
 %    csr_child_index(Bool) — emit src/csr_fact_source.rs, a LookupSource
 %                          over the reverse-CSR artifact for the
 %                          bidirectional kernel child direction

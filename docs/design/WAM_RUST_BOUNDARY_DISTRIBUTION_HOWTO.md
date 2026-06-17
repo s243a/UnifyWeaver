@@ -51,7 +51,7 @@ itself. They compose — the boundary win sits on top of a warm edge cache (phil
 | working set | unbudgeted · two-budget eviction · spill-and-continue | unbudgeted | `evict_budget` / `live_budget` / `..._with_spill` |
 | representation | exact histogram · g_B pre-weighted basis · fitted (tail-prune/binomial/beta-binomial/mixture/quantised-CDF/discretised-GMM) | exact | `build_boundary_basis_weighted_power` / `boundary_suffix_reprs` |
 | persistence | ephemeral · LMDB histograms · LMDB fitted reprs | ephemeral | `save/load_boundary_basis` / `save/load_boundary_reprs` |
-| result | scalar · effective_distance · distribution | scalar | `boundary_result_extractor` / the extractor read |
+| result | scalar · effective_distance · distribution · shortest_distance | scalar | `boundary_result_extractor` / the extractor read |
 
 They are genuinely independent — e.g. *lazy LMDB edges + entry-frontier band + fitted
 reprs persisted to LMDB* is a valid configuration, as is *eager edges + region band +
@@ -122,9 +122,14 @@ write_wam_rust_project([user:category_ancestor/4],
     [ module_name(myapp),
       boundary_optimization(true),          % off by default
       boundary_weight_n(2.0),               % the functional exponent N (default 2.0)
-      boundary_result_extractor(scalar)     % scalar | effective_distance | distribution
+      boundary_result_extractor(scalar)     % scalar | effective_distance | distribution | shortest_distance
     ], 'output/myapp').
 ```
+
+> `shortest_distance` returns the **cycle-correct shortest hop-distance to root** via the
+> min-plus distance cache (precompute with `vm.build_boundary_distances(band, root_id,
+> edge_pred)`, not `build_boundary_suffix`); with an empty cache it degrades to a plain
+> correct BFS. The other three read the path-length histogram.
 
 This is the *codegen* decision. At runtime the emitted wrapper splices against the
 side-table you populate (§4). **With an empty side-table the kernel is still correct**
