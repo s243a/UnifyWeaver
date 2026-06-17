@@ -818,6 +818,65 @@ pub fn convergence_jump(
     Some(jump)
 }
 
+/// **Parent reconvergence** — the convergence signal in the *ancestor* (up) direction.
+///
+/// The true hub property: ascending one level from `B` loses **far fewer distinct ancestors
+/// than the parent branching factor `b = |parents(B)|` predicts**, because the parents' upward
+/// cones *overlap* — the lineage re-merges above. The deficit (expected-from-`b` minus actual)
+/// is the convergence; high `b` with a large deficit is a hub, high `b` with none is just a
+/// fan. The exact deficit needs the parents' full ancestor sets (reachability — the global
+/// work we refuse), and the additive ancestor-weight is no help (it *is* the disjoint /
+/// branching-factor expectation, blind to overlap). But reconvergence shows up **locally**:
+/// overlapping parents first share **grandparents**. So we probe the bounded `up_hops`-deep
+/// up-cone of each parent and measure their overlap — `up_hops = 1` is "do the parents share
+/// grandparents," a 2-hop neighbourhood with no walk to root; `up_hops → ∞` is the exact
+/// deficit (the expensive limit). `up_hops` is the cost/sensitivity knob.
+///
+/// Returns the **overlap fraction** in `[0, 1]`: `(Σ|cone_p| − |⋃ cone_p|) / Σ|cone_p|`. `0`
+/// for disjoint lineages (tree-like, no convergence) or fewer than two parents (nothing to
+/// reconverge); higher means heavier reconvergence. Reads no distance — purely a bounded local
+/// neighbourhood — so it is non-circular and cycle-safe (the depth bound caps any cycle).
+pub fn parent_reconvergence(
+    node: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    up_hops: usize,
+) -> f64 {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let ps = match parents.get(&node) {
+        Some(ps) if ps.len() >= 2 => ps,
+        _ => return 0.0, // <2 parents: a single lineage, nothing to reconverge.
+    };
+    // Bounded up-cone of each parent, starting one level above it (its own ancestors within
+    // `up_hops`). Per-parent sets, so a node counts once per parent; overlap across parents is
+    // the reconvergence.
+    let mut total: usize = 0;
+    let mut union_count: HashMap<u32, u32> = HashMap::new();
+    for &p in ps {
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut q: VecDeque<(u32, usize)> = VecDeque::new();
+        if let Some(gps) = parents.get(&p) {
+            for &g in gps {
+                if seen.insert(g) { q.push_back((g, 1)); }
+            }
+        }
+        while let Some((x, depth)) = q.pop_front() {
+            if depth >= up_hops { continue; }
+            if let Some(xps) = parents.get(&x) {
+                for &g in xps {
+                    if seen.insert(g) { q.push_back((g, depth + 1)); }
+                }
+            }
+        }
+        total += seen.len();
+        for g in seen {
+            *union_count.entry(g).or_insert(0) += 1;
+        }
+    }
+    if total == 0 { return 0.0; } // parents are roots: no grandparents to share.
+    let distinct = union_count.len();
+    (total - distinct) as f64 / total as f64
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -2701,6 +2760,47 @@ mod tests {
         assert_eq!(descendant_weight(&cyc), None);
         assert_eq!(convergence_jump(&cyc), None);
         assert!(convergence_fanin(&cyc).contains_key(&0)); // cheap local metric is cycle-robust
+    }
+
+    // Parent reconvergence: the ANCESTOR-side convergence signal. A hub loses far fewer
+    // ancestors going up than its branching factor predicts, because parents share ancestors.
+    #[test]
+    fn parent_reconvergence_diamond_vs_tree() {
+        // DIAMOND (a hub): B(=3) has two parents 1,2 that BOTH point to a single grandparent 0.
+        // Branching factor 2, but the two lineages reconverge at 0 immediately.
+        let mut hub: HashMap<u32, Vec<u32>> = HashMap::new();
+        hub.insert(1, vec![0]); hub.insert(2, vec![0]); hub.insert(3, vec![1, 2]);
+        // up_hops=1: cone(1)={0}, cone(2)={0} -> total=2, distinct=1 -> overlap 1/2.
+        assert_eq!(parent_reconvergence(3, &hub, 1), 0.5);
+
+        // TREE/FAN (not a hub): same branching factor 2, but the parents have DISJOINT
+        // grandparents -> the lineages do not reconverge -> zero overlap.
+        let mut fan: HashMap<u32, Vec<u32>> = HashMap::new();
+        fan.insert(1, vec![10]); fan.insert(2, vec![20]); fan.insert(3, vec![1, 2]);
+        assert_eq!(parent_reconvergence(3, &fan, 1), 0.0);
+
+        // The branching factor is identical (2) in both; only reconvergence tells them apart —
+        // exactly "ancestors lost going up << branching factor" for the hub, not the fan.
+
+        // Fewer than two parents: a single lineage, nothing to reconverge -> 0.
+        assert_eq!(parent_reconvergence(1, &hub, 1), 0.0); // 1 has the single parent 0
+        assert_eq!(parent_reconvergence(0, &hub, 5), 0.0); // 0 is a root (no parents)
+
+        // The k-hop ladder: reconvergence can sit ABOVE the grandparents. Parents 1,2 have
+        // DISTINCT grandparents 10,20, but those reconverge at a shared great-grandparent 0.
+        let mut deep: HashMap<u32, Vec<u32>> = HashMap::new();
+        deep.insert(10, vec![0]); deep.insert(20, vec![0]);
+        deep.insert(1, vec![10]); deep.insert(2, vec![20]); deep.insert(3, vec![1, 2]);
+        // up_hops=1 sees only the disjoint grandparents {10},{20} -> no overlap yet.
+        assert_eq!(parent_reconvergence(3, &deep, 1), 0.0);
+        // up_hops=2 reaches the shared great-grandparent: cone(1)={10,0}, cone(2)={20,0}
+        // -> total=4, distinct=3 ({10,20,0}) -> overlap 1/4. Deeper probe, more cost, more reach.
+        assert_eq!(parent_reconvergence(3, &deep, 2), 0.25);
+
+        // Cycle-safe: the depth bound caps any loop (no infinite walk).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]); cyc.insert(2, vec![0, 1]);
+        let _ = parent_reconvergence(2, &cyc, 10); // terminates; value not asserted
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each

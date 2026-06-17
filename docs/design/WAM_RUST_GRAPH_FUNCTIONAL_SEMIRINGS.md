@@ -551,16 +551,30 @@ caching, the **designated-bridge** measure is cacheable.
 >   `1`, a hub merging several heavy subtrees jumps large. Needs a DAG (a reverse-topo order);
 >   `None` on a cycle — so rung 1 is the cyclic-graph fallback. (`descendant_weight`,
 >   `convergence_jump`.)
+> - **Rung 3 — parent reconvergence (the ancestor-side definition).** The two rungs above read
+>   the *descendant* cone (down from `B`); the sharpest hub definition reads the *ancestor* cone
+>   (up from `B`). The signature: ascending one level from `B` loses **far fewer distinct
+>   ancestors than the parent branching factor `b = |parents(B)|` predicts**, because the
+>   parents' upward cones *overlap* — the lineage re-merges above. The deficit (expected-from-`b`
+>   minus actual) *is* the convergence; `b` large with a big deficit is a hub, `b` large with
+>   none is just a fan. The exact deficit is reachability again — and note the additive
+>   ancestor-weight is no help, it *is* the disjoint/branching-factor expectation, blind to
+>   overlap, so a separate overlap-sensitive probe is required. The cheap one is **local**:
+>   overlapping parents first share **grandparents**, so probe each parent's bounded `up_hops`-
+>   deep up-cone and measure their overlap. `up_hops = 1` is "do the parents share grandparents"
+>   (a 2-hop neighbourhood, no walk to root); `up_hops → ∞` is the exact deficit. `up_hops` is
+>   the cost/sensitivity knob, and the depth bound makes it cycle-safe. (`parent_reconvergence`,
+>   returning the overlap fraction in `[0,1]`.)
 > - **The min-over-hubs caret is then quantized-LCA.** With hubs *cheaply* pre-selected (by
->   fan-in / jump, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ caret_through_
->   bridge(u, v, B)` picks the hub giving the least distance. The only distance work runs over
->   the *already-chosen small* hub set — bounded by hub count, not by ranking the whole graph —
->   so selection stays free and only the final min-pick costs anything. With **every** node a
->   hub it equals `caret_distance_lca` exactly (the unquantized shortest-path caret); with a
->   sparser hub set it is that caret **quantized up to the nearest hub level**, larger by the
->   gap `2·d(LCA→nearest hub)` of §5b. Tightness (low, dense hubs → small gap) trades against
->   reuse (high, sparse hubs → one field serves more pairs) — and *that* knob, unlike the cone
->   size, is chosen with arithmetic we already paid for.
+>   fan-in / jump / reconvergence, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ
+>   caret_through_bridge(u, v, B)` picks the hub giving the least distance. The only distance
+>   work runs over the *already-chosen small* hub set — bounded by hub count, not by ranking the
+>   whole graph — so selection stays free and only the final min-pick costs anything. With
+>   **every** node a hub it equals `caret_distance_lca` exactly (the unquantized shortest-path
+>   caret); with a sparser hub set it is that caret **quantized up to the nearest hub level**,
+>   larger by the gap `2·d(LCA→nearest hub)` of §5b. Tightness (low, dense hubs → small gap)
+>   trades against reuse (high, sparse hubs → one field serves more pairs) — and *that* knob,
+>   unlike the cone size, is chosen with arithmetic we already paid for.
 
 ## 6. Aside: the kernel-trick analogy
 
