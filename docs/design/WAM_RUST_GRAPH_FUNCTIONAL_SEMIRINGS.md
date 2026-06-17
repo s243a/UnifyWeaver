@@ -225,7 +225,7 @@ per-node `Elem` changes (from `Vec<u64>` to a 5-scalar tuple, etc.).
 |---|---|---|---|---|
 | histogram | convolution `(⊛, +)` | O(budget) | every linear functional (mass, moments, `WeightSum`, CDF) | everything |
 | moment jet `(M,m₁,…,m_K)` | truncated power series | `K+1` scalars (3 for mean/var) | count, mean, variance, skew/kurtosis → CLT/Edgeworth distribution (§7); **needs unbounded length** | mass + first `K` moments |
-| interval `(min,max)` | min-plus × max-plus | 2 scalars | shortest + longest; brackets `d_eff` (§5) | both endpoints |
+| interval `(min,max)` | min-plus × max-plus | 2 scalars | shortest + longest; brackets `d_eff` (with `mass`, §5) | both endpoints |
 | shortest scalar `min` | min-plus | 1 scalar | shortest distance (A* heuristic / landmark) | shortest only |
 
 ## 4. The domain: a node's ancestor space
@@ -286,20 +286,31 @@ search intrinsically carries the budget and stays on the histogram.
 This staging — **convergent ancestor space first, divergent/cyclic closure second** —
 orders the implementation (§8).
 
-## 5. A certified bracket on `d_eff` from two scalars
+## 5. A certified bracket on the effective distance from `(min, max, mass)`
 
-`d_eff = WeightSum_N^{-1/N}` with `WeightSum_N / M = E[L^{-N}]` over the path-length
-distribution. That is a **power mean** of the path lengths with exponent `−N`, so by the
-power-mean inequality
+Let `W = WeightSum_N = Σ_{L>0} H[L]·L^{-N}` and `M = mass`. The **normalised** effective
+distance is the power mean of the path lengths with exponent `−N`,
 
 ```
-min_L  ≤  d_eff  ≤  max_L      always.
+pm = (W / M)^{-1/N} = (E[L^{-N}])^{-1/N}
 ```
 
-So the tropical interval `(min, max)` is not just shortest/longest — it is an **exact,
-certified bracket on the real effective-distance metric**, for two integers, exact at
-the endpoints and sound everywhere between. It is the cheap surrogate for the
-`WeightSum` functional that §2 showed cannot be carried as a scalar.
+and by the power-mean inequality `min_L ≤ pm ≤ max_L` **always** — so the tropical
+interval `(min, max)` brackets the *normalised* metric exactly, for two integers, exact at
+the endpoints and sound between.
+
+The **raw** effective distance the kernel reports is the *un-normalised* `d_eff = W^{-1/N}`
+(no division by `M`) — i.e. the power mean scaled by the path count:
+
+```
+d_eff = M^{-1/N} · pm      ⟹      d_eff ∈ M^{-1/N} · [min, max].
+```
+
+So bracketing the raw `d_eff` needs the **mass** component too — which is exactly why the
+payload carries `(min, max, mass)`: the two tropical scalars bound the *shape*, the count
+sets the *scale*. (`(min, max, mass)` alone, no `m₁`/`m₂` needed for the bracket;
+validated in `boundary_cache::tests::interval_and_mass_bracket_d_eff`.) It is the cheap
+surrogate for the `WeightSum` functional that §2 showed cannot be carried as a scalar.
 
 ## 6. Aside: the kernel-trick analogy
 
@@ -366,12 +377,18 @@ histogram without ever building one**: read off `mean`, `var`, and emit a discre
 
 ## 8. Roadmap (increments)
 
-1. **Generic payload on the ancestor space (exact, safe).** Generalize the existing
-   `category_ancestor_boundary` cache from histogram to a `PathSemiring` tuple carrying
-   `(min, max, mass, m₁, m₂)`. Same trusted acyclic domain, so the generic solve is
-   validated *against the existing histogram* bucket-for-bucket (tropical pair = first/
-   last nonzero index; moment jet = the histogram's weighted sums). Wire the moment
-   jet → discretised-Normal as a CDF-gated reconstruction rung.
+1. **Payload on the ancestor space (exact, safe).** Carry `(min, max, mass, m₁, m₂)` over
+   the acyclic ancestor space and validate *against the existing histogram* bucket-for-
+   bucket (tropical pair = first/last nonzero index; moment jet = the histogram's weighted
+   sums). **[1a DONE]** `boundary_cache::{MomentJet, Interval, suffix_moment_jet,
+   suffix_interval}` propagate the two semirings directly (never forming the histogram),
+   with the `convolve` splice laws; validated by `moment_jet_and_interval_equal_the_
+   histogram`, `convolve_laws_match_spliced_histogram`, `interval_and_mass_bracket_d_eff`.
+   Concrete functions, not yet a `PathSemiring` trait — the trait is deferred until the
+   distance kernel gives a second instance to generalise over (and its star/closure
+   contract is settled, §3). **[1b next]** wire the moment jet → discretised-Normal as a
+   CDF-gated reconstruction rung; **[1c]** fuse the payload into the live precompute/kernel
+   path.
 1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
    work, characterize each payload's star/closure-or-truncation behaviour — the
    convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,

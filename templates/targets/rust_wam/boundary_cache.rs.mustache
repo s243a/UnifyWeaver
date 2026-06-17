@@ -120,6 +120,172 @@ pub fn f_weighted_power(h: &Hist, n: f64) -> f64 {
         .sum()
 }
 
+// --- Functional payloads: propagate the functionals, not the histogram ---
+//
+// The histogram is the high-dimensional implicit object; the quantities a query wants
+// are cheap functionals of it that satisfy their OWN node-to-node recurrence — so they
+// can be propagated and spliced without ever forming the histogram. See
+// docs/design/WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md. This is increment 1: the
+// moment-jet (counting / truncated-power-series semiring) and the support interval
+// (tropical min-plus × max-plus), each an instance of one algebraic-path-problem
+// recurrence `f(root)=one; f(v) = ⊕_p (edge ⊗ f(p))`, validated bucket-for-bucket
+// against `suffix_histogram` in the tests below.
+//
+// PRECONDITION (moment jet): exact only for UNTRUNCATED convolution — a length budget
+// is not representable in moment space — so these are exact on the acyclic ancestor
+// space with no budget cap (the convergent ancestor direction). They are cycle-safe
+// (a node on the DFS stack contributes the ⊕-identity) but a cyclic up-set needs the
+// closed-semiring treatment, deferred to a later increment.
+//
+// NORMATIVE: carry the RAW moments (mass, m1, m2); never (count, mean, variance).
+// Mean/variance are NOT linear under ⊕ (a multi-parent node is a mixture, not an
+// independent sum), so they are not a semiring element — they are read out, nonlinearly,
+// only at the end. (Cumulants would add under ⊗ but also break under ⊕; raw moments are
+// the safe carry for a branching DAG. See the note's "raw moments vs cumulants" fork.)
+
+/// Path-length **moment jet** toward the root: total path mass and the first two raw
+/// moments `(M, m1, m2) = (Σ H[L], Σ L·H[L], Σ L²·H[L])`. `f64` because moments grow
+/// large; mass is integer-valued but kept real for the mean/variance read-out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MomentJet {
+    pub mass: f64,
+    pub m1: f64,
+    pub m2: f64,
+}
+
+impl MomentJet {
+    /// ⊗-identity: the empty path at the root — one path of length 0.
+    pub fn root() -> Self { MomentJet { mass: 1.0, m1: 0.0, m2: 0.0 } }
+    /// ⊕-identity: no path (unreachable / a cycle-pruned branch).
+    pub fn zero() -> Self { MomentJet { mass: 0.0, m1: 0.0, m2: 0.0 } }
+    /// ⊕ — union of alternative path sets (a node's several parents): raw moments add.
+    pub fn union(self, o: Self) -> Self {
+        MomentJet { mass: self.mass + o.mass, m1: self.m1 + o.m1, m2: self.m2 + o.m2 }
+    }
+    /// ⊗ — concatenation of two independent segments (the splice): the binomial
+    /// convolution of raw moments, `m_k = Σ_j C(k,j) m_j(a) m_{k-j}(b)` for k ≤ 2.
+    pub fn convolve(self, o: Self) -> Self {
+        MomentJet {
+            mass: self.mass * o.mass,
+            m1: self.m1 * o.mass + self.mass * o.m1,
+            m2: self.m2 * o.mass + 2.0 * self.m1 * o.m1 + self.mass * o.m2,
+        }
+    }
+    /// ⊗ by a single edge: prepend one edge, shifting every path length by +1. This is
+    /// `convolve` with the length-1 atom `(1, 1, 1)`, specialised: `mass' = mass`,
+    /// `m1' = m1 + mass`, `m2' = m2 + 2·m1 + mass`.
+    pub fn shift_one(self) -> Self {
+        MomentJet { mass: self.mass, m1: self.m1 + self.mass, m2: self.m2 + 2.0 * self.m1 + self.mass }
+    }
+    /// Read-out (nonlinear, end of pipeline): mean path length.
+    pub fn mean(self) -> f64 { if self.mass > 0.0 { self.m1 / self.mass } else { 0.0 } }
+    /// Read-out: variance of the path length (`E[L²] − E[L]²`, floored at 0).
+    pub fn variance(self) -> f64 {
+        if self.mass > 0.0 {
+            (self.m2 / self.mass - self.mean() * self.mean()).max(0.0)
+        } else { 0.0 }
+    }
+}
+
+/// Path-length **support interval** toward the root: `(min, max)` = the shortest and
+/// longest path lengths. Tropical min-plus × max-plus. `None` (the ⊕-identity) = no path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Interval {
+    pub min: u32,
+    pub max: u32,
+}
+
+impl Interval {
+    /// ⊗-identity: the empty path at the root (length 0..=0).
+    pub fn root() -> Self { Interval { min: 0, max: 0 } }
+    /// ⊗ by a single edge: extend both ends by one.
+    pub fn shift_one(self) -> Self { Interval { min: self.min + 1, max: self.max + 1 } }
+    /// ⊕ — union of alternatives: min of mins, max of maxes.
+    pub fn union(self, o: Self) -> Self {
+        Interval { min: self.min.min(o.min), max: self.max.max(o.max) }
+    }
+    /// ⊗ — concatenation (the splice): the extremes add.
+    pub fn convolve(self, o: Self) -> Self {
+        Interval { min: self.min + o.min, max: self.max + o.max }
+    }
+}
+
+/// `MomentJet` for `node → root` by the moment recurrence — never forming the histogram.
+/// Memoised, cycle-safe (a node on the current DFS stack contributes `zero`). No budget:
+/// exact on an acyclic ancestor space (the moment law requires untruncated convolution).
+pub fn suffix_moment_jet(
+    node: u32,
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    memo: &mut std::collections::HashMap<u32, MomentJet>,
+    on_stack: &mut Vec<u32>,
+) -> MomentJet {
+    if node == root { return MomentJet::root(); }
+    if let Some(j) = memo.get(&node) { return *j; }
+    if on_stack.contains(&node) { return MomentJet::zero(); }
+    on_stack.push(node);
+    let mut acc = MomentJet::zero();
+    if let Some(ps) = parents.get(&node) {
+        for &p in ps {
+            let pj = suffix_moment_jet(p, root, parents, memo, on_stack);
+            acc = acc.union(pj.shift_one());
+        }
+    }
+    on_stack.pop();
+    memo.insert(node, acc);
+    acc
+}
+
+/// `Interval` for `node → root` by the tropical recurrence. `None` = unreachable.
+/// Memoised, cycle-safe (a node on the stack contributes `None`). No budget.
+pub fn suffix_interval(
+    node: u32,
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    memo: &mut std::collections::HashMap<u32, Option<Interval>>,
+    on_stack: &mut Vec<u32>,
+) -> Option<Interval> {
+    if node == root { return Some(Interval::root()); }
+    if let Some(iv) = memo.get(&node) { return *iv; }
+    if on_stack.contains(&node) { return None; }
+    on_stack.push(node);
+    let mut acc: Option<Interval> = None;
+    if let Some(ps) = parents.get(&node) {
+        for &p in ps {
+            if let Some(pi) = suffix_interval(p, root, parents, memo, on_stack) {
+                let shifted = pi.shift_one();
+                acc = Some(match acc { Some(a) => a.union(shifted), None => shifted });
+            }
+        }
+    }
+    on_stack.pop();
+    memo.insert(node, acc);
+    acc
+}
+
+/// Oracle read-outs: the `(M, m1, m2)` moment jet of an explicit histogram (`Σ H[L]`,
+/// `Σ L·H[L]`, `Σ L²·H[L]`). The directly-propagated `suffix_moment_jet` must equal this
+/// on an untruncated histogram — the exactness check the tests assert.
+pub fn hist_moment_jet(h: &Hist) -> MomentJet {
+    let mut j = MomentJet::zero();
+    for (l, &c) in h.iter().enumerate() {
+        let (l, c) = (l as f64, c as f64);
+        j.mass += c;
+        j.m1 += l * c;
+        j.m2 += l * l * c;
+    }
+    j
+}
+
+/// Oracle: the support interval `(min, max)` of an explicit histogram (first/last nonzero
+/// bucket), or `None` if it has no mass.
+pub fn hist_interval(h: &Hist) -> Option<Interval> {
+    let lo = h.iter().position(|&c| c > 0)?;
+    let hi = h.iter().rposition(|&c| c > 0)?;
+    Some(Interval { min: lo as u32, max: hi as u32 })
+}
+
+
 // Serialization — pack a histogram to/from a flat little-endian byte string so a
 // boundary-basis table (node -> histogram) can be persisted (e.g. the LMDB
 // `boundary_basis` sub-db) and reloaded across runs, per spec §8/§9. Format:
@@ -1325,6 +1491,92 @@ mod tests {
             let full = norm(full_hist(5, 0, &g, budget));
             let spl = norm(spliced_hist(5, 0, &g, &[3u32, 1, 2], budget));
             assert_eq!(full, spl, "budget {}", budget);
+        }
+    }
+
+    // Increment 1: the directly-propagated moment jet and support interval equal the
+    // ones read off the (untruncated) histogram — at EVERY node, not just the seed. This
+    // is the bucket-for-bucket exactness claim of WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md
+    // §2/§8.1: the functionals are computed without ever forming the histogram, yet match.
+    #[test]
+    fn moment_jet_and_interval_equal_the_histogram() {
+        let g = graph();
+        let big = 1000usize; // >= DAG height, so the histogram is untruncated (the precondition)
+        for node in [1u32, 2, 3, 4, 5] {
+            // oracle: the explicit histogram and its read-out functionals.
+            let h = {
+                let mut memo = HashMap::new();
+                let mut on_stack = vec![];
+                suffix_histogram(node, 0, &g, big, &mut memo, &mut on_stack)
+            };
+            let want_jet = hist_moment_jet(&h);
+            let want_iv = hist_interval(&h);
+            // directly propagated, no histogram formed.
+            let got_jet = {
+                let mut memo = HashMap::new();
+                let mut on_stack = vec![];
+                suffix_moment_jet(node, 0, &g, &mut memo, &mut on_stack)
+            };
+            let got_iv = {
+                let mut memo = HashMap::new();
+                let mut on_stack = vec![];
+                suffix_interval(node, 0, &g, &mut memo, &mut on_stack)
+            };
+            assert!((got_jet.mass - want_jet.mass).abs() < 1e-9, "node {} mass", node);
+            assert!((got_jet.m1 - want_jet.m1).abs() < 1e-9, "node {} m1", node);
+            assert!((got_jet.m2 - want_jet.m2).abs() < 1e-9, "node {} m2", node);
+            assert_eq!(got_iv, want_iv, "node {} interval", node);
+            // and the read-outs match the histogram's mean / variance.
+            assert!((got_jet.mean() - f_moment1(&h) / f_mass(&h)).abs() < 1e-9, "node {} mean", node);
+        }
+    }
+
+    // The ⊗ laws (binomial moment convolution; interval addition) reproduce the moments
+    // of an explicit splice — so a query may convolve cached jets instead of histograms.
+    #[test]
+    fn convolve_laws_match_spliced_histogram() {
+        // two arbitrary length distributions (as histograms).
+        let a: Hist = vec![0, 3, 5, 2];     // lengths 1,2,3
+        let b: Hist = vec![0, 0, 4, 1, 6];  // lengths 2,3,4
+        let spliced = splice_truncated(&a, &b, 1000); // untruncated
+        // jet route
+        let want = hist_moment_jet(&spliced);
+        let got = hist_moment_jet(&a).convolve(hist_moment_jet(&b));
+        assert!((got.mass - want.mass).abs() < 1e-9, "mass");
+        assert!((got.m1 - want.m1).abs() < 1e-9, "m1");
+        assert!((got.m2 - want.m2).abs() < 1e-9, "m2");
+        // interval route
+        let iv_want = hist_interval(&spliced).unwrap();
+        let iv_got = hist_interval(&a).unwrap().convolve(hist_interval(&b).unwrap());
+        assert_eq!(iv_got, iv_want, "interval");
+    }
+
+    // The certified bracket of §5. The NORMALISED effective distance — the power mean
+    // (WeightSum/M)^(-1/N) — lies in [min, max] by the power-mean inequality. The raw
+    // (un-normalised) d_eff = WeightSum^(-1/N) = M^(-1/N)·(power mean), so it is bracketed
+    // only after scaling by the mass term M^(-1/N): d_eff ∈ M^(-1/N)·[min, max]. Both come
+    // from the propagated (min, max, mass) — two scalars plus the path count.
+    #[test]
+    fn interval_and_mass_bracket_d_eff() {
+        let g = graph();
+        let h = {
+            let mut memo = HashMap::new();
+            let mut on_stack = vec![];
+            suffix_histogram(5, 0, &g, 1000, &mut memo, &mut on_stack)
+        };
+        let iv = hist_interval(&h).unwrap();
+        let mass = f_mass(&h);
+        for n in [1.0f64, 2.0, 3.0] {
+            let weight_sum = f_weighted_power(&h, n);
+            // normalised power mean is in [min, max].
+            let power_mean = (weight_sum / mass).powf(-1.0 / n);
+            assert!(power_mean >= iv.min as f64 - 1e-9 && power_mean <= iv.max as f64 + 1e-9,
+                "power mean {} must lie in [{}, {}] for N={}", power_mean, iv.min, iv.max, n);
+            // raw d_eff is bracketed once scaled by the mass term.
+            let d_eff = weight_sum.powf(-1.0 / n);
+            let scale = mass.powf(-1.0 / n);
+            assert!(d_eff >= scale * iv.min as f64 - 1e-9 && d_eff <= scale * iv.max as f64 + 1e-9,
+                "d_eff {} must lie in M^(-1/N)·[{}, {}] for N={}", d_eff, iv.min, iv.max, n);
         }
     }
 }
