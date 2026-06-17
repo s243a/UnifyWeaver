@@ -386,6 +386,12 @@ pub enum HistRepr {
     /// Mixture of binomials (shared `trials`); `comps` are `(weight, p)` pairs.
     /// The escalation rung for multimodal nodes a single binomial cannot fit.
     Mixture { trials: usize, comps: Vec<(f64, f64)>, total: u64 },
+    /// Quantised CDF table: the exact CDF stored as one fixed-point `u16` per support
+    /// point (`F(i) ≈ qcdf[i]/65535`). Lossy-but-exact-shaped — error bounded by the
+    /// quantisation step (≤ 2^-16) — and **always admissible** for any histogram, at
+    /// ~1/4 the bytes of the raw `u64` counts. The fallback when no parametric form
+    /// fits; also gives O(1) prefix-mass reads.
+    QuantCdf { qcdf: Vec<u16>, total: u64 },
 }
 
 impl HistRepr {
@@ -397,6 +403,7 @@ impl HistRepr {
             HistRepr::Binomial { .. } => 1 + 4 + 8 + 8,     // tag + trials + p + total
             HistRepr::BetaBinomial { .. } => 1 + 4 + 8 + 8 + 8, // tag + trials + alpha + beta + total
             HistRepr::Mixture { comps, .. } => 1 + 4 + 4 + comps.len() * 16 + 8,
+            HistRepr::QuantCdf { qcdf, .. } => 1 + 4 + qcdf.len() * 2 + 8, // tag + u32 len + u16 cdf + total
         }
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
@@ -418,6 +425,7 @@ impl HistRepr {
             HistRepr::Binomial { trials, p, .. } => binomial_pmf(*trials, *p),
             HistRepr::BetaBinomial { trials, alpha, beta, .. } => beta_binomial_pmf(*trials, *alpha, *beta),
             HistRepr::Mixture { trials, comps, .. } => mixture_pmf(*trials, comps),
+            HistRepr::QuantCdf { qcdf, .. } => dequantize_cdf(qcdf),
         }
     }
     fn total(&self) -> u64 {
@@ -425,9 +433,37 @@ impl HistRepr {
             HistRepr::Exact(h) => h.iter().sum(),
             HistRepr::Binomial { total, .. }
             | HistRepr::BetaBinomial { total, .. }
-            | HistRepr::Mixture { total, .. } => *total,
+            | HistRepr::Mixture { total, .. }
+            | HistRepr::QuantCdf { total, .. } => *total,
         }
     }
+}
+
+/// Quantise a histogram's CDF to one fixed-point `u16` per support point
+/// (`qcdf[i] = round(F(i) * 65535)`, monotone non-decreasing, last = 65535).
+pub fn quantize_cdf(h: &Hist) -> Vec<u16> {
+    let total: f64 = h.iter().map(|&c| c as f64).sum();
+    if total <= 0.0 { return Vec::new(); }
+    let mut acc = 0.0f64;
+    let mut prev = 0u16;
+    h.iter().map(|&c| {
+        acc += c as f64;
+        let q = (acc / total * 65535.0).round() as u16;
+        let q = q.max(prev); // enforce monotonicity against rounding
+        prev = q;
+        q
+    }).collect()
+}
+
+/// Recover the PMF from a quantised CDF table: `p[i] = (qcdf[i] - qcdf[i-1])/65535`.
+pub fn dequantize_cdf(qcdf: &[u16]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(qcdf.len());
+    let mut prev = 0u16;
+    for &q in qcdf {
+        out.push((q.saturating_sub(prev)) as f64 / 65535.0);
+        prev = q;
+    }
+    out
 }
 
 /// PMF of `BetaBinomial(trials, alpha, beta)` over `0..=trials`, by the stable
@@ -563,6 +599,13 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
         cands.push((HistRepr::Mixture { trials, comps, total }, err));
     }
+    {
+        // always-admissible fallback: the exact CDF at u16 precision (~1/4 the bytes
+        // of raw counts), error bounded by the quantisation step.
+        let qcdf = quantize_cdf(h);
+        let err = cdf_max_error_pmf(&exact_pmf, &dequantize_cdf(&qcdf));
+        cands.push((HistRepr::QuantCdf { qcdf, total }, err));
+    }
     cands
 }
 
@@ -598,7 +641,7 @@ pub fn choose_representation_budget(h: &Hist, min_points: usize, max_bytes: usiz
 /// Encode a `HistRepr` to a self-describing byte string (1-byte tag + fields), so
 /// a chosen representation can be persisted (the `boundary_basis_repr` LMDB sub-db)
 /// and `expand`ed on load. Tags: 0 = Exact, 1 = Binomial, 2 = Mixture,
-/// 3 = BetaBinomial.
+/// 3 = BetaBinomial, 4 = QuantCdf.
 pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
     let mut out = Vec::new();
     match r {
@@ -626,6 +669,14 @@ pub fn encode_repr(r: &HistRepr) -> Vec<u8> {
             for &(w, p) in comps {
                 out.extend_from_slice(&w.to_le_bytes());
                 out.extend_from_slice(&p.to_le_bytes());
+            }
+            out.extend_from_slice(&total.to_le_bytes());
+        }
+        HistRepr::QuantCdf { qcdf, total } => {
+            out.push(4u8);
+            out.extend_from_slice(&(qcdf.len() as u32).to_le_bytes());
+            for &q in qcdf {
+                out.extend_from_slice(&q.to_le_bytes());
             }
             out.extend_from_slice(&total.to_le_bytes());
         }
@@ -666,6 +717,18 @@ pub fn decode_repr(b: &[u8]) -> HistRepr {
             beta: read_f64(b, 13),
             total: read_u64(b, 21),
         },
+        4 if b.len() >= 1 + 4 => {
+            let len = read_u32(b, 1) as usize;
+            let mut qcdf = Vec::with_capacity(len);
+            let mut o = 5;
+            for _ in 0..len {
+                if o + 2 > b.len() { break; }
+                qcdf.push(u16::from_le_bytes([b[o], b[o + 1]]));
+                o += 2;
+            }
+            let total = if o + 8 <= b.len() { read_u64(b, o) } else { 0 };
+            HistRepr::QuantCdf { qcdf, total }
+        }
         2 if b.len() >= 1 + 4 + 4 => {
             let trials = read_u32(b, 1) as usize;
             let k = read_u32(b, 5) as usize;
@@ -825,11 +888,37 @@ mod tests {
             HistRepr::Binomial { trials: 12, p: 0.37, total: 9999 },
             HistRepr::BetaBinomial { trials: 30, alpha: 2.5, beta: 1.5, total: 8888 },
             HistRepr::Mixture { trials: 20, comps: vec![(0.6, 0.2), (0.4, 0.8)], total: 12345 },
+            HistRepr::QuantCdf { qcdf: vec![0u16, 100, 30000, 65535], total: 7777 },
         ];
         for r in reprs {
             assert_eq!(decode_repr(&encode_repr(&r)), r, "repr roundtrip {:?}", r);
         }
         assert_eq!(decode_repr(&[]), HistRepr::Exact(vec![]));
+    }
+
+    // The quantised-CDF table is always admissible (error ~ the quantisation step)
+    // and is chosen as the fallback when no parametric form fits — at ~1/4 the bytes
+    // of the exact histogram.
+    #[test]
+    fn quant_cdf_is_the_no_fit_fallback() {
+        // five sharp spikes: no unimodal (binomial/beta-binomial) nor K<=3 mixture fits.
+        let mut h = vec![0u64; 60];
+        for &i in &[3usize, 17, 28, 44, 55] { h[i] = 1000; }
+        let exact_pmf = to_pmf(&h);
+        // the quantised CDF reconstructs within the quantisation step
+        let q = quantize_cdf(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &dequantize_cdf(&q)) < 1e-3);
+        // parametric fits all miss the gate on five spikes
+        let (tb, pb) = fit_binomial(&h);
+        assert!(cdf_max_error_pmf(&exact_pmf, &binomial_pmf(tb, pb)) > 0.01);
+        let (tm, comps) = fit_binomial_mixture(&h, 3, 60);
+        assert!(cdf_max_error_pmf(&exact_pmf, &mixture_pmf(tm, &comps)) > 0.01);
+        // so the chooser falls back to QuantCdf — smaller than the exact histogram.
+        let repr = choose_representation(&h, 10, 0.01);
+        assert!(matches!(repr, HistRepr::QuantCdf { .. }),
+            "expected QuantCdf fallback, got {:?}", repr);
+        assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
     }
 
     #[test]
