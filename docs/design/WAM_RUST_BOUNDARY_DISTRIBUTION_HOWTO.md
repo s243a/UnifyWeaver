@@ -248,8 +248,11 @@ let reprs = vm.boundary_suffix_reprs(50, 0.001);   // HashMap<u32, HistRepr>
 ```
 
 The chooser (`boundary_cache::choose_representation`) tries, cheapest-first within the
-Kolmogorov `ε_K` gate: **exact → tail-pruned → binomial → beta-binomial → mixture →
-quantised-CDF → discretised-GMM**.
+`ε_K` gate: **exact → tail-pruned → binomial → beta-binomial → mixture →
+quantised-CDF → discretised-GMM**. The gate is a **certified sup-CDF
+(Kolmogorov-distance) tolerance** — `max_t |F_fit(t) − F_exact(t)| ≤ ε_K` against the
+full exact CDF — *not* a Kolmogorov–Smirnov statistical test (no sample, null, or
+critical value), so it is a deterministic bound, not a probabilistic one.
 `choose_representation_budget(h, min_points, max_bytes)` is the storage-driven
 complement (smallest error within a byte budget). The point count `min_points` is a
 *work trigger* / storage proxy, not an acceptance gate — acceptance is always the CDF

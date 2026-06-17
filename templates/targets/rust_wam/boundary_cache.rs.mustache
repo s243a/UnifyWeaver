@@ -163,9 +163,12 @@ pub fn decode_hist(b: &[u8]) -> Hist {
 //   * The point count is a WORK TRIGGER (when to TRY compressing), NOT an
 //     acceptance gate. The doc explicitly replaces "is it over 50 points?" with
 //     "which representation is cheapest at the requested error tolerance?".
-//   * Acceptance is an ERROR CERTIFICATE on the CDF — Kolmogorov epsilon_K (and
-//     optionally Wasserstein-1) — not a heuristic. Approximation only ever drops
-//     mass within that certified budget; everything kept stays exact.
+//   * Acceptance is an ERROR CERTIFICATE on the CDF — a deterministic **certified
+//     sup-CDF (Kolmogorov-distance) tolerance** `epsilon_K` (and optionally
+//     Wasserstein-1) — NOT a Kolmogorov–Smirnov statistical test: there is no sample,
+//     no null hypothesis, and no critical value, so the discrete-KS calibration caveats
+//     do not apply. It is `max_t |F_fit(t) - F_exact(t)|` against the full exact CDF.
+//     Approximation only ever drops mass within that certified budget; the rest is exact.
 //
 // This is OPT-IN: the boundary cache is exact by default. These are the tools a
 // storage-budgeted precompute uses when an exact histogram does not fit. The
@@ -182,6 +185,16 @@ pub fn decode_hist(b: &[u8]) -> Hist {
 pub const DEFAULT_COMPRESS_MIN_POINTS: usize = 50;
 /// Default acceptance certificate: max Kolmogorov CDF error (epsilon_K).
 pub const DEFAULT_COMPRESS_EPSILON_K: f64 = 0.001;
+/// EM sweeps for the iterative fits (binomial mixture, discretised-GMM). Fixed, not
+/// convergence-tested, because the output is **gate-protected**: a non-converged fit
+/// simply misses `epsilon_K` and a cheaper rung is kept, so under-iterating costs a
+/// rejection, never accuracy. (EM is known to converge slowly for unbalanced
+/// mixtures — the asymmetric case the GMM rung targets — so this is a real safeguard.)
+const EM_ITERS: usize = 80;
+/// Minimum component sigma for the discretised-GMM (half a bin) — floors variance away
+/// from a delta collapse in EM *and* in density evaluation, so a decoded/persisted GMM
+/// cannot evaluate through a looser floor. One value, used in both places.
+const SIGMA_FLOOR: f64 = 0.5;
 
 /// Kolmogorov error `max_t |F_a(t) - F_b(t)|` between two histograms, each
 /// normalised to a PMF by its own total mass. Bounds prefix-mass / CDF query
@@ -413,7 +426,12 @@ impl HistRepr {
     }
     /// Reconstruct a count histogram (parametric forms expand to the PMF scaled to
     /// `total` and rounded). The kernel always consumes counts, so a fitted node
-    /// expands on load.
+    /// expands on load — and a splice always convolves the **expanded histograms**, never
+    /// the parametric forms. That is deliberate: for the GMM the discretise+renormalise
+    /// step is nonlinear, so an "analytic" parametric convolution would not equal the
+    /// histogram splice and would break the certified-error invariant (besides exploding
+    /// component count K_a·K_b per cut). Histogram convolution is O(S_a·S_b) — cheap even
+    /// at depth-1000 — so expand-then-convolve is both correct and fast.
     pub fn expand(&self) -> Hist {
         match self {
             HistRepr::Exact(h) => h.clone(),
@@ -589,9 +607,10 @@ pub fn fit_binomial_mixture(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f6
 // fallback on bytes. Hence "escalation only": present for the shapes the binomial
 // families genuinely cannot represent, never the default.
 
-/// Unit Gaussian density at `x` for `N(mu, sigma)` (sigma floored away from 0).
+/// Unit Gaussian density at `x` for `N(mu, sigma)` (sigma floored at `SIGMA_FLOOR`,
+/// the same floor the EM applies, so a decoded GMM cannot slip through a looser bound).
 fn gauss_density(x: f64, mu: f64, sigma: f64) -> f64 {
-    let s = sigma.max(1e-3);
+    let s = sigma.max(SIGMA_FLOOR);
     let z = (x - mu) / s;
     (-0.5 * z * z).exp() / (s * (2.0 * std::f64::consts::PI).sqrt())
 }
@@ -615,9 +634,13 @@ pub fn discretised_gmm_pmf(support: usize, comps: &[(f64, f64, f64)]) -> Vec<f64
 }
 
 /// Fit a `k`-component discretised Gaussian mixture by EM over the integer support,
-/// weighted by the empirical PMF. Components start spread across the domain with equal
-/// weight; each sweep re-estimates `(weight, mu, sigma)` freely (sigma floored at half
-/// a bin to avoid delta collapse). Returns `(support, [(weight, mu, sigma)])`.
+/// weighted by the empirical PMF. Component means are **quantile-seeded** — `mu_j` at
+/// the empirical `(j+0.5)/k` quantile — so the init adapts to all-mass-at-one-end and
+/// asymmetric-bimodal shapes (the cases that justify the rung), where an equally-spaced
+/// seed strands a component on empty support. Seeding is deterministic, so a persisted
+/// cache stays reproducible (random restarts would not). Each sweep re-estimates
+/// `(weight, mu, sigma)` freely (sigma floored at `SIGMA_FLOOR` to avoid delta
+/// collapse). Returns `(support, [(weight, mu, sigma)])`.
 pub fn fit_discretised_gmm(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f64, f64, f64)>) {
     let pmf = to_pmf(h);
     let support = pmf.len();
@@ -627,8 +650,14 @@ pub fn fit_discretised_gmm(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f64
     }
     let span = (support - 1) as f64;
     let sigma0 = (span / (2.0 * k as f64)).max(0.75);
+    // empirical CDF -> quantile seeding of the component means.
+    let mut cum = 0.0f64;
+    let cdf: Vec<f64> = pmf.iter().map(|&p| { cum += p; cum }).collect();
+    let quantile = |q: f64| -> f64 {
+        cdf.iter().position(|&c| c >= q).unwrap_or(support - 1) as f64
+    };
     let mut comps: Vec<(f64, f64, f64)> = (0..k)
-        .map(|j| (1.0 / k as f64, span * (j as f64 + 0.5) / k as f64, sigma0))
+        .map(|j| (1.0 / k as f64, quantile((j as f64 + 0.5) / k as f64), sigma0))
         .collect();
     for _ in 0..iters {
         let mut nw = vec![0.0f64; k];   // sum_i pmf[i] r_ij
@@ -656,9 +685,14 @@ pub fn fit_discretised_gmm(h: &Hist, k: usize, iters: usize) -> (usize, Vec<(f64
         let wsum: f64 = nw.iter().sum();
         if wsum <= 0.0 { break; }
         for j in 0..k {
-            if nw[j] <= 0.0 { continue; } // keep the stale component rather than NaN
+            // A dead component (zero responsibility) keeps its stale weight rather than
+            // dividing by zero; the surviving components are renormalised by `wsum`, so
+            // the stored weights may then sum to < 1. `discretised_gmm_pmf` renormalises
+            // on read, so the reconstructed PMF is still correct — the stale weight is a
+            // harmless inconsistency in the persisted params, not in the distribution.
+            if nw[j] <= 0.0 { continue; }
             let mu = nmu[j] / nw[j];
-            let var = (nmu2[j] / nw[j] - mu * mu).max(0.25); // floor sigma at 0.5 bin
+            let var = (nmu2[j] / nw[j] - mu * mu).max(SIGMA_FLOOR * SIGMA_FLOOR);
             comps[j] = (nw[j] / wsum, mu, var.sqrt());
         }
     }
@@ -692,7 +726,7 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         cands.push((HistRepr::BetaBinomial { trials, alpha, beta, total }, err));
     }
     for k in [2usize, 3] {
-        let (trials, comps) = fit_binomial_mixture(h, k, 60);
+        let (trials, comps) = fit_binomial_mixture(h, k, EM_ITERS);
         let err = cdf_max_error_pmf(&exact_pmf, &mixture_pmf(trials, &comps));
         cands.push((HistRepr::Mixture { trials, comps, total }, err));
     }
@@ -700,7 +734,7 @@ fn representation_candidates(h: &Hist, min_points: usize) -> Vec<(HistRepr, f64)
         // escalation: free-variance Gaussian modes (narrow interior modes the
         // binomial families cannot place); costlier than the mixture, so only wins
         // in that niche.
-        let (support, comps) = fit_discretised_gmm(h, k, 80);
+        let (support, comps) = fit_discretised_gmm(h, k, EM_ITERS);
         let err = cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(support, &comps));
         cands.push((HistRepr::DiscGmm { support, comps, total }, err));
     }
@@ -1080,6 +1114,35 @@ mod tests {
         assert!(repr.bytes() < HistRepr::Exact(h.clone()).bytes());
         assert!(repr.bytes() < HistRepr::QuantCdf { qcdf: quantize_cdf(&h), total: 0 }.bytes(),
             "GMM must undercut the quant-CDF fallback to be chosen");
+        assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
+    }
+
+    // Three narrow interior modes: K=2 cannot cover them (one mode mis-modelled, gate
+    // missed), so the chooser must escalate to a K=3 DiscGmm — exercising the K=3
+    // selection path and the quantile-seeded init on an asymmetric (uneven-weight) shape.
+    #[test]
+    fn disc_gmm_selects_k3_for_three_modes() {
+        let support = 60usize;
+        // uneven weights so the seeding/asymmetry path is exercised, not a symmetric one.
+        let truth = discretised_gmm_pmf(
+            support, &[(0.25, 12.0, 1.2), (0.45, 30.0, 1.2), (0.30, 48.0, 1.2)]);
+        let h: Hist = truth.iter().map(|&pr| (pr * 1_000_000.0).round() as u64).collect();
+        let exact_pmf = to_pmf(&h);
+        // K=2 GMM leaves one mode uncovered -> misses the gate.
+        let (s2, c2) = fit_discretised_gmm(&h, 2, EM_ITERS);
+        assert!(cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(s2, &c2)) > 0.01,
+            "K=2 cannot cover three modes");
+        // K=3 GMM fits.
+        let (s3, c3) = fit_discretised_gmm(&h, 3, EM_ITERS);
+        assert!(cdf_max_error_pmf(&exact_pmf, &discretised_gmm_pmf(s3, &c3)) <= 0.01,
+            "K=3 GMM should fit three narrow interior modes");
+        // the chooser picks a 3-component DiscGmm (cheaper than quant-CDF at this support).
+        let repr = choose_representation(&h, 10, 0.01);
+        match &repr {
+            HistRepr::DiscGmm { comps, .. } => assert_eq!(comps.len(), 3, "expected K=3"),
+            other => panic!("expected K=3 DiscGmm, got {:?}", other),
+        }
+        assert!(repr.bytes() < HistRepr::QuantCdf { qcdf: quantize_cdf(&h), total: 0 }.bytes());
         assert!(cdf_max_error(&h, &repr.expand()) <= 0.01 + 1e-6);
     }
 

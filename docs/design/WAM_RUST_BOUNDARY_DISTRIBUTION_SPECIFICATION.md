@@ -466,14 +466,27 @@ histograms (support ≤ `budget`+1) the work trigger never fires; this matters a
 
 ### 9b. Ladder status and future work
 
-All six rungs above are **implemented** (Rungs 1–6: tail-pruned exact, binomial
-[moment + CDF fits], beta-binomial, mixture-of-binomials, quantised-CDF, discretised-
-GMM). The error/CDF-gate machinery, the chooser (error- and storage-driven), and the
-persistence path are general — adding a representation is just another candidate in
+All six **fitted histogram-approximation rungs** are implemented (Rungs 1–6: tail-pruned
+exact, binomial [moment + CDF fits], beta-binomial, mixture-of-binomials, quantised-CDF,
+discretised-GMM) — i.e. the *histogram-representation* ladder is closed structurally.
+This is a structural closure, not an empirical claim that every rung has been observed
+necessary on a measured workload (the GMM test uses a synthetic ground truth; whether a
+real boundary node escalates past Rung 5 is a measurement question, §6). The error/CDF-
+gate machinery, the chooser (error- and storage-driven), and the persistence path are
+general — adding a representation is just another candidate in
 `representation_candidates` with a `bytes()` and a `pmf()`/`expand()`.
+
+A **separate, cheaper reconstruction rung is still unbuilt**: the moment-jet / CLT
+reconstruction described in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §7 (carry
+`(M, m₁, m₂)`, reconstruct a discretised Normal). It is *not* part of this fitted ladder
+— it propagates without ever materialising the histogram — and per that note's roadmap
+it is the **first** (and cheapest, no-EM) reconstruction increment, even though the
+more-expensive GMM rung shipped first. So "ladder closed" here means the histogram-
+fitting forms; it does not mean the cheapest reconstruction path is done.
 
 Remaining, lower priority and added on demand:
 
+- **Moment-jet / CLT reconstruction rung** — see above and the functional-semiring note.
 - **heed-backend parity** for the `boundary_basis_repr` persistence and the spill
   sub-db (the `lmdb-zero` backend has both today).
 - **Higher-K / Bayesian model selection** for the mixture and GMM rungs (today `K =
