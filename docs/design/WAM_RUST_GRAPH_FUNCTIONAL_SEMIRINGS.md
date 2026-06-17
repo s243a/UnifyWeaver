@@ -419,6 +419,22 @@ There are **two** ways to pick the bridge, and they answer different questions:
 > instance not yet built: the bare interval gives the floor but not its count, and the moment
 > jet gives mass/moments but not the count *at* the floor.)
 
+> **Fixing the bridge does not fix the length — two nested collapses, neither uniform.** The
+> caret `min_B (d(u→B) + d(v→B))` is a `min` of a `min`, and it is worth being explicit that
+> *neither* collapses the path population to one length. (i) **Inner** (`d(u→B)`): even for a
+> *single* bridge `B`, parent **branching** gives routes `u → B` of *different* lengths, so
+> `H_{u→B}[L] = #{u→B paths of length L}` has support across many `L`; `d(u→B)` reads only the
+> **floor** of that multi-length distribution. (Example: `u`'s parents `a, b` with `a→B` 1 hop
+> and `b→…→B` 2 hops give `u→B` lengths `{2, 3}` to the *same* bridge; the min reads `2`.)
+> (ii) **Outer** (`min_B`): selects *which* bridge, nothing about length. So the `∧`-path
+> lengths through `B` form a genuinely multi-length set
+> `{a + c : a ∈ support(H_{u→B}), c ∈ support(H_{v→B})}`, and the caret is **one scalar
+> summarising that whole population** — the floor of it. This is the fuller version of the
+> "value vs. route" point above (which only noted ties *at* the floor): the population to a
+> fixed bridge already spans lengths, and the `min` discards everything but its floor — which
+> is exactly why the **soft** `d_eff` read (which *weights* those different-length routes
+> instead of dropping them) carries strictly more than the bare shortest.
+
 > **Hard vs. soft shortest distance — the admitted paths need not be one length.** The
 > floor functional above is the **hard** minimum (tropical / min-plus): *only* floor-length
 > paths get nonzero weight, so the value is `min L` exactly and the multiplicity `H[floor]`
