@@ -162,3 +162,18 @@ the quantised-CDF / GMM rungs matter only at large budget / deep paths, where
 histograms are long — never for the small-budget effective-distance query, where exact
 is also fastest.
 
+## 8. The generalization: carry the functionals, not the histogram
+
+The deepest "what kind of feature" answer (§4) is that the histogram is one *payload* of a
+more general idea: the cheap **functionals** of the path-length distribution each satisfy
+their own recurrence and can be propagated and spliced *without ever forming the
+histogram*. That reframes the boundary cache as a **`PathSemiring`** parameterised by what
+it carries — the histogram (everything, exact), the **moment jet** `(mass,m₁,m₂,m₃)` (mean
+/ variance / skew and a CLT distribution reconstruction, budget-free on the acyclic
+ancestor space), the **min-plus distance** scalar (cycle-correct shortest-distance, where
+the histogram's DFS is unsound on cycles), and the between-nodes **composite caret**
+distance. Same architecture, a different per-node element. The full theory — why the
+functionals factor, the inner-product / kernel-trick picture, the cumulants-vs-moments
+fork, and the directed/undirected subtleties of the caret bound — lives in
+**`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`**.
+
