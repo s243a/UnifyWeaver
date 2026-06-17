@@ -462,11 +462,16 @@ future work — `m₃` is now carried, so they are a read-out away.
      `a* = 0`) computes cycle-correct shortest `node→root` distances, where the DFS+memo
      recurrences are unsound on cycles (§4). This is also the §1.5 closure characterization
      for the min-plus payload, settled before the kernel wiring.
-   - **[2b next]** the weighted min-plus payload (edge weights, not hop count) and the
-     distance splice (`min_B (dist(seed→B) + dist(B→root))` — the ALT landmark lower bound),
-     then the `transitive_distance3` / `astar_shortest_path4` kernel wiring. This is also
-     where a second concrete instance finally motivates extracting the `PathSemiring` trait
-     (with the now-settled star/closure contract).
+   - **[2b DONE]** the weighted min-plus payload and the distance splice:
+     `weighted_distance_closure` (a Bellman-Ford relaxation summing per-edge weights, the
+     general closure of which the 2a BFS is the `weight ≡ 1` case) and `distance_splice`
+     (`min_B (dist(seed→B) + dist(B→root))` — the ALT landmark identity, exact when the
+     boundary is a cut), validated by `weighted_closure_respects_edge_weights` and
+     `distance_splice_equals_full_closure` (unweighted and weighted).
+   - **[2c next]** wire the distance closure + splice into the live WamState path and the
+     `transitive_distance3` / `astar_shortest_path4` kernels (boundary suffixes as A*
+     landmarks). This is where a second concrete instance finally motivates extracting the
+     `PathSemiring` trait (with the now-settled star/closure contract).
 
 ## 9. Relationship to the other docs
 

@@ -362,6 +362,69 @@ pub fn min_distance_closure(
     dist
 }
 
+/// Shortest **weighted** `node → root` distance, the general min-plus closure: the same
+/// `a* = 0` fixpoint as `min_distance_closure` but summing per-edge weights instead of
+/// counting hops. `weight(child, parent)` is the cost of the `child → parent` edge
+/// (assumed **non-negative**, so min-plus stays closed and the fixpoint converges). A
+/// Bellman-Ford relaxation `dist[v] = min_p (dist[p] + weight(v, p))` to convergence —
+/// cycle-correct (the unweighted BFS is the special case `weight ≡ 1`). Nodes that cannot
+/// reach `root` are absent (distance `+∞`); `root` maps to `0.0`.
+pub fn weighted_distance_closure(
+    root: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    weight: impl Fn(u32, u32) -> f64,
+) -> std::collections::HashMap<u32, f64> {
+    use std::collections::{HashMap, HashSet};
+    let mut nodes: HashSet<u32> = HashSet::new();
+    nodes.insert(root);
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); }
+    }
+    let mut dist: HashMap<u32, f64> = HashMap::new();
+    dist.insert(root, 0.0);
+    // Relax every child->parent edge until no distance improves (≤ |V| passes for
+    // non-negative weights). Order-independent: dist[v] only ever decreases toward its fix.
+    for _ in 0..nodes.len() {
+        let mut changed = false;
+        for (&v, ps) in parents {
+            for &p in ps {
+                if let Some(&dp) = dist.get(&p) {
+                    let cand = dp + weight(v, p);
+                    if cand < dist.get(&v).copied().unwrap_or(f64::INFINITY) {
+                        dist.insert(v, cand);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    dist
+}
+
+/// The **distance splice** (the ALT landmark identity): a query's shortest `seed → root`
+/// distance from cached boundary suffix distances, `min over B of (dist(seed → B) +
+/// dist_cached(B → root))`. Exact when the boundary set is a **cut** that every shortest
+/// `seed → root` path crosses — then a query needs only the (small) `seed → boundary`
+/// search plus an O(1) table read per boundary, never the full `B → root` cone.
+/// `dist_to_boundary(B)` supplies `dist(seed → B)` (e.g. a closure rooted at `B`, or the
+/// query's own bounded search); `cached(B)` supplies the precomputed `dist(B → root)`.
+/// Returns `+∞` if no boundary is reachable.
+pub fn distance_splice(
+    boundary: &[u32],
+    dist_to_boundary: impl Fn(u32) -> Option<f64>,
+    cached: impl Fn(u32) -> Option<f64>,
+) -> f64 {
+    let mut best = f64::INFINITY;
+    for &b in boundary {
+        if let (Some(sb), Some(br)) = (dist_to_boundary(b), cached(b)) {
+            best = best.min(sb + br);
+        }
+    }
+    best
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -1790,6 +1853,60 @@ mod tests {
             "DFS+memo poisons Z to None on the cycle (the bug the closure avoids)");
     }
 
+    // Increment 2b — the weighted min-plus closure agrees with the unweighted BFS closure
+    // when all edge weights are 1 (the BFS is the special case).
+    #[test]
+    fn weighted_closure_unit_weights_match_bfs() {
+        let g = graph();
+        let bfs = min_distance_closure(0, &g);
+        let w = weighted_distance_closure(0, &g, |_, _| 1.0);
+        for (&node, &d) in &bfs {
+            assert!((w.get(&node).copied().unwrap_or(f64::INFINITY) - d as f64).abs() < 1e-9,
+                "node {} unit-weighted vs BFS", node);
+        }
+    }
+
+    // Non-unit edge weights give the correct weighted shortest distance, cycle-correct.
+    #[test]
+    fn weighted_closure_respects_edge_weights() {
+        // root 0; 1→0 (w 5), 2→0 (w 1), 2→1 (w 1). Shortest 2→0 = min(1, 1+5) = 1; 1→0 = 5.
+        let mut p: HashMap<u32, Vec<u32>> = HashMap::new();
+        p.insert(1, vec![0]);
+        p.insert(2, vec![0, 1]);
+        let weight = |child: u32, parent: u32| -> f64 {
+            match (child, parent) { (1, 0) => 5.0, (2, 0) => 1.0, (2, 1) => 1.0, _ => 1.0 }
+        };
+        let d = weighted_distance_closure(0, &p, weight);
+        assert!((d[&1] - 5.0).abs() < 1e-9, "1→0 = 5");
+        assert!((d[&2] - 1.0).abs() < 1e-9, "2→0 = 1 (direct beats 2→1→0 = 6)");
+    }
+
+    // The distance splice (ALT landmark identity) equals the full closure when the boundary
+    // is a cut — unweighted and weighted.
+    #[test]
+    fn distance_splice_equals_full_closure() {
+        let g = graph(); // diamond DAG, root 0, seed 5; {1,2} is a root-near cut.
+        for weight in [
+            (&(|_: u32, _: u32| 1.0) as &dyn Fn(u32, u32) -> f64),
+            (&(|c: u32, _: u32| if c == 5 { 2.0 } else { 1.0 }) as &dyn Fn(u32, u32) -> f64),
+        ] {
+            let full = weighted_distance_closure(0, &g, weight);
+            let boundary = [1u32, 2];
+            // cached suffix dist(B->root) from the full closure; dist(seed->B) from a
+            // closure rooted at B.
+            let spliced = distance_splice(
+                &boundary,
+                |b| weighted_distance_closure(b, &g, weight).get(&5).copied(),
+                |b| full.get(&b).copied(),
+            );
+            assert!((spliced - full[&5]).abs() < 1e-9,
+                "splice {} should equal full dist {}", spliced, full[&5]);
+        }
+    }
+
+    #[test]
+    // The ⊗ laws (binomial moment convolution; interval addition) reproduce the moments
+    // of an explicit splice — so a query may convolve cached jets instead of histograms.
     fn convolve_laws_match_spliced_histogram() {
         // two arbitrary length distributions (as histograms).
         let a: Hist = vec![0, 3, 5, 2];     // lengths 1,2,3
