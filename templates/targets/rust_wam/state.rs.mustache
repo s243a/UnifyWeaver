@@ -509,6 +509,12 @@ pub struct WamState {
     /// re-enumerating node->root — turning exponential path enumeration into a
     /// histogram splice. Empty = boundary mode off (default).
     pub boundary_suffix: FxMap<u32, Vec<u64>>,
+    /// Functional-payload side-table (graph-functional-semiring increment 1c): node ->
+    /// the `node->root` moment jet `(mass, m1, m2)` and support interval `(min, max)`,
+    /// propagated WITHOUT the histogram. Budget-free (exact on the acyclic ancestor
+    /// space). A query splices these (`δ_depth ⊗ jet_B`) to read out mean/variance and
+    /// the `d_eff` bracket, or reconstruct a Normal — never forming the histogram.
+    pub boundary_jet: FxMap<u32, (crate::boundary_cache::MomentJet, crate::boundary_cache::Interval)>,
     /// Pre-weighted boundary basis (P4): node -> the `weighted_power(N)` basis
     /// vector `g_B[a] = sum_b H_node->root[b] * (a+b)^(-N)` for prefix length
     /// `a = 0..=max_depth`. A query reaching this node at prefix depth `a` adds
@@ -649,6 +655,7 @@ impl WamState {
             demand_set: FxSet::default(),
             min_dist: FxMap::default(),
             boundary_suffix: FxMap::default(),
+            boundary_jet: FxMap::default(),
             boundary_basis_wp: FxMap::default(),
             bindings: HashMap::new(),
             var_counter: 0,
@@ -1164,6 +1171,76 @@ impl WamState {
         };
         self.boundary_suffix = table.into_iter().collect();
         true
+    }
+
+    /// Functional-payload precompute (increment 1c): per boundary node, the `node->root`
+    /// moment jet `(mass, m1, m2)` and support interval `(min, max)`, propagated by the
+    /// `boundary_cache` recurrences — **never forming the histogram**. Budget-free: exact
+    /// on the acyclic ancestor space (the convergent ancestor direction; the moment law
+    /// needs untruncated convolution). Eager-edge only (needs `ffi_facts[edge_pred]`);
+    /// returns `false` as a no-op when only a lazy source is registered.
+    pub fn build_boundary_jets(
+        &mut self, boundary: &[u32], root_id: u32, edge_pred: &str,
+    ) -> bool {
+        let table: HashMap<u32, (crate::boundary_cache::MomentJet, crate::boundary_cache::Interval)> = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            let mut jmemo = HashMap::new();
+            let mut jstack: Vec<u32> = Vec::new();
+            let mut imemo = HashMap::new();
+            let mut istack: Vec<u32> = Vec::new();
+            let mut t = HashMap::new();
+            for &b in boundary {
+                let j = crate::boundary_cache::suffix_moment_jet(
+                    b, root_id, parents, &mut jmemo, &mut jstack);
+                if let Some(iv) = crate::boundary_cache::suffix_interval(
+                    b, root_id, parents, &mut imemo, &mut istack) {
+                    t.insert(b, (j, iv));
+                }
+            }
+            t
+        };
+        self.boundary_jet = table.into_iter().collect();
+        true
+    }
+
+    /// Query-time splice over the cached moment-jet side-table (`boundary_jet`): walk
+    /// `seed->root`, and at a cached boundary `B` reached by a length-`depth` prefix
+    /// contribute `δ_depth ⊗ jet_B` (union); at a direct root hit contribute `δ_{depth+1}`.
+    /// Accumulates the `seed->root` moment jet and support interval — the functionals,
+    /// never the histogram. Budget-free (the moment law needs untruncated convolution;
+    /// exact on the acyclic ancestor space). The `visited` guard keeps it terminating.
+    pub fn collect_native_category_ancestor_boundary_jet(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>,
+        acc: &EdgeAccessor, depth: i64,
+        jet: &mut crate::boundary_cache::MomentJet,
+        iv: &mut Option<crate::boundary_cache::Interval>,
+    ) {
+        use crate::boundary_cache::{Interval, MomentJet};
+        let push_iv = |iv: &mut Option<Interval>, x: Interval| {
+            *iv = Some(match *iv { Some(a) => a.union(x), None => x });
+        };
+        if let Some(&(b_jet, b_iv)) = self.boundary_jet.get(&cat_id) {
+            let d = depth as u32;
+            *jet = jet.union(MomentJet::delta(d).convolve(b_jet));
+            push_iv(iv, Interval { min: b_iv.min + d, max: b_iv.max + d });
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as u32;
+            *jet = jet.union(MomentJet::delta(l));
+            push_iv(iv, Interval::point(l));
+        }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_boundary_jet(
+                *parent_id, root_id, visited, acc, depth + 1, jet, iv);
+            visited.pop();
+        }
     }
 
     /// Top-down boundary precompute with the liveness-prioritised eviction of spec
@@ -2574,6 +2651,39 @@ mod boundary_kernel_tests {
             let wf = crate::boundary_cache::f_weighted_power(&full, 2.0);
             let ws = crate::boundary_cache::f_weighted_power(&spl, 2.0);
             assert!((wf - ws).abs() < 1e-12, "weighted_power mismatch for {:?}", bnames);
+        }
+    }
+
+    // Increment 1c: the jet precompute + query splice produce the seed->root functionals
+    // (mass, m1, m2, min, max) WITHOUT ever forming a histogram, matching the read-outs of
+    // the (untruncated) full-enumeration histogram — for every boundary band.
+    #[test]
+    fn boundary_jet_splice_matches_histogram() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let big = 1000usize;
+        let full = norm(full_hist(&vm, seed, root, big)); // untruncated oracle
+        let want_jet = crate::boundary_cache::hist_moment_jet(&full);
+        let want_iv = crate::boundary_cache::hist_interval(&full);
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            assert!(vm.build_boundary_jets(&bnodes, root, "category_parent"));
+            let mut jet = crate::boundary_cache::MomentJet::zero();
+            let mut iv = None;
+            {
+                let acc = vm.resolve_edge_accessor("category_parent");
+                let mut vis = vec![seed];
+                vm.collect_native_category_ancestor_boundary_jet(
+                    seed, root, &mut vis, &acc, 0, &mut jet, &mut iv);
+            }
+            assert!((jet.mass - want_jet.mass).abs() < 1e-9, "{:?} mass", bnames);
+            assert!((jet.m1 - want_jet.m1).abs() < 1e-9, "{:?} m1", bnames);
+            assert!((jet.m2 - want_jet.m2).abs() < 1e-9, "{:?} m2", bnames);
+            assert_eq!(iv, want_iv, "{:?} interval", bnames);
+            // the read-out reconstruction (a Normal) is constructible from the splice jet.
+            let recon = jet.to_normal_repr(want_iv.unwrap().max as usize + 1);
+            assert!(matches!(recon, crate::boundary_cache::HistRepr::MomentNormal { .. }));
         }
     }
 

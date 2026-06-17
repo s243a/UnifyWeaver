@@ -396,9 +396,14 @@ future work.
    Concrete functions, not yet a `PathSemiring` trait — the trait is deferred until the
    distance kernel gives a second instance to generalise over (and its star/closure
    contract is settled, §3). **[1b DONE]** the moment jet → discretised-Normal CDF-gated
-   reconstruction rung (`HistRepr::MomentNormal`, §7). **[1c next]** fuse the payload into
-   the live precompute/kernel path (carry `(min, max, mass, m₁, m₂)` through the boundary
-   precompute and reconstruct at the cut), and the higher-order Edgeworth/Pearson members.
+   reconstruction rung (`HistRepr::MomentNormal`, §7). **[1c DONE]** the payload is fused
+   into the live WamState path: `build_boundary_jets` precomputes the
+   `(mass, m₁, m₂, min, max)` side-table (`boundary_jet`) without forming the histogram,
+   and `collect_native_category_ancestor_boundary_jet` splices it at query time
+   (`δ_depth ⊗ jet_B`), validated against the full-enumeration histogram's read-outs
+   (`boundary_jet_splice_matches_histogram`). The end-to-end loop — propagate, splice,
+   reconstruct — now runs without ever materialising a histogram. Remaining within
+   increment 1: the higher-order Edgeworth/Pearson reconstruction members (carry `m₃`/`m₄`).
 1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
    work, characterize each payload's star/closure-or-truncation behaviour — the
    convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,
