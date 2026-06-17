@@ -505,6 +505,22 @@ caching, the **designated-bridge** measure is cacheable.
   property is part of the "complexity" — the same "proper boundary cut" precondition the
   boundary spec already requires. *Deferred — correct, but only worth it at depth.*
 
+> **Two separate questions: which bridge to *pick* vs. is it a *dominator*.** These are
+> easily conflated (I did). (1) **Bridge selection** — *which* nodes to designate as bridges
+> — is a soft, practical choice: good bridges are **convergence hubs**, the "union-type"
+> categories where the hierarchy funnels (`Physics` = the union of mechanics, EM, thermo, …).
+> They are **common ancestors of large descendant sets**, so one downward field serves *many*
+> pairs (max reuse), and they are meaningful semantic boundaries. The caret through a
+> designated bridge needs only that `B` be a **common ancestor** of `u` and `v` — *not* a
+> dominator — so it is well-defined (an upper bound) regardless of cross-lineages. (2) Being
+> a **dominator** (a *proper cut*: every `u→root` path crosses `B`) is the *stronger*
+> condition needed **only** for the exact convolution factorisation of the nested-cut
+> optimisation. A convergence hub that is *also* the sole gateway to root is both — but real
+> Wikipedia's **cross-listings** (`Mathematical_physics` under both Math and Physics) and
+> **cycles** make strict dominators *rare*. Hence: the designated-bridge caret (needs only
+> "common ancestor") is **robust** — pick the union hubs and go — while the nested-cut
+> factorisation (needs "dominator") is **fragile**, which is the deeper reason it is deferred.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
