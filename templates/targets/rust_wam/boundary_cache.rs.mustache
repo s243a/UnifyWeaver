@@ -675,6 +675,149 @@ pub fn up_distance_to(
     None
 }
 
+/// **Downward-convergence score = local fan-in**, the cheap, *non-circular* hub metric.
+///
+/// A good caret bridge is a **union/merge category**: a node many child categories point
+/// directly up into. The exact "funnel" — how many nodes have `B` as an ancestor (the
+/// descendant cone) — needs reachability, the very global upward work the bridges are meant
+/// to amortize; ranking candidate bridges by `caret_through_bridge` is the same circularity
+/// (it calls `up_distance_to` at every candidate). We refuse both. The **local in-degree**,
+/// `fanin[B] = #{v : B ∈ parents[v]}`, is the structural proxy: it never reads a distance, it
+/// is a property of the node (not of a `(u,v)` pair), and it falls out of one pass over the
+/// `parents` map we already hold — on the boundary-sweep path it is just `children[B].len()`,
+/// already materialized, so the score costs nothing extra. The trade is explicit: fan-in is
+/// the *local* convergence signal, not the true descendant funnel; we accept the proxy
+/// precisely because the exact funnel is the computation we are trying to avoid.
+pub fn convergence_fanin(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashMap<u32, u32> {
+    let mut fanin: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for ps in parents.values() {
+        for &p in ps {
+            *fanin.entry(p).or_insert(0) += 1;
+        }
+    }
+    fanin
+}
+
+/// Select hub bridges by the cheap `convergence_fanin` score: nodes whose local fan-in is at
+/// least `min_fanin`. Selection reads **no distances** — only the precomputed structural
+/// scores — so it is free to run before any query, and the result is the small candidate set
+/// `caret_min_over_hubs` ranges over.
+pub fn hubs_by_fanin(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    min_fanin: u32,
+) -> Vec<u32> {
+    let mut hubs: Vec<u32> = convergence_fanin(parents)
+        .into_iter()
+        .filter(|&(_, f)| f >= min_fanin)
+        .map(|(b, _)| b)
+        .collect();
+    hubs.sort_unstable();
+    hubs
+}
+
+/// **Quantized-LCA caret**: minimise `caret_through_bridge` over a *pre-selected* hub set.
+///
+/// This is the "choose the hub that gives the minimum distance" primitive. Crucially the only
+/// distance work runs over the hubs `hubs_by_fanin` already chose — bounded by the hub count,
+/// not by the graph — so the expensive part is paid once, on a small set, not per candidate
+/// across the whole DAG. With **every** node a hub it equals `caret_distance_lca` exactly (the
+/// unquantized shortest-path caret); with a sparser hub set it returns an upper bound, the
+/// LCA caret *quantized to the nearest hub level*, larger by the gap `2·d(LCA→nearest hub)`.
+/// `None` if no hub is a common ancestor of both `u` and `v`.
+pub fn caret_min_over_hubs(
+    u: u32,
+    v: u32,
+    hubs: &[u32],
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    hubs.iter()
+        .filter_map(|&b| caret_through_bridge(u, v, b, parents))
+        .min()
+}
+
+/// **Additive descendant weight** — the cheap, magnitude-aware cone-size proxy.
+///
+/// A hub is where the descendant cone *steps*: large at `B`, but each child just below carries
+/// only a slice, so the cone drops off sharply descending through `B`. The exact cone size is
+/// reachability (the expensive global work we refuse); fan-in sees the *branchiness* of that
+/// step but not its *magnitude* (two giant subtrees merging is fan-in 2 yet a huge drop). This
+/// recovers magnitude in **one reverse-topological pass**, no per-node BFS, no reachability:
+/// `w(B) = 1 + Σ_{c ∈ children(B)} w(c)`. It **over-counts diamonds** — a descendant reachable
+/// by two paths is counted twice — but that over-count is exactly the price of avoiding the
+/// distinct-set reachability, and the whole sweep is O(V+E). The dropoff at `B` is then
+/// `w(B) − max_c w(c)` (see `convergence_jump`). Returns `None` if the graph has a cycle
+/// (a reverse-topo order does not exist); fan-in, by contrast, is cycle-robust. `u64` because
+/// the diamond over-count can grow fast.
+pub fn descendant_weight(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<std::collections::HashMap<u32, u64>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps {
+            nodes.insert(p);
+            children.entry(p).or_default().push(c);
+        }
+    }
+    // pending[B] = #children of B not yet finalized; process a node once all its children are.
+    let mut pending: HashMap<u32, usize> = nodes
+        .iter()
+        .map(|&n| (n, children.get(&n).map_or(0, |v| v.len())))
+        .collect();
+    let mut q: VecDeque<u32> = pending
+        .iter()
+        .filter(|&(_, &c)| c == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    let mut w: HashMap<u32, u64> = HashMap::new();
+    while let Some(b) = q.pop_front() {
+        let sum: u64 = children
+            .get(&b)
+            .map_or(0, |cs| cs.iter().map(|c| w[c]).sum());
+        w.insert(b, 1 + sum);
+        if let Some(ps) = parents.get(&b) {
+            for &p in ps {
+                let e = pending.get_mut(&p).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(p);
+                }
+            }
+        }
+    }
+    if w.len() == nodes.len() { Some(w) } else { None } // short of all nodes => a cycle
+}
+
+/// The **cone-size dropoff** at each node: `jump(B) = w(B) − max_{c ∈ children(B)} w(c)`, the
+/// magnitude of the step the cone takes crossing `B` upward. A leaf has `jump = 1`; a hub
+/// merging several heavy subtrees has a large jump — the magnitude-aware hub signal fan-in
+/// approximates by count alone. Built from `descendant_weight`, so it shares the one-pass cost
+/// and the DAG-only / diamond-over-count caveats; `None` on a cyclic graph.
+pub fn convergence_jump(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<std::collections::HashMap<u32, u64>> {
+    use std::collections::HashMap;
+    let w = descendant_weight(parents)?;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &p in ps {
+            children.entry(p).or_default().push(c);
+        }
+    }
+    let mut jump: HashMap<u32, u64> = HashMap::new();
+    for (&b, &wb) in &w {
+        let max_child = children
+            .get(&b)
+            .map_or(0, |cs| cs.iter().map(|c| w[c]).max().unwrap_or(0));
+        jump.insert(b, wb - max_child);
+    }
+    Some(jump)
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -2464,6 +2607,100 @@ mod tests {
         // through(1) keeps the shared-physics-level signal that the LCA caret also gives
         // here (their LCA *is* 1), so they agree — the gap is 0 only when bridge == LCA.
         assert_eq!(caret_through_bridge(4, 6, 1, &t), caret_distance_lca(4, 6, &t));
+    }
+
+    // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
+    // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
+    // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.
+    #[test]
+    fn convergence_fanin_and_min_over_hubs() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]);
+        g.insert(6, vec![3]); g.insert(7, vec![3]);
+        g.insert(8, vec![2, 3]); // cross-listed: a child of two categories.
+
+        // Fan-in is the local in-degree, computed in one pass, no distances.
+        let fanin = convergence_fanin(&g);
+        assert_eq!(fanin.get(&0), Some(&1)); // only 1 points up into 0
+        assert_eq!(fanin.get(&1), Some(&2)); // 2,3
+        assert_eq!(fanin.get(&2), Some(&3)); // 4,5,8
+        assert_eq!(fanin.get(&3), Some(&3)); // 6,7,8
+        assert_eq!(fanin.get(&8), None);     // a leaf is nobody's parent
+
+        // Hubs = the merge categories: fan-in >= 3 selects exactly {2,3}; >=2 adds 1.
+        assert_eq!(hubs_by_fanin(&g, 3), vec![2, 3]);
+        assert_eq!(hubs_by_fanin(&g, 2), vec![1, 2, 3]);
+
+        // Quantized-LCA limit: with EVERY node a hub, min-over-hubs == the unquantized
+        // caret_distance_lca (the shortest-path caret), for every pair.
+        let all: Vec<u32> = (0u32..=8).collect();
+        for u in 0u32..=8 {
+            for v in 0u32..=8 {
+                assert_eq!(caret_min_over_hubs(u, v, &all, &g),
+                           caret_distance_lca(u, v, &g),
+                           "all-nodes hub set must equal the unquantized LCA caret ({},{})", u, v);
+            }
+        }
+
+        // With a SPARSE hub set the result is the LCA caret quantized up to the nearest hub:
+        // for (4,5) the true LCA is 2 (caret 2). Hub set {1} forces the bridge up to 1, adding
+        // the gap 2*d(2->1) = 2, giving 4 >= 2.
+        let lca45 = caret_distance_lca(4, 5, &g).unwrap();
+        assert_eq!(caret_min_over_hubs(4, 5, &[1], &g), Some(lca45 + 2));
+        // hubs {2,3}: 2 is the true LCA of (4,5), so the min picks it exactly — no gap.
+        assert_eq!(caret_min_over_hubs(4, 5, &[2, 3], &g), Some(lca45));
+        // a quantized caret is always an upper bound on the unquantized one.
+        for u in 0u32..=8 {
+            for v in 0u32..=8 {
+                if let Some(q) = caret_min_over_hubs(u, v, &[1, 2, 3], &g) {
+                    let exact = caret_distance_lca(u, v, &g).unwrap();
+                    assert!(q >= exact, "quantized caret {} >= exact {} ({},{})", q, exact, u, v);
+                }
+            }
+        }
+        // No common-ancestor hub -> None (8's parents are {2,3}; hub set {0} can't bridge a
+        // pair whose only shared ancestor below 0... here every pair shares 0, so use a hub
+        // that is an ancestor of neither: none exists for connected pairs, so test the empty
+        // hub set instead).
+        assert_eq!(caret_min_over_hubs(4, 5, &[], &g), None);
+    }
+
+    // The one-pass cone-size proxy and its dropoff. Same tree-with-a-merge as above:
+    // 1->0; 2,3->1; 4,5->2; 6,7->3; 8->[2,3]. Additive weight counts a node + all descendant
+    // *paths* (8 counted under both 2 and 3 -> the diamond over-count is visible & intended).
+    #[test]
+    fn descendant_weight_and_dropoff() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]);
+        g.insert(6, vec![3]); g.insert(7, vec![3]);
+        g.insert(8, vec![2, 3]);
+
+        let w = descendant_weight(&g).unwrap();
+        // leaves weigh 1.
+        assert_eq!(w[&4], 1); assert_eq!(w[&5], 1); assert_eq!(w[&6], 1);
+        assert_eq!(w[&7], 1); assert_eq!(w[&8], 1);
+        // 2 = self + {4,5,8} = 1+3 = 4; 3 = self + {6,7,8} = 4. (8 counted under BOTH.)
+        assert_eq!(w[&2], 4); assert_eq!(w[&3], 4);
+        // 1 = self + w(2) + w(3) = 1+4+4 = 9; 0 = self + w(1) = 10.
+        assert_eq!(w[&1], 9); assert_eq!(w[&0], 10);
+
+        // Dropoff: hubs 2,3 each jump 4 - max_child(=1) = 3; the merge node 1 jumps
+        // 9 - max(w2,w3)=9-4 = 5 (it merges two weight-4 subtrees -> a bigger step than a
+        // single child could give). Leaves jump 1.
+        let j = convergence_jump(&g).unwrap();
+        assert_eq!(j[&4], 1);
+        assert_eq!(j[&2], 3); assert_eq!(j[&3], 3);
+        assert_eq!(j[&1], 5);
+        assert_eq!(j[&0], 1); // a pass-through (single child) barely steps.
+
+        // A cycle has no reverse-topo order -> None (fan-in, by contrast, still works).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        assert_eq!(descendant_weight(&cyc), None);
+        assert_eq!(convergence_jump(&cyc), None);
+        assert!(convergence_fanin(&cyc).contains_key(&0)); // cheap local metric is cycle-robust
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each

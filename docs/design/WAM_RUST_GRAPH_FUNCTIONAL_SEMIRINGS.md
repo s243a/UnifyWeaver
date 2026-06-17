@@ -521,6 +521,47 @@ caching, the **designated-bridge** measure is cacheable.
 > "common ancestor") is **robust** — pick the union hubs and go — while the nested-cut
 > factorisation (needs "dominator") is **fragile**, which is the deeper reason it is deferred.
 
+> **Defining "downward convergence" *cheaply* — and *non-circularly*.** Bridge selection (1)
+> asks us to score nodes by how much the hierarchy funnels through them. The honest constraint
+> is sharper than "make it fast": the score must **not call the very upward distance work the
+> bridges exist to amortize**. The natural definition — *descendant-cone size*, `|desc(B)|` —
+> needs reachability (a global per-node traversal); and ranking candidate bridges by
+> `caret_through_bridge` is the same circularity wearing a hat (it runs `up_distance_to` at
+> every candidate). Both are rejected: they spend exactly what hubs were meant to save. What is
+> left must be **structural and local**, readable *before* any query.
+>
+> - **The true signal is a cone-size *step*, not a large cone.** A hub is where the descendant
+>   cone drops off sharply as you descend through it: large at `B`, but each child just below
+>   carries only a slice. That dropoff *is* the right characterization — and its exact form
+>   (cone size at every node) is the reachability we are refusing. So we take its **cheap
+>   shadows**, in two rungs.
+> - **Rung 1 — local fan-in (free, cycle-robust).** `fanin[B] = #{v : B ∈ parents[v]}`, the
+>   in-degree in the child→parent graph. It is the *first derivative* of the dropoff: it counts
+>   *how many* cones merge at `B` in one hop without summing their sizes. One pass over the
+>   `parents` map we already hold — on the boundary-sweep path it is just `children[B].len()`,
+>   already materialized, so the score costs **nothing extra**. It reads no distance, so it
+>   cannot be circular, and it is well-defined even with cycles. Its blind spot: *branchiness
+>   only* — two giant subtrees merging is `fanin = 2` yet a huge step.
+>   (`convergence_fanin`, `hubs_by_fanin`.)
+> - **Rung 2 — additive descendant weight (one pass, magnitude-aware).** `w(B) = 1 + Σ_{c ∈
+>   children(B)} w(c)` in reverse-topological order recovers the *magnitude* fan-in misses. It
+>   **over-counts diamonds** (a descendant on two paths is counted twice) — but that over-count
+>   is precisely the price of dodging distinct-set reachability, and it is a single **O(V+E)**
+>   sweep, not per-node BFS. The dropoff is then `jump(B) = w(B) − max_c w(c)` — a leaf jumps
+>   `1`, a hub merging several heavy subtrees jumps large. Needs a DAG (a reverse-topo order);
+>   `None` on a cycle — so rung 1 is the cyclic-graph fallback. (`descendant_weight`,
+>   `convergence_jump`.)
+> - **The min-over-hubs caret is then quantized-LCA.** With hubs *cheaply* pre-selected (by
+>   fan-in / jump, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ caret_through_
+>   bridge(u, v, B)` picks the hub giving the least distance. The only distance work runs over
+>   the *already-chosen small* hub set — bounded by hub count, not by ranking the whole graph —
+>   so selection stays free and only the final min-pick costs anything. With **every** node a
+>   hub it equals `caret_distance_lca` exactly (the unquantized shortest-path caret); with a
+>   sparser hub set it is that caret **quantized up to the nearest hub level**, larger by the
+>   gap `2·d(LCA→nearest hub)` of §5b. Tightness (low, dense hubs → small gap) trades against
+>   reuse (high, sparse hubs → one field serves more pairs) — and *that* knob, unlike the cone
+>   size, is chosen with arithmetic we already paid for.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
