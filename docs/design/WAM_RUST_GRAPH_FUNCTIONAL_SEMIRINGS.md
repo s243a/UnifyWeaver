@@ -55,6 +55,29 @@ H_{a→c}(z) = H_{a→b}(z) · H_{b→c}(z)
 by the union of the per-parent path sets, so `H_v = Σ_{p∈parents(v)} (shift_by_one ∘
 H_p)`.
 
+> **Elementarily (the inner-product picture).** The histogram is a *measure* (weighting
+> function) `μ` over length `λ`, and every functional is a **linear pairing** — an inner
+> product `⟨f, μ⟩ = Σ_λ f(λ)·μ(λ)`. Mass is `⟨1, μ⟩`, the raw moments are `m_k = ⟨λ^k, μ⟩`,
+> `WeightSum` is `⟨λ^{-N}, μ⟩`, and a weighted mean is `⟨f, μ⟩ / ⟨1, μ⟩` (divide by the
+> total weight). This is the same content as the homomorphism below, without the algebra:
+> - **Branching is disjointness made linear.** Paths *partition by their first edge* (a
+>   `v→p₁` path and a `v→p₂` path are distinct even if they later reconverge), so `μ_v` is a
+>   **disjoint union** `Σ_p S·μ_p`. "Traversal through one parent doesn't affect the other"
+>   is exactly that disjointness, and linearity of the pairing distributes over it:
+>   `⟨f, μ_v⟩ = Σ_p ⟨f, S·μ_p⟩` — that *is* the `⊕`-additivity.
+> - **The `+1` edge lives on the test function.** Shifting the measure is the adjoint shift
+>   of `f`: `⟨f, S·μ⟩ = Σ_λ f(λ)μ(λ−1) = ⟨f(·+1), μ⟩`. For `f = λ^k`, `(λ+1)^k` expands
+>   binomially → the binomial moment law. The edge is just `f ↦ f(·+1)`, not a separate
+>   mechanism.
+> - **Why carry raw moments, not the mean.** The numerator `⟨f, μ⟩` and the normalizer
+>   `⟨1, μ⟩` are each linear (carry-able through the disjoint union); their *ratio* (the
+>   mean) is not — so carry the pairings, divide at the read-out (the normative rule).
+> - **Why `WeightSum` is the exception.** It is a fine linear pairing, so branching (`⊕`)
+>   is no problem — it adds over parents. It fails only at a **cut**, where the joint
+>   measure is a *convolution* and `⟨f, ν∗μ⟩ = Σ_{a,b} f(a+b)ν(a)μ(b)` factors into single-
+>   side pairings **iff `f(a+b)` separates**: `(a+b)^k` does (binomial), `(a+b)^{-N}` does
+>   not. One inner-product identity explains both why moments splice and why `d_eff` won't.
+
 A functional `F` can therefore be propagated *on its own value* exactly when it respects
 both operations — i.e. `F` is a homomorphism from the histogram algebra `(⊛, +)` into
 some small algebra `(⊗, ⊕)`. Working them out:
