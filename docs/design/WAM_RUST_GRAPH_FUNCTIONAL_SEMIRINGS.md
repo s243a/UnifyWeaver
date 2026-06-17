@@ -214,35 +214,41 @@ carry the whole histogram, or accept the cheap **bracket** of §5 instead.
 
 ## 3. The `PathSemiring` framework
 
+**[Implemented — increment 2d.]** With two concrete instances in hand (the moment jet and
+the tropical interval) and the cyclic star settled (§4, increment 2a), the trait is now
+real, not a sketch:
+
 ```rust
-trait PathSemiring {
-    type Elem: Clone;
-    fn zero() -> Self::Elem;          // ⊕-identity: "no path here" / unreachable
-    fn one()  -> Self::Elem;          // ⊗-identity: the root / empty path
-    fn add(a: &Self::Elem, b: &Self::Elem) -> Self::Elem;   // combine alternatives
-    fn mul(a: &Self::Elem, b: &Self::Elem) -> Self::Elem;   // extend by one edge / concat
-    // optional: edge label for weighted graphs; a degree/budget truncation hook
+pub trait PathSemiring: Copy {
+    fn zero() -> Self;            // ⊕-identity: unreachable / no path
+    fn one()  -> Self;            // ⊗-identity: the root / empty path
+    fn add(self, other: Self) -> Self;   // ⊕ — combine a node's parents
+    fn step(self) -> Self;               // ⊗ by one edge (shift_one); keeps `zero` inert
 }
-// suffix_value::<S>(node, root, parents, budget, memo)  — generic `suffix_histogram`
+// suffix_value::<S>(node, root, parents, memo, on_stack) — the one generic recurrence;
+// suffix_moment_jet = suffix_value::<MomentJet>, suffix_interval wraps suffix_value::<Interval>.
 ```
 
-`suffix_histogram` becomes one instance; `(min, max, mass, m₁, m₂)` becomes another (a
-product semiring); the future scalar shortest-distance is a third. The band selection,
-shared-memo sweep, eviction, and persistence skeleton are payload-agnostic — only the
-per-node `Elem` changes (from `Vec<u64>` to a 5-scalar tuple, etc.).
+`MomentJet` and `Interval` both implement it, so the two recurrences collapse to one
+generic `suffix_value`. Adding a payload is now: implement four methods. How the review's
+three trait gaps were resolved:
 
-> **The trait above is illustrative, not the final contract — three gaps to close at §8.**
-> (1) **Star / closure for cycles.** The "optional truncation hook" cannot encode the
-> per-semiring divergence profile the cyclic increment (§8.2) needs: counting *diverges*
-> without truncation, min-plus *terminates* freely, and the moment jet's star converges
-> only if mass `< 1` (the walk terminates with probability 1; cf. closed/`*`-semirings,
-> Droste–Kuich). A real `star`/closure operation is per-semiring and deserves a dedicated
-> design step, not a boolean flag. (2) **No read-out / decode contract.** There is no typed
-> surface for "project `Elem` → the query answer" — the step both §8.1's bucket-for-bucket
-> validation and the Edgeworth read-out (§7) need. (3) **The `⊕`/`⊗` exactness asymmetry is
-> invisible.** Raw moments are exact under both, but a budget truncation breaks only `⊗`
-> (concatenation), never `⊕` (§2 precondition) — an invariant that currently lives only in
-> prose and will not survive a second implementor through a flat `add`/`mul` interface.
+- **(1) Star / closure for cycles** — *not* a trait method, deliberately. The closure
+  exists only for *closed* payloads: min-plus is closed (its star is the separate
+  `min_distance_closure` / `weighted_distance_closure`), while counting/moments diverge on
+  a cycle. So `star` is a per-payload free function, not a method some impls could not
+  honour. (`suffix_value` itself is the acyclic recurrence.)
+- **(2) ⊕/⊗ asymmetry** — `step` (⊗ by an edge) is exact only untruncated; a budget would
+  break `step`/⊗ but never `add`/⊕. The recurrence never truncates (acyclic, budget-free),
+  so it is exact; the asymmetry is documented on the trait and the budgeted case lives in
+  the histogram path. The `zero`-inert-under-`step` law (so unreachable parents contribute
+  nothing) is enforced by `path_semiring_laws_and_generic_equivalence`.
+- **(3) Read-out / decode** — left payload-specific for now (`MomentJet` → mean/variance/
+  skew; `Interval` → min/max), since a common typed read-out has no clean shared codomain;
+  a generic `project` is deferred until a consumer needs it.
+
+The band selection, shared-memo sweep, eviction, and persistence skeleton remain
+payload-agnostic — only the per-node element type changes.
 
 | payload | semiring | cost | answers | exact for |
 |---|---|---|---|---|
@@ -474,11 +480,14 @@ future work — `m₃` is now carried, so they are a read-out away.
      `category_ancestor_boundary_distance` (a BFS from the seed that stops at a cached
      boundary and adds its suffix — the ALT-landmark prune; degrades to a plain correct
      BFS with an empty cache). Validated by `boundary_distance_splice_matches_closure`.
-   - **[2d next]** wire it into the `transitive_distance3` / `astar_shortest_path4` kernel
-     *codegen* (the Prolog target), and extract the `PathSemiring` trait now that two
-     concrete instances (moment-jet, distance) and the star/closure contract exist — a
-     deduplicating refactor of `suffix_moment_jet` / `suffix_interval` behind one generic
-     `suffix_value::<S>`, with the closure as the min-plus `star`.
+   - **[2d-i DONE]** the `PathSemiring` trait is extracted (§3): `MomentJet` and `Interval`
+     implement it, and `suffix_moment_jet` / `suffix_interval` are now thin instances of one
+     generic `suffix_value::<S>`. The cyclic star stays a per-payload free function (only
+     min-plus is closed), the ⊕/⊗ asymmetry is on the trait, and the laws are guarded by
+     `path_semiring_laws_and_generic_equivalence`.
+   - **[2d-ii next]** wire the distance cache into the `transitive_distance3` /
+     `astar_shortest_path4` kernel *codegen* (the Prolog target) so a compiled query uses
+     it, closing increment 2.
 
 ## 9. Relationship to the other docs
 
