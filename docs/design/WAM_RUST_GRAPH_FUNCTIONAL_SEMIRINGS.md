@@ -107,6 +107,23 @@ axiom, and that is precisely what makes the splice exact.
 > clean for both. `mean = m₁/M`, `var = m₂/M − mean²` are **nonlinear read-outs at the
 > end**, never carried through the recurrence.
 
+> **Odd moments and cancellation (why raw, again).** Because path lengths are
+> non-negative, every *raw* moment is a sum of non-negative terms `Lᵏ·H[L]`, and the
+> binomial convolution combines only non-negative quantities (`C(k,j) ≥ 0`, all
+> `m ≥ 0`) — so **propagation never cancels, at any order, odd or even.** Cancellation
+> appears only in the **central read-out** (`μ₃ = m₃′ − 3μ·m₂′ + 2μ³` subtracts
+> comparable terms), and only when the central moment is *small* — a near-symmetric
+> node, where `μ₃ ≈ 0` is a small difference of large raw moments. That is benign: you
+> only *need* `μ₃` accurate when it is **large** (strong skew), which is the
+> non-cancelling regime; when it is small the skew correction it feeds is negligible, so
+> the lost precision does not move the reconstruction. And the **CDF gate is the final
+> backstop** — a numerically degraded skew/kurtosis reconstruction misses the Kolmogorov
+> certificate and is rejected back to the Gaussian or the histogram, exactly as a *model*
+> mismatch would, so correctness never rests on the conditioning of the conversion. (A
+> shifted-origin moment conditions the read-out better but reintroduces signs and breaks
+> the non-negative, linear propagation, so it stays a read-out-time option, not a change
+> to what is carried.)
+
 ### The one that does *not* factor: `WeightSum`
 
 `WeightSum_N` is `⊕`-linear (it adds under union) but **not** `⊗`-multiplicative:
