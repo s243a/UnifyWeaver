@@ -802,8 +802,13 @@ calibration of the relatedness read-out.)
 > (`O((V+E)·k)`). Each element is a `(hash, μ)` pair kept as the bottom-`k` by hash (deduped ⇒
 > diamonds once); because the hashes are drawn independently of `μ`, the bottom-`k` is a *uniform*
 > sample of the cone and the carried weights are an unbiased sample of its weight distribution, so the
-> mass read-out is `m̂_μ = D̂ · μ̄_sample` — the Cohen–Kaplan bottom-`k` subset-sum estimator
-> (`sketch_mu_mass`), exact while unsaturated and reducing to `sketch_card` at `μ ≡ 1`.
+> mass read-out is `m̂_μ = D̂ · μ̄_sample` — a bottom-`k` *plug-in* (ratio) subset-sum estimator
+> (`sketch_mu_mass`), in the spirit of Cohen–Kaplan bottom-`k` sketches (PODC/SIGMETRICS 2007), but
+> *not* their VLDB 2008 Horvitz–Thompson form (per-item adjusted weights, zero covariance, formally
+> tighter); the product is unbiased to `O(1/k)`. Exact while unsaturated and reducing to `sketch_card`
+> at `μ ≡ 1`. (This is *carry-weight KMV* — uniform hash + weight as side data — **not** Weighted
+> MinHash à la Ioffe 2010, which bakes the weight into the hash to estimate the weighted Jaccard
+> `J_w`; this sketch estimates weighted *mass*, not `J_w`. `k ≥ 2`; `D̂` is capped at the node count.)
 > `information_content_weighted_sketch` is the drop-in scalable IC (clamping the estimate at
 > `total_mu`, the mass analogue of the `.min(1.0)` ratio clamp). And this is exactly where membership
 > *matters* (per §-aside): a read-out over the *global* cone, not the per-pair caret (membership-
@@ -1218,7 +1223,12 @@ Each is referenced inline at the section that uses it.
   Distinct-Value Estimation Under Multiset Operations.* SIGMOD 2007. — the bottom-`k` / KMV
   `(k−1)/ĥ_k` cardinality estimator (`sketch_card`).
 - Cohen, E., & Kaplan, H. (2007). *Summarizing Data Using Bottom-k Sketches.* PODC 2007. — the
-  one-pass bottom-`k` Jaccard estimator (`sketch_jaccard`).
+  one-pass bottom-`k` Jaccard estimator (`sketch_jaccard`); the bottom-`k` plug-in subset-sum form
+  that `sketch_mu_mass` follows (their VLDB 2008 *Tighter Estimation* Horvitz–Thompson RC/SC
+  estimators are the formally tighter alternative not used here).
+- Ioffe, S. (2010). *Improved Consistent Sampling, Weighted Minhash and L1 Sketching.* ICDM 2010. —
+  Weighted MinHash (weight baked into the hash to estimate weighted Jaccard `J_w`); contrasted with
+  the *carry-weight KMV* of `descendant_minhash_weighted`, which estimates weighted mass, not `J_w`.
 
 **2-hop cover / hub labeling and landmark distance (§5c, roadmap 3f).**
 - Cohen, E., Halperin, E., Kaplan, H., & Zwick, U. (2002/2003). *Reachability and Distance

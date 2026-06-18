@@ -1606,12 +1606,20 @@ pub fn descendant_mu_mass(
 /// drawn independently of `μ`, so the bottom-`k` is a *uniform* sample of the distinct cone and the
 /// weights on it are an unbiased sample of the cone's weight distribution — that is what makes the
 /// read-out work. `None` on a cyclic graph (no reverse-topo order); SCC-condense first.
+///
+/// **Naming:** this is a *carry-weight KMV* / *weighted bottom-`k`* sketch — uniform hashes with the
+/// weight carried as side data — **not** Weighted MinHash (Ioffe 2010), which encodes the weight
+/// *into* the hash so collision probability equals the weighted Jaccard `J_w`. This sketch cannot
+/// estimate `J_w`; it estimates weighted *mass* (`sketch_mu_mass`) and shared mass
+/// (`sketch_mu_overlap`). `k ≥ 2` is required (the `(k−1)/ĥ_k` cardinality read is undefined at
+/// `k=1` and panics at `k=0`).
 pub fn descendant_minhash_weighted(
     parents: &std::collections::HashMap<u32, Vec<u32>>,
     mu: &std::collections::HashMap<u32, f64>,
     k: usize,
 ) -> Option<std::collections::HashMap<u32, Vec<(u64, f64)>>> {
     use std::collections::{HashMap, HashSet, VecDeque};
+    debug_assert!(k >= 2, "k must be ≥ 2: the (k−1)/ĥ_k estimator is undefined at k=1 and panics at k=0");
     debug_assert!(
         mu.values().all(|&w| (0.0..=1.0).contains(&w)),
         "membership weights μ must lie in [0,1]"
@@ -1653,13 +1661,20 @@ pub fn descendant_minhash_weighted(
 
 /// Bottom-`k` **subset-sum** read-out: estimate `m_μ = Σ_{d∈cone} μ_d` from a μ-weighted sketch.
 /// While unsaturated (`< k` pairs kept) the cone is fully captured, so this is the **exact** sum.
-/// Once saturated it is the Cohen–Kaplan bottom-`k` estimator `m̂_μ = D̂ · μ̄_sample` — the distinct
-/// cardinality `D̂ = (k−1)/ĥ_k` (the KMV estimate, identical to `sketch_card`) times the mean weight
-/// over the `k` sampled pairs. Because the bottom-`k` is a uniform sample of the cone independent of
-/// `μ`, `μ̄_sample` is unbiased for the cone's mean weight, so the product estimates the total mass.
-/// At `μ ≡ 1` it reduces exactly to `sketch_card` (the unweighted distinct count). Error is the KMV
-/// `∝ 1/√k` plus the sampling variance of `μ̄`, both tunable by `k`.
-pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize) -> f64 {
+/// Once saturated it is a bottom-`k` *plug-in* subset-sum estimator `m̂_μ = D̂ · μ̄_sample` — the
+/// distinct cardinality `D̂ = (k−1)/ĥ_k` (the KMV estimate, identical to `sketch_card`) times the
+/// mean weight over the `k` sampled pairs. Because the bottom-`k` is a uniform sample of the cone
+/// independent of `μ`, `μ̄_sample` is unbiased for the cone's mean weight; the product is unbiased to
+/// `O(1/k)` (a ratio-estimator term). This is *in the spirit of* Cohen–Kaplan bottom-`k` sketches
+/// (PODC/SIGMETRICS 2007), but it is **not** their VLDB 2008 Horvitz–Thompson form (per-item adjusted
+/// weights, zero covariance), which is formally tighter. At `μ ≡ 1` it reduces exactly to
+/// `sketch_card`. Error is the KMV `∝ 1/√k` plus the `μ̄` sampling variance, both tunable by `k`.
+///
+/// `n_universe` is the total node count — the cardinality `D̂` cannot exceed it (a distinct cone is a
+/// subset of the graph), so `D̂` is capped at `n_universe` to defend against a pathologically tiny
+/// `ĥ_k` blowing `(k−1)/ĥ_k` up to `~10¹⁹`. `k ≥ 2` (`k=1` makes `(k−1)/ĥ_k ≡ 0`).
+pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
+    debug_assert!(k >= 2, "k must be ≥ 2: k=1 makes (k−1)/ĥ_k ≡ 0 (mass 0 ⇒ IC 0), k=0 panics");
     if s.is_empty() {
         return 0.0;
     }
@@ -1667,7 +1682,8 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize) -> f64 {
         return s.iter().map(|&(_, w)| w).sum(); // unsaturated ⇒ exact
     }
     let hk = s[k - 1].0 as f64 / (u64::MAX as f64 + 1.0);
-    let card = if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk };
+    let raw_card = if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk };
+    let card = raw_card.min(n_universe as f64); // cone ⊆ graph ⇒ D̂ ≤ N (caps tiny-ĥ_k overflow)
     let mean_w = s.iter().map(|&(_, w)| w).sum::<f64>() / s.len() as f64;
     card * mean_w
 }
@@ -1675,11 +1691,20 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize) -> f64 {
 /// Scalable **μ-weighted IC**: `information_content_weighted` fed by the sketch mass instead of the
 /// exact `descendant_mu_mass`. The drop-in large-graph form of partial-admission IC — same
 /// `−log₂(m_μ/M_μ)`, but `m_μ` is the `O((V+E)·k)` sketch estimate. `total_mu` is still the exact
-/// universe mass `Σ_all μ` (cheap: one pass over the μ-map). The sketch estimate can overshoot
-/// `total_mu` by KMV sampling noise near the root (cone ≈ universe), so it is clamped at `total_mu`
-/// before the log — the mass analogue of `information_content`'s `.min(1.0)` ratio clamp.
-pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: usize) -> f64 {
-    information_content_weighted(sketch_mu_mass(s, k).min(total_mu), total_mu)
+/// universe mass `Σ_all μ` (cheap: one pass over the μ-map); `n_universe` the node count (cone cap).
+/// The sketch estimate can overshoot `total_mu` by KMV sampling noise near the root (cone ≈ universe),
+/// so it is clamped at `total_mu` before the log — the mass analogue of `information_content`'s
+/// `.min(1.0)` ratio clamp.
+///
+/// **DEPENDENCY:** the zero-mass semantics are inherited from `information_content_weighted`, which
+/// returns `+∞` for an empty cone (`m_μ = 0`, the maximal-surprise limit). Near zero mass the *sketch*
+/// path is high-variance: the saturated sample can miss the cone's few in-domain nodes and read
+/// `μ̄_sample = 0 ⇒ m̂_μ = 0 ⇒ IC = +∞` even when the exact mass is small-positive (or vice versa). So
+/// the exact and sketch IC agree at *exactly* zero (both `+∞`) and in the bulk, but can diverge in a
+/// thin near-zero band — use the exact `descendant_mu_mass` path when the mass is near zero and the
+/// distinction matters.
+pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: usize, n_universe: usize) -> f64 {
+    information_content_weighted(sketch_mu_mass(s, k, n_universe).min(total_mu), total_mu)
 }
 
 /// **μ-weighted cone-overlap mass** — the global-hub read-out. Estimates `Σ_{d∈A∩B} μ_d`, the
@@ -1690,8 +1715,22 @@ pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: u
 /// signal: a *funnel* hub is one many cones reach, but a μ-weighted funnel discounts the associative
 /// leak — two cones that overlap only on low-μ (out-of-domain) descendants score near zero, so hub
 /// selection stops being fooled by the leak. `0` if either sketch is empty.
-pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize) -> f64 {
+///
+/// **Estimator:** algebraically `D̂_∪ · mean_{d∈union sample}( μ_d · 𝟙[d∈A∩B] )` — the *same* single
+/// product estimator as `sketch_mu_mass`, with the intersection indicator folded into a 0/1-gated μ
+/// (not a Jaccard estimate times a separate conditional mean). Both factors are read off the *same*
+/// union sample, so their variance compounds, and `mean_shared_w` divides by `shared.len()`, which is
+/// small exactly when the leak-discount bites (few shared high-μ elements). **Use as a ranking signal,
+/// not an absolute mass** — it is high-variance in the low-overlap regime.
+///
+/// **Precondition:** `a` and `b` must have been built with the *same* `k` (the Broder union-bottom-`k`
+/// argument requires it); mixing `k`s silently biases `D̂_∪`. `n_universe` caps `D̂_∪` (a union of
+/// cones is `⊆` the graph), defending against a tiny `ĥ_k` overflow exactly as in `sketch_mu_mass`.
+pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
     use std::collections::HashMap;
+    debug_assert!(k >= 2, "k must be ≥ 2");
+    debug_assert!(a.len() <= k && b.len() <= k,
+        "both sketches must be built with the same k; mixing k biases the union-card estimate");
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
@@ -1717,7 +1756,7 @@ pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize) -> f64 {
     let union_card = if union.len() < k || hk <= 0.0 {
         union.len() as f64
     } else {
-        (k as f64 - 1.0) / hk
+        ((k as f64 - 1.0) / hk).min(n_universe as f64) // cap tiny-ĥ_k overflow (union ⊆ graph)
     };
     // jaccard-by-mass: (shared count / sample size) gives |A∩B|/|A∪B|; multiply by union mass-per-sample.
     let mean_shared_w = shared.iter().sum::<f64>() / shared.len() as f64;
@@ -4544,12 +4583,13 @@ mod tests {
         let total_mu: f64 = mu.values().sum();
 
         let exact = descendant_mu_mass(&g, &mu);
+        let n = exact.len(); // universe node count (cone cap)
         let wsig = descendant_minhash_weighted(&g, &mu, K).unwrap();
         for (&node, &m) in &exact {
-            let est = sketch_mu_mass(&wsig[&node], K);
+            let est = sketch_mu_mass(&wsig[&node], K, n);
             assert!((est - m).abs() < 1e-9, "node {node}: sketch mass {est} != exact {m}");
             // Scalable IC must match the exact-mass IC.
-            let ic_sketch = information_content_weighted_sketch(&wsig[&node], total_mu, K);
+            let ic_sketch = information_content_weighted_sketch(&wsig[&node], total_mu, K, n);
             let ic_exact = information_content_weighted(m, total_mu);
             assert!((ic_sketch - ic_exact).abs() < 1e-9, "node {node}: IC mismatch");
         }
@@ -4559,9 +4599,38 @@ mod tests {
         let w1 = descendant_minhash_weighted(&g, &mu_one, K).unwrap();
         let d = descendant_minhash(&g, K).unwrap();
         for &node in mu.keys() {
-            assert!((sketch_mu_mass(&w1[&node], K) - sketch_card(&d[&node], K)).abs() < 1e-9,
+            assert!((sketch_mu_mass(&w1[&node], K, n) - sketch_card(&d[&node], K)).abs() < 1e-9,
                 "node {node}: μ≡1 sketch mass != unweighted distinct count");
         }
+    }
+
+    // R2/NB6 + DEPENDENCY: zero-mass IC and the None-on-cycle path. A node whose whole cone is
+    // out-of-domain (μ≡0) has m_μ=0 ⇒ IC=+∞ in BOTH the exact and the sketch path (the sketch's
+    // sampled mean weight is also 0), so they agree at exactly zero — pinning the inherited #3271
+    // +∞ semantics. And a cyclic graph yields None (no reverse-topo order).
+    #[test]
+    fn mu_weighted_sketch_zero_mass_is_infinite_and_cycle_is_none() {
+        const K: usize = 8;
+        // Star: 1,2,3 -> 0. μ≡0 over the cone of node 0 (everything out of domain) but a positive
+        // universe mass elsewhere so total_mu>0 (the empty-cone, not empty-universe, case).
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![0]);
+        let mut mu: HashMap<u32, f64> = [(0u32, 0.0), (1, 0.0), (2, 0.0), (3, 0.0)].into_iter().collect();
+        mu.insert(99, 1.0); // an out-of-cone node carrying the universe mass
+        let total_mu: f64 = mu.values().sum(); // = 1.0 > 0
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let n = mu.len();
+        let exact = descendant_mu_mass(&g, &mu);
+        assert_eq!(exact[&0], 0.0, "cone of 0 is fully out of domain");
+        assert!(information_content_weighted(exact[&0], total_mu).is_infinite(), "exact zero-mass ⇒ +∞");
+        assert!(information_content_weighted_sketch(&w[&0], total_mu, K, n).is_infinite(),
+            "sketch zero-mass ⇒ +∞ (agrees with exact at exactly zero)");
+
+        // None on a cycle (0 <-> 1).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        let cmu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0)].into_iter().collect();
+        assert!(descendant_minhash_weighted(&cyc, &cmu, K).is_none(), "cycle ⇒ None");
     }
 
     // At scale the sketch is approximate (k << cone): build a wide tree, check the weighted-mass
@@ -4584,20 +4653,24 @@ mod tests {
         }
         let total_mu: f64 = mu.values().sum();
         let exact = descendant_mu_mass(&g, &mu);
+        let n = exact.len();
         let wsig = descendant_minhash_weighted(&g, &mu, K).unwrap();
 
-        let est_root = sketch_mu_mass(&wsig[&0], K);
+        let est_root = sketch_mu_mass(&wsig[&0], K, n);
         let rel_err = (est_root - exact[&0]).abs() / exact[&0];
+        // 20% tolerance is a non-flaky ~1.7σ guard: at k=256 the KMV cardinality CV ≈ 1/√(k−2) ≈ 6.3%
+        // and the μ̄ sampling CV ≈ std(μ)/mean(μ)/√k ≈ 10% for this mixture; they add in quadrature
+        // (≈12%), plus an O(1/k) ratio-bias term, over a single draw. Do NOT tighten into flakiness.
         assert!(rel_err < 0.20, "root mass est {est_root} vs exact {} (rel err {:.3})", exact[&0], rel_err);
 
         // A leaf cone is a single node ⇒ unsaturated ⇒ exact.
         let leaf = next - 1;
-        assert!((sketch_mu_mass(&wsig[&leaf], K) - exact[&leaf]).abs() < 1e-12, "leaf must be exact");
+        assert!((sketch_mu_mass(&wsig[&leaf], K, n) - exact[&leaf]).abs() < 1e-12, "leaf must be exact");
 
         // IC is finite and ordered: the root (huge cone) is less specific than a graded child.
-        let ic_root = information_content_weighted_sketch(&wsig[&0], total_mu, K);
+        let ic_root = information_content_weighted_sketch(&wsig[&0], total_mu, K, n);
         let child1 = 1u32;
-        let ic_child = information_content_weighted_sketch(&wsig[&child1], total_mu, K);
+        let ic_child = information_content_weighted_sketch(&wsig[&child1], total_mu, K, n);
         assert!(ic_root < ic_child, "root must be more general (lower IC) than a child");
         eprintln!("μ-sketch @scale: root mass exact {:.1} est {:.1} (rel {:.1}%), IC root {:.2} child {:.2}",
             exact[&0], est_root, 100.0 * rel_err, ic_root, ic_child);
@@ -4622,20 +4695,47 @@ mod tests {
         for u in [1u32, 2, 10, 11, 12, 13, 20, 21, 22, 23] { leak.insert(u, 1.0); }
         leak.insert(50, 0.05); leak.insert(90, 0.05); leak.insert(91, 0.05);
         let wl = descendant_minhash_weighted(&g, &leak, K).unwrap();
-        let ov_leak = sketch_mu_overlap(&wl[&1], &wl[&2], K);
+        let nl = leak.len();
+        let ov_leak = sketch_mu_overlap(&wl[&1], &wl[&2], K, nl);
 
         // Case 2: shared set is the CORE (μ high). Overlap mass should be larger.
         let mut core: HashMap<u32, f64> = leak.clone();
         core.insert(50, 1.0); core.insert(90, 1.0); core.insert(91, 1.0);
         let wc = descendant_minhash_weighted(&g, &core, K).unwrap();
-        let ov_core = sketch_mu_overlap(&wc[&1], &wc[&2], K);
+        let ov_core = sketch_mu_overlap(&wc[&1], &wc[&2], K, core.len());
 
         assert!(ov_core > ov_leak + 1.0, "μ-overlap must discount the leak: core {ov_core} vs leak {ov_leak}");
         // Disjoint cones share nothing ⇒ ~0 overlap (hub 1 vs a private leaf cone).
         let priv_only = descendant_minhash_weighted(&{ let mut h = HashMap::new();
             h.insert(30u32, vec![1u32]); h.insert(40u32, vec![2u32]); h }, &core, K).unwrap();
-        assert!(sketch_mu_overlap(&priv_only[&30], &priv_only[&40], K) < 1e-9, "disjoint ⇒ no overlap");
+        assert!(sketch_mu_overlap(&priv_only[&30], &priv_only[&40], K, core.len()) < 1e-9, "disjoint ⇒ no overlap");
         eprintln!("μ-overlap: leak-shared {:.2} vs core-shared {:.2} (leak-robust fan-in)", ov_leak, ov_core);
+    }
+
+    // NB4: sketch_mu_overlap in the SATURATED (approximate) regime, not just the tiny exact graphs.
+    // Two cones with a large shared CORE subtree (high-μ) and large private leaf bundles; with
+    // k << cone the Broder union-bottom-k still recovers the shared mass as a ranking signal within
+    // tolerance. Checked against the exact shared mass Σ_{d∈A∩B} μ_d.
+    #[test]
+    fn mu_weighted_overlap_saturated_regime() {
+        const K: usize = 256;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        mu.insert(1, 1.0); mu.insert(2, 1.0);
+        let mut next = 100u32;
+        // Shared CORE of 400 high-μ nodes, each a child of BOTH hubs 1 and 2.
+        let mut core_nodes: Vec<u32> = Vec::new();
+        for _ in 0..400 { let c = next; next += 1; g.insert(c, vec![1, 2]); mu.insert(c, 0.9); core_nodes.push(c); }
+        // Private leaf bundles (out-of-overlap) under each hub.
+        for _ in 0..500 { let a = next; next += 1; g.insert(a, vec![1]); mu.insert(a, 0.4); }
+        for _ in 0..500 { let b = next; next += 1; g.insert(b, vec![2]); mu.insert(b, 0.4); }
+        let n = mu.len();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let est = sketch_mu_overlap(&w[&1], &w[&2], K, n);
+        let exact_shared: f64 = core_nodes.iter().map(|c| mu[c]).sum(); // 400 * 0.9 = 360
+        let rel = (est - exact_shared).abs() / exact_shared;
+        assert!(rel < 0.25, "saturated overlap est {est} vs exact {exact_shared} (rel {:.3})", rel);
+        eprintln!("μ-overlap @scale: exact shared {:.0} est {:.0} (rel {:.1}%)", exact_shared, est, 100.0 * rel);
     }
 
     // The user's depth-convergence hypothesis: the RAW descendant count explodes as you go deeper
