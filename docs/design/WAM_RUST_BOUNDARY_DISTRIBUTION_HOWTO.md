@@ -101,7 +101,7 @@ live in **`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`**; the operator surface is:
 |---|---|---|---|
 | mean / variance / skew of path length, or a cheap distribution reconstruction | `build_boundary_jets(band, root, edge_pred)` | `collect_native_category_ancestor_boundary_jet(...)` → `MomentJet`; `.mean()/.variance()/.skewness()`, `.to_normal_repr(..)` | the moment jet `(mass,m₁,m₂,m₃)` + interval `(min,max)`, budget-free, **exact on the acyclic ancestor space** |
 | shortest hop-distance to root | `build_boundary_distances(band, root, edge_pred)` | `category_ancestor_boundary_distance(seed, root, acc)` → `u32`, or the `shortest_distance` extractor | the **cycle-correct** min-plus distance (the DFS histogram is unsound on cycles) |
-| between-nodes distance | (the to-root distance cache above) | `caret_distance_upper(d_u, d_v)` / `caret_distance_lca(u, v, parents)` | the composite **caret** — an undirected *upper* bound (exact = tree distance); `directed_distance_lower` is the A* heuristic for *directed* queries (no undirected lower bound off a tree) |
+| between-nodes distance / relatedness / hubs | see **§8** below | see **§8** below | the composite **caret**, semantic **similarity** (Resnik/Lin/FaITH), convergence **hubs**, and the landmark cache — the between-nodes companion to the to-root payloads |
 
 All three carry only a handful of scalars per node and degrade gracefully (an empty cache
 falls back to a correct full walk). They are the same boundary-cache architecture with a
@@ -319,7 +319,73 @@ mid-sweep spill of §4.
 
 ---
 
-## 8. Where everything lives
+## 8. Between-nodes: caret distance, semantic similarity, and hubs (operator's guide)
+
+The to-root payloads above answer "how far is this node from the root." The between-nodes line
+answers "how related are *these two* nodes." Theory and proofs live in
+**`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`** (§5, §8); real-data validation in
+**`WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`**. The operator surface:
+
+### 8.1 Caret distance (`u ↑ B ↓ v` through a shared ancestor)
+
+| you want | call | notes |
+|---|---|---|
+| the exact between-nodes caret | `WamState::category_caret_distance(u, v, acc)` | joint up-search over the live accessor; **boundary-restricted** (stops at the mixing boundary, doesn't climb to root). Cache-free; works on cyclic graphs |
+| …and the search-space count | `category_caret_distance_counted(u, v, acc)` | returns `(caret, nodes_visited)` |
+| scope the bridge to a level | `boundary_cache::caret_distance_budgeted(u, v, parents, budget)` | small budget = a *low* common ancestor; budget ≥ subtree height = the full LCA caret |
+| **the optimal bridge *node*** | `boundary_cache::caret_optimal_bridge(u, v, parents, budget)` → `(bridge, caret)` | the bidirectional read that needs **no curated cone** — explores only the two up-cones, names their lowest common ancestor. The right tool on a non-taxonomic graph (real Wikipedia) |
+
+The caret value is an *undirected upper bound* (exact = tree distance); `directed_distance_lower`
+is the A* heuristic for *directed* queries only (no undirected lower bound off a tree).
+
+### 8.2 Semantic similarity (information-content; **DAG-only**)
+
+```
+vm.build_descendant_sketches(edge_pred, k);              // precompute once (KMV descendant sketch)
+vm.category_resnik(u, v, edge_pred);                     // IC(MICA)
+vm.category_lin(u, v, edge_pred);                        // 2·IC/(IC+IC) ∈ [0,1]
+vm.category_faith(u, v, edge_pred);                      // JC-faithful sibling of Lin
+```
+
+Returns `None` until the sketches are built, and **`descendant_minhash` is `None` on a cyclic
+graph** — IC needs a DAG, so SCC-condense or scope to an acyclic subtree first (real category
+graphs are cyclic; see the measurement note). The library forms are
+`boundary_cache::{resnik,lin,faith}_similarity(u, v, parents, dsigs, n, k)`.
+
+### 8.3 Convergence hubs and the landmark cache (3f)
+
+```
+let hubs = boundary_cache::hubs_by_fanin(parents, min_fanin);   // cheap, cycle-robust selection
+vm.build_caret_landmarks(&hubs, edge_pred);                     // precompute d(·→B) per bridge
+vm.category_caret_through_bridge(u, v, B);                      // O(1) caret through a landmark
+vm.category_caret_min_over_landmarks(u, v);                     // O(#hubs) quantized-LCA caret
+```
+
+Other hub scores: `convergence_jump` (rung 2), `parent_reconvergence` (rung 3),
+`sketch_overlap_lift` (rung 4) with `hubs_by_jump` / `hubs_by_lift`. **Caveat on real data:**
+structural fan-in alone surfaces *maintenance* categories (`Container_categories`) — global hub
+selection wants a semantic signal (§5d), still open. Per-pair `caret_optimal_bridge` does **not**
+need it.
+
+### 8.4 Building a semantic test set on a non-taxonomic graph (the 3e pipeline)
+
+Wikipedia categories are associative, not is-a (a downward "subtree of X" leaks into the whole
+encyclopedia), so the semantic signal must come from outside the graph:
+
+1. `scripts/physics_random_walk_candidates.py --tsv <category_parent.tsv> --root Physics` →
+   candidate nodes.
+2. Classify them with an LLM (a Haiku subagent) → keep the genuine topics →
+   `tests/fixtures/wikipedia_physics_curated_nodes.txt`.
+3. `UW_CATEGORY_TSV=<tsv> UW_CATEGORY_NODES=<fixture> cargo test --nocapture
+   wikipedia_physics_curated_set_bridges` — pairwise `caret_optimal_bridge` over the curated set.
+
+The recurring bridges are the *real* semantic hubs (`Physics`, `Subfields_of_physics`); the
+mean-caret-to-core flags the LLM's borderline calls (chemistry outliers). The graph metric and the
+LLM audit each other. The raw end-to-end harness is `wikipedia_category_subtree_end_to_end_3e`
+(env-gated on `UW_CATEGORY_TSV`, optional `UW_CATEGORY_ROOT` / `UW_CATEGORY_MAXDEPTH` to scope a
+subtree); both skip in CI.
+
+## 9. Where everything lives
 
 | concern | code | tests |
 |---|---|---|
@@ -329,4 +395,6 @@ mid-sweep spill of §4.
 | compiler lowering / options | `src/unifyweaver/targets/wam_rust_target.pl`, `src/unifyweaver/core/recursive_kernel_detection.pl` | `tests/test_wam_rust_boundary_{lowering,foreign_dispatch}.pl` |
 | foreign dispatch + integrated scale | — | `tests/test_wam_rust_boundary_{kernel_exec,integrated_scale}.pl` |
 | measurement harnesses | `examples/benchmark/wam_rust_boundary_{measurement,lazy_edge_measurement}.pl`, `examples/benchmark/boundary_splice_complexity_bench.rs` | — |
-| design | `WAM_RUST_BOUNDARY_DISTRIBUTION_{PHILOSOPHY,SPECIFICATION,CACHE_PLAN}.md`, `WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md` | — |
+| between-nodes: caret / similarity / hubs / landmarks (§8) | `boundary_cache.rs.mustache` (`caret_*`, `*_similarity`, `descendant_minhash`, `convergence_*`, `hubs_by_*`, `bridge_distance_fields`), live methods in `state.rs.mustache` (`category_caret_*`, `category_{resnik,lin,faith}`, `build_descendant_sketches`, `build_caret_landmarks`) | the `caret_*` / `*_similarity` / `bridge_landmarks_*` / `wikipedia_*_3e` / `wikipedia_physics_curated_set_bridges` tests |
+| real-data test set | `scripts/physics_random_walk_candidates.py`, `tests/fixtures/wikipedia_physics_curated_nodes.txt` | the 3e harnesses above (env-gated, skip in CI) |
+| design | `WAM_RUST_BOUNDARY_DISTRIBUTION_{PHILOSOPHY,SPECIFICATION,CACHE_PLAN}.md`, `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`, `WAM_RUST_BOUNDARY_MEASUREMENT_2026-06-16.md`, `WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md` | — |

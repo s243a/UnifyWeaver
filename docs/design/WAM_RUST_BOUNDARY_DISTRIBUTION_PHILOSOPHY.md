@@ -177,3 +177,14 @@ functionals factor, the inner-product / kernel-trick picture, the cumulants-vs-m
 fork, and the directed/undirected subtleties of the caret bound — lives in
 **`WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`**.
 
+The between-nodes line has since grown into a full instance family, all built and live-wired:
+the **caret** (exact boundary-restricted search, the budgeted/designated-bridge variants, and
+the per-pair **optimal-bridge** read that needs no curated cone), **information-content
+similarity** (Resnik / Lin / FaITH off a descendant sketch, DAG-only), and **convergence-hub
+selection** with an O(1) **landmark cache** (the 2-hop-cover / hub-labeling instance). It has
+been run end-to-end on the real (cyclic, non-taxonomic) Wikipedia category graph — where the
+per-pair bidirectional bridge recovers semantically-correct ancestors directly on the raw graph,
+and an LLM-curated node set surfaces the true semantic hubs — in
+**`WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`**; the operator's guide is §8 of
+**`WAM_RUST_BOUNDARY_DISTRIBUTION_HOWTO.md`**.
+
