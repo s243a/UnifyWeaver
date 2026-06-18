@@ -596,7 +596,10 @@ caching, the **designated-bridge** measure is cacheable.
 >   `B` a funnel." Two fixes, both O(k): (a) **height-agnosticism** — summarize each node's
 >   *whole* lineage to root once, as a fixed-size **KMV/MinHash ancestor sketch**
 >   `sig(B) = bottom-k( {B} ∪ ⋃_p sig(p) )`, one root→leaf pass; overlap (`sketch_jaccard`) is
->   then read at *any* depth with no knob (error ∝ 1/√k, not a depth cutoff). (b) **baseline
+>   then read at *any* depth with no knob (error ∝ 1/√k, not a depth cutoff). (The sketch is the
+>   bottom-`k`/KMV lineage: MinHash for Jaccard, Broder 1997; the one-pass bottom-`k` Jaccard
+>   estimator, Cohen & Kaplan 2007; the `(k−1)/ĥ_k` distinct-count read, Bar-Yossef et al. 2002 /
+>   Beyer et al. 2007.) (b) **baseline
 >   correction** — a real hub reconverges *more than chance*: against the configuration-model
 >   null `E|A∩B| ≈ |A|·|B|/N`, the signal is `lift = observed |A∩B| / E|A∩B|` (`sketch_overlap_
 >   lift`), `>1` an excess funnel, `≈1` just small-world background. The sketch yields `|A|`,
@@ -709,7 +712,10 @@ category `t`." How *informative* is that? If `t` is the root (every article is u
 learned nothing — it was certain. If `t` is a tiny, specific leaf category, you learned a lot —
 that was surprising. So a node's information is its **rarity**: let `p(t) = |desc(t)| / N` be the
 fraction of all nodes that fall under `t` (its descendant cone over the total). The root has
-`p = 1`; a leaf has `p = 1/N`.
+`p = 1`; a leaf has `p = 1/N`. This descendant-fraction definition is **intrinsic** IC — it reads
+the rarity off the graph structure alone, needing no external corpus of annotation frequencies;
+Seco, Veale & Hayes (2004) introduced it and showed it matches corpus-based IC closely (≈ 0.84 vs
+0.79 correlation with human similarity benchmarks), which is why we use it here.
 
 **Why `−log₂`.** We want "information" to be `0` for the certain thing (`p=1`) and to *grow* as
 things get rarer (`p → 0`), and we want it to *add up* for independent facts. The function with
@@ -748,7 +754,7 @@ is an `O(k)` read, but calling `resnik`/`lin` is *not* `O(k)` — each runs a pe
 upward BFS to find the MICA; cache the ancestor sets for repeated queries on the same graph.)
 
 **FaITH similarity: the Jiang–Conrath-faithful sibling.** Lin isn't the only way to normalize
-Resnik. The *Jiang–Conrath distance* `JC(u,v) = IC(u) + IC(v) − 2·IC(MICA)` measures *how far
+Resnik. The *Jiang–Conrath distance* (Jiang & Conrath 1997) `JC(u,v) = IC(u) + IC(v) − 2·IC(MICA)` measures *how far
 apart* `u` and `v` are: it is the IC you'd have to "spend" climbing from each down to the MICA —
 `0` for identical nodes, large when they meet only high up. **FaITH** (Pirró & Euzenat 2010) turns
 that distance into a bounded similarity, `sim(u,v) = IC(MICA) / (IC(u) + IC(v) − IC(MICA))`, which
@@ -1022,3 +1028,53 @@ buy diminishing returns and is not carried).
 - `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` — phase status of shipped work.
 - This note — the algebraic generalization (product semirings, ancestor-space domain,
   the implicit-functional / kernel-trick framing) that the next increments build on.
+
+## 10. References
+
+Collected for understanding the theory and as a citation base for possible future write-up.
+Each is referenced inline at the section that uses it.
+
+**Information-content semantic similarity (§5d, §5e).**
+- Resnik, P. (1995). *Using Information Content to Evaluate Semantic Similarity in a Taxonomy.*
+  IJCAI-95. — `resnik_similarity = IC(MICA)`.
+- Lin, D. (1998). *An Information-Theoretic Definition of Similarity.* ICML 1998. —
+  `lin_similarity = 2·IC(MICA)/(IC(u)+IC(v))`.
+- Jiang, J. J., & Conrath, D. W. (1997). *Semantic Similarity Based on Corpus Statistics and
+  Lexical Taxonomy.* ROCLING X (also arXiv cmp-lg/9709008). — the JC distance `IC(u)+IC(v)−2·IC(MICA)`.
+- Seco, N., Veale, T., & Hayes, J. (2004). *An Intrinsic Information Content Metric for Semantic
+  Similarity in WordNet.* ECAI 2004. — the **intrinsic** (descendant-count) IC we use, `IC(t) =
+  −log₂(|desc(t)|/N)`, ≈0.84 vs 0.79 human-benchmark correlation against corpus IC.
+- Pirró, G., & Euzenat, J. (2010). *A Feature and Information Theoretic Framework for Semantic
+  Similarity and Relatedness.* ISWC 2010. — the **FaITH** measure `IC(MICA)/(IC(u)+IC(v)−IC(MICA))`.
+
+**MinHash / KMV sketches and distinct-count estimation (rung 4, §5d; descendant sketch, §5e).**
+- Broder, A. Z. (1997). *On the Resemblance and Containment of Documents.* SEQUENCES 1997. —
+  MinHash for Jaccard.
+- Bar-Yossef, Z., Jayram, T. S., Kumar, R., Sivakumar, D., & Trevisan, L. (2002). *Counting
+  Distinct Elements in a Data Stream.* RANDOM 2002. — k-minimum-values (KMV) distinct-count.
+- Beyer, K., Haas, P. J., Reinwald, B., Sismanis, Y., & Gemulla, R. (2007). *On Synopses for
+  Distinct-Value Estimation Under Multiset Operations.* SIGMOD 2007. — the bottom-`k` / KMV
+  `(k−1)/ĥ_k` cardinality estimator (`sketch_card`).
+- Cohen, E., & Kaplan, H. (2007). *Summarizing Data Using Bottom-k Sketches.* PODC 2007. — the
+  one-pass bottom-`k` Jaccard estimator (`sketch_jaccard`).
+
+**2-hop cover / hub labeling and landmark distance (§5c, roadmap 3f).**
+- Cohen, E., Halperin, E., Kaplan, H., & Zwick, U. (2002/2003). *Reachability and Distance
+  Queries via 2-Hop Labels.* SODA 2002 / SIAM J. Comput. 2003. — the 2-hop label framework that
+  `bridge_distance_fields` instantiates.
+- Abraham, I., Delling, D., Goldberg, A. V., & Werneck, R. F. (2012). *Hierarchical Hub Labelings
+  for Shortest Paths.* ESA 2012.
+- Akiba, T., Iwata, Y., & Yoshida, Y. (2013). *Fast Exact Shortest-Path Distance Queries on Large
+  Networks by Pruned Landmark Labeling.* SIGMOD 2013.
+- Tretyakov, K., Armas-Cervantes, A., García-Bañuelos, L., Vilo, J., & Dumas, M. (2011). *Fast
+  Fully Dynamic Landmark-based Estimation of Shortest Path Distances in Very Large Graphs.* CIKM
+  2011. — the `O(K·V)` space-tightness for O(1)-lookup landmarks.
+- Storandt, S. (2022). *Algorithms for Landmark Hub Labeling.* ISAAC 2022. — `min_B(d(u→B)+d(v→B))`
+  as a valid upper bound, exact iff an optimal meeting node is a landmark.
+
+**Distribution reconstruction (§7).**
+- Lindeberg, J. W. (1922). *Eine neue Herleitung des Exponentialgesetzes in der
+  Wahrscheinlichkeitsrechnung.* Math. Z. 15. — the CLT condition for the moment-jet → Gaussian rung.
+- Blinnikov, S., & Moessner, R. (1998). *Expansions for Nearly Gaussian Distributions.* A&A
+  Suppl. Ser. 130. — practical Gram–Charlier / Edgeworth series (the `MomentNormal` → `GramCharlier`
+  reconstruction rungs).
