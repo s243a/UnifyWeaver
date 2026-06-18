@@ -180,10 +180,12 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
   expensive signal only where uncertain" pattern as the reconstruction gate's Monte-Carlo fallback.
 - **The gate is tier-agnostic — it can be a *model cascade*** (`wikipedia_model_cascade_haiku_then_
   sonnet`). The two stages need not be embedding+LLM: a cheap *model* (Haiku) handles the bulk and a
-  strong *model* (Sonnet) is invoked **only on the cheap model's uncertain band** (`μ∈(0.3,0.7)`) —
-  an `n`-tier cascade in the limit. Measured: Haiku decides **71/90 (79%)** outright; the **19**
-  escalated nodes go to Sonnet, which is markedly more discriminating (band score spread `σ`: Haiku
-  `0.061` → Sonnet `0.160`) and **resolves 12 of the 19** decisively — un-clustering Haiku's `0.5`
+  strong *model* (Sonnet) is invoked **only on the cheap model's uncertain band** (the CLOSED band
+  `μ∈[0.3,0.7]`, endpoints escalated — this matches the 26-node Sonnet fixture exactly; the open band
+  would drop the `μ=0.3/0.7` endpoints and under-count to 19) — an `n`-tier cascade in the limit.
+  Measured: Haiku decides **64/90 (71%)** outright; the **26** escalated nodes go to Sonnet, which is
+  markedly more discriminating (band score spread `σ`: Haiku `0.117` → Sonnet `0.184`) and **resolves
+  16 of the 26** decisively — un-clustering Haiku's `0.5`
   pile (pure chemistry `Arsenic 0.1`, `Pnictogens 0.05`; engineering `Electric_vehicles 0.1`; vs
   physics-adjacent `Astronomical_objects 0.7`, `Electronics 0.55`).
 - **Batch-size caveat on the savings.** The escalation only pays off if the escalated band is large

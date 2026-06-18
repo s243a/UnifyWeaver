@@ -3867,8 +3867,11 @@ mod tests {
         // Two-threshold gate: accept on the prior if >= TAU_HI; reject if < TAU_LO; consult the LLM
         // only in the "just-missed-but-close" band [TAU_LO, TAU_HI), and accept there iff the
         // GEOMETRIC MEAN sqrt(prior·μ_llm) >= TAU_GEO. The geo-mean hard-vetoes if either is ~0.
+        // (This √(prior·μ) fusion is a *logarithmic opinion pool* — Clemen & Winkler 1999 — the
+        // equal-weight log pool, NOT a Bayesian posterior: it treats the two scores as independent
+        // expert opinions to average in log-space, with no likelihood/prior factorization.)
         const TAU_HI: f64 = 0.66;   // prior alone accepts (shallow ⇒ depth ≤ 2)
-        const TAU_LO: f64 = 0.33;   // prior alone rejects (deep ⇒ depth ≥ 4)
+        const TAU_LO: f64 = 0.33;   // prior alone rejects (deep ⇒ depth ≥ 5: c=1−d/6, d=4 gives 0.333 > τ_lo)
         const TAU_GEO: f64 = 0.5;
         let (mut acc_cheap, mut rej_cheap, mut llm_calls, mut acc_geo, mut rej_geo) = (0, 0, 0, 0, 0);
         for (&u, &mu) in &llm {
@@ -3892,6 +3895,8 @@ mod tests {
         // the ambiguous band, so the expensive calls are a fraction of the total.
         assert!(llm_calls < total, "the gate avoids an LLM call on the confident nodes");
         assert!(acc_cheap + rej_cheap > 0, "the cheap prior decides some nodes outright");
+        let saved = (total - llm_calls) as f64 / total as f64;
+        assert!(saved > 0.40, "the gate must save the majority of LLM calls (saved {:.0}%)", 100.0 * saved);
     }
 
     // The gate is TIER-AGNOSTIC: the two stages need not be embedding+LLM — they can be two models,
@@ -3912,7 +3917,10 @@ mod tests {
                 .collect()
         };
         let (h, s) = (load(&haiku), load(&sonnet));
-        let confident = |mu: f64| mu <= 0.3 || mu >= 0.7;
+        // The escalation band is CLOSED [0.3, 0.7] (endpoints escalate), so `confident` is the
+        // strict complement μ<0.3 ∨ μ>0.7. This matches the Sonnet band fixture exactly (26 nodes);
+        // the open band (0.3,0.7) would drop the μ=0.3/0.7 endpoints and under-count to 19.
+        let confident = |mu: f64| mu < 0.3 || mu > 0.7;
         // Tier 1: Haiku decides the confident nodes; the uncertain band escalates to Sonnet.
         let (mut by_haiku, mut escalated, mut resolved_by_sonnet) = (0, 0, 0);
         for (name, &mu) in &h {
@@ -3938,6 +3946,7 @@ mod tests {
         let (sd_h, sd_s) = (std(&|n| h[n]), std(&|n| s[n]));
         eprintln!("cascade: band score spread  Haiku σ={:.3}  Sonnet σ={:.3} (wider ⇒ more decisive)", sd_h, sd_s);
 
+        assert_eq!(by_haiku + escalated, total, "every node is either Haiku-decided or escalated (partition)");
         assert!(escalated < total, "the cheap tier decides the confident majority");
         assert!(resolved_by_sonnet * 2 >= escalated, "the strong tier resolves most of the escalated band");
         assert!(sd_s > sd_h, "the strong tier is more decisive (wider score spread) on the band");
