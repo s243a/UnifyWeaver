@@ -168,6 +168,16 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
 - **Generating `μ` from semantic vectors** (category embeddings) instead of an LLM is the natural
   alternative — same fuzzy membership, a different prior source; the structural agreement above
   predicts it would land in the same place. (Future: needs an embedding source.)
+- **Gated hybrid `μ` — cheap prior, LLM only on the close band** (`wikipedia_fuzzy_gated_hybrid_
+  membership`). The cost-optimal design: a *cheap* prior (a batched embedding-similarity `μ`, or —
+  as a stand-in here — the depth-to-root score) decides the confident nodes outright; the expensive
+  LLM is consulted **only in the "just-missed-but-close" band** `[τ_lo, τ_hi)` below the prior's
+  threshold, and fused there by the **geometric mean** `√(prior·μ_llm)` (which hard-vetoes if either
+  signal is ~0). Two thresholds: one on the prior, one on the geo-mean. Measured with the *weak*
+  depth stand-in prior on the 90-node fixture: **29 accept-on-prior, 23 reject-on-prior, only 38
+  consult the LLM — 58% of the LLM calls saved**; a stronger embedding prior would widen the
+  confident bands and shrink the consulted middle further. This is the same "cheap signal broadly,
+  expensive signal only where uncertain" pattern as the reconstruction gate's Monte-Carlo fallback.
 
 Still future work: **membership-weighted read-outs** — carry `μ` as a per-node weight into the
 functionals (`μ`-weighted Resnik/Lin that down-weights borderline ancestors in the MICA search, or

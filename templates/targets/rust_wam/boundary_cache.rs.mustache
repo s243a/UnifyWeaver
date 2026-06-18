@@ -3826,6 +3826,74 @@ mod tests {
         }
     }
 
+    // Gated hybrid μ: cheap structural prior decides the confident nodes; the (expensive) LLM is
+    // consulted ONLY in the "just-missed-but-close" band below the prior's threshold, and fused by
+    // GEOMETRIC MEAN there. (Here the cheap prior is a depth-to-root score standing in for an
+    // embedding-similarity μ — a real embedding would be a stronger prior and shrink the band; this
+    // demonstrates the gating + the LLM-call savings.) Gated on `UW_CATEGORY_TSV` + `UW_FUZZY_NODES`.
+    #[test]
+    fn wikipedia_fuzzy_gated_hybrid_membership() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("gated: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("gated: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let llm: HashMap<u32, f64> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| { let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(mu)) => ids.get(n.trim()).map(|&id| (id, mu)), _ => None } })
+            .collect();
+        let root = match ids.get("Physics") { Some(&r) => r, None => return };
+        let depth = min_distance_closure(root, &parents);
+        // cheap structural prior in [0,1]: shallow (close to the physics root) → high (embedding stand-in).
+        let cheap = |u: u32| -> Option<f64> {
+            depth.get(&u).map(|&d| (1.0 - d as f64 / 6.0).clamp(0.0, 1.0))
+        };
+
+        // Two-threshold gate: accept on the prior if >= TAU_HI; reject if < TAU_LO; consult the LLM
+        // only in the "just-missed-but-close" band [TAU_LO, TAU_HI), and accept there iff the
+        // GEOMETRIC MEAN sqrt(prior·μ_llm) >= TAU_GEO. The geo-mean hard-vetoes if either is ~0.
+        const TAU_HI: f64 = 0.66;   // prior alone accepts (shallow ⇒ depth ≤ 2)
+        const TAU_LO: f64 = 0.33;   // prior alone rejects (deep ⇒ depth ≥ 4)
+        const TAU_GEO: f64 = 0.5;
+        let (mut acc_cheap, mut rej_cheap, mut llm_calls, mut acc_geo, mut rej_geo) = (0, 0, 0, 0, 0);
+        for (&u, &mu) in &llm {
+            let c = match cheap(u) { Some(c) => c, None => continue };
+            if c >= TAU_HI {
+                acc_cheap += 1;                          // prior confident-accept, no LLM
+            } else if c < TAU_LO {
+                rej_cheap += 1;                          // prior confident-reject, no LLM
+            } else {
+                llm_calls += 1;                          // band: the only place the LLM is consulted
+                let geo = (c * mu).sqrt();               // geometric mean (hard-vetoes if either ~0)
+                if geo >= TAU_GEO { acc_geo += 1; } else { rej_geo += 1; }
+            }
+        }
+        let total = acc_cheap + rej_cheap + llm_calls;
+        eprintln!("gated: {} nodes | accept-on-prior {} reject-on-prior {} | LLM consulted {} ({:.0}% saved)",
+            total, acc_cheap, rej_cheap, llm_calls, 100.0 * (total - llm_calls) as f64 / total as f64);
+        eprintln!("gated: of the {} band nodes, geo-mean accepted {} rejected {}", llm_calls, acc_geo, rej_geo);
+
+        // The point: most nodes are decided by the cheap prior alone — the LLM is consulted only on
+        // the ambiguous band, so the expensive calls are a fraction of the total.
+        assert!(llm_calls < total, "the gate avoids an LLM call on the confident nodes");
+        assert!(acc_cheap + rej_cheap > 0, "the cheap prior decides some nodes outright");
+    }
+
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
     // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
     // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.
