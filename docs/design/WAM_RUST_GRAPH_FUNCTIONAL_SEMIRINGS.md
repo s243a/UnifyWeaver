@@ -808,11 +808,26 @@ calibration of the relatedness read-out.)
 > tighter); the product is unbiased to `O(1/k)`. Exact while unsaturated and reducing to `sketch_card`
 > at `μ ≡ 1`. (This is *carry-weight KMV* — uniform hash + weight as side data — **not** Weighted
 > MinHash à la Ioffe 2010, which bakes the weight into the hash to estimate the weighted Jaccard
-> `J_w`; this sketch estimates weighted *mass*, not `J_w`. `k ≥ 2`; `D̂` is capped at the node count.)
+> `J_w`; this sketch estimates weighted *mass*, not `J_w`. `k ≥ 2` is required.)
 > `information_content_weighted_sketch` is the drop-in scalable IC (clamping the estimate at
 > `total_mu`, the mass analogue of the `.min(1.0)` ratio clamp). And this is exactly where membership
 > *matters* (per §-aside): a read-out over the *global* cone, not the per-pair caret (membership-
-> robust). Two global hooks the weighted sketch unlocks:
+> robust).
+>
+> *Cardinality-cap knob (`CardCap`).* `D̂ = (k−1)/ĥ_k` is unbounded in principle: a pathologically
+> tiny `ĥ_k` can blow it to `~10¹⁹`, polluting the raw mass and hub score. The read-outs take a
+> configurable cap — passable as the explicit enum *or* a bare number (`usize ⇒ Universe`, `f64 ⇒
+> Ceiling`):
+> - **`Universe(N)`** — cap at the node count. A cone (or union of cones) is `⊆` the graph, so
+>   `D̂ ≤ N` is an *exact, tight* bound that also clips ordinary KMV over-estimates, cutting variance
+>   near the root. **Recommended whenever `N` is known** (the usual case). Cost: pass `N`.
+> - **`Ceiling(c)`** — a fixed ceiling. For streaming / incrementally-built graphs where `N` is
+>   unknown or expensive, or when comparing cones *across* differently-sized graphs (a size-independent
+>   ceiling). A pure overflow guard if set well above any real cone. Default is `Ceiling(1e12)`.
+> - **`Uncapped`** — raw KMV; only when a downstream stage clamps anyway (the IC read-out already does
+>   `.min(total_mu)`) or in tests.
+>
+> Two global hooks the weighted sketch unlocks:
 > - **Leak-robust fan-in** (`sketch_mu_overlap`): the μ-weighted mass two cones *share* (Broder
 >   bottom-`k` intersection, weighted). A funnel hub is one many cones reach, but a weighted funnel
 >   discounts the associative leak — cones overlapping only on low-μ descendants score ≈ 0 — so hub

@@ -1659,6 +1659,63 @@ pub fn descendant_minhash_weighted(
     if sig.len() == nodes.len() { Some(sig) } else { None } // short => a cycle
 }
 
+/// **How to cap the KMV cardinality estimate** `D̂ = (k−1)/ĥ_k` in the μ-weighted read-outs. The KMV
+/// estimator is unbounded in principle, so a pathologically tiny `ĥ_k` (e.g. a `mix64` output of `1`
+/// ⇒ `ĥ_k ≈ 5.4e−20`) can blow `D̂` up to `~10¹⁹`, which then propagates into the raw mass and the
+/// hub-overlap score. This selects the cap *policy*; both choices are legitimate for different
+/// settings, so it is a knob, not a hard-coded constant.
+///
+/// - [`CardCap::Universe`]`(n)` — cap at the graph node count `N`. A distinct cone (or a union of
+///   cones) is a *subset* of the graph, so `D̂ ≤ N` is an **exact, tight** bound: it both contains the
+///   overflow and clips any ordinary KMV *over*-estimate back to a real ceiling, slightly cutting
+///   variance near the root (where the cone ≈ `N`). **Recommended whenever `N` is known** — which is
+///   the usual case, since you built the sketches from a known graph. Cost: you must pass `N`.
+/// - [`CardCap::Ceiling`]`(c)` — cap at a fixed value. Use when `N` is unknown or expensive to obtain
+///   (streaming / incrementally-built graphs), or when you are deliberately comparing cones *across*
+///   graphs of different sizes and want a size-independent ceiling. Set well above any real cone it is
+///   a pure overflow guard and never clips a valid estimate. The [`Default`] is `Ceiling(1e12)` — far
+///   above any realistic node count, so real data is untouched but a tiny-`ĥ_k` blow-up is contained.
+/// - [`CardCap::Uncapped`] — raw KMV, no cap. Only safe when a downstream stage clamps anyway (e.g.
+///   `information_content_weighted_sketch` already does `.min(total_mu)`), or in tests.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CardCap {
+    /// Cap `D̂` at the graph node count `N` (cone ⊆ graph ⇒ `D̂ ≤ N`). Tightest; needs `N`.
+    Universe(usize),
+    /// Cap `D̂` at a fixed ceiling. Caller-free overflow guard; no semantic tightening.
+    Ceiling(f64),
+    /// No cap (raw KMV). Only when a downstream stage clamps, or for testing.
+    Uncapped,
+}
+
+impl Default for CardCap {
+    /// Caller-free overflow guard: `Ceiling(1e12)`. Prefer [`CardCap::Universe`] when `N` is known.
+    fn default() -> Self { CardCap::Ceiling(1e12) }
+}
+
+// Numeric convenience: the read-outs take `impl Into<CardCap>`, so a caller may pass the explicit
+// enum *or* a bare number — a `usize` node count is read as the (recommended) `Universe(n)` cap, a
+// bare `f64` as a fixed `Ceiling(c)`. `sketch_mu_mass(s, k, n)` and `sketch_mu_mass(s, k, 1e12)` and
+// `sketch_mu_mass(s, k, CardCap::Uncapped)` are all valid.
+impl From<usize> for CardCap {
+    /// A plain node count ⇒ [`CardCap::Universe`] (the tight, recommended cap).
+    fn from(n: usize) -> Self { CardCap::Universe(n) }
+}
+impl From<f64> for CardCap {
+    /// A plain float ⇒ [`CardCap::Ceiling`] (a fixed overflow ceiling).
+    fn from(c: f64) -> Self { CardCap::Ceiling(c) }
+}
+
+impl CardCap {
+    /// Apply the cap policy to a raw KMV cardinality estimate.
+    fn apply(self, card: f64) -> f64 {
+        match self {
+            CardCap::Universe(n) => card.min(n as f64),
+            CardCap::Ceiling(c) => card.min(c),
+            CardCap::Uncapped => card,
+        }
+    }
+}
+
 /// Bottom-`k` **subset-sum** read-out: estimate `m_μ = Σ_{d∈cone} μ_d` from a μ-weighted sketch.
 /// While unsaturated (`< k` pairs kept) the cone is fully captured, so this is the **exact** sum.
 /// Once saturated it is a bottom-`k` *plug-in* subset-sum estimator `m̂_μ = D̂ · μ̄_sample` — the
@@ -1670,10 +1727,11 @@ pub fn descendant_minhash_weighted(
 /// weights, zero covariance), which is formally tighter. At `μ ≡ 1` it reduces exactly to
 /// `sketch_card`. Error is the KMV `∝ 1/√k` plus the `μ̄` sampling variance, both tunable by `k`.
 ///
-/// `n_universe` is the total node count — the cardinality `D̂` cannot exceed it (a distinct cone is a
-/// subset of the graph), so `D̂` is capped at `n_universe` to defend against a pathologically tiny
-/// `ĥ_k` blowing `(k−1)/ĥ_k` up to `~10¹⁹`. `k ≥ 2` (`k=1` makes `(k−1)/ĥ_k ≡ 0`).
-pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
+/// `cap` selects the cardinality-cap policy ([`CardCap`]) that defends against a pathologically tiny
+/// `ĥ_k` blowing `(k−1)/ĥ_k` up to `~10¹⁹`; `CardCap::Universe(N)` is the tight, recommended choice
+/// when the node count `N` is known. `k ≥ 2` (`k=1` makes `(k−1)/ĥ_k ≡ 0`).
+pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, cap: impl Into<CardCap>) -> f64 {
+    let cap = cap.into();
     debug_assert!(k >= 2, "k must be ≥ 2: k=1 makes (k−1)/ĥ_k ≡ 0 (mass 0 ⇒ IC 0), k=0 panics");
     if s.is_empty() {
         return 0.0;
@@ -1683,7 +1741,7 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
     }
     let hk = s[k - 1].0 as f64 / (u64::MAX as f64 + 1.0);
     let raw_card = if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk };
-    let card = raw_card.min(n_universe as f64); // cone ⊆ graph ⇒ D̂ ≤ N (caps tiny-ĥ_k overflow)
+    let card = cap.apply(raw_card); // see CardCap (caps tiny-ĥ_k overflow)
     let mean_w = s.iter().map(|&(_, w)| w).sum::<f64>() / s.len() as f64;
     card * mean_w
 }
@@ -1691,7 +1749,7 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
 /// Scalable **μ-weighted IC**: `information_content_weighted` fed by the sketch mass instead of the
 /// exact `descendant_mu_mass`. The drop-in large-graph form of partial-admission IC — same
 /// `−log₂(m_μ/M_μ)`, but `m_μ` is the `O((V+E)·k)` sketch estimate. `total_mu` is still the exact
-/// universe mass `Σ_all μ` (cheap: one pass over the μ-map); `n_universe` the node count (cone cap).
+/// universe mass `Σ_all μ` (cheap: one pass over the μ-map); `cap` the [`CardCap`] policy.
 /// The sketch estimate can overshoot `total_mu` by KMV sampling noise near the root (cone ≈ universe),
 /// so it is clamped at `total_mu` before the log — the mass analogue of `information_content`'s
 /// `.min(1.0)` ratio clamp.
@@ -1703,8 +1761,8 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
 /// the exact and sketch IC agree at *exactly* zero (both `+∞`) and in the bulk, but can diverge in a
 /// thin near-zero band — use the exact `descendant_mu_mass` path when the mass is near zero and the
 /// distinction matters.
-pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: usize, n_universe: usize) -> f64 {
-    information_content_weighted(sketch_mu_mass(s, k, n_universe).min(total_mu), total_mu)
+pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: usize, cap: impl Into<CardCap>) -> f64 {
+    information_content_weighted(sketch_mu_mass(s, k, cap.into()).min(total_mu), total_mu)
 }
 
 /// **μ-weighted cone-overlap mass** — the global-hub read-out. Estimates `Σ_{d∈A∩B} μ_d`, the
@@ -1724,10 +1782,11 @@ pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: u
 /// not an absolute mass** — it is high-variance in the low-overlap regime.
 ///
 /// **Precondition:** `a` and `b` must have been built with the *same* `k` (the Broder union-bottom-`k`
-/// argument requires it); mixing `k`s silently biases `D̂_∪`. `n_universe` caps `D̂_∪` (a union of
-/// cones is `⊆` the graph), defending against a tiny `ĥ_k` overflow exactly as in `sketch_mu_mass`.
-pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, n_universe: usize) -> f64 {
+/// argument requires it); mixing `k`s silently biases `D̂_∪`. `cap` is the [`CardCap`] policy for
+/// `D̂_∪` (a union of cones is `⊆` the graph), defending against a tiny `ĥ_k` overflow as in `sketch_mu_mass`.
+pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, cap: impl Into<CardCap>) -> f64 {
     use std::collections::HashMap;
+    let cap = cap.into();
     debug_assert!(k >= 2, "k must be ≥ 2");
     debug_assert!(a.len() <= k && b.len() <= k,
         "both sketches must be built with the same k; mixing k biases the union-card estimate");
@@ -1756,7 +1815,7 @@ pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, n_univers
     let union_card = if union.len() < k || hk <= 0.0 {
         union.len() as f64
     } else {
-        ((k as f64 - 1.0) / hk).min(n_universe as f64) // cap tiny-ĥ_k overflow (union ⊆ graph)
+        cap.apply((k as f64 - 1.0) / hk) // cap tiny-ĥ_k overflow (union ⊆ graph)
     };
     // jaccard-by-mass: (shared count / sample size) gives |A∩B|/|A∪B|; multiply by union mass-per-sample.
     let mean_shared_w = shared.iter().sum::<f64>() / shared.len() as f64;
@@ -4631,6 +4690,38 @@ mod tests {
         cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
         let cmu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0)].into_iter().collect();
         assert!(descendant_minhash_weighted(&cyc, &cmu, K).is_none(), "cycle ⇒ None");
+    }
+
+    // CardCap: the cardinality-cap policy is configurable as the explicit enum OR a bare numeric
+    // value (usize ⇒ Universe, f64 ⇒ Ceiling). A saturated cone of 21 nodes (all μ=1) lets a tiny
+    // ceiling visibly clip the estimate, proving the knob is live and the two numeric spellings map
+    // to the documented variants.
+    #[test]
+    fn card_cap_config_enum_and_numeric_forms() {
+        const K: usize = 4;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        mu.insert(0, 1.0);
+        for i in 1u32..=20 { g.insert(i, vec![0]); mu.insert(i, 1.0); } // cone(0) = 21 distinct, μ≡1
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let s = &w[&0];
+
+        let raw = sketch_mu_mass(s, K, CardCap::Uncapped);
+        assert!(raw > 5.0, "uncapped estimate tracks the true ~21-node cone, got {raw}");
+
+        // A deliberately tiny ceiling clips D̂ (hence mass, since mean_w=1) down to the ceiling.
+        let clipped = sketch_mu_mass(s, K, CardCap::Ceiling(2.0));
+        assert!((clipped - 2.0).abs() < 1e-9, "Ceiling(2.0) caps mass at 2 (mean_w=1), got {clipped}");
+        assert!(clipped < raw, "the tiny ceiling actually clips");
+
+        // Numeric convenience: bare f64 ⇒ Ceiling, bare usize ⇒ Universe.
+        assert_eq!(sketch_mu_mass(s, K, 2.0_f64), clipped, "bare f64 ⇒ Ceiling(2.0)");
+        assert_eq!(sketch_mu_mass(s, K, 2usize), sketch_mu_mass(s, K, CardCap::Universe(2)),
+            "bare usize ⇒ Universe(n)");
+        // Default is a high ceiling ⇒ no clip for a real cone.
+        assert_eq!(sketch_mu_mass(s, K, CardCap::default()), raw, "default high ceiling never clips real data");
+        // Overlap takes the same knob.
+        let _ = sketch_mu_overlap(s, s, K, CardCap::Universe(21));
     }
 
     // At scale the sketch is approximate (k << cone): build a wide tree, check the weighted-mass
