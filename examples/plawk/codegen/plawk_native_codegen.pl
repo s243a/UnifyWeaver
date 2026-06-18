@@ -29,6 +29,7 @@
 %  Emit the first native Phase-2 PLAWK driver shape:
 %
 %      /^PREFIX/ { print $0 }
+%      /LITERAL/ { print $0 }
 %      $N == "VALUE" { print $0 }
 %      $N == "VALUE" { print $M, $K }
 %      $N == "VALUE" { count++ } END { print count }
@@ -1865,6 +1866,8 @@ plawk_pattern_guard_ir(always, GuardIR) :-
 plawk_pattern_guard_ir(prefix(Prefix), GuardIR) :-
     llvm_emit_atom_prefix_guard(plawk_surface_prefix, '%line', Prefix,
         '%is_match', GuardIR).
+plawk_pattern_guard_ir(contains(Needle), GuardIR) :-
+    plawk_pattern_guard_ir(contains(Needle), 32, GuardIR).
 
 plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
     plawk_pattern_guard_ir(field_eq(Index, Value), 32, GuardIR).
@@ -1875,6 +1878,9 @@ plawk_pattern_guard_ir(always, _FieldSeparator, GuardIR) :-
     plawk_pattern_guard_ir(always, GuardIR).
 plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GuardIR) :-
     plawk_pattern_guard_ir(prefix(Prefix), GuardIR).
+plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GuardIR) :-
+    plawk_literal_contains_guard_ir(plawk_surface_contains, Needle, FieldSeparator,
+        '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         FieldSeparator, '%is_match', GuardIR).
@@ -1890,6 +1896,8 @@ plawk_pattern_guard_ir(always, _GlobalBase, MatchValue, GuardIR) :-
 plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_atom_prefix_guard(GlobalBase, '%line', Prefix, MatchValue,
         GuardIR).
+plawk_pattern_guard_ir(contains(Needle), GlobalBase, MatchValue, GuardIR) :-
+    plawk_pattern_guard_ir(contains(Needle), 32, GlobalBase, MatchValue, GuardIR).
 
 plawk_pattern_guard_ir(field_eq(Index, Value), GlobalBase, MatchValue, GuardIR) :-
     plawk_pattern_guard_ir(field_eq(Index, Value), 32, GlobalBase, MatchValue,
@@ -1902,6 +1910,9 @@ plawk_pattern_guard_ir(always, _FieldSeparator, GlobalBase, MatchValue, GuardIR)
     plawk_pattern_guard_ir(always, GlobalBase, MatchValue, GuardIR).
 plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_pattern_guard_ir(prefix(Prefix), GlobalBase, MatchValue, GuardIR).
+plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue,
+        GuardIR).
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
@@ -1909,6 +1920,15 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+
+plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue, GlobalIR-GuardCallIR) :-
+    format(atom(IndexBase), '~w_contains_index', [GlobalBase]),
+    llvm_emit_atom_field_index(GlobalBase, '%line', 0, Needle, FieldSeparator,
+        IndexBase, GlobalIR-IndexCallIR),
+    format(atom(GuardCallIR),
+'~w
+  ~w = icmp sgt i64 %~w, 0',
+        [IndexCallIR, MatchValue, IndexBase]).
 
 plawk_field_cmp_op_code(eq, 0).
 plawk_field_cmp_op_code(ne, 1).

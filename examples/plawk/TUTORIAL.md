@@ -123,11 +123,13 @@ The Phase 0 examples use the counter as `NR`, collect printed lines in
 The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
 fields, native field lengths such as `length($2)`, native byte substrings such as
 `substr($2, 1, 3)`, and `OFS`, matching the first awk-style example above. It can
-also print explicit numeric field coercions with `int($N)`, where missing or
-non-numeric fields become `0`, and the first arithmetic composition forms add
-or subtract a non-negative integer constant from native `i64` primaries such as
-`NR`, `NF`, `length($N)`, and `int($N)`. It can also compile a scalar counter
-and an `END` action:
+also compile literal contains-pattern rules such as `/disk/ { print $0 }`, where
+the current `/.../` subset treats the body as a literal byte substring unless it
+uses the existing `^` prefix fast path. It can also print explicit numeric field
+coercions with `int($N)`, where missing or non-numeric fields become `0`, and
+the first arithmetic composition forms add or subtract a non-negative integer
+constant from native `i64` primaries such as `NR`, `NF`, `length($N)`, and
+`int($N)`. It can also compile a scalar counter and an `END` action:
 
 ```awk
 $1 == "ERROR" { count++ } END { print count }

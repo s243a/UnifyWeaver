@@ -25,6 +25,10 @@ test(parses_prefix_print_rule) :-
     plawk_parse_string("/^ERROR/ { print $0 }\n", Program),
     assertion(Program == program([], [rule(prefix("ERROR"), [print([field(0)])])], [])).
 
+test(parses_literal_pattern_print_rule) :-
+    plawk_parse_string("/disk/ { print $0 }\n", Program),
+    assertion(Program == program([], [rule(contains("disk"), [print([field(0)])])], [])).
+
 test(parses_field_eq_print_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print $0 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [print([field(0)])])], [])).
@@ -442,6 +446,16 @@ test(surface_prefix_prints_matching_records) :-
     run_surface_print_smoke("/^ERROR/ { print $0 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "ERROR disk full\nERROR net down\n").
+
+test(surface_literal_pattern_prints_containing_records) :-
+    run_surface_print_smoke("/disk/ { print $0 }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "ERROR disk full\n").
+
+test(surface_literal_pattern_counts_containing_records) :-
+    run_surface_print_smoke("/disk/ { hits++ } END { print hits }\n",
+        "INFO boot ok\nERROR disk full\nWARN disk hot\nERROR net down\n",
+        "2\n").
 
 test(surface_field_eq_prints_matching_records) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print $0 }\n",
@@ -952,6 +966,15 @@ test(surface_assoc_counts_long_record_first_field) :-
     format(string(Input), 'KEY ~w~n', [Payload]),
     run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"KEY\"] }\n",
         Input, "1\n").
+
+test(surface_literal_pattern_uses_native_index_guard) :-
+    plawk_parse_string("/disk/ { print $0 }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fsurface_5Fcontains = private constant [5 x i8] c"disk\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_surface_contains_contains_index = call i64 @wam_atom_field_index_value(%Value %line, i64 0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%is_match = icmp sgt i64 %plawk_surface_contains_contains_index, 0'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_assoc_counts_use_runtime_table) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
