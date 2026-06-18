@@ -178,6 +178,20 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
   consult the LLM — 58% of the LLM calls saved**; a stronger embedding prior would widen the
   confident bands and shrink the consulted middle further. This is the same "cheap signal broadly,
   expensive signal only where uncertain" pattern as the reconstruction gate's Monte-Carlo fallback.
+- **The gate is tier-agnostic — it can be a *model cascade*** (`wikipedia_model_cascade_haiku_then_
+  sonnet`). The two stages need not be embedding+LLM: a cheap *model* (Haiku) handles the bulk and a
+  strong *model* (Sonnet) is invoked **only on the cheap model's uncertain band** (`μ∈(0.3,0.7)`) —
+  an `n`-tier cascade in the limit. Measured: Haiku decides **71/90 (79%)** outright; the **19**
+  escalated nodes go to Sonnet, which is markedly more discriminating (band score spread `σ`: Haiku
+  `0.061` → Sonnet `0.160`) and **resolves 12 of the 19** decisively — un-clustering Haiku's `0.5`
+  pile (pure chemistry `Arsenic 0.1`, `Pnictogens 0.05`; engineering `Electric_vehicles 0.1`; vs
+  physics-adjacent `Astronomical_objects 0.7`, `Electronics 0.55`).
+- **Batch-size caveat on the savings.** The escalation only pays off if the escalated band is large
+  enough to amortize the *sunk cost* of a call — the system prompt + invocation overhead. Rule of
+  thumb: a batch should be **at least as large as the fixed (system-prompt) cost**, so the fixed
+  overhead is ≤ half the call; ideally `band ≫ sunk_cost` so the marginal per-item cost dominates.
+  A gate that escalates *too few* items per batch spends mostly fixed cost on each escalation and
+  erodes its own win — so the band, the batch size, and the tier-cost ratio should be sized together.
 
 Still future work: **membership-weighted read-outs** — carry `μ` as a per-node weight into the
 functionals (`μ`-weighted Resnik/Lin that down-weights borderline ancestors in the MICA search, or

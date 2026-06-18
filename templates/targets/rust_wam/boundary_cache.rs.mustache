@@ -3894,6 +3894,55 @@ mod tests {
         assert!(acc_cheap + rej_cheap > 0, "the cheap prior decides some nodes outright");
     }
 
+    // The gate is TIER-AGNOSTIC: the two stages need not be embedding+LLM — they can be two models,
+    // a cheap one for the bulk and a strong one only on the near-misses (an n-tier cascade in the
+    // limit). Here: Haiku (UW_FUZZY_NODES) decides the confident nodes; the Haiku-uncertain band
+    // (μ∈[0.3,0.7]) escalates to Sonnet (UW_SONNET_BAND), which is more discriminating and RESOLVES
+    // most of it. Gated on those two fixtures (skips in CI).
+    #[test]
+    fn wikipedia_model_cascade_haiku_then_sonnet() {
+        let haiku = match std::env::var("UW_FUZZY_NODES").ok() { Some(p) => p, None => { eprintln!("cascade: skip"); return; } };
+        let sonnet = match std::env::var("UW_SONNET_BAND").ok() { Some(p) => p, None => { eprintln!("cascade: skip"); return; } };
+        let load = |path: &str| -> HashMap<String, f64> {
+            std::fs::read_to_string(path).expect("read fixture").lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .filter_map(|l| { let mut it = l.split('\t');
+                    match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                        (Some(n), Some(mu)) => Some((n.trim().to_string(), mu)), _ => None } })
+                .collect()
+        };
+        let (h, s) = (load(&haiku), load(&sonnet));
+        let confident = |mu: f64| mu <= 0.3 || mu >= 0.7;
+        // Tier 1: Haiku decides the confident nodes; the uncertain band escalates to Sonnet.
+        let (mut by_haiku, mut escalated, mut resolved_by_sonnet) = (0, 0, 0);
+        for (name, &mu) in &h {
+            if confident(mu) { by_haiku += 1; }
+            else {
+                escalated += 1;
+                // Sonnet's score; "resolved" = it moved the node OUT of the ambiguous band.
+                if let Some(&sm) = s.get(name) { if confident(sm) { resolved_by_sonnet += 1; } }
+            }
+        }
+        let total = h.len();
+        eprintln!("cascade: {} nodes | Haiku decided {} ({:.0}%) | escalated to Sonnet {} | Sonnet resolved {} of those",
+            total, by_haiku, 100.0 * by_haiku as f64 / total as f64, escalated, resolved_by_sonnet);
+        // Sonnet is more decisive on the band: its scores spread WIDER than Haiku's (it un-clusters
+        // the 0.5 pile), measured by std-dev over the shared band nodes.
+        let band: Vec<&String> = h.iter().filter(|(_, &mu)| !confident(mu)).map(|(n, _)| n)
+            .filter(|n| s.contains_key(*n)).collect();
+        let std = |f: &dyn Fn(&String) -> f64| -> f64 {
+            let xs: Vec<f64> = band.iter().map(|n| f(n)).collect();
+            let m = xs.iter().sum::<f64>() / xs.len() as f64;
+            (xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / xs.len() as f64).sqrt()
+        };
+        let (sd_h, sd_s) = (std(&|n| h[n]), std(&|n| s[n]));
+        eprintln!("cascade: band score spread  Haiku σ={:.3}  Sonnet σ={:.3} (wider ⇒ more decisive)", sd_h, sd_s);
+
+        assert!(escalated < total, "the cheap tier decides the confident majority");
+        assert!(resolved_by_sonnet * 2 >= escalated, "the strong tier resolves most of the escalated band");
+        assert!(sd_s > sd_h, "the strong tier is more decisive (wider score spread) on the band");
+    }
+
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
     // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
     // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.

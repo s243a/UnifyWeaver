@@ -1,0 +1,33 @@
+# Strong-tier (Sonnet) re-scores of the Haiku-UNCERTAIN band (μ ∈ [0.3,0.7]) — the model cascade.
+#
+# Format: `node<TAB>mu`. Only the 26 nodes Haiku was uncertain about (the band) were escalated to
+# the stronger model; the confident 64 stayed with Haiku. Sonnet is markedly more discriminating —
+# it separated pure chemistry (Arsenic 0.1, Pnictogens 0.05, Metalloids 0.1) and
+# engineering/transport (Electric_vehicles 0.1, Propulsion 0.25) from physics-adjacent
+# (Astronomical_objects 0.7, Electronics 0.55), un-clustering Haiku's 0.5 pile. LLM-curated.
+Fire	0.35
+Fires	0.1
+Ice	0.4
+Electric_vehicles	0.1
+Chemical_elements	0.35
+Physical_objects	0.4
+Noble_gases	0.45
+Noble_gas_compounds	0.25
+Arsenic	0.1
+Oxygen	0.2
+Alternative_energy	0.2
+Breathing_gases	0.05
+Oxygen_compounds	0.1
+Arsenic_compounds	0.05
+Electricity_distribution	0.15
+Electrification	0.15
+Vision	0.2
+Groups_(periodic_table)	0.15
+Causality	0.45
+Propulsion	0.25
+Astronomical_objects	0.7
+Planets	0.6
+Earth	0.5
+Pnictogens	0.05
+Electronics	0.55
+Metalloids	0.1
