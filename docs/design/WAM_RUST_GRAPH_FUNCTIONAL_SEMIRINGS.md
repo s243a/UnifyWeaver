@@ -521,6 +521,140 @@ caching, the **designated-bridge** measure is cacheable.
 > "common ancestor") is **robust** — pick the union hubs and go — while the nested-cut
 > factorisation (needs "dominator") is **fragile**, which is the deeper reason it is deferred.
 
+> **Defining "downward convergence" *cheaply* — and *non-circularly*.** Bridge selection (1)
+> asks us to score nodes by how much the hierarchy funnels through them. The honest constraint
+> is sharper than "make it fast": the score must **not call the very upward distance work the
+> bridges exist to amortize**. The natural definition — *descendant-cone size*, `|desc(B)|` —
+> needs reachability (a global per-node traversal); and ranking candidate bridges by
+> `caret_through_bridge` is the same circularity wearing a hat (it runs `up_distance_to` at
+> every candidate). Both are rejected: they spend exactly what hubs were meant to save. What is
+> left must be **structural and local**, readable *before* any query.
+>
+> - **The true signal is a cone-size *step*, not a large cone.** A hub is where the descendant
+>   cone drops off sharply as you descend through it: large at `B`, but each child just below
+>   carries only a slice. That dropoff *is* the right characterization — and its exact form
+>   (cone size at every node) is the reachability we are refusing. So we take its **cheap
+>   shadows**, in two rungs.
+> - **Rung 1 — local fan-in (free, cycle-robust).** `fanin[B] = #{v : B ∈ parents[v]}`, the
+>   in-degree in the child→parent graph. It is the *first derivative* of the dropoff: it counts
+>   *how many* cones merge at `B` in one hop without summing their sizes. One pass over the
+>   `parents` map we already hold — on the boundary-sweep path it is just `children[B].len()`,
+>   already materialized, so the score costs **nothing extra**. It reads no distance, so it
+>   cannot be circular, and it is well-defined even with cycles. Its blind spot: *branchiness
+>   only* — two giant subtrees merging is `fanin = 2` yet a huge step.
+>   (`convergence_fanin`, `hubs_by_fanin`.)
+> - **Rung 2 — additive descendant weight (one pass, magnitude-aware).** `w(B) = 1 + Σ_{c ∈
+>   children(B)} w(c)` in reverse-topological order recovers the *magnitude* fan-in misses. It
+>   **over-counts diamonds** (a descendant on two paths is counted twice) — but that over-count
+>   is precisely the price of dodging distinct-set reachability, and it is a single **O(V+E)**
+>   sweep, not per-node BFS. The dropoff is then `jump(B) = w(B) − max_c w(c)` — a leaf jumps
+>   `1`, a hub merging several heavy subtrees jumps large. Needs a DAG (a reverse-topo order);
+>   `None` on a cycle — so rung 1 is the cyclic-graph fallback. (`descendant_weight`,
+>   `convergence_jump`.)
+> - **Rung 3 — parent reconvergence (the ancestor-side definition).** The two rungs above read
+>   the *descendant* cone (down from `B`); the sharpest hub definition reads the *ancestor* cone
+>   (up from `B`). The signature: ascending one level from `B` loses **far fewer distinct
+>   ancestors than the parent branching factor `b = |parents(B)|` predicts**, because the
+>   parents' upward cones *overlap* — the lineage re-merges above. The deficit (expected-from-`b`
+>   minus actual) *is* the convergence; `b` large with a big deficit is a hub, `b` large with
+>   none is just a fan. The exact deficit is reachability again — and note the additive
+>   ancestor-weight is no help, it *is* the disjoint/branching-factor expectation, blind to
+>   overlap, so a separate overlap-sensitive probe is required. The cheap one is **local**:
+>   overlapping parents first share **grandparents**, so probe each parent's bounded `up_hops`-
+>   deep up-cone and measure their overlap. `up_hops = 1` is "do the parents share grandparents"
+>   (a 2-hop neighbourhood, no walk to root); `up_hops → ∞` is the exact deficit. `up_hops` is
+>   the cost/sensitivity knob, and the depth bound makes it cycle-safe. (`parent_reconvergence`,
+>   returning the *duplicate-mass fraction* `overlap/total_mass = o/(Σsᵢ)` in `[0,1]` — **not**
+>   a Jaccard `o/(Σsᵢ−o)`; for two identical cones it returns `1/2`, intentionally, to avoid
+>   Jaccard's denominator instability near `o ≈ Σsᵢ`.)
+> - **Rung 4 — ancestor sketch + small-world lift (height-agnostic, baseline-corrected).** The
+>   fixed-`up_hops` probe of rung 3 has a fatal flaw: it only sees a crossover *within* `k`
+>   hops, but the **crossover height is unknown and varies per node** — too small misses deep
+>   hubs, too large walks to root (the reachability we refuse). Worse, in a **small-world**
+>   graph the up-cones cover most of the graph within a few hops, so *raw* overlap (at any `k`,
+>   even exact) approaches 1 for **every** pair — it measures "are we in a small world," not "is
+>   `B` a funnel." Two fixes, both O(k): (a) **height-agnosticism** — summarize each node's
+>   *whole* lineage to root once, as a fixed-size **KMV/MinHash ancestor sketch**
+>   `sig(B) = bottom-k( {B} ∪ ⋃_p sig(p) )`, one root→leaf pass; overlap (`sketch_jaccard`) is
+>   then read at *any* depth with no knob (error ∝ 1/√k, not a depth cutoff). (b) **baseline
+>   correction** — a real hub reconverges *more than chance*: against the configuration-model
+>   null `E|A∩B| ≈ |A|·|B|/N`, the signal is `lift = observed |A∩B| / E|A∩B|` (`sketch_overlap_
+>   lift`), `>1` an excess funnel, `≈1` just small-world background. The sketch yields `|A|`,
+>   `|B|` *and* `|A∩B|` from the same reads, so height-agnostic detection and the small-world
+>   correction share one precompute. This is the §6 kernel trick literally applied: the ancestor
+>   *set* is the never-materialized feature map, the sketch its inner-product handle. (`None` on
+>   a cycle — SCC-condense first, since a cycle's nodes share their entire up-cone.)
+> - **The min-over-hubs caret is then quantized-LCA.** With hubs *cheaply* pre-selected (by
+>   fan-in / jump / reconvergence / lift, **no distances**), `caret_min_over_hubs(u, v, hubs) = minᵦ
+>   caret_through_bridge(u, v, B)` picks the hub giving the least distance. The only distance
+>   work runs over the *already-chosen small* hub set — bounded by hub count, not by ranking the
+>   whole graph — so selection stays free and only the final min-pick costs anything. With
+>   **every** node a hub it equals `caret_distance_lca` exactly (the unquantized shortest-path
+>   caret); with a sparser hub set it is that caret **quantized up to the nearest hub level**,
+>   larger by the gap `2·d(LCA→nearest hub)` of §5b. Tightness (low, dense hubs → small gap)
+>   trades against reuse (high, sparse hubs → one field serves more pairs) — and *that* knob,
+>   unlike the cone size, is chosen with arithmetic we already paid for.
+
+### 5d. Two regimes: the per-pair mixing boundary (primary) vs the global hub measure (deferred)
+
+The rungs of §5c quietly answered the *global* question — "which nodes are good bridges for
+*any* pair." But that conflates two problems, and the **per-pair** one (the original
+`d_eff`-style query, "distance between *these two* nodes") is both primary and *easier*.
+
+**Per-pair: search only the mixing boundary.** For a fixed pair the relevant bridges live in
+the **common-ancestor space** `CA(u,v) = anc(u) ∩ anc(v)`, which is upward-closed (once the two
+lineages mix, everything above is common). The minimum caret is achieved on its **lower
+boundary** — the lowest common ancestors, i.e. a node that is "mixed" (both lineages reach it)
+yet has **at least one child still in a single lineage**. Every node above the boundary only
+adds `2` per level (§5b), so it can never win the `min`. This gives an *exact, precompute-free*
+algorithm that **does not climb to the root**: expand the joint up-BFS from `u` and `v` in
+lockstep by radius `r`, and stop once the best matched sum `≤ r+1` (any *unmatched* common
+ancestor has far-side depth `≥ r+1`, hence sum `≥ r+1`, so it cannot beat the best). The search
+radius is bounded by `max(d(u→LCA*), d(v→LCA*))` — in the **balanced** case `≈ caret/2`, but for
+an **asymmetric** pair (one node *is* the LCA) the near side speculatively climbs *above* the
+LCA up to `≈ caret` before the stop fires (it cannot know it is the LCA until the far side
+arrives). In every case it stays near the common-ancestor space rather than the height to root —
+on a tall stem with a low fork it touches a handful of nodes where the full-cone
+`caret_distance_lca` touches the whole stem — but the **worst-case** node-visit count is still
+`O(V+E)` for graphs with wide upward frontiers. (`caret_distance_lca_boundary[_counted]`.) This is the honest framing of §5c: the
+global hub set is an *approximate, reusable stand-in* for this boundary, justified only when
+**batching many pairs** amortizes its precompute; for a one-off pair, just search the boundary.
+
+**Global hub measure — deferred, and the following is a *conjecture*, not a result.** The
+global question ("rank all nodes as generic bridges") is harder, because — as the §5c rungs
+keep running into — *some* fan-in is near-universal (any multi-parent node reconverges
+*somewhere*), so raw merge counts do not discriminate. The missing ingredient is the **semantic
+diversity** of what merges: a node is a good *generic* bridge only if its parents (or the child
+populations it joins) span genuinely *different* regions, so it sits on the boundary for *many
+diverse* pairs rather than for near-duplicates. A speculative way to score that with category
+**embeddings**: stack a node's parent vectors into a matrix `M` and take its singular values
+`σ₁ ≥ σ₂ ≥ …`. The *product* of the top few, `∏σᵢ = √det(MMᵀ)`, is the determinantal-diversity
+(DPP / Gram-volume) measure used elsewhere for "diverse subset" scoring — the **volume** the
+parents span in semantic space. But the raw volume conflates *magnitude* (parent count, vector
+norms) with *spread*, so the better diversity score is the **geometric mean** of the top few,
+`(∏₁ᵏ σᵢ)^{1/k}` — the volume *normalized per dimension*, i.e. the average semantic spread per
+effective axis, **decoupled from count**. That cleanly separates the two factors a good hub
+wants: the geometric mean is the pure **diversity** term, and the **parent count `p`** is the
+separate **magnitude** term — a combined score would multiply them (`p · geomean`), rather than
+let a high count masquerade as diversity. A natural truncation rank `k` is the **size-biased
+mean parent count** `E[p²]/E[p]` (the effective branching seen along a random edge), `≈ 4` for
+Wikipedia — so "geometric mean of the top-4 singular values, times parent count" is the first
+guess. **Caveat:** this is an *ad-hoc proposal*; the truncation rank, parents-vs-child-centroids,
+and the count/diversity weighting are all unvalidated, and it presumes a meaningful embedding.
+Recorded as a future direction, not a recommendation.
+
+**Known limitation of the rung-4 lift null (deep DAGs).** The configuration-model null
+`E|A∩B| ≈ |A|·|B|/N` assumes *independent* ancestor membership, which a strongly hierarchical
+DAG violates: ancestor-set sizes grow as `Θ(branching^depth)`, so for deep nodes `|A|·|B|/N` can
+**exceed** the actual intersection, driving `lift < 1` (or undefined) even for genuine hubs. The
+null is therefore calibrated only for shallow/sparse hierarchies; for deep, high-branching DAGs
+the **absolute** lift values are unreliable, though the **ranking** of hubs against each other
+stays usable (the bias is roughly monotone in depth). The Gene Ontology semantic-similarity
+literature avoids this with an **information-content** null instead — `IC(t) = −log₂ P(node
+annotated under t)`, with similarity read from the IC of the LCA (Resnik 1995; Lin 1998) — a
+depth-aware baseline that does not inflate. For calibrated absolute scores, an IC-style null is
+the principled replacement; for bridge *selection* (a ranking), the current lift suffices.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only

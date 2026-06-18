@@ -624,6 +624,93 @@ pub fn caret_distance_budgeted(
         .min()
 }
 
+/// **Boundary-restricted** caret — the same value as `caret_distance_lca`, but the joint
+/// up-search **stops at the mixing boundary** (the lowest common ancestors) instead of
+/// expanding both ancestor cones all the way to the root.
+///
+/// `caret_distance_lca` builds the *entire* up-cone of `u` and of `v` and intersects — it
+/// always walks to root, even when the lineages merge one hop up. But the minimum
+/// `min_B (d(u→B)+d(v→B))` is achieved on the **merge frontier** (a common ancestor with a
+/// child still in a single lineage); every node above the frontier only adds `2` per level, so
+/// it can never win the `min`. So expand both BFSs in lockstep by radius `r` and stop once the
+/// best matched sum `≤ r+1`: any *unmatched* common ancestor has its far-side depth `≥ r+1`,
+/// hence sum `≥ r+1`, so it cannot beat the best. The search radius is bounded by
+/// `max(d(u→LCA*), d(v→LCA*))` — in the **balanced** case (both nodes equidistant from the
+/// LCA) this is `≈ caret/2`; for an **asymmetric** pair (one node *is* the LCA) it runs up to
+/// `≈ caret`. Either way the search never climbs above the common-ancestor space, so on a tall
+/// narrow cone with a low fork it is dramatically less than full expansion — but the
+/// **worst-case** node-visit count is still `O(V+E)` for graphs with wide upward frontiers.
+/// Returns `(caret, nodes_visited)`; the count is what the test uses to show the cone is never
+/// entered above the boundary.
+pub fn caret_distance_lca_boundary_counted(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> (Option<u32>, usize) {
+    use std::collections::{HashMap, HashSet};
+    let mut du: HashMap<u32, u32> = HashMap::new();
+    let mut dv: HashMap<u32, u32> = HashMap::new();
+    du.insert(u, 0);
+    dv.insert(v, 0);
+    let mut fu: Vec<u32> = vec![u]; // u-side frontier at depth r
+    let mut fv: Vec<u32> = vec![v];
+    let mut best: Option<u32> = None;
+    let relax = |best: &mut Option<u32>, s: u32| {
+        *best = Some(best.map_or(s, |x| x.min(s)));
+    };
+    // r = 0: only u == v matches here (sum 0). If u is a strict ancestor of v (or vice versa)
+    // the bootstrap does not fire; the BFS finds it later as the far side climbs.
+    if let Some(&b) = dv.get(&u) { relax(&mut best, b); }
+    if let Some(&a) = du.get(&v) { relax(&mut best, a); }
+    let mut r = 0u32;
+    loop {
+        if let Some(bst) = best {
+            if bst <= r + 1 { break; } // no unmatched ancestor can have sum < r+1
+        }
+        if fu.is_empty() && fv.is_empty() { break; }
+        let mut nu: Vec<u32> = Vec::new();
+        for &x in &fu {
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !du.contains_key(&p) {
+                        du.insert(p, r + 1);
+                        nu.push(p);
+                        if let Some(&b) = dv.get(&p) { relax(&mut best, (r + 1) + b); }
+                    }
+                }
+            }
+        }
+        let mut nv: Vec<u32> = Vec::new();
+        for &x in &fv {
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !dv.contains_key(&p) {
+                        dv.insert(p, r + 1);
+                        nv.push(p);
+                        if let Some(&a) = du.get(&p) { relax(&mut best, a + (r + 1)); }
+                    }
+                }
+            }
+        }
+        fu = nu;
+        fv = nv;
+        r += 1;
+    }
+    let mut visited: HashSet<u32> = du.keys().copied().collect();
+    for k in dv.keys() { visited.insert(*k); }
+    (best, visited.len())
+}
+
+/// Boundary-restricted caret distance (value only); see `caret_distance_lca_boundary_counted`.
+/// Equals `caret_distance_lca` exactly, but stops the joint search at the mixing boundary.
+pub fn caret_distance_lca_boundary(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    caret_distance_lca_boundary_counted(u, v, parents).0
+}
+
 /// Composite caret distance **through a designated bridge** `bridge`: `d(u→bridge) +
 /// d(v→bridge)`, the length of the `∧`-path forced through a *chosen reference node*.
 /// `None` unless `bridge` is an ancestor of **both** `u` and `v` (the path must exist).
@@ -673,6 +760,401 @@ pub fn up_distance_to(
         }
     }
     None
+}
+
+/// **Downward-convergence score = local fan-in**, the cheap, *non-circular* hub metric.
+///
+/// A good caret bridge is a **union/merge category**: a node many child categories point
+/// directly up into. The exact "funnel" — how many nodes have `B` as an ancestor (the
+/// descendant cone) — needs reachability, the very global upward work the bridges are meant
+/// to amortize; ranking candidate bridges by `caret_through_bridge` is the same circularity
+/// (it calls `up_distance_to` at every candidate). We refuse both. The **local in-degree**,
+/// `fanin[B] = #{v : B ∈ parents[v]}`, is the structural proxy: it never reads a distance, it
+/// is a property of the node (not of a `(u,v)` pair), and it falls out of one pass over the
+/// `parents` map we already hold — on the boundary-sweep path it is just `children[B].len()`,
+/// already materialized, so the score costs nothing extra. The trade is explicit: fan-in is
+/// the *local* convergence signal, not the true descendant funnel; we accept the proxy
+/// precisely because the exact funnel is the computation we are trying to avoid.
+///
+/// Note the absent-means-zero convention: nodes with **zero** fan-in (pure leaves — never
+/// anyone's parent) are **absent** from the returned map, not present with value `0`. Callers
+/// must treat a missing key as fan-in `0` (e.g. `fanin.get(&b).copied().unwrap_or(0)`).
+pub fn convergence_fanin(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashMap<u32, u32> {
+    let mut fanin: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for ps in parents.values() {
+        for &p in ps {
+            *fanin.entry(p).or_insert(0) += 1;
+        }
+    }
+    fanin
+}
+
+/// Select hub bridges by the cheap `convergence_fanin` score: nodes whose local fan-in is at
+/// least `min_fanin`. Selection reads **no distances** — only the precomputed structural
+/// scores — so it is free to run before any query, and the result is the small candidate set
+/// `caret_min_over_hubs` ranges over.
+pub fn hubs_by_fanin(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    min_fanin: u32,
+) -> Vec<u32> {
+    let mut hubs: Vec<u32> = convergence_fanin(parents)
+        .into_iter()
+        .filter(|&(_, f)| f >= min_fanin)
+        .map(|(b, _)| b)
+        .collect();
+    hubs.sort_unstable();
+    hubs
+}
+
+/// Select hubs by the rung-2 `convergence_jump` score: nodes whose cone-size dropoff is at
+/// least `min_jump`. `None` on a cyclic graph (jump is DAG-only) — fall back to `hubs_by_fanin`,
+/// which is cycle-robust. The selection itself reads no distances, like the others.
+pub fn hubs_by_jump(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    min_jump: u64,
+) -> Option<Vec<u32>> {
+    let mut hubs: Vec<u32> = convergence_jump(parents)?
+        .into_iter()
+        .filter(|&(_, j)| j >= min_jump)
+        .map(|(b, _)| b)
+        .collect();
+    hubs.sort_unstable();
+    Some(hubs)
+}
+
+/// Select hubs by the rung-4 ancestor-sketch **lift**: nodes whose parents reconverge above the
+/// small-world baseline — scored by the **max** pairwise `sketch_overlap_lift` over the node's
+/// parents — at least `min_lift`. Takes the precomputed sketches (`ancestor_minhash`) and the
+/// universe size `n_total`; reads no distances. A node with fewer than two parents cannot
+/// reconverge and is never selected.
+pub fn hubs_by_lift(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    sigs: &std::collections::HashMap<u32, Vec<u64>>,
+    n_total: usize,
+    k: usize,
+    min_lift: f64,
+) -> Vec<u32> {
+    let mut hubs: Vec<u32> = Vec::new();
+    for (&b, ps) in parents {
+        if ps.len() < 2 {
+            continue;
+        }
+        let mut best = 0.0f64;
+        for i in 0..ps.len() {
+            for j in (i + 1)..ps.len() {
+                if let (Some(a), Some(c)) = (sigs.get(&ps[i]), sigs.get(&ps[j])) {
+                    best = best.max(sketch_overlap_lift(a, c, n_total, k));
+                }
+            }
+        }
+        if best >= min_lift {
+            hubs.push(b);
+        }
+    }
+    hubs.sort_unstable();
+    hubs
+}
+
+/// **Quantized-LCA caret**: minimise `caret_through_bridge` over a *pre-selected* hub set.
+///
+/// This is the "choose the hub that gives the minimum distance" primitive. Crucially the only
+/// distance work runs over the hubs `hubs_by_fanin` already chose — bounded by the hub count,
+/// not by the graph — so the expensive part is paid once, on a small set, not per candidate
+/// across the whole DAG. With **every** node a hub it equals `caret_distance_lca` exactly (the
+/// unquantized shortest-path caret); with a sparser hub set it returns a valid **upper bound**
+/// on it. When a selected hub `h` lies above the optimal LCA `l` and both shortest paths
+/// `u→h` and `v→h` pass *through* `l` (always so on a tree), the gap is exactly
+/// `2·d(l→h)` — the LCA caret quantized to the nearest hub level. On a general DAG (multiple
+/// LCAs, or divergent paths to `h`) the result is still a valid upper bound but the gap need
+/// not simplify to that expression. `None` if no hub is a common ancestor of both `u` and `v`.
+pub fn caret_min_over_hubs(
+    u: u32,
+    v: u32,
+    hubs: &[u32],
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    hubs.iter()
+        .filter_map(|&b| caret_through_bridge(u, v, b, parents))
+        .min()
+}
+
+/// **Additive descendant weight** — the cheap, magnitude-aware cone-size proxy.
+///
+/// A hub is where the descendant cone *steps*: large at `B`, but each child just below carries
+/// only a slice, so the cone drops off sharply descending through `B`. The exact cone size is
+/// reachability (the expensive global work we refuse); fan-in sees the *branchiness* of that
+/// step but not its *magnitude* (two giant subtrees merging is fan-in 2 yet a huge drop). This
+/// recovers magnitude in **one reverse-topological pass**, no per-node BFS, no reachability:
+/// `w(B) = 1 + Σ_{c ∈ children(B)} w(c)`. It **over-counts diamonds** — a descendant reachable
+/// by two paths is counted twice — but that over-count is exactly the price of avoiding the
+/// distinct-set reachability, and the whole sweep is O(V+E). The dropoff at `B` is then
+/// `w(B) − max_c w(c)` (see `convergence_jump`). Returns `None` if the graph has a cycle
+/// (a reverse-topo order does not exist); fan-in, by contrast, is cycle-robust. `u64` because
+/// the diamond over-count can grow fast — for an adversarial stack of `n` diamonds it is
+/// `~2^(n/2)` and would overflow `u64` past ~60 levels, so the accumulation uses **saturating**
+/// arithmetic: beyond that the score pins at `u64::MAX` (still a valid "very large" ranking)
+/// rather than wrapping or panicking. Real type/category hierarchies are nowhere near this.
+pub fn descendant_weight(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<std::collections::HashMap<u32, u64>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps {
+            nodes.insert(p);
+            children.entry(p).or_default().push(c);
+        }
+    }
+    // pending[B] = #children of B not yet finalized; process a node once all its children are.
+    let mut pending: HashMap<u32, usize> = nodes
+        .iter()
+        .map(|&n| (n, children.get(&n).map_or(0, |v| v.len())))
+        .collect();
+    let mut q: VecDeque<u32> = pending
+        .iter()
+        .filter(|&(_, &c)| c == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    let mut w: HashMap<u32, u64> = HashMap::new();
+    while let Some(b) = q.pop_front() {
+        let sum: u64 = children
+            .get(&b)
+            .map_or(0, |cs| cs.iter().fold(0u64, |a, c| a.saturating_add(w[c])));
+        w.insert(b, 1u64.saturating_add(sum));
+        if let Some(ps) = parents.get(&b) {
+            for &p in ps {
+                let e = pending.get_mut(&p).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(p);
+                }
+            }
+        }
+    }
+    if w.len() == nodes.len() { Some(w) } else { None } // short of all nodes => a cycle
+}
+
+/// The **cone-size dropoff** at each node: `jump(B) = w(B) − max_{c ∈ children(B)} w(c)`, the
+/// magnitude of the step the cone takes crossing `B` upward. A leaf has `jump = 1`; a hub
+/// merging several heavy subtrees has a large jump — the magnitude-aware hub signal fan-in
+/// approximates by count alone. Built from `descendant_weight`, so it shares the one-pass cost
+/// and the DAG-only / diamond-over-count caveats; `None` on a cyclic graph.
+pub fn convergence_jump(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<std::collections::HashMap<u32, u64>> {
+    use std::collections::HashMap;
+    let w = descendant_weight(parents)?;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &p in ps {
+            children.entry(p).or_default().push(c);
+        }
+    }
+    let mut jump: HashMap<u32, u64> = HashMap::new();
+    for (&b, &wb) in &w {
+        let max_child = children
+            .get(&b)
+            .map_or(0, |cs| cs.iter().map(|c| w[c]).max().unwrap_or(0));
+        jump.insert(b, wb.saturating_sub(max_child)); // saturating: weights may pin at u64::MAX
+    }
+    Some(jump)
+}
+
+/// **Parent reconvergence** — the convergence signal in the *ancestor* (up) direction.
+///
+/// The true hub property: ascending one level from `B` loses **far fewer distinct ancestors
+/// than the parent branching factor `b = |parents(B)|` predicts**, because the parents' upward
+/// cones *overlap* — the lineage re-merges above. The deficit (expected-from-`b` minus actual)
+/// is the convergence; high `b` with a large deficit is a hub, high `b` with none is just a
+/// fan. The exact deficit needs the parents' full ancestor sets (reachability — the global
+/// work we refuse), and the additive ancestor-weight is no help (it *is* the disjoint /
+/// branching-factor expectation, blind to overlap). But reconvergence shows up **locally**:
+/// overlapping parents first share **grandparents**. So we probe the bounded `up_hops`-deep
+/// up-cone of each parent and measure their overlap — `up_hops = 1` is "do the parents share
+/// grandparents," a 2-hop neighbourhood with no walk to root; `up_hops → ∞` is the exact
+/// deficit (the expensive limit). `up_hops` is the cost/sensitivity knob.
+///
+/// Returns the **duplicate-mass fraction** in `[0, 1]`: `(Σ|cone_p| − |⋃ cone_p|) / Σ|cone_p|`,
+/// i.e. for two parent cones of sizes `s₁,s₂` with intersection `o` it is `o/(s₁+s₂)` — *not*
+/// the Jaccard `o/(s₁+s₂−o)`; for two identical cones it returns `1/2` (not `1`), and for `b`
+/// identical cones it approaches `1 − 1/b`. This is intentional: it measures the fraction of
+/// per-parent ancestor observations that were redundant, which ranks hubs without Jaccard's
+/// denominator instability near `o ≈ Σsᵢ` — do not "fix" it to Jaccard. `0` for disjoint
+/// lineages (tree-like, no convergence), for fewer than two parents (nothing to reconverge),
+/// and for `up_hops == 0` (no ancestors visible). Reads no distance — purely a bounded local
+/// neighbourhood — so it is non-circular and cycle-safe (the depth bound caps any cycle).
+pub fn parent_reconvergence(
+    node: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    up_hops: usize,
+) -> f64 {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    if up_hops == 0 {
+        return 0.0; // zero hops: no ancestor layer visible, nothing to reconverge.
+    }
+    let ps = match parents.get(&node) {
+        Some(ps) if ps.len() >= 2 => ps,
+        _ => return 0.0, // <2 parents: a single lineage, nothing to reconverge.
+    };
+    // Bounded up-cone of each parent, starting one level above it (its own ancestors within
+    // `up_hops`). Per-parent sets, so a node counts once per parent; overlap across parents is
+    // the reconvergence.
+    let mut total: usize = 0;
+    let mut union_count: HashMap<u32, u32> = HashMap::new();
+    for &p in ps {
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut q: VecDeque<(u32, usize)> = VecDeque::new();
+        if let Some(gps) = parents.get(&p) {
+            for &g in gps {
+                if seen.insert(g) { q.push_back((g, 1)); }
+            }
+        }
+        while let Some((x, depth)) = q.pop_front() {
+            if depth >= up_hops { continue; }
+            if let Some(xps) = parents.get(&x) {
+                for &g in xps {
+                    if seen.insert(g) { q.push_back((g, depth + 1)); }
+                }
+            }
+        }
+        total += seen.len();
+        for g in seen {
+            *union_count.entry(g).or_insert(0) += 1;
+        }
+    }
+    if total == 0 { return 0.0; } // parents are roots: no grandparents to share.
+    let distinct = union_count.len();
+    (total - distinct) as f64 / total as f64
+}
+
+/// splitmix64 finalizer — a cheap deterministic hash for the ancestor sketch.
+fn mix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// **Ancestor MinHash (KMV) sketch** — a fixed-size, *height-agnostic* summary of each node's
+/// whole lineage to root, so reconvergence overlap is an O(k) read with no depth knob.
+///
+/// The fixed-`up_hops` probe (`parent_reconvergence`) can only see a crossover *within* `k`
+/// hops, but the crossover height is unknown and varies per node — too small misses deep hubs,
+/// too large walks to root (the reachability we refuse). Instead, summarize the *entire*
+/// up-cone once: `sig(B) = ` the `k` smallest hashes of `{B} ∪ ⋃_{p∈parents} sig(p)`, built in
+/// **one** root→leaf topological pass (parents before children). Fixed size `k`; the union is
+/// merge-keep-`k`-smallest, so it stays O(k) regardless of lineage depth. Two parents' overlap
+/// is then read from their sketches at any height — `sketch_jaccard` / `sketch_overlap_lift` —
+/// the §6 kernel-trick move (the ancestor *set* is the never-materialized feature map, the
+/// sketch its inner-product handle). Approximation is sketch error (∝ 1/√k), tunable by `k`,
+/// **not** a hard miss of deep crossovers. `None` on a cyclic graph (no topo order; SCC-
+/// condense first, since a cycle's nodes share their whole up-cone anyway).
+pub fn ancestor_minhash(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    k: usize,
+) -> Option<std::collections::HashMap<u32, Vec<u64>>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut nodes: HashSet<u32> = HashSet::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps {
+            nodes.insert(p);
+            children.entry(p).or_default().push(c);
+        }
+    }
+    // pending[node] = #parents not yet sketched; a node is ready once all its parents are.
+    let mut pending: HashMap<u32, usize> = nodes
+        .iter()
+        .map(|&n| (n, parents.get(&n).map_or(0, |v| v.len())))
+        .collect();
+    let mut q: VecDeque<u32> = pending
+        .iter()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    let mut sig: HashMap<u32, Vec<u64>> = HashMap::new();
+    while let Some(b) = q.pop_front() {
+        let mut cand: Vec<u64> = vec![mix64(b as u64)];
+        if let Some(ps) = parents.get(&b) {
+            for &p in ps {
+                if let Some(s) = sig.get(&p) {
+                    cand.extend_from_slice(s);
+                }
+            }
+        }
+        cand.sort_unstable();
+        cand.dedup();
+        cand.truncate(k); // bottom-k: the k smallest hashes of the up-closure.
+        sig.insert(b, cand);
+        if let Some(cs) = children.get(&b) {
+            for &c in cs {
+                let e = pending.get_mut(&c).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(c);
+                }
+            }
+        }
+    }
+    if sig.len() == nodes.len() { Some(sig) } else { None } // short => a cycle
+}
+
+/// KMV cardinality estimate of the set a bottom-`k` sketch summarizes. Exact (`= s.len()`)
+/// while unsaturated (`< k` elements kept); once saturated, the classic `(k−1)/ĥ_k` estimator
+/// from the `k`-th smallest normalized hash.
+fn sketch_card(s: &[u64], k: usize) -> f64 {
+    if s.len() < k {
+        return s.len() as f64;
+    }
+    let hk = s[k - 1] as f64 / (u64::MAX as f64 + 1.0);
+    if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk }
+}
+
+/// Estimated **Jaccard** overlap of two ancestor sets from their KMV sketches (`|A∩B| /
+/// |A∪B|`), an O(k) read. Exact when both sketches are unsaturated. This is height-agnostic —
+/// it sees a crossover at *any* depth — but it is *not* discriminative on its own in a
+/// small-world graph, where almost every pair overlaps; use `sketch_overlap_lift` for the
+/// hub signal.
+pub fn sketch_jaccard(a: &[u64], b: &[u64], k: usize) -> f64 {
+    let mut m: Vec<u64> = a.iter().chain(b).copied().collect();
+    m.sort_unstable();
+    m.dedup();
+    m.truncate(k);
+    if m.is_empty() {
+        return 0.0;
+    }
+    let aset: std::collections::HashSet<u64> = a.iter().copied().collect();
+    let bset: std::collections::HashSet<u64> = b.iter().copied().collect();
+    let common = m.iter().filter(|x| aset.contains(x) && bset.contains(x)).count();
+    common as f64 / m.len() as f64
+}
+
+/// **Small-world-corrected reconvergence: overlap lift over the chance baseline.** In a
+/// small-world graph any two up-cones overlap with near-certainty, so raw overlap measures
+/// "are we in a small world," not "is `B` a funnel." A real hub reconverges *more than chance
+/// predicts*: against the configuration-model null `E|A∩B| ≈ |A|·|B|/N`, the signal is
+/// `lift = observed |A∩B| / E|A∩B|` — `>1` is an excess funnel, `≈1` is just the small-world
+/// background. All three quantities come from the KMV sketches (`|A|`, `|B|` by
+/// `sketch_card`, `|A∩B|` by `jaccard·|A∪B|`), so the correction is the same O(k) read. `0`
+/// if either cone is empty.
+pub fn sketch_overlap_lift(a: &[u64], b: &[u64], n_total: usize, k: usize) -> f64 {
+    let mut m: Vec<u64> = a.iter().chain(b).copied().collect();
+    m.sort_unstable();
+    m.dedup();
+    m.truncate(k);
+    if m.is_empty() {
+        return 0.0;
+    }
+    let inter = sketch_jaccard(a, b, k) * sketch_card(&m, k);
+    let ca = sketch_card(a, k);
+    let cb = sketch_card(b, k);
+    let expected = ca * cb / (n_total as f64);
+    if expected <= 0.0 { 0.0 } else { inter / expected }
 }
 
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
@@ -2464,6 +2946,279 @@ mod tests {
         // through(1) keeps the shared-physics-level signal that the LCA caret also gives
         // here (their LCA *is* 1), so they agree — the gap is 0 only when bridge == LCA.
         assert_eq!(caret_through_bridge(4, 6, 1, &t), caret_distance_lca(4, 6, &t));
+    }
+
+    // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
+    // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
+    // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.
+    #[test]
+    fn convergence_fanin_and_min_over_hubs() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]);
+        g.insert(6, vec![3]); g.insert(7, vec![3]);
+        g.insert(8, vec![2, 3]); // cross-listed: a child of two categories.
+
+        // Fan-in is the local in-degree, computed in one pass, no distances.
+        let fanin = convergence_fanin(&g);
+        assert_eq!(fanin.get(&0), Some(&1)); // only 1 points up into 0
+        assert_eq!(fanin.get(&1), Some(&2)); // 2,3
+        assert_eq!(fanin.get(&2), Some(&3)); // 4,5,8
+        assert_eq!(fanin.get(&3), Some(&3)); // 6,7,8
+        assert_eq!(fanin.get(&8), None);     // a leaf is nobody's parent
+
+        // Hubs = the merge categories: fan-in >= 3 selects exactly {2,3}; >=2 adds 1.
+        assert_eq!(hubs_by_fanin(&g, 3), vec![2, 3]);
+        assert_eq!(hubs_by_fanin(&g, 2), vec![1, 2, 3]);
+
+        // Quantized-LCA limit: with EVERY node a hub, min-over-hubs == the unquantized
+        // caret_distance_lca (the shortest-path caret), for every pair.
+        let all: Vec<u32> = (0u32..=8).collect();
+        for u in 0u32..=8 {
+            for v in 0u32..=8 {
+                assert_eq!(caret_min_over_hubs(u, v, &all, &g),
+                           caret_distance_lca(u, v, &g),
+                           "all-nodes hub set must equal the unquantized LCA caret ({},{})", u, v);
+            }
+        }
+
+        // With a SPARSE hub set the result is the LCA caret quantized up to the nearest hub:
+        // for (4,5) the true LCA is 2 (caret 2). Hub set {1} forces the bridge up to 1, adding
+        // the gap 2*d(2->1) = 2, giving 4 >= 2.
+        let lca45 = caret_distance_lca(4, 5, &g).unwrap();
+        assert_eq!(caret_min_over_hubs(4, 5, &[1], &g), Some(lca45 + 2));
+        // hubs {2,3}: 2 is the true LCA of (4,5), so the min picks it exactly — no gap.
+        assert_eq!(caret_min_over_hubs(4, 5, &[2, 3], &g), Some(lca45));
+        // a quantized caret is always an upper bound on the unquantized one.
+        for u in 0u32..=8 {
+            for v in 0u32..=8 {
+                if let Some(q) = caret_min_over_hubs(u, v, &[1, 2, 3], &g) {
+                    let exact = caret_distance_lca(u, v, &g).unwrap();
+                    assert!(q >= exact, "quantized caret {} >= exact {} ({},{})", q, exact, u, v);
+                }
+            }
+        }
+        // No common-ancestor hub -> None (8's parents are {2,3}; hub set {0} can't bridge a
+        // pair whose only shared ancestor below 0... here every pair shares 0, so use a hub
+        // that is an ancestor of neither: none exists for connected pairs, so test the empty
+        // hub set instead).
+        assert_eq!(caret_min_over_hubs(4, 5, &[], &g), None);
+    }
+
+    // The one-pass cone-size proxy and its dropoff. Same tree-with-a-merge as above:
+    // 1->0; 2,3->1; 4,5->2; 6,7->3; 8->[2,3]. Additive weight counts a node + all descendant
+    // *paths* (8 counted under both 2 and 3 -> the diamond over-count is visible & intended).
+    #[test]
+    fn descendant_weight_and_dropoff() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]);
+        g.insert(6, vec![3]); g.insert(7, vec![3]);
+        g.insert(8, vec![2, 3]);
+
+        let w = descendant_weight(&g).unwrap();
+        // leaves weigh 1.
+        assert_eq!(w[&4], 1); assert_eq!(w[&5], 1); assert_eq!(w[&6], 1);
+        assert_eq!(w[&7], 1); assert_eq!(w[&8], 1);
+        // 2 = self + {4,5,8} = 1+3 = 4; 3 = self + {6,7,8} = 4. (8 counted under BOTH.)
+        assert_eq!(w[&2], 4); assert_eq!(w[&3], 4);
+        // 1 = self + w(2) + w(3) = 1+4+4 = 9; 0 = self + w(1) = 10.
+        assert_eq!(w[&1], 9); assert_eq!(w[&0], 10);
+
+        // Dropoff: hubs 2,3 each jump 4 - max_child(=1) = 3; the merge node 1 jumps
+        // 9 - max(w2,w3)=9-4 = 5 (it merges two weight-4 subtrees -> a bigger step than a
+        // single child could give). Leaves jump 1.
+        let j = convergence_jump(&g).unwrap();
+        assert_eq!(j[&4], 1);
+        assert_eq!(j[&2], 3); assert_eq!(j[&3], 3);
+        assert_eq!(j[&1], 5);
+        assert_eq!(j[&0], 1); // a pass-through (single child) barely steps.
+
+        // Selection by jump (rung-2 hub helper): jumps are {0:1,1:5,2:3,3:3,leaves:1}, so a
+        // threshold of 3 selects exactly the merge nodes {1,2,3}.
+        assert_eq!(hubs_by_jump(&g, 3), Some(vec![1, 2, 3]));
+
+        // A cycle has no reverse-topo order -> None (fan-in, by contrast, still works).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        assert_eq!(descendant_weight(&cyc), None);
+        assert_eq!(convergence_jump(&cyc), None);
+        assert_eq!(hubs_by_jump(&cyc, 1), None); // cyclic -> None (fall back to hubs_by_fanin)
+        assert!(convergence_fanin(&cyc).contains_key(&0)); // cheap local metric is cycle-robust
+    }
+
+    // Parent reconvergence: the ANCESTOR-side convergence signal. A hub loses far fewer
+    // ancestors going up than its branching factor predicts, because parents share ancestors.
+    #[test]
+    fn parent_reconvergence_diamond_vs_tree() {
+        // DIAMOND (a hub): B(=3) has two parents 1,2 that BOTH point to a single grandparent 0.
+        // Branching factor 2, but the two lineages reconverge at 0 immediately.
+        let mut hub: HashMap<u32, Vec<u32>> = HashMap::new();
+        hub.insert(1, vec![0]); hub.insert(2, vec![0]); hub.insert(3, vec![1, 2]);
+        // up_hops=1: cone(1)={0}, cone(2)={0} -> total=2, distinct=1 -> overlap 1/2.
+        assert_eq!(parent_reconvergence(3, &hub, 1), 0.5);
+
+        // TREE/FAN (not a hub): same branching factor 2, but the parents have DISJOINT
+        // grandparents -> the lineages do not reconverge -> zero overlap.
+        let mut fan: HashMap<u32, Vec<u32>> = HashMap::new();
+        fan.insert(1, vec![10]); fan.insert(2, vec![20]); fan.insert(3, vec![1, 2]);
+        assert_eq!(parent_reconvergence(3, &fan, 1), 0.0);
+
+        // The branching factor is identical (2) in both; only reconvergence tells them apart —
+        // exactly "ancestors lost going up << branching factor" for the hub, not the fan.
+
+        // Fewer than two parents: a single lineage, nothing to reconverge -> 0.
+        assert_eq!(parent_reconvergence(1, &hub, 1), 0.0); // 1 has the single parent 0
+        assert_eq!(parent_reconvergence(0, &hub, 5), 0.0); // 0 is a root (no parents)
+        // up_hops = 0: no ancestor layer visible, nothing to reconverge -> 0 (NOT == up_hops 1).
+        assert_eq!(parent_reconvergence(3, &hub, 0), 0.0);
+        assert_eq!(parent_reconvergence(3, &hub, 1), 0.5); // contrast: one hop DOES see it
+
+        // The k-hop ladder: reconvergence can sit ABOVE the grandparents. Parents 1,2 have
+        // DISTINCT grandparents 10,20, but those reconverge at a shared great-grandparent 0.
+        let mut deep: HashMap<u32, Vec<u32>> = HashMap::new();
+        deep.insert(10, vec![0]); deep.insert(20, vec![0]);
+        deep.insert(1, vec![10]); deep.insert(2, vec![20]); deep.insert(3, vec![1, 2]);
+        // up_hops=1 sees only the disjoint grandparents {10},{20} -> no overlap yet.
+        assert_eq!(parent_reconvergence(3, &deep, 1), 0.0);
+        // up_hops=2 reaches the shared great-grandparent: cone(1)={10,0}, cone(2)={20,0}
+        // -> total=4, distinct=3 ({10,20,0}) -> overlap 1/4. Deeper probe, more cost, more reach.
+        assert_eq!(parent_reconvergence(3, &deep, 2), 0.25);
+
+        // Cycle-safe: the depth bound caps any loop (no infinite walk).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]); cyc.insert(2, vec![0, 1]);
+        let _ = parent_reconvergence(2, &cyc, 10); // terminates; value not asserted
+    }
+
+    // Ancestor MinHash sketch: height-agnostic overlap + the small-world lift correction.
+    // k=16 >> every set here, so the sketches are EXACT (they keep all hashes) and the
+    // Jaccard/cardinality/intersection reads are exact -> deterministic assertions.
+    #[test]
+    fn ancestor_sketch_height_agnostic_and_lift() {
+        const K: usize = 16;
+
+        // DEEP crossover the fixed up_hops=1 probe MISSED: parents 1,2 have distinct
+        // grandparents 10,20 that reconverge only at a shared great-grandparent 0.
+        let mut deep: HashMap<u32, Vec<u32>> = HashMap::new();
+        deep.insert(10, vec![0]); deep.insert(20, vec![0]);
+        deep.insert(1, vec![10]); deep.insert(2, vec![20]); deep.insert(3, vec![1, 2]);
+        let sig = ancestor_minhash(&deep, K).unwrap();
+        // up-closures: sig(1)={1,10,0}, sig(2)={2,20,0}; share {0} -> Jaccard 1/5 = 0.2,
+        // caught with NO depth knob (the fixed probe needed up_hops=2 and read 0 at 1).
+        assert!((sketch_jaccard(&sig[&1], &sig[&2], K) - 0.2).abs() < 1e-12);
+
+        // SMALL-WORLD CORRECTION. Same overlap structure, two universe sizes. Shared-ancestor
+        // graph: parents 1,2 both go through 10 then 0 -> sig(1)={1,10,0}, sig(2)={2,10,0},
+        // intersection {10,0} (size 2), |A|=|B|=3.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(10, vec![0]); g.insert(1, vec![10]); g.insert(2, vec![10]);
+        g.insert(3, vec![1, 2]);
+        let s = ancestor_minhash(&g, K).unwrap();
+        // Jaccard is large (2/4 = 0.5) regardless of N -> NON-discriminative on its own.
+        assert!((sketch_jaccard(&s[&1], &s[&2], K) - 0.5).abs() < 1e-12);
+        // Lift = observed |A∩B| / (|A|·|B|/N) = 2 / (9/N) = 2N/9.
+        // Dense world (N=5): 10/9 ≈ 1.11 -> barely above chance, NOT a hub by the corrected
+        // measure (the overlap is just small-world background).
+        assert!((sketch_overlap_lift(&s[&1], &s[&2], 5, K) - 10.0 / 9.0).abs() < 1e-9);
+        // Sparse world (N=45): 90/9 = 10.0 -> a strong funnel signal. SAME overlap, opposite
+        // verdict -> raw overlap measures the world, lift measures the hub.
+        assert!((sketch_overlap_lift(&s[&1], &s[&2], 45, K) - 10.0).abs() < 1e-9);
+
+        // A single shared root is exactly chance in its own small universe -> lift 1.0.
+        // Diamond 1->0, 2->0, 3->[1,2]: sig(1)={1,0}, sig(2)={2,0}, ∩={0}, |A|=|B|=2, N=4.
+        let mut dia: HashMap<u32, Vec<u32>> = HashMap::new();
+        dia.insert(1, vec![0]); dia.insert(2, vec![0]); dia.insert(3, vec![1, 2]);
+        let d = ancestor_minhash(&dia, K).unwrap();
+        assert!((sketch_overlap_lift(&d[&1], &d[&2], 4, K) - 1.0).abs() < 1e-9);
+
+        // Selection by lift (rung-4 hub helper): on graph `g`, node 3's parents {1,2} reconverge
+        // with lift 10/9 (>1) at N=5, so a threshold of 1.0 selects {3}; nodes with <2 parents
+        // (10,1,2) never qualify. A threshold above the lift selects nothing.
+        assert_eq!(hubs_by_lift(&g, &s, 5, K, 1.0), vec![3]);
+        assert!(hubs_by_lift(&g, &s, 5, K, 2.0).is_empty());
+
+        // Cyclic graph -> no topo order -> None (SCC-condense first).
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        assert_eq!(ancestor_minhash(&cyc, K), None);
+    }
+
+    // The boundary-restricted caret equals the full caret everywhere, but stops at the mixing
+    // boundary instead of walking both cones to root.
+    #[test]
+    fn caret_boundary_equals_full_but_visits_fewer() {
+        // Tall stem 0<-1<-...<-10 with a LOW fork at the bottom: 11,12 both -> 10. The LCA of
+        // (11,12) is 10 at depth 1 each, caret 2 -- one hop above the leaves, ten hops below
+        // root. The full search builds both cones up to 0 (all 13 nodes); the boundary search
+        // must stop at 10 and never enter the stem above it.
+        let mut stem: HashMap<u32, Vec<u32>> = HashMap::new();
+        for c in 1u32..=10 { stem.insert(c, vec![c - 1]); } // c -> c-1, up to root 0
+        stem.insert(11, vec![10]); stem.insert(12, vec![10]);
+
+        assert_eq!(caret_distance_lca_boundary(11, 12, &stem), caret_distance_lca(11, 12, &stem));
+        let (caret, visited) = caret_distance_lca_boundary_counted(11, 12, &stem);
+        assert_eq!(caret, Some(2));
+        // Touches only {11,12,10}; the ten stem nodes 0..9 are never entered.
+        assert_eq!(visited, 3, "boundary search must not climb the stem above the LCA");
+
+        // Equality must hold for EVERY pair, including ones whose boundary IS near root.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]); g.insert(6, vec![3]);
+        g.insert(7, vec![2, 3]); // cross-listed -> multiple ancestor routes
+        let nodes: Vec<u32> = (0u32..=7).collect();
+        for &a in &nodes {
+            for &b in &nodes {
+                assert_eq!(caret_distance_lca_boundary(a, b, &g), caret_distance_lca(a, b, &g),
+                    "boundary caret must equal full caret for ({},{})", a, b);
+            }
+        }
+
+        // u == v -> caret 0, found at r=0 with no expansion.
+        assert_eq!(caret_distance_lca_boundary(4, 4, &g), Some(0));
+        // No shared ancestor -> None (disconnected components).
+        let mut split: HashMap<u32, Vec<u32>> = HashMap::new();
+        split.insert(1, vec![0]); split.insert(3, vec![2]); // {0,1} and {2,3} disjoint
+        assert_eq!(caret_distance_lca_boundary(1, 3, &split), None);
+    }
+
+    // Asymmetric boundary: one query node IS the LCA, so the search runs to ~caret (not caret/2)
+    // on the near side -- it speculatively climbs ABOVE the LCA (it cannot know it is the LCA
+    // until the far side arrives), but only ~caret levels, never the whole stem to root.
+    #[test]
+    fn caret_boundary_asymmetric() {
+        // Tall stem 0<-1<-...<-20, with v hanging two hops below: 20<-21<-22. Query (20, 22):
+        // LCA = 20, d(20->20)=0, d(22->20)=2, caret = 2.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        for c in 1u32..=22 { g.insert(c, vec![c - 1]); }
+        assert_eq!(caret_distance_lca_boundary(20, 22, &g), caret_distance_lca(20, 22, &g));
+        let (caret, visited) = caret_distance_lca_boundary_counted(20, 22, &g);
+        assert_eq!(caret, Some(2));
+        // Visits only {18,19,20,21,22}: the 2-level speculative climb above the LCA (to 19,18)
+        // plus v's path. The 18 stem nodes 0..17 are never entered, despite the asymmetry --
+        // the near-side climb is bounded by ~caret, not by the height to root.
+        assert_eq!(visited, 5, "asymmetric search must stay near the boundary, not climb to root");
+    }
+
+    // Saturated MinHash regime: k < |ancestor set| so the (k-1)/h_k KMV estimator branch of
+    // sketch_card is actually exercised (every other sketch test uses k >> set => exact branch).
+    #[test]
+    fn ancestor_sketch_saturated_regime() {
+        // 20-node chain: node 20's ancestor closure has 21 members, well above k.
+        let mut chain: HashMap<u32, Vec<u32>> = HashMap::new();
+        for i in 1u32..=20 { chain.insert(i, vec![i - 1]); }
+        const K: usize = 4;
+        let sig = ancestor_minhash(&chain, K).unwrap();
+        // Deep node's sketch is saturated to exactly K entries.
+        assert_eq!(sig[&20].len(), K, "sketch must saturate at k for a large ancestor set");
+        // The KMV cardinality estimate (the (k-1)/h_k branch) should be in a sane range of the
+        // true 21 -- it is an estimator, so only a loose interval is asserted.
+        let est = sketch_card(&sig[&20], K);
+        assert!(est > 5.0 && est < 100.0, "KMV estimate {} implausible for n~21, k={}", est, K);
+        // Jaccard of two saturated sketches stays in [0,1] (no panic / out-of-range).
+        let j = sketch_jaccard(&sig[&20], &sig[&19], K);
+        assert!((0.0..=1.0).contains(&j));
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each
