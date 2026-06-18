@@ -226,17 +226,25 @@ The answers this pins down (and the honest limits):
   distribution obeys the universal bound `β₂ ≥ β₁ − 2`, and a **two-mode** distribution sits *on*
   it (the bimodal branch: skew `0`, excess kurtosis `−2.0 = 0 − 2`, the extremum). So the slack
   `d = β₂ − β₁ + 2 ≥ 0` is a histogram-free **multimodality detector**, and `MomentJet::
-  reconstruction_class` reads it: `d` small → **NeedsHistogram**; mild `|skew|,|kurtosis|` →
+  reconstruction_class` reads it: `d` small → **Multimodal**; mild `|skew|,|kurtosis|` →
   **Gaussian**; otherwise **GramCharlier**. Crucially **some skew is fine** — a skewed binomial
   (`skew 0.31`) classifies `GramCharlier`, reconstructed by the skew/kurtosis corrections — so it
-  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality. **Honest gap that
-  remains:** the moment ratios still cannot resolve an *arbitrary* multimodal shape; for the
-  genuinely-ambiguous middle of the diagram the principled fallback is a **Monte-Carlo
-  goodness-of-fit test** — sample paths, build the empirical distribution, test the parametric
-  hypothesis — which is embarrassingly parallel and a natural **GPU** workload (a *future*
-  direction). And the §7 reconstruction stays **CDF-gated** (histogram-validated) as the final
-  word; `reconstruction_class` is the cheap pre-screen that decides whether to attempt a parametric
-  form at all.
+  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality.
+- **Multimodal is still *closed-form* — a mixture, not "give up and store the histogram."** The
+  flag means *not a single mode*, so reconstruct with a **mixture / GMM** (`HistRepr::DiscGmm` /
+  `Mixture`). And the same **Pearson** framework behind the `(β₁,β₂)` diagram is Pearson's 1894
+  **method of moments** for a 2-Gaussian mixture: in the symmetric case the mixture is fit from the
+  *same four moments* in closed form — two equal-weight modes at `μ ± δ` with `δ = σ·(−γ₂/2)^¼`. On
+  the bimodal branch that yields modes at exactly `{6, 41}` (the true spikes) from the same moments
+  the single Gaussian botched at error `0.48`. So the ladder is Gaussian → Gram–Charlier → **mixture
+  (closed form)** → exact histogram, and only the last is non-parametric. **Honest gap:** four
+  moments under-determine a *general* (asymmetric, unequal-weight, many-component) mixture; fitting
+  that needs more — the histogram, or a **Monte-Carlo goodness-of-fit / EM** step (sample paths,
+  build the empirical distribution, fit/test), which is embarrassingly parallel and a natural
+  **GPU** workload (a *future* direction). The §7 reconstruction stays **CDF-gated**
+  (histogram-validated) as the final word; `reconstruction_class` is the cheap pre-screen that
+  decides *which* parametric family to attempt (single mode vs mixture), not whether to keep a
+  closed form at all.
 - **Cumulants vs moments is *orthogonal* to all of this.** They carry the same information
   (`κ_k ⟺ m_k`), so the reconstruction is identical; the §3 fork is purely the *splice cost /
   numerical-stability* axis (additive cumulants for `⊗`-heavy spines), not a representation-quality

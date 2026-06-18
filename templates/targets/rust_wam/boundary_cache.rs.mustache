@@ -296,23 +296,26 @@ impl MomentJet {
     /// `d = γ₂ − γ₁² + 2 ≥ 0` is a histogram-free **multimodality detector** (`d → 0` ⇒ two-mode
     /// extremum). Some skew is fine (a binomial has `γ₁ = (1−2p)/√(npq)`, Gram–Charlier handles
     /// it); the kurtosis and `d` are the real giveaways:
-    /// - `d` small (near the two-mode bound) → **NeedsHistogram** (a mixture the parametric forms
-    ///   miss — defer to the exact histogram / GMM, or a Monte-Carlo goodness-of-fit test);
+    /// - `d` small (near the two-mode bound) → **Multimodal** — *still closed-form approximable*,
+    ///   just not by a single mode: use a **mixture / GMM** (`HistRepr::DiscGmm`/`Mixture`). In the
+    ///   symmetric case the mixture is even fit from these same four moments in closed form (the
+    ///   Pearson 1894 method of moments — the same Pearson framework as this `(β₁,β₂)` diagram); a
+    ///   general mixture needs more than four moments (the histogram, or a Monte-Carlo / EM fit).
     /// - else mild `|γ₁|,|γ₂|` → **Gaussian** (the moment-Normal is faithful, the CLT case);
     /// - else (notable skew/kurtosis but not multimodal) → **GramCharlier** (skew/kurtosis
     ///   corrections, mildly non-normal).
     /// Thresholds are deliberately conservative defaults; the §7 CDF gate remains the final,
-    /// histogram-validated check — this is the cheap pre-screen that decides whether to attempt a
-    /// parametric form at all.
+    /// histogram-validated check — this is the cheap pre-screen that decides *which* parametric
+    /// family to attempt (single mode vs mixture), not whether to give up on a closed form.
     pub fn reconstruction_class(self) -> ReconClass {
         if self.mass <= 0.0 {
-            return ReconClass::NeedsHistogram;
+            return ReconClass::Multimodal;
         }
         let g1 = self.skewness();
         let g2 = self.excess_kurtosis();
         let d = g2 - g1 * g1 + 2.0; // slack above the universal two-mode bound β₂ = β₁ − 2
         if d < 0.7 {
-            ReconClass::NeedsHistogram // near the multimodal extremum
+            ReconClass::Multimodal // near the multimodal extremum → a closed-form mixture, not a single mode
         } else if g1.abs() <= 0.2 && g2.abs() <= 0.7 {
             ReconClass::Gaussian
         } else {
@@ -328,9 +331,10 @@ pub enum ReconClass {
     Gaussian,
     /// Mildly non-normal: skew/kurtosis corrections (Gram–Charlier / Edgeworth).
     GramCharlier,
-    /// A mixture / multimodal the low moments cannot reconstruct — defer to the exact histogram
-    /// (or a Monte-Carlo goodness-of-fit test).
-    NeedsHistogram,
+    /// Multimodal — still **closed-form** approximable, by a **mixture / GMM** (not a single mode):
+    /// fit by method-of-moments in the symmetric case (Pearson 1894), or by histogram / Monte-Carlo
+    /// / EM in general. The exact histogram is the last resort, not the first.
+    Multimodal,
 }
 
 /// Path-length **support interval** toward the root: `(min, max)` = the shortest and
@@ -4186,16 +4190,27 @@ mod tests {
         assert!(bjet.skewness().abs() < 0.2, "symmetric bimodal: skew is blind to it");
 
         // FINDING 3: the moment-ratio gate (Pearson β₁,β₂) picks the right reconstruction from the
-        // ratios alone — Gaussian for the CLT chain, NeedsHistogram for the bimodal mixture (it
-        // sits on the two-mode bound β₂ = β₁ − 2). A mildly SKEWED binomial reads GramCharlier:
-        // some skew is fine, it is the kurtosis/ratio that flags genuine non-normality.
+        // ratios alone — Gaussian for the CLT chain, Multimodal for the bimodal mixture (it sits on
+        // the two-mode bound β₂ = β₁ − 2). A mildly SKEWED binomial reads GramCharlier: some skew is
+        // fine, it is the kurtosis/ratio that flags genuine non-normality.
         assert_eq!(jet.reconstruction_class(), ReconClass::Gaussian);
-        assert_eq!(bjet.reconstruction_class(), ReconClass::NeedsHistogram);
+        assert_eq!(bjet.reconstruction_class(), ReconClass::Multimodal);
         let skewed = hist_moment_jet(&binomial_pmf(40, 0.15).iter()
             .map(|&pr| (pr * 1_000_000.0).round() as u64).collect::<Hist>());
         eprintln!("§3 skewed-binomial: skew {:.3} exkurt {:.3} -> {:?}",
             skewed.skewness(), skewed.excess_kurtosis(), skewed.reconstruction_class());
         assert_eq!(skewed.reconstruction_class(), ReconClass::GramCharlier);
+
+        // FINDING 4: "Multimodal" is NOT "needs the exact histogram" — the SAME four moments the
+        // single Gaussian botched (cdf_err 0.48) closed-form *locate the two modes* as a symmetric
+        // 2-Gaussian mixture (Pearson 1894 MoM): for two equal-weight modes at μ±δ with component
+        // variance s², γ₂ = −2(δ²/σ²)², so δ = σ·(−γ₂/2)^¼. On the bimodal that is exactly {6, 41}.
+        let sigma = bjet.variance().sqrt();
+        let delta = sigma * (-bjet.excess_kurtosis() / 2.0).powf(0.25);
+        let (mode_lo, mode_hi) = (bjet.mean() - delta, bjet.mean() + delta);
+        eprintln!("§3 closed-form 2-mixture modes from the 4 moments: {:.2}, {:.2}", mode_lo, mode_hi);
+        assert!((mode_lo - 6.0).abs() < 0.5 && (mode_hi - 41.0).abs() < 0.5,
+            "the bimodal's moments closed-form-locate its two modes: {} {}", mode_lo, mode_hi);
     }
 
     // §3 fork: the cumulant carry. Cumulants ADD under ⊗ (the O(K) splice) and round-trip
