@@ -994,18 +994,21 @@ buy diminishing returns and is not carried).
      signal, with the exact gap `through(B) − lca = 2·d(LCA→B)`
      (`caret_through_bridge_vs_lca_and_the_gap`).
    - **[3e DONE]** a **real-data integration** on the Wikipedia category graph
-     (`data/benchmark/{dev,300,10k,10x}/category_parent.tsv`, Physics-rooted, **cyclic**,
-     cross-listed) — the end-to-end composition where 2a/2b cycle-correctness earns its keep.
-     Harness: `wikipedia_category_subtree_end_to_end_3e` (env-var gated on `UW_CATEGORY_TSV`,
-     skips in CI). **Confirmed on real cyclic data across four scales (≤25k edges):** the
-     boundary caret `==` the full caret, the 3f cached-landmark caret `==` the per-query
-     `caret_min_over_hubs`, and `min_distance_closure` terminates. **Two findings:** (1) the
-     cycle/DAG split shows up immediately — `descendant_minhash` returns `None` (cyclic), so IC
-     similarity needs SCC-condensation while the caret/fan-in/landmark stack runs directly; (2)
-     *headline* — naive fan-in hub selection is **dominated by maintenance categories** at scale
-     (`Container_categories` has 1778 children at 10k), so the hub-quantized caret inflates far
-     above the exact one — concrete real-data motivation for the open global-hub-selection problem
-     and its semantic-diversity signal. Full write-up:
+     (`data/benchmark/{dev,300,10k,10x}/category_parent.tsv`). Harness:
+     `wikipedia_category_subtree_end_to_end_3e` (env-var gated on `UW_CATEGORY_TSV`, skips in CI;
+     `UW_CATEGORY_ROOT` / `UW_CATEGORY_MAXDEPTH` scope a single subtree). **Invariants held across
+     four scales (≤25k edges, raw + scoped):** boundary caret `==` full caret, 3f cached-landmark
+     caret `==` per-query `caret_min_over_hubs`, `min_distance_closure` terminates. **The lesson:
+     scope first.** A nominally "Physics-rooted" crawl is *not* a subtree of Physics — its
+     unbounded cone spans most of Wikipedia (7811/8247 nodes at 10k), is **cyclic** (so
+     `descendant_minhash` → `None`, IC unavailable), and its fan-in hubs are **maintenance
+     categories** (`Container_categories`, 1778 children; the hub-quantized caret then inflates to
+     7 vs an exact 1). Restricting to the **bounded-depth descendant cone** (depth ≤ 3) fixes both:
+     the subtree is **acyclic** (IC runs) and the hubs are semantic (`Subfields_of_physics`,
+     `Matter`, `Energy`). On it the IC read-outs track real physics — `Electromagnetism`–`Optics`
+     Lin 0.68 ≫ `Thermodynamics`–`Optics` 0.36 — and the quantization gap closes. Residual: even
+     scoped, fan-in can prefer `Physicists_by_nationality` over `Subfields_of_physics`, concrete
+     motivation for the deferred semantic-diversity hub selection. Full write-up:
      `WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`.
    - **[3f DONE]** the **landmark-cached designated-bridge caret** (§5c): `bridge_distance_fields`
      precomputes `d(·→B)` (one downward BFS per bridge over the shared children graph, `O(E +

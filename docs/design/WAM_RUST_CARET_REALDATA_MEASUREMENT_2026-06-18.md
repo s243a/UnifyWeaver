@@ -1,90 +1,82 @@
 # WAM-Rust caret / hub / similarity — real-data run (roadmap 3e), 2026-06-18
 
 The end-to-end composition (§8 increment 3e of `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md`) run on
-**real, cyclic, cross-listed Wikipedia category graphs**, at four scales.
+**real Wikipedia category graphs**, and the lesson that you must **scope to a single bounded
+subtree** before the read-outs mean anything.
 
-## What was run
+## Setup
 
 - **Data:** `data/benchmark/{dev,300,10k,10x}/category_parent.tsv` — `child<TAB>parent` category
-  edges, all **Physics-rooted**, offline (no network). Genuinely **cyclic** (≈5 back-edges at
-  `dev`, ≈20 at `10k`) and cross-listed (e.g. `Systems` under 4 parents). *Provenance / exact
-  correctness is not guaranteed by the maintainer — this is a demonstration on real-shaped data,
-  not an authoritative measurement.*
-- **Harness:** `boundary_cache::tests::wikipedia_category_subtree_end_to_end_3e` (env-var gated on
-  `UW_CATEGORY_TSV`, so it skips in CI and runs on demand). It interns the category names, builds
-  the parent map, and exercises the full stack: `min_distance_closure` (to root),
-  `caret_distance_lca` vs `caret_distance_lca_boundary`, `convergence_fanin` (hub ranking),
-  `bridge_distance_fields` + `caret_min_over_cached_bridges` (3f landmarks), and
-  `descendant_minhash` / `lin_similarity`.
+  edges, nominally **Physics-rooted**, offline (live `en.wikipedia.org` egress is blocked in this
+  environment). *Provenance / exact correctness not guaranteed — a demonstration on real-shaped
+  data, not an authoritative measurement.*
+- **Harness:** `boundary_cache::tests::wikipedia_category_subtree_end_to_end_3e`, env-var gated on
+  `UW_CATEGORY_TSV` (skips in CI). Knobs `UW_CATEGORY_ROOT` (default `Physics`) and
+  `UW_CATEGORY_MAXDEPTH` scope the graph to the **bounded-depth descendant cone of the root with
+  induced edges** — a single coherent subtree.
 
-| scale | nodes | edges | reach root | back-edges |
-|-------|-------|-------|-----------|-----------|
-| dev   | 121   | 198   | 108       | ~5        |
-| 10x   | 1593  | 3932  | 1512      | —         |
-| 300   | 2276  | 6008  | 2165      | —         |
-| 10k   | 8247  | 25227 | 7811      | ~20       |
+## The scoping lesson (why the raw graph is not a subtree)
 
-## Invariants confirmed on real cyclic data (the correctness story)
+The *unbounded* "Physics-rooted" graph is not a clean subtree at all: in real Wikipedia, Physics's
+descendant cone reaches **most of the encyclopedia** within a few hops via cross-listings (at
+`10k`, **7811 of 8247** nodes "reach Physics"). Two symptoms on the raw graph:
 
-Across **all four scales**, with the graph cyclic:
+- **It is cyclic** (≈5 back-edges at `dev`, ≈20 at `10k`), so `descendant_minhash` returns `None`
+  and IC similarity is unavailable without SCC-condensation.
+- **Fan-in hub selection is dominated by *maintenance* categories.** Top fan-in at `10k`:
+  `Container_categories` (**1778** children), `CatAutoTOC_generates_no_TOC` (1219),
+  `Navseasoncats_year_and_decade` (691) — bookkeeping, not topics. Routing carets through them
+  inflates the hub-quantized caret far above exact (`Electromagnetism`–`Optics`: exact **1**,
+  hub-quantized **7**).
 
-- **`caret_distance_lca_boundary` == `caret_distance_lca`** for every query pair — the
-  boundary-restricted search gives the same answer as full-cone on real data.
-- **`caret_min_over_cached_bridges` == `caret_min_over_hubs`** — the 3f landmark cache equals the
-  per-query path on real data.
-- **`min_distance_closure` terminates** and roots at distance 0 — the cycle-correctness (2a/2b)
-  earns its keep: the BFS-fixpoint / joint-up-BFS functions all terminate where a naive DFS
-  recurrence would loop.
+**Scoping to a bounded-depth subtree fixes both at once.** Depth ≤ 3 from `Physics` keeps the
+genuine physics neighbourhood (deeper, the cross-listings into temporal/organizational categories
+take over — `Categories_by_decade` etc.), and that subtree turns out **acyclic**, so IC runs:
 
-## Finding 1 — the cycle/DAG split shows up immediately
+| scale | raw nodes | scoped (depth≤3) | scoped edges | back-edges |
+|-------|-----------|------------------|--------------|-----------|
+| dev   | 121       | 29               | 35           | 0         |
+| 10k   | 8247      | 74               | 88           | 0         |
+| 300   | 2276      | 107              | 130          | 0         |
 
-`descendant_minhash` returned **`None` at every scale** — the real category graph is cyclic, so
-the *sketch-based* payloads (descendant sketch, `descendant_weight`, `convergence_jump`, hence IC
-/ Resnik / Lin / FaITH) are unavailable on the raw graph and need **SCC-condensation first**, the
-documented prescription. Meanwhile the **cycle-robust** payloads — `convergence_fanin`, the caret
-family, `bridge_distance_fields` — ran directly. This is exactly the cycle-robust-vs-DAG-only
-distinction the code carries, now observed on real data rather than a synthetic cycle.
+## Invariants confirmed (scoped and raw, all scales)
 
-## Finding 2 (headline) — naive fan-in hub selection is dominated by *maintenance* categories at scale
+- `caret_distance_lca_boundary == caret_distance_lca`
+- `caret_min_over_cached_bridges == caret_min_over_hubs` (3f)
+- `min_distance_closure` terminates, roots at 0 — the 2a/2b cycle-correctness earns its keep on
+  the cyclic raw graph.
 
-The top fan-in "hubs" diverge sharply by scale:
+## Read-outs on the clean (scoped) subtree
 
-- **dev (clean, 121 nodes):** `Subfields_of_physics` (10), `Subfields_by_academic_discipline` (7),
-  `Scientific_disciplines` (6), … — *semantic* categories, genuinely good bridges. Here the
-  **hub-quantized caret equals the exact caret** (e.g. `caret(Classical_mechanics,
-  Electromagnetism) = 2`, hub-quantized `= 2`): the high-fan-in nodes *are* the real
-  convergence points.
-- **10k (8247 nodes):** `Container_categories` (**1778** children), `CatAutoTOC_generates_no_TOC`
-  (1219), `Navseasoncats_year_and_decade` (691), `Navseasoncats_decade_and_century`, … — these
-  are Wikipedia **bookkeeping / navigation** categories, not topics. They have enormous fan-in but
-  are **meaningless bridges**. Routing carets through them inflates the hub-quantized caret far
-  above the exact one (`caret(Electromagnetism, Optics) = 1` but hub-quantized `= 7`;
-  `caret(Classical_mechanics, Electromagnetism) = 2` vs `6`).
+**Hubs become semantic.** Depth ≤ 3 top fan-in: `Subfields_of_physics`, `Matter`, `Mechanics`,
+`Energy` (dev); `Physicists_by_nationality`, `Subfields_of_physics`, `Mechanics` (300). The
+quantization gap closes (hub-quantized caret == exact for the close physics pairs), because the
+hubs are now the real convergence points.
 
-The exact per-pair carets stayed small and sensible at every scale (`Electromagnetism`–`Optics`
-= 1; `Classical_mechanics`–`Electromagnetism` = 2; `Thermodynamics`–`Optics` = 3) — the
-**per-pair boundary caret is unaffected**; only the *globally-selected-hub* approximation
-degrades.
+**IC similarity runs and is physically sensible** (`k = 64`, scoped subtree acyclic). At `10k`,
+depth ≤ 3:
 
-### Why this matters
+| pair | Resnik | Lin | FaITH |
+|------|--------|-----|-------|
+| `Electromagnetism` – `Optics` | 3.21 | **0.68** | **0.52** |
+| `Classical_mechanics` – `Electromagnetism` | 1.82 | 0.46 | 0.30 |
+| `Thermodynamics` – `Optics` | 1.82 | 0.36 | 0.22 |
 
-This is concrete real-data evidence for the still-open **global hub-selection** problem
-(§5d, §8). Pure structural **fan-in is fooled by administrative categories** — `Container_categories`
-maximizes fan-in while carrying no semantic relatedness — which is precisely the failure the
-**semantic-diversity** signal (the geometric-mean-of-singular-values conjecture, §5d) or even a
-simple maintenance-category filter is meant to fix. The §5c tightness-vs-reuse tradeoff is no
-longer abstract: at scale, the cheapest selector (fan-in) picks bridges so general (or so
-administrative) that the quantization gap `2·d(LCA→nearest hub)` swamps the signal. The per-pair
-mixing-boundary search remains the reliable answer; the global hub set needs a semantic filter to
-be useful.
+The ordering is meaningful: `Electromagnetism`–`Optics` (optics *is* a part of electromagnetism)
+scores far higher than `Thermodynamics`–`Optics` (weakly related). The exact per-pair carets agree
+(`Electromagnetism`–`Optics` = 1, the closest; `Thermodynamics`–`Optics` = 3). So on real data the
+relatedness read-outs track genuine physics structure.
 
 ## Takeaways
 
-1. The caret / landmark / cycle-correct-distance machinery is **correct on real cyclic data** —
-   all algebraic invariants held across 4 scales up to 25k edges.
-2. The **cycle-robust vs DAG-only** payload split is real and load-bearing: IC similarity needs
-   SCC-condensation on the (cyclic) category graph; the caret stack does not.
-3. **Global hub selection needs semantics, not just structure** — naive fan-in surfaces
-   `Container_categories`, a vivid argument for the deferred diversity-based selection. The
-   immediate cheap fix (filter maintenance categories) and the principled one (semantic diversity)
-   are both now motivated by data.
+1. **Scope first.** A nominal "X-rooted" Wikipedia crawl is not a subtree of X — its cone is the
+   whole encyclopedia. A bounded-depth descendant cone with induced edges is the actual single
+   subtree, and it is the precondition for *any* of the read-outs (hubs, IC) to be meaningful.
+2. **Bounded scoping also restores acyclicity**, so the DAG-only IC payloads (`descendant_minhash`
+   → Resnik/Lin/FaITH) run without SCC-condensation. The depth knob is the §5c tightness lever made
+   concrete: small depth = coherent + acyclic; large depth = the cross-listed, cyclic soup.
+3. **The machinery is correct on real cyclic data** — all algebraic invariants held across four
+   scales — and on the scoped subtree the similarity numbers track real physics relatedness.
+4. **Global hub selection still needs semantics.** Even scoped, fan-in surfaces
+   `Physicists_by_nationality` over `Subfields_of_physics` at `300`; the deferred diversity-based
+   selection (§5d) is what would prefer the latter. Concrete motivation, now from clean data.

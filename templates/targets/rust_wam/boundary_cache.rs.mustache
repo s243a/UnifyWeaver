@@ -3273,14 +3273,20 @@ mod tests {
         assert_eq!(bridge_distance_fields(&[2, 2, 3], &t), bridge_distance_fields(&[2, 3], &t));
     }
 
-    // Roadmap 3e: end-to-end on the REAL, cyclic, cross-listed Wikipedia category graph.
-    // Skips unless `UW_CATEGORY_TSV` points to a `child<TAB>parent` file (header row skipped),
-    // e.g. data/benchmark/{dev,300,10k,10x}/category_parent.tsv (all Physics-rooted, various
-    // sizes). Asserts the algebraic invariants that must hold on any graph (boundary caret ==
-    // full caret; cached-landmark caret == per-query; termination on cycles) and *reports* the
-    // data-dependent read-outs (hubs, carets, similarities). Run with --nocapture to see them.
+    // Roadmap 3e: end-to-end on the REAL Wikipedia category graph. Skips unless `UW_CATEGORY_TSV`
+    // points to a `child<TAB>parent` file (header row skipped), e.g.
+    // data/benchmark/{dev,300,10k,10x}/category_parent.tsv (Physics-rooted, various sizes).
+    //
+    // Two knobs scope the graph to a clean **single subtree** (per the lesson that Physics's
+    // *unbounded* cone spans most of Wikipedia via cross-listings, and is dominated by
+    // maintenance categories): `UW_CATEGORY_ROOT` (default "Physics") and `UW_CATEGORY_MAXDEPTH`
+    // (default unbounded). With a small max-depth the subtree stays semantically coherent (hubs
+    // like `Subfields_of_physics`) AND turns out **acyclic**, so IC similarity (DAG-only) runs.
+    // Asserts the algebraic invariants (boundary caret == full; cached-landmark == per-query;
+    // termination); reports the data-dependent read-outs. Run with --nocapture to see them.
     #[test]
     fn wikipedia_category_subtree_end_to_end_3e() {
+        use std::collections::VecDeque;
         let path = match std::env::var("UW_CATEGORY_TSV") {
             Ok(p) => p,
             Err(_) => { eprintln!("3e: skip (set UW_CATEGORY_TSV to a category_parent.tsv)"); return; }
@@ -3293,18 +3299,47 @@ mod tests {
             if ln == 0 && line.starts_with("child") { continue; } // header
             let mut it = line.split('\t');
             let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
-            let mut intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
                 *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 })
             };
             let ci = intern(c, &mut ids, &mut names);
             let pi = intern(p, &mut ids, &mut names);
             parents.entry(ci).or_default().push(pi);
         }
-        let edges: usize = parents.values().map(|v| v.len()).sum();
-        eprintln!("3e[{}]: {} nodes, {} child->parent edges", path, names.len(), edges);
-        let root = *ids.get("Physics").expect("expected a Physics-rooted graph");
+        let root_name = std::env::var("UW_CATEGORY_ROOT").unwrap_or_else(|_| "Physics".to_string());
+        let root = *ids.get(root_name.as_str()).expect("root category present in the graph");
+        eprintln!("3e[{}]: {} nodes, {} edges (raw)", path, names.len(),
+            parents.values().map(|v| v.len()).sum::<usize>());
 
-        // (1) Cycle-correct distances to root terminate on the cyclic real graph.
+        // Scope to a single subtree: the bounded-depth descendant cone of `root`, induced edges.
+        let max_depth: usize = std::env::var("UW_CATEGORY_MAXDEPTH").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+        if max_depth != usize::MAX {
+            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (&c, ps) in &parents { for &p in ps { children.entry(p).or_default().push(c); } }
+            let mut dep: HashMap<u32, usize> = HashMap::new();
+            dep.insert(root, 0);
+            let mut q: VecDeque<u32> = VecDeque::new(); q.push_back(root);
+            while let Some(x) = q.pop_front() {
+                let dx = dep[&x];
+                if dx >= max_depth { continue; }
+                if let Some(cs) = children.get(&x) {
+                    for &c in cs { if !dep.contains_key(&c) { dep.insert(c, dx + 1); q.push_back(c); } }
+                }
+            }
+            let mut scoped: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (&c, ps) in &parents {
+                if dep.contains_key(&c) {
+                    let kept: Vec<u32> = ps.iter().copied().filter(|p| dep.contains_key(p)).collect();
+                    if !kept.is_empty() { scoped.insert(c, kept); }
+                }
+            }
+            eprintln!("3e: scoped to depth<={} from '{}' -> {} nodes, {} edges",
+                max_depth, root_name, dep.len(), scoped.values().map(|v| v.len()).sum::<usize>());
+            parents = scoped;
+        }
+
+        // (1) Cycle-correct distances to root terminate.
         let to_root = min_distance_closure(root, &parents);
         assert_eq!(to_root.get(&root), Some(&0), "root distance is 0");
         eprintln!("3e: {} nodes reach the root upward", to_root.len());
@@ -3344,17 +3379,23 @@ mod tests {
         }
         eprintln!("3e: {} query pairs exercised", tested);
 
-        // (5) The cycle-vs-DAG distinction, on real data: the descendant SKETCH is DAG-only.
+        // (5) IC similarity — DAG-only. The raw cyclic graph gives None (needs SCC-condensation);
+        // the bounded-depth subtree is acyclic, so Resnik/Lin/FaITH run on real physics topics.
         match descendant_minhash(&parents, 64) {
-            None => eprintln!("3e: descendant_minhash = None — graph has cycles, so IC similarity \
-                               needs SCC-condensation first (the documented prescription)"),
+            None => eprintln!("3e: descendant_minhash = None — this graph has cycles, so IC \
+                               similarity needs SCC-condensation first (scope with \
+                               UW_CATEGORY_MAXDEPTH to get an acyclic subtree)"),
             Some(d) => {
-                eprintln!("3e: graph is acyclic at this scale — IC similarity available");
                 let n = d.len();
+                eprintln!("3e: subtree is acyclic — IC similarity (Resnik / Lin / FaITH):");
                 for &(an, bn) in &candidates {
                     if let (Some(&u), Some(&v)) = (ids.get(an), ids.get(bn)) {
-                        if let Some(l) = lin_similarity(u, v, &parents, &d, n, 64) {
-                            eprintln!("3e: Lin({}, {}) = {:.3}", an, bn, l);
+                        let r = resnik_similarity(u, v, &parents, &d, n, 64);
+                        let l = lin_similarity(u, v, &parents, &d, n, 64);
+                        let fa = faith_similarity(u, v, &parents, &d, n, 64);
+                        if let (Some(r), Some(l), Some(fa)) = (r, l, fa) {
+                            eprintln!("      {:<26} {:<22} Resnik {:.2}  Lin {:.2}  FaITH {:.2}",
+                                an, bn, r, l, fa);
                         }
                     }
                 }
