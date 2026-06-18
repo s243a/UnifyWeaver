@@ -41,6 +41,7 @@
 %      BEGIN { print "kind", "count" } { total++ } END { print "total", total }
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
+%      $1 == "ERROR" { printf "%s=%s\n", $2, $3 }
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
 %      $1 == "ERROR" { print int($3) + 1 }
@@ -61,17 +62,19 @@
 %  function emits the target-specific native main that streams the file, lowers
 %  the deterministic guard, and prints matching records.
 plawk_program_native_driver_ir(
-    program(BeginClauses, [rule(Pattern, [print(Fields)])], []),
+    program(BeginClauses, [rule(Pattern, [Action])], []),
     InputPath,
     DriverIR
 ) :-
+    plawk_rule_body_print_action(Action),
+    plawk_output_action_exprs(Action, Exprs),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_field_separator(BeginClauses, FieldSeparator),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
-    plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR),
-    plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintGlobalIR-PrintActionIR),
+    plawk_print_record_counter_ir(Exprs, LoopPhiIR, RecordCounterIR),
+    plawk_output_action_ir(Action, FieldSeparator, OutputSeparator, PrintGlobalIR-PrintActionIR),
     format(atom(RecordIR),
 '~w
 ~w
@@ -513,6 +516,8 @@ plawk_actions_body_print_field(Actions, Field) :-
 
 plawk_action_body_print_field(print(Fields), Field) :-
     member(Field, Fields).
+plawk_action_body_print_field(printf(string(_Format), Args), Field) :-
+    member(Field, Args).
 plawk_action_body_print_field(if(_Pattern, ThenActions, ElseActions), Field) :-
     (   plawk_actions_body_print_field(ThenActions, Field)
     ;   plawk_actions_body_print_field(ElseActions, Field)
@@ -1359,6 +1364,9 @@ plawk_scalar_rule_body_plain_action(Action) :-
 plawk_rule_body_print_action(print(Fields)) :-
     Fields = [_ | _],
     maplist(plawk_rule_body_print_field, Fields).
+plawk_rule_body_print_action(printf(string(Format), Args)) :-
+    string(Format),
+    maplist(plawk_rule_body_print_field, Args).
 
 plawk_rule_body_print_field(field(_)).
 plawk_rule_body_print_field(string(_)).
@@ -1482,6 +1490,17 @@ plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, Fie
     { plawk_rule_body_print_action(print(Fields)),
       format(atom(PrintPrefix), '~w_print_~w', [Prefix, OpIndex]),
       plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+plawk_scalar_action_sequence_pairs([printf(string(Format), Args) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_rule_body_print_action(printf(string(Format), Args)),
+      format(atom(PrintPrefix), '~w_printf_~w', [Prefix, OpIndex]),
+      plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, PrintPrefix, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -1926,6 +1945,14 @@ plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(BodyParts, '\n', IR).
 
+plawk_output_action_exprs(print(Fields), Fields).
+plawk_output_action_exprs(printf(string(_Format), Args), Args).
+
+plawk_output_action_ir(print(Fields), FieldSeparator, OutputSeparator, Pair) :-
+    plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, Pair).
+plawk_output_action_ir(printf(string(Format), Args), FieldSeparator, _OutputSeparator, Pair) :-
+    plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, plawk_printf, Pair).
+
 plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Prefix, ''-IR) :-
     !,
     format(atom(FmtVar), '~w_line_fmt', [Prefix]),
@@ -1938,6 +1965,99 @@ plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 
     plawk_print_ir_parts(Pairs, GlobalParts, BodyParts),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(BodyParts, '\n', IR).
+
+plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, Prefix, GlobalIR-IR) :-
+    phrase(plawk_printf_arg_pairs(Args, FieldSeparator, Prefix, 0), ArgPairs),
+    pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
+    pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
+    append(ArgCallArgLists, CallArgs),
+    maplist(plawk_printf_call_arg_kind, CallArgs, ArgKinds),
+    plawk_printf_rewrite_format(Format, ArgKinds, PrintfFormat),
+    format(atom(FormatGlobal), '~w_fmt', [Prefix]),
+    llvm_emit_c_string_global(FormatGlobal, PrintfFormat, FormatGlobalIR, _FormatLen, FormatBytesLen),
+    format(atom(FmtPtrVar), '~w_fmt_ptr', [Prefix]),
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [FmtPtrVar, FormatBytesLen, FormatBytesLen, FormatGlobal]),
+    plawk_printf_call_args_ir(CallArgs, CallArgsIR),
+    format(atom(PrintVar), '~w_printed', [Prefix]),
+    (   CallArgsIR == ''
+    ->  format(atom(PrintCall),
+            '  %~w = call i32 (i8*, ...) @printf(i8* %~w)',
+            [PrintVar, FmtPtrVar])
+    ;   format(atom(PrintCall),
+            '  %~w = call i32 (i8*, ...) @printf(i8* %~w, ~w)',
+            [PrintVar, FmtPtrVar, CallArgsIR])
+    ),
+    plawk_join_nonempty_ir([FormatGlobalIR | ArgGlobalParts], GlobalIR),
+    append(ArgSetupParts, [FmtPtr, PrintCall], BodyParts),
+    atomic_list_concat(BodyParts, '\n', IR).
+
+plawk_printf_arg_pairs([], _FieldSeparator, _Prefix, _Index) -->
+    [].
+plawk_printf_arg_pairs([Arg | Args], FieldSeparator, Prefix, Index) -->
+    { plawk_emit_prefixed_print_expr_ir(Arg, FieldSeparator, Prefix, Index,
+          Type, GlobalParts, SetupParts),
+      plawk_printf_type_call_args(Type, CallArgs),
+      plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+      plawk_join_nonempty_ir(SetupParts, SetupIR),
+      NextIndex is Index + 1
+    },
+    [GlobalIR-(SetupIR-CallArgs)],
+    plawk_printf_arg_pairs(Args, FieldSeparator, Prefix, NextIndex).
+
+plawk_printf_type_call_args(i64(_FmtPrefix, _PrintPrefix, ValueIR), [i64(ValueIR)]).
+plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).
+plawk_printf_type_call_args(string(_Base, PtrIR), [string_ptr(PtrIR)]).
+
+plawk_printf_call_arg_kind(i64(_ValueIR), i64).
+plawk_printf_call_arg_kind(slice_len(_LenIR), slice_len).
+plawk_printf_call_arg_kind(slice_ptr(_PtrIR), slice_ptr).
+plawk_printf_call_arg_kind(string_ptr(_PtrIR), string).
+
+plawk_printf_call_args_ir([], '') :-
+    !.
+plawk_printf_call_args_ir(CallArgs, IR) :-
+    maplist(plawk_printf_call_arg_ir, CallArgs, Parts),
+    atomic_list_concat(Parts, ', ', IR).
+
+plawk_printf_call_arg_ir(i64(ValueIR), IR) :-
+    format(atom(IR), 'i64 ~w', [ValueIR]).
+plawk_printf_call_arg_ir(slice_len(LenIR), IR) :-
+    format(atom(IR), 'i32 ~w', [LenIR]).
+plawk_printf_call_arg_ir(slice_ptr(PtrIR), IR) :-
+    format(atom(IR), 'i8* ~w', [PtrIR]).
+plawk_printf_call_arg_ir(string_ptr(PtrIR), IR) :-
+    format(atom(IR), 'i8* ~w', [PtrIR]).
+
+plawk_printf_rewrite_format(Format, ArgKinds, RewrittenFormat) :-
+    string_codes(Format, Codes),
+    plawk_printf_rewrite_codes(Codes, ArgKinds, RewrittenCodes),
+    string_codes(RewrittenFormat, RewrittenCodes).
+
+plawk_printf_rewrite_codes([], [], []).
+plawk_printf_rewrite_codes([Code | Rest], Kinds, [Code | RewrittenRest]) :-
+    Code =\= 0'%,
+    !,
+    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
+plawk_printf_rewrite_codes([0'%, 0'% | Rest], Kinds, [0'%, 0'% | RewrittenRest]) :-
+    !,
+    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
+plawk_printf_rewrite_codes([0'% | Rest], [i64 | Kinds], [0'%, 0'l, 0'd | RewrittenRest]) :-
+    plawk_printf_i64_spec_codes(Rest, RestAfterSpec),
+    !,
+    plawk_printf_rewrite_codes(RestAfterSpec, Kinds, RewrittenRest).
+plawk_printf_rewrite_codes([0'%, 0's | Rest], [string | Kinds], [0'%, 0's | RewrittenRest]) :-
+    !,
+    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
+plawk_printf_rewrite_codes([0'%, 0's | Rest], [slice_len, slice_ptr | Kinds],
+        [0'%, 0'., 0'*, 0's | RewrittenRest]) :-
+    !,
+    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
+
+plawk_printf_i64_spec_codes([0'l, 0'd | Rest], Rest).
+plawk_printf_i64_spec_codes([0'd | Rest], Rest).
+plawk_printf_i64_spec_codes([0'i | Rest], Rest).
 
 plawk_print_ir_parts([], [], []).
 plawk_print_ir_parts([GlobalIR-BodyIR | Parts], [GlobalIR | GlobalParts], [BodyIR | BodyParts]) :-

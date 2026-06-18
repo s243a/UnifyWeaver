@@ -133,6 +133,12 @@ and an `END` action:
 $1 == "ERROR" { count++ } END { print count }
 ```
 
+It can also compile basic rule-local `printf` actions:
+
+```awk
+$1 == "ERROR" { printf "%s=%s\n", $2, $3 }
+```
+
 It can also compile multiple scalar increments in one action list:
 
 ```awk
@@ -439,6 +445,9 @@ net,down
 
 The native output path writes the single-byte separator directly, so separators
 such as `%` are treated as data rather than `printf` format strings.
+Use `printf` when the rule action should control formatting directly; supported
+native specifiers are `%%`, `%s`, `%d`, `%i`, and `%ld`, with field-slice `%s`
+lowered as `%.*s`.
 This path keeps the streaming loop native while the WAM runtime supplies the
 reader, atom helpers, and reusable associative table primitive.
 

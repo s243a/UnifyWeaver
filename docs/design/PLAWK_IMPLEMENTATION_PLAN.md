@@ -270,6 +270,10 @@ through the shared primary emitter followed by a shared binary `i64` operation.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
+Basic rule-local `printf` actions now lower to native vararg `@printf` calls.
+The supported format subset is `%%`, `%s`, `%d`, `%i`, and `%ld`; field-slice
+`%s` arguments are rewritten to `%.*s` and passed as allocation-free length and
+pointer pairs.
 Numeric field guards such as `$3 > 100` lower through the shared
 `@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
 as a strict signed decimal `i64` and compares with numeric op codes.

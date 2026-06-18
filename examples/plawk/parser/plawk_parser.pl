@@ -19,6 +19,7 @@
 %      BEGIN { print "kind", "count" } { count++ } END { print "count", count }
 %      BEGIN { FS = ":" } $1 == "ERROR" { counts[$2]++ } END { print counts["disk"] }
 %      BEGIN { FS = ":"; OFS = "," } $1 == "ERROR" { print $2, $3 }
+%      $1 == "ERROR" { printf "%s=%s\n", $2, $3 }
 %      { count++ } END { print "count", count }
 %      $3 > 100 { big++ } END { print big }
 %      $1 == "ERROR" { print $3, int($3) }
@@ -191,6 +192,12 @@ quoted_string(Codes) -->
     quoted_string_codes(Codes),
     "\"".
 
+quoted_string_codes(Codes) -->
+    "\\",
+    quoted_string_escape_codes(EscapedCodes),
+    !,
+    quoted_string_codes(RestCodes),
+    { append(EscapedCodes, RestCodes, Codes) }.
 quoted_string_codes([Code | Codes]) -->
     [Code],
     { Code =\= 0'", Code =\= 0'\n, Code =\= 0'\r },
@@ -198,6 +205,20 @@ quoted_string_codes([Code | Codes]) -->
     quoted_string_codes(Codes).
 quoted_string_codes([]) -->
     [].
+
+quoted_string_escape_codes([10]) -->
+    "n".
+quoted_string_escape_codes([9]) -->
+    "t".
+quoted_string_escape_codes([13]) -->
+    "r".
+quoted_string_escape_codes([0'"]) -->
+    "\"".
+quoted_string_escape_codes([0'\\]) -->
+    "\\".
+quoted_string_escape_codes([0'\\, Code]) -->
+    [Code],
+    { Code =\= 0'\n, Code =\= 0'\r }.
 
 begin_clauses([begin(Actions)]) -->
     "BEGIN",
@@ -275,6 +296,9 @@ actions_rest([]) -->
 
 action(Action) -->
     if_action(Action),
+    !.
+action(Action) -->
+    printf_action(Action),
     !.
 action(Action) -->
     print_action(Action),
@@ -403,6 +427,33 @@ print_action(print(Fields)) -->
     "print",
     required_ws,
     print_fields(Fields).
+
+printf_action(printf(string(Format), Args)) -->
+    "printf",
+    required_ws,
+    quoted_string(FormatCodes),
+    printf_args(Args),
+    { string_codes(Format, FormatCodes) }.
+
+printf_args([Arg | Args]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    field_expr(Arg),
+    printf_args_rest(Args).
+printf_args([]) -->
+    [].
+
+printf_args_rest([Arg | Args]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    field_expr(Arg),
+    printf_args_rest(Args).
+printf_args_rest([]) -->
+    [].
 
 print_fields([Field | Fields]) -->
     field_expr(Field),
