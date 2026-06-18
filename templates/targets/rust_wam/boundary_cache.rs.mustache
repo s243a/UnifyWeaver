@@ -624,9 +624,50 @@ pub fn caret_distance_budgeted(
         .min()
 }
 
-/// **Boundary-restricted** caret — the same value as `caret_distance_lca`, but the joint
-/// up-search **stops at the mixing boundary** (the lowest common ancestors) instead of
-/// expanding both ancestor cones all the way to the root.
+/// The **optimal bridge node** for a pair: the common ancestor `B` (within `budget` hops of
+/// *both* `u` and `v`) that minimises `d(u→B) + d(v→B)` — i.e. the mixing-boundary bridge that
+/// *achieves* the budgeted caret — returned as `(B, caret)`.
+///
+/// This is the per-pair, **bidirectional** read that needs no curated root cone. Wikipedia's
+/// category graph is associative, not is-a: a *downward* "subtree of Physics" leaks into all of
+/// Wikipedia within a few hops (`Physics → Matter → Physical_objects → Organisms → …`), so a
+/// clean cone can't be cut structurally. But the optimal-bridge query only explores the bounded
+/// *up-cones* of the two chosen nodes and finds where *their* lineages actually mix — so for two
+/// genuinely-related nodes it recovers their real lowest common ancestor (e.g. two physics
+/// subfields meet at `Subfields_of_physics`) directly on the raw, uncurated, even cyclic graph.
+/// `budget` bounds the ancestor space (e.g. ~10 generations); `None` if they share no ancestor
+/// within it. The caret equals `caret_distance_budgeted`; this also names the achieving bridge.
+pub fn caret_optimal_bridge(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    budget: u32,
+) -> Option<(u32, u32)> {
+    use std::collections::{HashMap, VecDeque};
+    fn up_bounded(
+        src: u32, parents: &HashMap<u32, Vec<u32>>, budget: u32,
+    ) -> HashMap<u32, u32> {
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q: VecDeque<u32> = VecDeque::new();
+        d.insert(src, 0);
+        q.push_back(src);
+        while let Some(x) = q.pop_front() {
+            let dx = d[&x];
+            if dx >= budget { continue; }
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !d.contains_key(&p) { d.insert(p, dx + 1); q.push_back(p); }
+                }
+            }
+        }
+        d
+    }
+    let du = up_bounded(u, parents, budget);
+    let dv = up_bounded(v, parents, budget);
+    du.iter()
+        .filter_map(|(&b, &a)| dv.get(&b).map(|&c| (b, a + c)))
+        .min_by(|x, y| x.1.cmp(&y.1).then(x.0.cmp(&y.0)))
+}
 ///
 /// `caret_distance_lca` builds the *entire* up-cone of `u` and of `v` and intersects — it
 /// always walks to root, even when the lineages merge one hop up. But the minimum
@@ -3172,6 +3213,28 @@ mod tests {
         assert_eq!(caret_distance_budgeted(4, 6, &t, 100), caret_distance_lca(4, 6, &t));
     }
 
+    // The optimal-bridge read: the bridge NODE achieving the budgeted caret, on the raw graph.
+    #[test]
+    fn optimal_bridge_names_the_mixing_node() {
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![1]); t.insert(3, vec![1]);
+        t.insert(4, vec![2]); t.insert(5, vec![2]); t.insert(6, vec![3]);
+        // 4 & 5 mix at node 2 (caret 2); the bridge is named, and the caret matches budgeted.
+        assert_eq!(caret_optimal_bridge(4, 5, &t, 10), Some((2, 2)));
+        // 4 & 6 mix at node 1 (caret 4); bridge named.
+        assert_eq!(caret_optimal_bridge(4, 6, &t, 10), Some((1, 4)));
+        // The caret component always equals caret_distance_budgeted, and the bridge achieves it.
+        for &(u, v) in &[(4u32, 5u32), (4, 6), (5, 6), (3, 4)] {
+            let got = caret_optimal_bridge(u, v, &t, 10);
+            assert_eq!(got.map(|(_, c)| c), caret_distance_budgeted(u, v, &t, 10));
+            if let Some((b, c)) = got {
+                assert_eq!(caret_through_bridge(u, v, b, &t), Some(c), "bridge {} achieves caret", b);
+            }
+        }
+        // Out of budget -> None (4 & 6 need 2 hops to reach the bridge).
+        assert_eq!(caret_optimal_bridge(4, 6, &t, 1), None);
+    }
+
     // The composition the physics-subtree idea is built on: propagate the SUPPORT interval
     // (to the subtree root), take its upper bound `max` as the caret budget, and the
     // budgeted caret then always finds the bridge for nodes in the subtree (at worst the
@@ -3378,6 +3441,20 @@ mod tests {
             tested += 1;
         }
         eprintln!("3e: {} query pairs exercised", tested);
+
+        // (4b) The per-pair OPTIMAL BRIDGE on the bounded ancestor space (≤10 generations) — the
+        // bidirectional read that needs no curated cone: it finds where *these two* lineages mix
+        // and names their lowest common ancestor, directly on the raw (uncurated) graph.
+        eprintln!("3e: optimal bridge (budget 10), per pair on the raw ancestor space:");
+        for &(an, bn) in &candidates {
+            if let (Some(&u), Some(&v)) = (ids.get(an), ids.get(bn)) {
+                match caret_optimal_bridge(u, v, &parents, 10) {
+                    Some((b, c)) => eprintln!("      {:<24} {:<22} -> bridge '{}'  (caret {})",
+                        an, bn, names[b as usize], c),
+                    None => eprintln!("      {:<24} {:<22} -> no shared ancestor within 10", an, bn),
+                }
+            }
+        }
 
         // (5) IC similarity — DAG-only. The raw cyclic graph gives None (needs SCC-condensation);
         // the bounded-depth subtree is acyclic, so Resnik/Lin/FaITH run on real physics topics.

@@ -1006,9 +1006,16 @@ buy diminishing returns and is not carried).
      7 vs an exact 1). Restricting to the **bounded-depth descendant cone** (depth ≤ 3) fixes both:
      the subtree is **acyclic** (IC runs) and the hubs are semantic (`Subfields_of_physics`,
      `Matter`, `Energy`). On it the IC read-outs track real physics — `Electromagnetism`–`Optics`
-     Lin 0.68 ≫ `Thermodynamics`–`Optics` 0.36 — and the quantization gap closes. Residual: even
-     scoped, fan-in can prefer `Physicists_by_nationality` over `Subfields_of_physics`, concrete
-     motivation for the deferred semantic-diversity hub selection. Full write-up:
+     Lin 0.68 ≫ `Thermodynamics`–`Optics` 0.36 — and the quantization gap closes. **The deeper
+     resolution:** the leak is a *downward-cone* problem (Wikipedia categories are associative, not
+     is-a, so `Physics → Matter → Physical_objects → Organisms → …` is real, not a data bug); the
+     **per-pair bidirectional bridge sidesteps it** — `caret_optimal_bridge(u, v, budget)` explores
+     only the two nodes' *up-cones*, finds where *their* lineages mix, and on the **raw, uncurated,
+     cyclic** graph recovers semantically-correct bridges (`Classical_mechanics`×`Electromagnetism`
+     → `Subfields_of_physics`; `Electromagnetism`×`Optics` → `Electromagnetism`), stable across all
+     scales, no cone needed. Residual: even scoped, fan-in can prefer `Physicists_by_nationality`
+     over `Subfields_of_physics` — concrete motivation for the deferred semantic-diversity *global*
+     hub selection (per-pair bridges are already good without it). Full write-up:
      `WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`.
    - **[3f DONE]** the **landmark-cached designated-bridge caret** (§5c): `bridge_distance_fields`
      precomputes `d(·→B)` (one downward BFS per bridge over the shared children graph, `O(E +

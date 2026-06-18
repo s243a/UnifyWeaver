@@ -15,11 +15,57 @@ subtree** before the read-outs mean anything.
   `UW_CATEGORY_MAXDEPTH` scope the graph to the **bounded-depth descendant cone of the root with
   induced edges** — a single coherent subtree.
 
-## The scoping lesson (why the raw graph is not a subtree)
+## The data is not wrong — Wikipedia categories are not a taxonomy
 
-The *unbounded* "Physics-rooted" graph is not a clean subtree at all: in real Wikipedia, Physics's
-descendant cone reaches **most of the encyclopedia** within a few hops via cross-listings (at
-`10k`, **7811 of 8247** nodes "reach Physics"). Two symptoms on the raw graph:
+A natural first reaction to "Physics's cone contains `States_of_the_United_States`" is *the data
+must be corrupted*. It is not. Every step is a real row in the file and an individually-plausible
+Wikipedia subcategory link; the absurdity is **transitive**:
+
+```
+Physics → Matter → Physical_objects → Organisms → … → Humans → Human_activities → … → Movies
+Physics → Matter → Physical_objects → Astronomical_objects → … → Earth → … → States_of_the_United_States
+Physics → Time → History
+```
+
+The load-bearing edge is `Organisms → Physical_objects` (Wikipedia really does file living things
+under "physical objects"); once crossed, Physics's *subcategory* cone bleeds into all of biology →
+humans → everything. This is the documented property that **Wikipedia's category graph is
+associative, not is-a** — following "subcategory" links transitively, almost everything is a
+"subcategory" of almost everything within a handful of hops. A live fetch would show the same
+leaks (and is blocked here anyway). So a clean *downward* "subtree of Physics" **cannot be cut
+structurally** — only with semantic filtering.
+
+## The resolution: the per-pair bidirectional bridge needs no curated cone
+
+The leak is a property of the *downward* cone. The per-pair caret/bridge metrics are
+**bidirectional and bounded** — they explore only the *up-cones* of the two chosen nodes and find
+where *their* lineages mix — so the downward leak never bites. Pick two nodes that *should* be
+related, bound the ancestor space (`caret_optimal_bridge(u, v, budget=10)`), and read off their
+real lowest common ancestor — **directly on the raw, uncurated, cyclic graph**:
+
+| pair | optimal bridge (raw graph, budget 10) | caret |
+|------|---------------------------------------|-------|
+| `Classical_mechanics` – `Electromagnetism` | **`Subfields_of_physics`** | 2 |
+| `Thermodynamics` – `Optics` | **`Subfields_of_physics`** | 3 |
+| `Quantum_mechanics` – `Classical_mechanics` | **`Subfields_of_physics`** | 2 |
+| `Electromagnetism` – `Optics` | **`Electromagnetism`** | 1 |
+
+The bridges are semantically correct and **stable across all scales** (dev / 300 / 10k give the
+same bridges), because the bounded up-search from two physics topics recovers their genuine common
+ancestor regardless of the downward mess. `Electromagnetism`–`Optics` meeting at `Electromagnetism`
+itself (caret 1) is exactly right — optics is filed under electromagnetism. **This is the honest
+way to use the metric on real Wikipedia: per-pair, bidirectional, bounded — not a curated cone.**
+
+## Scoping a downward cone — still useful for the DAG-only payloads, but only a band-aid
+
+The *global* / *downward* read-outs (fan-in hubs, the descendant-sketch IC) still need an acyclic,
+semantically-coherent graph, and for those a bounded-depth cone helps — with the caveat that it
+only *partially* cleans the leak (it stays physics-ish to depth ~3, then the cross-listings take
+over).
+
+The *unbounded* "Physics-rooted" graph is not a clean subtree at all: Physics's descendant cone
+reaches **most of the encyclopedia** within a few hops (at `10k`, **7811 of 8247** nodes "reach
+Physics"). Two symptoms on the raw graph:
 
 - **It is cyclic** (≈5 back-edges at `dev`, ≈20 at `10k`), so `descendant_minhash` returns `None`
   and IC similarity is unavailable without SCC-condensation.
@@ -69,14 +115,22 @@ relatedness read-outs track genuine physics structure.
 
 ## Takeaways
 
-1. **Scope first.** A nominal "X-rooted" Wikipedia crawl is not a subtree of X — its cone is the
-   whole encyclopedia. A bounded-depth descendant cone with induced edges is the actual single
-   subtree, and it is the precondition for *any* of the read-outs (hubs, IC) to be meaningful.
-2. **Bounded scoping also restores acyclicity**, so the DAG-only IC payloads (`descendant_minhash`
-   → Resnik/Lin/FaITH) run without SCC-condensation. The depth knob is the §5c tightness lever made
-   concrete: small depth = coherent + acyclic; large depth = the cross-listed, cyclic soup.
-3. **The machinery is correct on real cyclic data** — all algebraic invariants held across four
-   scales — and on the scoped subtree the similarity numbers track real physics relatedness.
-4. **Global hub selection still needs semantics.** Even scoped, fan-in surfaces
-   `Physicists_by_nationality` over `Subfields_of_physics` at `300`; the deferred diversity-based
-   selection (§5d) is what would prefer the latter. Concrete motivation, now from clean data.
+1. **The data is real, not wrong — Wikipedia categories are associative, not is-a**, so a clean
+   *downward* "subtree of X" cannot be cut structurally; the transitive leak (`Organisms →
+   Physical_objects → …`) is genuine Wikipedia.
+2. **The per-pair bidirectional bridge is the robust answer** — `caret_optimal_bridge` (bounded
+   up-search, no curated cone) recovers semantically-correct lowest common ancestors
+   (`Subfields_of_physics`, `Electromagnetism`) for related pairs, **directly on the raw, cyclic
+   graph**, stable across all scales. This is how the metric should be used on real Wikipedia:
+   pick two nodes that should be related, bound the ancestor space, read the bridge.
+3. **Downward/global read-outs (fan-in hubs, descendant-sketch IC) need an acyclic, coherent
+   graph**, for which a bounded-depth cone is a useful *band-aid* (acyclic + physics-ish to depth
+   ~3), but only that — it cannot fully clean the associative leak. On the scoped subtree the IC
+   numbers still track real physics (`Electromagnetism`–`Optics` Lin 0.68 ≫ `Thermodynamics`–
+   `Optics` 0.36).
+4. **The machinery is correct on real cyclic data** — all algebraic invariants held across four
+   scales (boundary == full caret, cached-landmark == per-query, cycle-correct termination).
+5. **Global hub selection still needs semantics.** Even scoped, fan-in surfaces
+   `Physicists_by_nationality` over `Subfields_of_physics`; the associative-leak finding is the
+   deeper reason structure alone can't pick good *global* bridges — the deferred diversity-based
+   selection (§5d) is what would. Per-pair bridges, by contrast, are already good *without* it.
