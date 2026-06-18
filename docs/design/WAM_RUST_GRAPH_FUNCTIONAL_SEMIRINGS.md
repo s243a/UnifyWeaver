@@ -201,6 +201,76 @@ the *measurement* of where that crossover sits (which dominates a given cache re
 remaining open step, but the two representations it would choose between are now both shipped and
 interchangeable.
 
+**[measured]** The chain-vs-branch split that governs the *carry* also governs the deeper
+question — *when is the moment/cumulant summary a faithful stand-in for the histogram, without
+ever forming the histogram?* — and `moment_reconstruction_faithful_on_chains_not_on_branches`
+measures it. Two synthetic graphs propagate the jet (never the histogram) and the reconstruction
+is scored against the independently-computed true histogram:
+
+| node shape | true distribution | `to_normal_repr` CDF error | excess kurtosis (self-diagnostic) |
+|---|---|---|---|
+| `⊗`-heavy chain (24 length-`{1,2}` diamonds) | shifted binomial → Gaussian (CLT) | **0.0019** | `−0.08` (reads Gaussian) |
+| `⊕`-heavy branch (two depths, 6 vs 41) | bimodal mixture | **0.48** | `−2.0` (reads strongly non-Gaussian) |
+
+(The chain's `0.0019` is *below* the Berry–Esseen CLT bound `≈ 0.097` for `n=24` — not a
+contradiction: the chain is **symmetric** (`γ₁ = 0`), so the leading `O(n^−½)` Edgeworth term
+vanishes and only the `O(n^−1)` correction remains. Berry 1941 / Esseen 1942.)
+
+The answers this pins down (and the honest limits):
+
+- **The moments are exact; only the *reconstruction* approximates.** Mean/variance/skew/kurtosis
+  are computed exactly by propagation — `κ₂ = 24·0.25` on the chain confirms cumulant additivity.
+  Faithfulness is entirely a property of the reconstruction step (moments → distribution shape).
+- **You know it is faithful from *structure*, not the histogram.** A `⊗`-heavy node is a sum of
+  many independent stages → Gaussian by the CLT, so the moment-Normal is near-exact (0.002); a
+  `⊕`-heavy node is a *mixture*, possibly multimodal, where it fails (0.48). The graph shape is the
+  prior — read off the topology, not the histogram.
+- **The carried higher moments *self-diagnose*, via their *ratio*.** Not a single threshold but the
+  **Pearson `(β₁, β₂)` moment-ratio diagram** (`β₁ = skew²`, `β₂ = excess kurtosis`): every
+  distribution obeys the universal bound `β₂ ≥ β₁ − 2`, with equality attained **only** by two-point
+  (Bernoulli) distributions (the bimodal branch sits there: skew `0`, excess kurtosis `−2.0 = 0 −
+  2`). So the slack `d = β₂ − β₁ + 2 ≥ 0` is a histogram-free **multimodality detector**, and
+  `MomentJet::reconstruction_class` reads it: `d < 0.7` → **Multimodal**; mild `|skew|,|kurtosis|` →
+  **Gaussian**; otherwise **GramCharlier**. Crucially **some skew is fine** — a skewed binomial
+  (`skew 0.31`) classifies `GramCharlier`, reconstructed by the skew/kurtosis corrections — so it
+  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality. (The Gram–Charlier A
+  expansion is itself a valid non-negative density only over a *bounded* `(γ₁, γ₂)` region, roughly
+  `|γ₁| ≲ 2` — Jondeau & Rockinger 2001; outside it the §7 CDF gate rejects the negative-density
+  result, so the pre-screen stays safe.)
+- **The `0.7` threshold is a conservative heuristic, not the rigorous boundary** — and this is the
+  interesting subtlety. `0.7` has **zero false positives** (anything below it is provably near the
+  two-mode extremum), but `d` does *not* cleanly separate multimodal from unimodal: the
+  **platykurtic** band `0.7 ≲ d ≲ 2` holds *both*. The **uniform** is unimodal/amodal yet has
+  `d ≈ 0.80` (excess kurtosis `−1.2`); four moments cannot tell a flat-but-unimodal shape from a
+  mild bimodal. `0.7` sits just below the uniform's `0.80`, so platykurtic-unimodals route to
+  GramCharlier — *raising it to ≈1.5 would wrongly call the uniform a mixture.* (Published
+  unimodality floors — Sharma & Bhandari 2015; Klaassen & van Es 2023, `d ≥ 189/125 ≈ 1.512` — are
+  for *strictly* unimodal densities and exclude the flat uniform, which is why we keep `0.7`.) The
+  platykurtic band is precisely the **genuinely ambiguous middle** the moments can't resolve — the
+  case for the §7 CDF gate or a Monte-Carlo / GMM fit, not a sharper threshold.
+- **Multimodal is still *closed-form* — a mixture, not "give up and store the histogram."** The
+  flag means *not a single mode*, so reconstruct with a **mixture / GMM** (`HistRepr::DiscGmm` /
+  `Mixture`). And the same **Pearson** framework behind the `(β₁,β₂)` diagram is Pearson's 1894
+  **method of moments** for a 2-Gaussian mixture: in the *symmetric* case (equal weights, equal
+  component variance) the mixture is fit from the *same four moments* in closed form — two modes at
+  `μ ± δ` with `δ = σ·(−γ₂/2)^¼`, which is **exact for all component variances `s ≥ 0`** (from
+  `γ₂ = −2(δ/σ)⁴`), not just the `s→0` point-mass limit. On the bimodal branch that yields modes at
+  exactly `{6, 41}` (the true spikes) from the same moments the single Gaussian botched at error
+  `0.48`. So the ladder is Gaussian → Gram–Charlier → **mixture (closed form)** → exact histogram,
+  and only the last is non-parametric. **Honest gap:** four moments under-determine a *general*
+  mixture — Pearson's *asymmetric* 2-Gaussian case already reduces to a **9th-degree (nonic)
+  polynomial** in the separation and typically needs more than four moments; fitting that needs the
+  histogram, or a **Monte-Carlo goodness-of-fit / EM** step (sample paths,
+  build the empirical distribution, fit/test), which is embarrassingly parallel and a natural
+  **GPU** workload (a *future* direction). The §7 reconstruction stays **CDF-gated**
+  (histogram-validated) as the final word; `reconstruction_class` is the cheap pre-screen that
+  decides *which* parametric family to attempt (single mode vs mixture), not whether to keep a
+  closed form at all.
+- **Cumulants vs moments is *orthogonal* to all of this.** They carry the same information
+  (`κ_k ⟺ m_k`), so the reconstruction is identical; the §3 fork is purely the *splice cost /
+  numerical-stability* axis (additive cumulants for `⊗`-heavy spines), not a representation-quality
+  axis. Faithfulness is a §7 reconstruction question, the same for both carries.
+
 ### The one that does *not* factor: `WeightSum`
 
 **The unifying principle: point-evaluation of the GF.** Treat `H(z) = Σ_L H[L] z^L` as a
@@ -1125,3 +1195,22 @@ Each is referenced inline at the section that uses it.
 - Blinnikov, S., & Moessner, R. (1998). *Expansions for Nearly Gaussian Distributions.* A&A
   Suppl. Ser. 130. — practical Gram–Charlier / Edgeworth series (the `MomentNormal` → `GramCharlier`
   reconstruction rungs).
+- Berry, A. C. (1941), *The Accuracy of the Gaussian Approximation to the Sum of Independent
+  Variates* (Trans. AMS 49); Esseen, C.-G. (1942) — the **Berry–Esseen** `O(n^−½)` CLT convergence
+  rate. For a *symmetric* sum (`γ₁ = 0`, the symmetric diamond chain) the leading `O(n^−½)` Edgeworth
+  term vanishes, leaving `O(n^−1)` — why the chain's measured `0.0019` beats the `≈0.097` bound (§3).
+
+**Moment-ratio admissibility and mixtures (§3, the `reconstruction_class` gate).**
+- Pearson, K. (1894). *Contributions to the Mathematical Theory of Evolution.* Phil. Trans. R. Soc.
+  London A, 185. — the **method of moments**, and the "dissection" of a frequency curve into a
+  2-Gaussian mixture; the general *asymmetric* case reduces to a **9th-degree (nonic)** polynomial,
+  the symmetric equal-variance case to the closed-form `δ = σ·(−γ₂/2)^¼`.
+- Sharma, R., & Bhandari, R. (2015). *Skewness, Kurtosis and Newton's Inequality.* Rocky Mountain J.
+  Math. 45(5). — bounds in the Pearson `(β₁, β₂)` plane; the universal `β₂ ≥ β₁ − 2`, attained only
+  by two-point distributions (`d = 0`).
+- Klaassen, C. A. J., & van Es, B. (2023). arXiv:2312.06212. — the **strictly-unimodal** floor
+  `d ≥ 189/125 ≈ 1.512`; note it does *not* cover the flat/amodal uniform (`d ≈ 0.80`), which is why
+  `reconstruction_class` keeps the conservative `d < 0.7` rather than raising to `≈1.5`.
+- Jondeau, E., & Rockinger, M. (2001). *Gram–Charlier Densities.* J. Economic Dynamics and Control,
+  25(10). — the **bounded `(γ₁, γ₂)` region** over which the Gram–Charlier A expansion is a valid
+  (non-negative) density (roughly `|γ₁| ≲ 2`); outside it the §7 CDF gate rejects the result.
