@@ -1,4 +1,5 @@
 # Strong-tier (Sonnet) re-scores of the Haiku-UNCERTAIN band (μ ∈ [0.3,0.7]) — the model cascade.
+# discrimination: disciplinary-leaning physics-relevance (is this studied AS physics), NOT foundational (does it rest on physics). The discrimination context is a user choice; record it here so mu is interpretable.
 #
 # Format: `node<TAB>mu`. Only the 26 nodes Haiku was uncertain about (the band) were escalated to
 # the stronger model; the confident 64 stayed with Haiku. Sonnet is markedly more discriminating —

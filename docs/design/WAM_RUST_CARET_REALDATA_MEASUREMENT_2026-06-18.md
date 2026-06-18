@@ -206,7 +206,12 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
   capturing the foundational relationship that both the disciplinary-LLM *and* the taxonomic-depth
   miss. So embeddings are not merely a cheaper classifier; they measure a foundationally-relevant
   facet the other two signals cannot. The fuzzy framework is dimension-agnostic: *which* `μ` you want
-  is a choice of prompt (or reference vector) for the application.
+  is a choice of prompt (or reference vector) for the application. So the **discrimination context is
+  a first-class, user-supplied prompt parameter** — "discriminate by discipline / by foundation /
+  by …" — chosen per the user's preference and need; the graph algorithms downstream are
+  dimension-neutral (they consume a `μ` fixture without caring what `μ` means). The one practical
+  consequence: a fixture should **record the discrimination context it was scored under** (a header
+  field), so a `μ` value is interpretable — the existing fixtures are disciplinary-leaning.
 - **When the discrimination actually matters: per-pair vs global.** How strictly we draw the
   physics/chemistry line is *not critical* for the **per-pair** algorithms — the bidirectional caret
   and the IC similarity operate on specific chosen node pairs and work whether or not the membership
