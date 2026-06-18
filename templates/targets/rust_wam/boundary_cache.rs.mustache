@@ -624,9 +624,50 @@ pub fn caret_distance_budgeted(
         .min()
 }
 
-/// **Boundary-restricted** caret — the same value as `caret_distance_lca`, but the joint
-/// up-search **stops at the mixing boundary** (the lowest common ancestors) instead of
-/// expanding both ancestor cones all the way to the root.
+/// The **optimal bridge node** for a pair: the common ancestor `B` (within `budget` hops of
+/// *both* `u` and `v`) that minimises `d(u→B) + d(v→B)` — i.e. the mixing-boundary bridge that
+/// *achieves* the budgeted caret — returned as `(B, caret)`.
+///
+/// This is the per-pair, **bidirectional** read that needs no curated root cone. Wikipedia's
+/// category graph is associative, not is-a: a *downward* "subtree of Physics" leaks into all of
+/// Wikipedia within a few hops (`Physics → Matter → Physical_objects → Organisms → …`), so a
+/// clean cone can't be cut structurally. But the optimal-bridge query only explores the bounded
+/// *up-cones* of the two chosen nodes and finds where *their* lineages actually mix — so for two
+/// genuinely-related nodes it recovers their real lowest common ancestor (e.g. two physics
+/// subfields meet at `Subfields_of_physics`) directly on the raw, uncurated, even cyclic graph.
+/// `budget` bounds the ancestor space (e.g. ~10 generations); `None` if they share no ancestor
+/// within it. The caret equals `caret_distance_budgeted`; this also names the achieving bridge.
+pub fn caret_optimal_bridge(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    budget: u32,
+) -> Option<(u32, u32)> {
+    use std::collections::{HashMap, VecDeque};
+    fn up_bounded(
+        src: u32, parents: &HashMap<u32, Vec<u32>>, budget: u32,
+    ) -> HashMap<u32, u32> {
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q: VecDeque<u32> = VecDeque::new();
+        d.insert(src, 0);
+        q.push_back(src);
+        while let Some(x) = q.pop_front() {
+            let dx = d[&x];
+            if dx >= budget { continue; }
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !d.contains_key(&p) { d.insert(p, dx + 1); q.push_back(p); }
+                }
+            }
+        }
+        d
+    }
+    let du = up_bounded(u, parents, budget);
+    let dv = up_bounded(v, parents, budget);
+    du.iter()
+        .filter_map(|(&b, &a)| dv.get(&b).map(|&c| (b, a + c)))
+        .min_by(|x, y| x.1.cmp(&y.1).then(x.0.cmp(&y.0)))
+}
 ///
 /// `caret_distance_lca` builds the *entire* up-cone of `u` and of `v` and intersects — it
 /// always walks to root, even when the lineages merge one hop up. But the minimum
@@ -3172,6 +3213,28 @@ mod tests {
         assert_eq!(caret_distance_budgeted(4, 6, &t, 100), caret_distance_lca(4, 6, &t));
     }
 
+    // The optimal-bridge read: the bridge NODE achieving the budgeted caret, on the raw graph.
+    #[test]
+    fn optimal_bridge_names_the_mixing_node() {
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![1]); t.insert(3, vec![1]);
+        t.insert(4, vec![2]); t.insert(5, vec![2]); t.insert(6, vec![3]);
+        // 4 & 5 mix at node 2 (caret 2); the bridge is named, and the caret matches budgeted.
+        assert_eq!(caret_optimal_bridge(4, 5, &t, 10), Some((2, 2)));
+        // 4 & 6 mix at node 1 (caret 4); bridge named.
+        assert_eq!(caret_optimal_bridge(4, 6, &t, 10), Some((1, 4)));
+        // The caret component always equals caret_distance_budgeted, and the bridge achieves it.
+        for &(u, v) in &[(4u32, 5u32), (4, 6), (5, 6), (3, 4)] {
+            let got = caret_optimal_bridge(u, v, &t, 10);
+            assert_eq!(got.map(|(_, c)| c), caret_distance_budgeted(u, v, &t, 10));
+            if let Some((b, c)) = got {
+                assert_eq!(caret_through_bridge(u, v, b, &t), Some(c), "bridge {} achieves caret", b);
+            }
+        }
+        // Out of budget -> None (4 & 6 need 2 hops to reach the bridge).
+        assert_eq!(caret_optimal_bridge(4, 6, &t, 1), None);
+    }
+
     // The composition the physics-subtree idea is built on: propagate the SUPPORT interval
     // (to the subtree root), take its upper bound `max` as the caret budget, and the
     // budgeted caret then always finds the bridge for nodes in the subtree (at worst the
@@ -3271,6 +3334,226 @@ mod tests {
 
         // Duplicate bridges are de-duplicated (same fields as the unique set).
         assert_eq!(bridge_distance_fields(&[2, 2, 3], &t), bridge_distance_fields(&[2, 3], &t));
+    }
+
+    // Roadmap 3e: end-to-end on the REAL Wikipedia category graph. Skips unless `UW_CATEGORY_TSV`
+    // points to a `child<TAB>parent` file (header row skipped), e.g.
+    // data/benchmark/{dev,300,10k,10x}/category_parent.tsv (Physics-rooted, various sizes).
+    //
+    // Two knobs scope the graph to a clean **single subtree** (per the lesson that Physics's
+    // *unbounded* cone spans most of Wikipedia via cross-listings, and is dominated by
+    // maintenance categories): `UW_CATEGORY_ROOT` (default "Physics") and `UW_CATEGORY_MAXDEPTH`
+    // (default unbounded). With a small max-depth the subtree stays semantically coherent (hubs
+    // like `Subfields_of_physics`) AND turns out **acyclic**, so IC similarity (DAG-only) runs.
+    // Asserts the algebraic invariants (boundary caret == full; cached-landmark == per-query;
+    // termination); reports the data-dependent read-outs. Run with --nocapture to see them.
+    #[test]
+    fn wikipedia_category_subtree_end_to_end_3e() {
+        use std::collections::VecDeque;
+        let path = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p,
+            Err(_) => { eprintln!("3e: skip (set UW_CATEGORY_TSV to a category_parent.tsv)"); return; }
+        };
+        let text = std::fs::read_to_string(&path).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; } // header
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 })
+            };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let root_name = std::env::var("UW_CATEGORY_ROOT").unwrap_or_else(|_| "Physics".to_string());
+        let root = *ids.get(root_name.as_str()).expect("root category present in the graph");
+        eprintln!("3e[{}]: {} nodes, {} edges (raw)", path, names.len(),
+            parents.values().map(|v| v.len()).sum::<usize>());
+
+        // Scope to a single subtree: the bounded-depth descendant cone of `root`, induced edges.
+        let max_depth: usize = std::env::var("UW_CATEGORY_MAXDEPTH").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+        if max_depth != usize::MAX {
+            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (&c, ps) in &parents { for &p in ps { children.entry(p).or_default().push(c); } }
+            let mut dep: HashMap<u32, usize> = HashMap::new();
+            dep.insert(root, 0);
+            let mut q: VecDeque<u32> = VecDeque::new(); q.push_back(root);
+            while let Some(x) = q.pop_front() {
+                let dx = dep[&x];
+                if dx >= max_depth { continue; }
+                if let Some(cs) = children.get(&x) {
+                    for &c in cs { if !dep.contains_key(&c) { dep.insert(c, dx + 1); q.push_back(c); } }
+                }
+            }
+            let mut scoped: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (&c, ps) in &parents {
+                if dep.contains_key(&c) {
+                    let kept: Vec<u32> = ps.iter().copied().filter(|p| dep.contains_key(p)).collect();
+                    if !kept.is_empty() { scoped.insert(c, kept); }
+                }
+            }
+            eprintln!("3e: scoped to depth<={} from '{}' -> {} nodes, {} edges",
+                max_depth, root_name, dep.len(), scoped.values().map(|v| v.len()).sum::<usize>());
+            parents = scoped;
+        }
+
+        // (1) Cycle-correct distances to root terminate.
+        let to_root = min_distance_closure(root, &parents);
+        assert_eq!(to_root.get(&root), Some(&0), "root distance is 0");
+        eprintln!("3e: {} nodes reach the root upward", to_root.len());
+
+        // (2) Convergence hubs (cycle-robust local fan-in) — report the top few.
+        let fanin = convergence_fanin(&parents);
+        let mut ranked: Vec<(u32, u32)> = fanin.iter().map(|(&b, &f)| (b, f)).collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let hubs: Vec<u32> = ranked.iter().take(8).map(|&(b, _)| b).collect();
+        eprintln!("3e: top fan-in hubs:");
+        for &(b, f) in ranked.iter().take(6) { eprintln!("      {:>3}  {}", f, names[b as usize]); }
+
+        // (3) Landmark fields for the hubs (BFS over children — works on cyclic graphs).
+        let fields = bridge_distance_fields(&hubs, &parents);
+
+        // (4) Real query pairs (skip any whose names are absent at this scale).
+        let candidates = [
+            ("Classical_mechanics", "Electromagnetism"),
+            ("Thermodynamics", "Optics"),
+            ("Quantum_mechanics", "Classical_mechanics"),
+            ("Electromagnetism", "Optics"),
+        ];
+        let mut tested = 0;
+        for &(an, bn) in &candidates {
+            let (u, v) = match (ids.get(an), ids.get(bn)) { (Some(&u), Some(&v)) => (u, v), _ => continue };
+            // INVARIANT: the boundary-restricted caret equals the full-cone caret on real data.
+            let full = caret_distance_lca(u, v, &parents);
+            let bnd = caret_distance_lca_boundary(u, v, &parents);
+            assert_eq!(full, bnd, "boundary==full caret for ({}, {})", an, bn);
+            // INVARIANT: the cached-landmark min equals the per-query min over the same hubs.
+            assert_eq!(caret_min_over_cached_bridges(u, v, &fields),
+                       caret_min_over_hubs(u, v, &hubs, &parents),
+                       "cached==per-query landmark caret for ({}, {})", an, bn);
+            eprintln!("3e: caret({}, {}) = {:?}  | hub-quantized = {:?}",
+                an, bn, full, caret_min_over_cached_bridges(u, v, &fields));
+            tested += 1;
+        }
+        eprintln!("3e: {} query pairs exercised", tested);
+
+        // (4b) The per-pair OPTIMAL BRIDGE on the bounded ancestor space (≤10 generations) — the
+        // bidirectional read that needs no curated cone: it finds where *these two* lineages mix
+        // and names their lowest common ancestor, directly on the raw (uncurated) graph.
+        eprintln!("3e: optimal bridge (budget 10), per pair on the raw ancestor space:");
+        for &(an, bn) in &candidates {
+            if let (Some(&u), Some(&v)) = (ids.get(an), ids.get(bn)) {
+                match caret_optimal_bridge(u, v, &parents, 10) {
+                    Some((b, c)) => eprintln!("      {:<24} {:<22} -> bridge '{}'  (caret {})",
+                        an, bn, names[b as usize], c),
+                    None => eprintln!("      {:<24} {:<22} -> no shared ancestor within 10", an, bn),
+                }
+            }
+        }
+
+        // (5) IC similarity — DAG-only. The raw cyclic graph gives None (needs SCC-condensation);
+        // the bounded-depth subtree is acyclic, so Resnik/Lin/FaITH run on real physics topics.
+        match descendant_minhash(&parents, 64) {
+            None => eprintln!("3e: descendant_minhash = None — this graph has cycles, so IC \
+                               similarity needs SCC-condensation first (scope with \
+                               UW_CATEGORY_MAXDEPTH to get an acyclic subtree)"),
+            Some(d) => {
+                let n = d.len();
+                eprintln!("3e: subtree is acyclic — IC similarity (Resnik / Lin / FaITH):");
+                for &(an, bn) in &candidates {
+                    if let (Some(&u), Some(&v)) = (ids.get(an), ids.get(bn)) {
+                        let r = resnik_similarity(u, v, &parents, &d, n, 64);
+                        let l = lin_similarity(u, v, &parents, &d, n, 64);
+                        let fa = faith_similarity(u, v, &parents, &d, n, 64);
+                        if let (Some(r), Some(l), Some(fa)) = (r, l, fa) {
+                            eprintln!("      {:<26} {:<22} Resnik {:.2}  Lin {:.2}  FaITH {:.2}",
+                                an, bn, r, l, fa);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Roadmap 3e, LLM-curated test set: an external classifier (Haiku) supplies the *semantic*
+    // signal the graph structure lacks. Random walks down the category graph surface candidates,
+    // Haiku keeps the genuine physics topics (tests/fixtures/wikipedia_physics_curated_nodes.txt),
+    // and here the per-pair bidirectional optimal-bridge is computed across the curated set on the
+    // RAW graph. The recurring bridges are the *real* semantic hubs (no fan-in admin-category
+    // noise); the least-connected curated nodes flag the classifier's borderline calls. Gated on
+    // `UW_CATEGORY_TSV` + `UW_CATEGORY_NODES` (skips in CI).
+    #[test]
+    fn wikipedia_physics_curated_set_bridges() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("3e-curated: skip (UW_CATEGORY_TSV)"); return; } };
+        let nodes_file = match std::env::var("UW_CATEGORY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("3e-curated: skip (UW_CATEGORY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let nf = std::fs::read_to_string(&nodes_file).expect("read UW_CATEGORY_NODES");
+        let curated: Vec<u32> = nf.lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && !s.starts_with('#'))
+            .filter_map(|s| ids.get(s).copied())
+            .collect();
+        eprintln!("3e-curated: {} curated nodes present in the graph", curated.len());
+
+        let mut bridge_count: HashMap<u32, u32> = HashMap::new();
+        let mut caret_sum: HashMap<u32, (u32, u32)> = HashMap::new(); // node -> (sum caret, count)
+        let (mut pairs, mut with_bridge) = (0u32, 0u32);
+        for i in 0..curated.len() {
+            for j in (i + 1)..curated.len() {
+                let (u, v) = (curated[i], curated[j]);
+                pairs += 1;
+                if let Some((b, c)) = caret_optimal_bridge(u, v, &parents, 10) {
+                    with_bridge += 1;
+                    *bridge_count.entry(b).or_insert(0) += 1;
+                    for &x in &[u, v] {
+                        let e = caret_sum.entry(x).or_insert((0, 0));
+                        e.0 += c; e.1 += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("3e-curated: {}/{} curated pairs share a bridge within budget 10", with_bridge, pairs);
+
+        let mut br: Vec<(u32, u32)> = bridge_count.into_iter().collect();
+        br.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        eprintln!("3e-curated: most frequent bridges (emergent semantic hubs):");
+        for &(b, c) in br.iter().take(8) { eprintln!("      {:>4}  {}", c, names[b as usize]); }
+
+        // Mean optimal-bridge caret to the rest of the set: the physics core is *close* (small
+        // mean), the classifier's borderline calls (Fire, Physical_exercise) sit *far* (large).
+        let mut avg: Vec<(u32, f64)> = curated.iter().filter_map(|&u| {
+            caret_sum.get(&u).map(|&(s, n)| (u, s as f64 / n as f64))
+        }).collect();
+        avg.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+        eprintln!("3e-curated: farthest-from-core (largest mean caret — flags misclassifications):");
+        for &(u, a) in avg.iter().take(6) { eprintln!("      {:>5.2}  {}", a, names[u as usize]); }
+        eprintln!("3e-curated: closest-to-core (smallest mean caret — the physics centre):");
+        for &(u, a) in avg.iter().rev().take(6) { eprintln!("      {:>5.2}  {}", a, names[u as usize]); }
+
+        // Weak invariant: a meaningful fraction of curated physics pairs ARE related within budget
+        // — the curated set is genuinely a related cluster (vs the leaked non-physics discarded).
+        assert!(curated.len() >= 10, "expected a non-trivial curated set");
+        assert!(with_bridge * 4 >= pairs, "curated physics pairs mostly related: {}/{}", with_bridge, pairs);
     }
 
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.

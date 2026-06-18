@@ -993,10 +993,30 @@ buy diminishing returns and is not carried).
      the shortest path (no info beyond distance), while a fixed bridge keeps the level
      signal, with the exact gap `through(B) − lca = 2·d(LCA→B)`
      (`caret_through_bridge_vs_lca_and_the_gap`).
-   - **[3e next]** a **real-data integration** on a Wikipedia subtree (e.g. physics): extract
-     the root-anchored region (`build_scoped_subtree_lmdb.py`), propagate the support
-     interval, and compute multi-level budgeted carets between topics — the end-to-end
-     composition on real (cyclic) data, where the 2a/2b cycle-correctness earns its keep.
+   - **[3e DONE]** a **real-data integration** on the Wikipedia category graph
+     (`data/benchmark/{dev,300,10k,10x}/category_parent.tsv`). Harness:
+     `wikipedia_category_subtree_end_to_end_3e` (env-var gated on `UW_CATEGORY_TSV`, skips in CI;
+     `UW_CATEGORY_ROOT` / `UW_CATEGORY_MAXDEPTH` scope a single subtree). **Invariants held across
+     four scales (≤25k edges, raw + scoped):** boundary caret `==` full caret, 3f cached-landmark
+     caret `==` per-query `caret_min_over_hubs`, `min_distance_closure` terminates. **The lesson:
+     scope first.** A nominally "Physics-rooted" crawl is *not* a subtree of Physics — its
+     unbounded cone spans most of Wikipedia (7811/8247 nodes at 10k), is **cyclic** (so
+     `descendant_minhash` → `None`, IC unavailable), and its fan-in hubs are **maintenance
+     categories** (`Container_categories`, 1778 children; the hub-quantized caret then inflates to
+     7 vs an exact 1). Restricting to the **bounded-depth descendant cone** (depth ≤ 3) fixes both:
+     the subtree is **acyclic** (IC runs) and the hubs are semantic (`Subfields_of_physics`,
+     `Matter`, `Energy`). On it the IC read-outs track real physics — `Electromagnetism`–`Optics`
+     Lin 0.68 ≫ `Thermodynamics`–`Optics` 0.36 — and the quantization gap closes. **The deeper
+     resolution:** the leak is a *downward-cone* problem (Wikipedia categories are associative, not
+     is-a, so `Physics → Matter → Physical_objects → Organisms → …` is real, not a data bug); the
+     **per-pair bidirectional bridge sidesteps it** — `caret_optimal_bridge(u, v, budget)` explores
+     only the two nodes' *up-cones*, finds where *their* lineages mix, and on the **raw, uncurated,
+     cyclic** graph recovers semantically-correct bridges (`Classical_mechanics`×`Electromagnetism`
+     → `Subfields_of_physics`; `Electromagnetism`×`Optics` → `Electromagnetism`), stable across all
+     scales, no cone needed. Residual: even scoped, fan-in can prefer `Physicists_by_nationality`
+     over `Subfields_of_physics` — concrete motivation for the deferred semantic-diversity *global*
+     hub selection (per-pair bridges are already good without it). Full write-up:
+     `WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`.
    - **[3f DONE]** the **landmark-cached designated-bridge caret** (§5c): `bridge_distance_fields`
      precomputes `d(·→B)` (one downward BFS per bridge over the shared children graph, `O(E +
      Σ_B|desc(B)|) ≤ O(K·V)`), and `caret_through_bridge_cached` / `caret_min_over_cached_bridges`
