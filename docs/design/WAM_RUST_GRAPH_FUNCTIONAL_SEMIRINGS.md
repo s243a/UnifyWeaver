@@ -727,6 +727,20 @@ across graphs. **One exception:** when both nodes are the root, `IC(u)=IC(v)=0`,
 is an `O(k)` read, but calling `resnik`/`lin` is *not* `O(k)` — each runs a per-query `O(V+E)`
 upward BFS to find the MICA; cache the ancestor sets for repeated queries on the same graph.)
 
+**FaITH similarity: the Jiang–Conrath-faithful sibling.** Lin isn't the only way to normalize
+Resnik. The *Jiang–Conrath distance* `JC(u,v) = IC(u) + IC(v) − 2·IC(MICA)` measures *how far
+apart* `u` and `v` are: it is the IC you'd have to "spend" climbing from each down to the MICA —
+`0` for identical nodes, large when they meet only high up. **FaITH** (Pirró & Euzenat 2010) turns
+that distance into a bounded similarity, `sim(u,v) = IC(MICA) / (IC(u) + IC(v) − IC(MICA))`, which
+rearranges to the clean form `FaITH = 1 / (1 + JC/IC(MICA))` — a distance-to-similarity map scaled
+by how informative the shared category is. It sits in `[0,1]`, is `1` for identical non-root nodes
+and `0` when only the root is shared (`FaITH(3,4) = 1.22/(2.81+2.81−1.22) = 0.28` on the example —
+note it ranks the *same* pairs as Lin but on a different curve, being harsher on weak overlap). A
+small honesty correction to a tempting claim: FaITH is sometimes said to "avoid the undefined-at-
+root case," but it does **not** — at root-root all three ICs are `0`, the denominator
+`IC(u)+IC(v)−IC(MICA)` (which is `≥ max(IC(u),IC(v))`) is `0`, and it returns `None` exactly as
+Lin does. Its real merit is the JC-faithfulness, not dodging that corner. (`faith_similarity`.)
+
 **Why we needed the descendant *sketch* (and not the additive weight).** Every formula above needs
 `|desc(t)|`, the **distinct** count of nodes under `t`. Computing that exactly for all `t` is
 reachability — the global blow-up we keep refusing. The cheap one-pass additive `descendant_weight`
