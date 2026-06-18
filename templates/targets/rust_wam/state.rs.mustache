@@ -529,6 +529,15 @@ pub struct WamState {
     /// functional. Smaller (one f64 vector of length <= max_depth+1 vs a
     /// variable-support histogram) and faster. Empty = basis mode off.
     pub boundary_basis_wp: FxMap<u32, Vec<f64>>,
+    /// Descendant-sketch cache (IC semantic similarity): node -> its KMV descendant sketch
+    /// (`descendant_minhash`), the dedup-by-construction handle on `|desc(node)|`. Built once
+    /// by `build_descendant_sketches`; the `category_resnik`/`category_lin`/`category_faith`
+    /// read-outs use it for the information content of the most informative common ancestor.
+    /// `desc_sketch_n` is the node count `N` (for `IC = -log2(|desc|/N)`), `desc_sketch_k` the
+    /// sketch width. Empty = IC similarity off (default). Eager-edge only (needs `ffi_facts`).
+    pub desc_sketch: std::collections::HashMap<u32, Vec<u64>>,
+    pub desc_sketch_n: usize,
+    pub desc_sketch_k: usize,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -664,6 +673,9 @@ impl WamState {
             boundary_jet: FxMap::default(),
             boundary_dist: FxMap::default(),
             boundary_basis_wp: FxMap::default(),
+            desc_sketch: std::collections::HashMap::new(),
+            desc_sketch_n: 0,
+            desc_sketch_k: 0,
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -1381,6 +1393,62 @@ impl WamState {
         let mut visited: HashSet<u32> = du.keys().copied().collect();
         for k in dv.keys() { visited.insert(*k); }
         (best, visited.len())
+    }
+
+    /// Precompute the **descendant sketches** for IC semantic similarity (Resnik/Lin/FaITH):
+    /// run `descendant_minhash` over the eager `edge_pred` graph and cache a fixed-`k` KMV
+    /// sketch of every node's descendant cone, plus the node count `N`. A harness calls this
+    /// once at setup; the `category_resnik`/`category_lin`/`category_faith` read-outs then reuse
+    /// it. Returns `false` (no-op) if `edge_pred` has no eager facts or the graph has a cycle
+    /// (no reverse-topo order). Eager-edge only.
+    pub fn build_descendant_sketches(&mut self, edge_pred: &str, k: usize) -> bool {
+        let sketch = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            match crate::boundary_cache::descendant_minhash(parents, k) {
+                Some(s) => s,
+                None => return false, // cyclic graph
+            }
+        };
+        self.desc_sketch_n = sketch.len(); // descendant_minhash sketches every node => N
+        self.desc_sketch = sketch;
+        self.desc_sketch_k = k;
+        true
+    }
+
+    /// **Resnik** semantic similarity `IC(MICA(u,v))` over the eager `edge_pred` graph, using
+    /// the cached descendant sketches (`build_descendant_sketches`). `None` if the sketches are
+    /// not built, `edge_pred` is unknown, or `u`,`v` share no ancestor. See
+    /// `boundary_cache::resnik_similarity` (this is its live, cache-backed entry point; the
+    /// MICA search is a per-query `O(V+E)` ancestor BFS).
+    pub fn category_resnik(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::resnik_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// **Lin** semantic similarity `2·IC(MICA)/(IC(u)+IC(v)) ∈ [0,1]` over the eager `edge_pred`
+    /// graph, using the cached descendant sketches. `None` if unbuilt, `edge_pred` unknown,
+    /// `u`,`v` share no ancestor, or both are the root. See `boundary_cache::lin_similarity`.
+    pub fn category_lin(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::lin_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// **FaITH** semantic similarity `IC(MICA)/(IC(u)+IC(v)−IC(MICA)) ∈ [0,1]` (the
+    /// Jiang–Conrath-faithful sibling of Lin) over the eager `edge_pred` graph, using the
+    /// cached descendant sketches. Same `None` conditions as `category_lin`. See
+    /// `boundary_cache::faith_similarity`.
+    pub fn category_faith(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::faith_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
     }
 
     /// Directed shortest `u → target` hop-distance (following parent edges, so `target`
@@ -2953,6 +3021,44 @@ mod boundary_kernel_tests {
         assert_eq!(caret, Some(2), "low fork: LCA is node 20, caret = 2");
         // Touches only {20, 21, 22}; the 20-node stem 0..19 above the LCA is never entered.
         assert_eq!(visited, 3, "boundary search must not climb the stem; visited={}", visited);
+    }
+
+    // The live IC similarity read-outs equal the boundary_cache library functions, after
+    // build_descendant_sketches caches the sketches in WamState.
+    #[test]
+    fn live_ic_similarity_matches_library() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // balanced tree: 0 root; 1,2->0; 3,4->1; 5,6->2.
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "0"), ("3", "1"), ("4", "1"), ("5", "2"), ("6", "2"),
+        ]);
+        // unbuilt -> None (safe default).
+        let z = vm.intern_atom("3");
+        let w = vm.intern_atom("4");
+        assert_eq!(vm.category_resnik(z, w, "category_parent"), None);
+
+        let k = 16usize;
+        assert!(vm.build_descendant_sketches("category_parent", k));
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        let dsigs = crate::boundary_cache::descendant_minhash(&parents, k).unwrap();
+        let n = dsigs.len();
+        // intern all node names BEFORE further borrows.
+        let pairs: Vec<(u32, u32, &str, &str)> =
+            [("3", "4"), ("3", "5"), ("1", "3"), ("3", "3")].iter()
+                .map(|&(a, b)| (vm.intern_atom(a), vm.intern_atom(b), a, b)).collect();
+        for (u, v, an, bn) in pairs {
+            assert_eq!(vm.category_resnik(u, v, "category_parent"),
+                crate::boundary_cache::resnik_similarity(u, v, &parents, &dsigs, n, k),
+                "resnik({},{})", an, bn);
+            assert_eq!(vm.category_lin(u, v, "category_parent"),
+                crate::boundary_cache::lin_similarity(u, v, &parents, &dsigs, n, k),
+                "lin({},{})", an, bn);
+            assert_eq!(vm.category_faith(u, v, "category_parent"),
+                crate::boundary_cache::faith_similarity(u, v, &parents, &dsigs, n, k),
+                "faith({},{})", an, bn);
+        }
+        // Unknown edge predicate -> None.
+        assert_eq!(vm.category_resnik(z, w, "no_such_pred"), None);
     }
 
     // Increment 3b — the A* ancestor search returns the directed shortest u->ancestor
