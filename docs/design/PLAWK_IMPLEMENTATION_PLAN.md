@@ -319,9 +319,9 @@ early-exit rule's scalar values to the loop phi inputs, while assoc-only chains
 update tables before the continuation branch. Terminal `break` uses the sibling
 path: matching rules branch to a dedicated stream-close block and scalar/mixed
 programs feed `END` through final-state phis. This native slice deliberately
-supports terminal `next`/`break` only; non-terminal loop control needs a future
-intra-rule control-flow lowering rather than implicit fall-through after the
-skipped or final record. The current
+trims unreachable tail actions after `next`/`break` in the same rule body or
+branch before lowering, so parser-accepted non-final control statements still
+reuse the terminal native continuation/close paths. The current
 associative-count surface allocates one reusable WAM/LLVM
 interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
 array, increments those tables in the native streaming loop, and performs `END`

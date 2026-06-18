@@ -347,8 +347,8 @@ $1 == "ERROR" { hits++; break }
 END { print hits, total }
 ```
 
-For now, `next` and `break` must be the last action in the rule body. Inside a
-branch, `next` or `break` must be the last action in that branch.
+If `next` or `break` appears before the end of a rule body or branch, later
+actions in that same action list are unreachable and skipped by native codegen.
 
 `BEGIN` can emit literal report headers before the first input record is read:
 
@@ -388,7 +388,7 @@ The current arithmetic print subset can add or subtract a non-negative integer
 constant from native `i64` primaries:
 
 ```awk
-$1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3 }
+$1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3, index($2, "sk") + 1 }
 $1 == "ERROR" { print int($3) + 1 }
 $1 == "ERROR" { print int($3) - 1 }
 ```

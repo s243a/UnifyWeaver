@@ -533,15 +533,30 @@ test(surface_terminal_next_skips_remaining_scalar_rules) :-
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2\n").
 
+test(surface_nonterminal_next_skips_dead_scalar_tail) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "2 0\n").
+
 test(surface_terminal_next_skips_remaining_assoc_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped[$2]++; next } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 0 1\n").
 
+test(surface_nonterminal_next_skips_dead_assoc_tail) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped[$2]++ } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "0 0 1\n").
+
 test(surface_terminal_next_skips_remaining_mixed_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; by_kind[$2]++; next } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2 2 0 1\n").
+
+test(surface_nonterminal_next_skips_dead_mixed_tail) :-
+    run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
+        "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
+        "2 0 0 0 1\n").
 
 test(surface_terminal_next_only_skips_remaining_scalar_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++ } END { print total }\n",
@@ -563,15 +578,30 @@ test(surface_terminal_break_stops_scalar_rule_chain_and_runs_end) :-
         "INFO boot ok\nWARN cpu hot\nERROR disk full\nERROR net down\n",
         "1 2\n").
 
+test(surface_nonterminal_break_skips_dead_scalar_tail) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { break; hits++ } { total++ } END { print hits, total }\n",
+        "INFO boot ok\nWARN cpu hot\nERROR disk full\nERROR net down\n",
+        "0 2\n").
+
 test(surface_terminal_break_stops_assoc_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
         "1 0 1\n").
 
+test(surface_nonterminal_break_skips_dead_assoc_tail) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { break; seen[$2]++ } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "WARN cpu hot\nERROR disk full\nERROR net down\n",
+        "0 0 1\n").
+
 test(surface_terminal_break_stops_mixed_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { hits++; seen[$2]++; break } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
         "1 1 1 0 1\n").
+
+test(surface_nonterminal_break_skips_dead_mixed_tail) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { break; hits++; seen[$2]++ } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
+        "WARN cpu hot\nERROR disk full\nERROR net down\n",
+        "0 1 0 0 1\n").
 
 test(surface_terminal_break_as_last_rule_keeps_continue_phi_valid) :-
     run_surface_print_smoke("{ total++ } $1 == \"ERROR\" { hits++; break } END { print hits, total }\n",
@@ -728,6 +758,11 @@ test(surface_scalar_if_else_branch_next_skips_later_actions) :-
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
         "2 2 2\n").
 
+test(surface_scalar_if_else_branch_next_skips_dead_tail_and_later_actions) :-
+    run_surface_print_smoke("{ if ($1 == \"DEBUG\") { next; skipped++ } else { seen++ }; total++ } END { print total, seen, skipped }\n",
+        "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
+        "2 2 0\n").
+
 test(surface_mixed_if_else_branch_next_skips_later_rules) :-
     run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; by_kind[$2]++; next } else { seen++ } } { total++; counts[$1]++ } END { print total, seen, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
@@ -737,6 +772,11 @@ test(surface_scalar_if_else_branch_break_stops_stream) :-
     run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; break } else { total++ } } END { print hits, total }\n",
         "INFO boot ok\nWARN cpu hot\nERROR disk full\nINFO after break\n",
         "1 2\n").
+
+test(surface_scalar_if_else_branch_break_skips_dead_tail_and_stops_stream) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { break; hits++ } else { total++ } } END { print hits, total }\n",
+        "INFO boot ok\nWARN cpu hot\nERROR disk full\nINFO after break\n",
+        "0 2\n").
 
 test(surface_mixed_if_else_branch_break_stops_stream) :-
     run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; seen[$2]++; break } else { total++; counts[$1]++ } } END { print hits, total, seen[\"disk\"], counts[\"INFO\"], counts[\"WARN\"] }\n",
@@ -1179,21 +1219,42 @@ test(surface_terminal_next_only_uses_native_continue_branch) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
-test(surface_nonterminal_next_scalar_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_next_scalar_uses_native_continue_branch) :-
     plawk_parse_string("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '  br label %continue_loop'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_slot_1_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
-test(surface_nonterminal_next_assoc_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_next_assoc_uses_native_continue_branch) :-
     plawk_parse_string("$1 == \"DEBUG\" { next; skipped[$2]++ } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"ERROR\"] }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '  br label %continue_loop'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
-test(surface_nonterminal_next_mixed_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_next_mixed_uses_native_continue_branch) :-
     plawk_parse_string("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"ERROR\"] }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_apply:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '  br label %continue_loop'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_slot_1_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_assoc_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
-test(surface_branch_nonterminal_next_rejected_by_native_codegen, [fail]) :-
+test(surface_branch_nonterminal_next_uses_native_continue_branch) :-
     plawk_parse_string("{ if ($1 == \"DEBUG\") { next; skipped++ } else { total++ } } END { print total, skipped }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '  br label %continue_loop'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'then_slot_1_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_if_else_branch_break_uses_native_close_path) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { hits++; break } else { total++ } } END { print hits, total }\n", Program),
@@ -1205,9 +1266,14 @@ test(surface_if_else_branch_break_uses_native_close_path) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
-test(surface_branch_nonterminal_break_rejected_by_native_codegen, [fail]) :-
+test(surface_branch_nonterminal_break_uses_native_close_path) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { break; hits++ } else { total++ } } END { print hits, total }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'rule_0_body_if_0_then:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'br label %break_close_stream'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'then_slot_0_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_terminal_break_uses_close_path_and_final_state_phi) :-
     plawk_parse_string("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n", Program),
@@ -1237,17 +1303,33 @@ test(surface_mixed_terminal_break_uses_close_path_and_final_state_phi) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
-test(surface_nonterminal_break_scalar_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_break_scalar_uses_native_close_path) :-
     plawk_parse_string("$1 == \"ERROR\" { break; hits++ } { total++ } END { print hits, total }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_done]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
-test(surface_nonterminal_break_assoc_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_break_assoc_uses_native_close_path) :-
     plawk_parse_string("$1 == \"ERROR\" { break; seen[$2]++ } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_apply:'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
-test(surface_nonterminal_break_mixed_rejected_by_native_codegen, [fail]) :-
+test(surface_nonterminal_break_mixed_uses_native_close_path) :-
     plawk_parse_string("$1 == \"ERROR\" { break; hits++; seen[$2]++ } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"] }\n", Program),
-    plawk_program_native_driver_ir(Program, 'input.txt', _DriverIR).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'break_close_stream:'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%break_slot_0 = phi i64 [%rule_0_slot_0, %rule_0_done]'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_slot_0_op_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'rule_0_assoc_0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
 
 test(surface_end_string_literals_use_indexed_globals) :-
     plawk_parse_string("{ total++; counts[$1]++ } END { print \"total\", total, \"errors\", counts[\"ERROR\"] }\n", Program),
