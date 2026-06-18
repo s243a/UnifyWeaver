@@ -797,10 +797,28 @@ calibration of the relatedness read-out.)
 > sibling. The admission weight need not be linear in `μ`: `fuzzy_admission` is an **S-curve**
 > (logistic) transfer `w(μ) = 1/(1+e^{−k(μ−c)})` — default `c=0.55, k≈4.39` fits the anchors
 > `w(0.8)=0.75`, `w(0.3)=0.25` — for a nearly-full/nearly-zero admission with a tunable knee.
-> *Scaling caveat:* `descendant_mu_mass` is exact (per-node BFS, `O(V·(V+E))`); the large-graph form
-> wants a **`μ`-weighted MinHash** sketch (the weighted analogue of `descendant_minhash`), future
-> work. And this is exactly where membership *matters* (per §-aside): a read-out over the *global*
-> cone, not the per-pair caret, which is membership-robust.
+> *Scaling — now done:* `descendant_mu_mass` is exact (per-node BFS, `O(V·(V+E))`); the large-graph
+> form is `descendant_minhash_weighted`, a **`μ`-weighted KMV sketch** built in one reverse-topo pass
+> (`O((V+E)·k)`). Each element is a `(hash, μ)` pair kept as the bottom-`k` by hash (deduped ⇒
+> diamonds once); because the hashes are drawn independently of `μ`, the bottom-`k` is a *uniform*
+> sample of the cone and the carried weights are an unbiased sample of its weight distribution, so the
+> mass read-out is `m̂_μ = D̂ · μ̄_sample` — the Cohen–Kaplan bottom-`k` subset-sum estimator
+> (`sketch_mu_mass`), exact while unsaturated and reducing to `sketch_card` at `μ ≡ 1`.
+> `information_content_weighted_sketch` is the drop-in scalable IC (clamping the estimate at
+> `total_mu`, the mass analogue of the `.min(1.0)` ratio clamp). And this is exactly where membership
+> *matters* (per §-aside): a read-out over the *global* cone, not the per-pair caret (membership-
+> robust). Two global hooks the weighted sketch unlocks:
+> - **Leak-robust fan-in** (`sketch_mu_overlap`): the μ-weighted mass two cones *share* (Broder
+>   bottom-`k` intersection, weighted). A funnel hub is one many cones reach, but a weighted funnel
+>   discounts the associative leak — cones overlapping only on low-μ descendants score ≈ 0 — so hub
+>   selection stops being fooled by the leak. (Measured: core-shared overlap `3.00` vs leak-shared
+>   `0.15`.)
+> - **Depth-stability** (`mu_weighted_count_is_depth_stable`): the raw cone count *explodes* toward
+>   the root as the leak accumulates (more deep nodes than shallow), but the weighted mass barely
+>   moves because the deep nodes are out-of-domain — on the spine test the raw cone grows `201 → 645`
+>   (+444) while the μ-mass grows only `5 → 18` (+13), ~3% of the raw growth. So the **weighted count
+>   converges as you descend** where the raw count diverges: a depth-robust global signal, which is
+>   the property the global hub problem needs.
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
