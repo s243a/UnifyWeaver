@@ -190,6 +190,17 @@ reconstruction works), a branching-heavy node is a genuine mixture (possibly mul
 GMM/histogram territory). `§8.1` freezes the `Elem` type into shipped code, so this trade
 should be **named and measured there, not defaulted silently.**
 
+**[named, implemented]** Both carries now exist as concrete types so the choice is explicit, not
+a silent default: the raw-moment `MomentJet` (`⊕`-linear `union`, `O(K²)`-binomial `convolve`) and
+the `CumulantJet` `(mass, κ₁..κ₄)` (`O(K)`-additive `convolve` — `mass ×`, `κ +` — with `union`
+round-tripping through moments since a mixture's cumulants are not additive). They are exact
+inverses (`from_moment`/`to_moment`), validated agreeing on both operations by
+`cumulant_jet_additive_splice_matches_moment_jet`. So a `⊗`-heavy spine can carry cumulants for the
+cheap additive splice and a `⊕`-heavy region carries raw moments, converting at the boundary —
+the *measurement* of where that crossover sits (which dominates a given cache region) is the
+remaining open step, but the two representations it would choose between are now both shipped and
+interchangeable.
+
 ### The one that does *not* factor: `WeightSum`
 
 **The unifying principle: point-evaluation of the GF.** Treat `H(z) = Σ_L H[L] z^L` as a
