@@ -832,7 +832,15 @@ calibration of the relatedness read-out.)
 >   bottom-`k` intersection, weighted). A funnel hub is one many cones reach, but a weighted funnel
 >   discounts the associative leak — cones overlapping only on low-μ descendants score ≈ 0 — so hub
 >   selection stops being fooled by the leak. (Measured: core-shared overlap `3.00` vs leak-shared
->   `0.15`.)
+>   `0.15`.) The **hub-selection read-out** built on this is `sketch_mu_overlap_lift`, the μ-weighted
+>   analogue of `sketch_overlap_lift`: shared mass against the *mass* configuration-model null
+>   `E = m_A·m_B / M`, so `lift > 1` is an excess in-domain funnel and `lift ≈ 1` is the small-world
+>   background; `μ ≡ 1` reduces exactly to the unweighted lift. This is where the leak finally bites
+>   the *global* signal and the weighting pays off: on a test with a real in-domain hub and a
+>   leak-driven false hub of **identical cone sizes** — so identical *unweighted* lift (`4.01` both,
+>   fooled) — the weighted lift reads the real hub `2.50` (excess funnel, `> 1`) and the leak hub
+>   `0.25` (*below* chance, correctly suppressed), a 10× separation
+>   (`mu_overlap_lift_separates_real_hub_from_leak_hub`). The unweighted lift cannot tell them apart.
 > - **Depth-stability** (`mu_weighted_count_is_depth_stable`): the raw cone count *explodes* toward
 >   the root as the leak accumulates (more deep nodes than shallow), but the weighted mass barely
 >   moves because the deep nodes are out-of-domain — on the spine test the raw cone grows `201 → 645`
