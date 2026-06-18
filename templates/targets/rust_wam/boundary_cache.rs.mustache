@@ -1320,6 +1320,32 @@ pub fn lin_similarity(
     if denom <= 0.0 { None } else { Some((2.0 * mica_ic / denom).min(1.0)) }
 }
 
+/// **FaITH similarity** (Pirró & Euzenat 2010) — a sibling of Lin: `IC(MICA) / (IC(u) + IC(v) −
+/// IC(MICA))`, in `[0,1]`. It is the *faithful* normalization of the Jiang–Conrath distance
+/// `JC = IC(u)+IC(v)−2·IC(MICA)`: algebraically `FaITH = 1 / (1 + JC/IC(MICA))`, so it turns the
+/// JC *distance* into a bounded *similarity* scaled by how informative the MICA is. Like Lin it
+/// is `1` for identical non-root nodes and `0` when the only shared ancestor is the root.
+///
+/// Honest note: it does **not** dodge the root-root case — when both are the root all three ICs
+/// are `0`, so the ratio is `0/0` and this returns `None`, exactly as Lin does (the denominator
+/// `IC(u)+IC(v)−IC(MICA) ≥ max(IC(u),IC(v))`, which is `0` iff both are the root). Its advantage
+/// over Lin is the JC-faithfulness, not avoiding that edge case. Inherits `resnik_similarity`'s
+/// per-query `O(V+E)` cost and same-graph `dsigs` precondition; `.min(1.0)` guards KMV variance.
+pub fn faith_similarity(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    dsigs: &std::collections::HashMap<u32, Vec<u64>>,
+    n_total: usize,
+    k: usize,
+) -> Option<f64> {
+    let mica_ic = resnik_similarity(u, v, parents, dsigs, n_total, k)?;
+    let icu = information_content(dsigs.get(&u)?, n_total, k);
+    let icv = information_content(dsigs.get(&v)?, n_total, k);
+    let denom = icu + icv - mica_ic; // = JC + IC(MICA); ≥ max(IC(u),IC(v)), 0 iff both root
+    if denom <= 0.0 { None } else { Some((mica_ic / denom).min(1.0)) }
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -3433,6 +3459,23 @@ mod tests {
         // only for IC(x)>0); Resnik(root,root) is still Some(0).
         assert_eq!(lin_similarity(0, 0, &t, &d, n, K), None);
         assert!(close(resnik_similarity(0, 0, &t, &d, n, K).unwrap(), 0.0));
+
+        // FaITH = IC(MICA)/(IC(u)+IC(v)-IC(MICA)) -- the JC-faithful sibling of Lin.
+        // (3,4): MICA=1; m/(2*IC3 - m) with m=IC(1).
+        let m34 = ic1; // MICA(3,4) = node 1
+        assert!(close(faith_similarity(3, 4, &t, &d, n, K).unwrap(),
+            m34 / (ic3 + ic3 - m34)));
+        // Identity (non-root) = 1; only-root-shared = 0; ancestor-of-other uses MICA=1.
+        assert!(close(faith_similarity(3, 3, &t, &d, n, K).unwrap(), 1.0));
+        assert!(close(faith_similarity(3, 5, &t, &d, n, K).unwrap(), 0.0));
+        assert!(close(faith_similarity(1, 3, &t, &d, n, K).unwrap(), ic1 / (ic1 + ic3 - ic1)));
+        // FaITH range and the JC identity FaITH = 1/(1 + JC/IC(MICA)) for a non-root MICA.
+        let f34 = faith_similarity(3, 4, &t, &d, n, K).unwrap();
+        assert!((0.0..=1.0).contains(&f34));
+        let jc = ic3 + ic3 - 2.0 * m34; // Jiang-Conrath distance of (3,4)
+        assert!(close(f34, 1.0 / (1.0 + jc / m34)));
+        // Root-root: FaITH is also 0/0 -> None (it does NOT dodge this; same as Lin).
+        assert_eq!(faith_similarity(0, 0, &t, &d, n, K), None);
 
         // Diamond DAG -- the dedup motivation: 3->[1,2], 1->0, 2->0. The descendant SET counts
         // node 3 once (distinct {0,1,2,3} = 4), where descendant_weight would count it twice (5).
