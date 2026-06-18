@@ -192,6 +192,32 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
   overhead is ≤ half the call; ideally `band ≫ sunk_cost` so the marginal per-item cost dominates.
   A gate that escalates *too few* items per batch spends mostly fixed cost on each escalation and
   erodes its own win — so the band, the batch size, and the tier-cost ratio should be sized together.
+- **What `μ` *means*: disciplinary vs foundational membership.** The physics/chemistry boundary is
+  not just fuzzy, it is *hierarchical* — chemistry is **founded on** physics (electron bands → band
+  theory; p-bonding → molecular orbitals → quantum mechanics), so `Noble_gas_compounds` is
+  *chemistry by discipline* yet *physics by foundation*. Those are two distinct membership notions:
+  **disciplinary** ("is this studied as / a physics topic") and **foundational** ("does this rest on
+  physics principles"). The rubric here asked for the *disciplinary* sense, so the strong tier scored
+  chemistry low (`Arsenic 0.1`); a *foundational* rubric would score the same nodes higher. Crucially
+  **neither current signal captures the foundational dimension**: the LLM (as prompted) measured
+  discipline, and the graph *depth* measures taxonomic distance (chemistry sits deep in the cone, so
+  it reads "far"), which also misses the foundation. This is a strong argument for the **embedding-`μ`
+  ** — semantic embeddings reflect *conceptual* similarity (`electron bands` ≈ band theory ≈ physics),
+  capturing the foundational relationship that both the disciplinary-LLM *and* the taxonomic-depth
+  miss. So embeddings are not merely a cheaper classifier; they measure a foundationally-relevant
+  facet the other two signals cannot. The fuzzy framework is dimension-agnostic: *which* `μ` you want
+  is a choice of prompt (or reference vector) for the application.
+- **When the discrimination actually matters: per-pair vs global.** How strictly we draw the
+  physics/chemistry line is *not critical* for the **per-pair** algorithms — the bidirectional caret
+  and the IC similarity operate on specific chosen node pairs and work whether or not the membership
+  is clean (the same robustness as the 3e "no curated cone needed" finding). The discrimination
+  becomes **load-bearing only for *global* graph properties** — fan-in vs fan-out hub selection,
+  where which nodes/edges count as in-region decides the convergence structure (recall raw fan-in on
+  the full graph surfaced `Container_categories`; a `μ`-weighted fan-in would down-weight non-physics
+  and surface the real physics hubs). So the fuzzy `μ` and the deferred **membership-weighted
+  read-outs** (`μ`-weighted fan-in/fan-out, Resnik/Lin) are precisely the tool the *global*
+  hub-selection problem needs — and the reason careful discrimination is worth the effort there but
+  not in the per-pair path.
 
 Still future work: **membership-weighted read-outs** — carry `μ` as a per-node weight into the
 functionals (`μ`-weighted Resnik/Lin that down-weights borderline ancestors in the MICA search, or
