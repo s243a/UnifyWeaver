@@ -236,8 +236,11 @@ three trait gaps were resolved:
 - **(1) Star / closure for cycles** — *not* a trait method, deliberately. The closure
   exists only for *closed* payloads: min-plus is closed (its star is the separate
   `min_distance_closure` / `weighted_distance_closure`), while counting/moments diverge on
-  a cycle. So `star` is a per-payload free function, not a method some impls could not
-  honour. (`suffix_value` itself is the acyclic recurrence.)
+  a cycle. So `star` is a per-payload free function/method, not a trait method some impls could
+  not honour. (`suffix_value` itself is the acyclic recurrence.) The **element** stars are now
+  implemented and characterized per §8 increment 1.5: `MomentJet::star` (closed form iff
+  `mass < 1`, else `None`) and `Interval::star` (`None` for any positive-length loop, the max-plus
+  factor diverging) — each `a* = one ⊕ a⊗a*`, the building block for splicing a condensed SCC.
 - **(2) ⊕/⊗ asymmetry** — `step` (⊗ by an edge) is exact only untruncated; a budget would
   break `step`/⊗ but never `add`/⊕. The recurrence never truncates (acyclic, budget-free),
   so it is exact; the asymmetry is documented on the trait and the budgeted case lives in
@@ -908,13 +911,26 @@ buy diminishing returns and is not carried).
    to recover the true `n` of a binomial (the accurate-binomial payoff of the skew, §7).
    Remaining within increment 1: the higher-order Edgeworth/Pearson reconstruction *rungs*
    (use the carried `m₃`, and carry `m₄`).
-1.5. **Per-payload closure characterization (still on acyclic data).** Before any cyclic
-   work, characterize each payload's star/closure-or-truncation behaviour — the
-   convergence table of §4 / §3-gap-(1): counting needs truncation, min-plus terminates,
-   the moment jet's star needs mass `< 1`. Do it on the acyclic domain where each can be
-   checked against the histogram. This is logically prior to, and separable from, the
-   cyclic increment, so step 2 then confronts **one** unknown (cyclic control flow), not
-   two (control flow *and* per-payload divergence) at once.
+1.5. **Per-payload closure characterization (still on acyclic data). [DONE]** Each payload's
+   star/closure-or-truncation behaviour — the convergence table of §4 / §3-gap-(1) — is now
+   an implemented, tested element star `a* = ⊕_{i≥0} aⁱ = one ⊕ a⊗a*`:
+   - **min-plus**: closed, `a* = 0` (looping never shortens the shortest path) — the graph-level
+     form is `min_distance_closure` (**[2a]**).
+   - **counting / moment jet** (`MomentJet::star`): converges to a **budget-free closed form iff
+     `mass < 1`** (`Σ massⁱ = 1/(1−mass)` finite), `None` otherwise. Pure path-counting has
+     integer `mass ≥ 1` on any real loop, so it always diverges → the cycle must be
+     **truncated** (the existing budget + visited-guard); a *discounted/weighted* jet (`mass < 1`)
+     has the finite closed form. Checked against the explicit geometric histogram
+     (`moment_jet_star_converges_iff_mass_below_one`).
+   - **interval** (min-plus × max-plus, `Interval::star`): the min factor closes at `0`, but the
+     **max** (longest-path) factor diverges on any positive-length loop, so the interval star is
+     `None` except for the degenerate length-0 loop.
+
+   So divergence is **per-payload and now explicit**, on the acyclic domain checked against the
+   histogram: counting/max-plus need truncation, min-plus terminates, the weighted moment jet has
+   a closed star. This was logically prior to the cyclic increment (which is `[DONE]` below), so
+   it kept step 2's only genuinely new unknown to cyclic *control flow*, not per-payload
+   divergence as well.
 2. **Distance / shortest-path kernels + cyclic closure.** Point the now-generic
    machinery at `transitive_distance3`, then `weighted_shortest_path3` /
    `astar_shortest_path4` (boundary suffixes as ALT landmarks), adding the

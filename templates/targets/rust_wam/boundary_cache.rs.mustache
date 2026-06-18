@@ -264,6 +264,30 @@ impl MomentJet {
             total: self.mass.round() as u64,
         }
     }
+    /// **Element star / closure** (increment 1.5): `a* = ⊕_{i≥0} aⁱ = one ⊕ a⊗a*` — the
+    /// moment jet of *going around this element any number of times* (the building block for a
+    /// cyclic up-set, where an SCC condenses to a self-loop spliced as its star). Unlike the
+    /// histogram, which would need length-**truncation** (a self-loop gives infinite support,
+    /// every length `i` carrying the `i`-loop weight), the jet's star is a **budget-free closed
+    /// form** — but only when it **converges**, which the counting/moment payload does **iff
+    /// `mass < 1`** (the total weight `Σ massⁱ = 1/(1−mass)` is finite). `None` for `mass ≥ 1`
+    /// (divergent — the §4 "counting diverges on a cycle without truncation" case). The closed
+    /// form solves `s = root ⊕ a⊗s` sequentially: `M = 1/(1−m)`, then each raw moment `s_k`
+    /// from the lower ones. Contrast min-plus, whose star is `0` and always converges
+    /// (`min_distance_closure`); this is the moment-payload entry in the §4 convergence table.
+    pub fn star(self) -> Option<MomentJet> {
+        let m = self.mass;
+        if !(0.0..1.0).contains(&m) {
+            return None; // mass >= 1 diverges; mass < 0 is not a counting measure
+        }
+        let inv = 1.0 / (1.0 - m); // = M, the star's mass
+        let (a1, a2, a3, a4) = (self.m1, self.m2, self.m3, self.m4);
+        let s1 = a1 * inv * inv;
+        let s2 = (a2 * inv + 2.0 * a1 * s1) * inv;
+        let s3 = (a3 * inv + 3.0 * a2 * s1 + 3.0 * a1 * s2) * inv;
+        let s4 = (a4 * inv + 4.0 * a3 * s1 + 6.0 * a2 * s2 + 4.0 * a1 * s3) * inv;
+        Some(MomentJet { mass: inv, m1: s1, m2: s2, m3: s3, m4: s4 })
+    }
 }
 
 /// Path-length **support interval** toward the root: `(min, max)` = the shortest and
@@ -288,6 +312,18 @@ impl Interval {
     /// ⊗ — concatenation (the splice): the extremes add.
     pub fn convolve(self, o: Self) -> Self {
         Interval { min: self.min + o.min, max: self.max + o.max }
+    }
+    /// **Element star / closure** (increment 1.5): the interval is a product semiring,
+    /// **min-plus × max-plus**, and its two factors close *differently*. The **min** part is
+    /// closed — `min* = 0` (looping never shortens the shortest path), matching the min-plus
+    /// `min_distance_closure`. The **max** part (longest path) is **not** closed: any loop of
+    /// positive length can be taken arbitrarily often, so `max* = ∞`. So the interval star
+    /// converges only for the degenerate length-0 loop (`max == 0` → the root `[0,0]`); for any
+    /// real loop it is `None` (the max-plus factor diverges). This is the tropical mirror of the
+    /// moment payload: there the *mass* sub-stochasticity (`< 1`) is the convergence gate; here
+    /// it is the *longest-path* direction that has no finite closure.
+    pub fn star(self) -> Option<Interval> {
+        if self.max == 0 { Some(Interval::root()) } else { None }
     }
 }
 
@@ -3960,6 +3996,57 @@ mod tests {
         let iv_want = hist_interval(&spliced).unwrap();
         let iv_got = hist_interval(&a).unwrap().convolve(hist_interval(&b).unwrap());
         assert_eq!(iv_got, iv_want, "interval");
+    }
+
+    // Increment 1.5: the moment-jet element STAR `a* = Σ aⁱ`. Converges (closed form) iff
+    // mass < 1; checked against the explicit geometric histogram; diverges (None) for the
+    // counting case (mass >= 1), which is exactly why a cyclic counting payload needs truncation.
+    #[test]
+    fn moment_jet_star_converges_iff_mass_below_one() {
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-9;
+
+        // A discounted self-loop: weight 0.5 on a length-1 step. Its star is the geometric
+        // length distribution h*[i] = 0.5^i (i loops -> length i, weight 0.5^i), mass < 1.
+        let a = MomentJet { mass: 0.5, m1: 0.5, m2: 0.5, m3: 0.5, m4: 0.5 }; // 0.5·δ_1
+        let s = a.star().expect("mass<1 converges");
+        // Oracle: the explicit (float) geometric histogram, truncated where the tail is ~0.
+        let (mut mass, mut m1, mut m2, mut m3, mut m4) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..200i32 {
+            let (w, l) = (0.5f64.powi(i), i as f64);
+            mass += w; m1 += l * w; m2 += l * l * w; m3 += l * l * l * w; m4 += l * l * l * l * w;
+        }
+        assert!(close(s.mass, mass) && close(s.m1, m1) && close(s.m2, m2)
+            && close(s.m3, m3) && close(s.m4, m4), "star != geometric histogram moments");
+        // known closed forms for this geometric series.
+        assert!(close(s.mass, 2.0) && close(s.mean(), 1.0) && close(s.variance(), 2.0));
+
+        // Self-consistency: a* = one ⊕ a⊗a* (the defining fixpoint).
+        let fix = MomentJet::root().union(a.convolve(s));
+        assert!(close(s.mass, fix.mass) && close(s.m1, fix.m1) && close(s.m2, fix.m2)
+            && close(s.m3, fix.m3) && close(s.m4, fix.m4), "star is not the fixpoint");
+
+        // A richer loop (0.3·δ_1 + 0.2·δ_2, mass 0.5): the closed-form star equals the directly
+        // summed Σ_{i=0}^N aⁱ (N large enough that the 0.5^N tail vanishes).
+        let b = MomentJet { mass: 0.5, m1: 0.7, m2: 1.1, m3: 1.9, m4: 3.5 };
+        let sb = b.star().unwrap();
+        let (mut acc, mut term) = (MomentJet::zero(), MomentJet::root());
+        for _ in 0..400 { acc = acc.union(term); term = term.convolve(b); }
+        assert!((sb.mass - acc.mass).abs() < 1e-9 && (sb.m1 - acc.m1).abs() < 1e-9
+            && (sb.m2 - acc.m2).abs() < 1e-9 && (sb.m4 - acc.m4).abs() < 1e-9,
+            "closed-form star != summed power series");
+
+        // Divergence: a pure-COUNTING loop has integer mass >= 1, so Σ massⁱ is unbounded —
+        // no convergent star, the cycle must be truncated (the §4 counting case).
+        assert_eq!(MomentJet::delta(1).star(), None);                               // mass 1
+        assert_eq!(MomentJet::delta(1).union(MomentJet::delta(2)).star(), None);    // mass 2
+        assert_eq!(MomentJet::root().star(), None);                                 // mass 1 (one)
+
+        // Interval (min-plus × max-plus): the max (longest-path) factor diverges on any
+        // positive-length loop, so the interval star is None except for the degenerate len-0
+        // loop. (The min factor is closed at 0 — the min_distance_closure direction.)
+        assert_eq!(Interval::point(1).star(), None);            // a real loop -> max diverges
+        assert_eq!(Interval { min: 0, max: 3 }.star(), None);
+        assert_eq!(Interval { min: 0, max: 0 }.star(), Some(Interval::root())); // degenerate
     }
 
     // The skewness read-out (from the third moment m3) matches the binomial's analytic
