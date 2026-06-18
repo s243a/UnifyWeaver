@@ -3480,6 +3480,82 @@ mod tests {
         }
     }
 
+    // Roadmap 3e, LLM-curated test set: an external classifier (Haiku) supplies the *semantic*
+    // signal the graph structure lacks. Random walks down the category graph surface candidates,
+    // Haiku keeps the genuine physics topics (tests/fixtures/wikipedia_physics_curated_nodes.txt),
+    // and here the per-pair bidirectional optimal-bridge is computed across the curated set on the
+    // RAW graph. The recurring bridges are the *real* semantic hubs (no fan-in admin-category
+    // noise); the least-connected curated nodes flag the classifier's borderline calls. Gated on
+    // `UW_CATEGORY_TSV` + `UW_CATEGORY_NODES` (skips in CI).
+    #[test]
+    fn wikipedia_physics_curated_set_bridges() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("3e-curated: skip (UW_CATEGORY_TSV)"); return; } };
+        let nodes_file = match std::env::var("UW_CATEGORY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("3e-curated: skip (UW_CATEGORY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let nf = std::fs::read_to_string(&nodes_file).expect("read UW_CATEGORY_NODES");
+        let curated: Vec<u32> = nf.lines()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && !s.starts_with('#'))
+            .filter_map(|s| ids.get(s).copied())
+            .collect();
+        eprintln!("3e-curated: {} curated nodes present in the graph", curated.len());
+
+        let mut bridge_count: HashMap<u32, u32> = HashMap::new();
+        let mut caret_sum: HashMap<u32, (u32, u32)> = HashMap::new(); // node -> (sum caret, count)
+        let (mut pairs, mut with_bridge) = (0u32, 0u32);
+        for i in 0..curated.len() {
+            for j in (i + 1)..curated.len() {
+                let (u, v) = (curated[i], curated[j]);
+                pairs += 1;
+                if let Some((b, c)) = caret_optimal_bridge(u, v, &parents, 10) {
+                    with_bridge += 1;
+                    *bridge_count.entry(b).or_insert(0) += 1;
+                    for &x in &[u, v] {
+                        let e = caret_sum.entry(x).or_insert((0, 0));
+                        e.0 += c; e.1 += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("3e-curated: {}/{} curated pairs share a bridge within budget 10", with_bridge, pairs);
+
+        let mut br: Vec<(u32, u32)> = bridge_count.into_iter().collect();
+        br.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        eprintln!("3e-curated: most frequent bridges (emergent semantic hubs):");
+        for &(b, c) in br.iter().take(8) { eprintln!("      {:>4}  {}", c, names[b as usize]); }
+
+        // Mean optimal-bridge caret to the rest of the set: the physics core is *close* (small
+        // mean), the classifier's borderline calls (Fire, Physical_exercise) sit *far* (large).
+        let mut avg: Vec<(u32, f64)> = curated.iter().filter_map(|&u| {
+            caret_sum.get(&u).map(|&(s, n)| (u, s as f64 / n as f64))
+        }).collect();
+        avg.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+        eprintln!("3e-curated: farthest-from-core (largest mean caret — flags misclassifications):");
+        for &(u, a) in avg.iter().take(6) { eprintln!("      {:>5.2}  {}", a, names[u as usize]); }
+        eprintln!("3e-curated: closest-to-core (smallest mean caret — the physics centre):");
+        for &(u, a) in avg.iter().rev().take(6) { eprintln!("      {:>5.2}  {}", a, names[u as usize]); }
+
+        // Weak invariant: a meaningful fraction of curated physics pairs ARE related within budget
+        // — the curated set is genuinely a related cluster (vs the leaked non-physics discarded).
+        assert!(curated.len() >= 10, "expected a non-trivial curated set");
+        assert!(with_bridge * 4 >= pairs, "curated physics pairs mostly related: {}/{}", with_bridge, pairs);
+    }
+
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
     // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
     // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.

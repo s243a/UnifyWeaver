@@ -113,6 +113,29 @@ scores far higher than `Thermodynamics`–`Optics` (weakly related). The exact p
 (`Electromagnetism`–`Optics` = 1, the closest; `Thermodynamics`–`Optics` = 3). So on real data the
 relatedness read-outs track genuine physics structure.
 
+## LLM-curated test set: the external semantic signal — and the metric as its audit
+
+The graph alone can't tell physics from not-physics (that's the whole leak). So bring the semantic
+signal from *outside*: random walks down the category graph surface candidate nodes
+(`scripts/physics_random_walk_candidates.py`, seeded), and a **Haiku subagent** classifies which
+are genuine physics topics — saved as the reusable fixture
+`tests/fixtures/wikipedia_physics_curated_nodes.txt` (46 nodes). Then
+`wikipedia_physics_curated_set_bridges` computes the per-pair `caret_optimal_bridge` across the
+whole curated set on the **raw 10k graph** (1035 pairs, all related within budget 10). Two results:
+
+- **The recurring bridges are the *real* semantic hubs** — `Physics` (215 pairs),
+  `Subfields_of_physics` (169), `Natural_sciences` (160), `Matter`, `Energy`. This is what fan-in
+  *failed* to find (it surfaced `Container_categories`): curate the **nodes** semantically, let the
+  bidirectional metric find their bridges, and the genuine hubs emerge. The only structural-noise
+  leftover (`CatAutoTOC_generates_no_TOC`) ranks below all the physics hubs.
+- **The metric audits the classifier.** Mean optimal-bridge caret to the rest of the set separates
+  the physics *centre* (`Subfields_of_physics` 3.27, `Matter` 3.47, `Energy` 3.64,
+  `Electromagnetism`, `Classical_mechanics`) from the *outliers* — `Nitrogen` (6.78),
+  `Hydrogen_compounds`, `Hydrogen`, `Chalcogens`, `Oxygen`: exactly the **chemistry** nodes Haiku
+  over-included. The LLM supplies the semantic signal the graph lacks; the graph distance in turn
+  flags the LLM's borderline calls. They are complementary — neither alone is enough, together they
+  are a clean, self-checking pipeline for building a semantic test set on a non-taxonomic graph.
+
 ## Takeaways
 
 1. **The data is real, not wrong — Wikipedia categories are associative, not is-a**, so a clean
