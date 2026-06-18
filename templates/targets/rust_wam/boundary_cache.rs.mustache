@@ -1157,6 +1157,169 @@ pub fn sketch_overlap_lift(a: &[u64], b: &[u64], n_total: usize, k: usize) -> f6
     if expected <= 0.0 { 0.0 } else { inter / expected }
 }
 
+/// **Descendant KMV sketch** — the *downward* mirror of `ancestor_minhash`. `dsig(B)`
+/// summarizes `B`'s descendant cone (`B` and everything below it): `dsig(B) = bottom-k({B} ∪
+/// ⋃_{c ∈ children(B)} dsig(c))`, built in **one reverse-topological pass** (children before
+/// parents). Because the sketch is a *set*, it **dedups by construction** — a descendant
+/// reachable by several paths counts once — so `sketch_card(dsig(B))` estimates the *distinct*
+/// cone size `|desc(B)|`, the thing `descendant_weight` over-counts. This is exactly the
+/// frequency the information-content null needs (see `information_content`). `None` on a cyclic
+/// graph (no reverse-topo order); SCC-condense first.
+pub fn descendant_minhash(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    k: usize,
+) -> Option<std::collections::HashMap<u32, Vec<u64>>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps {
+            nodes.insert(p);
+            children.entry(p).or_default().push(c);
+        }
+    }
+    // pending[B] = #children of B not yet sketched; a node is ready once all its children are.
+    let mut pending: HashMap<u32, usize> = nodes
+        .iter()
+        .map(|&n| (n, children.get(&n).map_or(0, |v| v.len())))
+        .collect();
+    let mut q: VecDeque<u32> = pending
+        .iter()
+        .filter(|&(_, &c)| c == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    let mut sig: HashMap<u32, Vec<u64>> = HashMap::new();
+    while let Some(b) = q.pop_front() {
+        let mut cand: Vec<u64> = vec![mix64(b as u64)];
+        if let Some(cs) = children.get(&b) {
+            for &c in cs {
+                if let Some(s) = sig.get(&c) {
+                    cand.extend_from_slice(s);
+                }
+            }
+        }
+        cand.sort_unstable();
+        cand.dedup();
+        cand.truncate(k);
+        sig.insert(b, cand);
+        if let Some(ps) = parents.get(&b) {
+            for &p in ps {
+                let e = pending.get_mut(&p).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(p);
+                }
+            }
+        }
+    }
+    if sig.len() == nodes.len() { Some(sig) } else { None } // short => a cycle
+}
+
+/// **Information content** `IC(t) = −log₂(|desc(t)| / N)` from the descendant sketch — high for
+/// a *specific* node (small cone), `0` at the root (cone = everything). `|desc(t)|` is the
+/// distinct cone size estimated by `descendant_minhash` (dedup-by-construction, so no diamond
+/// over-count). This is the Gene-Ontology frequency null (Resnik 1995): unlike the rung-4
+/// configuration-model lift, it uses *actual* cone frequencies, so it does not inflate on deep
+/// DAGs. `N` is the total node count.
+pub fn information_content(dsig: &[u64], n_total: usize, k: usize) -> f64 {
+    if n_total == 0 {
+        return 0.0;
+    }
+    let card = sketch_card(dsig, k).max(1.0);
+    let p = (card / n_total as f64).min(1.0); // clamp sketch overestimate so IC ≥ 0
+    -p.log2()
+}
+
+/// Reflexive ancestor set of `node` (`node` itself plus every strict ancestor), by up-BFS.
+/// **O(|ancestors(node)| + edges above it)** per call — it allocates a fresh `HashSet`/`VecDeque`.
+/// For repeated queries on the same node, cache the returned set rather than recomputing.
+fn reflexive_ancestors(
+    node: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashSet<u32> {
+    use std::collections::{HashSet, VecDeque};
+    let mut seen: HashSet<u32> = HashSet::new();
+    seen.insert(node);
+    let mut q: VecDeque<u32> = VecDeque::new();
+    q.push_back(node);
+    while let Some(x) = q.pop_front() {
+        if let Some(ps) = parents.get(&x) {
+            for &p in ps {
+                if seen.insert(p) {
+                    q.push_back(p);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// **Resnik similarity** — the calibrated, depth-aware alternative to the rung-4 lift: the
+/// information content of the **most informative common ancestor** (MICA), the common ancestor
+/// with the highest `IC` (= the smallest descendant cone). Since `IC` is non-increasing upward,
+/// the MICA is a *lowest* common ancestor; here we enumerate the common ancestors (reflexive,
+/// so one term may be the other's ancestor) and take the max `IC`. Uses *actual* cone
+/// frequencies, so — unlike the configuration-model lift — it does not inflate on deep DAGs.
+/// `None` if `u` and `v` share no ancestor. `dsigs` = `descendant_minhash`, `n_total` = nodes.
+///
+/// **Cost is NOT `O(k)`.** `information_content` is an `O(k)` read, but this function runs two
+/// per-query upward BFSs (`reflexive_ancestors(u)`, `reflexive_ancestors(v)`) to locate the
+/// MICA — `O(V+E)` worst case, with fresh allocations. For repeated queries cache the ancestor
+/// sets, or precompute an all-pairs structure (e.g. ancestor bitmasks). The `O(V·k)` precompute
+/// / `O(k)` read budget covers the *sketch and IC*, not the MICA search.
+///
+/// **Precondition:** `dsigs` must be the `descendant_minhash` output for the **same** `parents`
+/// graph (same node set) — every common ancestor of `u`,`v` must have a sketch entry. A missing
+/// entry is silently skipped by the `filter_map`, which would *underestimate* the IC (the true
+/// MICA dropped, a lower-IC ancestor returned) rather than error. The `debug_assert!`s catch the
+/// common mismatch (`u`/`v` absent); if `dsigs` may be stale, rebuild it on the current graph.
+/// (Two ties at the max IC are immaterial: the returned value is the IC, not the node.)
+/// **Estimation caveat:** with *saturated* sketches (`k < |desc|`) the cardinality is an
+/// estimate, so the node achieving the max *estimated* IC may not be the exact MICA (KMV
+/// variance can make a parent's cone appear smaller than a child's). The returned value is still
+/// the max over all common ancestors; only the identity of the argmax can wobble.
+pub fn resnik_similarity(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    dsigs: &std::collections::HashMap<u32, Vec<u64>>,
+    n_total: usize,
+    k: usize,
+) -> Option<f64> {
+    debug_assert!(dsigs.contains_key(&u), "u not in dsigs — dsigs/parents graph mismatch");
+    debug_assert!(dsigs.contains_key(&v), "v not in dsigs — dsigs/parents graph mismatch");
+    let au = reflexive_ancestors(u, parents);
+    let av = reflexive_ancestors(v, parents);
+    au.intersection(&av)
+        .filter_map(|b| dsigs.get(b).map(|s| information_content(s, n_total, k)))
+        .fold(None, |acc, ic| Some(acc.map_or(ic, |a: f64| a.max(ic))))
+}
+
+/// **Lin similarity** — Resnik normalized to `[0,1]`: `2·IC(MICA) / (IC(u) + IC(v))`. Because
+/// the MICA is a common ancestor of both, `IC(MICA) ≤ IC(u)` and `≤ IC(v)`, so the ratio is
+/// `≤ 1`. `None` if `u` and `v` share no ancestor, **or both are the root** (`IC(u)=IC(v)=0`,
+/// so the ratio is `0/0`, undefined). Note the latter makes the identical-node identity
+/// `Lin(x,x)=1` hold only for `IC(x) > 0`: `Lin(root,root)` is `None`, while
+/// `Resnik(root,root)` is `Some(0)`. Inherits `resnik_similarity`'s `O(V+E)`-per-query cost and
+/// its same-graph `dsigs` precondition.
+pub fn lin_similarity(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    dsigs: &std::collections::HashMap<u32, Vec<u64>>,
+    n_total: usize,
+    k: usize,
+) -> Option<f64> {
+    let mica_ic = resnik_similarity(u, v, parents, dsigs, n_total, k)?;
+    let icu = information_content(dsigs.get(&u)?, n_total, k);
+    let icv = information_content(dsigs.get(&v)?, n_total, k);
+    let denom = icu + icv;
+    // .min(1.0): exact Lin ≤ 1 by construction (IC(MICA) ≤ min(IC(u),IC(v))); the clamp guards
+    // KMV variance, which can make IC(MICA) appear > min(IC(u),IC(v)) on saturated sketches.
+    if denom <= 0.0 { None } else { Some((2.0 * mica_ic / denom).min(1.0)) }
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -3219,6 +3382,74 @@ mod tests {
         // Jaccard of two saturated sketches stays in [0,1] (no panic / out-of-range).
         let j = sketch_jaccard(&sig[&20], &sig[&19], K);
         assert!((0.0..=1.0).contains(&j));
+    }
+
+    // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
+    // depth-aware alternative to the rung-4 lift. Balanced binary tree: 0 root; 1,2->0;
+    // 3,4->1; 5,6->2. N=7. Cones: |desc(0)|=7, |desc(1)|=|desc(2)|=3, leaves=1.
+    #[test]
+    fn ic_resnik_lin_similarity() {
+        const K: usize = 16; // k >> cones => exact sketches => exact IC
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![0]);
+        t.insert(3, vec![1]); t.insert(4, vec![1]);
+        t.insert(5, vec![2]); t.insert(6, vec![2]);
+        let n = 7usize;
+        let d = descendant_minhash(&t, K).unwrap();
+
+        // Descendant sketch dedups -> distinct cone sizes.
+        assert_eq!(sketch_card(&d[&0], K), 7.0);
+        assert_eq!(sketch_card(&d[&1], K), 3.0);
+        assert_eq!(sketch_card(&d[&3], K), 1.0);
+
+        // IC: root 0, internal log2(7/3), leaf log2(7).
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(information_content(&d[&0], n, K), 0.0));
+        assert!(close(information_content(&d[&1], n, K), (7.0f64 / 3.0).log2()));
+        assert!(close(information_content(&d[&3], n, K), 7.0f64.log2()));
+
+        // Resnik = IC(MICA). (3,4) share LCA 1 -> log2(7/3); (3,5) share only root -> 0.
+        assert!(close(resnik_similarity(3, 4, &t, &d, n, K).unwrap(), (7.0f64 / 3.0).log2()));
+        assert!(close(resnik_similarity(3, 5, &t, &d, n, K).unwrap(), 0.0));
+        // Self-similarity is the node's own IC (a node is its own ancestor).
+        assert!(close(resnik_similarity(3, 3, &t, &d, n, K).unwrap(), 7.0f64.log2()));
+
+        // Lin = 2*IC(MICA)/(IC(u)+IC(v)) in [0,1]. (3,4): 2*log2(7/3)/(2*log2 7).
+        let lin34 = lin_similarity(3, 4, &t, &d, n, K).unwrap();
+        assert!(close(lin34, (7.0f64 / 3.0).log2() / 7.0f64.log2()));
+        assert!((0.0..=1.0).contains(&lin34));
+        // Only-root pair -> Lin 0; identical leaves -> Lin 1 (MICA == both).
+        assert!(close(lin_similarity(3, 5, &t, &d, n, K).unwrap(), 0.0));
+        assert!(close(lin_similarity(3, 3, &t, &d, n, K).unwrap(), 1.0));
+
+        // Ancestor-of-descendant: reflexive ancestors include the node, so MICA(1,3) = 1
+        // (node 1 is the most specific common ancestor of itself and its descendant 3).
+        let ic1 = information_content(&d[&1], n, K);
+        let ic3 = information_content(&d[&3], n, K);
+        assert!(close(resnik_similarity(1, 3, &t, &d, n, K).unwrap(), ic1));
+        assert!(close(lin_similarity(1, 3, &t, &d, n, K).unwrap(), 2.0 * ic1 / (ic1 + ic3)));
+
+        // Root-root: IC(root)=0 -> Lin denominator 0 -> None (the identity Lin(x,x)=1 holds
+        // only for IC(x)>0); Resnik(root,root) is still Some(0).
+        assert_eq!(lin_similarity(0, 0, &t, &d, n, K), None);
+        assert!(close(resnik_similarity(0, 0, &t, &d, n, K).unwrap(), 0.0));
+
+        // Diamond DAG -- the dedup motivation: 3->[1,2], 1->0, 2->0. The descendant SET counts
+        // node 3 once (distinct {0,1,2,3} = 4), where descendant_weight would count it twice (5).
+        let mut dia: HashMap<u32, Vec<u32>> = HashMap::new();
+        dia.insert(1, vec![0]); dia.insert(2, vec![0]); dia.insert(3, vec![1, 2]);
+        let dd = descendant_minhash(&dia, K).unwrap();
+        assert_eq!(sketch_card(&dd[&0], K), 4.0); // distinct {0,1,2,3}, NOT 5
+        assert_eq!(descendant_weight(&dia).unwrap()[&0], 5); // the over-count we avoid
+
+        // No shared ancestor -> None; cyclic graph -> descendant_minhash None.
+        let mut split: HashMap<u32, Vec<u32>> = HashMap::new();
+        split.insert(1, vec![0]); split.insert(3, vec![2]);
+        let ds = descendant_minhash(&split, K).unwrap();
+        assert_eq!(resnik_similarity(1, 3, &split, &ds, 4, K), None);
+        let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
+        cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
+        assert_eq!(descendant_minhash(&cyc, K), None);
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each
