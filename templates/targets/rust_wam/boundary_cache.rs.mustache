@@ -3273,6 +3273,95 @@ mod tests {
         assert_eq!(bridge_distance_fields(&[2, 2, 3], &t), bridge_distance_fields(&[2, 3], &t));
     }
 
+    // Roadmap 3e: end-to-end on the REAL, cyclic, cross-listed Wikipedia category graph.
+    // Skips unless `UW_CATEGORY_TSV` points to a `child<TAB>parent` file (header row skipped),
+    // e.g. data/benchmark/{dev,300,10k,10x}/category_parent.tsv (all Physics-rooted, various
+    // sizes). Asserts the algebraic invariants that must hold on any graph (boundary caret ==
+    // full caret; cached-landmark caret == per-query; termination on cycles) and *reports* the
+    // data-dependent read-outs (hubs, carets, similarities). Run with --nocapture to see them.
+    #[test]
+    fn wikipedia_category_subtree_end_to_end_3e() {
+        let path = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p,
+            Err(_) => { eprintln!("3e: skip (set UW_CATEGORY_TSV to a category_parent.tsv)"); return; }
+        };
+        let text = std::fs::read_to_string(&path).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; } // header
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 })
+            };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let edges: usize = parents.values().map(|v| v.len()).sum();
+        eprintln!("3e[{}]: {} nodes, {} child->parent edges", path, names.len(), edges);
+        let root = *ids.get("Physics").expect("expected a Physics-rooted graph");
+
+        // (1) Cycle-correct distances to root terminate on the cyclic real graph.
+        let to_root = min_distance_closure(root, &parents);
+        assert_eq!(to_root.get(&root), Some(&0), "root distance is 0");
+        eprintln!("3e: {} nodes reach the root upward", to_root.len());
+
+        // (2) Convergence hubs (cycle-robust local fan-in) — report the top few.
+        let fanin = convergence_fanin(&parents);
+        let mut ranked: Vec<(u32, u32)> = fanin.iter().map(|(&b, &f)| (b, f)).collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let hubs: Vec<u32> = ranked.iter().take(8).map(|&(b, _)| b).collect();
+        eprintln!("3e: top fan-in hubs:");
+        for &(b, f) in ranked.iter().take(6) { eprintln!("      {:>3}  {}", f, names[b as usize]); }
+
+        // (3) Landmark fields for the hubs (BFS over children — works on cyclic graphs).
+        let fields = bridge_distance_fields(&hubs, &parents);
+
+        // (4) Real query pairs (skip any whose names are absent at this scale).
+        let candidates = [
+            ("Classical_mechanics", "Electromagnetism"),
+            ("Thermodynamics", "Optics"),
+            ("Quantum_mechanics", "Classical_mechanics"),
+            ("Electromagnetism", "Optics"),
+        ];
+        let mut tested = 0;
+        for &(an, bn) in &candidates {
+            let (u, v) = match (ids.get(an), ids.get(bn)) { (Some(&u), Some(&v)) => (u, v), _ => continue };
+            // INVARIANT: the boundary-restricted caret equals the full-cone caret on real data.
+            let full = caret_distance_lca(u, v, &parents);
+            let bnd = caret_distance_lca_boundary(u, v, &parents);
+            assert_eq!(full, bnd, "boundary==full caret for ({}, {})", an, bn);
+            // INVARIANT: the cached-landmark min equals the per-query min over the same hubs.
+            assert_eq!(caret_min_over_cached_bridges(u, v, &fields),
+                       caret_min_over_hubs(u, v, &hubs, &parents),
+                       "cached==per-query landmark caret for ({}, {})", an, bn);
+            eprintln!("3e: caret({}, {}) = {:?}  | hub-quantized = {:?}",
+                an, bn, full, caret_min_over_cached_bridges(u, v, &fields));
+            tested += 1;
+        }
+        eprintln!("3e: {} query pairs exercised", tested);
+
+        // (5) The cycle-vs-DAG distinction, on real data: the descendant SKETCH is DAG-only.
+        match descendant_minhash(&parents, 64) {
+            None => eprintln!("3e: descendant_minhash = None — graph has cycles, so IC similarity \
+                               needs SCC-condensation first (the documented prescription)"),
+            Some(d) => {
+                eprintln!("3e: graph is acyclic at this scale — IC similarity available");
+                let n = d.len();
+                for &(an, bn) in &candidates {
+                    if let (Some(&u), Some(&v)) = (ids.get(an), ids.get(bn)) {
+                        if let Some(l) = lin_similarity(u, v, &parents, &d, n, 64) {
+                            eprintln!("3e: Lin({}, {}) = {:.3}", an, bn, l);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
     // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
     // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.
