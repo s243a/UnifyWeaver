@@ -50,6 +50,21 @@ test(parses_field_eq_print_fields_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print $2, $3 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"), [print([field(2), field(3)])])], [])).
 
+test(parses_field_eq_printf_fields_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { printf \"%s=%s\\n\", $2, $3 }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [printf(string("%s=%s\n"), [field(2), field(3)])])], [])).
+
+test(parses_field_eq_printf_literal_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { printf \"hit\\n\" }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [printf(string("hit\n"), [])])], [])).
+
+test(parses_field_eq_printf_string_arg_rule) :-
+    plawk_parse_string("$1 == \"ERROR\" { printf \"%s:%s\\n\", \"kind\", $1 }\n", Program),
+    assertion(Program == program([], [rule(field_eq(1, "ERROR"),
+        [printf(string("%s:%s\n"), [string("kind"), field(1)])])], [])).
+
 test(parses_field_eq_print_nr_fields_rule) :-
     plawk_parse_string("$1 == \"ERROR\" { print NR, $2, $3 }\n", Program),
     assertion(Program == program([], [rule(field_eq(1, "ERROR"),
@@ -437,6 +452,21 @@ test(surface_field_eq_prints_selected_fields) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print $2, $3 }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "disk full\nnet down\n").
+
+test(surface_field_eq_printf_fields_prints_matching_records) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { printf \"%s=%s\\n\", $2, $3 }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "disk=full\nnet=down\n").
+
+test(surface_field_eq_printf_has_no_implicit_newline) :-
+    run_surface_print_smoke("$1 == \"ERROR\" { printf \"[%s]\", $2 }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
+        "[disk][net]").
+
+test(surface_printf_string_literal_arg) :-
+    run_surface_print_smoke("{ printf \"%s:%s\\n\", \"kind\", $1 }\n",
+        "INFO boot ok\nERROR disk full\n",
+        "kind:INFO\nkind:ERROR\n").
 
 test(surface_field_numeric_cmp_prints_matching_records) :-
     run_surface_print_smoke("$3 > 100 { print $1, $3 }\n",
@@ -838,6 +868,21 @@ test(surface_begin_field_separator_drives_selected_field_printing) :-
         "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
         "disk full\nnet down\n").
 
+test(surface_begin_field_separator_drives_printf_fields) :-
+    run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { printf \"%s=%s\\n\", $2, $3 }\n",
+        "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
+        "disk=full\nnet=down\n").
+
+test(surface_printf_i64_and_percent_literals) :-
+    run_surface_print_smoke("{ printf \"row=%d %% %s\\n\", NR, $1 } END { print \"done\" }\n",
+        "INFO boot ok\nERROR disk full\n",
+        "row=1 % INFO\nrow=2 % ERROR\ndone\n").
+
+test(surface_if_else_branch_printf_prints_selected_branch) :-
+    run_surface_print_smoke("{ if ($1 == \"ERROR\") { printf \"E:%s\\n\", $2 } else { printf \"O:%s\\n\", $1 } } END { print \"done\" }\n",
+        "INFO boot ok\nERROR disk full\nWARN cpu hot\n",
+        "O:INFO\nE:disk\nO:WARN\ndone\n").
+
 test(surface_begin_field_separator_prints_header) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; print \"kind\", \"count\" } { counts[$1]++ } END { print \"ERROR\", counts[\"ERROR\"] }\n",
         "ERROR:disk:full\nWARN:cpu:hot\nERROR:net:down\n",
@@ -982,6 +1027,25 @@ test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_1_op_1_field_i64_ok'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_printf_uses_native_vararg_call) :-
+    plawk_parse_string("{ printf \"row=%d %% %s\\n\", NR, $1 } END { print \"done\" }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_0_body_printf_0_fmt = private constant [17 x i8] c"row=%ld %% %.*s\\0A\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_printf_0_field_1 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 1, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_printf_0_printed = call i32 (i8*, ...) @printf(i8* %rule_0_body_printf_0_fmt_ptr, i64 %current_nr, i32 %rule_0_body_printf_0_field_1_len, i8* %rule_0_body_printf_0_field_1_ptr)'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
+    !.
+
+test(surface_branch_printf_uses_prefixed_native_vararg_call) :-
+    plawk_parse_string("{ if ($1 == \"ERROR\") { printf \"E:%s\\n\", $2 } else { printf \"O:%s\\n\", $1 } } END { print \"done\" }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_0_body_if_0_then_printf_0_fmt = private constant [8 x i8] c"E:%.*s\\0A\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@.rule_0_body_if_0_else_printf_0_fmt = private constant [8 x i8] c"O:%.*s\\0A\\00"'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_printf_0_printed = call i32 (i8*, ...) @printf'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_printf_0_printed = call i32 (i8*, ...) @printf'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

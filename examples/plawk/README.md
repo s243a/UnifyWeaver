@@ -89,6 +89,12 @@ The first arithmetic composition forms add or subtract a non-negative integer
 constant from native `i64` primaries such as `NR`, `NF`, `length($N)`,
 `int($N)`, and `index($N, "literal")`, e.g.
 `$1 == "ERROR" { print NR - 1, int($3) + 1, index($2, "sk") + 1 }`.
+Rule actions can also use basic `printf` forms, e.g.
+`$1 == "ERROR" { printf "%s=%s\n", $2, $3 }`. `printf` does not add `OFS` or
+an implicit newline; supported native formats are `%%`, `%s` for strings and
+field slices, and `%d`/`%i`/`%ld` for native `i64` values. Field slices are
+lowered allocation-free by rewriting `%s` to `%.*s` and passing the slice length
+and pointer to the native vararg call.
 Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
 such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
 streaming loop.
