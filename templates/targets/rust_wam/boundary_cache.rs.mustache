@@ -883,17 +883,24 @@ pub fn caret_min_over_hubs(
 /// **Landmark distance fields for designated bridges** (roadmap 3f): for each bridge `B`,
 /// precompute `d(·→B)` — the up-distance from every descendant of `B` to `B` — as one downward
 /// BFS from `B` over the *children* graph (the reverse of `parents`). The children map is built
-/// **once** and shared across all bridges, so the whole precompute is `O(E + Σ_B |desc(B)|)`,
-/// at most `O(K·V)` for `K` bridges. With these fields cached, `caret_through_bridge` collapses
-/// from a per-query BFS to an **O(1)** table lookup (`caret_through_bridge_cached`) — the
-/// "designated bridges are landmarks" amortization (§5c): pay the field once, reuse it across
-/// every pair. (`d(src→B)` over parent edges equals the reverse BFS depth `B→src` over child
-/// edges, since reversing a shortest up-path gives an equal-length down-path.)
+/// **once** and shared across all bridges, so the precompute is
+/// `O(E + Σ_B(|desc(B)| + edges_within_desc(B))) ≤ O(K·(V+E))` time for `K` bridges, and
+/// `O(Σ_B|desc(B)|) ≤ O(K·V)` **memory** (tight for an O(1)-lookup landmark scheme). With these
+/// fields cached, `caret_through_bridge` collapses from a per-query BFS to an **O(1)** table
+/// lookup (`caret_through_bridge_cached`) — the "designated bridges are landmarks" amortization
+/// (§5c): pay the field once, reuse it across every pair. (`d(src→B)` over parent edges equals
+/// the reverse BFS depth `B→src` over child edges: child edges are the exact reversal of parent
+/// edges, so upward and downward paths are in length-preserving bijection and their minima
+/// coincide — the standard reversed-BFS argument, valid on any directed graph, diamonds
+/// included.) **Duplicate bridges** in the slice are de-duplicated (a repeated `B` would
+/// otherwise re-run its BFS, idempotent but wasteful). A **pure-leaf bridge** (no descendants)
+/// yields the field `{B: 0}`, so cached queries for any pair other than `(B,B)` correctly return
+/// `None`.
 pub fn bridge_distance_fields(
     bridges: &[u32],
     parents: &std::collections::HashMap<u32, Vec<u32>>,
 ) -> std::collections::HashMap<u32, std::collections::HashMap<u32, u32>> {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for (&c, ps) in parents {
         for &p in ps {
@@ -901,7 +908,9 @@ pub fn bridge_distance_fields(
         }
     }
     let mut fields: HashMap<u32, HashMap<u32, u32>> = HashMap::new();
+    let mut done: HashSet<u32> = HashSet::new();
     for &b in bridges {
+        if !done.insert(b) { continue; } // de-duplicate: skip a bridge already fielded
         let mut d: HashMap<u32, u32> = HashMap::new();
         let mut q: VecDeque<u32> = VecDeque::new();
         d.insert(b, 0);
@@ -931,6 +940,8 @@ pub fn caret_through_bridge_cached(
     v: u32,
     field: &std::collections::HashMap<u32, u32>,
 ) -> Option<u32> {
+    // Each depth is ≤ V−1, so the sum ≤ 2(V−1) < u32::MAX for any in-memory HashMap<u32,…> graph
+    // (consistent with up_distance_to's unchecked `dx + 1`).
     Some(field.get(&u)? + field.get(&v)?)
 }
 
@@ -938,6 +949,13 @@ pub fn caret_through_bridge_cached(
 /// designated bridges whose fields are precomputed (`bridge_distance_fields`). With the fields
 /// built for exactly the same bridge set, this equals `caret_min_over_hubs` — but at O(#bridges)
 /// table lookups per pair instead of a BFS per bridge.
+///
+/// It minimises over **every** field present in `fields`, not over a separate bridge list — the
+/// caller keeps `fields` in sync with the intended bridge set, and must `bridge_distance_fields`
+/// again if the graph or hub set changes. Like `caret_min_over_hubs` this is the LCA caret only
+/// when the optimal common ancestor is among the bridges; with a sparser set it is a valid
+/// **upper bound**, larger by `2·d(LCA→nearest bridge)` (§5b/§5c). `None` if no bridge is a
+/// common ancestor of both nodes.
 pub fn caret_min_over_cached_bridges(
     u: u32,
     v: u32,
@@ -3237,6 +3255,22 @@ mod tests {
                            "min over cached bridges ({},{})", u, v);
             }
         }
+
+        // No-common-bridge -> None: with bridges {2,3} only, the cross-branch pair (4,6) has
+        // no bridge that is a common ancestor (4 reaches 2 not 3; 6 reaches 3 not 2).
+        let low = bridge_distance_fields(&[2, 3], &t);
+        assert_eq!(caret_min_over_cached_bridges(4, 6, &low), None);
+        assert_eq!(caret_min_over_cached_bridges(4, 6, &low),
+                   caret_min_over_hubs(4, 6, &[2, 3], &t)); // parity on the None case too
+
+        // Pure-leaf bridge: a leaf (4) has no descendants, so its field is just {4: 0}.
+        let leaf = bridge_distance_fields(&[4], &t);
+        assert_eq!(leaf[&4].len(), 1);
+        assert_eq!(caret_through_bridge_cached(4, 4, &leaf[&4]), Some(0));
+        assert_eq!(caret_through_bridge_cached(5, 4, &leaf[&4]), None);
+
+        // Duplicate bridges are de-duplicated (same fields as the unique set).
+        assert_eq!(bridge_distance_fields(&[2, 2, 3], &t), bridge_distance_fields(&[2, 3], &t));
     }
 
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.

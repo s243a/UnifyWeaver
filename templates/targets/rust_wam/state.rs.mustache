@@ -3120,6 +3120,8 @@ mod boundary_kernel_tests {
         // unbuilt -> None.
         let (a, b) = (id(&mut vm, "4"), id(&mut vm, "5"));
         assert_eq!(vm.category_caret_through_bridge(a, b, bridges[2]), None);
+        // unknown edge predicate -> false no-op.
+        assert!(!vm.build_caret_landmarks(&bridges, "no_such_pred"));
 
         assert!(vm.build_caret_landmarks(&bridges, "category_parent"));
         let names = ["0", "1", "2", "3", "4", "5", "6", "7"];

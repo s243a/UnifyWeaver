@@ -491,6 +491,26 @@ caching, the **designated-bridge** measure is cacheable.
   multi-level bridges **are** the landmarks, and there are only a few. This is the
   boundary-cache *reuse*, finally applied to the caret — and the *computational* reason
   (beyond §5b's informational one) to prefer the designated bridge: it is the cacheable one.
+
+> **Theory grounding (3f, now built).** The designated-bridge landmark scheme is a
+> semantically-scoped instance of **2-hop cover / hub labeling** (Cohen, Halperin, Kaplan &
+> Zwick 2002; Abraham, Delling, Goldberg & Werneck 2012; *pruned landmark labeling*, Akiba,
+> Iwata & Yoshida 2013). Each bridge's field `d(·→B)` is one **column of the all-pairs distance
+> matrix in the min-plus (tropical) semiring** `(min, +)`, and the caret read
+> `min_B (d(u→B) + d(v→B))` is a **min-plus inner product** of `u`'s and `v`'s label rows — the
+> tropical analogue of `Σ_B x_u[B]·x_v[B]`. So "carry the functional, not the distribution" is
+> here *literally* the tropical-algebra strategy: the cached label is a min-plus vector, the
+> query a min-plus dot product, and no path-length distribution between the pair is ever formed.
+> The `O(K·V)` storage is **tight** for an O(1)-lookup landmark scheme (Tretyakov et al. 2011):
+> no asymptotically smaller compact representation supports constant-time distance reads. And
+> the read is the true LCA caret **only if the optimal common ancestor is one of the chosen
+> bridges**; with a sparser set it is a valid **upper bound**, larger by `2·d(LCA→nearest
+> bridge)` (§5b) — the standard landmark-distance over-estimate (Storandt 2022). The field
+> construction is the **reversed-BFS** identity: child edges are the exact reversal of parent
+> edges, so `src→B` up-paths and `B→src` down-paths are in length-preserving bijection and their
+> minima coincide (the Contraction-Hierarchies / bidirectional-search argument; holds on any
+> directed graph, diamonds included). (`bridge_distance_fields`, `caret_through_bridge_cached`,
+> `caret_min_over_cached_bridges`; live `build_caret_landmarks`.)
 - **Nested cuts (the convolution refinement).** A bridge is a **cut**, and distributions
   *factor* there: `H_{u→root} = H_{u→B} ⊛ H_{B→root}` (counting) / `d(u→root) = d(u→B) +
   d(B→root)` (min-plus). So one can cache the **suffix above** `B` and treat `B` as a *fresh
@@ -981,7 +1001,12 @@ buy diminishing returns and is not carried).
      bridges, cache their fields once, and `caret_min_over_hubs` becomes O(#hubs) lookups instead
      of a BFS per hub. The cached field is the **min-plus distance functional** read off a compact
      precompute — never forming the path-length distribution between the pair, the §8 "carry the
-     functional, not the distribution" theme again. Validated by
+     functional, not the distribution" theme again (formally a min-plus inner product over a
+     2-hop-cover / hub-labeling structure — see the §5c theory-grounding note for the literature
+     and the `O(K·V)` space-tightness result). The cached read **equals** the per-query
+     `caret_min_over_hubs`, but note *that* is the true LCA caret only when an optimal common
+     ancestor is among the bridges; with a sparser bridge set both are a valid **upper bound**
+     (gap `2·d(LCA→nearest bridge)`, §5c). Validated by
      `bridge_landmarks_cached_caret_matches_per_query` and `live_bridge_landmarks_match_library`.
    - **[deferred]** the **nested-cut** hierarchy (§5c) — cache the suffix above each cut and
      compose by convolution; worth it only for *deep* hierarchies, and needs the
