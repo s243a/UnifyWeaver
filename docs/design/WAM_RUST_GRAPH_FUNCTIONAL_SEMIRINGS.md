@@ -212,6 +212,10 @@ is scored against the independently-computed true histogram:
 | `⊗`-heavy chain (24 length-`{1,2}` diamonds) | shifted binomial → Gaussian (CLT) | **0.0019** | `−0.08` (reads Gaussian) |
 | `⊕`-heavy branch (two depths, 6 vs 41) | bimodal mixture | **0.48** | `−2.0` (reads strongly non-Gaussian) |
 
+(The chain's `0.0019` is *below* the Berry–Esseen CLT bound `≈ 0.097` for `n=24` — not a
+contradiction: the chain is **symmetric** (`γ₁ = 0`), so the leading `O(n^−½)` Edgeworth term
+vanishes and only the `O(n^−1)` correction remains. Berry 1941 / Esseen 1942.)
+
 The answers this pins down (and the honest limits):
 
 - **The moments are exact; only the *reconstruction* approximates.** Mean/variance/skew/kurtosis
@@ -229,7 +233,10 @@ The answers this pins down (and the honest limits):
   `MomentJet::reconstruction_class` reads it: `d < 0.7` → **Multimodal**; mild `|skew|,|kurtosis|` →
   **Gaussian**; otherwise **GramCharlier**. Crucially **some skew is fine** — a skewed binomial
   (`skew 0.31`) classifies `GramCharlier`, reconstructed by the skew/kurtosis corrections — so it
-  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality.
+  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality. (The Gram–Charlier A
+  expansion is itself a valid non-negative density only over a *bounded* `(γ₁, γ₂)` region, roughly
+  `|γ₁| ≲ 2` — Jondeau & Rockinger 2001; outside it the §7 CDF gate rejects the negative-density
+  result, so the pre-screen stays safe.)
 - **The `0.7` threshold is a conservative heuristic, not the rigorous boundary** — and this is the
   interesting subtlety. `0.7` has **zero false positives** (anything below it is provably near the
   two-mode extremum), but `d` does *not* cleanly separate multimodal from unimodal: the
@@ -1188,3 +1195,22 @@ Each is referenced inline at the section that uses it.
 - Blinnikov, S., & Moessner, R. (1998). *Expansions for Nearly Gaussian Distributions.* A&A
   Suppl. Ser. 130. — practical Gram–Charlier / Edgeworth series (the `MomentNormal` → `GramCharlier`
   reconstruction rungs).
+- Berry, A. C. (1941), *The Accuracy of the Gaussian Approximation to the Sum of Independent
+  Variates* (Trans. AMS 49); Esseen, C.-G. (1942) — the **Berry–Esseen** `O(n^−½)` CLT convergence
+  rate. For a *symmetric* sum (`γ₁ = 0`, the symmetric diamond chain) the leading `O(n^−½)` Edgeworth
+  term vanishes, leaving `O(n^−1)` — why the chain's measured `0.0019` beats the `≈0.097` bound (§3).
+
+**Moment-ratio admissibility and mixtures (§3, the `reconstruction_class` gate).**
+- Pearson, K. (1894). *Contributions to the Mathematical Theory of Evolution.* Phil. Trans. R. Soc.
+  London A, 185. — the **method of moments**, and the "dissection" of a frequency curve into a
+  2-Gaussian mixture; the general *asymmetric* case reduces to a **9th-degree (nonic)** polynomial,
+  the symmetric equal-variance case to the closed-form `δ = σ·(−γ₂/2)^¼`.
+- Sharma, R., & Bhandari, R. (2015). *Skewness, Kurtosis and Newton's Inequality.* Rocky Mountain J.
+  Math. 45(5). — bounds in the Pearson `(β₁, β₂)` plane; the universal `β₂ ≥ β₁ − 2`, attained only
+  by two-point distributions (`d = 0`).
+- Klaassen, C. A. J., & van Es, B. (2023). arXiv:2312.06212. — the **strictly-unimodal** floor
+  `d ≥ 189/125 ≈ 1.512`; note it does *not* cover the flat/amodal uniform (`d ≈ 0.80`), which is why
+  `reconstruction_class` keeps the conservative `d < 0.7` rather than raising to `≈1.5`.
+- Jondeau, E., & Rockinger, M. (2001). *Gram–Charlier Densities.* J. Economic Dynamics and Control,
+  25(10). — the **bounded `(γ₁, γ₂)` region** over which the Gram–Charlier A expansion is a valid
+  (non-negative) density (roughly `|γ₁| ≲ 2`); outside it the §7 CDF gate rejects the result.
