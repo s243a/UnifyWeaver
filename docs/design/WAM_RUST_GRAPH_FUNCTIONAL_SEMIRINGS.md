@@ -223,23 +223,37 @@ The answers this pins down (and the honest limits):
   prior — read off the topology, not the histogram.
 - **The carried higher moments *self-diagnose*, via their *ratio*.** Not a single threshold but the
   **Pearson `(β₁, β₂)` moment-ratio diagram** (`β₁ = skew²`, `β₂ = excess kurtosis`): every
-  distribution obeys the universal bound `β₂ ≥ β₁ − 2`, and a **two-mode** distribution sits *on*
-  it (the bimodal branch: skew `0`, excess kurtosis `−2.0 = 0 − 2`, the extremum). So the slack
-  `d = β₂ − β₁ + 2 ≥ 0` is a histogram-free **multimodality detector**, and `MomentJet::
-  reconstruction_class` reads it: `d` small → **Multimodal**; mild `|skew|,|kurtosis|` →
+  distribution obeys the universal bound `β₂ ≥ β₁ − 2`, with equality attained **only** by two-point
+  (Bernoulli) distributions (the bimodal branch sits there: skew `0`, excess kurtosis `−2.0 = 0 −
+  2`). So the slack `d = β₂ − β₁ + 2 ≥ 0` is a histogram-free **multimodality detector**, and
+  `MomentJet::reconstruction_class` reads it: `d < 0.7` → **Multimodal**; mild `|skew|,|kurtosis|` →
   **Gaussian**; otherwise **GramCharlier**. Crucially **some skew is fine** — a skewed binomial
   (`skew 0.31`) classifies `GramCharlier`, reconstructed by the skew/kurtosis corrections — so it
   is the *kurtosis and the ratio*, not skew, that flag genuine non-normality.
+- **The `0.7` threshold is a conservative heuristic, not the rigorous boundary** — and this is the
+  interesting subtlety. `0.7` has **zero false positives** (anything below it is provably near the
+  two-mode extremum), but `d` does *not* cleanly separate multimodal from unimodal: the
+  **platykurtic** band `0.7 ≲ d ≲ 2` holds *both*. The **uniform** is unimodal/amodal yet has
+  `d ≈ 0.80` (excess kurtosis `−1.2`); four moments cannot tell a flat-but-unimodal shape from a
+  mild bimodal. `0.7` sits just below the uniform's `0.80`, so platykurtic-unimodals route to
+  GramCharlier — *raising it to ≈1.5 would wrongly call the uniform a mixture.* (Published
+  unimodality floors — Sharma & Bhandari 2015; Klaassen & van Es 2023, `d ≥ 189/125 ≈ 1.512` — are
+  for *strictly* unimodal densities and exclude the flat uniform, which is why we keep `0.7`.) The
+  platykurtic band is precisely the **genuinely ambiguous middle** the moments can't resolve — the
+  case for the §7 CDF gate or a Monte-Carlo / GMM fit, not a sharper threshold.
 - **Multimodal is still *closed-form* — a mixture, not "give up and store the histogram."** The
   flag means *not a single mode*, so reconstruct with a **mixture / GMM** (`HistRepr::DiscGmm` /
   `Mixture`). And the same **Pearson** framework behind the `(β₁,β₂)` diagram is Pearson's 1894
-  **method of moments** for a 2-Gaussian mixture: in the symmetric case the mixture is fit from the
-  *same four moments* in closed form — two equal-weight modes at `μ ± δ` with `δ = σ·(−γ₂/2)^¼`. On
-  the bimodal branch that yields modes at exactly `{6, 41}` (the true spikes) from the same moments
-  the single Gaussian botched at error `0.48`. So the ladder is Gaussian → Gram–Charlier → **mixture
-  (closed form)** → exact histogram, and only the last is non-parametric. **Honest gap:** four
-  moments under-determine a *general* (asymmetric, unequal-weight, many-component) mixture; fitting
-  that needs more — the histogram, or a **Monte-Carlo goodness-of-fit / EM** step (sample paths,
+  **method of moments** for a 2-Gaussian mixture: in the *symmetric* case (equal weights, equal
+  component variance) the mixture is fit from the *same four moments* in closed form — two modes at
+  `μ ± δ` with `δ = σ·(−γ₂/2)^¼`, which is **exact for all component variances `s ≥ 0`** (from
+  `γ₂ = −2(δ/σ)⁴`), not just the `s→0` point-mass limit. On the bimodal branch that yields modes at
+  exactly `{6, 41}` (the true spikes) from the same moments the single Gaussian botched at error
+  `0.48`. So the ladder is Gaussian → Gram–Charlier → **mixture (closed form)** → exact histogram,
+  and only the last is non-parametric. **Honest gap:** four moments under-determine a *general*
+  mixture — Pearson's *asymmetric* 2-Gaussian case already reduces to a **9th-degree (nonic)
+  polynomial** in the separation and typically needs more than four moments; fitting that needs the
+  histogram, or a **Monte-Carlo goodness-of-fit / EM** step (sample paths,
   build the empirical distribution, fit/test), which is embarrassingly parallel and a natural
   **GPU** workload (a *future* direction). The §7 reconstruction stays **CDF-gated**
   (histogram-validated) as the final word; `reconstruction_class` is the cheap pre-screen that

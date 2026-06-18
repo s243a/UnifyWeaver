@@ -303,19 +303,33 @@ impl MomentJet {
     ///   general mixture needs more than four moments (the histogram, or a Monte-Carlo / EM fit).
     /// - else mild `|γ₁|,|γ₂|` → **Gaussian** (the moment-Normal is faithful, the CLT case);
     /// - else (notable skew/kurtosis but not multimodal) → **GramCharlier** (skew/kurtosis
-    ///   corrections, mildly non-normal).
-    /// Thresholds are deliberately conservative defaults; the §7 CDF gate remains the final,
-    /// histogram-validated check — this is the cheap pre-screen that decides *which* parametric
-    /// family to attempt (single mode vs mixture), not whether to give up on a closed form.
+    ///   corrections, mildly non-normal). *Caveat:* the Gram–Charlier A expansion is non-negative
+    ///   only over a bounded region of `(γ₁, γ₂)` (roughly `|γ₁| ≲ 2`; Jondeau & Rockinger 2001) —
+    ///   large skew/kurtosis can yield a non-positive "density"; the §7 CDF gate rejects any such
+    ///   result before it is accepted.
+    ///
+    /// **On the `d < 0.7` threshold (a conservative heuristic, not the rigorous boundary).** The
+    /// universal bound is `d ≥ 0`, attained *only* by two-point (Bernoulli) distributions. `0.7`
+    /// has **zero false positives** — anything below it is provably near the two-mode extremum. But
+    /// it does *not* cleanly separate multimodal from unimodal, because the **platykurtic** band
+    /// `0.7 ≲ d ≲ 2` contains *both*: e.g. the uniform is unimodal yet has `d ≈ 0.80` (excess
+    /// kurtosis `−1.2`). Four moments cannot distinguish a flat-but-unimodal shape from a mild
+    /// bimodal — that is the genuinely *ambiguous middle*, resolved by the §7 CDF gate or a
+    /// Monte-Carlo / GMM fit, not by the ratios. `0.7` is set just below the uniform's `0.80` so
+    /// platykurtic-unimodals route to GramCharlier rather than being mislabelled multimodal.
+    /// (Published unimodality floors — Sharma & Bhandari 2015; Klaassen & van Es 2023 — are for
+    /// *strictly* unimodal densities and do not cover the flat/amodal uniform, which is exactly
+    /// why we do not raise the threshold to ≈1.5.) The gate decides *which* family to attempt; the
+    /// §7 CDF gate is the final, histogram-validated word.
     pub fn reconstruction_class(self) -> ReconClass {
-        if self.mass <= 0.0 {
-            return ReconClass::Multimodal;
-        }
         let g1 = self.skewness();
         let g2 = self.excess_kurtosis();
         let d = g2 - g1 * g1 + 2.0; // slack above the universal two-mode bound β₂ = β₁ − 2
+        if self.mass <= 0.0 || !d.is_finite() || !g1.is_finite() || !g2.is_finite() {
+            return ReconClass::Multimodal; // empty / corrupt-moment jet → safest (mixture) fallback
+        }
         if d < 0.7 {
-            ReconClass::Multimodal // near the multimodal extremum → a closed-form mixture, not a single mode
+            ReconClass::Multimodal // near the two-mode extremum → a closed-form mixture, not a single mode
         } else if g1.abs() <= 0.2 && g2.abs() <= 0.7 {
             ReconClass::Gaussian
         } else {
@@ -4177,8 +4191,9 @@ mod tests {
             bjet.mean(), bjet.variance(), bjet.skewness(), bjet.excess_kurtosis(), berr);
 
         // FINDING 1: moments reconstruct the chain (CLT) accurately, the branch mixture badly.
-        assert!(err_normal < 0.06, "chain Gaussian reconstruction is faithful: cdf_err {}", err_normal);
-        assert!(berr > 0.2 && berr > 4.0 * err_normal,
+        // (Tight bounds pin the documented numbers 0.0019 / 0.48, with slack for platform FP.)
+        assert!(err_normal < 0.005, "chain Gaussian reconstruction is faithful: cdf_err {}", err_normal);
+        assert!(berr > 0.30 && berr > 4.0 * err_normal,
             "branch mixture reconstruction is much worse: branch {} vs chain {}", berr, err_normal);
         // FINDING 2: the carried moments self-diagnose — the chain reads ~Gaussian (excess
         // kurtosis ~0), the bimodal branch reads strongly platykurtic (excess kurtosis << 0), a
@@ -4204,13 +4219,32 @@ mod tests {
         // FINDING 4: "Multimodal" is NOT "needs the exact histogram" — the SAME four moments the
         // single Gaussian botched (cdf_err 0.48) closed-form *locate the two modes* as a symmetric
         // 2-Gaussian mixture (Pearson 1894 MoM): for two equal-weight modes at μ±δ with component
-        // variance s², γ₂ = −2(δ²/σ²)², so δ = σ·(−γ₂/2)^¼. On the bimodal that is exactly {6, 41}.
+        // variance s², γ₂ = −2(δ/σ)⁴ holds EXACTLY for all s ≥ 0 (not just the s→0 point-mass
+        // limit), so δ = σ·(−γ₂/2)^¼. On the bimodal that is exactly {6, 41}.
         let sigma = bjet.variance().sqrt();
         let delta = sigma * (-bjet.excess_kurtosis() / 2.0).powf(0.25);
         let (mode_lo, mode_hi) = (bjet.mean() - delta, bjet.mean() + delta);
         eprintln!("§3 closed-form 2-mixture modes from the 4 moments: {:.2}, {:.2}", mode_lo, mode_hi);
         assert!((mode_lo - 6.0).abs() < 0.5 && (mode_hi - 41.0).abs() < 0.5,
             "the bimodal's moments closed-form-locate its two modes: {} {}", mode_lo, mode_hi);
+
+        // FINDING 5: the threshold is conservative, NOT the unimodality boundary. A UNIFORM
+        // distribution is unimodal/amodal yet platykurtic (excess kurtosis −1.2, d ≈ 0.80); 0.7
+        // sits just below it, so the uniform reads GramCharlier, not Multimodal — raising the
+        // threshold to ~1.5 would wrongly call it a mixture. The platykurtic band (0.7, ~2) is the
+        // ambiguous middle (unimodal-flat vs mild-bimodal) the 4 moments cannot separate.
+        let uniform: Hist = vec![1u64; 41]; // uniform over lengths 0..=40
+        let ujet = hist_moment_jet(&uniform);
+        eprintln!("§3 uniform: exkurt {:.3} d {:.3} -> {:?}",
+            ujet.excess_kurtosis(), ujet.excess_kurtosis() - ujet.skewness().powi(2) + 2.0,
+            ujet.reconstruction_class());
+        assert_eq!(ujet.reconstruction_class(), ReconClass::GramCharlier,
+            "platykurtic-but-unimodal uniform must NOT be called Multimodal");
+        // A jet directly at the two-mode extremum (skew 0, excess kurtosis −2, d=0) → Multimodal.
+        let two_mode = MomentJet { mass: 2.0, m1: 0.0, m2: 2.0, m3: 0.0, m4: 2.0 }; // ±1, var 1, μ4 1
+        assert_eq!(two_mode.reconstruction_class(), ReconClass::Multimodal);
+        // Empty / NaN-moment jets fall back to Multimodal (the safe mixture/histogram route).
+        assert_eq!(MomentJet::zero().reconstruction_class(), ReconClass::Multimodal);
     }
 
     // §3 fork: the cumulant carry. Cumulants ADD under ⊗ (the O(K) splice) and round-trip
