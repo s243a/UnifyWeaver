@@ -538,6 +538,12 @@ pub struct WamState {
     pub desc_sketch: std::collections::HashMap<u32, Vec<u64>>,
     pub desc_sketch_n: usize,
     pub desc_sketch_k: usize,
+    /// Designated-bridge landmark fields (roadmap 3f): bridge `B` -> `d(·→B)`, the up-distance
+    /// from every descendant of `B` to `B`. Built once by `build_caret_landmarks`; the
+    /// `category_caret_through_bridge` / `category_caret_min_over_landmarks` read-outs then
+    /// answer the designated-bridge caret in O(1) per pair instead of a per-query BFS. Empty =
+    /// landmark caret off (default). Eager-edge only.
+    pub caret_landmarks: std::collections::HashMap<u32, std::collections::HashMap<u32, u32>>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -676,6 +682,7 @@ impl WamState {
             desc_sketch: std::collections::HashMap::new(),
             desc_sketch_n: 0,
             desc_sketch_k: 0,
+            caret_landmarks: std::collections::HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -1449,6 +1456,41 @@ impl WamState {
         let parents = self.ffi_facts.get(edge_pred)?;
         crate::boundary_cache::faith_similarity(
             u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// Precompute the **designated-bridge landmark fields** (roadmap 3f): one downward
+    /// distance field `d(·→B)` per bridge in `bridges`, over the eager `edge_pred` graph
+    /// (`bridge_distance_fields`). A harness calls this once at setup after picking the
+    /// designated bridges (e.g. the convergence hubs of §5c); `category_caret_through_bridge`
+    /// and `category_caret_min_over_landmarks` then answer in O(1) / O(#bridges) per pair.
+    /// Returns `false` (no-op) if `edge_pred` has no eager facts. Eager-edge only.
+    pub fn build_caret_landmarks(&mut self, bridges: &[u32], edge_pred: &str) -> bool {
+        let fields = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::bridge_distance_fields(bridges, parents)
+        };
+        self.caret_landmarks = fields;
+        true
+    }
+
+    /// O(1) designated-bridge caret `d(u→B) + d(v→B)` via the cached landmark field for `B`
+    /// (`build_caret_landmarks`). `None` if `B` is not a cached landmark, or either node is not
+    /// a descendant of `B`. Equals `category_caret_distance` *through that fixed bridge* — the
+    /// cache-backed entry point for `boundary_cache::caret_through_bridge`.
+    pub fn category_caret_through_bridge(&self, u: u32, v: u32, bridge: u32) -> Option<u32> {
+        let field = self.caret_landmarks.get(&bridge)?;
+        crate::boundary_cache::caret_through_bridge_cached(u, v, field)
+    }
+
+    /// The **quantized-LCA caret over the cached landmarks**: the minimum cached
+    /// designated-bridge caret over all landmarks (`build_caret_landmarks`). With the landmarks
+    /// chosen as the convergence hubs, this is `caret_min_over_hubs` realized at O(#landmarks)
+    /// table lookups per pair (no per-query BFS). `None` if no landmark bridges both nodes.
+    pub fn category_caret_min_over_landmarks(&self, u: u32, v: u32) -> Option<u32> {
+        crate::boundary_cache::caret_min_over_cached_bridges(u, v, &self.caret_landmarks)
     }
 
     /// Directed shortest `u → target` hop-distance (following parent edges, so `target`
@@ -3059,6 +3101,43 @@ mod boundary_kernel_tests {
         }
         // Unknown edge predicate -> None.
         assert_eq!(vm.category_resnik(z, w, "no_such_pred"), None);
+    }
+
+    // Roadmap 3f: the live landmark-cached designated-bridge caret equals the per-query
+    // boundary_cache caret_through_bridge / caret_min_over_hubs, at O(1) per pair after build.
+    #[test]
+    fn live_bridge_landmarks_match_library() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // tree with a cross-listing: 1->0; 2,3->1; 4,5->2; 6->3; 7->[2,3].
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "1"), ("3", "1"), ("4", "2"), ("5", "2"),
+            ("6", "3"), ("7", "2"), ("7", "3"),
+        ]);
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // intern node names + bridges before resolving anything else.
+        let id = |vm: &mut WamState, s: &str| vm.intern_atom(s);
+        let bridges: Vec<u32> = ["0", "1", "2", "3"].iter().map(|s| id(&mut vm, s)).collect();
+        // unbuilt -> None.
+        let (a, b) = (id(&mut vm, "4"), id(&mut vm, "5"));
+        assert_eq!(vm.category_caret_through_bridge(a, b, bridges[2]), None);
+        // unknown edge predicate -> false no-op.
+        assert!(!vm.build_caret_landmarks(&bridges, "no_such_pred"));
+
+        assert!(vm.build_caret_landmarks(&bridges, "category_parent"));
+        let names = ["0", "1", "2", "3", "4", "5", "6", "7"];
+        let ids: Vec<u32> = names.iter().map(|s| id(&mut vm, s)).collect();
+        for &u in &ids {
+            for &v in &ids {
+                for &br in &bridges {
+                    assert_eq!(vm.category_caret_through_bridge(u, v, br),
+                        crate::boundary_cache::caret_through_bridge(u, v, br, &parents),
+                        "cached through {} for ({},{})", br, u, v);
+                }
+                assert_eq!(vm.category_caret_min_over_landmarks(u, v),
+                    crate::boundary_cache::caret_min_over_hubs(u, v, &bridges, &parents),
+                    "min over landmarks ({},{})", u, v);
+            }
+        }
     }
 
     // Increment 3b — the A* ancestor search returns the directed shortest u->ancestor
