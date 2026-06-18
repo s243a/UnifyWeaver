@@ -3798,6 +3798,32 @@ mod tests {
         for &(mu, mc, u) in rows.iter().take(4) {
             eprintln!("      μ={:.1}  mean_caret={:.1}  {}", mu, mc, names[u as usize]);
         }
+
+        // (3) DISTANCE-TO-ROOT vs μ (the single-anchor structural signal). Depth to the Physics
+        // root is the one-legged caret `caret(u, Physics) = d(u→Physics)`. Statistically it should
+        // anti-correlate with μ: there are more deep nodes than shallow, and each downward hop has
+        // a chance to exit the semantic space, so deeper ⇒ more likely non-physics (even though a
+        // few deep-but-genuine physics nodes buck it). This is the cheap single-anchor version of
+        // the mean-caret-to-core above; they should agree.
+        if let Some(&root_id) = ids.get("Physics") {
+            let depth = min_distance_closure(root_id, &parents); // d(node → Physics) for all
+            let pts: Vec<(f64, f64)> = scored.iter()
+                .filter_map(|&(u, mu)| depth.get(&u).map(|&d| (mu, d as f64)))
+                .collect();
+            let npt = pts.len() as f64;
+            let (mx, my) = (pts.iter().map(|p| p.0).sum::<f64>() / npt,
+                            pts.iter().map(|p| p.1).sum::<f64>() / npt);
+            let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+            for &(x, y) in &pts { sxy += (x - mx) * (y - my); sxx += (x - mx).powi(2); syy += (y - my).powi(2); }
+            let r = sxy / (sxx.sqrt() * syy.sqrt());
+            let (mut hi, mut lo) = ((0.0, 0u32), (0.0, 0u32));
+            for &(mu, d) in &pts { if mu >= 0.8 { hi.0 += d; hi.1 += 1; } else if mu <= 0.3 { lo.0 += d; lo.1 += 1; } }
+            eprintln!("fuzzy: depth-to-Physics-root  high-μ(≥0.8)={:.2}  low-μ(≤0.3)={:.2}  | corr(μ,depth)={:.2}",
+                hi.0 / hi.1.max(1) as f64, lo.0 / lo.1.max(1) as f64, r);
+            // Statistically, μ and depth-to-root anti-correlate — the single-anchor signal agrees
+            // with the mean-caret-to-core (and with the LLM μ).
+            assert!(r < 0.0, "μ and depth-to-physics-root anti-correlate statistically: r={}", r);
+        }
     }
 
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.

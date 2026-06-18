@@ -155,6 +155,19 @@ exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
   low-`μ` (≤0.3) at **4.77** — so each can audit the other. The disagreements are the interesting
   cases the fusion surfaces (e.g. `Sound`, `Waves`, `Cold` read `μ=1.0` but sit slightly farther
   structurally — genuine physics the graph places at a remove).
+- **The single-anchor version agrees too: depth-to-root vs `μ`.** Distance to the `Physics` root is
+  the *one-legged caret* `caret(u, Physics) = d(u→Physics)` (the root is a universal ancestor, so one
+  leg is zero). Statistically it anti-correlates with `μ`: there are more deep nodes than shallow,
+  and each downward hop has a chance to leak out of the semantic space, so deeper ⇒ more likely
+  non-physics (a few deep-but-genuine physics nodes buck it). Measured: high-`μ`(≥0.8) depth **2.24**,
+  low-`μ`(≤0.3) depth **3.86**, **`corr(μ, depth) = −0.48`**. So the cheap single-anchor signal
+  agrees with the multi-anchor mean-caret and with the LLM — "either way, similar results." (Note
+  this is the *robust* use of depth: the per-pair caret to a chosen anchor, not the raw root-depth
+  ranking that the associative leak makes unreliable — a leaked chemistry node is deep via a long
+  associative path, which is exactly why deep ⇒ less-physics holds *statistically* here.)
+- **Generating `μ` from semantic vectors** (category embeddings) instead of an LLM is the natural
+  alternative — same fuzzy membership, a different prior source; the structural agreement above
+  predicts it would land in the same place. (Future: needs an embedding source.)
 
 Still future work: **membership-weighted read-outs** — carry `μ` as a per-node weight into the
 functionals (`μ`-weighted Resnik/Lin that down-weights borderline ancestors in the MICA search, or
