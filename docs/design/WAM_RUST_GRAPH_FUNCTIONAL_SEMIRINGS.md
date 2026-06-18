@@ -785,6 +785,33 @@ calibrated on deep DAGs — the principled absolute-score companion to the lift'
 (Hub *selection* from these scores is still the open global problem; this only fixes the
 calibration of the relatedness read-out.)
 
+> **`μ`-weighted IC — "partial admission" (the first membership-weighted read-out).** `IC` counts
+> every descendant as `1`; on a non-taxonomic graph the **associative leak** bloats a domain node's
+> cone with out-of-domain descendants, so its `|desc|` looks huge and the raw `IC` mistakes it for
+> *generality* (big cone → low `IC`). Fix it by **admitting each node with weight `μ ∈ [0,1]`**
+> instead of 0/1 (the fuzzy-membership `μ` of the measurement note): `IC_μ(t) = −log₂(Σ_{d∈desc(t)}
+> μ_d / Σ_all μ)` (`information_content_weighted`, with `descendant_mu_mass` the distinct weighted
+> mass; `μ ≡ 1` recovers `IC`). Low-`μ` leaked descendants barely count, so the effective cone
+> shrinks to its in-domain size and the node's `IC` is *raised* to its true specificity — on a leaky
+> test graph a physics node's IC goes `0.49 → 1.28`, closing the false generality gap to a clean
+> sibling. The admission weight need not be linear in `μ`: `fuzzy_admission` is an **S-curve**
+> (logistic) transfer `w(μ) = 1/(1+e^{−k(μ−c)})` — default `c=0.55, k≈4.39` fits the anchors
+> `w(0.8)=0.75`, `w(0.3)=0.25` — for a nearly-full/nearly-zero admission with a tunable knee.
+> *Scaling caveat:* `descendant_mu_mass` is exact (per-node BFS, `O(V·(V+E))`); the large-graph form
+> wants a **`μ`-weighted MinHash** sketch (the weighted analogue of `descendant_minhash`), future
+> work. And this is exactly where membership *matters* (per §-aside): a read-out over the *global*
+> cone, not the per-pair caret, which is membership-robust.
+>
+> **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
+> intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
+> into that descendant-mass null — as the calibration fix for the associative leak on a non-taxonomic
+> DAG — is, to our knowledge, original here and not a restatement of a published estimator. It is a
+> strict generalization: `μ ≡ 1` reduces *exactly* to the sketch IC (regression-tested in
+> `mu_weighted_ic_reduces_to_sketch_ic_at_mu_one`). The default S-curve steepness is the *exact*
+> anchor fit `k = 4·ln 3 ≈ 4.3944` (symmetric anchors `0.25` either side of `c`); the logistic only
+> *asymptotes* to `0`/`1`, so if exact endpoints are wanted (fully-out nodes contributing *exactly*
+> zero) Zadeh's piecewise-quadratic S-function is the drop-in alternative.
+
 ### 5e. A gentle primer on information-content similarity (for the reader learning this)
 
 *§5d is written for someone who already has the vocabulary. This subsection builds the same idea
