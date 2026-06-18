@@ -1521,6 +1521,68 @@ pub fn information_content(dsig: &[u64], n_total: usize, k: usize) -> f64 {
     -p.log2()
 }
 
+/// **μ-weighted ("partial admission") information content.** Standard `IC` counts every descendant
+/// as `1`; here each node is admitted with weight `μ ∈ [0,1]`, so `IC_μ(t) = −log₂( m_μ(t) / M_μ )`
+/// with `m_μ(t) = Σ_{d∈desc(t)} μ_d` the admitted mass under `t` and `M_μ = Σ_all μ` the total. Low-μ
+/// (out-of-domain / leaked) descendants barely count, so a *domain* node whose cone is bloated by
+/// the associative leak — which the raw `IC` mistakes for *generality* (a big cone → low IC) — has
+/// its effective cone shrunk back to its in-domain size and its IC *raised* to its true specificity.
+/// `μ ≡ 1` recovers `information_content`. (`m_μ` is the **distinct** weighted mass; see
+/// `descendant_mu_mass`.)
+pub fn information_content_weighted(desc_mu_mass: f64, total_mu: f64) -> f64 {
+    if total_mu <= 0.0 || desc_mu_mass <= 0.0 {
+        return 0.0;
+    }
+    -((desc_mu_mass / total_mu).min(1.0)).log2()
+}
+
+/// Exact **distinct** μ-weighted descendant mass per node: `m_μ(t) = Σ_{d∈desc(t)} μ_d` over the
+/// distinct descendant set (`t` included), so diamonds count once. A downward BFS per node
+/// (`O(V·(V+E))`) — exact, for small graphs / validation. At scale this wants a **μ-weighted
+/// MinHash** sketch (the weighted analogue of `descendant_minhash`), which is future work; this
+/// grounds `information_content_weighted`. With `μ ≡ 1` it equals the distinct descendant count.
+pub fn descendant_mu_mass(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+) -> std::collections::HashMap<u32, f64> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); children.entry(p).or_default().push(c); }
+    }
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let mut out: HashMap<u32, f64> = HashMap::new();
+    for &t in &nodes {
+        let mut seen: HashSet<u32> = HashSet::new();
+        seen.insert(t);
+        let mut q: VecDeque<u32> = VecDeque::new();
+        q.push_back(t);
+        let mut mass = muv(t);
+        while let Some(x) = q.pop_front() {
+            if let Some(cs) = children.get(&x) {
+                for &c in cs { if seen.insert(c) { mass += muv(c); q.push_back(c); } }
+            }
+        }
+        out.insert(t, mass);
+    }
+    out
+}
+
+/// **Fuzzy admission curve**: an S-shaped (logistic) transfer from the raw membership `μ` to an
+/// admission weight in `[0,1]`, `w(μ) = 1/(1 + e^{−k(μ−c)})`. Shapes *how* `μ` translates to
+/// admission — nearly-full weight well above the boundary, nearly-zero well below, a smooth knee
+/// through the middle — instead of admitting linearly by raw `μ`. The default `c = 0.55, k ≈ 4.39`
+/// fits the anchors `w(0.8) = 0.75` (small drop) and `w(0.3) = 0.25` (significant drop), with the
+/// crossover `w(0.55) = 0.5`; raise `k` for a sharper accept/reject knee, move `c` for the
+/// boundary. (Zadeh's piecewise-quadratic S-function is the classic alternative shape.) Feed
+/// `w(μ_d)` as the per-node admission weight to `descendant_mu_mass` for a fuzzy partial-admission
+/// `IC`.
+pub fn fuzzy_admission(mu: f64, center: f64, steepness: f64) -> f64 {
+    1.0 / (1.0 + (-steepness * (mu - center)).exp())
+}
+
 /// Reflexive ancestor set of `node` (`node` itself plus every strict ancestor), by up-BFS.
 /// **O(|ancestors(node)| + edges above it)** per call — it allocates a fresh `HashSet`/`VecDeque`.
 /// For repeated queries on the same node, cache the returned set rather than recomputing.
@@ -4097,6 +4159,54 @@ mod tests {
         // Jaccard of two saturated sketches stays in [0,1] (no panic / out-of-range).
         let j = sketch_jaccard(&sig[&20], &sig[&19], K);
         assert!((0.0..=1.0).contains(&j));
+    }
+
+    // μ-weighted ("partial admission") IC + the fuzzy S-curve admission. A leaky graph: physics
+    // node 1 (μ=1) has a cone of mostly LEAKED low-μ descendants (3,4,5,6 at μ=0.1); physics node 2
+    // (μ=1) is a clean leaf. Raw IC mistakes node 1's big leaked cone for generality (low IC);
+    // partial admission discounts the leak and RAISES its IC to its true specificity.
+    #[test]
+    fn mu_weighted_ic_partial_admission_and_s_curve() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]);
+        g.insert(3, vec![1]); g.insert(4, vec![3]); g.insert(5, vec![3]); g.insert(6, vec![3]);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-2;
+
+        // RAW IC (μ ≡ 1): node 1's leaked cone {1,3,4,5,6}=5 makes it look general; node 2={2}=1 specific.
+        let n = 7.0; // nodes 0..=6
+        let mass1: HashMap<u32, f64> = (0u32..=6).map(|i| (i, 1.0)).collect();
+        let raw = descendant_mu_mass(&g, &mass1);
+        let (ic_raw_1, ic_raw_2) = (information_content_weighted(raw[&1], n),
+                                    information_content_weighted(raw[&2], n));
+        assert!(close(raw[&1], 5.0) && close(raw[&2], 1.0));          // μ≡1 == distinct counts
+        assert!(ic_raw_1 < ic_raw_2 - 1.5, "raw IC: leaked node 1 looks falsely GENERAL");
+
+        // LINEAR μ-weighting: 3,4,5,6 at μ=0.1; 0,1,2 at μ=1. The leak is discounted.
+        let mut mu: HashMap<u32, f64> = (0u32..=2).map(|i| (i, 1.0)).collect();
+        for i in 3u32..=6 { mu.insert(i, 0.1); }
+        let total_mu: f64 = mu.values().sum();
+        let lin = descendant_mu_mass(&g, &mu);
+        let (ic_mu_1, ic_mu_2) = (information_content_weighted(lin[&1], total_mu),
+                                  information_content_weighted(lin[&2], total_mu));
+        // Node 1's IC is RAISED (its cone is mostly leaked); the false generality is corrected.
+        assert!(ic_mu_1 > ic_raw_1 + 0.5, "partial admission raises the leaked node's IC: {} -> {}", ic_raw_1, ic_mu_1);
+        assert!(ic_mu_2 - ic_mu_1 < ic_raw_2 - ic_raw_1, "the leak's false discrimination shrinks");
+
+        // FUZZY S-CURVE admission: the anchors w(0.8)=0.75, w(0.3)=0.25, crossover w(0.55)=0.5.
+        let (c, k) = (0.55, 4.39);
+        assert!(close(fuzzy_admission(0.8, c, k), 0.75));
+        assert!(close(fuzzy_admission(0.3, c, k), 0.25));
+        assert!(close(fuzzy_admission(0.55, c, k), 0.5));
+        assert!(fuzzy_admission(0.1, c, k) < fuzzy_admission(0.3, c, k));   // monotone
+        assert!(fuzzy_admission(1.0, c, k) > fuzzy_admission(0.8, c, k));
+        // Shape μ through the S-curve, then admit: still corrects the leak, with a tunable knee.
+        let mu_s: HashMap<u32, f64> = mu.iter().map(|(&u, &m)| (u, fuzzy_admission(m, c, k))).collect();
+        let tot_s: f64 = mu_s.values().sum();
+        let s = descendant_mu_mass(&g, &mu_s);
+        let ic_s_1 = information_content_weighted(s[&1], tot_s);
+        assert!(ic_s_1 > ic_raw_1 + 0.5, "S-curve partial admission also corrects the leak");
+        eprintln!("μ-IC: node1 raw {:.2} → linear-μ {:.2} → S-curve {:.2}  (node2 raw {:.2})",
+            ic_raw_1, ic_mu_1, ic_s_1, ic_raw_2);
     }
 
     // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
