@@ -619,6 +619,11 @@ on a tall stem with a low fork it touches a handful of nodes where the full-cone
 `O(V+E)` for graphs with wide upward frontiers. (`caret_distance_lca_boundary[_counted]`.) This is the honest framing of §5c: the
 global hub set is an *approximate, reusable stand-in* for this boundary, justified only when
 **batching many pairs** amortizes its precompute; for a one-off pair, just search the boundary.
+The live runtime now does exactly that: `WamState::category_caret_distance` is the
+boundary-restricted lockstep search over the real edge accessor (replacing the earlier
+full-cone joint BFS), with `category_caret_distance_counted` exposing the visit count — it
+equals the full caret everywhere and, on a tall stem with a low fork, touches three nodes
+where the full cone walked the whole stem.
 
 **Global hub measure — deferred, and the following is a *conjecture*, not a result.** The
 global question ("rank all nodes as generic bridges") is harder, because — as the §5c rungs
