@@ -1829,12 +1829,33 @@ pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, cap: impl
 /// unit of admitted mass sits in `A` with prob `m_A/M` and in `B` with prob `m_B/M`, independently),
 /// and the signal is `lift = observed_shared_mass / E` with `observed = sketch_mu_overlap`. `lift > 1`
 /// is an *excess in-domain funnel* — a genuine domain hub; `lift ≈ 1` is the small-world background.
-/// At `μ ≡ 1` it reduces *exactly* to `sketch_overlap_lift` (`m_A=|A|`, `m_B=|B|`, `M=N`).
+/// **When `μ ≡ 1` *and* `k ≥ |cone|` (the exact / unsaturated regime)** it reduces *exactly* to
+/// `sketch_overlap_lift` (`m_A=|A|`, `m_B=|B|`, `M=N`). Under saturation (`k < |cone|`) the weighted
+/// path applies the cardinality `cap` while the unweighted `sketch_overlap_lift` does not, so the
+/// reduction is then only approximate.
+///
+/// This is the null model of the **weighted configuration model** (Barrat et al. 2004; Newman 2004):
+/// `s_i·s_j / 2W` with admitted mass playing the role of strength `s` and `M` of total weight `W`.
 ///
 /// This is the read-out the weighted sketch was built for: the raw `sketch_overlap_lift` is fooled by
 /// the associative leak — two cones that overlap heavily on *out-of-domain* descendants look like a
 /// hub — but here the observed shared mass discounts those low-`μ` descendants, so a leak-driven false
-/// hub collapses to `lift ≈ 0` while a real in-domain hub stays `> 1`. `0` if either cone has no mass.
+/// hub collapses below chance (`lift < 1`) while a real in-domain hub stays `> 1`.
+///
+/// # Preconditions
+/// - `total_mu` must be `Σ_all μ` over the **same** node universe the sketches were hashed from
+///   (`descendant_minhash_weighted`'s graph); a mismatched `total_mu` rescales every lift.
+/// - For `cap = CardCap::Ceiling(c)`, `c` must bound the cone **union** `|A ∪ B|`, not just the
+///   individual cones — the cap is applied to `m_A`, `m_B` *and* the union cardinality, and a ceiling
+///   sized to one cone lets the union exceed it, biasing the lift. Prefer `Universe(N)` (which bounds
+///   the union by construction) or `Uncapped` unless you have a safe global ceiling. (The lift ratio
+///   is in any case fairly *insensitive* to the cap: it appears in the numerator union-card and in the
+///   `m_A·m_B` denominator, so it largely cancels — the cap matters for the raw mass, less for the lift.)
+///
+/// Returns `0` if either cone has negligible mass (`< 1e-9·M`): a near-empty cone cannot support a
+/// meaningful lift, and dividing by its tiny expected value would amplify sketch noise into a
+/// spurious spike (the weighted resolution limit; product-lift RSE ≈ `√3/√k`). Gate harder upstream
+/// if your application has many small cones.
 pub fn sketch_mu_overlap_lift(
     a: &[(u64, f64)],
     b: &[(u64, f64)],
@@ -1847,6 +1868,10 @@ pub fn sketch_mu_overlap_lift(
         return 0.0;
     }
     let (m_a, m_b) = (sketch_mu_mass(a, k, cap), sketch_mu_mass(b, k, cap));
+    let floor = 1e-9 * total_mu; // resolution-limit gate: tiny cones cannot carry a meaningful lift
+    if m_a < floor || m_b < floor {
+        return 0.0;
+    }
     let expected = m_a * m_b / total_mu;
     if expected <= 0.0 {
         return 0.0;
@@ -4907,9 +4932,10 @@ mod tests {
             "μ-mass must be depth-stable: weighted growth {wmass_growth} vs raw {raw_growth}");
     }
 
-    // μ-weighted overlap LIFT reduces to the unweighted sketch_overlap_lift at μ≡1. Diamond: 3->[1,2],
-    // 4->[3]; 1,2->0. cone(1)={1,3,4}, cone(2)={2,3,4}, ∩={3,4}. k >> cone ⇒ exact, so the two lifts
-    // must agree to 1e-9.
+    // μ-weighted overlap LIFT reduces to the unweighted sketch_overlap_lift at μ≡1 — but only in the
+    // exact (k≥cone) regime; under saturation the weighted path applies the cap and the unweighted does
+    // not. Diamond: 3->[1,2], 4->[3]; 1,2->0. cone(1)={1,3,4}, cone(2)={2,3,4}, ∩={3,4}. k >> cone ⇒
+    // exact, so the two lifts must agree to 1e-9.
     #[test]
     fn mu_overlap_lift_reduces_to_unweighted_at_mu_one() {
         const K: usize = 16;
@@ -4929,42 +4955,44 @@ mod tests {
         assert!(weighted > 1.0, "1 and 2 funnel into the shared {{3,4}} more than chance");
     }
 
-    // THE HUB-SELECTOR PAYOFF: the μ-weighted lift discriminates a real in-domain hub from a
-    // leak-driven false hub where the UNWEIGHTED lift cannot. Two cone-pairs with IDENTICAL sizes
-    // (so identical unweighted lift): pair A,B shares 40 in-domain nodes (μ=1); pair C,D shares 40
-    // out-of-domain leak nodes (μ=0.02). Both also carry 30 private in-domain children so their total
-    // MASS is comparable. The unweighted lift is fooled (equal); the weighted lift ranks the real hub
-    // above chance (>1) and pushes the leak hub below chance (<1).
-    #[test]
-    fn mu_overlap_lift_separates_real_hub_from_leak_hub() {
-        const K: usize = 128; // > every cone (71) ⇒ exact
+    // Hub test graph: nodes 1,2 are the REAL-hub queries (share 40 in-domain μ=1 nodes); 3,4 are the
+    // LEAK-hub queries (share 40 out-of-domain μ=0.02 nodes). Each of 1,2,3,4 also carries 30 private
+    // in-domain children so all four cones have comparable MASS and IDENTICAL size (71). 300 filler
+    // nodes under a filler root inflate the universe (small-world background). 505 nodes total.
+    fn hub_test_graph() -> (HashMap<u32, Vec<u32>>, HashMap<u32, f64>) {
         let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut mu: HashMap<u32, f64> = HashMap::new();
-        for q in [1u32, 2, 3, 4] { mu.insert(q, 1.0); } // 1,2 real hub queries; 3,4 leak hub queries
+        for q in [1u32, 2, 3, 4] { mu.insert(q, 1.0); }
         let mut next = 1000u32;
-        // Private in-domain children (μ=1): 30 under each of 1,2,3,4 — gives all four cones in-domain bulk.
         for &q in &[1u32, 2, 3, 4] {
             for _ in 0..30 { let c = next; next += 1; g.insert(c, vec![q]); mu.insert(c, 1.0); }
         }
-        // Shared CORE for the real hub: 40 in-domain nodes under BOTH 1 and 2 (μ=1).
-        for _ in 0..40 { let s = next; next += 1; g.insert(s, vec![1, 2]); mu.insert(s, 1.0); }
-        // Shared LEAK for the false hub: 40 out-of-domain nodes under BOTH 3 and 4 (μ=0.02).
-        for _ in 0..40 { let l = next; next += 1; g.insert(l, vec![3, 4]); mu.insert(l, 0.02); }
-        // Filler to inflate the universe (small-world background): 300 nodes under a filler root.
+        for _ in 0..40 { let s = next; next += 1; g.insert(s, vec![1, 2]); mu.insert(s, 1.0); }   // real core
+        for _ in 0..40 { let l = next; next += 1; g.insert(l, vec![3, 4]); mu.insert(l, 0.02); }  // leak
         let froot = next; next += 1; mu.insert(froot, 0.5);
         for _ in 0..300 { let f = next; next += 1; g.insert(f, vec![froot]); mu.insert(f, 0.5); }
+        (g, mu)
+    }
 
+    // THE HUB-SELECTOR PAYOFF (exact regime, k > cone): the μ-weighted lift discriminates a real
+    // in-domain hub from a leak-driven false hub where the UNWEIGHTED lift cannot. With IDENTICAL
+    // cone sizes the unweighted lift is fooled (equal); the weighted lift ranks the real hub above
+    // chance (>1) and pushes the leak hub below chance (<1), a ~10× separation.
+    #[test]
+    fn mu_overlap_lift_separates_real_hub_from_leak_hub() {
+        const K: usize = 128; // > every cone (71) ⇒ exact, so the numbers are deterministic
+        let (g, mu) = hub_test_graph();
         let d = descendant_minhash(&g, K).unwrap();
         let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
-        let n = d.len();
+        let n = d.len(); // 505 reachable nodes (every node appears as a parent or child edge)
         let total_mu: f64 = mu.values().sum();
 
         let unw_real = sketch_overlap_lift(&d[&1], &d[&2], n, K);
         let unw_leak = sketch_overlap_lift(&d[&3], &d[&4], n, K);
         let w_real = sketch_mu_overlap_lift(&w[&1], &w[&2], total_mu, K, n);
         let w_leak = sketch_mu_overlap_lift(&w[&3], &w[&4], total_mu, K, n);
-        eprintln!("hub-lift: unweighted real {:.2} leak {:.2} (FOOLED) | weighted real {:.2} leak {:.2}",
-            unw_real, unw_leak, w_real, w_leak);
+        eprintln!("hub-lift exact: unweighted real {:.2} leak {:.2} (FOOLED) | weighted real {:.2} leak {:.2} ({:.1}×)",
+            unw_real, unw_leak, w_real, w_leak, w_real / w_leak);
 
         // Unweighted lift cannot tell them apart (identical cone sizes).
         assert!((unw_real - unw_leak).abs() < 1e-6, "unweighted lift is fooled: real {unw_real} leak {unw_leak}");
@@ -4972,7 +5000,52 @@ mod tests {
         // Weighted lift: real hub is an excess in-domain funnel; leak hub falls below chance.
         assert!(w_real > 1.0, "real in-domain hub: weighted lift > 1 ({w_real})");
         assert!(w_leak < 1.0, "leak hub correctly suppressed below chance ({w_leak})");
-        assert!(w_real > w_leak * 5.0, "real hub ranks far above the leak hub ({w_real} vs {w_leak})");
+        assert!(w_real > w_leak * 9.0, "real hub ranks ~10× above the leak hub ({w_real} vs {w_leak})");
+    }
+
+    // R1 SATURATED regime (k < cone): the exact tests never reach the KMV-estimator/cap branch since
+    // every cone (71) fits in k. Here k=32 forces saturation, exercising that branch in the lift. Two
+    // claims: (a) the real-vs-leak discrimination SURVIVES sketching, and (b) the cap is load-bearing
+    // — a Ceiling below the cone size visibly clips the saturated mass the lift consumes (whereas the
+    // lift *ratio* is largely cap-insensitive, since the cap appears in both numerator and denominator).
+    #[test]
+    fn mu_overlap_lift_saturated_regime_and_cap_is_live() {
+        const K: usize = 32; // < cone (71) ⇒ sketches SATURATE
+        let (g, mu) = hub_test_graph();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let n = w.len();
+        let total_mu: f64 = mu.values().sum();
+        assert_eq!(w[&1].len(), K, "cone(1) sketch is saturated at k");
+
+        // (a) discrimination survives saturation.
+        let w_real = sketch_mu_overlap_lift(&w[&1], &w[&2], total_mu, K, n);
+        let w_leak = sketch_mu_overlap_lift(&w[&3], &w[&4], total_mu, K, n);
+        eprintln!("hub-lift saturated k={}: weighted real {:.2} leak {:.2}", K, w_real, w_leak);
+        assert!(w_real > w_leak * 3.0, "ranking survives saturation: real {w_real} leak {w_leak}");
+
+        // (b) the cap is load-bearing in the saturated regime: a Ceiling below the cone clips the mass.
+        let uncapped = sketch_mu_mass(&w[&1], K, CardCap::Uncapped);
+        let clipped = sketch_mu_mass(&w[&1], K, CardCap::Ceiling(20.0));
+        assert!(uncapped > 25.0, "uncapped saturated mass tracks the ~71-node cone, got {uncapped}");
+        assert!((clipped - 20.0).abs() < 1e-9, "Ceiling(20) clips the saturated mass (mean_w=1), got {clipped}");
+        // Universe(505) doesn't bite (cone << 505), so it matches Uncapped — and the lift ratio barely
+        // moves under a different cap (numerator/denominator cancellation).
+        assert_eq!(sketch_mu_mass(&w[&1], K, CardCap::Universe(505)), uncapped, "Universe(505) doesn't clip a 71-cone");
+    }
+
+    // NB6 edge cases: disjoint cones ⇒ lift 0; total_mu=0 ⇒ no panic, lift 0.
+    #[test]
+    fn mu_overlap_lift_edge_cases() {
+        const K: usize = 16;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        // Two fully disjoint cones: {10}->{1}, {20}->{2}. No shared descendants.
+        g.insert(10, vec![1]); g.insert(20, vec![2]);
+        let mu: HashMap<u32, f64> = [(1u32, 1.0), (2, 1.0), (10, 1.0), (20, 1.0)].into_iter().collect();
+        let total_mu: f64 = mu.values().sum();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        assert_eq!(sketch_mu_overlap_lift(&w[&1], &w[&2], total_mu, K, 4usize), 0.0, "disjoint ⇒ lift 0");
+        // total_mu = 0 must not panic (degenerate universe).
+        assert_eq!(sketch_mu_overlap_lift(&w[&1], &w[&2], 0.0, K, 4usize), 0.0, "total_mu=0 ⇒ 0, no panic");
     }
 
     // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
