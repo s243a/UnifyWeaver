@@ -660,6 +660,19 @@ annotated under t)`, with similarity read from the IC of the LCA (Resnik 1995; L
 depth-aware baseline that does not inflate. For calibrated absolute scores, an IC-style null is
 the principled replacement; for bridge *selection* (a ranking), the current lift suffices.
 
+**This IC null is now implemented** (`information_content`, `resnik_similarity`,
+`lin_similarity`). It rests on a **descendant sketch** — `descendant_minhash`, the exact
+downward mirror of the rung-4 `ancestor_minhash`: one reverse-topological pass gives each node a
+fixed-`k` KMV sketch of its descendant cone, which (being a *set*) **dedups by construction**, so
+`sketch_card` estimates the *distinct* cone size `|desc(t)|` that `descendant_weight` over-counts.
+Then `IC(t) = −log₂(|desc(t)|/N)`, `resnik = IC(MICA)` (the most informative common ancestor —
+max `IC` over the common ancestors, which is a lowest one since `IC` is non-increasing upward),
+and `lin = 2·IC(MICA)/(IC(u)+IC(v)) ∈ [0,1]`. The cost mirrors rung 4 exactly: `O(V·k)`
+precompute, `O(k)` reads, no per-query reachability. Unlike the configuration-model lift it uses
+*actual* cone frequencies, so it stays calibrated on deep DAGs — the principled absolute-score
+companion to the lift's ranking signal. (Hub *selection* from these scores is still the open
+global problem; this only fixes the calibration of the relatedness read-out.)
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
