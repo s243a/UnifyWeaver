@@ -797,10 +797,48 @@ calibration of the relatedness read-out.)
 > sibling. The admission weight need not be linear in `μ`: `fuzzy_admission` is an **S-curve**
 > (logistic) transfer `w(μ) = 1/(1+e^{−k(μ−c)})` — default `c=0.55, k≈4.39` fits the anchors
 > `w(0.8)=0.75`, `w(0.3)=0.25` — for a nearly-full/nearly-zero admission with a tunable knee.
-> *Scaling caveat:* `descendant_mu_mass` is exact (per-node BFS, `O(V·(V+E))`); the large-graph form
-> wants a **`μ`-weighted MinHash** sketch (the weighted analogue of `descendant_minhash`), future
-> work. And this is exactly where membership *matters* (per §-aside): a read-out over the *global*
-> cone, not the per-pair caret, which is membership-robust.
+> *Scaling — now done:* `descendant_mu_mass` is exact (per-node BFS, `O(V·(V+E))`); the large-graph
+> form is `descendant_minhash_weighted`, a **`μ`-weighted KMV sketch** built in one reverse-topo pass
+> (`O((V+E)·k)`). Each element is a `(hash, μ)` pair kept as the bottom-`k` by hash (deduped ⇒
+> diamonds once); because the hashes are drawn independently of `μ`, the bottom-`k` is a *uniform*
+> sample of the cone and the carried weights are an unbiased sample of its weight distribution, so the
+> mass read-out is `m̂_μ = D̂ · μ̄_sample` — a bottom-`k` *plug-in* (ratio) subset-sum estimator
+> (`sketch_mu_mass`), in the spirit of Cohen–Kaplan bottom-`k` sketches (PODC/SIGMETRICS 2007), but
+> *not* their VLDB 2008 Horvitz–Thompson form (per-item adjusted weights, zero covariance, formally
+> tighter); the product is unbiased to `O(1/k)`. Exact while unsaturated and reducing to `sketch_card`
+> at `μ ≡ 1`. (This is *carry-weight KMV* — uniform hash + weight as side data — **not** Weighted
+> MinHash à la Ioffe 2010, which bakes the weight into the hash to estimate the weighted Jaccard
+> `J_w`; this sketch estimates weighted *mass*, not `J_w`. `k ≥ 2` is required.)
+> `information_content_weighted_sketch` is the drop-in scalable IC (clamping the estimate at
+> `total_mu`, the mass analogue of the `.min(1.0)` ratio clamp). And this is exactly where membership
+> *matters* (per §-aside): a read-out over the *global* cone, not the per-pair caret (membership-
+> robust).
+>
+> *Cardinality-cap knob (`CardCap`).* `D̂ = (k−1)/ĥ_k` is unbounded in principle: a pathologically
+> tiny `ĥ_k` can blow it to `~10¹⁹`, polluting the raw mass and hub score. The read-outs take a
+> configurable cap — passable as the explicit enum *or* a bare number (`usize ⇒ Universe`, `f64 ⇒
+> Ceiling`):
+> - **`Universe(N)`** — cap at the node count. A cone (or union of cones) is `⊆` the graph, so
+>   `D̂ ≤ N` is an *exact, tight* bound that also clips ordinary KMV over-estimates, cutting variance
+>   near the root. **Recommended whenever `N` is known** (the usual case). Cost: pass `N`.
+> - **`Ceiling(c)`** — a fixed ceiling. For streaming / incrementally-built graphs where `N` is
+>   unknown or expensive, or when comparing cones *across* differently-sized graphs (a size-independent
+>   ceiling). A pure overflow guard if set well above any real cone. Default is `Ceiling(1e12)`.
+> - **`Uncapped`** — raw KMV; only when a downstream stage clamps anyway (the IC read-out already does
+>   `.min(total_mu)`) or in tests.
+>
+> Two global hooks the weighted sketch unlocks:
+> - **Leak-robust fan-in** (`sketch_mu_overlap`): the μ-weighted mass two cones *share* (Broder
+>   bottom-`k` intersection, weighted). A funnel hub is one many cones reach, but a weighted funnel
+>   discounts the associative leak — cones overlapping only on low-μ descendants score ≈ 0 — so hub
+>   selection stops being fooled by the leak. (Measured: core-shared overlap `3.00` vs leak-shared
+>   `0.15`.)
+> - **Depth-stability** (`mu_weighted_count_is_depth_stable`): the raw cone count *explodes* toward
+>   the root as the leak accumulates (more deep nodes than shallow), but the weighted mass barely
+>   moves because the deep nodes are out-of-domain — on the spine test the raw cone grows `201 → 645`
+>   (+444) while the μ-mass grows only `5 → 18` (+13), ~3% of the raw growth. So the **weighted count
+>   converges as you descend** where the raw count diverges: a depth-robust global signal, which is
+>   the property the global hub problem needs.
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
@@ -1200,7 +1238,12 @@ Each is referenced inline at the section that uses it.
   Distinct-Value Estimation Under Multiset Operations.* SIGMOD 2007. — the bottom-`k` / KMV
   `(k−1)/ĥ_k` cardinality estimator (`sketch_card`).
 - Cohen, E., & Kaplan, H. (2007). *Summarizing Data Using Bottom-k Sketches.* PODC 2007. — the
-  one-pass bottom-`k` Jaccard estimator (`sketch_jaccard`).
+  one-pass bottom-`k` Jaccard estimator (`sketch_jaccard`); the bottom-`k` plug-in subset-sum form
+  that `sketch_mu_mass` follows (their VLDB 2008 *Tighter Estimation* Horvitz–Thompson RC/SC
+  estimators are the formally tighter alternative not used here).
+- Ioffe, S. (2010). *Improved Consistent Sampling, Weighted Minhash and L1 Sketching.* ICDM 2010. —
+  Weighted MinHash (weight baked into the hash to estimate weighted Jaccard `J_w`); contrasted with
+  the *carry-weight KMV* of `descendant_minhash_weighted`, which estimates weighted mass, not `J_w`.
 
 **2-hop cover / hub labeling and landmark distance (§5c, roadmap 3f).**
 - Cohen, E., Halperin, E., Kaplan, H., & Zwick, U. (2002/2003). *Reachability and Distance
