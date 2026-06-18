@@ -75,7 +75,8 @@ swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
-The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }` and
+The first Phase 2 surface smokes parse `/^ERROR/ { print $0 }`,
+literal contains-pattern rules such as `/disk/ { print $0 }`, and
 `$1 == "ERROR" { print $0 }`, plus selected-field actions such as
 `$1 == "ERROR" { print $2, $3 }`. Rule prints can include native `NR` and
 `NF`, e.g. `$1 == "ERROR" { print NR, NF, $2, $3 }`, plus native field lengths

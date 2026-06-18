@@ -10,6 +10,7 @@
 %  Parse the first Phase-2 surface slice:
 %
 %      /^PREFIX/ { print $0 }
+%      /LITERAL/ { print $0 }
 %      $N == "VALUE" { print $0 }
 %      $N == "VALUE" { print $M, $K }
 %      $N == "VALUE" { count++ } END { print count }
@@ -82,6 +83,9 @@ pattern(Pattern) -->
     prefix_pattern(Pattern),
     !.
 pattern(Pattern) -->
+    literal_pattern(Pattern),
+    !.
+pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 pattern(Pattern) -->
@@ -93,6 +97,14 @@ prefix_pattern(prefix(Prefix)) -->
     "/",
     { Codes \== [],
       string_codes(Prefix, Codes)
+    }.
+
+literal_pattern(contains(Literal)) -->
+    "/",
+    literal_pattern_codes(Codes),
+    "/",
+    { Codes \== [],
+      string_codes(Literal, Codes)
     }.
 
 field_eq_pattern(field_eq(Index, Value)) -->
@@ -151,6 +163,25 @@ prefix_codes_rest([Code | Codes]) -->
     !,
     prefix_codes_rest(Codes).
 prefix_codes_rest([]) -->
+    [].
+
+literal_pattern_codes([Code | Codes]) -->
+    [Code],
+    { Code =\= 0'/,
+      Code =\= 0'\n,
+      Code =\= 0'\r
+    },
+    literal_pattern_codes_rest(Codes).
+
+literal_pattern_codes_rest([Code | Codes]) -->
+    [Code],
+    { Code =\= 0'/,
+      Code =\= 0'\n,
+      Code =\= 0'\r
+    },
+    !,
+    literal_pattern_codes_rest(Codes).
+literal_pattern_codes_rest([]) -->
     [].
 
 integer_codes([Code | Codes]) -->

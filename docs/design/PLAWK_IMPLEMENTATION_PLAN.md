@@ -252,8 +252,11 @@ prints matching records from a text file without calling `run_loop` in the hot
 record loop. The reusable file open/read/eof/close skeleton now lives in the
 WAM/LLVM target as `llvm_emit_stream_driver_ir/3`, so PLAWK supplies only the
 surface-specific globals, per-record lowering, continuation phis, and close
-block. The field-equality path scans fields in native code without
-allocating substrings; selected-field printing projects byte slices directly.
+block. Literal contains-pattern rules such as `/disk/ { print $0 }` lower to
+whole-record native index checks; the only regex metacharacter currently
+special-cased is the existing leading `^` prefix shortcut. The field-equality
+path scans fields in native code without allocating substrings; selected-field
+printing projects byte slices directly.
 Rule prints can include native `NR`, implemented as a record-number `i64` phi in
 the print-only streaming loop, and native `NF`, implemented with the shared
 `@wam_atom_field_count_value` helper over the active single-byte `FS`. Rule
