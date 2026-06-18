@@ -1314,28 +1314,73 @@ impl WamState {
     /// distance), a certified upper bound on a DAG. `None` if `u` and `v` share no
     /// ancestor. (Cache-free; the boundary `min_dist` table only gives the looser
     /// root-bridge bound `dist(u→root) + dist(v→root)`.)
+    ///
+    /// The joint search is **boundary-restricted**: rather than build both ancestor cones up
+    /// to the root and intersect, it expands the two BFSs in lockstep by radius `r` and stops
+    /// at the **mixing boundary** (the lowest common ancestors) once the best matched sum
+    /// `≤ r+1` — any unmatched common ancestor has far-side depth `≥ r+1`, so it cannot beat
+    /// the best. On a tall narrow cone with a low fork this touches a handful of nodes where
+    /// the full-cone search would walk the whole stem to root; it equals the full caret
+    /// everywhere (the library `caret_distance_lca` is the oracle). See
+    /// `caret_distance_lca_boundary` in `boundary_cache` for the proof and the static-graph
+    /// version. (Worst-case node-visits is still `O(V+E)` for wide upward frontiers.)
     pub fn category_caret_distance(&self, u: u32, v: u32, acc: &EdgeAccessor) -> Option<u32> {
-        use std::collections::{HashMap, HashSet, VecDeque};
-        let up_dist = |src: u32| -> HashMap<u32, u32> {
-            let mut d: HashMap<u32, u32> = HashMap::new();
-            let mut seen: HashSet<u32> = HashSet::new();
-            let mut q: VecDeque<(u32, u32)> = VecDeque::new();
-            d.insert(src, 0);
-            seen.insert(src);
-            q.push_back((src, 0));
-            while let Some((node, dist)) = q.pop_front() {
-                for p in self.edge_parents_via(node, acc) {
-                    if seen.insert(p) {
-                        d.insert(p, dist + 1);
-                        q.push_back((p, dist + 1));
+        self.category_caret_distance_counted(u, v, acc).0
+    }
+
+    /// As `category_caret_distance`, also returning the **number of nodes visited** — the
+    /// measure that shows the boundary search never climbs above the common-ancestor space.
+    pub fn category_caret_distance_counted(
+        &self, u: u32, v: u32, acc: &EdgeAccessor,
+    ) -> (Option<u32>, usize) {
+        use std::collections::{HashMap, HashSet};
+        let mut du: HashMap<u32, u32> = HashMap::new();
+        let mut dv: HashMap<u32, u32> = HashMap::new();
+        du.insert(u, 0);
+        dv.insert(v, 0);
+        let mut fu: Vec<u32> = vec![u]; // u-side frontier at depth r
+        let mut fv: Vec<u32> = vec![v];
+        let mut best: Option<u32> = None;
+        let relax = |best: &mut Option<u32>, s: u32| {
+            *best = Some(best.map_or(s, |x| x.min(s)));
+        };
+        // r = 0: only u == v matches here (sum 0); strict-ancestor pairs match later as the
+        // far side climbs.
+        if let Some(&b) = dv.get(&u) { relax(&mut best, b); }
+        if let Some(&a) = du.get(&v) { relax(&mut best, a); }
+        let mut r = 0u32;
+        loop {
+            if let Some(bst) = best {
+                if bst <= r + 1 { break; } // no unmatched ancestor can have sum < r+1
+            }
+            if fu.is_empty() && fv.is_empty() { break; }
+            let mut nu: Vec<u32> = Vec::new();
+            for &x in &fu {
+                for p in self.edge_parents_via(x, acc) {
+                    if !du.contains_key(&p) {
+                        du.insert(p, r + 1);
+                        nu.push(p);
+                        if let Some(&b) = dv.get(&p) { relax(&mut best, (r + 1) + b); }
                     }
                 }
             }
-            d
-        };
-        let du = up_dist(u);
-        let dv = up_dist(v);
-        du.iter().filter_map(|(b, &a)| dv.get(b).map(|&c| a + c)).min()
+            let mut nv: Vec<u32> = Vec::new();
+            for &x in &fv {
+                for p in self.edge_parents_via(x, acc) {
+                    if !dv.contains_key(&p) {
+                        dv.insert(p, r + 1);
+                        nv.push(p);
+                        if let Some(&a) = du.get(&p) { relax(&mut best, a + (r + 1)); }
+                    }
+                }
+            }
+            fu = nu;
+            fv = nv;
+            r += 1;
+        }
+        let mut visited: HashSet<u32> = du.keys().copied().collect();
+        for k in dv.keys() { visited.insert(*k); }
+        (best, visited.len())
     }
 
     /// Directed shortest `u → target` hop-distance (following parent edges, so `target`
@@ -2883,6 +2928,31 @@ mod boundary_kernel_tests {
             let want = crate::boundary_cache::caret_distance_lca(u, v, &parents);
             assert_eq!(got, want, "caret({}, {})", un, vn);
         }
+    }
+
+    // Increment 3b — the live caret search is boundary-restricted: on a tall stem with a low
+    // fork it stops at the merge point and never climbs the stem to root.
+    #[test]
+    fn live_caret_boundary_skips_the_stem() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // Tall stem 0<-1<-...<-20 (child -> parent), with a low fork: 21,22 both -> 20.
+        let strs: Vec<(String, String)> = {
+            let mut p: Vec<(String, String)> =
+                (1u32..=20).map(|c| (c.to_string(), (c - 1).to_string())).collect();
+            p.push(("21".into(), "20".into()));
+            p.push(("22".into(), "20".into()));
+            p
+        };
+        let pair_refs: Vec<(&str, &str)> =
+            strs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        vm.register_ffi_fact_pairs("category_parent", &pair_refs);
+        let u = vm.intern_atom("21");
+        let v = vm.intern_atom("22");
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let (caret, visited) = vm.category_caret_distance_counted(u, v, &acc);
+        assert_eq!(caret, Some(2), "low fork: LCA is node 20, caret = 2");
+        // Touches only {20, 21, 22}; the 20-node stem 0..19 above the LCA is never entered.
+        assert_eq!(visited, 3, "boundary search must not climb the stem; visited={}", visited);
     }
 
     // Increment 3b — the A* ancestor search returns the directed shortest u->ancestor
