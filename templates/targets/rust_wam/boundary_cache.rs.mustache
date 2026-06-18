@@ -288,6 +288,49 @@ impl MomentJet {
         let s4 = (a4 * inv + 4.0 * a3 * s1 + 6.0 * a2 * s2 + 4.0 * a1 * s3) * inv;
         Some(MomentJet { mass: inv, m1: s1, m2: s2, m3: s3, m4: s4 })
     }
+
+    /// **Moment-ratio admissibility gate** (the Pearson `(β₁, β₂)` diagram): classify the likely
+    /// reconstruction *from the moment ratios alone*, no histogram. With `γ₁ = skewness`,
+    /// `γ₂ = excess kurtosis` (so `β₁ = γ₁²`, `β₂ = γ₂`), every distribution obeys the universal
+    /// bound `β₂ ≥ β₁ − 2`, and a **two-mode** distribution sits *on* it — so the slack
+    /// `d = γ₂ − γ₁² + 2 ≥ 0` is a histogram-free **multimodality detector** (`d → 0` ⇒ two-mode
+    /// extremum). Some skew is fine (a binomial has `γ₁ = (1−2p)/√(npq)`, Gram–Charlier handles
+    /// it); the kurtosis and `d` are the real giveaways:
+    /// - `d` small (near the two-mode bound) → **NeedsHistogram** (a mixture the parametric forms
+    ///   miss — defer to the exact histogram / GMM, or a Monte-Carlo goodness-of-fit test);
+    /// - else mild `|γ₁|,|γ₂|` → **Gaussian** (the moment-Normal is faithful, the CLT case);
+    /// - else (notable skew/kurtosis but not multimodal) → **GramCharlier** (skew/kurtosis
+    ///   corrections, mildly non-normal).
+    /// Thresholds are deliberately conservative defaults; the §7 CDF gate remains the final,
+    /// histogram-validated check — this is the cheap pre-screen that decides whether to attempt a
+    /// parametric form at all.
+    pub fn reconstruction_class(self) -> ReconClass {
+        if self.mass <= 0.0 {
+            return ReconClass::NeedsHistogram;
+        }
+        let g1 = self.skewness();
+        let g2 = self.excess_kurtosis();
+        let d = g2 - g1 * g1 + 2.0; // slack above the universal two-mode bound β₂ = β₁ − 2
+        if d < 0.7 {
+            ReconClass::NeedsHistogram // near the multimodal extremum
+        } else if g1.abs() <= 0.2 && g2.abs() <= 0.7 {
+            ReconClass::Gaussian
+        } else {
+            ReconClass::GramCharlier
+        }
+    }
+}
+
+/// The reconstruction a moment jet's `(skew, excess-kurtosis)` ratios admit (`reconstruction_class`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconClass {
+    /// Near-Gaussian (the CLT / chain case): the moment-Normal is faithful.
+    Gaussian,
+    /// Mildly non-normal: skew/kurtosis corrections (Gram–Charlier / Edgeworth).
+    GramCharlier,
+    /// A mixture / multimodal the low moments cannot reconstruct — defer to the exact histogram
+    /// (or a Monte-Carlo goodness-of-fit test).
+    NeedsHistogram,
 }
 
 /// Path-length **support interval** toward the root: `(min, max)` = the shortest and
@@ -4141,6 +4184,18 @@ mod tests {
         assert!(jet.excess_kurtosis().abs() < 0.5, "chain reads ~Gaussian");
         assert!(bjet.excess_kurtosis() < -1.0, "bimodal branch flagged via kurtosis");
         assert!(bjet.skewness().abs() < 0.2, "symmetric bimodal: skew is blind to it");
+
+        // FINDING 3: the moment-ratio gate (Pearson β₁,β₂) picks the right reconstruction from the
+        // ratios alone — Gaussian for the CLT chain, NeedsHistogram for the bimodal mixture (it
+        // sits on the two-mode bound β₂ = β₁ − 2). A mildly SKEWED binomial reads GramCharlier:
+        // some skew is fine, it is the kurtosis/ratio that flags genuine non-normality.
+        assert_eq!(jet.reconstruction_class(), ReconClass::Gaussian);
+        assert_eq!(bjet.reconstruction_class(), ReconClass::NeedsHistogram);
+        let skewed = hist_moment_jet(&binomial_pmf(40, 0.15).iter()
+            .map(|&pr| (pr * 1_000_000.0).round() as u64).collect::<Hist>());
+        eprintln!("§3 skewed-binomial: skew {:.3} exkurt {:.3} -> {:?}",
+            skewed.skewness(), skewed.excess_kurtosis(), skewed.reconstruction_class());
+        assert_eq!(skewed.reconstruction_class(), ReconClass::GramCharlier);
     }
 
     // §3 fork: the cumulant carry. Cumulants ADD under ⊗ (the O(K) splice) and round-trip

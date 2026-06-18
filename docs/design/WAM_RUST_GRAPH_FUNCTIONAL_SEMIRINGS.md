@@ -221,11 +221,22 @@ The answers this pins down (and the honest limits):
   many independent stages → Gaussian by the CLT, so the moment-Normal is near-exact (0.002); a
   `⊕`-heavy node is a *mixture*, possibly multimodal, where it fails (0.48). The graph shape is the
   prior — read off the topology, not the histogram.
-- **The carried higher moments *self-diagnose*.** The bimodal branch reads excess kurtosis `−2.0`
-  — a cheap "I am not Gaussian" flag with no histogram. **Honest gap:** for a *symmetric* mixture
-  the skew is `~0` (blind to the bimodality); kurtosis catches this one, but a general multimodal
-  shape still needs the exact histogram fallback — which is exactly why the §7 reconstruction is
-  **CDF-gated**, validated against the true distribution during calibration rather than assumed.
+- **The carried higher moments *self-diagnose*, via their *ratio*.** Not a single threshold but the
+  **Pearson `(β₁, β₂)` moment-ratio diagram** (`β₁ = skew²`, `β₂ = excess kurtosis`): every
+  distribution obeys the universal bound `β₂ ≥ β₁ − 2`, and a **two-mode** distribution sits *on*
+  it (the bimodal branch: skew `0`, excess kurtosis `−2.0 = 0 − 2`, the extremum). So the slack
+  `d = β₂ − β₁ + 2 ≥ 0` is a histogram-free **multimodality detector**, and `MomentJet::
+  reconstruction_class` reads it: `d` small → **NeedsHistogram**; mild `|skew|,|kurtosis|` →
+  **Gaussian**; otherwise **GramCharlier**. Crucially **some skew is fine** — a skewed binomial
+  (`skew 0.31`) classifies `GramCharlier`, reconstructed by the skew/kurtosis corrections — so it
+  is the *kurtosis and the ratio*, not skew, that flag genuine non-normality. **Honest gap that
+  remains:** the moment ratios still cannot resolve an *arbitrary* multimodal shape; for the
+  genuinely-ambiguous middle of the diagram the principled fallback is a **Monte-Carlo
+  goodness-of-fit test** — sample paths, build the empirical distribution, test the parametric
+  hypothesis — which is embarrassingly parallel and a natural **GPU** workload (a *future*
+  direction). And the §7 reconstruction stays **CDF-gated** (histogram-validated) as the final
+  word; `reconstruction_class` is the cheap pre-screen that decides whether to attempt a parametric
+  form at all.
 - **Cumulants vs moments is *orthogonal* to all of this.** They carry the same information
   (`κ_k ⟺ m_k`), so the reconstruction is identical; the §3 fork is purely the *splice cost /
   numerical-stability* axis (additive cumulants for `⊗`-heavy spines), not a representation-quality
