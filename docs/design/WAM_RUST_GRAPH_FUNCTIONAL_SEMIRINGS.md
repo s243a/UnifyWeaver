@@ -593,6 +593,50 @@ caching, the **designated-bridge** measure is cacheable.
 >   trades against reuse (high, sparse hubs → one field serves more pairs) — and *that* knob,
 >   unlike the cone size, is chosen with arithmetic we already paid for.
 
+### 5d. Two regimes: the per-pair mixing boundary (primary) vs the global hub measure (deferred)
+
+The rungs of §5c quietly answered the *global* question — "which nodes are good bridges for
+*any* pair." But that conflates two problems, and the **per-pair** one (the original
+`d_eff`-style query, "distance between *these two* nodes") is both primary and *easier*.
+
+**Per-pair: search only the mixing boundary.** For a fixed pair the relevant bridges live in
+the **common-ancestor space** `CA(u,v) = anc(u) ∩ anc(v)`, which is upward-closed (once the two
+lineages mix, everything above is common). The minimum caret is achieved on its **lower
+boundary** — the lowest common ancestors, i.e. a node that is "mixed" (both lineages reach it)
+yet has **at least one child still in a single lineage**. Every node above the boundary only
+adds `2` per level (§5b), so it can never win the `min`. This gives an *exact, precompute-free*
+algorithm that **does not climb to the root**: expand the joint up-BFS from `u` and `v` in
+lockstep by radius `r`, and stop once the best matched sum `≤ r+1` (any *unmatched* common
+ancestor has far-side depth `≥ r+1`, hence sum `≥ r+1`, so it cannot beat the best). The search
+radius is bounded by the boundary depth `≈ caret/2`, not the height to root — on a tall stem
+with a low fork it touches three nodes where the full-cone `caret_distance_lca` touches the
+whole stem. (`caret_distance_lca_boundary[_counted]`.) This is the honest framing of §5c: the
+global hub set is an *approximate, reusable stand-in* for this boundary, justified only when
+**batching many pairs** amortizes its precompute; for a one-off pair, just search the boundary.
+
+**Global hub measure — deferred, and the following is a *conjecture*, not a result.** The
+global question ("rank all nodes as generic bridges") is harder, because — as the §5c rungs
+keep running into — *some* fan-in is near-universal (any multi-parent node reconverges
+*somewhere*), so raw merge counts do not discriminate. The missing ingredient is the **semantic
+diversity** of what merges: a node is a good *generic* bridge only if its parents (or the child
+populations it joins) span genuinely *different* regions, so it sits on the boundary for *many
+diverse* pairs rather than for near-duplicates. A speculative way to score that with category
+**embeddings**: stack a node's parent vectors into a matrix `M` and take its singular values
+`σ₁ ≥ σ₂ ≥ …`. The *product* of the top few, `∏σᵢ = √det(MMᵀ)`, is the determinantal-diversity
+(DPP / Gram-volume) measure used elsewhere for "diverse subset" scoring — the **volume** the
+parents span in semantic space. But the raw volume conflates *magnitude* (parent count, vector
+norms) with *spread*, so the better diversity score is the **geometric mean** of the top few,
+`(∏₁ᵏ σᵢ)^{1/k}` — the volume *normalized per dimension*, i.e. the average semantic spread per
+effective axis, **decoupled from count**. That cleanly separates the two factors a good hub
+wants: the geometric mean is the pure **diversity** term, and the **parent count `p`** is the
+separate **magnitude** term — a combined score would multiply them (`p · geomean`), rather than
+let a high count masquerade as diversity. A natural truncation rank `k` is the **size-biased
+mean parent count** `E[p²]/E[p]` (the effective branching seen along a random edge), `≈ 4` for
+Wikipedia — so "geometric mean of the top-4 singular values, times parent count" is the first
+guess. **Caveat:** this is an *ad-hoc proposal*; the truncation rank, parents-vs-child-centroids,
+and the count/diversity weighting are all unvalidated, and it presumes a meaningful embedding.
+Recorded as a future direction, not a recommendation.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only

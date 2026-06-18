@@ -624,6 +624,87 @@ pub fn caret_distance_budgeted(
         .min()
 }
 
+/// **Boundary-restricted** caret — the same value as `caret_distance_lca`, but the joint
+/// up-search **stops at the mixing boundary** (the lowest common ancestors) instead of
+/// expanding both ancestor cones all the way to the root.
+///
+/// `caret_distance_lca` builds the *entire* up-cone of `u` and of `v` and intersects — it
+/// always walks to root, even when the lineages merge one hop up. But the minimum
+/// `min_B (d(u→B)+d(v→B))` is achieved on the **merge frontier** (a common ancestor with a
+/// child still in a single lineage); every node above the frontier only adds `2` per level, so
+/// it can never win the `min`. So expand both BFSs in lockstep by radius `r` and stop once the
+/// best matched sum `≤ r+1`: any *unmatched* common ancestor has its far-side depth `≥ r+1`,
+/// hence sum `≥ r+1`, so it cannot beat the best. The search radius is bounded by the boundary
+/// depth (`≈ caret/2`), not the height to root — the search-space reduction. Returns
+/// `(caret, nodes_visited)`; the count is what the test uses to show the cone is never entered.
+pub fn caret_distance_lca_boundary_counted(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> (Option<u32>, usize) {
+    use std::collections::{HashMap, HashSet};
+    let mut du: HashMap<u32, u32> = HashMap::new();
+    let mut dv: HashMap<u32, u32> = HashMap::new();
+    du.insert(u, 0);
+    dv.insert(v, 0);
+    let mut fu: Vec<u32> = vec![u]; // u-side frontier at depth r
+    let mut fv: Vec<u32> = vec![v];
+    let mut best: Option<u32> = None;
+    let relax = |best: &mut Option<u32>, s: u32| {
+        *best = Some(best.map_or(s, |x| x.min(s)));
+    };
+    // r = 0: a node already shared (e.g. u == v, or one is the other) matches at sum 0/d.
+    if let Some(&b) = dv.get(&u) { relax(&mut best, b); }
+    if let Some(&a) = du.get(&v) { relax(&mut best, a); }
+    let mut r = 0u32;
+    loop {
+        if let Some(bst) = best {
+            if bst <= r + 1 { break; } // no unmatched ancestor can have sum < r+1
+        }
+        if fu.is_empty() && fv.is_empty() { break; }
+        let mut nu: Vec<u32> = Vec::new();
+        for &x in &fu {
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !du.contains_key(&p) {
+                        du.insert(p, r + 1);
+                        nu.push(p);
+                        if let Some(&b) = dv.get(&p) { relax(&mut best, (r + 1) + b); }
+                    }
+                }
+            }
+        }
+        let mut nv: Vec<u32> = Vec::new();
+        for &x in &fv {
+            if let Some(ps) = parents.get(&x) {
+                for &p in ps {
+                    if !dv.contains_key(&p) {
+                        dv.insert(p, r + 1);
+                        nv.push(p);
+                        if let Some(&a) = du.get(&p) { relax(&mut best, a + (r + 1)); }
+                    }
+                }
+            }
+        }
+        fu = nu;
+        fv = nv;
+        r += 1;
+    }
+    let mut visited: HashSet<u32> = du.keys().copied().collect();
+    for k in dv.keys() { visited.insert(*k); }
+    (best, visited.len())
+}
+
+/// Boundary-restricted caret distance (value only); see `caret_distance_lca_boundary_counted`.
+/// Equals `caret_distance_lca` exactly, but stops the joint search at the mixing boundary.
+pub fn caret_distance_lca_boundary(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> Option<u32> {
+    caret_distance_lca_boundary_counted(u, v, parents).0
+}
+
 /// Composite caret distance **through a designated bridge** `bridge`: `d(u→bridge) +
 /// d(v→bridge)`, the length of the `∧`-path forced through a *chosen reference node*.
 /// `None` unless `bridge` is an ancestor of **both** `u` and `v` (the path must exist).
@@ -2974,6 +3055,45 @@ mod tests {
         let mut cyc: HashMap<u32, Vec<u32>> = HashMap::new();
         cyc.insert(0, vec![1]); cyc.insert(1, vec![0]);
         assert_eq!(ancestor_minhash(&cyc, K), None);
+    }
+
+    // The boundary-restricted caret equals the full caret everywhere, but stops at the mixing
+    // boundary instead of walking both cones to root.
+    #[test]
+    fn caret_boundary_equals_full_but_visits_fewer() {
+        // Tall stem 0<-1<-...<-10 with a LOW fork at the bottom: 11,12 both -> 10. The LCA of
+        // (11,12) is 10 at depth 1 each, caret 2 -- one hop above the leaves, ten hops below
+        // root. The full search builds both cones up to 0 (all 13 nodes); the boundary search
+        // must stop at 10 and never enter the stem above it.
+        let mut stem: HashMap<u32, Vec<u32>> = HashMap::new();
+        for c in 1u32..=10 { stem.insert(c, vec![c - 1]); } // c -> c-1, up to root 0
+        stem.insert(11, vec![10]); stem.insert(12, vec![10]);
+
+        assert_eq!(caret_distance_lca_boundary(11, 12, &stem), caret_distance_lca(11, 12, &stem));
+        let (caret, visited) = caret_distance_lca_boundary_counted(11, 12, &stem);
+        assert_eq!(caret, Some(2));
+        // Touches only {11,12,10}; the ten stem nodes 0..9 are never entered.
+        assert_eq!(visited, 3, "boundary search must not climb the stem above the LCA");
+
+        // Equality must hold for EVERY pair, including ones whose boundary IS near root.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]);
+        g.insert(4, vec![2]); g.insert(5, vec![2]); g.insert(6, vec![3]);
+        g.insert(7, vec![2, 3]); // cross-listed -> multiple ancestor routes
+        let nodes: Vec<u32> = (0u32..=7).collect();
+        for &a in &nodes {
+            for &b in &nodes {
+                assert_eq!(caret_distance_lca_boundary(a, b, &g), caret_distance_lca(a, b, &g),
+                    "boundary caret must equal full caret for ({},{})", a, b);
+            }
+        }
+
+        // u == v -> caret 0, found at r=0 with no expansion.
+        assert_eq!(caret_distance_lca_boundary(4, 4, &g), Some(0));
+        // No shared ancestor -> None (disconnected components).
+        let mut split: HashMap<u32, Vec<u32>> = HashMap::new();
+        split.insert(1, vec![0]); split.insert(3, vec![2]); // {0,1} and {2,3} disjoint
+        assert_eq!(caret_distance_lca_boundary(1, 3, &split), None);
     }
 
     // Undirected BFS shortest distance — the oracle for the caret tests (treats each
