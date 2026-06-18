@@ -759,6 +759,12 @@ inflate on deep graphs — the honest replacement for the rung-4 lift's absolute
 precompute — which stays open (§5d). Picking good bridges is selection; scoring how related two
 nodes are is a read-out; this increment is the read-out.
 
+**Live path.** As with the caret, the read-outs are wired into the runtime:
+`WamState::build_descendant_sketches` precomputes and caches the descendant sketches once (like
+`build_boundary_distances`/`build_boundary_jets`), and `category_resnik` / `category_lin` /
+`category_faith` answer per-pair queries against them — eager-edge only (the sketch needs the
+in-memory parent map), `None` until the sketches are built.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
