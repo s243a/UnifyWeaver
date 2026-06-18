@@ -801,6 +801,16 @@ calibration of the relatedness read-out.)
 > wants a **`μ`-weighted MinHash** sketch (the weighted analogue of `descendant_minhash`), future
 > work. And this is exactly where membership *matters* (per §-aside): a read-out over the *global*
 > cone, not the per-pair caret, which is membership-robust.
+>
+> **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
+> intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
+> into that descendant-mass null — as the calibration fix for the associative leak on a non-taxonomic
+> DAG — is, to our knowledge, original here and not a restatement of a published estimator. It is a
+> strict generalization: `μ ≡ 1` reduces *exactly* to the sketch IC (regression-tested in
+> `mu_weighted_ic_reduces_to_sketch_ic_at_mu_one`). The default S-curve steepness is the *exact*
+> anchor fit `k = 4·ln 3 ≈ 4.3944` (symmetric anchors `0.25` either side of `c`); the logistic only
+> *asymptotes* to `0`/`1`, so if exact endpoints are wanted (fully-out nodes contributing *exactly*
+> zero) Zadeh's piecewise-quadratic S-function is the drop-in alternative.
 
 ### 5e. A gentle primer on information-content similarity (for the reader learning this)
 

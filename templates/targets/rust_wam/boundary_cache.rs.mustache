@@ -1529,9 +1529,27 @@ pub fn information_content(dsig: &[u64], n_total: usize, k: usize) -> f64 {
 /// its effective cone shrunk back to its in-domain size and its IC *raised* to its true specificity.
 /// `μ ≡ 1` recovers `information_content`. (`m_μ` is the **distinct** weighted mass; see
 /// `descendant_mu_mass`.)
+///
+/// **Boundary semantics** (the two limits are *opposite*, so we do not collapse both to `0`):
+/// - `desc_mu_mass = 0` with `total_mu > 0` is a genuinely *empty* (fully out-of-domain) cone —
+///   `p = 0`, so `IC = −log₂ 0 = +∞`, the maximal-surprise limit. We return `f64::INFINITY`, not
+///   `0.0` (which would wrongly read as *root-like / fully general*, the exact inversion of an
+///   empty cone). Callers that aggregate IC should treat `+∞` as "drop / out of domain".
+/// - `total_mu ≤ 0` is a precondition violation (no admitted mass anywhere ⇒ no probability space):
+///   `IC` is undefined. `debug_assert` catches it in tests; release returns `0.0` as a safe inert
+///   fallback. `total_mu` must be `Σ_all μ` (the full universe mass), with `desc_mu_mass ≤ total_mu`.
 pub fn information_content_weighted(desc_mu_mass: f64, total_mu: f64) -> f64 {
-    if total_mu <= 0.0 || desc_mu_mass <= 0.0 {
-        return 0.0;
+    debug_assert!(total_mu > 0.0, "total_mu must be the positive universe mass Σ_all μ");
+    debug_assert!(desc_mu_mass >= 0.0, "desc_mu_mass is a sum of μ≥0 and cannot be negative");
+    debug_assert!(
+        desc_mu_mass <= total_mu + 1e-9,
+        "desc_mu_mass ({desc_mu_mass}) exceeds total_mu ({total_mu}); total_mu is not Σ_all μ"
+    );
+    if total_mu <= 0.0 {
+        return 0.0; // undefined universe; inert fallback (see doc)
+    }
+    if desc_mu_mass <= 0.0 {
+        return f64::INFINITY; // empty cone ⇒ p=0 ⇒ maximal surprise (see doc)
     }
     -((desc_mu_mass / total_mu).min(1.0)).log2()
 }
@@ -1541,18 +1559,27 @@ pub fn information_content_weighted(desc_mu_mass: f64, total_mu: f64) -> f64 {
 /// (`O(V·(V+E))`) — exact, for small graphs / validation. At scale this wants a **μ-weighted
 /// MinHash** sketch (the weighted analogue of `descendant_minhash`), which is future work; this
 /// grounds `information_content_weighted`. With `μ ≡ 1` it equals the distinct descendant count.
+///
+/// **Contract:** `mu` holds membership weights in `[0,1]`. A node *absent* from `mu` is admitted
+/// with weight `0` (`unwrap_or(0.0)`) — i.e. "not in the domain" is the default, so the caller
+/// only has to list the in-domain nodes and their grades. A `debug_assert` checks every supplied
+/// weight is in `[0,1]`.
 pub fn descendant_mu_mass(
     parents: &std::collections::HashMap<u32, Vec<u32>>,
     mu: &std::collections::HashMap<u32, f64>,
 ) -> std::collections::HashMap<u32, f64> {
     use std::collections::{HashMap, HashSet, VecDeque};
+    debug_assert!(
+        mu.values().all(|&w| (0.0..=1.0).contains(&w)),
+        "membership weights μ must lie in [0,1]"
+    );
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut nodes: HashSet<u32> = HashSet::new();
     for (&c, ps) in parents {
         nodes.insert(c);
         for &p in ps { nodes.insert(p); children.entry(p).or_default().push(c); }
     }
-    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0); // absent ⇒ μ=0 (out of domain; see contract)
     let mut out: HashMap<u32, f64> = HashMap::new();
     for &t in &nodes {
         let mut seen: HashSet<u32> = HashSet::new();
@@ -1579,7 +1606,17 @@ pub fn descendant_mu_mass(
 /// boundary. (Zadeh's piecewise-quadratic S-function is the classic alternative shape.) Feed
 /// `w(μ_d)` as the per-node admission weight to `descendant_mu_mass` for a fuzzy partial-admission
 /// `IC`.
+///
+/// The default `k` is **exact**: fitting `w(0.8)=0.75, w(0.3)=0.25` (symmetric anchors about
+/// `c=0.55`, each `0.25` away) forces `k·0.25 = ln 3`, i.e. `k = 4·ln 3 ≈ 4.3944`. Note the
+/// logistic only *asymptotes* to `0`/`1`: `w(0)=0.087, w(1)=0.135` are not pinned to the endpoints.
+/// If exact `0`/`1` at the extremes matters (so fully-out nodes contribute *exactly* nothing),
+/// Zadeh's piecewise-quadratic S-function is the drop-in alternative — it reaches `0` below the
+/// lower foot and `1` above the upper foot exactly. **Degenerate `steepness`:** `steepness = 0`
+/// collapses `w ≡ 0.5` (no discrimination); `steepness < 0` *inverts* the curve (admits low μ,
+/// rejects high) — almost always a sign error, so a `debug_assert` requires `steepness > 0`.
 pub fn fuzzy_admission(mu: f64, center: f64, steepness: f64) -> f64 {
+    debug_assert!(steepness > 0.0, "steepness must be > 0 (0 ⇒ constant 0.5, <0 inverts admission)");
     1.0 / (1.0 + (-steepness * (mu - center)).exp())
 }
 
@@ -4207,6 +4244,33 @@ mod tests {
         assert!(ic_s_1 > ic_raw_1 + 0.5, "S-curve partial admission also corrects the leak");
         eprintln!("μ-IC: node1 raw {:.2} → linear-μ {:.2} → S-curve {:.2}  (node2 raw {:.2})",
             ic_raw_1, ic_mu_1, ic_s_1, ic_raw_2);
+    }
+
+    // R6 regression: with μ ≡ 1 the partial-admission IC must AGREE with the independent
+    // sketch-based `information_content` (descendant MinHash), node for node — the μ-weighted
+    // path is a strict generalization that reduces to the established estimator at μ ≡ 1.
+    #[test]
+    fn mu_weighted_ic_reduces_to_sketch_ic_at_mu_one() {
+        const K: usize = 64; // k >> cone sizes ⇒ exact sketches
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![0]);
+        t.insert(3, vec![1]); t.insert(4, vec![1]);
+        t.insert(5, vec![2]); t.insert(6, vec![2]);
+        let n = 7usize;
+
+        // Sketch path: distinct-cone IC.
+        let d = descendant_minhash(&t, K).unwrap();
+        // μ-weighted path at μ ≡ 1: exact distinct mass == distinct cone size.
+        let mu_one: HashMap<u32, f64> = (0u32..=6).map(|i| (i, 1.0)).collect();
+        let mass = descendant_mu_mass(&t, &mu_one);
+        let total_mu: f64 = mu_one.values().sum(); // == n
+
+        for node in 0u32..=6 {
+            let ic_sketch = information_content(&d[&node], n, K);
+            let ic_mu = information_content_weighted(mass[&node], total_mu);
+            assert!((ic_sketch - ic_mu).abs() < 1e-9,
+                "node {node}: sketch IC {ic_sketch} != μ≡1 IC {ic_mu}");
+        }
     }
 
     // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
