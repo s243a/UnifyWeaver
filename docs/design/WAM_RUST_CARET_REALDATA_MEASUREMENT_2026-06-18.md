@@ -136,30 +136,43 @@ whole curated set on the **raw 10k graph** (1035 pairs, all related within budge
   flags the LLM's borderline calls. They are complementary — neither alone is enough, together they
   are a clean, self-checking pipeline for building a semantic test set on a non-taxonomic graph.
 
-## Future direction: fuzzy / graded membership
+## Fuzzy / graded membership (implemented)
 
 Binary keep/discard is lossy at the boundary — `Fire` (combustion → thermodynamics) and `Nitrogen`
-(physical chemistry) are not physics *topics* yet are not unrelated either. A natural
-generalization: have the classifier return a **graded physics-relevance score** `μ ∈ [0,1]` per
-node (a fuzzy-set membership, Zadeh 1965) instead of a bit. A single **threshold knob** then
-selects the test set — strict (`μ ≥ 0.8`) = core physics, loose (`μ ≥ 0.3`) admits `Fire`, the
-chemistry boundary, etc. — the same tightness-vs-reuse knob that runs through §5c (budget,
-quantization) and §7 (hard vs soft distance), now on the *membership* side. (The user's framing: a
-number that falls in the range of a category, with a looser criterion pulling in `Fire`.)
+(physical chemistry) are not physics *topics* yet are not unrelated either. So the classifier now
+returns a **graded physics-relevance score** `μ ∈ [0,1]` per node (a fuzzy-set membership,
+Zadeh 1965) instead of a bit — `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` (Haiku-scored),
+exercised by `wikipedia_fuzzy_membership_threshold_and_fusion`.
 
-Two refinements it enables:
+- **The threshold knob works.** On the 90-node fixture: `|μ≥0.8| = 25` (core) → `|μ≥0.5| = 42` →
+  `|μ≥0.4| = 48` — a strict cut keeps the core, a loose cut pulls in the chemistry/combustion
+  boundary. `Fire` lands at `μ = 0.5` (loose-in, strict-out), exactly the graded boundary case.
+  This is the same tightness-vs-reuse knob as §5c (budget, quantization) and §7 (hard vs soft
+  distance), now on the *membership* side.
+- **The two signals fuse, and they agree.** The LLM `μ` is the *semantic* prior; the graph's
+  **mean optimal-bridge caret to the physics core** (a few canonical `μ=1.0` anchors) is the
+  *structural* signal. They correlate: high-`μ` (≥0.8) nodes sit at mean caret-to-core **3.02**,
+  low-`μ` (≤0.3) at **4.77** — so each can audit the other. The disagreements are the interesting
+  cases the fusion surfaces (e.g. `Sound`, `Waves`, `Cold` read `μ=1.0` but sit slightly farther
+  structurally — genuine physics the graph places at a remove).
+- **The single-anchor version agrees too: depth-to-root vs `μ`.** Distance to the `Physics` root is
+  the *one-legged caret* `caret(u, Physics) = d(u→Physics)` (the root is a universal ancestor, so one
+  leg is zero). Statistically it anti-correlates with `μ`: there are more deep nodes than shallow,
+  and each downward hop has a chance to leak out of the semantic space, so deeper ⇒ more likely
+  non-physics (a few deep-but-genuine physics nodes buck it). Measured: high-`μ`(≥0.8) depth **2.24**,
+  low-`μ`(≤0.3) depth **3.86**, **`corr(μ, depth) = −0.48`**. So the cheap single-anchor signal
+  agrees with the multi-anchor mean-caret and with the LLM — "either way, similar results." (Note
+  this is the *robust* use of depth: the per-pair caret to a chosen anchor, not the raw root-depth
+  ranking that the associative leak makes unreliable — a leaked chemistry node is deep via a long
+  associative path, which is exactly why deep ⇒ less-physics holds *statistically* here.)
+- **Generating `μ` from semantic vectors** (category embeddings) instead of an LLM is the natural
+  alternative — same fuzzy membership, a different prior source; the structural agreement above
+  predicts it would land in the same place. (Future: needs an embedding source.)
 
-- **Fuse the two complementary signals.** The LLM score `μ` is the *semantic* prior; the graph
-  mean-caret-to-core is a *structural* membership signal (it already separated the chemistry
-  outliers above). A node's membership could be a blend of the two, each catching the other's
-  errors — the self-checking pipeline made continuous rather than a hard keep/discard.
-- **Membership-weighted read-outs.** Carry `μ` as a per-node weight into the functionals:
-  `μ`-weighted Resnik/Lin (down-weight borderline ancestors in the MICA search), or a
-  `μ`-thresholded boundary so a query "stays in physics with tolerance `τ`". This is the
-  graph-functional-semiring move applied to a *soft* node set rather than a hard one.
-
-Cost is small: the fixture grows one column (`node<TAB>μ`) and the classifier prompt asks for a
-score rather than a label. Recorded for future work.
+Still future work: **membership-weighted read-outs** — carry `μ` as a per-node weight into the
+functionals (`μ`-weighted Resnik/Lin that down-weights borderline ancestors in the MICA search, or
+a `μ`-thresholded boundary so a query "stays in physics with tolerance `τ`"). That is the
+graph-functional-semiring move applied to a *soft* node set rather than a hard one.
 
 ## Takeaways
 

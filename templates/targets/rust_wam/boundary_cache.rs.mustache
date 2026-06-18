@@ -3721,6 +3721,111 @@ mod tests {
         assert!(with_bridge * 4 >= pairs, "curated physics pairs mostly related: {}/{}", with_bridge, pairs);
     }
 
+    // Fuzzy / graded membership: the LLM scores each node μ ∈ [0,1] instead of keep/discard
+    // (tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv). Two things: (1) a THRESHOLD KNOB — a
+    // strict cut keeps the core, a loose cut pulls in Fire / the chemistry boundary; (2) FUSION of
+    // the LLM's *semantic* μ with the *structural* mean-caret-to-core, each catching the other's
+    // errors. Gated on `UW_CATEGORY_TSV` + `UW_FUZZY_NODES` (skips in CI).
+    #[test]
+    fn wikipedia_fuzzy_membership_threshold_and_fusion() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("fuzzy: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("fuzzy: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        // load (node, μ), keeping only nodes present in the graph.
+        let scored: Vec<(u32, f64)> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| {
+                let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(mu)) => ids.get(n.trim()).map(|&id| (id, mu)),
+                    _ => None,
+                }
+            }).collect();
+        eprintln!("fuzzy: {} scored nodes present", scored.len());
+
+        // (1) THRESHOLD KNOB: the set grows as the cut loosens, and the chemistry/combustion
+        // boundary (μ≈0.5, e.g. Fire) enters only under a loose criterion.
+        let count_at = |tau: f64| scored.iter().filter(|&&(_, mu)| mu >= tau).count();
+        let (strict, mid, loose) = (count_at(0.8), count_at(0.5), count_at(0.4));
+        eprintln!("fuzzy: |μ≥0.8|={}  |μ≥0.5|={}  |μ≥0.4|={}", strict, mid, loose);
+        assert!(strict <= mid && mid <= loose, "threshold cut is monotone");
+        let fire_mu = scored.iter().find(|&&(id, _)| names[id as usize] == "Fire").map(|&(_, mu)| mu);
+        if let Some(mu) = fire_mu {
+            assert!(mu >= 0.4 && mu < 0.8, "Fire is a graded boundary case (loose-in, strict-out): μ={}", mu);
+        }
+
+        // (2) FUSION: structural signal = mean optimal-bridge caret (budget 10) to the physics
+        // core (a few canonical μ=1.0 anchors). Low caret = structurally close to physics.
+        let anchors: Vec<u32> = ["Thermodynamics", "Electromagnetism", "Mechanics", "Optics", "Energy", "Matter"]
+            .iter().filter_map(|s| ids.get(*s).copied()).collect();
+        let mean_caret = |u: u32| -> Option<f64> {
+            let cs: Vec<u32> = anchors.iter().filter(|&&a| a != u)
+                .filter_map(|&a| caret_optimal_bridge(u, a, &parents, 10).map(|(_, c)| c)).collect();
+            if cs.is_empty() { None } else { Some(cs.iter().map(|&c| c as f64).sum::<f64>() / cs.len() as f64) }
+        };
+        // bucket the structural signal by the LLM grade — the two should AGREE on average.
+        let (mut hi, mut lo) = ((0.0f64, 0u32), (0.0f64, 0u32));
+        let mut rows: Vec<(f64, f64, u32)> = Vec::new(); // (μ, mean_caret, node)
+        for &(u, mu) in &scored {
+            if let Some(mc) = mean_caret(u) {
+                rows.push((mu, mc, u));
+                if mu >= 0.8 { hi.0 += mc; hi.1 += 1; } else if mu <= 0.3 { lo.0 += mc; lo.1 += 1; }
+            }
+        }
+        let (hi_mean, lo_mean) = (hi.0 / hi.1.max(1) as f64, lo.0 / lo.1.max(1) as f64);
+        eprintln!("fuzzy: mean caret-to-core  high-μ(≥0.8)={:.2}  low-μ(≤0.3)={:.2}", hi_mean, lo_mean);
+        // The signals correlate: high-μ nodes are structurally CLOSER to the physics core than low-μ.
+        assert!(hi_mean < lo_mean, "semantic μ and structural caret agree: {:.2} vs {:.2}", hi_mean, lo_mean);
+
+        // Disagreements are where the fusion earns its keep — each signal flags the other's errors.
+        rows.sort_by(|a, b| (b.0 - 1.0 / (1.0 + b.1)).partial_cmp(&(a.0 - 1.0 / (1.0 + a.1))).unwrap());
+        eprintln!("fuzzy: largest μ-vs-structure disagreements (high μ, structurally far):");
+        for &(mu, mc, u) in rows.iter().take(4) {
+            eprintln!("      μ={:.1}  mean_caret={:.1}  {}", mu, mc, names[u as usize]);
+        }
+
+        // (3) DISTANCE-TO-ROOT vs μ (the single-anchor structural signal). Depth to the Physics
+        // root is the one-legged caret `caret(u, Physics) = d(u→Physics)`. Statistically it should
+        // anti-correlate with μ: there are more deep nodes than shallow, and each downward hop has
+        // a chance to exit the semantic space, so deeper ⇒ more likely non-physics (even though a
+        // few deep-but-genuine physics nodes buck it). This is the cheap single-anchor version of
+        // the mean-caret-to-core above; they should agree.
+        if let Some(&root_id) = ids.get("Physics") {
+            let depth = min_distance_closure(root_id, &parents); // d(node → Physics) for all
+            let pts: Vec<(f64, f64)> = scored.iter()
+                .filter_map(|&(u, mu)| depth.get(&u).map(|&d| (mu, d as f64)))
+                .collect();
+            let npt = pts.len() as f64;
+            let (mx, my) = (pts.iter().map(|p| p.0).sum::<f64>() / npt,
+                            pts.iter().map(|p| p.1).sum::<f64>() / npt);
+            let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+            for &(x, y) in &pts { sxy += (x - mx) * (y - my); sxx += (x - mx).powi(2); syy += (y - my).powi(2); }
+            let r = sxy / (sxx.sqrt() * syy.sqrt());
+            let (mut hi, mut lo) = ((0.0, 0u32), (0.0, 0u32));
+            for &(mu, d) in &pts { if mu >= 0.8 { hi.0 += d; hi.1 += 1; } else if mu <= 0.3 { lo.0 += d; lo.1 += 1; } }
+            eprintln!("fuzzy: depth-to-Physics-root  high-μ(≥0.8)={:.2}  low-μ(≤0.3)={:.2}  | corr(μ,depth)={:.2}",
+                hi.0 / hi.1.max(1) as f64, lo.0 / lo.1.max(1) as f64, r);
+            // Statistically, μ and depth-to-root anti-correlate — the single-anchor signal agrees
+            // with the mean-caret-to-core (and with the LLM μ).
+            assert!(r < 0.0, "μ and depth-to-physics-root anti-correlate statistically: r={}", r);
+        }
+    }
+
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
     // Tree-with-a-merge: 1->0; 2,3->1; 4,5->2; 6,7->3; and 8 is cross-listed under BOTH 2 and
     // 3 (8 -> [2,3]). Fan-in counts direct children: 0<-{1}, 1<-{2,3}, 2<-{4,5,8}, 3<-{6,7,8}.
