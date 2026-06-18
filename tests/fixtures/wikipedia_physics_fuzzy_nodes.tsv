@@ -1,4 +1,5 @@
 # Fuzzy (graded) physics-membership scores for the WAM-Rust caret test set.
+# discrimination: disciplinary-leaning physics-relevance (is this studied AS physics), NOT foundational (does it rest on physics). The discrimination context is a user choice; record it here so mu is interpretable.
 #
 # Format: `node<TAB>mu`, mu in [0,1] = graded physics-relevance. '#' lines are comments.
 # Provenance: random walks DOWN the Wikipedia category graph from "Physics"
