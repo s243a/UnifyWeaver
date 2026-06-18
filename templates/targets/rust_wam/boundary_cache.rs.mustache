@@ -4066,6 +4066,83 @@ mod tests {
         assert_eq!(iv_got, iv_want, "interval");
     }
 
+    // The §3 measurement (answers "when is the moment/cumulant summary a faithful stand-in for
+    // the histogram, without computing the histogram?"). The moments are EXACT; the question is
+    // whether the *reconstruction* (moments -> distribution) matches the true histogram. The
+    // structural answer: a ⊗-heavy CHAIN tends Gaussian (CLT) so moments reconstruct it well; a
+    // ⊕-heavy BRANCH is a mixture (here bimodal) so moments reconstruct it badly. Cumulants vs
+    // moments is the *orthogonal* splice-cost axis — same moments, same reconstruction quality.
+    #[test]
+    fn moment_reconstruction_faithful_on_chains_not_on_branches() {
+        // CHAIN-heavy: n length-{1,2} diamonds in series. Path length = n + Binomial(n,0.5) -> a
+        // shifted binomial -> Gaussian by the CLT (the canonical ⊗-heavy / CLT case).
+        let n = 24u32;
+        let mut chain: HashMap<u32, Vec<u32>> = HashMap::new();
+        for i in 1..=n {
+            chain.insert(i, vec![i - 1, 1000 + i]); // b_i -> b_{i-1} (len 1) | m_i (len 2 path)
+            chain.insert(1000 + i, vec![i - 1]);
+        }
+        let (root, seed) = (0u32, n);
+        let true_h = {
+            let (mut memo, mut st) = (HashMap::new(), Vec::new());
+            suffix_histogram(seed, root, &chain, (2 * n + 4) as usize, &mut memo, &mut st)
+        };
+        let jet = {
+            let (mut memo, mut st) = (HashMap::new(), Vec::new());
+            suffix_moment_jet(seed, root, &chain, &mut memo, &mut st)
+        };
+        // Compare the true distribution's CDF to the reconstruction's PMF CDF directly (no
+        // integer rounding — a 2-path bimodal would otherwise round a spread Gaussian to all-zero).
+        let cdf_err = |truth: &Hist, pmf: &[f64]| -> f64 {
+            let tt: f64 = truth.iter().map(|&c| c as f64).sum();
+            let n = truth.len().max(pmf.len());
+            let (mut ca, mut cb, mut w) = (0.0f64, 0.0f64, 0.0f64);
+            for i in 0..n {
+                ca += *truth.get(i).unwrap_or(&0) as f64 / tt;
+                cb += pmf.get(i).copied().unwrap_or(0.0);
+                w = w.max((ca - cb).abs());
+            }
+            w
+        };
+        let support = true_h.len();
+        let err_normal = cdf_err(&true_h, &jet.to_normal_repr(support).pmf());
+        let err_gc = cdf_err(&true_h, &jet.to_gram_charlier_repr(support).pmf());
+        eprintln!("§3 chain : mean {:.2} var {:.2} skew {:.3} exkurt {:.3} | cdf_err Normal {:.4} GC {:.4}",
+            jet.mean(), jet.variance(), jet.skewness(), jet.excess_kurtosis(), err_normal, err_gc);
+        // cumulant additivity made visible: variance = n × per-stage variance (0.25).
+        assert!((jet.variance() - n as f64 * 0.25).abs() < 1e-6, "κ₂ adds over the chain stages");
+
+        // BRANCH-heavy: one node, two parents at very different depths -> a BIMODAL mixture.
+        let mut br: HashMap<u32, Vec<u32>> = HashMap::new();
+        br.insert(1, vec![0]); for i in 2..=5 { br.insert(i, vec![i - 1]); }       // short branch (depth 5)
+        br.insert(100, vec![0]); for i in 101..=139 { br.insert(i, vec![i - 1]); } // long branch (depth 40)
+        br.insert(500, vec![5, 139]);                                              // X: meets root at 6 or 41
+        let bh = {
+            let (mut memo, mut st) = (HashMap::new(), Vec::new());
+            suffix_histogram(500, 0, &br, 60, &mut memo, &mut st)
+        };
+        let bjet = {
+            let (mut memo, mut st) = (HashMap::new(), Vec::new());
+            suffix_moment_jet(500, 0, &br, &mut memo, &mut st)
+        };
+        let berr = cdf_err(&bh, &bjet.to_normal_repr(bh.len()).pmf());
+        eprintln!("§3 branch: mean {:.2} var {:.2} skew {:.3} exkurt {:.3} | cdf_err Normal {:.4}",
+            bjet.mean(), bjet.variance(), bjet.skewness(), bjet.excess_kurtosis(), berr);
+
+        // FINDING 1: moments reconstruct the chain (CLT) accurately, the branch mixture badly.
+        assert!(err_normal < 0.06, "chain Gaussian reconstruction is faithful: cdf_err {}", err_normal);
+        assert!(berr > 0.2 && berr > 4.0 * err_normal,
+            "branch mixture reconstruction is much worse: branch {} vs chain {}", berr, err_normal);
+        // FINDING 2: the carried moments self-diagnose — the chain reads ~Gaussian (excess
+        // kurtosis ~0), the bimodal branch reads strongly platykurtic (excess kurtosis << 0), a
+        // cheap non-Gaussianity flag WITHOUT the histogram. The honest gap: skew stays ~0 for the
+        // symmetric bimodal case, so skew alone is blind — kurtosis catches THIS one, but a
+        // general multimodal shape still needs the histogram (the CDF-gated fallback, §7).
+        assert!(jet.excess_kurtosis().abs() < 0.5, "chain reads ~Gaussian");
+        assert!(bjet.excess_kurtosis() < -1.0, "bimodal branch flagged via kurtosis");
+        assert!(bjet.skewness().abs() < 0.2, "symmetric bimodal: skew is blind to it");
+    }
+
     // §3 fork: the cumulant carry. Cumulants ADD under ⊗ (the O(K) splice) and round-trip
     // through raw moments under ⊕; both agree with the raw-moment jet they convert from.
     #[test]

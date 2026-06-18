@@ -201,6 +201,36 @@ the *measurement* of where that crossover sits (which dominates a given cache re
 remaining open step, but the two representations it would choose between are now both shipped and
 interchangeable.
 
+**[measured]** The chain-vs-branch split that governs the *carry* also governs the deeper
+question — *when is the moment/cumulant summary a faithful stand-in for the histogram, without
+ever forming the histogram?* — and `moment_reconstruction_faithful_on_chains_not_on_branches`
+measures it. Two synthetic graphs propagate the jet (never the histogram) and the reconstruction
+is scored against the independently-computed true histogram:
+
+| node shape | true distribution | `to_normal_repr` CDF error | excess kurtosis (self-diagnostic) |
+|---|---|---|---|
+| `⊗`-heavy chain (24 length-`{1,2}` diamonds) | shifted binomial → Gaussian (CLT) | **0.0019** | `−0.08` (reads Gaussian) |
+| `⊕`-heavy branch (two depths, 6 vs 41) | bimodal mixture | **0.48** | `−2.0` (reads strongly non-Gaussian) |
+
+The answers this pins down (and the honest limits):
+
+- **The moments are exact; only the *reconstruction* approximates.** Mean/variance/skew/kurtosis
+  are computed exactly by propagation — `κ₂ = 24·0.25` on the chain confirms cumulant additivity.
+  Faithfulness is entirely a property of the reconstruction step (moments → distribution shape).
+- **You know it is faithful from *structure*, not the histogram.** A `⊗`-heavy node is a sum of
+  many independent stages → Gaussian by the CLT, so the moment-Normal is near-exact (0.002); a
+  `⊕`-heavy node is a *mixture*, possibly multimodal, where it fails (0.48). The graph shape is the
+  prior — read off the topology, not the histogram.
+- **The carried higher moments *self-diagnose*.** The bimodal branch reads excess kurtosis `−2.0`
+  — a cheap "I am not Gaussian" flag with no histogram. **Honest gap:** for a *symmetric* mixture
+  the skew is `~0` (blind to the bimodality); kurtosis catches this one, but a general multimodal
+  shape still needs the exact histogram fallback — which is exactly why the §7 reconstruction is
+  **CDF-gated**, validated against the true distribution during calibration rather than assumed.
+- **Cumulants vs moments is *orthogonal* to all of this.** They carry the same information
+  (`κ_k ⟺ m_k`), so the reconstruction is identical; the §3 fork is purely the *splice cost /
+  numerical-stability* axis (additive cumulants for `⊗`-heavy spines), not a representation-quality
+  axis. Faithfulness is a §7 reconstruction question, the same for both carries.
+
 ### The one that does *not* factor: `WeightSum`
 
 **The unifying principle: point-evaluation of the GF.** Treat `H(z) = Σ_L H[L] z^L` as a
