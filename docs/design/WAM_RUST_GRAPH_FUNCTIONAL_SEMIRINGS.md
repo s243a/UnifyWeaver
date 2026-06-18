@@ -564,7 +564,9 @@ caching, the **designated-bridge** measure is cacheable.
 >   deep up-cone and measure their overlap. `up_hops = 1` is "do the parents share grandparents"
 >   (a 2-hop neighbourhood, no walk to root); `up_hops → ∞` is the exact deficit. `up_hops` is
 >   the cost/sensitivity knob, and the depth bound makes it cycle-safe. (`parent_reconvergence`,
->   returning the overlap fraction in `[0,1]`.)
+>   returning the *duplicate-mass fraction* `overlap/total_mass = o/(Σsᵢ)` in `[0,1]` — **not**
+>   a Jaccard `o/(Σsᵢ−o)`; for two identical cones it returns `1/2`, intentionally, to avoid
+>   Jaccard's denominator instability near `o ≈ Σsᵢ`.)
 > - **Rung 4 — ancestor sketch + small-world lift (height-agnostic, baseline-corrected).** The
 >   fixed-`up_hops` probe of rung 3 has a fatal flaw: it only sees a crossover *within* `k`
 >   hops, but the **crossover height is unknown and varies per node** — too small misses deep
@@ -608,9 +610,13 @@ adds `2` per level (§5b), so it can never win the `min`. This gives an *exact, 
 algorithm that **does not climb to the root**: expand the joint up-BFS from `u` and `v` in
 lockstep by radius `r`, and stop once the best matched sum `≤ r+1` (any *unmatched* common
 ancestor has far-side depth `≥ r+1`, hence sum `≥ r+1`, so it cannot beat the best). The search
-radius is bounded by the boundary depth `≈ caret/2`, not the height to root — on a tall stem
-with a low fork it touches three nodes where the full-cone `caret_distance_lca` touches the
-whole stem. (`caret_distance_lca_boundary[_counted]`.) This is the honest framing of §5c: the
+radius is bounded by `max(d(u→LCA*), d(v→LCA*))` — in the **balanced** case `≈ caret/2`, but for
+an **asymmetric** pair (one node *is* the LCA) the near side speculatively climbs *above* the
+LCA up to `≈ caret` before the stop fires (it cannot know it is the LCA until the far side
+arrives). In every case it stays near the common-ancestor space rather than the height to root —
+on a tall stem with a low fork it touches a handful of nodes where the full-cone
+`caret_distance_lca` touches the whole stem — but the **worst-case** node-visit count is still
+`O(V+E)` for graphs with wide upward frontiers. (`caret_distance_lca_boundary[_counted]`.) This is the honest framing of §5c: the
 global hub set is an *approximate, reusable stand-in* for this boundary, justified only when
 **batching many pairs** amortizes its precompute; for a one-off pair, just search the boundary.
 
@@ -636,6 +642,18 @@ Wikipedia — so "geometric mean of the top-4 singular values, times parent coun
 guess. **Caveat:** this is an *ad-hoc proposal*; the truncation rank, parents-vs-child-centroids,
 and the count/diversity weighting are all unvalidated, and it presumes a meaningful embedding.
 Recorded as a future direction, not a recommendation.
+
+**Known limitation of the rung-4 lift null (deep DAGs).** The configuration-model null
+`E|A∩B| ≈ |A|·|B|/N` assumes *independent* ancestor membership, which a strongly hierarchical
+DAG violates: ancestor-set sizes grow as `Θ(branching^depth)`, so for deep nodes `|A|·|B|/N` can
+**exceed** the actual intersection, driving `lift < 1` (or undefined) even for genuine hubs. The
+null is therefore calibrated only for shallow/sparse hierarchies; for deep, high-branching DAGs
+the **absolute** lift values are unreliable, though the **ranking** of hubs against each other
+stays usable (the bias is roughly monotone in depth). The Gene Ontology semantic-similarity
+literature avoids this with an **information-content** null instead — `IC(t) = −log₂ P(node
+annotated under t)`, with similarity read from the IC of the LCA (Resnik 1995; Lin 1998) — a
+depth-aware baseline that does not inflate. For calibrated absolute scores, an IC-style null is
+the principled replacement; for bridge *selection* (a ranking), the current lift suffices.
 
 ## 6. Aside: the kernel-trick analogy
 
