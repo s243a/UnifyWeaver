@@ -87,8 +87,8 @@ Explicit numeric field coercion is available as `int($N)`, e.g.
 `$1 == "ERROR" { print $3, int($3) }`; failed numeric parses print `0`.
 The first arithmetic composition forms add or subtract a non-negative integer
 constant from native `i64` primaries such as `NR`, `NF`, `length($N)`,
-and `int($N)`, e.g.
-`$1 == "ERROR" { print NR - 1, int($3) + 1 }`.
+`int($N)`, and `index($N, "literal")`, e.g.
+`$1 == "ERROR" { print NR - 1, int($3) + 1, index($2, "sk") + 1 }`.
 Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
 such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
 streaming loop.
@@ -122,10 +122,10 @@ Terminal `next` is supported in native rule chains, so `$1 == "DEBUG" {
 skipped++; next } { total++ } END { print total, skipped }` skips the later
 rule for matching records. Terminal `break` is supported in the same native
 rule-chain shape and closes the stream before running `END`, e.g. `$1 == "ERROR"
-{ hits++; break } { total++ } END { print hits, total }`. In the current surface
-slice, `next` and `break` must be the last action in their rule body; branch
-`next`/`break` must also be terminal in that branch. Non-terminal loop control is
-intentionally rejected by the native codegen boundary. The first
+{ hits++; break } { total++ } END { print hits, total }`. If `next` or `break`
+appears before the end of a rule body or branch, later actions in that same
+action list are treated as unreachable tail actions and skipped by native
+codegen. The first
 associative-count surface now supports multiple source arrays, e.g.
 `{ counts[$1]++; by_component[$2]++ } END { print counts["ERROR"], by_component["disk"] }`.
 Codegen allocates one WAM/LLVM runtime interned-atom-keyed `i64` table per

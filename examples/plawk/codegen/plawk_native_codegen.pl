@@ -247,15 +247,33 @@ plawk_state_slot_index(StatePlan, Slot, Index) :-
     plawk_state_plan_slots(StatePlan, Slots),
     nth0(Index, Slots, Slot).
 
-plawk_split_terminal_control(Actions, BodyActions, terminal_next) :-
+plawk_trim_control_tails([], []).
+plawk_trim_control_tails([next | _Rest], [next]) :-
+    !.
+plawk_trim_control_tails([break | _Rest], [break]) :-
+    !.
+plawk_trim_control_tails([if(Pattern, ThenActions, ElseActions) | Rest],
+        [if(Pattern, TrimmedThenActions, TrimmedElseActions) | TrimmedRest]) :-
+    !,
+    plawk_trim_control_tails(ThenActions, TrimmedThenActions),
+    plawk_trim_control_tails(ElseActions, TrimmedElseActions),
+    plawk_trim_control_tails(Rest, TrimmedRest).
+plawk_trim_control_tails([Action | Rest], [Action | TrimmedRest]) :-
+    plawk_trim_control_tails(Rest, TrimmedRest).
+
+plawk_split_terminal_control(Actions0, BodyActions, Control) :-
+    plawk_trim_control_tails(Actions0, Actions),
+    plawk_split_normalized_terminal_control(Actions, BodyActions, Control).
+
+plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_next) :-
     append(BodyActions, [next], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
-plawk_split_terminal_control(Actions, BodyActions, terminal_break) :-
+plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_break) :-
     append(BodyActions, [break], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
-plawk_split_terminal_control(Actions, Actions, fallthrough) :-
+plawk_split_normalized_terminal_control(Actions, Actions, fallthrough) :-
     \+ plawk_actions_have_control(Actions).
 
 plawk_actions_have_control(Actions) :-
@@ -270,11 +288,12 @@ plawk_action_has_control(if(_Pattern, ThenActions, ElseActions)) :-
     ).
 
 plawk_branch_actions_have_unsupported_control(Actions) :-
-    (   append(BodyActions, [next], Actions)
+    plawk_trim_control_tails(Actions, TrimmedActions),
+    (   append(BodyActions, [next], TrimmedActions)
     ->  plawk_actions_have_control(BodyActions)
-    ;   append(BodyActions, [break], Actions)
+    ;   append(BodyActions, [break], TrimmedActions)
     ->  plawk_actions_have_control(BodyActions)
-    ;   plawk_actions_have_control(Actions)
+    ;   plawk_actions_have_control(TrimmedActions)
     ).
 
 plawk_rule_target(fallthrough, NextLabel, NextLabel).
@@ -385,7 +404,8 @@ plawk_scalar_rule_controls(Rules, Controls) :-
 plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
-          member(Action, Actions),
+          plawk_trim_control_tails(Actions, ReachableActions),
+          member(Action, ReachableActions),
           plawk_scalar_update_action_name(Action, Name)
         ),
         ActionVars),
@@ -415,7 +435,8 @@ plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, Pla
 plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
-          member(Action, Actions),
+          plawk_trim_control_tails(Actions, ReachableActions),
+          member(Action, ReachableActions),
           plawk_scalar_update_action_name(Action, Name)
         ),
         ActionVars),
@@ -469,7 +490,8 @@ plawk_rules_scalar_update_exprs(Rules, Exprs) :-
         Exprs).
 
 plawk_actions_scalar_update_expr(Actions, Expr) :-
-    member(Action, Actions),
+    plawk_trim_control_tails(Actions, ReachableActions),
+    member(Action, ReachableActions),
     plawk_action_scalar_update_expr(Action, Expr).
 
 plawk_action_scalar_update_expr(if(_Pattern, ThenActions, ElseActions), Expr) :-
@@ -485,7 +507,8 @@ plawk_scalar_operation_expr(add(Expr), Expr).
 plawk_scalar_operation_expr(set(Expr), Expr).
 
 plawk_actions_body_print_field(Actions, Field) :-
-    member(Action, Actions),
+    plawk_trim_control_tails(Actions, ReachableActions),
+    member(Action, ReachableActions),
     plawk_action_body_print_field(Action, Field).
 
 plawk_action_body_print_field(print(Fields), Field) :-
@@ -549,19 +572,24 @@ plawk_scalar_conditional_action(if(_Pattern, ThenActions, ElseActions)) :-
 plawk_scalar_plain_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 
-plawk_split_branch_control(Actions, BodyActions, branch_next) :-
+plawk_split_branch_control(Actions0, BodyActions, Control) :-
+    plawk_trim_control_tails(Actions0, Actions),
+    plawk_split_normalized_branch_control(Actions, BodyActions, Control).
+
+plawk_split_normalized_branch_control(Actions, BodyActions, branch_next) :-
     append(BodyActions, [next], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
-plawk_split_branch_control(Actions, BodyActions, branch_break) :-
+plawk_split_normalized_branch_control(Actions, BodyActions, branch_break) :-
     append(BodyActions, [break], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
-plawk_split_branch_control(Actions, Actions, fallthrough) :-
+plawk_split_normalized_branch_control(Actions, Actions, fallthrough) :-
     \+ plawk_actions_have_control(Actions).
 
 plawk_assoc_increment_spec_in_actions(Actions, Spec) :-
-    member(Action, Actions),
+    plawk_trim_control_tails(Actions, ReachableActions),
+    member(Action, ReachableActions),
     plawk_assoc_increment_spec_in_action(Action, Spec).
 
 plawk_assoc_increment_specs_in_actions(Actions, Specs) :-
