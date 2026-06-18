@@ -327,6 +327,74 @@ impl Interval {
     }
 }
 
+/// **Cumulant jet** — the alternative moment carry (§3 fork, "the additivity question"). Carries
+/// `(mass, κ₁..κ₄)`: the path multiplicity and the **cumulants** of the *normalized* length
+/// distribution. Cumulants **add** under concatenation, so `⊗` is an `O(K)` *additive* splice
+/// (`mass ×`, `κ +`) where the raw-moment jet needs the `O(K²)` binomial convolution — strictly
+/// cheaper for `⊗`-heavy (chain/spine) regions, and it never forms the large `m₃ ~ μ³` central-
+/// read-out cancellation term. The catch is `⊕`: a multi-parent node is a **mixture**, whose
+/// cumulants are *not* additive (the law of total cumulance), so `union` round-trips through raw
+/// moments (which *are* `⊕`-linear). So: cumulants for chain-dominated spines, raw moments for
+/// the branching solve — the same chain-vs-branch split that governs reconstruction (§7). This
+/// type makes the trade **named, not defaulted silently**.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CumulantJet {
+    pub mass: f64,
+    pub k1: f64,
+    pub k2: f64,
+    pub k3: f64,
+    pub k4: f64,
+}
+
+impl CumulantJet {
+    /// ⊗-identity (the empty path at the root): mass 1, all cumulants 0 (a point mass at 0).
+    pub fn root() -> Self { CumulantJet { mass: 1.0, k1: 0.0, k2: 0.0, k3: 0.0, k4: 0.0 } }
+    /// ⊕-identity (no path).
+    pub fn zero() -> Self { CumulantJet { mass: 0.0, k1: 0.0, k2: 0.0, k3: 0.0, k4: 0.0 } }
+
+    /// Convert a raw-moment jet to cumulants: normalize by mass, form the central moments, then
+    /// `κ₁=μ, κ₂=μ₂, κ₃=μ₃, κ₄=μ₄−3μ₂²`. Mass-0 jet → `zero`.
+    pub fn from_moment(j: MomentJet) -> Self {
+        if j.mass <= 0.0 { return CumulantJet::zero(); }
+        let m = j.mass;
+        let (mu, e2, e3, e4) = (j.m1 / m, j.m2 / m, j.m3 / m, j.m4 / m);
+        let mu2 = e2 - mu * mu;
+        let mu3 = e3 - 3.0 * mu * e2 + 2.0 * mu * mu * mu;
+        let mu4 = e4 - 4.0 * mu * e3 + 6.0 * mu * mu * e2 - 3.0 * mu * mu * mu * mu;
+        CumulantJet { mass: m, k1: mu, k2: mu2, k3: mu3, k4: mu4 - 3.0 * mu2 * mu2 }
+    }
+
+    /// Invert `from_moment`: cumulants → central moments (`μ₄=κ₄+3κ₂²`) → raw moments (× mass).
+    pub fn to_moment(self) -> MomentJet {
+        let (m, mu, mu2, mu3) = (self.mass, self.k1, self.k2, self.k3);
+        let mu4 = self.k4 + 3.0 * self.k2 * self.k2;
+        MomentJet {
+            mass: m,
+            m1: m * mu,
+            m2: m * (mu2 + mu * mu),
+            m3: m * (mu3 + 3.0 * mu * mu2 + mu * mu * mu),
+            m4: m * (mu4 + 4.0 * mu * mu3 + 6.0 * mu * mu * mu2 + mu * mu * mu * mu),
+        }
+    }
+
+    /// ⊗ — concatenation: mass multiplies, cumulants **add**. The `O(K)` additive splice.
+    pub fn convolve(self, o: Self) -> Self {
+        CumulantJet {
+            mass: self.mass * o.mass,
+            k1: self.k1 + o.k1,
+            k2: self.k2 + o.k2,
+            k3: self.k3 + o.k3,
+            k4: self.k4 + o.k4,
+        }
+    }
+
+    /// ⊕ — union (a mixture): cumulants are *not* additive, so round-trip through raw moments
+    /// (which are `⊕`-linear) — this is the operation cumulants make expensive (§3's catch).
+    pub fn union(self, o: Self) -> Self {
+        CumulantJet::from_moment(self.to_moment().union(o.to_moment()))
+    }
+}
+
 /// The algebraic-path-problem interface a payload implements so the *one* generic
 /// recurrence `suffix_value` can propagate it: `f(root) = one; f(v) = ⊕_p (edge ⊗ f(p))`.
 /// `zero` is the ⊕-identity (unreachable / no path), `one` the ⊗-identity (the root /
@@ -3996,6 +4064,40 @@ mod tests {
         let iv_want = hist_interval(&spliced).unwrap();
         let iv_got = hist_interval(&a).unwrap().convolve(hist_interval(&b).unwrap());
         assert_eq!(iv_got, iv_want, "interval");
+    }
+
+    // §3 fork: the cumulant carry. Cumulants ADD under ⊗ (the O(K) splice) and round-trip
+    // through raw moments under ⊕; both agree with the raw-moment jet they convert from.
+    #[test]
+    fn cumulant_jet_additive_splice_matches_moment_jet() {
+        let a = hist_moment_jet(&vec![0, 3, 5, 2]);     // lengths 1,2,3
+        let b = hist_moment_jet(&vec![0, 0, 4, 1, 6]);  // lengths 2,3,4
+        let close = |x: f64, y: f64, tol: f64| (x - y).abs() < tol;
+
+        // round-trip moment -> cumulant -> moment is the identity.
+        let ra = CumulantJet::from_moment(a).to_moment();
+        assert!(close(ra.mass, a.mass, 1e-9) && close(ra.m1, a.m1, 1e-6)
+            && close(ra.m2, a.m2, 1e-6) && close(ra.m3, a.m3, 1e-4) && close(ra.m4, a.m4, 1e-3));
+
+        // ⊗: the ADDITIVE cumulant splice (κ add, mass ×) reproduces the binomial moment convolution.
+        let conv_m = a.convolve(b);
+        let conv_c = CumulantJet::from_moment(a).convolve(CumulantJet::from_moment(b)).to_moment();
+        assert!(close(conv_c.mass, conv_m.mass, 1e-9) && close(conv_c.m1, conv_m.m1, 1e-6)
+            && close(conv_c.m2, conv_m.m2, 1e-5) && close(conv_c.m3, conv_m.m3, 1e-3));
+        // the additivity law itself: κ_k(a⊗b) = κ_k(a) + κ_k(b).
+        let (ca, cb) = (CumulantJet::from_moment(a), CumulantJet::from_moment(b));
+        let cab = ca.convolve(cb);
+        assert!(close(cab.k1, ca.k1 + cb.k1, 1e-9) && close(cab.k2, ca.k2 + cb.k2, 1e-9)
+            && close(cab.k3, ca.k3 + cb.k3, 1e-9) && close(cab.k4, ca.k4 + cb.k4, 1e-9));
+
+        // ⊕: union via cumulants (round-trip through moments) matches the moment-jet union.
+        let union_m = a.union(b);
+        let union_c = CumulantJet::from_moment(a).union(CumulantJet::from_moment(b)).to_moment();
+        assert!(close(union_c.mass, union_m.mass, 1e-9) && close(union_c.m1, union_m.m1, 1e-6)
+            && close(union_c.m2, union_m.m2, 1e-5) && close(union_c.m3, union_m.m3, 1e-3));
+
+        // κ₁ = mean, κ₂ = variance (the read-outs agree with the moment jet's).
+        assert!(close(ca.k1, a.mean(), 1e-9) && close(ca.k2, a.variance(), 1e-9));
     }
 
     // Increment 1.5: the moment-jet element STAR `a* = Σ aⁱ`. Converges (closed form) iff
