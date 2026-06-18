@@ -971,10 +971,18 @@ buy diminishing returns and is not carried).
      the root-anchored region (`build_scoped_subtree_lmdb.py`), propagate the support
      interval, and compute multi-level budgeted carets between topics — the end-to-end
      composition on real (cyclic) data, where the 2a/2b cycle-correctness earns its keep.
-   - **[3f, buildable]** the **landmark-cached designated-bridge caret** (§5c): precompute
-     `d(·→B)` (one downward field) for each designated level `B`, so `caret_through_bridge`
-     is O(1) per pair — the boundary-cache reuse applied to the caret. `O(K·V)` for `K`
-     levels.
+   - **[3f DONE]** the **landmark-cached designated-bridge caret** (§5c): `bridge_distance_fields`
+     precomputes `d(·→B)` (one downward BFS per bridge over the shared children graph, `O(E +
+     Σ_B|desc(B)|) ≤ O(K·V)`), and `caret_through_bridge_cached` / `caret_min_over_cached_bridges`
+     then answer in **O(1)** / **O(#bridges)** per pair — the boundary-cache reuse applied to the
+     caret. Wired into the live path: `WamState::build_caret_landmarks`,
+     `category_caret_through_bridge`, `category_caret_min_over_landmarks`. This is the missing
+     amortization that makes hub *selection* (§5c rungs) pay off: pick the convergence hubs as
+     bridges, cache their fields once, and `caret_min_over_hubs` becomes O(#hubs) lookups instead
+     of a BFS per hub. The cached field is the **min-plus distance functional** read off a compact
+     precompute — never forming the path-length distribution between the pair, the §8 "carry the
+     functional, not the distribution" theme again. Validated by
+     `bridge_landmarks_cached_caret_matches_per_query` and `live_bridge_landmarks_match_library`.
    - **[deferred]** the **nested-cut** hierarchy (§5c) — cache the suffix above each cut and
      compose by convolution; worth it only for *deep* hierarchies, and needs the
      dominator/cut property maintained on a DAG. And **[3c, optional]** a between-nodes

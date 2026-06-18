@@ -880,6 +880,72 @@ pub fn caret_min_over_hubs(
         .min()
 }
 
+/// **Landmark distance fields for designated bridges** (roadmap 3f): for each bridge `B`,
+/// precompute `d(·→B)` — the up-distance from every descendant of `B` to `B` — as one downward
+/// BFS from `B` over the *children* graph (the reverse of `parents`). The children map is built
+/// **once** and shared across all bridges, so the whole precompute is `O(E + Σ_B |desc(B)|)`,
+/// at most `O(K·V)` for `K` bridges. With these fields cached, `caret_through_bridge` collapses
+/// from a per-query BFS to an **O(1)** table lookup (`caret_through_bridge_cached`) — the
+/// "designated bridges are landmarks" amortization (§5c): pay the field once, reuse it across
+/// every pair. (`d(src→B)` over parent edges equals the reverse BFS depth `B→src` over child
+/// edges, since reversing a shortest up-path gives an equal-length down-path.)
+pub fn bridge_distance_fields(
+    bridges: &[u32],
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashMap<u32, std::collections::HashMap<u32, u32>> {
+    use std::collections::{HashMap, VecDeque};
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &p in ps {
+            children.entry(p).or_default().push(c);
+        }
+    }
+    let mut fields: HashMap<u32, HashMap<u32, u32>> = HashMap::new();
+    for &b in bridges {
+        let mut d: HashMap<u32, u32> = HashMap::new();
+        let mut q: VecDeque<u32> = VecDeque::new();
+        d.insert(b, 0);
+        q.push_back(b);
+        while let Some(x) = q.pop_front() {
+            let dx = d[&x];
+            if let Some(cs) = children.get(&x) {
+                for &c in cs {
+                    if !d.contains_key(&c) {
+                        d.insert(c, dx + 1);
+                        q.push_back(c);
+                    }
+                }
+            }
+        }
+        fields.insert(b, d);
+    }
+    fields
+}
+
+/// O(1) caret through a designated bridge using its precomputed `bridge_distance_fields` field
+/// `d(·→B)`: `field[u] + field[v]`. Equals `caret_through_bridge(u, v, B, parents)` exactly,
+/// and is `None` on the same condition (either node is not a descendant of `B`, so absent from
+/// the field).
+pub fn caret_through_bridge_cached(
+    u: u32,
+    v: u32,
+    field: &std::collections::HashMap<u32, u32>,
+) -> Option<u32> {
+    Some(field.get(&u)? + field.get(&v)?)
+}
+
+/// The cached counterpart of `caret_min_over_hubs`: minimise the O(1) cached caret over a set of
+/// designated bridges whose fields are precomputed (`bridge_distance_fields`). With the fields
+/// built for exactly the same bridge set, this equals `caret_min_over_hubs` — but at O(#bridges)
+/// table lookups per pair instead of a BFS per bridge.
+pub fn caret_min_over_cached_bridges(
+    u: u32,
+    v: u32,
+    fields: &std::collections::HashMap<u32, std::collections::HashMap<u32, u32>>,
+) -> Option<u32> {
+    fields.values().filter_map(|f| caret_through_bridge_cached(u, v, f)).min()
+}
+
 /// **Additive descendant weight** — the cheap, magnitude-aware cone-size proxy.
 ///
 /// A hub is where the descendant cone *steps*: large at `B`, but each child just below carries
@@ -3135,6 +3201,42 @@ mod tests {
         // through(1) keeps the shared-physics-level signal that the LCA caret also gives
         // here (their LCA *is* 1), so they agree — the gap is 0 only when bridge == LCA.
         assert_eq!(caret_through_bridge(4, 6, 1, &t), caret_distance_lca(4, 6, &t));
+    }
+
+    // Roadmap 3f: the landmark-cached designated-bridge caret equals the per-query
+    // caret_through_bridge everywhere, at O(1) per pair after one precompute per bridge.
+    #[test]
+    fn bridge_landmarks_cached_caret_matches_per_query() {
+        // Same tree as above plus a cross-listing so some pairs route through several bridges.
+        let mut t: HashMap<u32, Vec<u32>> = HashMap::new();
+        t.insert(1, vec![0]); t.insert(2, vec![1]); t.insert(3, vec![1]);
+        t.insert(4, vec![2]); t.insert(5, vec![2]); t.insert(6, vec![3]);
+        t.insert(7, vec![2, 3]); // cross-listed under both 2 and 3
+        let nodes: Vec<u32> = (0u32..=7).collect();
+        let bridges: Vec<u32> = vec![0, 1, 2, 3];
+        let fields = bridge_distance_fields(&bridges, &t);
+
+        // Field correctness: d(src->B) via the cached field == the per-query up_distance_to.
+        for &b in &bridges {
+            for &s in &nodes {
+                assert_eq!(fields[&b].get(&s).copied(), up_distance_to(s, b, &t),
+                    "field d({}->{})", s, b);
+            }
+        }
+        // Cached caret == per-query caret_through_bridge for every (pair, bridge).
+        for &u in &nodes {
+            for &v in &nodes {
+                for &b in &bridges {
+                    assert_eq!(caret_through_bridge_cached(u, v, &fields[&b]),
+                               caret_through_bridge(u, v, b, &t),
+                               "cached caret through {} for ({},{})", b, u, v);
+                }
+                // min over cached bridges == caret_min_over_hubs over the same set.
+                assert_eq!(caret_min_over_cached_bridges(u, v, &fields),
+                           caret_min_over_hubs(u, v, &bridges, &t),
+                           "min over cached bridges ({},{})", u, v);
+            }
+        }
     }
 
     // Downward convergence (fan-in) hub selection + the quantized-LCA min-over-hubs caret.
