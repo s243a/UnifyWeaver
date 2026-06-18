@@ -673,6 +673,66 @@ precompute, `O(k)` reads, no per-query reachability. Unlike the configuration-mo
 companion to the lift's ranking signal. (Hub *selection* from these scores is still the open
 global problem; this only fixes the calibration of the relatedness read-out.)
 
+### 5e. A gentle primer on information-content similarity (for the reader learning this)
+
+*§5d is written for someone who already has the vocabulary. This subsection builds the same idea
+from scratch, with worked numbers — skip it if §5d read easily. Running example: the balanced
+tree the test uses — root `0`; `1,2 → 0`; `3,4 → 1`; `5,6 → 2`, so seven nodes total.*
+
+**One idea: rarity is information.** Imagine someone tells you "this article is filed under
+category `t`." How *informative* is that? If `t` is the root (every article is under it), you
+learned nothing — it was certain. If `t` is a tiny, specific leaf category, you learned a lot —
+that was surprising. So a node's information is its **rarity**: let `p(t) = |desc(t)| / N` be the
+fraction of all nodes that fall under `t` (its descendant cone over the total). The root has
+`p = 1`; a leaf has `p = 1/N`.
+
+**Why `−log₂`.** We want "information" to be `0` for the certain thing (`p=1`) and to *grow* as
+things get rarer (`p → 0`), and we want it to *add up* for independent facts. The function with
+those properties is `IC(t) = −log₂ p(t)` — the number of **bits of surprise**. Worked on the
+example (`N = 7`):
+
+| node | cone `desc(t)` | `\|desc\|` | `p = \|desc\|/7` | `IC = −log₂ p` |
+|------|----------------|-----------|------------------|----------------|
+| `0` (root) | all seven | 7 | 1.00 | **0.00** |
+| `1` (internal) | `{1,3,4}` | 3 | 0.43 | **1.22** |
+| `3` (leaf) | `{3}` | 1 | 0.14 | **2.81** |
+
+So depth/specificity shows up as higher IC, automatically — no hand-tuned "level" number, just
+the cone fraction.
+
+**Resnik similarity: how related are `u` and `v`? Look at the deepest category that holds both.**
+The common ancestors of `u` and `v` are the categories containing *both*. The **most informative**
+one — smallest cone, highest IC — is their *most specific shared category*, the `MICA`. Resnik
+says: `sim(u,v) = IC(MICA)`. Intuition: if the deepest thing that contains both *quantum
+electrodynamics* and *quantum chromodynamics* is the very specific *quantum field theory*, they
+are closely related; if the only thing containing both *QED* and *medieval poetry* is the root
+("everything"), they are unrelated (IC = 0). On the example: `Resnik(3,4)` — their deepest shared
+category is `1`, so `= 1.22`; `Resnik(3,5)` — they share only the root, so `= 0`. (Why the MICA is
+always a *lowest* common ancestor: cones only grow as you go up, so `IC` only *falls* as you go
+up — the maximum IC is at the bottom of the shared region, the merge frontier of §5d.)
+
+**Lin similarity: normalize so "identical" scores 1.** Raw Resnik isn't on a fixed scale — a deep
+tree gives big IC numbers, a shallow one small. Lin divides by how specific the two items
+themselves are: `sim(u,v) = 2·IC(MICA) / (IC(u) + IC(v))`. If `u = v`, the MICA *is* `u`, so it is
+`2·IC(u)/2·IC(u) = 1`; if they share only the root, `IC(MICA)=0` so it is `0`. On the example,
+`Lin(3,4) = 2(1.22)/(2.81+2.81) = 0.43`. Now every pair sits in `[0,1]`, comparable across graphs.
+
+**Why we needed the descendant *sketch* (and not the additive weight).** Every formula above needs
+`|desc(t)|`, the **distinct** count of nodes under `t`. Computing that exactly for all `t` is
+reachability — the global blow-up we keep refusing. The cheap one-pass additive `descendant_weight`
+(rung 2) is no good *here*: it counts a node reachable by two paths **twice**, so it inflates
+`|desc|`, distorts `p`, and would corrupt the IC. The fix is a **set**: `descendant_minhash` keeps
+a fixed-`k` sample of the cone, and a set automatically counts each member once — so its size
+estimate is the *distinct* `|desc|` we need. Same `O(V·k)` precompute / `O(k)` read as the rung-4
+ancestor sketch, just pointed downward. (And it is the §6 kernel-trick move once more: the cone is
+the big object we never materialize; the sketch is the small handle we read it through.)
+
+**Where this sits.** This gives a *calibrated relatedness read-out* between two nodes that does not
+inflate on deep graphs — the honest replacement for the rung-4 lift's absolute value. What it does
+**not** yet answer is the *global* question — *which* nodes make good generic bridges to
+precompute — which stays open (§5d). Picking good bridges is selection; scoring how related two
+nodes are is a read-out; this increment is the read-out.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
