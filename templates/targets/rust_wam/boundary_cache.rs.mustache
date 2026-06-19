@@ -1893,9 +1893,16 @@ pub fn sketch_mu_overlap_lift(
 ///   resolution-limit fragility `sketch_mu_overlap_lift` gates against), mass-weighted so larger seeds
 ///   count more. The safer **default**, and the standard way to pool enrichment/lift.
 /// - [`HubAgg::MeanOfRatios`] — **mean-of-ratios** `(1/m) Σ obs_i/E_i`: every seed's lift weighted
-///   *equally* regardless of its cone size. Use when each seed is an equally-important query concept
-///   and you do not want big cones to dominate; higher variance (a tiny-cone seed can dominate the
-///   mean), so it leans harder on the mass gate.
+///   *equally* regardless of its cone size — *breadth* of coverage rather than *mass* of coverage. Use
+///   when each seed is an independent query concept of equal importance and you do not want big cones
+///   to dominate; higher variance (a tiny-cone seed with small `E_i` can spike the mean), so it leans
+///   harder on the mass gate.
+///
+/// **Dilution of a non-reconverging seed differs between the two** (both correct, just different): a
+/// seed the candidate *shares nothing in-domain with* but whose own cone is in-resolution contributes
+/// `obs_i = 0` with `E_i > 0`, so `Pooled` dilutes it **mass-weighted** (its `E_i` enters `ΣE`) while
+/// `MeanOfRatios` dilutes it **equally** (a `0` term over `m`). (A *sub-resolution* seed — mass below
+/// the floor — is dropped from **both** identically, excluded from the sums *and* the count.)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HubAgg {
     /// `Σ obs_i / Σ E_i` — pooled, lower-variance, mass-weighted. The default.
@@ -1914,9 +1921,18 @@ impl Default for HubAgg {
 /// associative leak, scores ≈ chance (`1`) or below. `agg` selects how the per-seed signals combine
 /// ([`HubAgg`]; `Pooled` by default). Seeds equal to the candidate are skipped (a cone's self-overlap
 /// is trivially maximal); a seed the candidate does not reconverge with contributes `0` mass, so it
-/// *dilutes* a hub that only funnels a handful of seeds. Sub-resolution seeds (mass `< 1e-9·M`) are
-/// dropped. `0` if the candidate has no sketch / no usable seeds. Rank candidates by this to *select*
-/// hubs the raw (unweighted) overlap would tie or mis-rank (see `rank_mu_fanin_hubs`).
+/// *dilutes* a hub that only funnels a handful of seeds. `0` if the candidate has no sketch / no
+/// usable seeds. Rank candidates by this to *select* hubs the raw (unweighted) overlap would tie or
+/// mis-rank (see `rank_mu_fanin_hubs`).
+///
+/// The candidate and every seed are gated at mass `< 1e-9·M` (`floor`). This is a **numerical
+/// negligibility floor**, not the statistical sketch resolution: it screens out essentially-zero-mass
+/// cones (ghosts, fully out-of-domain) that carry no signal and would divide a near-zero `E` into
+/// noise. It is *not* a domain-tunable knob and is *coarser* than the sketch's own error (KMV relative
+/// error ≈ `1/√k`, e.g. ~6% at `k=256`) — if your application has many small-but-meaningful cones,
+/// gate them at a domain threshold upstream rather than relying on this floor. (Degenerate aside: a
+/// tiny positive `total_mu` makes `floor` collapse toward zero so every cone passes; harmless, since
+/// in that regime all masses are comparable anyway.)
 pub fn mu_fanin_hub_score(
     candidate: u32,
     queries: &[u32],
@@ -1934,7 +1950,7 @@ pub fn mu_fanin_hub_score(
         Some(s) => s.as_slice(),
         None => return 0.0,
     };
-    let floor = 1e-9 * total_mu; // resolution gate (matches sketch_mu_overlap_lift)
+    let floor = 1e-9 * total_mu; // numerical negligibility floor (see doc), matches sketch_mu_overlap_lift
     let m_c = sketch_mu_mass(cs, k, cap);
     if m_c < floor {
         return 0.0;
@@ -1981,8 +1997,10 @@ pub fn rank_mu_fanin_hubs(
         .iter()
         .map(|&c| (c, mu_fanin_hub_score(c, queries, sketches, total_mu, k, cap, agg)))
         .collect();
-    // Descending by score; node id as the deterministic tie-break.
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    // Descending by score; node id as the deterministic tie-break makes the comparator *total*, so
+    // sort_unstable_by is equivalent and cheaper. Scores are finite by construction (every return path
+    // of mu_fanin_hub_score is 0.0 or a finite ratio), so the unwrap_or branch is unreachable.
+    scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
     scored
 }
 
@@ -5256,6 +5274,12 @@ mod tests {
         // But both still select the real hub.
         assert_eq!(pooled[0].0, 10, "pooled ranks real hub first");
         assert_eq!(mean[0].0, 10, "mean ranks real hub first");
+        // ...and the leak hub stays BELOW chance under BOTH aggregators on heterogeneous seeds
+        // (closes the leak-robustness spec: not just out-ranked, genuinely suppressed).
+        let pooled_leak = pooled.iter().find(|(h, _)| *h == 20).unwrap().1;
+        let mean_leak = mean.iter().find(|(h, _)| *h == 20).unwrap().1;
+        assert!(pooled_leak < 1.0, "pooled leak hub below chance ({pooled_leak})");
+        assert!(mean_leak < 1.0, "mean leak hub below chance ({mean_leak})");
     }
 
     // Edge cases: empty seed set ⇒ 0; candidate is the only seed (self-skipped) ⇒ 0; fully disjoint
