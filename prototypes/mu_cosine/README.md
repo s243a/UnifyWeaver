@@ -45,6 +45,18 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
    `lin_from_ic` (the two should converge — `μ(X|root) == Lin(X, root)`, the unification below).
 5. Emit a dense `μ` map (`category → μ`) for the whole graph and feed it to the Rust core.
 
+**Compute & batching (so the GPU sizing is not guessed):**
+- The sampler's **mesh size** (e.g. 324 nodes) is *coverage*, **not** a batch size — it sets label
+  diversity, nothing about training memory. The training **batch** is a count of *pairs* per step, an
+  independent knob.
+- This model is **not memory-bound**: 1 block (~1.77M params ≈ 7 MB) + the 8.2k-cat embedding table
+  (~13 MB) + Adam (~25 MB); activations scale at **~24 KB/pair**. The whole 1.2k-pair set is ~30 MB —
+  you can full-batch it. Choose batch (256–1024) for SGD noise vs. stability, not memory. Bigger
+  batches also give more **in-batch negatives** (SGNS), so prefer larger on a big GPU.
+- The real memory cost is the **embedding table at full Wikipedia scale**: ~1M cats × 384 × 4B ≈
+  1.5 GB (+~3 GB dense Adam). Use **sparse embedding gradients** (only the rows a batch touches) — the
+  lever is the table, not the pair-batch (still 1k–4k).
+
 **Open decisions a follow-up should know:**
 - `n_heads = 16` (not the discussed ~20): 384 is not divisible by 20; its divisors near there are 16
   (24 dims/head) and 24 (16 dims/head). 16 is closest to the target head count — revisit if 24 (more
