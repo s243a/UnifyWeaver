@@ -849,11 +849,16 @@ calibration of the relatedness read-out.)
 >   (product-lift RSE ≈ `√3/√k`), so the read-out gates cones with mass `< 1e-9·M` to `0` (the weighted
 >   resolution limit); gate harder upstream if many small cones are in play. The **selection** step on
 >   top of the pairwise lift is `mu_fanin_hub_score` / `rank_mu_fanin_hubs`: score each candidate node
->   by the *mean* weighted lift of its cone against a query/seed set, then rank descending. This is
->   "pick the hubs," and it inherits the leak-robustness — on a test where a real in-domain hub and a
->   leak hub share *identically-sized* blocks with the seeds (so the *unweighted* mean lift **ties**
->   them at `2.90`), the weighted ranking reads the real hub `3.17` (`> 1`) and the leak hub `0.15`
->   (`< 1`), ranking the real hub first by a 21× margin (`rank_mu_fanin_hubs_picks_real_over_leak`).
+>   by the aggregate weighted lift of its cone against a query/seed set, then rank descending. The
+>   aggregator is a knob (`HubAgg`): **`Pooled`** (default) is the ratio-of-sums `Σobs/ΣE` — the
+>   candidate's lift against the seed set as one aggregate cone, lower-variance and the standard way to
+>   pool enrichment; **`MeanOfRatios`** weights each seed equally (higher variance, leans on the mass
+>   gate). Both inherit the leak-robustness — on a test where a real in-domain hub and a leak hub share
+>   *identically-sized* blocks with the seeds (so the *unweighted* mean lift **ties** them at `2.90`),
+>   the weighted ranking reads the real hub `3.17` (`> 1`) and the leak hub `0.15` (`< 1`), ranking the
+>   real hub first by a 21× margin (`rank_mu_fanin_hubs_picks_real_over_leak`); the two aggregators
+>   diverge only on heterogeneous-size seeds and still agree on the ranking
+>   (`hub_agg_pooled_vs_mean_differ_on_heterogeneous_seeds`).
 > - **Depth-stability** (`mu_weighted_count_is_depth_stable`): the raw cone count *explodes* toward
 >   the root as the leak accumulates (more deep nodes than shallow), but the weighted mass barely
 >   moves because the deep nodes are out-of-domain — on the spine test the raw cone grows `201 → 645`

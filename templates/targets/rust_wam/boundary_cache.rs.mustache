@@ -1883,15 +1883,40 @@ pub fn sketch_mu_overlap_lift(
     sketch_mu_overlap(a, b, k, cap) / expected
 }
 
+/// **How to aggregate the per-seed reconvergence lifts into one hub score.** Both options inherit the
+/// underlying lift's leak-robustness (they sum/average `μ`-weighted shared *mass*, which discounts the
+/// associative leak); they differ in *how seeds of different cone sizes are weighted* and in variance.
+///
+/// - [`HubAgg::Pooled`] — **ratio-of-sums** `Σ obs_i / Σ E_i`: the candidate's total shared in-domain
+///   mass against the total expected, i.e. its lift against the seed set treated as **one aggregate
+///   cone**. Lower variance (a single small-cone seed with a tiny `E_i` cannot spike it — the same
+///   resolution-limit fragility `sketch_mu_overlap_lift` gates against), mass-weighted so larger seeds
+///   count more. The safer **default**, and the standard way to pool enrichment/lift.
+/// - [`HubAgg::MeanOfRatios`] — **mean-of-ratios** `(1/m) Σ obs_i/E_i`: every seed's lift weighted
+///   *equally* regardless of its cone size. Use when each seed is an equally-important query concept
+///   and you do not want big cones to dominate; higher variance (a tiny-cone seed can dominate the
+///   mean), so it leans harder on the mass gate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HubAgg {
+    /// `Σ obs_i / Σ E_i` — pooled, lower-variance, mass-weighted. The default.
+    Pooled,
+    /// `(1/m) Σ obs_i/E_i` — equal weight per seed, higher variance.
+    MeanOfRatios,
+}
+impl Default for HubAgg {
+    fn default() -> Self { HubAgg::Pooled }
+}
+
 /// **μ-weighted fan-in hub score** — aggregate the pairwise reconvergence into a single per-node
-/// number: the *mean* `sketch_mu_overlap_lift` of a candidate's descendant cone against a set of query
-/// (seed) cones. A node that reconverges with *many* queries on *in-domain* mass scores high; one that
-/// reconverges with few, or only on the associative leak, scores ≈ chance (`1`) or below. The mean is
-/// taken over every query whose sketch is present and which is *not* the candidate itself (a cone's
-/// self-overlap is trivially maximal and would swamp the score). Queries the candidate does not
-/// reconverge with contribute `0`, correctly diluting a hub that only funnels a handful of seeds.
-/// `0` if no usable queries. This is the leak-robust selection signal: rank candidates by it to pick
-/// hubs that the raw (unweighted) overlap would tie or mis-rank (see `rank_mu_fanin_hubs`).
+/// number: how much a candidate's descendant cone reconverges (shares *in-domain* mass) with a set of
+/// query (seed) cones, against the mass configuration-model null. A node that reconverges with *many*
+/// seeds on in-domain mass scores high (`> 1`); one that reconverges with few, or only on the
+/// associative leak, scores ≈ chance (`1`) or below. `agg` selects how the per-seed signals combine
+/// ([`HubAgg`]; `Pooled` by default). Seeds equal to the candidate are skipped (a cone's self-overlap
+/// is trivially maximal); a seed the candidate does not reconverge with contributes `0` mass, so it
+/// *dilutes* a hub that only funnels a handful of seeds. Sub-resolution seeds (mass `< 1e-9·M`) are
+/// dropped. `0` if the candidate has no sketch / no usable seeds. Rank candidates by this to *select*
+/// hubs the raw (unweighted) overlap would tie or mis-rank (see `rank_mu_fanin_hubs`).
 pub fn mu_fanin_hub_score(
     candidate: u32,
     queries: &[u32],
@@ -1899,21 +1924,41 @@ pub fn mu_fanin_hub_score(
     total_mu: f64,
     k: usize,
     cap: impl Into<CardCap>,
+    agg: HubAgg,
 ) -> f64 {
     let cap = cap.into();
+    if total_mu <= 0.0 {
+        return 0.0;
+    }
     let cs = match sketches.get(&candidate) {
         Some(s) => s.as_slice(),
         None => return 0.0,
     };
-    let (mut sum, mut count) = (0.0f64, 0usize);
+    let floor = 1e-9 * total_mu; // resolution gate (matches sketch_mu_overlap_lift)
+    let m_c = sketch_mu_mass(cs, k, cap);
+    if m_c < floor {
+        return 0.0;
+    }
+    let (mut sum_obs, mut sum_exp, mut sum_lift, mut count) = (0.0f64, 0.0f64, 0.0f64, 0usize);
     for &q in queries {
         if q == candidate { continue; }
-        if let Some(qs) = sketches.get(&q) {
-            sum += sketch_mu_overlap_lift(cs, qs, total_mu, k, cap);
-            count += 1;
-        }
+        let qs = match sketches.get(&q) { Some(s) => s.as_slice(), None => continue };
+        let m_q = sketch_mu_mass(qs, k, cap);
+        if m_q < floor { continue; } // sub-resolution seed: cannot carry signal, drop it
+        let obs = sketch_mu_overlap(cs, qs, k, cap);
+        let exp = m_c * m_q / total_mu;
+        sum_obs += obs;
+        sum_exp += exp;
+        sum_lift += if exp > 0.0 { obs / exp } else { 0.0 };
+        count += 1;
     }
-    if count == 0 { 0.0 } else { sum / count as f64 }
+    if count == 0 {
+        return 0.0;
+    }
+    match agg {
+        HubAgg::Pooled => if sum_exp > 0.0 { sum_obs / sum_exp } else { 0.0 },
+        HubAgg::MeanOfRatios => sum_lift / count as f64,
+    }
 }
 
 /// **Rank candidate nodes as μ-weighted fan-in hubs** for a query/seed set: score each candidate by
@@ -1921,7 +1966,7 @@ pub fn mu_fanin_hub_score(
 /// id for determinism). The "select the hubs" step the weighted sketch was built toward — leak-robust,
 /// so a hub whose only commonality with the seeds is out-of-domain (the associative leak) sinks to the
 /// bottom even when its raw cone overlap is large. `cap` is the [`CardCap`] policy (`Universe(N)` for a
-/// calibrated score); `total_mu = Σ_all μ` over the sketch universe.
+/// calibrated score); `agg` the [`HubAgg`] aggregator; `total_mu = Σ_all μ` over the sketch universe.
 pub fn rank_mu_fanin_hubs(
     candidates: &[u32],
     queries: &[u32],
@@ -1929,11 +1974,12 @@ pub fn rank_mu_fanin_hubs(
     total_mu: f64,
     k: usize,
     cap: impl Into<CardCap>,
+    agg: HubAgg,
 ) -> Vec<(u32, f64)> {
     let cap = cap.into();
     let mut scored: Vec<(u32, f64)> = candidates
         .iter()
-        .map(|&c| (c, mu_fanin_hub_score(c, queries, sketches, total_mu, k, cap)))
+        .map(|&c| (c, mu_fanin_hub_score(c, queries, sketches, total_mu, k, cap, agg)))
         .collect();
     // Descending by score; node id as the deterministic tie-break.
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
@@ -5160,13 +5206,72 @@ mod tests {
         assert!((unw_score(10) - unw_score(20)).abs() < 1e-6,
             "unweighted hub score ties real and leak: {} vs {}", unw_score(10), unw_score(20));
 
-        // μ-weighted ranking puts the real in-domain hub FIRST.
-        let ranked = rank_mu_fanin_hubs(&candidates, &queries, &w, total_mu, K, CardCap::Universe(n));
+        // μ-weighted ranking puts the real in-domain hub FIRST (default Pooled aggregator).
+        let ranked = rank_mu_fanin_hubs(&candidates, &queries, &w, total_mu, K, CardCap::Universe(n), HubAgg::Pooled);
         eprintln!("hub-ranking: {:?}  (unweighted tie at {:.2})", ranked, unw_score(10));
         assert_eq!(ranked[0].0, 10, "real in-domain hub ranks first");
         assert_eq!(ranked[1].0, 20, "leak hub ranks last");
         assert!(ranked[0].1 > ranked[1].1 * 9.0, "real hub score ~10× the leak hub ({:?})", ranked);
         assert!(ranked[0].1 > 1.0 && ranked[1].1 < 1.0, "real hub > chance, leak hub < chance");
+
+        // Both aggregators agree on the RANKING (the selection is robust to the aggregator choice);
+        // with symmetric seeds they also agree numerically.
+        let ranked_mean = rank_mu_fanin_hubs(&candidates, &queries, &w, total_mu, K, CardCap::Universe(n), HubAgg::MeanOfRatios);
+        assert_eq!(ranked_mean[0].0, 10, "mean-of-ratios also ranks the real hub first");
+        assert!((ranked[0].1 - ranked_mean[0].1).abs() < 1e-9, "symmetric seeds ⇒ pooled == mean");
+    }
+
+    // Pooled vs MeanOfRatios DIFFER when seeds have heterogeneous cone sizes (the knob is live), yet
+    // both still rank the real hub above the leak hub. One big seed (5) and two small seeds (6,7) all
+    // reconverge with hub 10 in-domain and hub 20 on the leak.
+    #[test]
+    fn hub_agg_pooled_vs_mean_differ_on_heterogeneous_seeds() {
+        const K: usize = 256;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for s in [5u32, 6, 7, 10, 20] { mu.insert(s, 1.0); }
+        let mut next = 2000u32;
+        for &h in &[10u32, 20] {
+            for _ in 0..30 { let c = next; next += 1; g.insert(c, vec![h]); mu.insert(c, 1.0); }
+        }
+        // Big seed 5: shares 40 in-domain with 10, 40 leak with 20. Small seeds 6,7: share 4 each.
+        for (&q, share) in [(5u32, 40usize), (6, 4), (7, 4)].iter().map(|(q, s)| (q, *s)) {
+            for _ in 0..share { let c = next; next += 1; g.insert(c, vec![q, 10]); mu.insert(c, 1.0); }
+            for _ in 0..share { let l = next; next += 1; g.insert(l, vec![q, 20]); mu.insert(l, 0.02); }
+        }
+        let froot = next; next += 1; mu.insert(froot, 0.5);
+        for _ in 0..300 { let f = next; next += 1; g.insert(f, vec![froot]); mu.insert(f, 0.5); }
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let n = w.len();
+        let total_mu: f64 = mu.values().sum();
+        let (cands, qs) = ([10u32, 20], [5u32, 6, 7]);
+
+        let pooled = rank_mu_fanin_hubs(&cands, &qs, &w, total_mu, K, n, HubAgg::Pooled);
+        let mean = rank_mu_fanin_hubs(&cands, &qs, &w, total_mu, K, n, HubAgg::MeanOfRatios);
+        eprintln!("hub-agg heterogeneous: pooled {:?}  mean {:?}", pooled, mean);
+        // The knob is live: the two aggregators give different scores for the real hub.
+        let p10 = pooled.iter().find(|(h, _)| *h == 10).unwrap().1;
+        let m10 = mean.iter().find(|(h, _)| *h == 10).unwrap().1;
+        assert!((p10 - m10).abs() > 0.1, "pooled {p10} and mean {m10} differ on heterogeneous seeds");
+        // But both still select the real hub.
+        assert_eq!(pooled[0].0, 10, "pooled ranks real hub first");
+        assert_eq!(mean[0].0, 10, "mean ranks real hub first");
+    }
+
+    // Edge cases: empty seed set ⇒ 0; candidate is the only seed (self-skipped) ⇒ 0; fully disjoint
+    // seeds ⇒ 0 (no reconvergence). None must panic.
+    #[test]
+    fn mu_fanin_hub_score_edge_cases() {
+        const K: usize = 16;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(10, vec![1]); g.insert(20, vec![2]); // disjoint cones under 1 and 2
+        let mu: HashMap<u32, f64> = [(1u32, 1.0), (2, 1.0), (10, 1.0), (20, 1.0)].into_iter().collect();
+        let total_mu: f64 = mu.values().sum();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        assert_eq!(mu_fanin_hub_score(1, &[], &w, total_mu, K, 4usize, HubAgg::Pooled), 0.0, "empty seeds ⇒ 0");
+        assert_eq!(mu_fanin_hub_score(1, &[1], &w, total_mu, K, 4usize, HubAgg::Pooled), 0.0, "only-self seed ⇒ 0");
+        assert_eq!(mu_fanin_hub_score(1, &[2], &w, total_mu, K, 4usize, HubAgg::MeanOfRatios), 0.0, "disjoint seed ⇒ 0");
+        assert_eq!(mu_fanin_hub_score(999, &[1, 2], &w, total_mu, K, 4usize, HubAgg::Pooled), 0.0, "missing candidate ⇒ 0");
     }
 
     // NB6 edge cases: disjoint cones ⇒ lift 0; total_mu=0 ⇒ no panic, lift 0.
