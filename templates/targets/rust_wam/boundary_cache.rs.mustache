@@ -1883,6 +1883,63 @@ pub fn sketch_mu_overlap_lift(
     sketch_mu_overlap(a, b, k, cap) / expected
 }
 
+/// **μ-weighted fan-in hub score** — aggregate the pairwise reconvergence into a single per-node
+/// number: the *mean* `sketch_mu_overlap_lift` of a candidate's descendant cone against a set of query
+/// (seed) cones. A node that reconverges with *many* queries on *in-domain* mass scores high; one that
+/// reconverges with few, or only on the associative leak, scores ≈ chance (`1`) or below. The mean is
+/// taken over every query whose sketch is present and which is *not* the candidate itself (a cone's
+/// self-overlap is trivially maximal and would swamp the score). Queries the candidate does not
+/// reconverge with contribute `0`, correctly diluting a hub that only funnels a handful of seeds.
+/// `0` if no usable queries. This is the leak-robust selection signal: rank candidates by it to pick
+/// hubs that the raw (unweighted) overlap would tie or mis-rank (see `rank_mu_fanin_hubs`).
+pub fn mu_fanin_hub_score(
+    candidate: u32,
+    queries: &[u32],
+    sketches: &std::collections::HashMap<u32, Vec<(u64, f64)>>,
+    total_mu: f64,
+    k: usize,
+    cap: impl Into<CardCap>,
+) -> f64 {
+    let cap = cap.into();
+    let cs = match sketches.get(&candidate) {
+        Some(s) => s.as_slice(),
+        None => return 0.0,
+    };
+    let (mut sum, mut count) = (0.0f64, 0usize);
+    for &q in queries {
+        if q == candidate { continue; }
+        if let Some(qs) = sketches.get(&q) {
+            sum += sketch_mu_overlap_lift(cs, qs, total_mu, k, cap);
+            count += 1;
+        }
+    }
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+/// **Rank candidate nodes as μ-weighted fan-in hubs** for a query/seed set: score each candidate by
+/// `mu_fanin_hub_score` and return `(node, score)` sorted by score *descending* (ties broken by node
+/// id for determinism). The "select the hubs" step the weighted sketch was built toward — leak-robust,
+/// so a hub whose only commonality with the seeds is out-of-domain (the associative leak) sinks to the
+/// bottom even when its raw cone overlap is large. `cap` is the [`CardCap`] policy (`Universe(N)` for a
+/// calibrated score); `total_mu = Σ_all μ` over the sketch universe.
+pub fn rank_mu_fanin_hubs(
+    candidates: &[u32],
+    queries: &[u32],
+    sketches: &std::collections::HashMap<u32, Vec<(u64, f64)>>,
+    total_mu: f64,
+    k: usize,
+    cap: impl Into<CardCap>,
+) -> Vec<(u32, f64)> {
+    let cap = cap.into();
+    let mut scored: Vec<(u32, f64)> = candidates
+        .iter()
+        .map(|&c| (c, mu_fanin_hub_score(c, queries, sketches, total_mu, k, cap)))
+        .collect();
+    // Descending by score; node id as the deterministic tie-break.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    scored
+}
+
 /// **Fuzzy admission curve**: an S-shaped (logistic) transfer from the raw membership `μ` to an
 /// admission weight in `[0,1]`, `w(μ) = 1/(1 + e^{−k(μ−c)})`. Shapes *how* `μ` translates to
 /// admission — nearly-full weight well above the boundary, nearly-zero well below, a smooth knee
@@ -5062,6 +5119,54 @@ mod tests {
         assert!((q_unc / q_c10 - 1.0).abs() < 0.25, "real/leak ranking preserved under cap ({q_unc} vs {q_c10})");
         eprintln!("cap-rescale: real Uncapped {:.2} → C20 {:.2} → C10 {:.2}; ranking q_unc {:.1} q_c10 {:.1}",
             r_unc, r_c20, r_c10, q_unc, q_c10);
+    }
+
+    // THE HUB-SELECTION PAYOFF: rank_mu_fanin_hubs picks the real in-domain hub over a leak-driven
+    // false hub where the UNWEIGHTED ranking ties them. Queries 1,2,3 each reconverge with candidate
+    // 10 on a 15-node IN-DOMAIN block (μ=1) and with candidate 20 on a 15-node LEAK block (μ=0.02).
+    // Both candidates carry 30 private in-domain children, so their cones are the same SIZE (so the
+    // unweighted hub score ties) but the in-domain MASS they share with the seeds differs ~50×.
+    #[test]
+    fn rank_mu_fanin_hubs_picks_real_over_leak() {
+        const K: usize = 256; // > every cone ⇒ exact
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for s in [1u32, 2, 3, 10, 20] { mu.insert(s, 1.0); } // 1,2,3 queries; 10 real hub; 20 leak hub
+        let mut next = 1000u32;
+        // Private in-domain children (μ=1): 30 under each candidate, so the two cones match in size/mass-base.
+        for &h in &[10u32, 20] {
+            for _ in 0..30 { let c = next; next += 1; g.insert(c, vec![h]); mu.insert(c, 1.0); }
+        }
+        // Per query: a 15-node in-domain block shared with hub 10, and a 15-node leak block shared with 20.
+        for &q in &[1u32, 2, 3] {
+            for _ in 0..15 { let c = next; next += 1; g.insert(c, vec![q, 10]); mu.insert(c, 1.0); }   // real core
+            for _ in 0..15 { let l = next; next += 1; g.insert(l, vec![q, 20]); mu.insert(l, 0.02); }  // leak
+        }
+        // Filler universe (small-world background).
+        let froot = next; next += 1; mu.insert(froot, 0.5);
+        for _ in 0..300 { let f = next; next += 1; g.insert(f, vec![froot]); mu.insert(f, 0.5); }
+
+        let d = descendant_minhash(&g, K).unwrap();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let n = d.len();
+        let total_mu: f64 = mu.values().sum();
+        let queries = [1u32, 2, 3];
+        let candidates = [10u32, 20];
+
+        // Unweighted hub score (mean overlap lift on the raw sketches) TIES the two candidates.
+        let unw_score = |h: u32| -> f64 {
+            queries.iter().map(|&q| sketch_overlap_lift(&d[&h], &d[&q], n, K)).sum::<f64>() / 3.0
+        };
+        assert!((unw_score(10) - unw_score(20)).abs() < 1e-6,
+            "unweighted hub score ties real and leak: {} vs {}", unw_score(10), unw_score(20));
+
+        // μ-weighted ranking puts the real in-domain hub FIRST.
+        let ranked = rank_mu_fanin_hubs(&candidates, &queries, &w, total_mu, K, CardCap::Universe(n));
+        eprintln!("hub-ranking: {:?}  (unweighted tie at {:.2})", ranked, unw_score(10));
+        assert_eq!(ranked[0].0, 10, "real in-domain hub ranks first");
+        assert_eq!(ranked[1].0, 20, "leak hub ranks last");
+        assert!(ranked[0].1 > ranked[1].1 * 9.0, "real hub score ~10× the leak hub ({:?})", ranked);
+        assert!(ranked[0].1 > 1.0 && ranked[1].1 < 1.0, "real hub > chance, leak hub < chance");
     }
 
     // NB6 edge cases: disjoint cones ⇒ lift 0; total_mu=0 ⇒ no panic, lift 0.
