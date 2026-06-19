@@ -49,10 +49,14 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
 - The sampler's **mesh size** (e.g. 324 nodes) is *coverage*, **not** a batch size — it sets label
   diversity, nothing about training memory. The training **batch** is a count of *pairs* per step, an
   independent knob.
-- This model is **not memory-bound**: 1 block (~1.77M params ≈ 7 MB) + the 8.2k-cat embedding table
-  (~13 MB) + Adam (~25 MB); activations scale at **~24 KB/pair**. The whole 1.2k-pair set is ~30 MB —
-  you can full-batch it. Choose batch (256–1024) for SGD noise vs. stability, not memory. Bigger
-  batches also give more **in-batch negatives** (SGNS), so prefer larger on a big GPU.
+- This prototype model is **not memory-bound**: 1 block (~1.77M params ≈ 7 MB) + the 8.2k-cat
+  embedding table (~13 MB) + Adam (~25 MB); activations scale at **~24 KB/pair**. The whole 1.2k-pair
+  set is ~30 MB — you can full-batch it. Choose batch (256–1024) for SGD noise vs. stability, not
+  memory. Bigger batches also give more **in-batch negatives** (SGNS), so prefer larger on a big GPU.
+- Activations/pair scale with `layers × seq_len × 2`, so a **500 MB activation budget** holds
+  ~20k pairs for this 1-layer single-token model, ~3k for a 6-layer single-token one, ~200 for a
+  6-layer name-token-sequence one — all comfortable batches. Don't assume the prototype's tiny
+  footprint if you deepen the model or feed token sequences.
 - The real memory cost is the **embedding table at full Wikipedia scale**: ~1M cats × 384 × 4B ≈
   1.5 GB (+~3 GB dense Adam). Use **sparse embedding gradients** (only the rows a batch touches) — the
   lever is the table, not the pair-batch (still 1k–4k).
