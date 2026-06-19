@@ -832,7 +832,22 @@ calibration of the relatedness read-out.)
 >   bottom-`k` intersection, weighted). A funnel hub is one many cones reach, but a weighted funnel
 >   discounts the associative leak — cones overlapping only on low-μ descendants score ≈ 0 — so hub
 >   selection stops being fooled by the leak. (Measured: core-shared overlap `3.00` vs leak-shared
->   `0.15`.)
+>   `0.15`.) The **hub-selection read-out** built on this is `sketch_mu_overlap_lift`, the μ-weighted
+>   analogue of `sketch_overlap_lift`: shared mass against the *mass* configuration-model null
+>   `E = m_A·m_B / M` — the **weighted configuration model** of Barrat et al. (2004) / Newman (2004),
+>   `s_i·s_j/2W` with admitted mass as the strength `s` — so `lift > 1` is an excess in-domain funnel
+>   and `lift ≈ 1` is the small-world background. In the **exact (`k ≥ |cone|`) regime** `μ ≡ 1`
+>   reduces *exactly* to the unweighted lift (under saturation the weighted path applies the cap and
+>   the unweighted does not, so the reduction is then only approximate). This is where the leak finally
+>   bites the *global* signal and the weighting pays off: on a test (exact regime) with a real
+>   in-domain hub and a leak-driven false hub of **identical cone sizes** — so identical *unweighted*
+>   lift (`4.01` both, fooled) — the weighted lift reads the real hub `2.50` (excess funnel, `> 1`) and
+>   the leak hub `0.25` (*below* chance, correctly suppressed), a 10× separation
+>   (`mu_overlap_lift_separates_real_hub_from_leak_hub`); the discrimination survives sketch saturation
+>   (`mu_overlap_lift_saturated_regime_and_cap_is_live`, `k=32`: real `2.33`, leak `0.18`). The
+>   unweighted lift cannot tell them apart. *Caveat:* the lift is high-variance for tiny cones
+>   (product-lift RSE ≈ `√3/√k`), so the read-out gates cones with mass `< 1e-9·M` to `0` (the weighted
+>   resolution limit); gate harder upstream if many small cones are in play.
 > - **Depth-stability** (`mu_weighted_count_is_depth_stable`): the raw cone count *explodes* toward
 >   the root as the leak accumulates (more deep nodes than shallow), but the weighted mass barely
 >   moves because the deep nodes are out-of-domain — on the spine test the raw cone grows `201 → 645`
@@ -1244,6 +1259,11 @@ Each is referenced inline at the section that uses it.
 - Ioffe, S. (2010). *Improved Consistent Sampling, Weighted Minhash and L1 Sketching.* ICDM 2010. —
   Weighted MinHash (weight baked into the hash to estimate weighted Jaccard `J_w`); contrasted with
   the *carry-weight KMV* of `descendant_minhash_weighted`, which estimates weighted mass, not `J_w`.
+- Barrat, A., Barthélemy, M., Pastor-Satorras, R., & Vespignani, A. (2004). *The Architecture of
+  Complex Weighted Networks.* PNAS 101(11). — the weighted-network strength `s_i`; with Newman 2004
+  the `s_i·s_j/2W` weighted configuration-model null that `sketch_mu_overlap_lift` uses (mass = strength).
+- Newman, M. E. J. (2004). *Analysis of Weighted Networks.* Phys. Rev. E 70, 056131
+  (arXiv:cond-mat/0408187). — weighted modularity / the weighted configuration-model expectation.
 
 **2-hop cover / hub labeling and landmark distance (§5c, roadmap 3f).**
 - Cohen, E., Halperin, E., Kaplan, H., & Zwick, U. (2002/2003). *Reachability and Distance
