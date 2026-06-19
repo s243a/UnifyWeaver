@@ -1648,28 +1648,39 @@ pub fn information_content(dsig: &[u64], n_total: usize, k: usize) -> f64 {
 }
 
 /// **μ-weighted ("partial admission") information content.** Standard `IC` counts every descendant
-/// as `1`; here each node is admitted with weight `μ ∈ [0,1]`, so `IC_μ(t) = −log₂( m_μ(t) / M_μ )`
-/// with `m_μ(t) = Σ_{d∈desc(t)} μ_d` the admitted mass under `t` and `M_μ = Σ_all μ` the total. Low-μ
-/// (out-of-domain / leaked) descendants barely count, so a *domain* node whose cone is bloated by
-/// the associative leak — which the raw `IC` mistakes for *generality* (a big cone → low IC) — has
-/// its effective cone shrunk back to its in-domain size and its IC *raised* to its true specificity.
-/// `μ ≡ 1` recovers `information_content`. (`m_μ` is the **distinct** weighted mass; see
-/// `descendant_mu_mass`.)
+/// as `1`; here each node is admitted with weight `μ ∈ [0,1]`, so `IC_μ(t) = −log₂( m_μ(t) / D )`
+/// with `m_μ(t) = Σ_{d∈desc(t)} μ_d` the admitted mass under `t`. Low-μ (out-of-domain / leaked)
+/// descendants barely count, so a *domain* node whose cone is bloated by the associative leak — which
+/// the raw `IC` mistakes for *generality* (a big cone → low IC) — has its effective cone shrunk back
+/// to its in-domain size. `μ ≡ 1` recovers `information_content`. (`m_μ` is the **distinct** weighted
+/// mass; see `descendant_mu_mass`.)
+///
+/// **The denominator `D` is a choice of *reference universe*, and it is the caller's** (the second
+/// argument). Two principled options, identical at `μ ≡ 1` (then `Σμ = N`), differing by the constant
+/// offset `log₂(N/Σμ)` otherwise:
+/// - **`D = N`, the raw node count** — the *direct* generalization of intrinsic IC (`−log₂(|desc|/N)`
+///   with the count μ-weighted, universe unchanged). Absolute generality against the full graph; a
+///   node whose cone sweeps *all* in-domain mass is **not** pinned to `IC = 0` (it gets `−log₂(Σμ/N) >
+///   0`). Prefer this for generality / leak read-outs.
+/// - **`D = Σμ`, the total admitted mass** — the in-domain-*conditional* IC ("IC within the in-domain
+///   world"), `IC = 0` at the in-domain root. Prefer this for μ-weighted *similarity* (Lin/FaITH),
+///   which the `N`-offset would compress toward 1. (`Σμ ≤ N`, so this gives larger IC values.)
+/// Either way `D > 0` and `m_μ ≤ D` are required.
 ///
 /// **Boundary semantics** (the two limits are *opposite*, so we do not collapse both to `0`):
 /// - `desc_mu_mass = 0` with `total_mu > 0` is a genuinely *empty* (fully out-of-domain) cone —
 ///   `p = 0`, so `IC = −log₂ 0 = +∞`, the maximal-surprise limit. We return `f64::INFINITY`, not
 ///   `0.0` (which would wrongly read as *root-like / fully general*, the exact inversion of an
 ///   empty cone). Callers that aggregate IC should treat `+∞` as "drop / out of domain".
-/// - `total_mu ≤ 0` is a precondition violation (no admitted mass anywhere ⇒ no probability space):
-///   `IC` is undefined. `debug_assert` catches it in tests; release returns `0.0` as a safe inert
-///   fallback. `total_mu` must be `Σ_all μ` (the full universe mass), with `desc_mu_mass ≤ total_mu`.
+/// - `total_mu ≤ 0` (the denominator `D`) is a precondition violation (no universe ⇒ no probability
+///   space): `IC` is undefined. `debug_assert` catches it in tests; release returns `0.0` as a safe
+///   inert fallback. `D` must be the chosen reference universe (`N` or `Σμ`), with `desc_mu_mass ≤ D`.
 pub fn information_content_weighted(desc_mu_mass: f64, total_mu: f64) -> f64 {
-    debug_assert!(total_mu > 0.0, "total_mu must be the positive universe mass Σ_all μ");
+    debug_assert!(total_mu > 0.0, "denominator (reference universe N or Σμ) must be positive");
     debug_assert!(desc_mu_mass >= 0.0, "desc_mu_mass is a sum of μ≥0 and cannot be negative");
     debug_assert!(
         desc_mu_mass <= total_mu + 1e-9,
-        "desc_mu_mass ({desc_mu_mass}) exceeds total_mu ({total_mu}); total_mu is not Σ_all μ"
+        "desc_mu_mass ({desc_mu_mass}) exceeds the denominator ({total_mu}); m_μ ≤ {{N or Σμ}} required"
     );
     if total_mu <= 0.0 {
         return 0.0; // undefined universe; inert fallback (see doc)
@@ -1889,6 +1900,31 @@ pub fn sketch_mu_mass(s: &[(u64, f64)], k: usize, cap: impl Into<CardCap>) -> f6
 /// distinction matters.
 pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: usize, cap: impl Into<CardCap>) -> f64 {
     information_content_weighted(sketch_mu_mass(s, k, cap.into()).min(total_mu), total_mu)
+}
+
+/// **Cone purity — the fan-in-hub leak detector.** The in-domain *fraction* of a node's descendant
+/// cone: `purity = m_μ(desc) / |desc|` ∈ `[0,1]`, the admitted (weighted) mass over the raw distinct
+/// cone size. A **leak conduit** has *low* purity — a huge cone that is mostly *out-of-domain* — while
+/// a clean in-domain region has *high* purity. This is the structural signature of the associative
+/// leak: a universal fan-in hub (a node everything funnels up into, so its down-cone is everything)
+/// pulls a vast, semantically scattered cone into the domain, and purity measures exactly how diluted
+/// that cone is.
+///
+/// **Complement to μ-weighted IC, and it catches a leak IC cannot.** IC `−log₂(m_μ/Σμ)` measures cone
+/// *size* (specificity); purity measures cone *in-domain fraction* (leak-ness). A *total*-leak conduit
+/// whose bloated cone re-encompasses **all** in-domain mass reads as maximally general by IC (`m_μ ≈
+/// Σμ ⇒ IC ≈ 0`) — IC is blind to it — yet purity flags it immediately (`m_μ / |desc| ≈ 0`, because
+/// it divides by the *raw* cone size). On the real Wikipedia graph `Matter` (μ=1, a genuine physics
+/// concept) has `IC_w = 0.00` but `purity = 0.0044`, vs `Thermodynamics` `purity = 0.112` (25×).
+///
+/// *Measurement caveat:* feed `weighted_mass` from the **exact** `descendant_mu_mass` (or a large `k`)
+/// for big cones — a sparse μ-signal (few scored nodes in a vast cone) underflows a small MinHash
+/// sample, which happens to read leak conduits as `≈0` purity (qualitatively right, but not precise).
+pub fn cone_purity(weighted_mass: f64, raw_cone_size: f64) -> f64 {
+    if raw_cone_size <= 0.0 {
+        return 0.0;
+    }
+    (weighted_mass / raw_cone_size).min(1.0)
 }
 
 /// **μ-weighted cone-overlap mass** — the global-hub read-out. Estimates `Σ_{d∈A∩B} μ_d`, the
@@ -5027,6 +5063,106 @@ mod tests {
             assert!(descendant_minhash_weighted(&cond.parents, &cmu, K).is_some(), "weighted sketch builds on condensed real graph");
             eprintln!("scc: μ lift preserved Σμ={:.1} over {} scored nodes; weighted sketch built", b, mu.len());
         }
+    }
+
+    // Cone PURITY as a leak detector. A LEAK CONDUIT — an in-domain node (μ=1) with a huge
+    // out-of-domain subtree — has low purity; a CLEAN hub (in-domain subtree) has high purity.
+    #[test]
+    fn cone_purity_separates_leak_conduit_from_clean_hub() {
+        const K: usize = 256;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        let mut next = 100u32;
+        // Leak conduit L=1 (μ=1) over 100 OUT-of-domain children (μ=0): cone 101, mass ~1, purity ~0.01.
+        mu.insert(1, 1.0);
+        for _ in 0..100 { let c = next; next += 1; g.insert(c, vec![1]); mu.insert(c, 0.0); }
+        // Clean hub C=2 (μ=1) over 10 IN-domain children (μ=1): cone 11, mass 11, purity 1.0.
+        mu.insert(2, 1.0);
+        for _ in 0..10 { let c = next; next += 1; g.insert(c, vec![2]); mu.insert(c, 1.0); }
+
+        let mass = descendant_mu_mass(&g, &mu);      // exact in-domain mass
+        let d = descendant_minhash(&g, K).unwrap();  // raw cone size
+        let pur = |h: u32| cone_purity(mass[&h], sketch_card(&d[&h], K));
+        let (p_leak, p_clean) = (pur(1), pur(2));
+        eprintln!("purity: leak conduit {:.3} vs clean hub {:.3}", p_leak, p_clean);
+        assert!(p_leak < 0.05, "leak conduit has low purity ({p_leak})");
+        assert!(p_clean > 0.95, "clean hub has high purity ({p_clean})");
+        assert!(p_clean > p_leak * 10.0, "purity separates them by >10×");
+        // Note: the leak conduit's cone (101) is LARGER than the clean hub's (11) — raw cone size
+        // mistakes it for a bigger/more-general hub; purity inverts that, exposing the leak.
+        assert!(sketch_card(&d[&1], K) > sketch_card(&d[&2], K), "the leak conduit's RAW cone is bigger");
+    }
+
+    // Gated real-data validation of the fan-in/leak hypothesis on the condensed Wikipedia graph:
+    // the universal fan-in hubs (Matter, Physical_objects — descendant cone ≈ the whole graph) are
+    // LEAK CONDUITS with tiny purity, while clean physics nodes (Thermodynamics, Physical_quantity)
+    // have ≥20× higher purity. Crucially purity flags Matter (a μ=1 physics concept whose leaked cone
+    // re-encompasses ALL in-domain mass) which μ-weighted IC reads as maximally general (IC≈0).
+    // Exact masses (the sparse μ-signal underflows a MinHash sample on huge cones). Gated on
+    // UW_CATEGORY_TSV + UW_FUZZY_NODES.
+    #[test]
+    fn wikipedia_cone_purity_flags_leak_conduits() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("purity: skip (UW_CATEGORY_TSV)"); return; } };
+        let fz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("purity: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str| *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 });
+            let ci = intern(c); let pi = intern(p);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for l in std::fs::read_to_string(&fz).expect("read fuzzy").lines() {
+            if l.trim_start().starts_with('#') { continue; }
+            let mut it = l.split('\t');
+            if let (Some(nm), Some(m)) = (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                if let Some(&i) = ids.get(nm.trim()) { mu.insert(i, m); }
+            }
+        }
+        const K: usize = 128;
+        let cond = condense_scc(&parents);
+        let cmu = lift_mu_to_components(&mu, &cond);
+        let mass = descendant_mu_mass(&cond.parents, &cmu); // EXACT (avoid the sparse-sample underflow)
+        let d = descendant_minhash(&cond.parents, K).unwrap();
+        // IC denominator is the RAW universe size N (component count) — the direct μ-generalization of
+        // intrinsic IC `−log₂(m_μ/N)`: μ weights the numerator count, N stays the reference universe.
+        // (Normalizing by Σμ instead would be the in-domain-CONDITIONAL IC — reserved for μ-weighted
+        // similarity, where the offset log₂(N/Σμ) matters; here we want absolute generality.)
+        let n_universe = cond.members.len() as f64;
+        let stat = |nm: &str| -> Option<(f64, f64)> { // (purity, IC)
+            let c = cond.comp[ids.get(nm)?];
+            let cone = sketch_card(&d[&c], K);
+            Some((cone_purity(mass[&c], cone), information_content_weighted(mass[&c], n_universe)))
+        };
+        let leaks = ["Matter", "Physical_objects", "Astronomical_objects", "Time"];
+        let clean = ["Thermodynamics", "Physical_quantity", "Atoms", "States_of_matter"];
+        let mut leak_max = 0.0f64;
+        for nm in leaks { if let Some((p, ic)) = stat(nm) {
+            eprintln!("purity[leak]  {:20} {:.4}  IC {:.2}", nm, p, ic);
+            leak_max = leak_max.max(p);
+        }}
+        let mut clean_min = 1.0f64;
+        for nm in clean { if let Some((p, ic)) = stat(nm) {
+            eprintln!("purity[clean] {:20} {:.4}  IC {:.2}", nm, p, ic);
+            clean_min = clean_min.min(p);
+        }}
+        // Purity STRICTLY separates leak conduits from clean physics nodes.
+        assert!(leak_max < clean_min, "every leak conduit is strictly less pure than every clean node (floor {clean_min} > ceil {leak_max})");
+        assert!(clean_min > leak_max * 4.0, "clean physics ≥4× purer than the leakiest conduit (measured ~4.85×)");
+        // IC does NOT — it tracks in-domain MASS, not leak-ness, so leak conduits straddle a clean
+        // node in IC rank: Matter (huge in-domain mass) reads as MORE general than the clean Atoms,
+        // while Astronomical_objects (tiny in-domain mass) reads as MORE specific. Two leak conduits
+        // on opposite sides of a clean node ⇒ IC cannot isolate the leak; purity can.
+        let (ic_matter, ic_astro, ic_atoms) = (stat("Matter").unwrap().1, stat("Astronomical_objects").unwrap().1, stat("Atoms").unwrap().1);
+        assert!(ic_matter < ic_atoms && ic_atoms < ic_astro,
+            "IC straddles a clean node with leaks: Matter {ic_matter:.2} < Atoms {ic_atoms:.2} < Astronomical {ic_astro:.2}");
     }
 
     // μ-weighted KMV sketch: the scalable companion to the exact descendant_mu_mass. With k >> cone

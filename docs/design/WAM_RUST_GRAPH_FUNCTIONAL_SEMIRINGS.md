@@ -865,6 +865,26 @@ calibration of the relatedness read-out.)
 >   (+444) while the μ-mass grows only `5 → 18` (+13), ~3% of the raw growth. So the **weighted count
 >   converges as you descend** where the raw count diverges: a depth-robust global signal, which is
 >   the property the global hub problem needs.
+> - **Cone purity — a structural leak detector** (`cone_purity`, validated on real data,
+>   `wikipedia_cone_purity_flags_leak_conduits`). `purity = m_μ(desc) / |desc|` — the in-domain
+>   *fraction* of a node's cone. The leak conduits are **generic apex nodes** with a vast, mostly
+>   out-of-domain descendant cone: on the real Wikipedia graph `Matter` and `Physical_objects` (which
+>   share an SCC) have a descendant cone of essentially the whole graph, purity `0.0045` vs clean
+>   physics nodes (`Thermodynamics`, `Physical_quantity`) at `0.112` (25×), and *every* clean node is
+>   strictly purer than *every* leak conduit. **Purity catches what IC cannot**, but the precise reason
+>   matters: `IC` tracks in-domain *mass*, which is unrelated to leak-ness, so the leak conduits
+>   *straddle* a clean node in IC rank — `Matter` (huge in-domain mass) reads as **more general** than
+>   the clean `Atoms`, while `Astronomical_objects` (tiny in-domain mass) reads as **more specific** —
+>   two leak conduits on opposite sides of a clean node, so IC ordering cannot isolate the leak.
+>   *Note on the IC denominator:* the read-out uses `−log₂(m_μ/N)` (raw node count `N`, the direct
+>   μ-generalization of intrinsic IC), so `Matter` is `7.76`, **not** the misleading `0` that the
+>   in-domain-conditional denominator `Σμ` produces. *(Two structural caveats: immediate fan-out (child
+>   count) is **not** the signal — `Astronomical_objects` has 1 child but a 5270-node cone; and fan-in
+>   (#parents) **anti**-correlates with cone size (−0.10) — leak conduits are *low* fan-in generic
+>   nodes, not high fan-in. The leak is a transitive descendant-cone-diversity phenomenon. A purely
+>   structural proxy, child-cone coherence, partly detects the "union vs intersection" character of
+>   such nodes but cannot separate a diverse in-domain hub from a diverse leak bucket — only `μ` can,
+>   which is why purity needs the membership signal.)*
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
