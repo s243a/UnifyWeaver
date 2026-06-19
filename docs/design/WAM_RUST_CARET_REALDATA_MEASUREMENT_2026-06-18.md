@@ -316,11 +316,23 @@ the degenerate zero and reads as absolute generality against the whole graph. (`
 denominator for μ-weighted *similarity* — Lin/FaITH — where the offset would compress scores toward 1;
 that read-out is future work.)
 
-**What μ-weighting does and does not fix.** It cancels the **out-of-domain** leak (biology, geography
-descendants contribute `0`). It does **not** fix the **in-domain** leak: `Matter`'s cone wrongly
-contains other physics concepts (`Energy`, `Optics`) which are genuinely in-domain (`μ=1`), so they
-*are* counted — membership can't veto a bad *edge*. That residual is why `Matter` still ranks most-
-general, and why the robust real-data answer remains the **per-pair bidirectional bridge** (or
-bounded-depth scoping), not the global descendant cone. A distance-discounted descendant mass (down-
-weighting in-domain nodes reached only via long leak paths) is the candidate mechanism to attack it,
-and is deferred future work.
+**What μ-*weighting* does and does not fix — and what μ-*gating* does.** Down-weighting cancels the
+**out-of-domain** leak (biology, geography descendants contribute `0`) but does **not** fix the
+**in-domain** leak: it sums over the whole transitively-closed cone, so a high-`μ` node reachable only
+*through* an out-of-domain node is still counted — membership can't veto a bad *edge* while the
+traversal stays downward-closed.
+
+**The fix is μ-gating** (`descendant_mu_mass_gated`, `wikipedia_mu_gating_cuts_the_in_domain_leak`):
+**prune** the traversal at the membership frontier — descend into a child only while `μ ≥ threshold`.
+A branch that falls out of the domain is cut and never explored, so the cone becomes the in-domain
+*neighborhood* rather than the transitive closure. On the real graph, gating `Matter` at `μ ≥ 0.3`
+collapses its cone from **≈8328 nodes (purity `0.005`) to 48 nodes (purity `0.76`)** while *retaining*
+the in-domain mass — the leak is **cut, not just down-weighted** — and the gated cones nest sensibly
+(`Matter` spans more in-domain mass than `Energy`), so an in-domain IC/hierarchy becomes legible
+again. The price is structural and exactly as expected: the gated cone is **no longer downward-closed
+in the raw DAG** (you give up the raw transitive-subset *closure* for *domain coherence*) — the
+membership field bends the cone, and "what is under X" becomes an in-domain-geodesic question. It is
+the adaptive, membership-aware form of bounded-depth scoping. *Density caveat:* gating defaults absent
+nodes to `μ=0`, so it only stays connected if every in-domain *connector* is scored; here the scored
+physics nodes form a connected high-`μ` subgraph so it does not over-prune, but a sparser domain would
+need denser `μ`.

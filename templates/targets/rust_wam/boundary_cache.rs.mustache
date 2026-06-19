@@ -1734,6 +1734,76 @@ pub fn descendant_mu_mass(
     out
 }
 
+/// **μ-gated descendant cone** — `descendant_mu_mass` with a *membership frontier*. Instead of summing
+/// `μ` over the whole transitively-closed cone (which down-*weights* the leak but still traverses it),
+/// this **prunes** the traversal: it descends into a child only if `μ(child) ≥ threshold`, so a branch
+/// that falls out of the domain is cut at the frontier and never explored. The root is always kept.
+/// Returns `(gated_mass, gated_cone_size)` per node — mass for a μ-weighted IC over the *bounded*
+/// cone, size for the in-domain neighborhood it spans (and `gated_mass / gated_cone_size` is a gated
+/// purity).
+///
+/// This attacks the **in-domain leak** that plain μ-weighting cannot: a high-`μ` node reachable only
+/// *through* a low-`μ` (out-of-domain) node is **excluded** — you can't get to it without leaving the
+/// domain — whereas `descendant_mu_mass` counts it. The gated cone is therefore **no longer downward-
+/// closed in the raw DAG** (a node past the frontier is dropped even though raw reachability puts it
+/// "under" the root): you trade the raw transitive-subset *closure* for **domain coherence**. It is
+/// the adaptive, membership-aware generalization of bounded-depth scoping — cut at the μ-frontier, not
+/// a fixed depth. `threshold ≤ 0` (or `μ ≡ 1`) recovers `descendant_mu_mass`'s full cone (a *negative*
+/// threshold is silently equivalent to `0`, since `μ ≥ 0`). The gate is `≥`, so a node at *exactly*
+/// `μ = threshold` is **admitted**.
+///
+/// **Well-defined, path-independent membership.** A node is in the gated cone iff *some* root→node path
+/// has every node above `threshold`; membership therefore does not depend on BFS order (the `μ ≥
+/// threshold` test is a node property, and the `seen` set only dedups). A node reachable by *both* an
+/// in-domain and an out-of-domain path is **included** — the in-domain path admits it.
+///
+/// **Cost & coverage.** Exact, `O(V·(V+E))` (a gated BFS per node) — the same shape as
+/// `descendant_mu_mass`; a *gated KMV sketch* is the scalable analogue (future work). Output keys are
+/// the nodes that appear in `parents` (as child or parent); a node present only in `mu` but in no edge
+/// (isolated) is **absent from the output**, exactly as in `descendant_mu_mass`.
+///
+/// **Density caveat (and mitigation):** absent nodes default to `μ = 0`, so they gate *out*. The
+/// frontier only stays coherent if every in-domain *connector* is scored; with a sparse `μ` it can
+/// prune through unscored gaps and disconnect the region. (On the real Wikipedia physics set the
+/// scored nodes form a connected high-`μ` subgraph, so this does not bite — `Matter`'s cone shrinks
+/// from ≈8000 to 48 with the in-domain mass retained.) If permissive traversal through *uncertain*
+/// regions is preferred over pruning, give unscored connectors a neutral `μ` (e.g. `0.5`) so they pass
+/// a `0.3` gate but contribute little mass.
+pub fn descendant_mu_mass_gated(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+) -> std::collections::HashMap<u32, (f64, u32)> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    debug_assert!(mu.values().all(|&w| w >= 0.0), "weights must be ≥ 0");
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); children.entry(p).or_default().push(c); }
+    }
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let mut out: HashMap<u32, (f64, u32)> = HashMap::new();
+    for &t in &nodes {
+        let mut seen: HashSet<u32> = HashSet::new();
+        seen.insert(t);
+        let mut q: VecDeque<u32> = VecDeque::new();
+        q.push_back(t);
+        let mut mass = muv(t);
+        while let Some(x) = q.pop_front() {
+            if let Some(cs) = children.get(&x) {
+                // Descend only into children that are still in-domain (μ ≥ threshold): prune the frontier.
+                for &c in cs {
+                    let mu_c = muv(c);
+                    if mu_c >= threshold && seen.insert(c) { mass += mu_c; q.push_back(c); }
+                }
+            }
+        }
+        out.insert(t, (mass, seen.len() as u32));
+    }
+    out
+}
+
 /// **μ-weighted descendant KMV sketch** — the scalable companion to `descendant_mu_mass`. Where
 /// `descendant_mu_mass` does an exact per-node BFS (`O(V·(V+E))`), this builds *every* node's sketch
 /// in **one reverse-topological pass** (`O((V+E)·k)`), the same shape as `descendant_minhash`. Each
@@ -4893,6 +4963,59 @@ mod tests {
         assert!((0.0..=1.0).contains(&j));
     }
 
+    // μ-GATING cuts an IN-DOMAIN leak that plain μ-weighting leaves in. Graph: root 0 has an
+    // in-domain child A=1 (μ=1) and an out-of-domain node L=2 (μ=0); B=3 (μ=1, in-domain) hangs under
+    // L — so B is reachable from the root ONLY by passing through the out-of-domain L. Plain mass
+    // counts B (1+1+0+1=3); the gate prunes at L (μ<0.3) so B is never reached (1+1=2).
+    #[test]
+    fn descendant_mu_mass_gated_cuts_in_domain_leak() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![2]); // A=1,L=2 under 0; B=3 under L
+        let mu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0), (2, 0.0), (3, 1.0)].into_iter().collect();
+
+        let plain = descendant_mu_mass(&g, &mu);
+        assert!((plain[&0] - 3.0).abs() < 1e-9, "plain mass counts B via the leak: got {}", plain[&0]);
+
+        let gated = descendant_mu_mass_gated(&g, &mu, 0.3);
+        let (mass, size) = gated[&0];
+        assert!((mass - 2.0).abs() < 1e-9, "gated prunes at L ⇒ B excluded: mass {mass}");
+        assert_eq!(size, 2, "gated cone of root = {{0, A}} (L and B pruned)");
+        // The directly-in-domain child A is still reached; the leak path is what's cut.
+        assert!((descendant_mu_mass_gated(&g, &mu, 0.3)[&1].0 - 1.0).abs() < 1e-9);
+        // threshold ≤ 0 recovers the full descendant_mu_mass cone (no gating).
+        let full = descendant_mu_mass_gated(&g, &mu, 0.0);
+        assert!((full[&0].0 - plain[&0]).abs() < 1e-9, "threshold 0 recovers descendant_mu_mass");
+    }
+
+    // μ-gating corner cases (review): MULTI-PATH (in-domain path wins over a pruned one), μ == threshold
+    // is inclusive, all-pruned (threshold > max μ), and an isolated node (in μ, not in the edge set).
+    #[test]
+    fn descendant_mu_mass_gated_corner_cases() {
+        // C=3 is a child of BOTH the in-domain A=1 and the out-of-domain L=2. The L-path is pruned,
+        // but the A-path admits C — membership is "exists an all-in-domain path", path-independent.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![1, 2]);
+        let mu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0), (2, 0.0), (3, 1.0)].into_iter().collect();
+        let (m, sz) = descendant_mu_mass_gated(&g, &mu, 0.3)[&0];
+        assert_eq!(sz, 3, "C reached via the in-domain path A even though the L-path is pruned");
+        assert!((m - 3.0).abs() < 1e-9, "mass = 0 + A + C (L excluded)");
+
+        // μ == threshold is admitted (gate is `≥`).
+        let mut g2: HashMap<u32, Vec<u32>> = HashMap::new(); g2.insert(1, vec![0]);
+        let mu2: HashMap<u32, f64> = [(0u32, 1.0), (1, 0.3)].into_iter().collect();
+        assert_eq!(descendant_mu_mass_gated(&g2, &mu2, 0.3)[&0].1, 2, "μ == threshold is included");
+
+        // All-pruned: threshold above every μ ⇒ each cone is just its root.
+        let allprune = descendant_mu_mass_gated(&g, &mu, 1.5);
+        assert_eq!(allprune[&0].1, 1, "threshold > max μ ⇒ cone = {{root}}");
+        assert!((allprune[&0].0 - mu[&0]).abs() < 1e-9);
+
+        // Isolated node (present in μ but in no edge) is absent from the output — no panic.
+        let mut mu3 = mu.clone(); mu3.insert(99, 1.0);
+        assert!(descendant_mu_mass_gated(&g, &mu3, 0.3).get(&99).is_none(),
+            "a node absent from `parents` does not appear in the output");
+    }
+
     // μ-weighted ("partial admission") IC + the fuzzy S-curve admission. A leaky graph: physics
     // node 1 (μ=1) has a cone of mostly LEAKED low-μ descendants (3,4,5,6 at μ=0.1); physics node 2
     // (μ=1) is a clean leaf. Raw IC mistakes node 1's big leaked cone for generality (low IC);
@@ -5163,6 +5286,63 @@ mod tests {
         let (ic_matter, ic_astro, ic_atoms) = (stat("Matter").unwrap().1, stat("Astronomical_objects").unwrap().1, stat("Atoms").unwrap().1);
         assert!(ic_matter < ic_atoms && ic_atoms < ic_astro,
             "IC straddles a clean node with leaks: Matter {ic_matter:.2} < Atoms {ic_atoms:.2} < Astronomical {ic_astro:.2}");
+    }
+
+    // μ-GATING cuts the leak on real data where plain μ-weighting only down-weights it. Matter's RAW
+    // descendant cone is ≈ the whole graph (≈8000 nodes, purity ≈0.005); gating at μ≥0.3 prunes the
+    // out-of-domain branches at the frontier, collapsing the cone to a small in-domain neighborhood
+    // (≈48 nodes) that RETAINS the in-domain mass — so gated purity jumps from ≈0.005 to >0.5. The
+    // scored physics nodes form a connected high-μ subgraph, so the gate does not over-prune here.
+    // Gated on UW_CATEGORY_TSV + UW_FUZZY_NODES.
+    #[test]
+    fn wikipedia_mu_gating_cuts_the_in_domain_leak() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("gate: skip (UW_CATEGORY_TSV)"); return; } };
+        let fz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("gate: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str| *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 });
+            let ci = intern(c); let pi = intern(p);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for l in std::fs::read_to_string(&fz).expect("read fuzzy").lines() {
+            if l.trim_start().starts_with('#') { continue; }
+            let mut it = l.split('\t');
+            if let (Some(nm), Some(m)) = (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                if let Some(&i) = ids.get(nm.trim()) { mu.insert(i, m); }
+            }
+        }
+        const K: usize = 128;
+        let cond = condense_scc(&parents);
+        let cmu = lift_mu_to_components(&mu, &cond);
+        let raw_mass = descendant_mu_mass(&cond.parents, &cmu);
+        let gated = descendant_mu_mass_gated(&cond.parents, &cmu, 0.3);
+        let d = descendant_minhash(&cond.parents, K).unwrap();
+        let matter = cond.comp[ids.get("Matter").expect("Matter present")];
+
+        let raw_cone = sketch_card(&d[&matter], K);
+        let (g_mass, g_size) = gated[&matter];
+        let raw_purity = cone_purity(raw_mass[&matter], raw_cone);
+        let gated_purity = cone_purity(g_mass, g_size as f64);
+        eprintln!("gate: Matter raw cone {:.0} (purity {:.4}) → gated cone {} mass {:.1} (purity {:.3})",
+            raw_cone, raw_purity, g_size, g_mass, gated_purity);
+
+        assert!(raw_cone > 5000.0, "Matter's raw cone is ≈ the whole graph ({raw_cone})");
+        assert!((g_size as f64) < 200.0, "gating collapses the cone to a small in-domain neighborhood ({g_size})");
+        assert!(g_mass > 30.0, "the gated cone RETAINS the in-domain mass ({g_mass})");
+        assert!(gated_purity > 0.5 && raw_purity < 0.05,
+            "gated purity ≫ raw purity: {gated_purity:.3} vs {raw_purity:.4} — the leak is cut, not just down-weighted");
+        // Gating nests sensibly: Matter (broad) spans more in-domain mass than Energy (narrower).
+        let energy = cond.comp[ids.get("Energy").expect("Energy present")];
+        assert!(gated[&matter].0 > gated[&energy].0, "the gated cones preserve an in-domain generality order");
     }
 
     // μ-weighted KMV sketch: the scalable companion to the exact descendant_mu_mass. With k >> cone
