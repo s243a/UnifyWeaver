@@ -885,6 +885,21 @@ calibration of the relatedness read-out.)
 >   structural proxy, child-cone coherence, partly detects the "union vs intersection" character of
 >   such nodes but cannot separate a diverse in-domain hub from a diverse leak bucket — only `μ` can,
 >   which is why purity needs the membership signal.)*
+> - **μ-gating — the in-domain-leak fix** (`descendant_mu_mass_gated`,
+>   `wikipedia_mu_gating_cuts_the_in_domain_leak`). Down-*weighting* sums over the whole transitively-
+>   closed cone, so it cancels the out-of-domain leak but not the **in-domain** one (a high-μ node
+>   reachable only *through* an out-of-domain node is still counted). μ-*gating* **prunes** the
+>   traversal at the membership frontier — descend into a child only while `μ ≥ threshold` — so a
+>   branch that falls out of the domain is cut and never explored. On the real graph this collapses
+>   `Matter`'s cone from `≈8328` nodes (purity `0.005`) to **48** (purity `0.76`) while keeping the
+>   in-domain mass: the leak is **cut**, not down-weighted, and a within-domain IC/hierarchy becomes
+>   legible again. The structural price (named exactly right by the contributor of the idea): the gated
+>   cone is **no longer downward-closed in the raw DAG** — you trade the raw transitive-subset
+>   *closure* for *domain coherence*, the membership field bending the cone so "what is under X" is an
+>   in-domain-geodesic question. It is the adaptive (membership-frontier) generalization of the project's
+>   bounded-depth scoping band-aid. (Caveat: absent ⇒ `μ=0`, so it needs every in-domain *connector*
+>   scored, or a sparse μ prunes through unscored gaps; the physics set is connected enough that it
+>   does not bite.)
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
