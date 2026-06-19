@@ -1545,9 +1545,23 @@ pub fn condense_scc(parents: &std::collections::HashMap<u32, Vec<u32>>) -> Conde
 }
 
 /// Lift a per-node membership `μ` to per-**component** mass by **summing** members: a component's
-/// admitted mass is the total `μ` of the nodes collapsed into it. Summing preserves `Σμ`, so the
-/// component-level `total_mu` equals the node-level one and IC / lift read-outs stay calibrated.
-/// Nodes absent from `mu` contribute `0` (the `descendant_mu_mass` out-of-domain default).
+/// admitted mass is the total `μ` of the nodes collapsed into it. Nodes absent from `mu` contribute
+/// `0` (the `descendant_mu_mass` out-of-domain default).
+///
+/// **Why sum (not max/mean).** The read-outs built on this — IC `−log₂(m_μ(cone)/Σμ)`, the hub lift
+/// `obs/(m_a·m_b/Σμ)` — are functions of *admitted mass* and the total `Σμ`. Summing is the unique
+/// aggregation that **conserves mass**, so condensation is *transparent* to them: a cone through a
+/// cycle counts each member's `μ` exactly once, matching what `descendant_mu_mass`'s distinct (`seen`)
+/// traversal would have counted on the original graph, and the component-level `total_mu` equals the
+/// node-level one. `max`/`mean` would shrink masses non-proportionally and *undercount* any cone
+/// through a cycle, distorting IC/lift precisely at the cyclic nodes.
+///
+/// A component mass therefore reads as a node count under load: `> 1` ⟹ **≥ 2** in-domain nodes
+/// collapsed (no single `μ ≤ 1` reaches it); `> 0` ⟹ at least one; `(0,1]` is ambiguous (one node, or
+/// several low-`μ`). The sum-vs-other-aggregation distinction is only ever *observable* when a single
+/// SCC bundles two or more **distinct scored concepts** with different `μ` — i.e. domain concepts that
+/// are cyclically cross-filed — which is rare (on the 10k Wikipedia graph the non-trivial SCCs are
+/// maintenance tangles of mostly-unscored categories), so no aggregation policy is exposed here.
 pub fn lift_mu_to_components(
     mu: &std::collections::HashMap<u32, f64>,
     cond: &Condensation,
