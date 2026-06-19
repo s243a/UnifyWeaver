@@ -14,10 +14,11 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 |---|---|
 | training objective (cosine ≈ μ) | ✅ **proven** on real data — `train_cosine_mu.py`, corr 1.00 |
 | distance-biased sampler | ✅ implemented (in the trainer) |
+| pairwise label *generator* | ✅ **done** — `gen_mu_pairs.py` (emits candidate pairs; no LLM cost) |
 | transformer architecture | ✅ **forward pass** only — `mu_transformer.py`, runs at 384-dim |
 | MiniLM init | ⬜ **not done** — random fallback (HuggingFace egress blocked in this env) |
 | training the full encoder | ⬜ **not done** — needs numpy/torch (neither installed here) |
-| generalisation labels | ⬜ **not done** — only 90 single-anchor μ exist; need more / pairwise |
+| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` |
 | wiring dense μ back to the Rust core | ⬜ **not done** — see "Integration" below |
 
 **Reproduce what exists (no deps):**
@@ -25,17 +26,19 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 cd prototypes/mu_cosine
 python3 train_cosine_mu.py        # learns cos≈μ on the 90-node fixture; prints corr → 1.00
 python3 mu_transformer.py         # forward pass of the encoder at d_model=384
+python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 neg, 5:1) to mu_pairs.tsv
 ```
+(`mu_pairs.sample.tsv` is a committed 30-line example of the generator's output.)
 
 **To take it into the real ML environment (ordered):**
 1. `pip install torch` (or numpy) — and obtain MiniLM (`sentence-transformers/all-MiniLM-L6-v2`, 384-d)
    for the per-category init embeddings. Wire it into `MuEncoder.embed` (currently random fallback).
-2. **Generate generalisation labels** — the 90 scores are all `μ(node | Physics)` (one anchor), which
-   over-fit; the model can't generalise without *pairwise* `μ(a, b)` across varied anchors. Reuse the
-   existing Haiku pipeline: `scripts/physics_random_walk_candidates.py` surfaces candidates; sample
-   pairs with the distance bias (already in `train_cosine_mu.py: w()`); score with a Haiku subagent as
-   the other fixtures were (`tests/fixtures/wikipedia_physics_*`). *(No agent has written this
-   generator yet — it is the recommended first task; ask the user before spending LLM budget.)*
+2. **Score the candidate pairs.** `gen_mu_pairs.py` already emits them — a graded-word2vec-SGNS design
+   (~5:1 negatives:positives; positives a hub-down-weighted random-walk *mesh* grown around the seed
+   roots; negatives uniform noise). Fill the blank `μ` column with a Haiku subagent (`score_stub`
+   shows the prompt/format; same discipline as `tests/fixtures/wikipedia_physics_*`). **Spends LLM
+   budget — confirm with the user first.** Tune `--neg-ratio`, `--stop-prob`, `--restart-alpha`,
+   `--seeds` and inspect the resulting μ histogram for boundary-band (0.3–0.7) coverage.
 3. Port `mu_transformer.py`'s forward to torch (it is a faithful spec) and add the training loop — the
    objective and gradient shape are validated by `train_cosine_mu.py`.
 4. Validate: held-out `μ` regression, and that the dense μ it predicts *agrees with the graph-side*
