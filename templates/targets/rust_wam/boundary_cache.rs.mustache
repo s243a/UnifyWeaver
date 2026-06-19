@@ -2374,6 +2374,80 @@ pub fn faith_similarity(
     if denom <= 0.0 { None } else { Some((mica_ic / denom).min(1.0)) }
 }
 
+/// **Per-node `IC` from μ-gated cones** — the input to the `*_from_ic` similarity functions, and the
+/// payoff of gating for *similarity*. `IC_μ(t) = −log₂(gated_mass(t) / total_mu)` from
+/// `descendant_mu_mass_gated`: because the cone is gated (domain-coherent, the leak pruned at the
+/// μ-frontier), the IC is meaningful *within* the domain rather than swamped by the associative leak.
+/// An out-of-domain node (gated mass `0`) maps to `+∞` — it is skipped in the MICA search and drives
+/// any similarity *to* it to `0`.
+///
+/// `total_mu = Σ_all μ` is the **in-domain-conditional** denominator, the right one for *similarity*:
+/// it keeps `IC ≈ 0` at the most general in-domain node, so Lin/FaITH use their full `[0,1]` range
+/// (the absolute-generality `N` denominator's `log₂(N/Σμ)` offset would compress them toward `1`).
+/// With `μ ≡ 1` and `threshold ≤ 0` (then `gated_mass = |desc|` and `Σμ = N`) it reduces to the
+/// standard intrinsic `IC`, so `*_from_ic` then equals `resnik_similarity` &c.
+pub fn gated_ic(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+    total_mu: f64,
+) -> std::collections::HashMap<u32, f64> {
+    descendant_mu_mass_gated(parents, mu, threshold)
+        .into_iter()
+        .map(|(n, (mass, _))| (n, information_content_weighted(mass, total_mu)))
+        .collect()
+}
+
+/// **Resnik over a precomputed `IC` map** — `IC(MICA)`, the max **finite** `IC` among the reflexive
+/// common ancestors of `u`,`v`. Non-finite (`+∞`, out-of-domain) ancestors are skipped, so the MICA is
+/// the most specific common *in-domain* ancestor. `None` if `u`,`v` share no finite-`IC` ancestor.
+/// Generic over the `IC` source: pair with `gated_ic` for domain-coherent (gated) similarity, or pass
+/// any node→`IC` map. Runs the two `O(V+E)` upward BFSs (`reflexive_ancestors`) per query.
+pub fn resnik_from_ic(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    ic: &std::collections::HashMap<u32, f64>,
+) -> Option<f64> {
+    let au = reflexive_ancestors(u, parents);
+    let av = reflexive_ancestors(v, parents);
+    au.intersection(&av)
+        .filter_map(|b| ic.get(b).copied())
+        .filter(|x| x.is_finite())
+        .fold(None, |acc, x| Some(acc.map_or(x, |a: f64| a.max(x))))
+}
+
+/// **Lin over a precomputed `IC` map** — `2·IC(MICA) / (IC(u)+IC(v))` in `[0,1]` (`resnik_from_ic`
+/// MICA). If `u` or `v` is out-of-domain (`IC = +∞`) the ratio is `0` (no similarity to a node with no
+/// in-domain cone). `None` if no common finite-`IC` ancestor, or both are the most-general node
+/// (`IC=0`, a `0/0`).
+pub fn lin_from_ic(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    ic: &std::collections::HashMap<u32, f64>,
+) -> Option<f64> {
+    let mica = resnik_from_ic(u, v, parents, ic)?;
+    let (icu, icv) = (*ic.get(&u)?, *ic.get(&v)?);
+    let denom = icu + icv;
+    if denom <= 0.0 { None } else { Some((2.0 * mica / denom).min(1.0)) }
+}
+
+/// **FaITH over a precomputed `IC` map** (Pirró & Euzenat 2010) — `IC(MICA) / (IC(u)+IC(v)−IC(MICA))`
+/// in `[0,1]`. Same `IC`-source genericity and out-of-domain (`+∞ ⇒ 0`) / root (`None`) behavior as
+/// `lin_from_ic`.
+pub fn faith_from_ic(
+    u: u32,
+    v: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    ic: &std::collections::HashMap<u32, f64>,
+) -> Option<f64> {
+    let mica = resnik_from_ic(u, v, parents, ic)?;
+    let (icu, icv) = (*ic.get(&u)?, *ic.get(&v)?);
+    let denom = icu + icv - mica;
+    if denom <= 0.0 { None } else { Some((mica / denom).min(1.0)) }
+}
+
 /// Oracle read-outs: the `(M, m1, m2, m3)` moment jet of an explicit histogram. The
 /// directly-propagated `suffix_moment_jet` must equal this on an untruncated histogram —
 /// the exactness check the tests assert.
@@ -5345,6 +5419,54 @@ mod tests {
         assert!(gated[&matter].0 > gated[&energy].0, "the gated cones preserve an in-domain generality order");
     }
 
+    // μ-weighted SIMILARITY over the gated cones tracks real physics relatedness. With domain-coherent
+    // (gated) cones and the Σμ denominator, Lin ranks Electromagnetism–Optics (optics IS part of EM)
+    // well above Thermodynamics–Optics (weakly related), and an out-of-domain pair (·–Music) → 0.
+    // Gated on UW_CATEGORY_TSV + UW_FUZZY_NODES.
+    #[test]
+    fn wikipedia_gated_similarity_tracks_physics_relatedness() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("sim: skip (UW_CATEGORY_TSV)"); return; } };
+        let fz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("sim: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str| *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 });
+            let ci = intern(c); let pi = intern(p);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for l in std::fs::read_to_string(&fz).expect("read fuzzy").lines() {
+            if l.trim_start().starts_with('#') { continue; }
+            let mut it = l.split('\t');
+            if let (Some(nm), Some(m)) = (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                if let Some(&i) = ids.get(nm.trim()) { mu.insert(i, m); }
+            }
+        }
+        let cond = condense_scc(&parents);
+        let cmu = lift_mu_to_components(&mu, &cond);
+        let total_mu: f64 = cmu.values().sum();
+        let ic = gated_ic(&cond.parents, &cmu, 0.3, total_mu); // gated cones + Σμ denominator
+        let comp = |nm: &str| -> Option<u32> { ids.get(nm).map(|i| cond.comp[i]) };
+        let lin = |a: &str, b: &str| -> Option<f64> { lin_from_ic(comp(a)?, comp(b)?, &cond.parents, &ic) };
+
+        let em_optics = lin("Electromagnetism", "Optics").expect("EM–Optics");
+        let thermo_optics = lin("Thermodynamics", "Optics").expect("Thermo–Optics");
+        eprintln!("gated-sim: EM–Optics lin {:.3}  Thermo–Optics lin {:.3}", em_optics, thermo_optics);
+        assert!(em_optics > thermo_optics + 0.2, "EM–Optics ({em_optics:.3}) ≫ Thermo–Optics ({thermo_optics:.3})");
+        assert!(em_optics > 0.5, "optics is part of EM ⇒ strongly related ({em_optics:.3})");
+        // An out-of-domain partner (Music, μ=0) ⇒ +∞ IC ⇒ similarity 0.
+        if let Some(m) = lin("Thermodynamics", "Music") {
+            assert!(m < 0.05, "similarity to the out-of-domain Music is ≈ 0 ({m:.3})");
+        }
+    }
+
     // μ-weighted KMV sketch: the scalable companion to the exact descendant_mu_mass. With k >> cone
     // the sketch is exact, so it must match descendant_mu_mass node-for-node, AND at μ≡1 reduce to
     // the unweighted distinct count (sketch_card). Diamond included (8 -> [3,4]) so dedup is tested.
@@ -5850,6 +5972,42 @@ mod tests {
         assert_eq!(sketch_mu_overlap_lift(&w[&1], &w[&2], total_mu, K, 4usize), 0.0, "disjoint ⇒ lift 0");
         // total_mu = 0 must not panic (degenerate universe).
         assert_eq!(sketch_mu_overlap_lift(&w[&1], &w[&2], 0.0, K, 4usize), 0.0, "total_mu=0 ⇒ 0, no panic");
+    }
+
+    // Gated-cone similarity (resnik/lin/faith _from_ic over gated_ic). Tree: 0 root; A=1,B=2 -> 0;
+    // A1=3,A2=4 -> A; B1=5 -> B. μ≡1 here, so it also checks the REDUCTION to the unweighted
+    // descendant-sketch similarity. Siblings (3,4 under A) must be more similar than cousins (3,5).
+    #[test]
+    fn gated_ic_similarity_orders_and_reduces() {
+        const K: usize = 32;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]);
+        g.insert(3, vec![1]); g.insert(4, vec![1]); g.insert(5, vec![2]);
+        let n = 6usize;
+        let mu: HashMap<u32, f64> = (0u32..=5).map(|i| (i, 1.0)).collect();
+        // μ≡1, threshold 0, total = Σμ = N ⇒ gated_ic == standard intrinsic IC.
+        let ic = gated_ic(&g, &mu, 0.0, n as f64);
+
+        // MICA(3,4) = A (IC = −log₂(3/6) = 1); MICA(3,5) = root (IC 0). Siblings > cousins.
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(resnik_from_ic(3, 4, &g, &ic).unwrap(), 1.0), "MICA(3,4)=A, IC 1");
+        assert!(close(resnik_from_ic(3, 5, &g, &ic).unwrap(), 0.0), "MICA(3,5)=root, IC 0");
+        assert!(lin_from_ic(3, 4, &g, &ic).unwrap() > lin_from_ic(3, 5, &g, &ic).unwrap(),
+            "siblings more similar than cousins");
+        assert!(close(lin_from_ic(3, 5, &g, &ic).unwrap(), 0.0), "cousins via root ⇒ Lin 0");
+
+        // REDUCTION: at μ≡1, threshold 0, total=N the gated IC equals the descendant-sketch IC, so
+        // the _from_ic similarities equal the sketch-based resnik/lin (exact at k >> cone).
+        let d = descendant_minhash(&g, K).unwrap();
+        for (u, v) in [(3u32, 4u32), (3, 5), (1, 2)] {
+            let (a, b) = (resnik_from_ic(u, v, &g, &ic), resnik_similarity(u, v, &g, &d, n, K));
+            assert!(close(a.unwrap(), b.unwrap()), "gated_ic resnik == sketch resnik at μ≡1 for ({u},{v})");
+        }
+        // Out-of-domain node (μ=0) ⇒ +∞ IC ⇒ Lin to it is 0. Make node 5 out-of-domain.
+        let mut mu2 = mu.clone(); mu2.insert(5, 0.0);
+        let ic2 = gated_ic(&g, &mu2, 0.3, mu2.values().sum());
+        assert!(ic2[&5].is_infinite(), "out-of-domain leaf ⇒ +∞ IC");
+        assert_eq!(lin_from_ic(3, 5, &g, &ic2).unwrap(), 0.0, "similarity to an out-of-domain node is 0");
     }
 
     // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
