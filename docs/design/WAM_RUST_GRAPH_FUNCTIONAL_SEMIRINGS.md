@@ -900,6 +900,16 @@ calibration of the relatedness read-out.)
 >   bounded-depth scoping band-aid. (Caveat: absent ⇒ `μ=0`, so it needs every in-domain *connector*
 >   scored, or a sparse μ prunes through unscored gaps; the physics set is connected enough that it
 >   does not bite.)
+> - **μ-weighted similarity over the gated cones** (`gated_ic` + `resnik_from_ic` / `lin_from_ic` /
+>   `faith_from_ic`, real-data `wikipedia_gated_similarity_tracks_physics_relatedness`). This is where
+>   gating *pays off* for relatedness: feed the gated-cone IC (domain-coherent, leak pruned) into the
+>   standard MICA machinery, with the **Σμ** (in-domain-conditional) denominator so Lin/FaITH keep
+>   their full `[0,1]` range (`IC ≈ 0` at the most general in-domain node). The `*_from_ic` functions
+>   are generic over the IC source (any node→IC map); at `μ ≡ 1, threshold ≤ 0` they reduce exactly to
+>   the sketch-based `resnik_similarity` &c. On the raw cyclic Wikipedia graph the ordering tracks real
+>   physics: `Electromagnetism–Optics` Lin **0.62** (optics ⊂ EM) ≫ `Thermodynamics–Optics` **0.21**,
+>   and a partner that is out-of-domain (`Music`, μ=0 ⇒ `IC = +∞`) scores **0**. An out-of-domain
+>   *common ancestor* is skipped (non-finite IC) so the MICA is the most specific in-domain one.
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
