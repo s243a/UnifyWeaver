@@ -1891,6 +1891,31 @@ pub fn information_content_weighted_sketch(s: &[(u64, f64)], total_mu: f64, k: u
     information_content_weighted(sketch_mu_mass(s, k, cap.into()).min(total_mu), total_mu)
 }
 
+/// **Cone purity — the fan-in-hub leak detector.** The in-domain *fraction* of a node's descendant
+/// cone: `purity = m_μ(desc) / |desc|` ∈ `[0,1]`, the admitted (weighted) mass over the raw distinct
+/// cone size. A **leak conduit** has *low* purity — a huge cone that is mostly *out-of-domain* — while
+/// a clean in-domain region has *high* purity. This is the structural signature of the associative
+/// leak: a universal fan-in hub (a node everything funnels up into, so its down-cone is everything)
+/// pulls a vast, semantically scattered cone into the domain, and purity measures exactly how diluted
+/// that cone is.
+///
+/// **Complement to μ-weighted IC, and it catches a leak IC cannot.** IC `−log₂(m_μ/Σμ)` measures cone
+/// *size* (specificity); purity measures cone *in-domain fraction* (leak-ness). A *total*-leak conduit
+/// whose bloated cone re-encompasses **all** in-domain mass reads as maximally general by IC (`m_μ ≈
+/// Σμ ⇒ IC ≈ 0`) — IC is blind to it — yet purity flags it immediately (`m_μ / |desc| ≈ 0`, because
+/// it divides by the *raw* cone size). On the real Wikipedia graph `Matter` (μ=1, a genuine physics
+/// concept) has `IC_w = 0.00` but `purity = 0.0044`, vs `Thermodynamics` `purity = 0.112` (25×).
+///
+/// *Measurement caveat:* feed `weighted_mass` from the **exact** `descendant_mu_mass` (or a large `k`)
+/// for big cones — a sparse μ-signal (few scored nodes in a vast cone) underflows a small MinHash
+/// sample, which happens to read leak conduits as `≈0` purity (qualitatively right, but not precise).
+pub fn cone_purity(weighted_mass: f64, raw_cone_size: f64) -> f64 {
+    if raw_cone_size <= 0.0 {
+        return 0.0;
+    }
+    (weighted_mass / raw_cone_size).min(1.0)
+}
+
 /// **μ-weighted cone-overlap mass** — the global-hub read-out. Estimates `Σ_{d∈A∩B} μ_d`, the
 /// *admitted* mass two cones share, from their μ-weighted sketches: take the bottom-`k` of the
 /// union, then (Broder) the elements present in **both** sketches are exactly the shared ones whose
@@ -5026,6 +5051,99 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "Σμ preserved on the real graph ({a} vs {b})");
             assert!(descendant_minhash_weighted(&cond.parents, &cmu, K).is_some(), "weighted sketch builds on condensed real graph");
             eprintln!("scc: μ lift preserved Σμ={:.1} over {} scored nodes; weighted sketch built", b, mu.len());
+        }
+    }
+
+    // Cone PURITY as a leak detector. A LEAK CONDUIT — an in-domain node (μ=1) with a huge
+    // out-of-domain subtree — has low purity; a CLEAN hub (in-domain subtree) has high purity.
+    #[test]
+    fn cone_purity_separates_leak_conduit_from_clean_hub() {
+        const K: usize = 256;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        let mut next = 100u32;
+        // Leak conduit L=1 (μ=1) over 100 OUT-of-domain children (μ=0): cone 101, mass ~1, purity ~0.01.
+        mu.insert(1, 1.0);
+        for _ in 0..100 { let c = next; next += 1; g.insert(c, vec![1]); mu.insert(c, 0.0); }
+        // Clean hub C=2 (μ=1) over 10 IN-domain children (μ=1): cone 11, mass 11, purity 1.0.
+        mu.insert(2, 1.0);
+        for _ in 0..10 { let c = next; next += 1; g.insert(c, vec![2]); mu.insert(c, 1.0); }
+
+        let mass = descendant_mu_mass(&g, &mu);      // exact in-domain mass
+        let d = descendant_minhash(&g, K).unwrap();  // raw cone size
+        let pur = |h: u32| cone_purity(mass[&h], sketch_card(&d[&h], K));
+        let (p_leak, p_clean) = (pur(1), pur(2));
+        eprintln!("purity: leak conduit {:.3} vs clean hub {:.3}", p_leak, p_clean);
+        assert!(p_leak < 0.05, "leak conduit has low purity ({p_leak})");
+        assert!(p_clean > 0.95, "clean hub has high purity ({p_clean})");
+        assert!(p_clean > p_leak * 10.0, "purity separates them by >10×");
+        // Note: the leak conduit's cone (101) is LARGER than the clean hub's (11) — raw cone size
+        // mistakes it for a bigger/more-general hub; purity inverts that, exposing the leak.
+        assert!(sketch_card(&d[&1], K) > sketch_card(&d[&2], K), "the leak conduit's RAW cone is bigger");
+    }
+
+    // Gated real-data validation of the fan-in/leak hypothesis on the condensed Wikipedia graph:
+    // the universal fan-in hubs (Matter, Physical_objects — descendant cone ≈ the whole graph) are
+    // LEAK CONDUITS with tiny purity, while clean physics nodes (Thermodynamics, Physical_quantity)
+    // have ≥20× higher purity. Crucially purity flags Matter (a μ=1 physics concept whose leaked cone
+    // re-encompasses ALL in-domain mass) which μ-weighted IC reads as maximally general (IC≈0).
+    // Exact masses (the sparse μ-signal underflows a MinHash sample on huge cones). Gated on
+    // UW_CATEGORY_TSV + UW_FUZZY_NODES.
+    #[test]
+    fn wikipedia_cone_purity_flags_leak_conduits() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("purity: skip (UW_CATEGORY_TSV)"); return; } };
+        let fz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("purity: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str| *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 });
+            let ci = intern(c); let pi = intern(p);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        for l in std::fs::read_to_string(&fz).expect("read fuzzy").lines() {
+            if l.trim_start().starts_with('#') { continue; }
+            let mut it = l.split('\t');
+            if let (Some(nm), Some(m)) = (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                if let Some(&i) = ids.get(nm.trim()) { mu.insert(i, m); }
+            }
+        }
+        const K: usize = 128;
+        let cond = condense_scc(&parents);
+        let cmu = lift_mu_to_components(&mu, &cond);
+        let total_mu: f64 = cmu.values().sum();
+        let mass = descendant_mu_mass(&cond.parents, &cmu); // EXACT (avoid the sparse-sample underflow)
+        let d = descendant_minhash(&cond.parents, K).unwrap();
+        let purity = |nm: &str| -> Option<(f64, f64)> { // (purity, IC_w)
+            let c = cond.comp[ids.get(nm)?];
+            let cone = sketch_card(&d[&c], K);
+            Some((cone_purity(mass[&c], cone), information_content_weighted(mass[&c], total_mu)))
+        };
+        let leaks = ["Matter", "Physical_objects", "Astronomical_objects", "Time"];
+        let clean = ["Thermodynamics", "Physical_quantity", "Atoms", "States_of_matter"];
+        let mut leak_max = 0.0f64;
+        for nm in leaks { if let Some((p, ic)) = purity(nm) {
+            eprintln!("purity[leak]  {:20} {:.4}  IC_w {:.2}", nm, p, ic);
+            leak_max = leak_max.max(p);
+        }}
+        let mut clean_min = 1.0f64;
+        for nm in clean { if let Some((p, ic)) = purity(nm) {
+            eprintln!("purity[clean] {:20} {:.4}  IC_w {:.2}", nm, p, ic);
+            clean_min = clean_min.min(p);
+        }}
+        // The leak conduits are strictly, substantially less pure than the clean physics nodes.
+        assert!(leak_max < clean_min, "every leak conduit is strictly less pure than every clean node (floor {clean_min} > ceil {leak_max})");
+        assert!(clean_min > leak_max * 4.0, "clean physics ≥4× purer than the leakiest conduit (measured ~4.85×)");
+        // Purity catches Matter, which IC reads as maximally general (the leak IC cannot see).
+        if let Some((p, ic)) = purity("Matter") {
+            assert!(ic < 0.1 && p < 0.02, "Matter: IC sees it as general ({ic:.2}) but purity flags the leak ({p:.4})");
         }
     }
 

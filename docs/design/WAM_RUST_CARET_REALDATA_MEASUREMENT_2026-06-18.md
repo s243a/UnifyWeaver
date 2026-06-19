@@ -252,3 +252,44 @@ graph-functional-semiring move applied to a *soft* node set rather than a hard o
    `Physicists_by_nationality` over `Subfields_of_physics`; the associative-leak finding is the
    deeper reason structure alone can't pick good *global* bridges — the deferred diversity-based
    selection (§5d) is what would. Per-pair bridges, by contrast, are already good *without* it.
+
+## Addendum (2026-06-19) — cone purity confirms leak conduits are universal fan-in hubs
+
+Once `condense_scc` unblocked the descendant-sketch family on the raw cyclic graph, the
+μ-weighted machinery could finally run a *global* read-out on real data. Two things came out of it.
+
+**Measurement caveat first.** The μ-weighted KMV *sketch* underflows on the real graph: only 90 of
+8669 nodes are scored, so a `k=128` MinHash sample of a large cone routinely contains *zero* scored
+nodes and reports `mass ≈ 0`. For a one-off 8k-node measurement the right tool is the **exact**
+`descendant_mu_mass`; the sketch is for scale, not for a 1%-density signal in a whole-graph cone.
+
+**The finding (`wikipedia_cone_purity_flags_leak_conduits`).** Define **cone purity** `= m_μ(desc) /
+|desc|`, the in-domain fraction of a node's descendant cone (`cone_purity`). Measured on the condensed
+10k graph with exact masses:
+
+| node | μ | raw cone | in-domain mass | purity | `IC_w` |
+|---|---|---:|---:|---:|---:|
+| `Matter` | 1.0 | **8669** (whole graph) | 37.9 (all) | **0.0044** | 0.00 |
+| `Physical_objects` | 0.5 | **8669** | 37.9 | **0.0044** | 0.00 |
+| `Astronomical_objects` | 0.7 | 5270 | 1.8 | **0.0003** | 4.40 |
+| `Time` | 1.0 | 3608 | 2.3 | **0.0006** | 4.04 |
+| `Thermodynamics` | 1.0 | 49 | 5.5 | **0.112** | 2.78 |
+| `Physical_quantity` | 1.0 | 49 | 5.5 | **0.112** | 2.78 |
+| `Atoms` | 0.9 | 214 | 6.0 | **0.0289** | 2.66 |
+| `States_of_matter` | 1.0 | 194 | 4.5 | **0.0223** | 3.07 |
+
+1. **Leak conduits are the universal fan-in hubs.** `Matter` and `Physical_objects` have a descendant
+   cone that *is the entire graph* — everything funnels up into them, so going down they reach
+   everything. That is exactly what makes them leak, and purity (`0.0044`) marks them; every clean
+   physics node is strictly purer, by `≥ 4.85×`. This confirms the hypothesis that the associative
+   leak is a **fan-in** phenomenon (concept mixing at a convergence node), not a per-edge accident.
+2. **Purity catches a leak `IC` cannot.** `Matter` is a genuine physics concept (μ=1) whose leaked
+   cone re-encompasses *all* in-domain mass, so `IC_w ≈ 0` reads it as maximally *general* — IC is
+   structurally blind to this total-leak case. Purity flags it because it divides by the *raw* cone
+   size, not the admitted mass. So `cone_purity` is a genuinely complementary signal, not a
+   restatement of μ-weighted IC.
+3. **Immediate fan-out is not the signal.** `Astronomical_objects` has a single child but a 5270-node
+   cone; `Time` has 8 children. Branching factor does not predict the leak — transitive cone
+   *diversity* (low purity) does. The fuller notion (entropy of a cone over *multiple* domains) would
+   need multi-domain μ; with a single physics-relevance μ, purity is the computable proxy and it
+   already separates leak conduits from clean hubs cleanly.

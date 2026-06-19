@@ -865,6 +865,19 @@ calibration of the relatedness read-out.)
 >   (+444) while the μ-mass grows only `5 → 18` (+13), ~3% of the raw growth. So the **weighted count
 >   converges as you descend** where the raw count diverges: a depth-robust global signal, which is
 >   the property the global hub problem needs.
+> - **Cone purity — the fan-in-hub leak detector** (`cone_purity`, validated on real data,
+>   `wikipedia_cone_purity_flags_leak_conduits`). `purity = m_μ(desc) / |desc|` — the in-domain
+>   *fraction* of a node's cone. This confirms a structural hypothesis about the leak: the worst leak
+>   conduits are the **universal fan-in hubs** — a node *everything* funnels up into has a down-cone
+>   that *is* everything, so it drags a vast, mostly-out-of-domain cone into the domain. On the real
+>   Wikipedia graph `Matter` and `Physical_objects` have a descendant cone of **all 8669 nodes**;
+>   their purity is `0.0044` vs clean physics nodes (`Thermodynamics`, `Physical_quantity`) at `0.112`
+>   (25×), and *every* clean node is strictly purer than *every* leak conduit. Crucially **purity
+>   catches a leak μ-weighted IC cannot**: `Matter` (μ=1, a real physics concept) has a cone that
+>   re-encompasses *all* in-domain mass, so `IC_w ≈ 0` reads it as maximally *general* — IC is blind to
+>   it — yet `purity = 0.0044` flags it, because it divides by the *raw* cone size. (Immediate fan-out
+>   — child count — is *not* the signal: `Astronomical_objects` has 1 child but a 5270-node cone; it is
+>   transitive cone *diversity*, i.e. low purity, that marks a leak.)
 >
 > **Novel-contribution flag.** Resnik-style IC over a frequency null (Resnik 1995; Seco 2004's
 > intrinsic descendant-count form) is established; *graded* (fuzzy `μ ∈ [0,1]`) **partial admission**
