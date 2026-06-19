@@ -1748,13 +1748,27 @@ pub fn descendant_mu_mass(
 /// closed in the raw DAG** (a node past the frontier is dropped even though raw reachability puts it
 /// "under" the root): you trade the raw transitive-subset *closure* for **domain coherence**. It is
 /// the adaptive, membership-aware generalization of bounded-depth scoping — cut at the μ-frontier, not
-/// a fixed depth. `threshold ≤ 0` (or `μ ≡ 1`) recovers `descendant_mu_mass`'s full cone.
+/// a fixed depth. `threshold ≤ 0` (or `μ ≡ 1`) recovers `descendant_mu_mass`'s full cone (a *negative*
+/// threshold is silently equivalent to `0`, since `μ ≥ 0`). The gate is `≥`, so a node at *exactly*
+/// `μ = threshold` is **admitted**.
 ///
-/// **Density caveat:** absent nodes default to `μ = 0`, so they gate *out*. The frontier only stays
-/// coherent if every in-domain *connector* is scored; with a sparse `μ` it can prune through unscored
-/// gaps and disconnect the region. (On the real Wikipedia physics set the scored nodes form a
-/// connected high-`μ` subgraph, so this does not bite — `Matter`'s cone shrinks from ≈8000 to 48 with
-/// the in-domain mass retained — but a sparser domain would need denser `μ`.)
+/// **Well-defined, path-independent membership.** A node is in the gated cone iff *some* root→node path
+/// has every node above `threshold`; membership therefore does not depend on BFS order (the `μ ≥
+/// threshold` test is a node property, and the `seen` set only dedups). A node reachable by *both* an
+/// in-domain and an out-of-domain path is **included** — the in-domain path admits it.
+///
+/// **Cost & coverage.** Exact, `O(V·(V+E))` (a gated BFS per node) — the same shape as
+/// `descendant_mu_mass`; a *gated KMV sketch* is the scalable analogue (future work). Output keys are
+/// the nodes that appear in `parents` (as child or parent); a node present only in `mu` but in no edge
+/// (isolated) is **absent from the output**, exactly as in `descendant_mu_mass`.
+///
+/// **Density caveat (and mitigation):** absent nodes default to `μ = 0`, so they gate *out*. The
+/// frontier only stays coherent if every in-domain *connector* is scored; with a sparse `μ` it can
+/// prune through unscored gaps and disconnect the region. (On the real Wikipedia physics set the
+/// scored nodes form a connected high-`μ` subgraph, so this does not bite — `Matter`'s cone shrinks
+/// from ≈8000 to 48 with the in-domain mass retained.) If permissive traversal through *uncertain*
+/// regions is preferred over pruning, give unscored connectors a neutral `μ` (e.g. `0.5`) so they pass
+/// a `0.3` gate but contribute little mass.
 pub fn descendant_mu_mass_gated(
     parents: &std::collections::HashMap<u32, Vec<u32>>,
     mu: &std::collections::HashMap<u32, f64>,
@@ -1780,7 +1794,8 @@ pub fn descendant_mu_mass_gated(
             if let Some(cs) = children.get(&x) {
                 // Descend only into children that are still in-domain (μ ≥ threshold): prune the frontier.
                 for &c in cs {
-                    if muv(c) >= threshold && seen.insert(c) { mass += muv(c); q.push_back(c); }
+                    let mu_c = muv(c);
+                    if mu_c >= threshold && seen.insert(c) { mass += mu_c; q.push_back(c); }
                 }
             }
         }
@@ -4970,6 +4985,35 @@ mod tests {
         // threshold ≤ 0 recovers the full descendant_mu_mass cone (no gating).
         let full = descendant_mu_mass_gated(&g, &mu, 0.0);
         assert!((full[&0].0 - plain[&0]).abs() < 1e-9, "threshold 0 recovers descendant_mu_mass");
+    }
+
+    // μ-gating corner cases (review): MULTI-PATH (in-domain path wins over a pruned one), μ == threshold
+    // is inclusive, all-pruned (threshold > max μ), and an isolated node (in μ, not in the edge set).
+    #[test]
+    fn descendant_mu_mass_gated_corner_cases() {
+        // C=3 is a child of BOTH the in-domain A=1 and the out-of-domain L=2. The L-path is pruned,
+        // but the A-path admits C — membership is "exists an all-in-domain path", path-independent.
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![1, 2]);
+        let mu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0), (2, 0.0), (3, 1.0)].into_iter().collect();
+        let (m, sz) = descendant_mu_mass_gated(&g, &mu, 0.3)[&0];
+        assert_eq!(sz, 3, "C reached via the in-domain path A even though the L-path is pruned");
+        assert!((m - 3.0).abs() < 1e-9, "mass = 0 + A + C (L excluded)");
+
+        // μ == threshold is admitted (gate is `≥`).
+        let mut g2: HashMap<u32, Vec<u32>> = HashMap::new(); g2.insert(1, vec![0]);
+        let mu2: HashMap<u32, f64> = [(0u32, 1.0), (1, 0.3)].into_iter().collect();
+        assert_eq!(descendant_mu_mass_gated(&g2, &mu2, 0.3)[&0].1, 2, "μ == threshold is included");
+
+        // All-pruned: threshold above every μ ⇒ each cone is just its root.
+        let allprune = descendant_mu_mass_gated(&g, &mu, 1.5);
+        assert_eq!(allprune[&0].1, 1, "threshold > max μ ⇒ cone = {{root}}");
+        assert!((allprune[&0].0 - mu[&0]).abs() < 1e-9);
+
+        // Isolated node (present in μ but in no edge) is absent from the output — no panic.
+        let mut mu3 = mu.clone(); mu3.insert(99, 1.0);
+        assert!(descendant_mu_mass_gated(&g, &mu3, 0.3).get(&99).is_none(),
+            "a node absent from `parents` does not appear in the output");
     }
 
     // μ-weighted ("partial admission") IC + the fuzzy S-curve admission. A leaky graph: physics
