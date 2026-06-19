@@ -1848,9 +1848,13 @@ pub fn sketch_mu_overlap(a: &[(u64, f64)], b: &[(u64, f64)], k: usize, cap: impl
 /// - For `cap = CardCap::Ceiling(c)`, `c` must bound the cone **union** `|A ∪ B|`, not just the
 ///   individual cones — the cap is applied to `m_A`, `m_B` *and* the union cardinality, and a ceiling
 ///   sized to one cone lets the union exceed it, biasing the lift. Prefer `Universe(N)` (which bounds
-///   the union by construction) or `Uncapped` unless you have a safe global ceiling. (The lift ratio
-///   is in any case fairly *insensitive* to the cap: it appears in the numerator union-card and in the
-///   `m_A·m_B` denominator, so it largely cancels — the cap matters for the raw mass, less for the lift.)
+///   the union by construction) or `Uncapped` unless you have a safe global ceiling. **The absolute
+///   lift is *not* cap-invariant:** when a ceiling `c` bites below the cone cardinalities it scales the
+///   numerator union-card once and the `m_A·m_B` denominator twice, so `lift ∝ 1/c` (a ceiling of `10`
+///   on a `~70`-node cone inflates the lift ~5× over `Uncapped`). What the cap *does* preserve is the
+///   **relative ranking** between cones — it rescales every cone comparably, so it (approximately)
+///   cancels in a `lift_A / lift_B` comparison. Use `Universe(N)` for a *calibrated* absolute lift;
+///   a `Ceiling` only changes the scale, not the hub *ordering*.
 ///
 /// Returns `0` if either cone has negligible mass (`< 1e-9·M`): a near-empty cone cannot support a
 /// meaningful lift, and dividing by its tiny expected value would amplify sketch noise into a
@@ -5006,8 +5010,8 @@ mod tests {
     // R1 SATURATED regime (k < cone): the exact tests never reach the KMV-estimator/cap branch since
     // every cone (71) fits in k. Here k=32 forces saturation, exercising that branch in the lift. Two
     // claims: (a) the real-vs-leak discrimination SURVIVES sketching, and (b) the cap is load-bearing
-    // — a Ceiling below the cone size visibly clips the saturated mass the lift consumes (whereas the
-    // lift *ratio* is largely cap-insensitive, since the cap appears in both numerator and denominator).
+    // — a Ceiling below the cone size visibly clips the saturated mass the lift consumes. (How the cap
+    // moves the *lift* is pinned separately in mu_overlap_lift_cap_rescales_absolute_keeps_ranking.)
     #[test]
     fn mu_overlap_lift_saturated_regime_and_cap_is_live() {
         const K: usize = 32; // < cone (71) ⇒ sketches SATURATE
@@ -5028,9 +5032,36 @@ mod tests {
         let clipped = sketch_mu_mass(&w[&1], K, CardCap::Ceiling(20.0));
         assert!(uncapped > 25.0, "uncapped saturated mass tracks the ~71-node cone, got {uncapped}");
         assert!((clipped - 20.0).abs() < 1e-9, "Ceiling(20) clips the saturated mass (mean_w=1), got {clipped}");
-        // Universe(505) doesn't bite (cone << 505), so it matches Uncapped — and the lift ratio barely
-        // moves under a different cap (numerator/denominator cancellation).
+        // Universe(505) doesn't bite (cone << 505), so it matches Uncapped on the raw mass.
         assert_eq!(sketch_mu_mass(&w[&1], K, CardCap::Universe(505)), uncapped, "Universe(505) doesn't clip a 71-cone");
+    }
+
+    // Corrected cap nuance (the earlier "lift is cap-insensitive" claim was wrong). A Ceiling that
+    // bites below the cone cardinalities does NOT cancel in the lift: it scales the numerator union-
+    // card once and the m_A·m_B denominator twice, so the ABSOLUTE lift ∝ 1/c. What survives is the
+    // RANKING: the cap rescales every cone comparably, so lift_real / lift_leak is ~preserved. Use
+    // Universe(N) for a calibrated absolute lift; a Ceiling only changes the scale, not the order.
+    #[test]
+    fn mu_overlap_lift_cap_rescales_absolute_keeps_ranking() {
+        const K: usize = 32; // saturated, so the cap bites
+        let (g, mu) = hub_test_graph();
+        let w = descendant_minhash_weighted(&g, &mu, K).unwrap();
+        let total_mu: f64 = mu.values().sum();
+
+        let real = |cap: CardCap| sketch_mu_overlap_lift(&w[&1], &w[&2], total_mu, K, cap);
+        let leak = |cap: CardCap| sketch_mu_overlap_lift(&w[&3], &w[&4], total_mu, K, cap);
+
+        let (r_unc, r_c20, r_c10) = (real(CardCap::Uncapped), real(CardCap::Ceiling(20.0)), real(CardCap::Ceiling(10.0)));
+        // Absolute lift is NOT cap-invariant: tighter ceiling ⇒ larger lift, ∝ 1/c.
+        assert!(r_c10 > r_unc * 2.0, "Ceiling(10) inflates the absolute lift well above Uncapped ({r_c10} vs {r_unc})");
+        assert!((r_c10 / r_c20 - 2.0).abs() < 0.1, "absolute lift ∝ 1/c: c=10 vs c=20 ⇒ ~2× ({r_c10} vs {r_c20})");
+
+        // Ranking (real/leak) is ~preserved across caps — the property hub SELECTION relies on.
+        let ratio = |cap: CardCap| real(cap) / leak(cap);
+        let (q_unc, q_c10) = (ratio(CardCap::Uncapped), ratio(CardCap::Ceiling(10.0)));
+        assert!((q_unc / q_c10 - 1.0).abs() < 0.25, "real/leak ranking preserved under cap ({q_unc} vs {q_c10})");
+        eprintln!("cap-rescale: real Uncapped {:.2} → C20 {:.2} → C10 {:.2}; ranking q_unc {:.1} q_c10 {:.1}",
+            r_unc, r_c20, r_c10, q_unc, q_c10);
     }
 
     // NB6 edge cases: disjoint cones ⇒ lift 0; total_mu=0 ⇒ no panic, lift 0.
