@@ -1189,7 +1189,8 @@ buy diminishing returns and is not carried).
      caret `==` per-query `caret_min_over_hubs`, `min_distance_closure` terminates. **The lesson:
      scope first.** A nominally "Physics-rooted" crawl is *not* a subtree of Physics — its
      unbounded cone spans most of Wikipedia (7811/8247 nodes at 10k), is **cyclic** (so
-     `descendant_minhash` → `None`, IC unavailable), and its fan-in hubs are **maintenance
+     `descendant_minhash` → `None`, IC unavailable — *now resolved* by `condense_scc`, see below),
+     and its fan-in hubs are **maintenance
      categories** (`Container_categories`, 1778 children; the hub-quantized caret then inflates to
      7 vs an exact 1). Restricting to the **bounded-depth descendant cone** (depth ≤ 3) fixes both:
      the subtree is **acyclic** (IC runs) and the hubs are semantic (`Subfields_of_physics`,
@@ -1205,6 +1206,17 @@ buy diminishing returns and is not carried).
      over `Subfields_of_physics` — concrete motivation for the deferred semantic-diversity *global*
      hub selection (per-pair bridges are already good without it). Full write-up:
      `WAM_RUST_CARET_REALDATA_MEASUREMENT_2026-06-18.md`.
+   - **[SCC condensation DONE]** the cyclic-graph blocker above is resolved by `condense_scc`
+     (iterative Tarjan — explicit work stack, no recursion, so a deep graph cannot overflow): it
+     collapses each strongly-connected component to one node, yielding an **acyclic component DAG**
+     the whole sketch family (`descendant_minhash`, `*_weighted`, IC, `rank_mu_fanin_hubs`) consumes.
+     `lift_mu_to_components` **sums** member `μ` into per-component mass (preserving `Σμ`, so the
+     IC/lift read-outs stay calibrated). On the real 10k graph this is a *small* fix with a *large*
+     unblock: **8247 nodes → 8204 components, only 4 non-trivial SCCs (largest 35 nodes)** — i.e. ~43
+     nodes of cyclic structure were enough to return `None` for every descendant sketch; condensing
+     them lets the weighted sketch (and hence the μ-weighted hub ranking) run on the raw cyclic graph
+     for the first time. (This relaxed the `descendant_minhash_weighted` weight guard from `μ∈[0,1]`
+     to `≥0`, since a summed component mass legitimately exceeds 1.)
    - **[3f DONE]** the **landmark-cached designated-bridge caret** (§5c): `bridge_distance_fields`
      precomputes `d(·→B)` (one downward BFS per bridge over the shared children graph, `O(E +
      Σ_B|desc(B)|) ≤ O(K·V)`), and `caret_through_bridge_cached` / `caret_min_over_cached_bridges`

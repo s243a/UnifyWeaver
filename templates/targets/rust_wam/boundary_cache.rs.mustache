@@ -1447,6 +1447,118 @@ pub fn sketch_overlap_lift(a: &[u64], b: &[u64], n_total: usize, k: usize) -> f6
     if expected <= 0.0 { 0.0 } else { inter / expected }
 }
 
+/// **Strongly-connected-component condensation** — the prerequisite that makes a *cyclic* graph
+/// usable by the DAG-only sketch family (`descendant_minhash`, `ancestor_minhash`,
+/// `descendant_minhash_weighted`, and everything built on them: IC, hub ranking). Real category
+/// graphs (Wikipedia) contain cycles — two categories can each be filed under the other — so a
+/// reverse-topological pass has no valid order and the sketch builders return `None`. Condensation
+/// collapses each strongly-connected component to a single node, yielding the **component DAG**: a
+/// cycle's nodes share their whole up- and down-cone anyway, so collapsing them loses nothing the
+/// sketches care about. Tarjan's algorithm, run **iteratively** (an explicit work stack, not
+/// recursion) so a deep graph cannot overflow the call stack.
+///
+/// Edges are the input `parents` direction (`child → parent`); the returned `parents` is the same
+/// form over component ids (deduped, self-loops dropped), so it drops straight into the sketch
+/// builders. Component ids are dense `0..n_components`. `comp` maps each node to its component;
+/// `members` the inverse. Lift a per-node `μ` to per-component mass with `lift_mu_to_components`
+/// (it **sums** members, preserving `Σμ`), then a node's cone/score is read at `comp[&node]`.
+pub struct Condensation {
+    /// node id → component id (dense, `0..n_components`).
+    pub comp: std::collections::HashMap<u32, u32>,
+    /// the component DAG, `child-component → [parent-component]` (deduped, no self-loops).
+    pub parents: std::collections::HashMap<u32, Vec<u32>>,
+    /// component id → its member node ids.
+    pub members: std::collections::HashMap<u32, Vec<u32>>,
+}
+
+pub fn condense_scc(parents: &std::collections::HashMap<u32, Vec<u32>>) -> Condensation {
+    use std::collections::{HashMap, HashSet};
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); }
+    }
+    let empty: Vec<u32> = Vec::new();
+    // Iterative Tarjan.
+    let mut index: u32 = 0;
+    let mut idx: HashMap<u32, u32> = HashMap::new();
+    let mut low: HashMap<u32, u32> = HashMap::new();
+    let mut on_stack: HashSet<u32> = HashSet::new();
+    let mut tstack: Vec<u32> = Vec::new();
+    let mut comp: HashMap<u32, u32> = HashMap::new();
+    let mut n_comp: u32 = 0;
+    for &start in &nodes {
+        if idx.contains_key(&start) { continue; }
+        let mut work: Vec<(u32, usize)> = vec![(start, 0)];
+        while let Some(&(v, pi)) = work.last() {
+            if pi == 0 {
+                idx.insert(v, index);
+                low.insert(v, index);
+                index += 1;
+                tstack.push(v);
+                on_stack.insert(v);
+            }
+            let succ = parents.get(&v).unwrap_or(&empty);
+            if pi < succ.len() {
+                work.last_mut().unwrap().1 += 1; // advance past this successor
+                let w = succ[pi];
+                if !idx.contains_key(&w) {
+                    work.push((w, 0)); // recurse into w
+                } else if on_stack.contains(&w) {
+                    let lw = idx[&w];
+                    let e = low.get_mut(&v).unwrap();
+                    *e = (*e).min(lw);
+                }
+            } else {
+                // v fully explored: if it is an SCC root, pop its component.
+                if low[&v] == idx[&v] {
+                    loop {
+                        let w = tstack.pop().unwrap();
+                        on_stack.remove(&w);
+                        comp.insert(w, n_comp);
+                        if w == v { break; }
+                    }
+                    n_comp += 1;
+                }
+                work.pop();
+                if let Some(&(pv, _)) = work.last() {
+                    let lv = low[&v];
+                    let e = low.get_mut(&pv).unwrap();
+                    *e = (*e).min(lv);
+                }
+            }
+        }
+    }
+    // Build the component DAG and members.
+    let mut cparents: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &v in &nodes { members.entry(comp[&v]).or_default().push(v); }
+    for (&c, ps) in parents {
+        let cc = comp[&c];
+        for &p in ps {
+            let cp = comp[&p];
+            if cc != cp { cparents.entry(cc).or_default().push(cp); }
+        }
+    }
+    for v in cparents.values_mut() { v.sort_unstable(); v.dedup(); }
+    Condensation { comp, parents: cparents, members }
+}
+
+/// Lift a per-node membership `μ` to per-**component** mass by **summing** members: a component's
+/// admitted mass is the total `μ` of the nodes collapsed into it. Summing preserves `Σμ`, so the
+/// component-level `total_mu` equals the node-level one and IC / lift read-outs stay calibrated.
+/// Nodes absent from `mu` contribute `0` (the `descendant_mu_mass` out-of-domain default).
+pub fn lift_mu_to_components(
+    mu: &std::collections::HashMap<u32, f64>,
+    cond: &Condensation,
+) -> std::collections::HashMap<u32, f64> {
+    let mut out: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+    for (&node, &c) in &cond.comp {
+        *out.entry(c).or_insert(0.0) += mu.get(&node).copied().unwrap_or(0.0);
+    }
+    out
+}
+
 /// **Descendant KMV sketch** — the *downward* mirror of `ancestor_minhash`. `dsig(B)`
 /// summarizes `B`'s descendant cone (`B` and everything below it): `dsig(B) = bottom-k({B} ∪
 /// ⋃_{c ∈ children(B)} dsig(c))`, built in **one reverse-topological pass** (children before
@@ -1570,8 +1682,8 @@ pub fn descendant_mu_mass(
 ) -> std::collections::HashMap<u32, f64> {
     use std::collections::{HashMap, HashSet, VecDeque};
     debug_assert!(
-        mu.values().all(|&w| (0.0..=1.0).contains(&w)),
-        "membership weights μ must lie in [0,1]"
+        mu.values().all(|&w| w >= 0.0),
+        "weights must be ≥ 0 (membership μ∈[0,1] for raw nodes, or summed component mass ≥0 from a condensation)"
     );
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut nodes: HashSet<u32> = HashSet::new();
@@ -1621,8 +1733,8 @@ pub fn descendant_minhash_weighted(
     use std::collections::{HashMap, HashSet, VecDeque};
     debug_assert!(k >= 2, "k must be ≥ 2: the (k−1)/ĥ_k estimator is undefined at k=1 and panics at k=0");
     debug_assert!(
-        mu.values().all(|&w| (0.0..=1.0).contains(&w)),
-        "membership weights μ must lie in [0,1]"
+        mu.values().all(|&w| w >= 0.0),
+        "weights must be ≥ 0 (membership μ∈[0,1] for raw nodes, or summed component mass ≥0 from a condensation)"
     );
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut nodes: HashSet<u32> = HashSet::new();
@@ -4803,6 +4915,103 @@ mod tests {
             let ic_mu = information_content_weighted(mass[&node], total_mu);
             assert!((ic_sketch - ic_mu).abs() < 1e-9,
                 "node {node}: sketch IC {ic_sketch} != μ≡1 IC {ic_mu}");
+        }
+    }
+
+    // SCC condensation collapses a cycle to one component, yielding an ACYCLIC component DAG the
+    // sketch family can consume. Cycle {0,1} (0↔1); 2->0, 3->2, 0->4. Components: {0,1},{2},{3},{4}.
+    #[test]
+    fn condense_scc_collapses_cycle_to_acyclic_dag() {
+        const K: usize = 16;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(0, vec![1, 4]); g.insert(1, vec![0]); // 0↔1 mutual cycle
+        g.insert(2, vec![0]); g.insert(3, vec![2]);
+        // The raw cyclic graph defeats the sketch builder.
+        assert!(descendant_minhash(&g, K).is_none(), "raw cyclic graph ⇒ None");
+
+        let cond = condense_scc(&g);
+        // The cycle's two nodes share a component; the others are singletons ⇒ 4 components.
+        assert_eq!(cond.comp[&0], cond.comp[&1], "0 and 1 are one SCC");
+        assert_ne!(cond.comp[&0], cond.comp[&2], "2 is its own SCC");
+        assert_eq!(cond.members.len(), 4, "4 components");
+        let mut cyc = cond.members[&cond.comp[&0]].clone(); cyc.sort_unstable();
+        assert_eq!(cyc, vec![0, 1], "the cycle component's members are exactly {{0,1}}");
+        // Self-loop of the collapsed cycle is dropped ⇒ the component DAG is acyclic ⇒ sketch builds.
+        let a = cond.comp[&0];
+        assert!(!cond.parents.get(&a).map_or(false, |ps| ps.contains(&a)), "no component self-loop");
+        assert!(descendant_minhash(&cond.parents, K).is_some(), "condensed graph is acyclic");
+
+        // μ lift SUMS members and preserves Σμ; the weighted sketch then builds on the component DAG.
+        let mu: HashMap<u32, f64> = [(0u32, 1.0), (1, 0.5), (2, 1.0), (3, 0.0), (4, 0.0)].into_iter().collect();
+        let cmu = lift_mu_to_components(&mu, &cond);
+        assert!((cmu[&a] - 1.5).abs() < 1e-12, "cycle component mass = μ0+μ1 = 1.5");
+        let (node_total, comp_total): (f64, f64) = (mu.values().sum(), cmu.values().sum());
+        assert!((node_total - comp_total).abs() < 1e-12, "Σμ preserved by the lift");
+        assert!(descendant_minhash_weighted(&cond.parents, &cmu, K).is_some(), "weighted sketch builds on condensation");
+    }
+
+    // On a DAG condensation is the identity: every node is its own singleton component, and a
+    // self-loop is dropped (a single node with a self-edge is still one component, no multi-node SCC).
+    #[test]
+    fn condense_scc_dag_identity_and_self_loop() {
+        let mut dag: HashMap<u32, Vec<u32>> = HashMap::new();
+        dag.insert(1, vec![0]); dag.insert(2, vec![0]); dag.insert(3, vec![1]);
+        let cond = condense_scc(&dag);
+        assert_eq!(cond.members.len(), 4, "DAG ⇒ one component per node (0,1,2,3)");
+        assert!(cond.members.values().all(|m| m.len() == 1), "every component is a singleton");
+
+        // Self-loop: 0 -> [0, 1]. 0 is a singleton SCC; the self-loop must not appear in the DAG.
+        let mut sl: HashMap<u32, Vec<u32>> = HashMap::new();
+        sl.insert(0, vec![0, 1]);
+        let c2 = condense_scc(&sl);
+        assert_eq!(c2.members[&c2.comp[&0]], vec![0], "self-loop node is its own singleton");
+        assert!(!c2.parents.get(&c2.comp[&0]).map_or(false, |ps| ps.contains(&c2.comp[&0])), "self-loop dropped");
+    }
+
+    // Gated: SCC condensation UNBLOCKS the sketch family on the REAL (cyclic) Wikipedia category
+    // graph — the raw graph gives None; the condensation is acyclic and the weighted sketch builds.
+    // Reports the SCC stats. Gated on UW_CATEGORY_TSV (+ UW_FUZZY_NODES for the μ lift).
+    #[test]
+    fn wikipedia_scc_condense_unblocks_sketches() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("scc: skip (UW_CATEGORY_TSV)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let mut intern = |s: &str| *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 });
+            let ci = intern(c); let pi = intern(p);
+            parents.entry(ci).or_default().push(pi);
+        }
+        const K: usize = 64;
+        let raw_acyclic = descendant_minhash(&parents, K).is_some();
+        let cond = condense_scc(&parents);
+        let n_nodes = names.len();
+        let n_comp = cond.members.len();
+        let largest = cond.members.values().map(|m| m.len()).max().unwrap_or(0);
+        let nontrivial = cond.members.values().filter(|m| m.len() > 1).count();
+        eprintln!("scc: {} nodes raw-acyclic={} → {} components ({} non-trivial, largest {} nodes)",
+            n_nodes, raw_acyclic, n_comp, nontrivial, largest);
+        // The condensation must be acyclic and let the sketch family build.
+        assert!(descendant_minhash(&cond.parents, K).is_some(), "condensed real graph is acyclic");
+        if let Ok(fz) = std::env::var("UW_FUZZY_NODES") {
+            let mut mu: HashMap<u32, f64> = HashMap::new();
+            for l in std::fs::read_to_string(&fz).expect("read fuzzy").lines() {
+                if l.trim_start().starts_with('#') { continue; }
+                let mut it = l.split('\t');
+                if let (Some(nm), Some(m)) = (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    if let Some(&i) = ids.get(nm.trim()) { mu.insert(i, m); }
+                }
+            }
+            let cmu = lift_mu_to_components(&mu, &cond);
+            let (a, b): (f64, f64) = (mu.values().sum(), cmu.values().sum());
+            assert!((a - b).abs() < 1e-6, "Σμ preserved on the real graph ({a} vs {b})");
+            assert!(descendant_minhash_weighted(&cond.parents, &cmu, K).is_some(), "weighted sketch builds on condensed real graph");
+            eprintln!("scc: μ lift preserved Σμ={:.1} over {} scored nodes; weighted sketch built", b, mu.len());
         }
     }
 
