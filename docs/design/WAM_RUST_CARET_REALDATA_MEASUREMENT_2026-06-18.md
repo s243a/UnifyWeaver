@@ -253,43 +253,74 @@ graph-functional-semiring move applied to a *soft* node set rather than a hard o
    deeper reason structure alone can't pick good *global* bridges — the deferred diversity-based
    selection (§5d) is what would. Per-pair bridges, by contrast, are already good *without* it.
 
-## Addendum (2026-06-19) — cone purity confirms leak conduits are universal fan-in hubs
+## Addendum (2026-06-19) — cone purity as a leak detector, and what it taught us about leak structure
 
-Once `condense_scc` unblocked the descendant-sketch family on the raw cyclic graph, the
-μ-weighted machinery could finally run a *global* read-out on real data. Two things came out of it.
+Once `condense_scc` unblocked the descendant-sketch family on the raw cyclic graph, the μ-weighted
+machinery could finally run a *global* read-out on real data. A thread of investigation followed; the
+findings corrected several natural-but-wrong hypotheses (including some of my own first framings).
 
 **Measurement caveat first.** The μ-weighted KMV *sketch* underflows on the real graph: only 90 of
-8669 nodes are scored, so a `k=128` MinHash sample of a large cone routinely contains *zero* scored
+~8200 nodes are scored, so a `k=128` MinHash sample of a large cone routinely contains *zero* scored
 nodes and reports `mass ≈ 0`. For a one-off 8k-node measurement the right tool is the **exact**
 `descendant_mu_mass`; the sketch is for scale, not for a 1%-density signal in a whole-graph cone.
 
-**The finding (`wikipedia_cone_purity_flags_leak_conduits`).** Define **cone purity** `= m_μ(desc) /
-|desc|`, the in-domain fraction of a node's descendant cone (`cone_purity`). Measured on the condensed
-10k graph with exact masses:
+**Cone purity (`wikipedia_cone_purity_flags_leak_conduits`).** Define **cone purity** `= m_μ(desc) /
+|desc|`, the in-domain fraction of a node's descendant cone (`cone_purity`). `IC` is `−log₂(m_μ/N)`
+with `N` the raw node count (the direct μ-generalization of intrinsic IC — see below). On the
+condensed 10k graph, exact masses:
 
-| node | μ | raw cone | in-domain mass | purity | `IC_w` |
+| node | μ | raw cone | in-domain mass | purity | IC (`/N`) |
 |---|---|---:|---:|---:|---:|
-| `Matter` | 1.0 | **8669** (whole graph) | 37.9 (all) | **0.0044** | 0.00 |
-| `Physical_objects` | 0.5 | **8669** | 37.9 | **0.0044** | 0.00 |
-| `Astronomical_objects` | 0.7 | 5270 | 1.8 | **0.0003** | 4.40 |
-| `Time` | 1.0 | 3608 | 2.3 | **0.0006** | 4.04 |
-| `Thermodynamics` | 1.0 | 49 | 5.5 | **0.112** | 2.78 |
-| `Physical_quantity` | 1.0 | 49 | 5.5 | **0.112** | 2.78 |
-| `Atoms` | 0.9 | 214 | 6.0 | **0.0289** | 2.66 |
-| `States_of_matter` | 1.0 | 194 | 4.5 | **0.0223** | 3.07 |
+| `Matter` / `Physical_objects` (one SCC) | 1.0 / 0.5 | **~8000** (≈ whole graph) | 37.9 (all) | **0.0045** | **7.76** |
+| `Astronomical_objects` | 0.7 | 4632 | 1.8 | **0.0004** | 12.15 |
+| `Time` | 1.0 | 4101 | 2.3 | **0.0006** | 11.80 |
+| `Thermodynamics` / `Physical_quantity` | 1.0 | 49 | 5.5 | **0.112** | 10.54 |
+| `States_of_matter` | 1.0 | 231 | 4.5 | **0.0225** | 10.83 |
+| `Atoms` | 0.9 | 214 | 6.0 | **0.0276** | 10.42 |
 
-1. **Leak conduits are the universal fan-in hubs.** `Matter` and `Physical_objects` have a descendant
-   cone that *is the entire graph* — everything funnels up into them, so going down they reach
-   everything. That is exactly what makes them leak, and purity (`0.0044`) marks them; every clean
-   physics node is strictly purer, by `≥ 4.85×`. This confirms the hypothesis that the associative
-   leak is a **fan-in** phenomenon (concept mixing at a convergence node), not a per-edge accident.
-2. **Purity catches a leak `IC` cannot.** `Matter` is a genuine physics concept (μ=1) whose leaked
-   cone re-encompasses *all* in-domain mass, so `IC_w ≈ 0` reads it as maximally *general* — IC is
-   structurally blind to this total-leak case. Purity flags it because it divides by the *raw* cone
-   size, not the admitted mass. So `cone_purity` is a genuinely complementary signal, not a
-   restatement of μ-weighted IC.
-3. **Immediate fan-out is not the signal.** `Astronomical_objects` has a single child but a 5270-node
-   cone; `Time` has 8 children. Branching factor does not predict the leak — transitive cone
-   *diversity* (low purity) does. The fuller notion (entropy of a cone over *multiple* domains) would
-   need multi-domain μ; with a single physics-relevance μ, purity is the computable proxy and it
-   already separates leak conduits from clean hubs cleanly.
+1. **Purity cleanly separates leak conduits from clean hubs; IC does not.** Every clean physics node
+   is strictly purer than every leak conduit (`≥ 4.85×`). IC, by contrast, tracks in-domain *mass*,
+   which is unrelated to leak-ness, so the leak conduits **straddle** a clean node in IC rank: `Matter`
+   (huge in-domain mass) reads *more general* (`7.76`) than the clean `Atoms` (`10.42`), while
+   `Astronomical_objects` (tiny in-domain mass) reads *more specific* (`12.15`). Two leak conduits on
+   opposite sides of one clean node ⇒ IC ordering cannot isolate the leak; purity can.
+
+2. **Leak conduits are *generic apex* nodes, NOT high-fan-in hubs** (correcting my first framing).
+   With **fan-in = #parents, fan-out = #children**, a degree-vs-cone correlation over all ~8200 nodes
+   gives `corr(fan-in, cone) = −0.10` and `corr(fan-out, cone) = +0.17`. Fan-in **anti**-correlates:
+   more parents ⇒ *smaller* cone (a heavily cross-filed node is a *specific* node several domains each
+   claim). The big-cone leak conduits have *few* parents — they are generic nodes near the apex
+   (`Matter` has 1 parent). So the leak is not a fan-in (parent-convergence) phenomenon.
+
+3. **It is a transitive descendant-cone-diversity phenomenon, and immediate degree does not capture
+   it.** `Astronomical_objects` has a single child but a 4632-node cone; `Container_categories` has
+   1778 children and the same giant cone as `Animal_phyla` which has 1. Neither immediate fan-out nor
+   fan-in predicts the leak — the cone explodes *transitively*.
+
+4. **"Union vs intersection" is a real axis, but needs μ.** A node's children can be *coherent* (an
+   intersection/specialisation — child cones overlap) or a *disjoint union* (a grab-bag bucket).
+   Child-cone coherence (mean pairwise Jaccard of children's cones) directionally tracks it — the
+   leak SCC `Matter`/`Physical_objects` is the *least* coherent (`0.05`, disjoint children), `Mechanics`
+   the most (`0.30`). But coherence **cannot** separate a *good* union (a diverse but in-domain hub
+   like `Subfields_of_physics`, coherence `0.10`) from a *bad* one (a diverse out-of-domain bucket
+   like `Time`, `0.12`) — they cross over. Structure sees *diversity*, not *domain*; only `μ` (purity)
+   tells in-domain diversity from leak. This re-confirms the arc's thesis: topology alone can't find
+   leaks — the external membership signal is irreducible.
+
+**On the IC denominator (`N` vs `Σμ`).** Intrinsic IC is `−log₂(|desc|/N)`; the direct μ-generalization
+weights the *numerator* count (`|desc| → m_μ`) and keeps `N` as the reference universe:
+`IC = −log₂(m_μ/N)`. An earlier version normalized by `Σμ` instead, which is the in-domain-*conditional*
+IC and pins any cone that sweeps all in-domain mass to `IC = 0` (the misleading `Matter = 0.00`). The
+two differ by the constant offset `log₂(N/Σμ) ≈ 7.8`, so node *ranking* is identical, but `/N` avoids
+the degenerate zero and reads as absolute generality against the whole graph. (`Σμ` is the right
+denominator for μ-weighted *similarity* — Lin/FaITH — where the offset would compress scores toward 1;
+that read-out is future work.)
+
+**What μ-weighting does and does not fix.** It cancels the **out-of-domain** leak (biology, geography
+descendants contribute `0`). It does **not** fix the **in-domain** leak: `Matter`'s cone wrongly
+contains other physics concepts (`Energy`, `Optics`) which are genuinely in-domain (`μ=1`), so they
+*are* counted — membership can't veto a bad *edge*. That residual is why `Matter` still ranks most-
+general, and why the robust real-data answer remains the **per-pair bidirectional bridge** (or
+bounded-depth scoping), not the global descendant cone. A distance-discounted descendant mass (down-
+weighting in-domain nodes reached only via long leak paths) is the candidate mechanism to attack it,
+and is deferred future work.
