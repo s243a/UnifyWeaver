@@ -224,27 +224,45 @@ Two ready-to-paste kickoff prompts:
 > `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on your own branch;
 > do not touch the merged WAM-Rust core.
 
-**C — cascade-refine the dense μ at the boundary (correctness fix for A's output).**
+**C — cascade-refine the dense μ where it changes cutoff decisions (correctness fix for A's output).**
 MiniLM measures *relatedness*, not *membership*: it rates loosely-connected categories (e.g. `Music`
-≈ 0.34 via acoustics/sound, but music is not a physics sub-topic) above the gating threshold, which
-re-pollutes the gated cones exactly where gating decides. Escalate only the borderline band to an LLM
-that can reason about membership — the model-cascade pattern already in the merged core
-(`wikipedia_model_cascade_haiku_then_sonnet`, `wikipedia_fuzzy_gated_hybrid_membership`, with the
-geometric-mean = log-opinion-pool fusion). The Haiku re-scores of the band are *also* the highest-value
-(boundary) training labels for Prompt B — so C feeds B.
+≈ 0.34 via acoustics/sound, but music is not a physics sub-topic) just above the gating cutoff, which
+re-pollutes the gated cones exactly where gating decides. The *highest-value* rescore set is **not** the
+whole uncertainty band — it's the categories whose μ sits close enough to the **cutoff** that a rescore
+could **flip the in/out decision** (the active-learning / uncertainty-sampling principle: a label's
+value ≈ its probability of changing a decision; a label far from the cutoff can't change anything). On
+A's `dense_mu_physics.tsv` (8247 cats), around the `0.3` gate that is tiny: **[0.25,0.35] = 319 cats,
+[0.20,0.45] = 876, the just-above-cutoff false-positive side (0.30,0.45] = 203** — a few hundred Haiku
+calls, ~7–19 KB. Use the model-cascade pattern already in the merged core
+(`wikipedia_model_cascade_haiku_then_sonnet`, `wikipedia_fuzzy_gated_hybrid_membership`, geometric-mean
+= log-opinion-pool fusion). The Haiku re-scores are *also* the highest-value (boundary) training labels
+for Prompt B — so **C feeds B** — and small/expensive, so **commit them as a fixture** (see the
+commit-vs-regenerate rule under Persistent storage).
 > In the UnifyWeaver repo, refine the dense μ map from PR #3281 with a model cascade. MiniLM rates
-> *relatedness*, not domain *membership*, so it mis-scores borderline categories near the gating
-> threshold (e.g. `Music` ≈ 0.34, but music is only loosely physics-related, not a physics sub-topic).
-> Take the dense μ TSV; for categories in the uncertain band around the threshold (μ ∈ ~[0.2, 0.6]),
-> re-score with a Haiku subagent asking specifically about **membership** ("Is `<category>` a
+> *relatedness*, not domain *membership*, so it mis-scores categories near the gating cutoff (e.g.
+> `Music` ≈ 0.34, but music is only loosely physics-related, not a physics sub-topic). Rescore only the
+> categories that could **change a cutoff decision** — those within a margin of the `0.3` gate, e.g.
+> μ ∈ `[0.2, 0.45]` (~880; or the tight straddle `[0.25,0.35]`, ~320), weighted toward the
+> just-above-cutoff false-positive side. (Don't spend budget far from the cutoff — those can't flip.)
+> Re-score with a Haiku subagent asking specifically about **membership** ("Is `<category>` a
 > sub-topic/subfield *of physics*? 0..1, 1 = core physics, 0 = unrelated" — not "related to"), batched,
 > same discipline as the `wikipedia_physics_*` fixtures. Fuse with the geometric mean `√(prior·haiku)`
-> (the log-opinion-pool used in the merged `wikipedia_model_cascade_haiku_then_sonnet` /
-> `wikipedia_fuzzy_gated_hybrid_membership` tests — it hard-vetoes a loose connection: `Music` →
-> `√(0.34·0) = 0`). Keep the confident extremes (μ > 0.8, μ < 0.1) on the MiniLM prior untouched. Emit
-> the refined μ (same format) **and** save the Haiku band labels as boundary training data for the
-> encoder (Prompt B). **Spends LLM budget, bounded to the band — report the band size and confirm with
-> me before scoring.** Branch off `main`, open a PR.
+> (the log-opinion-pool used in the merged cascade tests — it hard-vetoes a loose connection: `Music` →
+> `√(0.34·0) = 0`). Keep categories far from the cutoff on the MiniLM prior untouched. Emit the refined
+> μ (same format) **and commit the Haiku rescores as a fixture** (e.g.
+> `tests/fixtures/wikipedia_physics_boundary_haiku.tsv`, `name<TAB>μ`) — it's small, expensive, and the
+> reusable boundary training data for Prompt B. **Spends LLM budget, bounded to the decision band —
+> report the band size and confirm with me before scoring.** Branch off `main`, open a PR.
+
+### What to commit vs. host externally
+
+The deciding question is **cheap-and-regenerable vs. expensive-and-irreproducible**, *not* raw size:
+- **Commit (in git, as fixtures):** the **LLM-labelled** data — the Haiku boundary rescores (Prompt C),
+  the existing `tests/fixtures/wikipedia_physics_*`. These are expensive (LLM budget), *not*
+  reproducible, the highest-value asset, and small (the decision band is ~tens of KB). Never re-buy them.
+- **Regenerate or host externally (rclone, below):** **model-derived** artifacts — MiniLM embeddings,
+  the full dense-μ map (`dense_mu_physics.tsv` is ~150 KB and regenerable from the model in minutes),
+  checkpoints, the 1.5 GB full-graph embeddings. Cheap to remake, so don't bloat git; host the big ones.
 
 ### Persistent storage (rclone + Dropbox)
 
