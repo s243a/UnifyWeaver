@@ -20,7 +20,8 @@ torch 2.x + sentence-transformers (ML pieces).
 | encoder architecture (MLP/MoE, not a transformer) | ✅ **forward pass** only — `mu_encoder.py`, runs at 384-dim |
 | MiniLM init | ✅ **done** — `mu_encoder_torch.py` `build_minilm_init` + `embed()` (ML env w/ HF egress) |
 | training the full encoder | ✅ **done** — `train_cosine_mu_torch.py` (torch port; objective + held-out generalisation) |
-| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` (awaiting user OK) |
+| **scoring the pairs (μ labels)** | ✅ **sampler labels done** — `mu_pairs_scored.tsv` (200 Haiku-scored positives + 1000 free μ=0 negatives); cutoff-band rescore (Prompt C) still pending |
+| training on the scored pairs | ⬜ **not done** — `train_cosine_mu_torch.py --mode pairs --minilm` (needs an HF-egress env for MiniLM init) |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 
 ### Progress — ML-environment port (folded in from #3283)
@@ -99,6 +100,24 @@ python3 dense_mu_direct.py --compare                              # the table ab
 python3 dense_mu_direct.py --model e5 --out dense_mu_e5.tsv       # emit the chosen (calibrated) map
 python3 check_feeds_rust.py --mu-file dense_mu_e5.tsv             # sanity-check it feeds the Rust core
 ```
+
+### Progress — sampler training labels scored (`mu_pairs_scored.tsv`)
+
+The first batch of **pairwise** training labels is generated and scored (step 2 of the ordered plan).
+`gen_mu_pairs.py --seeds Physics` produced 1200 candidate pairs; the **200 positives** (hub-down-weighted
+RWR mesh) were scored with parallel Haiku subagents (graded sameness/relatedness 0..1 — 1.0 same/nested
+topic, 0.5–0.7 same broad domain, 0.2–0.4 loosely related, 0.0 unrelated), and the **1000 negatives**
+(domain × uniform-random noise) take μ=0 for free (SGNS — negatives are sampled, not labelled). Committed
+as `mu_pairs_scored.tsv` (small, expensive, reusable — the commit-vs-regenerate rule; the unscored
+`mu_pairs.tsv` is git-ignored). Positive-μ mean 0.61, ~72% ≥0.5 — a graded spectrum (long mesh walks
+drift out of physics and correctly score low, e.g. `Physics/Creation_myths` 0.0, `Physics/Time_travel`
+0.1, vs `Physics/Heat` 0.95). **These varied-anchor pairwise labels are exactly the signal the Step-4
+note says is missing** (single-anchor μ(X|Physics) training collapses pairwise structure).
+
+**Next:** in an **HF-egress env**, `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`,
+then re-run `validate_lin_agreement.py` (expect pairwise agreement to improve over the single-anchor
+encoder). The **cutoff-band rescore (Prompt C)** is the complementary label set — it needs the e5 dense
+map (also HF-egress), so it runs in the same env.
 
 **Reproduce what exists (no deps):**
 ```bash

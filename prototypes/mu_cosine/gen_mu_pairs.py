@@ -166,16 +166,20 @@ def main():
 
 
 def score_stub(pairs_path):  # noqa: ARG001
-    """TODO (spends LLM budget — ask the user first).
+    """Scoring the candidate pairs (spends LLM budget — ask the user first).
 
-    Read `pairs_path`, and for each (name_a, name_b) ask a Haiku subagent: 'On a 0..1 scale, how
-    related are the Wikipedia categories <a> and <b>? (1 = essentially the same topic, 0 = unrelated)'
-    — batched, with the same prompt discipline as the existing fixtures
-    (tests/fixtures/wikipedia_physics_*). Write μ back into the 5th column. Then the dense-μ training
-    in train_cosine_mu.py / the transformer uses these pairwise labels across the varied anchors.
+    Realized 2026-06-20: the 200 `stratum=pos` pairs from a `--seeds Physics` run were scored with
+    parallel Haiku subagents (graded sameness/relatedness, 0..1; rubric: 1.0 same/nested topic,
+    0.5–0.7 same broad domain, 0.2–0.4 loosely related, 0.0 unrelated) and the 1000 `neg` pairs
+    assigned μ=0 by construction. The result is committed as `mu_pairs_scored.tsv` (the expensive,
+    reusable label asset; the unscored `mu_pairs.tsv` is git-ignored and regenerable). To re-score a
+    fresh batch: regenerate with `main()`, split the `pos` rows, hand each batch to a Haiku subagent
+    with that rubric, and merge μ back into the 5th column. Then `train_cosine_mu_torch.py --mode
+    pairs --minilm` trains the dense-μ encoder on these varied-anchor pairwise labels (the structure
+    single-anchor μ(X|Physics) training collapses — see validate_lin_agreement.py).
     """
-    raise NotImplementedError("scoring is the budget-spending step; wire up a Haiku subagent and "
-                              "confirm with the user before running")
+    raise NotImplementedError("scoring is the budget-spending step; the committed mu_pairs_scored.tsv "
+                              "was produced via Haiku subagents — confirm with the user before re-running")
 
 
 if __name__ == "__main__":
