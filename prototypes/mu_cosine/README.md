@@ -34,12 +34,16 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
 **To take it into the real ML environment (ordered):**
 1. `pip install torch` (or numpy) — and obtain MiniLM (`sentence-transformers/all-MiniLM-L6-v2`, 384-d)
    for the per-category init embeddings. Wire it into `MuEncoder.embed` (currently random fallback).
-2. **Score the candidate pairs.** `gen_mu_pairs.py` already emits them — a graded-word2vec-SGNS design
-   (~5:1 negatives:positives; positives a hub-down-weighted random-walk *mesh* grown around the seed
-   roots; negatives uniform noise). Fill the blank `μ` column with a Haiku subagent (`score_stub`
-   shows the prompt/format; same discipline as `tests/fixtures/wikipedia_physics_*`). **Spends LLM
-   budget — confirm with the user first.** Tune `--neg-ratio`, `--stop-prob`, `--restart-alpha`,
-   `--seeds` and inspect the resulting μ histogram for boundary-band (0.3–0.7) coverage.
+2. **Score the candidate pairs — but only the *positives*.** `gen_mu_pairs.py` emits a
+   graded-word2vec-SGNS design (~5:1 negatives:positives; positives a hub-down-weighted random-walk
+   *mesh*; negatives uniform noise). **Do not LLM-score the negatives** — in SGNS negatives are
+   *sampled*, not labelled; a random `(Geology, 2022_movies)` pair is `μ≈0` by construction, and paying
+   Haiku to confirm 1000 obviously-unrelated pairs is wasted budget (it also contributes ~no gradient
+   signal). So score the `stratum=pos` rows only (~200), assign the `neg` rows `μ=0`. Fill the `μ`
+   column with a Haiku subagent (`score_stub` shows the prompt/format; same discipline as
+   `tests/fixtures/wikipedia_physics_*`). **Spends LLM budget — confirm with the user first.** *Budget
+   priority:* the cutoff-decision band (Prompt C) is higher-value-per-label than these mesh positives —
+   if budget is tight, do C first.
 3. Port `mu_encoder.py`'s forward to torch (it is a faithful spec) and add the training loop — the
    objective and gradient shape are validated by `train_cosine_mu.py`. Start with `n_layers=1`,
    `n_experts=1` (plain MLP / projection head); add MoE experts or neighbour context only if it
