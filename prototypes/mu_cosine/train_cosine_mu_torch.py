@@ -96,7 +96,7 @@ def load_pairs(path):
             except ValueError:
                 skipped += 1
                 continue
-            rows.append((parts[0], parts[1], mu))
+            rows.append((parts[0], parts[1], mu, parts[2]))
     if skipped:
         print(f"WARNING: {skipped} pair rows had a blank/non-numeric μ (unscored) — skipped. "
               f"Score them first (gen_mu_pairs.py score_stub; spends LLM budget).")
@@ -125,8 +125,12 @@ def pearson(xs, ys):
 # --------------------------------------------------------------------------------------------------
 # training
 # --------------------------------------------------------------------------------------------------
-def make_optimizer(model, lr):
-    """SparseAdam for a trainable sparse embedding table; Adam for everything else (README: Adam)."""
+def make_optimizer(model, lr, weight_decay=0.0):
+    """SparseAdam for a trainable sparse embedding table; AdamW for everything else (README: Adam).
+
+    `weight_decay` regularises the *shared encoder* blocks toward zero — i.e. toward the identity
+    residual `x + FFN(LN(x))` ≈ raw MiniLM — which is the strongest generaliser when labels are few
+    (a small pairwise set easily overfits a 1.2M-param encoder). SparseAdam has no weight_decay arg."""
     sparse_params, dense_params = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -137,7 +141,7 @@ def make_optimizer(model, lr):
             dense_params.append(p)
     opts = []
     if dense_params:
-        opts.append(torch.optim.Adam(dense_params, lr=lr))
+        opts.append(torch.optim.AdamW(dense_params, lr=lr, weight_decay=weight_decay))
     if sparse_params:
         opts.append(torch.optim.SparseAdam(sparse_params, lr=lr))
     return opts
@@ -184,7 +188,7 @@ def train_fixture(args):
     train_ids = model._ids(train)
     train_mu = torch.tensor([mu[n] for n in train])
 
-    opts = make_optimizer(model, args.lr)
+    opts = make_optimizer(model, args.lr, args.weight_decay)
 
     def report(tag):
         with torch.no_grad():
@@ -226,9 +230,12 @@ def train_pairs(args):
     rows = load_pairs(args.pairs)
     if not rows:
         raise SystemExit(f"no scored pairs in {args.pairs} — fill the μ column first (budget step).")
-    print(f"loaded {len(rows)} scored pairs (μ in "
-          f"[{min(r[2] for r in rows):.2f},{max(r[2] for r in rows):.2f}])")
-    names = sorted({n for a, b, _ in rows for n in (a, b)})
+    pos = [r for r in rows if r[3] == "pos"]
+    neg = [r for r in rows if r[3] != "pos"]
+    print(f"loaded {len(rows)} scored pairs: {len(pos)} pos (μ in "
+          f"[{min((r[2] for r in pos), default=0):.2f},{max((r[2] for r in pos), default=0):.2f}]) / "
+          f"{len(neg)} neg (μ=0 SGNS negatives)")
+    names = sorted({n for a, b, _, _ in rows for n in (a, b)})
 
     if args.minilm:
         print("building MiniLM init for paired categories ...")
@@ -241,12 +248,19 @@ def train_pairs(args):
         init = torch.randn(len(names), cfg.d_model) / math.sqrt(cfg.d_model)
         model = MuEncoder(cfg, init_embeddings=init, names=names, freeze_init=False)
 
+    # Hold out a fraction of the *positives* (the graded signal). Negatives are μ=0 by construction,
+    # so a held-out metric on them is trivial (predict 0) and would dilute corr — keep them all in
+    # training as SGNS negatives, and measure generalisation on held-out positives only.
     g = torch.Generator().manual_seed(args.seed)
-    perm = torch.randperm(len(rows), generator=g).tolist()
-    rows = [rows[i] for i in perm]
-    n_hold = int(round(args.holdout * len(rows)))
-    hold, train = rows[:n_hold], rows[n_hold:]
-    print(f"train {len(train)} / held-out {len(hold)} pairs")
+    pperm = torch.randperm(len(pos), generator=g).tolist()
+    pos = [pos[i] for i in pperm]
+    n_hold = int(round(args.holdout * len(pos)))
+    hold_pos = pos[:n_hold]
+    train_rows = pos[n_hold:] + neg
+    gt = torch.Generator().manual_seed(args.seed + 1)
+    train_rows = [train_rows[i] for i in torch.randperm(len(train_rows), generator=gt).tolist()]
+    print(f"train {len(train_rows)} pairs ({len(pos)-n_hold} pos + {len(neg)} neg) / "
+          f"held-out {len(hold_pos)} positives")
 
     def ids(split):
         a = model._ids([r[0] for r in split])
@@ -254,17 +268,20 @@ def train_pairs(args):
         m = torch.tensor([r[2] for r in split])
         return a, b, m
 
-    a_tr, b_tr, m_tr = ids(train)
-    opts = make_optimizer(model, args.lr)
+    a_tr, b_tr, m_tr = ids(train_rows)
+    pos_tr = [r for r in train_rows if r[3] == "pos"]
+    a_p, b_p, m_p = ids(pos_tr)
+    opts = make_optimizer(model, args.lr, args.weight_decay)
 
     def report(tag):
         with torch.no_grad():
             cos, _ = model.mu(a_tr, b_tr)
-            line = f"{tag} train MSE {F.mse_loss(cos, m_tr):.4f} corr {pearson(cos, m_tr):+.3f}"
-            if hold:
-                a_h, b_h, m_h = ids(hold)
+            cosp, _ = model.mu(a_p, b_p)
+            line = (f"{tag} train MSE {F.mse_loss(cos, m_tr):.4f} (pos-only corr {pearson(cosp, m_p):+.3f})")
+            if hold_pos:
+                a_h, b_h, m_h = ids(hold_pos)
                 cosh, _ = model.mu(a_h, b_h)
-                line += f" | HELD-OUT MSE {F.mse_loss(cosh, m_h):.4f} corr {pearson(cosh, m_h):+.3f}"
+                line += f" | HELD-OUT pos MSE {F.mse_loss(cosh, m_h):.4f} corr {pearson(cosh, m_h):+.3f}"
             print(line)
 
     report("initial")
@@ -297,6 +314,8 @@ def main():
     ap.add_argument("--aux-weight", type=float, default=0.01, help="MoE load-balancing aux weight")
     ap.add_argument("--epochs", type=int, default=4000)
     ap.add_argument("--lr", type=float, default=0.05)
+    ap.add_argument("--weight-decay", type=float, default=0.0,
+                    help="AdamW weight decay on the shared encoder (regularises toward raw MiniLM)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--holdout", type=float, default=0.0, help="fraction held out for generalisation")
     ap.add_argument("--dist-bias", type=float, default=1.0,
