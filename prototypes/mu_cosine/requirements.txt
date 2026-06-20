@@ -5,6 +5,7 @@
 torch>=2.0
 numpy>=1.24
 sentence-transformers>=2.2    # provides the embedders below (needs HF egress)
+einops>=0.7                   # only for the nomic-ai/nomic-embed-text-v1.5 preset in dense_mu_direct.py
 # Embedder choice (see prior project eval: skill_embedding_models.md, reports/answer_level_*.json):
 #   intfloat/e5-small-v2          384-d, lightweight, query:/passage: prefixes  (best cosine-to-target)
 #   nomic-ai/nomic-embed-text-v1.5  768-d, search_query:/_document: prefixes    (best discrimination;
