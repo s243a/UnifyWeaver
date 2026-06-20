@@ -23,6 +23,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | **scoring the pairs (μ labels)** | ✅ **sampler labels done** — `mu_pairs_scored.tsv` (200 Haiku-scored positives + 1000 free μ=0 negatives); cutoff-band rescore (Prompt C) still pending |
 | training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
+| control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
 
 ### Progress — ML-environment port (folded in from #3283)
 
