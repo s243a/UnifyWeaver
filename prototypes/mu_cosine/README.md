@@ -205,15 +205,26 @@ own PR** — parallel sessions (A and B below) coordinate by cross-referencing t
 
 Two ready-to-paste kickoff prompts:
 
-**A — dense μ *without* training (fastest path to unblock the graph work):**
+**A — dense μ *without* training (fastest path to unblock the graph work).**
+Use an **asymmetric** embedder, not MiniLM. μ(X | root) is *directional* ("is X a member of *root*'s
+domain"); MiniLM is symmetric (generic relatedness — it conflates loose-relatedness with membership,
+e.g. `Music ≈ 0.34`). e5-small and nomic have query/passage prefixes for exactly this. The choice
+should be made on **decision-band size** (the budget driver: fewer categories near the cutoff ⇒ fewer
+Haiku rescores in Prompt C), which is *not* the same as cosine-to-target — on prior project reports
+e5-small wins cosine-to-target (0.953) but has poor *discrimination* (rank 84) while nomic has the best
+discrimination (rank 1.2). So **measure it on our data** (zero LLM cost):
 > In the UnifyWeaver repo, produce a dense μ map by running an embedding model directly — no training.
-> For every category in `data/benchmark/10k/category_parent.tsv`, MiniLM-encode its name
-> (`sentence-transformers/all-MiniLM-L6-v2`), cosine to the `Physics` anchor embedding, clamp to
-> `[0,1]` (`prototypes/mu_cosine/mu_encoder.py:to_membership`), and emit `name<TAB>μ` in the format of
-> `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` (names verbatim from the TSV). Then sanity-check
-> it feeds `gated_ic` / `lin_from_ic` in the Rust core. Deps: `pip install -r
-> prototypes/mu_cosine/requirements.txt` + HF egress. Work on a branch off `main` and **open a PR**;
-> report coverage there.
+> For every category in `data/benchmark/10k/category_parent.tsv`, encode its name with an **asymmetric**
+> model — try both `intfloat/e5-small-v2` (384-d, lightweight, `query:`/`passage:` prefixes) and
+> `nomic-ai/nomic-embed-text-v1.5` (768-d, `search_query:`/`search_document:`). Encode the root as the
+> **query** (`query: Physics`) and each category as the **document** (`passage: <name>`); take the
+> cosine, clamp to `[0,1]` (`prototypes/mu_cosine/mu_encoder.py:to_membership`), emit `name<TAB>μ` in
+> the `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` format (names verbatim). For **each** model
+> report the **decision-band count** (categories with μ ∈ `[0.2,0.45]` near the 0.3 gate — MiniLM had
+> 876) and a few sanity cases (`Music`, `Optics`, `Thermodynamics`); the model with the *smallest* band
+> is the budget-optimal pick (fewest Haiku rescores in Prompt C). Sanity-check the chosen map feeds
+> `gated_ic` / `lin_from_ic` in the Rust core. Deps: `pip install -r prototypes/mu_cosine/requirements.txt`
+> + HF egress. Branch off `main`, **open a PR**, report the band sizes there.
 
 **B — train the encoder (the prototype's payoff):**
 > Pick up the self-contained ML sub-project in the UnifyWeaver repo: read
