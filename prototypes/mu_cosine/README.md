@@ -157,6 +157,13 @@ python3 emit_dense_mu.py --encoder enc_pairs.pt --out dense_mu_pairs.tsv
 python3 check_feeds_rust.py --mu-file dense_mu_pairs.tsv
 ```
 
+**Next architecture (design, not yet built):** the symmetric `cos(f(a),f(b))` encoder above cannot model
+the *order-dependence* of membership (`μ(X|root) ≠ μ(root|X)`). The directional successor — frozen e5
+inputs + learned **role** (member/anchor) and **operator** (symmetric / Wikipedia-order / LLM-judged)
+tokens read by a small attention block, with cold-start coverage preserved — is specified in
+[`DESIGN_directional_attention.md`](DESIGN_directional_attention.md). #3287 (MiniLM symmetric) is its
+control arm.
+
 **Reproduce what exists (no deps):**
 ```bash
 cd prototypes/mu_cosine
