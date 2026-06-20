@@ -29,7 +29,7 @@ tokens = { operator(op), anchor(root), node(X)@gen0, {parents(X)}@gen1, {grandpa
 
 node(X)@gen0       = e5(X)      + gen_emb[0]          # the member candidate
 ancestor@gen_d     = e5(anc)    + gen_emb[d]          # X's lineage, tagged by min-hop distance d
-⌀@gen≥k            = absent_emb + gen_emb[d]          # learned "lineage ended / beyond depth" token
+⌀@gen≥k            = noise + gen_emb[d]               # absent slot: OFF-MANIFOLD noise (no learnable content); gen_emb carries the depth
 anchor(root)       = e5(root)   + role_emb[ANCHOR]    # the domain root — REQUIRED (see "Why keep the anchor")
 operator(op)       = op_emb[op]                       # learned codebook row, no e5 content (an "instruction")
 judge(j)           = judge_emb[j]                     # OPTIONAL, orthogonal axis — see below
@@ -43,10 +43,22 @@ not its index. `gen_emb[d]` is a learned per-generation (per-hop) embedding; the
 node can have several `gen1` parents — feed ancestors as a *set tagged by min-hop distance*, not a linear
 chain. Depth `k` is an ablation knob (start at node + parent, i.e. `k=1`, then widen and measure).
 
+**Masking absent generations = off-manifold noise, not a learned token.** A shallow lineage (or anything
+beyond depth `k`) fills its slot with **random noise** matched to the e5 magnitude, *plus* its `gen_emb`
+tag. Why noise beats a learned `absent_emb`: a learned token is a fixed content vector the model can
+*over-read* on a small label set; noise is off-manifold and **unreadable**, so the model learns to truly
+*ignore* absent ancestry while the `gen_emb` tag still signals "lineage ended before gen-`d`" (the depth
+cue is preserved without an overfittable vector). Use the *same* noise as a training regulariser —
+randomly replace **present** ancestors with noise (noise-as-dropout) to stop over-reliance on a full
+lineage and to help cold-start nodes with sparse real ancestry; this beats zero-dropout, whose zeroed
+token is a readable, deterministic value. **Inference caveat:** random fill makes μ mildly stochastic, so
+fix a per-node seed (or MC-average a few draws) to keep the dense map deterministic — the variance is
+negligible once the model has learned to ignore noise slots.
+
 - **e5 embeddings are frozen** (the `query:` / `passage:` asymmetry-friendly model — finally motivated
-  here, where direction matters). Learned parameters are only: `role_emb` / `gen_emb` / `absent_emb` (a
-  handful of rows), `op_emb` (a small codebook), the attention block (1–2 layers, a few heads), and the
-  sigmoid readout.
+  here, where direction matters). Learned parameters are only: `role_emb` / `gen_emb` (a handful of rows;
+  **no** learned absent token — absent slots are noise), `op_emb` (a small codebook), the attention block
+  (1–2 layers, a few heads), and the sigmoid readout.
 - **"Learn the tags (operator / role / generation), not the nodes."** Every node is `frozen e5 + shared
   learned tags`, so **all 8,247 categories are covered (cold-start safe)**. A learned per-node *table*
   would only have rows for the ~324 nodes seen in training and would break the dense map — do not use one.
@@ -121,10 +133,12 @@ bounded `LLM_*` boundary labels (the cutoff band, ~tens of k Haiku tokens, bough
 > prototypes/mu_cosine/requirements.txt` and confirm HuggingFace reaches `intfloat/e5-small-v2`.
 > Then: (1) Add a `MuAttention` model — frozen e5 inputs + learned tags: `op_emb` codebook, `anchor`
 > role, per-generation `gen_emb[0..k]` for the node + its ancestor **set** (min-hop distance on the
-> `category_parent.tsv` DAG; start `k=1` = node+parent), and a learned `absent_emb` for masked/shallow
-> generations — read by a 1–2 layer / few-head attention block (permutation-invariant; the tags carry
-> position), with a sigmoid μ-readout. Keep e5 FROZEN; learn only the tags + attention + head (cold-start:
-> every node = frozen e5 + shared tags). Keep the explicit `anchor(root)` token — lineage-only can't score
+> `category_parent.tsv` DAG; start `k=1` = node+parent), and **off-manifold random noise** (matched to e5
+> magnitude, no learned token) for masked/shallow generations — read by a 1–2 layer / few-head attention
+> block (permutation-invariant; the tags carry position), with a sigmoid μ-readout. Use the same noise as
+> dropout (randomly replace present ancestors during training); fix a per-node seed at inference so the
+> dense map is deterministic. Keep e5 FROZEN; learn only the tags + attention + head (cold-start: every
+> node = frozen e5 + shared tags). Keep the explicit `anchor(root)` token — lineage-only can't score
 > out-of-domain roots. (2) Train
 > multi-task over operators: `WIKI` from `category_parent.tsv` edges (free margin loss
 > `μ(child|parent) − μ(parent|child) ≥ m`, in-batch uniform negatives) and `SYM` from
