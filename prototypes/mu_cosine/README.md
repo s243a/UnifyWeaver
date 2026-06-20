@@ -220,3 +220,28 @@ Two ready-to-paste kickoff prompts:
 > μ, and agreement with the graph-side `lin_from_ic`). Heed the integration guards: clamp cosine to
 > `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on the prototype branch;
 > do not touch the merged WAM-Rust core.
+
+### Persistent storage (rclone + Dropbox)
+
+The cloud container is **ephemeral** and the ~30 GB disk doesn't survive between sessions, so large
+artifacts that outgrow git — MiniLM cache, model checkpoints, full-graph embeddings (~1.5 GB), scored
+label sets — should live in external storage and be pulled per session. The agreed approach is
+**`rclone` against a Dropbox *app-folder* app** (real VM egress, unlike a connector, which is
+context-only). `cloud_setup.sh` is a credential-free template for the environment's setup-script field.
+
+- **Security boundary is the Dropbox app, not rclone.** Create it as *Scoped access — App folder* so
+  the token physically can't reach anything outside `/Apps/<YourApp>/`. A config path-prefix is **not**
+  a restriction (any command could still type `dropbox:` and reach a full-Dropbox app's whole account).
+  Scope permissions to `files.content.read` (+ `.write` only if you persist results).
+- **Credentials**: set `DROPBOX_APP_KEY` / `DROPBOX_APP_SECRET` / `DROPBOX_REFRESH_TOKEN` in the
+  env-vars field yourself (visible to env editors, no secrets store → app-folder scoping is the safety
+  net). Generate the refresh token once via `rclone config` on your own machine. **An agent must not
+  enter credentials for you.**
+- **Workflow**: `rclone copy "dropbox:datasets" ./data` (down) / `rclone copy ./outputs
+  "dropbox:outputs"` (up). `copy` never deletes — prefer it over `sync`. Pre-pull stable files in the
+  setup script so they bake into the snapshot; fetch only changing data at runtime.
+- **Parallel sessions** (prompts A and B at once) can share one app folder — coordinate writes by
+  subfolder (`dropbox:dense-mu/` for A's output, `dropbox:checkpoints/` for B) and via PR #3280.
+- *Alternative:* dedicated object storage (S3/GCS/R2) is arguably a better fit for machine-readable
+  blobs (cleaner credential scoping, no token-refresh fragility); `rclone` supports those backends too,
+  so the same workflow applies — just a different `[remote]` in `rclone.conf`.
