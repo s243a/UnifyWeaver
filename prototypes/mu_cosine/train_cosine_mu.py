@@ -8,8 +8,8 @@ training target. This script verifies exactly that on the **real** Wikipedia-phy
 **distance-biased sampling** from the design (nearby categories sampled more often).
 
 It deliberately uses learnable vectors *directly* (the simplest "encoder") to isolate and prove the
-objective. The full architecture — a configurable transformer encoder producing those vectors from
-MiniLM-initialised embeddings — is in `mu_transformer.py` (forward pass), and is the separate project;
+objective. The full architecture — a configurable MLP/MoE encoder producing those vectors from
+MiniLM-initialised embeddings — is in `mu_encoder.py` (forward pass), and is the separate project;
 this file is the evidence that the objective it optimises is sound.
 
 No dependencies. Closed-form cosine-MSE gradient (finite-difference checked at startup).
@@ -93,17 +93,21 @@ def cos_grad(a, b):
 
 
 def finite_diff_check():
-    """Sanity: the closed-form cos gradient matches a finite difference."""
+    """Sanity: the closed-form cos gradient matches a finite difference — BOTH sides (∂cos/∂a, used
+    for the node update, and ∂cos/∂b = cos_grad(b, a), used for the anchor update)."""
     random.seed(0)
     d = 5
     a = [random.gauss(0, 1) for _ in range(d)]
     b = [random.gauss(0, 1) for _ in range(d)]
-    g = cos_grad(a, b)
     eps = 1e-6
+    ga, gb = cos_grad(a, b), cos_grad(b, a)
     for i in range(d):
         a2 = list(a); a2[i] += eps
-        fd = (cosine(a2, b) - cosine(a, b)) / eps
-        assert abs(fd - g[i]) < 1e-4, f"grad mismatch dim {i}: {fd} vs {g[i]}"
+        b2 = list(b); b2[i] += eps
+        fda = (cosine(a2, b) - cosine(a, b)) / eps
+        fdb = (cosine(a, b2) - cosine(a, b)) / eps
+        assert abs(fda - ga[i]) < 1e-4, f"∂cos/∂a mismatch dim {i}: {fda} vs {ga[i]}"
+        assert abs(fdb - gb[i]) < 1e-4, f"∂cos/∂b mismatch dim {i}: {fdb} vs {gb[i]}"
     return True
 
 

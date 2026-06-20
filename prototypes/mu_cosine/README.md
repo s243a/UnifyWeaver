@@ -42,10 +42,15 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
 3. Port `mu_encoder.py`'s forward to torch (it is a faithful spec) and add the training loop — the
    objective and gradient shape are validated by `train_cosine_mu.py`. Start with `n_layers=1`,
    `n_experts=1` (plain MLP / projection head); add MoE experts or neighbour context only if it
-   underfits.
+   underfits. Notes: use **Adam, not SGD** (an embedding table wants per-row adaptive steps, with
+   sparse gradients — see batching); **do *not* re-apply `train_cosine_mu.py`'s `--dist-bias`** when
+   training on `gen_mu_pairs.py` output — those pairs already encode the distance preference via the
+   explicit negatives, so a distance bias on top double-penalises far pairs.
 4. Validate: held-out `μ` regression, and that the dense μ it predicts *agrees with the graph-side*
    `lin_from_ic` (the two should converge — `μ(X|root) == Lin(X, root)`, the unification below).
-5. Emit a dense `μ` map (`category → μ`) for the whole graph and feed it to the Rust core.
+5. Emit a dense `μ` map (`category → μ`) for the whole graph — **clamp cosine to `[0,1]`
+   (`to_membership`) and emit names verbatim** (both load-bearing — see Integration) — and feed it to
+   the Rust core.
 
 **Compute & batching (so the GPU sizing is not guessed):**
 - The sampler's **mesh size** (e.g. 324 nodes) is *coverage*, **not** a batch size — it sets label
@@ -73,6 +78,10 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
 - **Start at `n_layers=1`, `n_experts=1`** (plain MLP / projection head): few params generalise from a
   small label set; a *shared* encoder on (mostly-frozen) MiniLM embeddings is what produces dense μ for
   *unlabelled* categories — big/per-category capacity overfits the labels and leaves the rest at init.
+- **If you turn on MoE (`n_experts > 1`):** the prototype's *soft* gate (all experts, softmax blend) is
+  interpretable but can **collapse** all gate weight onto one expert without a load-balancing auxiliary
+  loss (`aux = n_experts · Σ_i f_i·P_i`, fraction-routed × mean-gate) — add it. *Top-k* (sparse) routing
+  is the throughput upgrade for production; soft routing is fine while prototyping.
 
 ## The idea
 
@@ -130,9 +139,11 @@ final    MSE 0.0002 corr(cos, μ) +1.00
   μ 1.00  cos +0.96  Sound
 ```
 
-So `μ` is faithfully expressible as the cosine of learned vectors. (With 16 dims for 90 nodes this is
-over-parameterised and fits exactly — that is fine as a proof of the *objective*; the real test is
-*generalisation* to unscored categories via the transformer encoder, which is the separate project.)
+So `μ` is faithfully expressible as the cosine of learned vectors. **Read this as *capacity*, not
+*inductive bias*:** 91 vectors × 16 dims = 1,456 free parameters fitting 90 targets (~16× over-
+parameterised), so `corr → 1.00` proves the representation *can* encode μ, nothing about
+generalisation. The real test — predicting μ for *unscored* categories — needs the shared MLP encoder
+on MiniLM init, and is the separate project.
 
 ## What this prototype does NOT do (the separate project)
 
@@ -151,6 +162,18 @@ This environment has **no numpy / torch / network**, so:
 Once the encoder produces dense `μ` for *all* categories (not just the scored 90), it removes the
 density caveat on `descendant_mu_mass_gated` (gating no longer prunes through unscored connectors) and
 feeds `gated_ic` / `lin_from_ic` directly — the same `μ` map, just dense and domain-swappable.
+
+**Two things that will silently corrupt the integration if missed (review-flagged):**
+1. **Clamp the cosine to `[0,1]` before emitting** (`to_membership` in `mu_encoder.py`). Cosine is in
+   `[-1,1]`, but the Rust mass functions assume `μ ≥ 0`: `descendant_mu_mass` and `sketch_mu_mass` *sum*
+   μ as mass, so a negative weight corrupts the mass / KMV estimate; only `descendant_mu_mass_gated`
+   tolerates it (a negative just fails the gate). Training targets `μ ∈ [0,1]` so the model is only
+   *asked* for non-negative, but an unlabelled very-dissimilar pair can produce a negative cosine at
+   inference — hence the clamp at emission.
+2. **Category-name strings must match `category_parent.tsv` exactly** (case- and underscore-sensitive).
+   The Rust loaders intern names → integer ids; a name absent from the graph hits `unwrap_or(0.0)` and
+   silently becomes `μ=0`, **re-activating the density caveat this whole project exists to close.**
+   Emit names verbatim from the TSV, and assert your coverage (how many emitted names resolved).
 
 **Exact pointers** (so a follow-up doesn't have to hunt):
 - Consumers of `μ` live in `templates/targets/rust_wam/boundary_cache.rs.mustache`:

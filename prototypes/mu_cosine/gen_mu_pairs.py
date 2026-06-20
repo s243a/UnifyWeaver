@@ -84,6 +84,7 @@ def main():
     ap.add_argument("--stop-prob", type=float, default=0.4, help="geometric per-step stop probability")
     ap.add_argument("--hub-beta", type=float, default=1.0, help="step down-weight exponent on degree")
     ap.add_argument("--restart-alpha", type=float, default=0.3, help="prob a positive restarts at a seed")
+    ap.add_argument("--max-frontier", type=int, default=3000, help="cap the mesh so it stays around the seeds")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", default=os.path.join(ROOT, "mu_pairs.tsv"))
     args = ap.parse_args()
@@ -117,8 +118,12 @@ def main():
             continue
         pairs.add(key)
         rows.append((start, end, "pos", len(path) - 1))
-        # grow the mesh with the path's interior/endpoint (keeps coverage connected around the seeds)
+        # grow the mesh with the path's interior/endpoint (keeps coverage connected around the seeds).
+        # Capped at --max-frontier: an unbounded frontier would, over many walks, drift into a plain
+        # random walk from an ever-expanding set rather than a mesh *around* the seeds.
         for n in path[1:]:
+            if len(frontier) >= args.max_frontier:
+                break
             if n not in frontier:
                 frontier.append(n)
 
@@ -131,7 +136,10 @@ def main():
         tries += 1
         a = rng.choice(frontier)            # the "target" (in/near domain)
         b = rng.choice(universe)            # the noise
-        if a == b or b in adj.get(a, ()):   # skip self / direct neighbours (those aren't negatives)
+        # skip self / DIRECT neighbours (those aren't negatives). Stricter: exclude k-hop neighbours of
+        # `a` (a small BFS) so borderline-related pairs don't leak into the negatives — only needed if
+        # the scored μ histogram shows negatives creeping above the cutoff.
+        if a == b or b in adj.get(a, ()):
             continue
         key = tuple(sorted((a, b)))
         if key in pairs:

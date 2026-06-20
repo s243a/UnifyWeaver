@@ -141,6 +141,18 @@ class MuEncoder:
         return sum(x * y for x, y in zip(a, b)) / (na * nb)
 
 
+def to_membership(cos):
+    """Map a cosine (∈ [-1, 1]) to a membership μ (∈ [0, 1]) for emitting to the Rust core.
+
+    **Required before feeding the dense μ to `descendant_mu_mass` / `sketch_mu_mass`:** those sum μ as
+    *mass* and assume μ ≥ 0 — a negative weight corrupts the mass / KMV estimate. `descendant_mu_mass_
+    gated` tolerates a negative (it just fails the `≥ threshold` gate), but the others do not, so clamp
+    at the emission step. (Training targets the LLM μ ∈ [0,1], so the model is only ever *asked* for
+    [0,1]; but an unlabelled, very-dissimilar pair can produce a negative cosine at inference.)
+    """
+    return max(0.0, min(1.0, cos))
+
+
 if __name__ == "__main__":
     for n_experts in (1, 4):
         enc = MuEncoder(Config(n_layers=1, n_experts=n_experts))
