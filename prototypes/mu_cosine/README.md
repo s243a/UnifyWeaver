@@ -53,6 +53,43 @@ HuggingFace is reachable (MiniLM downloads + encodes, 384-d).
 `train_cosine_mu_torch.py --mode pairs --minilm` → re-run `validate_lin_agreement.py` (expect the
 pairwise agreement to improve). **Confirm with the user before scoring.**
 
+### Progress — dense μ *without* training, model comparison (prompt A variant)
+
+Instead of spending budget, the fastest path to unblock the graph work (README prompt **A**): emit a
+dense μ map by **direct asymmetric embedding** (encode the root as a *query*, each category as a
+*document*, cosine, clamp) — and pick the embedder that minimises future Haiku re-scoring.
+
+| new file | what it does |
+|---|---|
+| `dense_mu_direct.py` | dense `name<TAB>μ` with no training, asymmetric query/doc prefixes; presets `minilm` / `e5` / `nomic`; `--compare` reports each model's **decision band** (μ near the 0.3 gate) + fixture discrimination |
+| `check_feeds_rust.py` | confirms a chosen map feeds `gated_ic` / `lin_from_ic` (faithful port): names resolve verbatim, μ∈[0,1], gated IC finite + general→specific, membership separates physics/non-physics |
+| `dense_mu_e5.sample.tsv` | committed illustrative 20-row sample of the chosen map (full maps are git-ignored, regenerable) |
+
+**Decision-band metric & the trap.** The *budget* metric is the **decision band** — categories with
+μ ∈ [0.2, 0.45] straddling the 0.3 gate, the ones a later Haiku pass must re-score. But the **raw**
+band is misleading: asymmetric retrieval models have a high cosine *floor*, so they pile everything
+above the gate (e5 raw band = **0** — but Music=0.84 ≈ Optics=0.87, no discrimination at all). The fix
+(no budget): **calibrate** each model's cosine→μ against the existing 90-node Haiku fixture (linear
+fit), then the band is comparable and reflects genuine ambiguity:
+
+| model | dim | raw band | **calibrated band** | fixture r | gate leak (non-phys passing 0.3) |
+|---|---|---|---|---|---|
+| `all-MiniLM-L6-v2` | 384 | 876 | 2028 | +0.573 | 4/5 |
+| **`e5-small-v2`** | **384** | 0 | **653** | **+0.665** | **3/5** (Cooking, Religious correctly out) |
+| `nomic-embed-text-v1.5` | 768 | 4109 | 1049 | +0.647 | — |
+
+**Pick: `intfloat/e5-small-v2`** — smallest calibrated band, best fixture correlation, cleanest gate
+separation, and 384-d (lightweight). `check_feeds_rust.py` confirms its map feeds the Rust core
+(IC general→specific: Physics 2.85 < Optics 5.12 < Thermodynamics 7.18). Caveat: pairwise `lin_from_ic`
+**saturates** toward 1.0 for many pairs on this graph (all maps) — the membership μ, not pairwise Lin,
+is the clean separator. Don't use BERT/ModernBERT (logit/entropy encoders, not sentence embedders).
+
+```bash
+python3 dense_mu_direct.py --compare                              # the table above
+python3 dense_mu_direct.py --model e5 --out dense_mu_e5.tsv       # emit the chosen (calibrated) map
+python3 check_feeds_rust.py --mu-file dense_mu_e5.tsv             # sanity-check it feeds the Rust core
+```
+
 **Reproduce what exists (no deps):**
 ```bash
 cd prototypes/mu_cosine

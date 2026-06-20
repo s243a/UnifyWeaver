@@ -1,0 +1,19 @@
+# Illustrative 20-row sample of the e5-small-v2 dense μ(category | Physics) map
+# (calibrated to the Haiku fixture; full map regenerate: dense_mu_direct.py --model e5).
+# Format: name<TAB>μ. Physics topics high; everyday topics low.
+Physics	1.0000
+Optics	0.7464
+Thermodynamics	0.8509
+Electromagnetism	0.6402
+Atoms	0.6260
+Light	0.4804
+Acoustics	0.4388
+Temperature	0.7479
+Energy	0.8160
+Waves	0.5340
+Music	0.5231
+Cooking	0.0934
+Religious_buildings	0.0000
+Politics	0.5001
+Fashion	0.3991
+Sports	0.0397

@@ -1,1 +1,6 @@
 mu_pairs.tsv
+# generated dense μ maps (regenerate with emit_dense_mu.py / dense_mu_direct.py); the committed
+# dense_mu_e5.sample.tsv is the illustrative sample. *.sample.tsv is kept (negated below).
+dense_mu*.tsv
+!dense_mu*.sample.tsv
+*.pt

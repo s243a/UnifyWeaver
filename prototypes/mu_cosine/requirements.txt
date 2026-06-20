@@ -5,3 +5,4 @@
 torch>=2.0
 numpy>=1.24
 sentence-transformers>=2.2    # pulls `transformers`; provides all-MiniLM-L6-v2 (needs HF egress)
+einops>=0.7                   # only for the nomic-ai/nomic-embed-text-v1.5 preset in dense_mu_direct.py
