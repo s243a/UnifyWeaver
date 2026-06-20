@@ -16,10 +16,42 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 | distance-biased sampler | ✅ implemented (in the trainer) |
 | pairwise label *generator* | ✅ **done** — `gen_mu_pairs.py` (emits candidate pairs; no LLM cost) |
 | encoder architecture (MLP/MoE, not a transformer) | ✅ **forward pass** only — `mu_encoder.py`, runs at 384-dim |
-| MiniLM init | ⬜ **not done** — random fallback (HuggingFace egress blocked in this env) |
-| training the full encoder | ⬜ **not done** — needs numpy/torch (neither installed here) |
-| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` |
-| wiring dense μ back to the Rust core | ⬜ **not done** — see "Integration" below |
+| MiniLM init | ✅ **done** — `mu_encoder_torch.py` `build_minilm_init` + `embed()` (ML env w/ HF egress) |
+| training the full encoder | ✅ **done** — `train_cosine_mu_torch.py` (torch port; objective + held-out generalisation) |
+| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` (awaiting user OK) |
+| wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` (clamped, verbatim names, 100% coverage); Rust consumption not yet run |
+
+### Progress — ML-environment port (this branch)
+
+The handoff's "take it into the real ML environment" steps are now implemented in torch (steps that
+spend **no** LLM budget). Gating checks passed first: `pip install -r requirements.txt` succeeds and
+HuggingFace is reachable (MiniLM downloads + encodes, 384-d).
+
+| new file | what it does |
+|---|---|
+| `mu_encoder_torch.py` | torch port of the MLP/MoE encoder; **MiniLM init wired into `embed()`** (`build_minilm_init`); MoE load-balancing aux loss; `to_membership` clamp |
+| `train_cosine_mu_torch.py` | the cosine-μ objective in torch (Adam / SparseAdam). `--free-vectors` reproduces `train_cosine_mu.py` (**corr → 1.00**); `--minilm --holdout` is the generalisation test; `--mode pairs` for scored `gen_mu_pairs.py` (refuses unscored rows) |
+| `emit_dense_mu.py` | README step 5 — dense `name<TAB>μ` for the whole graph from the trained encoder; **clamps [0,1]**, **emits names verbatim**, asserts coverage |
+| `validate_lin_agreement.py` | README step 4b — faithful python port of `gated_ic`/`lin_from_ic` (threshold 0.3, Σμ denom), compares graph-side Lin vs semantic cosine |
+
+**Validation results (no LLM budget spent):**
+- **Objective**: `--free-vectors` → train MSE 0.0000, corr **+1.00** (torch matches the stdlib proof).
+- **Generalisation** (frozen MiniLM init + shared 1-layer encoder, 0.2 held-out): **held-out corr +0.946**,
+  MSE 0.023 — μ predicted for categories whose label the encoder never saw. Even the *untrained*
+  MiniLM-cosine already scores held-out corr +0.88.
+- **Dense μ**: emitted for all 8 247 categories, 100% name resolution; highest-μ are exactly physics
+  topics (Light, Electromagnetism, Thermodynamics, Acoustics…); 262 in the [0.3,0.7] boundary band.
+- **Lin agreement (a caveat, honestly)**: the literal `μ(X|root) == Lin(X, root)` is **degenerate** —
+  node-vs-root Lin saturates at 1.0 for all 51 scored nodes (the root is the most-general node).
+  The *pairwise* graph-Lin vs semantic-cosine correlation is **weak** for the single-anchor-trained
+  encoder (Pearson ≈ −0.13): single-anchor μ(X|Physics) training collapses physics nodes onto the
+  Physics direction, so pairwise cos saturates. **This is the concrete motivation for the pairwise
+  scored labels** (`gen_mu_pairs.py`, the budget step) — the held-out *single-anchor* μ regression is
+  strong, but capturing pairwise/Lin structure needs the varied-anchor pairwise μ.
+
+**Next (needs the budget step):** score `mu_pairs.tsv` (`gen_mu_pairs.py score_stub`, ~1200 pairs) →
+`train_cosine_mu_torch.py --mode pairs --minilm` → re-run `validate_lin_agreement.py` (expect the
+pairwise agreement to improve). **Confirm with the user before scoring.**
 
 **Reproduce what exists (no deps):**
 ```bash
