@@ -8,7 +8,8 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 
 ## Status & handoff (read this first)
 
-**Branch:** `claude/mu-cosine-embedding-prototype` · **PR:** #3280 · last verified Python 3.11, stdlib only.
+**Status:** merged to `main` (via #3280). New work: branch from `main`, open your own PR. Last
+verified Python 3.11, stdlib only.
 
 | piece | state |
 |---|---|
@@ -194,8 +195,9 @@ The pure-stdlib pieces run anywhere. To train the real encoder you need an envir
 allows `huggingface.co` and whose **setup script** installs the requirements (an HF MCP server is
 optional — it's an interface, not a bypass of the network policy). Large artifacts (full-graph
 embeddings ~1.5 GB, weights) should be hosted externally and downloaded at runtime, **not** committed
-to git — the cloud container is ephemeral, so they re-fetch per session. Cross-session coordination:
-post progress on **PR #3280**.
+to git — the cloud container is ephemeral, so they re-fetch per session. **Coordination:** the
+prototype was merged to `main` (via #3280), so each new session **branches from `main` and opens its
+own PR** — parallel sessions (A and B below) coordinate by cross-referencing their PRs.
 
 Two ready-to-paste kickoff prompts:
 
@@ -206,19 +208,20 @@ Two ready-to-paste kickoff prompts:
 > `[0,1]` (`prototypes/mu_cosine/mu_encoder.py:to_membership`), and emit `name<TAB>μ` in the format of
 > `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` (names verbatim from the TSV). Then sanity-check
 > it feeds `gated_ic` / `lin_from_ic` in the Rust core. Deps: `pip install -r
-> prototypes/mu_cosine/requirements.txt` + HF egress. Report coverage on PR #3280.
+> prototypes/mu_cosine/requirements.txt` + HF egress. Work on a branch off `main` and **open a PR**;
+> report coverage there.
 
 **B — train the encoder (the prototype's payoff):**
 > Pick up the self-contained ML sub-project in the UnifyWeaver repo: read
-> `prototypes/mu_cosine/README.md` (a complete handoff), branch
-> `claude/mu-cosine-embedding-prototype`, discuss on PR #3280. First verify `pip install -r
+> `prototypes/mu_cosine/README.md` (a complete handoff). Branch from `main` and **open your own PR**
+> for this work. First verify `pip install -r
 > prototypes/mu_cosine/requirements.txt` succeeds and HuggingFace is reachable; if not, report exactly
 > what's blocked and stop — don't fake it. Then follow the README's ordered steps: port
 > `mu_encoder.py`'s forward to torch, wire MiniLM init into `embed()`, generate+score training pairs
 > (`gen_mu_pairs.py` emits candidates; **scoring spends LLM budget — confirm with me before running**),
 > train the cosine-μ objective (validated by `train_cosine_mu.py`), validate generalisation (held-out
 > μ, and agreement with the graph-side `lin_from_ic`). Heed the integration guards: clamp cosine to
-> `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on the prototype branch;
+> `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on your own branch;
 > do not touch the merged WAM-Rust core.
 
 ### Persistent storage (rclone + Dropbox)
@@ -241,7 +244,8 @@ context-only). `cloud_setup.sh` is a credential-free template for the environmen
   "dropbox:outputs"` (up). `copy` never deletes — prefer it over `sync`. Pre-pull stable files in the
   setup script so they bake into the snapshot; fetch only changing data at runtime.
 - **Parallel sessions** (prompts A and B at once) can share one app folder — coordinate writes by
-  subfolder (`dropbox:dense-mu/` for A's output, `dropbox:checkpoints/` for B) and via PR #3280.
+  subfolder (`dropbox:dense-mu/` for A's output, `dropbox:checkpoints/` for B) and by cross-referencing
+  their PRs.
 - *Alternative:* dedicated object storage (S3/GCS/R2) is arguably a better fit for machine-readable
   blobs (cleaner credential scoping, no token-refresh fragility); `rclone` supports those backends too,
   so the same workflow applies — just a different `[remote]` in `rclone.conf`.
