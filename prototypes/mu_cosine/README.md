@@ -185,3 +185,38 @@ feeds `gated_ic` / `lin_from_ic` directly — the same `μ` map, just dense and 
   (`name<TAB>μ`). Candidate surfacing: `scripts/physics_random_walk_candidates.py`.
 - Format the dense μ the same way (`name<TAB>μ`, '#'-comment header) so the existing Rust loaders
   (e.g. `wikipedia_gated_similarity_tracks_physics_relatedness`) consume it unchanged — just larger.
+
+## Starting a new session (ML environment)
+
+The pure-stdlib pieces run anywhere. To train the real encoder you need an environment with
+`pip install -r requirements.txt` (torch, numpy, sentence-transformers) **and** HuggingFace egress
+(for `all-MiniLM-L6-v2`). On Claude-Code-on-the-web that means an environment whose **network policy**
+allows `huggingface.co` and whose **setup script** installs the requirements (an HF MCP server is
+optional — it's an interface, not a bypass of the network policy). Large artifacts (full-graph
+embeddings ~1.5 GB, weights) should be hosted externally and downloaded at runtime, **not** committed
+to git — the cloud container is ephemeral, so they re-fetch per session. Cross-session coordination:
+post progress on **PR #3280**.
+
+Two ready-to-paste kickoff prompts:
+
+**A — dense μ *without* training (fastest path to unblock the graph work):**
+> In the UnifyWeaver repo, produce a dense μ map by running an embedding model directly — no training.
+> For every category in `data/benchmark/10k/category_parent.tsv`, MiniLM-encode its name
+> (`sentence-transformers/all-MiniLM-L6-v2`), cosine to the `Physics` anchor embedding, clamp to
+> `[0,1]` (`prototypes/mu_cosine/mu_encoder.py:to_membership`), and emit `name<TAB>μ` in the format of
+> `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` (names verbatim from the TSV). Then sanity-check
+> it feeds `gated_ic` / `lin_from_ic` in the Rust core. Deps: `pip install -r
+> prototypes/mu_cosine/requirements.txt` + HF egress. Report coverage on PR #3280.
+
+**B — train the encoder (the prototype's payoff):**
+> Pick up the self-contained ML sub-project in the UnifyWeaver repo: read
+> `prototypes/mu_cosine/README.md` (a complete handoff), branch
+> `claude/mu-cosine-embedding-prototype`, discuss on PR #3280. First verify `pip install -r
+> prototypes/mu_cosine/requirements.txt` succeeds and HuggingFace is reachable; if not, report exactly
+> what's blocked and stop — don't fake it. Then follow the README's ordered steps: port
+> `mu_encoder.py`'s forward to torch, wire MiniLM init into `embed()`, generate+score training pairs
+> (`gen_mu_pairs.py` emits candidates; **scoring spends LLM budget — confirm with me before running**),
+> train the cosine-μ objective (validated by `train_cosine_mu.py`), validate generalisation (held-out
+> μ, and agreement with the graph-side `lin_from_ic`). Heed the integration guards: clamp cosine to
+> `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on the prototype branch;
+> do not touch the merged WAM-Rust core.
