@@ -131,14 +131,25 @@ an arbitrary number of tokens, so adding it later is free.
 
 ## Validation (per operator)
 
-- `WIKI`: held-out edge order-accuracy (does `μ(child|parent) > μ(parent|child)`?); IC monotonicity /
-  decision-flip on the gated cone.
+**Primary metrics:** held-out directional/pairwise-μ corr, **gate-leak** (probe + large OOD sample),
+decision-flip behaviour, and cold-start coverage. **Do _not_ optimise for lin-agreement** — the control
+baseline (#3294, `REPORT_control_baseline.md`) found pairwise `lin_from_ic` is **96.7% saturated at 1.0**:
+μ-gating prunes ancestor cones, so gated IC is **non-monotone up the DAG** (a common ancestor can out-IC
+the nodes below it ⇒ `2·IC(MICA)/(IC(u)+IC(v))` overshoots 1 and clamps). That's a graph/gating property,
+largely independent of the μ map, so **no** μ map can un-saturate it; only ~3.3% of pairs are gradable
+(control +0.124 there, ≈ noise on 42 pairs). Membership μ — not gated Lin — is the in-domain separator.
+Report lin-agreement only on the **non-saturated** pairs, as a weak secondary signal.
+
+- `WIKI`: held-out edge order-accuracy (does `μ(child|parent) > μ(parent|child)`?); decision-flip on the
+  gated cone.
 - `LLM_*`: held-out directional-μ corr vs Haiku.
 - `SYM`: matches relatedness; `μ(X|root) ≈ μ(root|X)`.
 - Every operator's dense map → `check_feeds_rust.py` (100% coverage, IC general→specific, `lin ∈ [0,1]`,
   gate-leak count).
-- **Control arm:** the MiniLM symmetric encoder (#3287) is the baseline the e5 multi-operator model must
-  **beat on `SYM` and on gate-leak** — otherwise the extra machinery isn't earning its keep.
+- **Control arm:** the MiniLM symmetric encoder (#3287, numbers in `REPORT_control_baseline.md`) is the
+  baseline the e5 multi-operator model must **beat on held-out μ corr, `SYM`, and gate-leak** (control:
+  held-out +0.726, gate-leak 0/5 probe & 1.1% on 4280 OOD nodes) — otherwise the extra machinery isn't
+  earning its keep.
 
 ## Cost & coverage
 
@@ -166,5 +177,7 @@ bounded `LLM_*` boundary labels (the cutoff band, ~tens of k Haiku tokens, bough
 > Frozen e5 + AdamW weight decay. (3) OPTIONAL, budget-gated, confirm first: add an `LLM_subtopic`
 > operator from a small Haiku boundary set (cutoff band only, ≤82k Haiku tokens, one inline subagent).
 > (4) Validate per operator: WIKI held-out edge order-accuracy, SYM relatedness + symmetry, each dense
-> map through `check_feeds_rust.py`; report gate-leak vs the #3287 MiniLM-symmetric **control**. Do the
+> map through `check_feeds_rust.py`; head-to-head vs the #3287 MiniLM-symmetric **control**
+> (`REPORT_control_baseline.md`) on **held-out μ corr, SYM, and gate-leak** — NOT lin-agreement, which is
+> 96.7% saturated and structurally low-resolution (judge it only on the non-saturated pairs). Do the
 > judge axis later — start with one implicit judge. Report all per-operator numbers in the PR.
