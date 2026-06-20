@@ -8,8 +8,9 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 
 ## Status & handoff (read this first)
 
-**Status:** merged to `main` (via #3280). New work: branch from `main`, open your own PR. Last
-verified Python 3.11, stdlib only.
+**Status:** merged to `main` (via #3280); the torch port + direct-embedding comparison are folded in
+here. New work: branch from `main`, open your own PR. Last verified Python 3.11 (stdlib pieces) /
+torch 2.x + sentence-transformers (ML pieces).
 
 | piece | state |
 |---|---|
@@ -17,10 +18,87 @@ verified Python 3.11, stdlib only.
 | distance-biased sampler | ✅ implemented (in the trainer) |
 | pairwise label *generator* | ✅ **done** — `gen_mu_pairs.py` (emits candidate pairs; no LLM cost) |
 | encoder architecture (MLP/MoE, not a transformer) | ✅ **forward pass** only — `mu_encoder.py`, runs at 384-dim |
-| MiniLM init | ⬜ **not done** — random fallback (HuggingFace egress blocked in this env) |
-| training the full encoder | ⬜ **not done** — needs numpy/torch (neither installed here) |
-| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` |
-| wiring dense μ back to the Rust core | ⬜ **not done** — see "Integration" below |
+| MiniLM init | ✅ **done** — `mu_encoder_torch.py` `build_minilm_init` + `embed()` (ML env w/ HF egress) |
+| training the full encoder | ✅ **done** — `train_cosine_mu_torch.py` (torch port; objective + held-out generalisation) |
+| **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` (awaiting user OK) |
+| wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
+
+### Progress — ML-environment port (folded in from #3283)
+
+The handoff's "take it into the real ML environment" steps are implemented in torch (the steps that
+spend **no** LLM budget). Gating checks passed first: `pip install -r requirements.txt` succeeds and
+HuggingFace is reachable (MiniLM downloads + encodes, 384-d).
+
+| new file | what it does |
+|---|---|
+| `mu_encoder_torch.py` | torch port of the MLP/MoE encoder; **MiniLM init wired into `embed()`** (`build_minilm_init`); MoE load-balancing aux loss; `to_membership` clamp |
+| `train_cosine_mu_torch.py` | the cosine-μ objective in torch (Adam / SparseAdam). `--free-vectors` reproduces `train_cosine_mu.py` (**corr → 1.00**); `--minilm --holdout` is the generalisation test; `--mode pairs` for scored `gen_mu_pairs.py` (refuses unscored rows) |
+| `emit_dense_mu.py` | step 5 — dense `name<TAB>μ` for the whole graph from the trained encoder; **clamps [0,1]**, **emits names verbatim**, asserts coverage |
+| `validate_lin_agreement.py` | step 4b — faithful python port of `gated_ic`/`lin_from_ic` (threshold 0.3, Σμ denom), compares graph-side Lin vs semantic cosine |
+
+**Validation results (no LLM budget spent):**
+- **Objective**: `--free-vectors` → train MSE 0.0000, corr **+1.00** (torch matches the stdlib proof).
+- **Generalisation** (frozen MiniLM init + shared 1-layer encoder, 0.2 held-out): **held-out corr +0.946**,
+  MSE 0.023 — μ predicted for categories whose label the encoder never saw. Even the *untrained*
+  MiniLM-cosine already scores held-out corr +0.88.
+- **Dense μ**: emitted for all 8 247 categories, 100% name resolution; highest-μ are exactly physics
+  topics (Light, Electromagnetism, Thermodynamics, Acoustics…); 262 in the [0.3,0.7] boundary band.
+- **Lin agreement — the Step-4 claim, corrected.** The handoff's step 4 said the dense μ should
+  *converge* to the graph-side `lin_from_ic` (`μ(X|root) == Lin(X, root)`). **That validation is
+  degenerate and has been dropped:** node-vs-root Lin saturates at 1.0 for all 51 scored nodes (the
+  root is the most-general node, so every node's MICA-with-root *is* the root). The *pairwise* graph-Lin
+  vs semantic-cosine correlation is **weak** for the single-anchor-trained encoder (Pearson ≈ −0.13):
+  single-anchor μ(X|Physics) training collapses physics nodes onto the Physics direction, so pairwise
+  cosine saturates too. **This is the concrete motivation for the pairwise scored labels**
+  (`gen_mu_pairs.py`, the budget step) — the held-out *single-anchor* μ regression is strong, but
+  capturing pairwise/Lin structure needs the varied-anchor pairwise μ. Do **not** gate the encoder on
+  agreement with node-vs-root Lin.
+
+**Next (needs the budget step):** score `mu_pairs.tsv` (`gen_mu_pairs.py score_stub`, ~1200 pairs) →
+`train_cosine_mu_torch.py --mode pairs --minilm` → re-run `validate_lin_agreement.py` (expect the
+pairwise agreement to improve). **Confirm with the user before scoring.**
+
+### Progress — dense μ *without* training, model comparison (Prompt A, realized)
+
+The fastest path to unblock the graph work (Prompt A below) is a dense μ map by **direct asymmetric
+embedding** (encode the root as a *query*, each category as a *document*, cosine, clamp) — picking the
+embedder that minimises future Haiku re-scoring.
+
+| new file | what it does |
+|---|---|
+| `dense_mu_direct.py` | dense `name<TAB>μ` with no training, asymmetric query/doc prefixes; presets `minilm` / `e5` / `nomic`; `--compare` reports each model's **decision band** + fixture discrimination |
+| `check_feeds_rust.py` | confirms a chosen map feeds `gated_ic` / `lin_from_ic` (faithful port): names resolve verbatim, μ∈[0,1], gated IC finite + general→specific, membership separates physics/non-physics |
+| `dense_mu_e5.sample.tsv` | committed illustrative 20-row sample of the chosen map (full maps are git-ignored, regenerable) |
+
+**Decision-band metric & the trap (this corrects Prompt A's "smallest band wins").** The budget metric
+is the **decision band** — categories with μ ∈ [0.2, 0.45] straddling the 0.3 gate, the ones a later
+Haiku pass must re-score. But the **raw** band is misleading: asymmetric retrieval models have a high
+cosine *floor*, so they pile everything above the gate (e5 raw band = **0** — but Music=0.84 ≈
+Optics=0.87, no discrimination at all; "smallest raw band" would pick the *worst*, most-compressed
+model). The fix (no budget): **calibrate** each model's cosine→μ against the existing 90-node Haiku
+fixture (linear fit) **before** counting the band — only then is the band comparable and reflective of
+genuine ambiguity:
+
+| model | dim | raw band | **calibrated band** | fixture r | gate leak (non-phys passing 0.3) |
+|---|---|---|---|---|---|
+| `all-MiniLM-L6-v2` | 384 | 876 | 2028 | +0.573 | 4/5 |
+| **`e5-small-v2`** | **384** | 0 | **653** | **+0.665** | **3/5** (Cooking, Religious correctly out) |
+| `nomic-embed-text-v1.5` | 768 | 4109 | 1049 | +0.647 | — |
+
+**Pick: `intfloat/e5-small-v2`** — smallest *calibrated* band, best fixture correlation, cleanest gate
+separation, and 384-d (lightweight). `check_feeds_rust.py` confirms its map feeds the Rust core
+(IC general→specific: Physics 2.85 < Optics 5.12 < Thermodynamics 7.18). Caveat: pairwise `lin_from_ic`
+**saturates** toward 1.0 for many pairs on this graph (all maps) — the membership μ, not pairwise Lin,
+is the clean separator (same finding as the Step-4 correction above). Don't use BERT/ModernBERT
+(logit/entropy encoders, not sentence embedders). e5 still leaks a couple of loosely-related apexes
+near the gate (e.g. Music ≈ 0.52, Politics ≈ 0.50) — exactly what **Prompt C** (cutoff-band Haiku
+rescore) is for.
+
+```bash
+python3 dense_mu_direct.py --compare                              # the table above
+python3 dense_mu_direct.py --model e5 --out dense_mu_e5.tsv       # emit the chosen (calibrated) map
+python3 check_feeds_rust.py --mu-file dense_mu_e5.tsv             # sanity-check it feeds the Rust core
+```
 
 **Reproduce what exists (no deps):**
 ```bash
@@ -51,8 +129,11 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
    sparse gradients — see batching); **do *not* re-apply `train_cosine_mu.py`'s `--dist-bias`** when
    training on `gen_mu_pairs.py` output — those pairs already encode the distance preference via the
    explicit negatives, so a distance bias on top double-penalises far pairs.
-4. Validate: held-out `μ` regression, and that the dense μ it predicts *agrees with the graph-side*
-   `lin_from_ic` (the two should converge — `μ(X|root) == Lin(X, root)`, the unification below).
+4. Validate: held-out `μ` regression (this is the real generalisation signal). **Do _not_ validate
+   against node-vs-root `lin_from_ic`** — that cross-check is degenerate (root is the most-general
+   node, so node-vs-root Lin saturates at 1.0); see the "ML-environment port" progress note above. If
+   you want a graph-side cross-check, use *pairwise* μ(a,b) for varied anchors, and expect it to need
+   the pairwise scored labels (step 2) before it agrees.
 5. Emit a dense `μ` map (`category → μ`) for the whole graph — **clamp cosine to `[0,1]`
    (`to_membership`) and emit names verbatim** (both load-bearing — see Integration) — and feed it to
    the Rust core.
@@ -100,9 +181,12 @@ single per-node scalar but the **cosine between two learned vectors**, one for `
 ```
 
 Learn the encoder so that cosine matches the LLM-provided `μ`. Because the root is just another encoded
-category, the *same* node embeddings serve any domain — swap the root vector, swap the domain. This
-also unifies `μ` with the graph-similarity work: `μ(X | root)` is exactly `Lin(X, root)` measured in
-semantic (vector) space instead of the category graph.
+category, the *same* node embeddings serve any domain — swap the root vector, swap the domain. This is
+*analogous* to the graph-similarity work — `μ(X | root)` plays the role `Lin(X, root)` plays on the
+category graph, but measured in semantic (vector) space. **It is not a literal identity:** the
+node-vs-root `Lin` is degenerate (saturates at 1.0 — the root is the most-general node), so don't try
+to validate the embedding μ against graph-side node-vs-root Lin (see the Step-4 note in the status
+section).
 
 ## Architecture (`mu_encoder.py`) — an MLP, not a transformer
 
@@ -205,7 +289,9 @@ own PR** — parallel sessions (A and B below) coordinate by cross-referencing t
 
 Two ready-to-paste kickoff prompts:
 
-**A — dense μ *without* training (fastest path to unblock the graph work).**
+**A — dense μ *without* training (fastest path to unblock the graph work).** ✅ **Realized** — see the
+"dense μ *without* training, model comparison" progress section above (`dense_mu_direct.py`; **e5-small
+picked** on smallest *calibrated* band). Kept here for the reasoning; re-run only to re-pick the model.
 Use an **asymmetric** embedder, not MiniLM. μ(X | root) is *directional* ("is X a member of *root*'s
 domain"); MiniLM is symmetric (generic relatedness — it conflates loose-relatedness with membership,
 e.g. `Music ≈ 0.34`). e5-small and nomic have query/passage prefixes for exactly this. The choice
@@ -221,8 +307,11 @@ discrimination (rank 1.2). So **measure it on our data** (zero LLM cost):
 > cosine, clamp to `[0,1]` (`prototypes/mu_cosine/mu_encoder.py:to_membership`), emit `name<TAB>μ` in
 > the `tests/fixtures/wikipedia_physics_fuzzy_nodes.tsv` format (names verbatim). For **each** model
 > report the **decision-band count** (categories with μ ∈ `[0.2,0.45]` near the 0.3 gate — MiniLM had
-> 876) and a few sanity cases (`Music`, `Optics`, `Thermodynamics`); the model with the *smallest* band
-> is the budget-optimal pick (fewest Haiku rescores in Prompt C). Sanity-check the chosen map feeds
+> 876) and a few sanity cases (`Music`, `Optics`, `Thermodynamics`). **Calibrate each model's cosine→μ
+> against the 90-node Haiku fixture (linear fit) _before_ counting the band** — the raw band rewards a
+> degenerate compressor (e5's raw band is 0 because it pins everything above the gate). The model with
+> the *smallest calibrated* band is the budget-optimal pick (fewest Haiku rescores in Prompt C).
+> Sanity-check the chosen map feeds
 > `gated_ic` / `lin_from_ic` in the Rust core. Deps: `pip install -r prototypes/mu_cosine/requirements.txt`
 > + HF egress. Branch off `main`, **open a PR**, report the band sizes there.
 
@@ -240,34 +329,35 @@ discrimination (rank 1.2). So **measure it on our data** (zero LLM cost):
 > do not touch the merged WAM-Rust core.
 
 **C — cascade-refine the dense μ where it changes cutoff decisions (correctness fix for A's output).**
-MiniLM measures *relatedness*, not *membership*: it rates loosely-connected categories (e.g. `Music`
-≈ 0.34 via acoustics/sound, but music is not a physics sub-topic) just above the gating cutoff, which
-re-pollutes the gated cones exactly where gating decides. The *highest-value* rescore set is **not** the
-whole uncertainty band — it's the categories whose μ sits close enough to the **cutoff** that a rescore
-could **flip the in/out decision** (the active-learning / uncertainty-sampling principle: a label's
-value ≈ its probability of changing a decision; a label far from the cutoff can't change anything). On
-A's `dense_mu_physics.tsv` (8247 cats), around the `0.3` gate that is tiny: **[0.25,0.35] = 319 cats,
-[0.20,0.45] = 876, the just-above-cutoff false-positive side (0.30,0.45] = 203** — a few hundred Haiku
-calls, ~7–19 KB. Use the model-cascade pattern already in the merged core
-(`wikipedia_model_cascade_haiku_then_sonnet`, `wikipedia_fuzzy_gated_hybrid_membership`, geometric-mean
-= log-opinion-pool fusion). The Haiku re-scores are *also* the highest-value (boundary) training labels
-for Prompt B — so **C feeds B** — and small/expensive, so **commit them as a fixture** (see the
-commit-vs-regenerate rule under Persistent storage).
-> In the UnifyWeaver repo, refine the dense μ map from PR #3281 with a model cascade. MiniLM rates
-> *relatedness*, not domain *membership*, so it mis-scores categories near the gating cutoff (e.g.
-> `Music` ≈ 0.34, but music is only loosely physics-related, not a physics sub-topic). Rescore only the
-> categories that could **change a cutoff decision** — those within a margin of the `0.3` gate, e.g.
-> μ ∈ `[0.2, 0.45]` (~880; or the tight straddle `[0.25,0.35]`, ~320), weighted toward the
-> just-above-cutoff false-positive side. (Don't spend budget far from the cutoff — those can't flip.)
-> Re-score with a Haiku subagent asking specifically about **membership** ("Is `<category>` a
-> sub-topic/subfield *of physics*? 0..1, 1 = core physics, 0 = unrelated" — not "related to"), batched,
-> same discipline as the `wikipedia_physics_*` fixtures. Fuse with the geometric mean `√(prior·haiku)`
-> (the log-opinion-pool used in the merged cascade tests — it hard-vetoes a loose connection: `Music` →
-> `√(0.34·0) = 0`). Keep categories far from the cutoff on the MiniLM prior untouched. Emit the refined
-> μ (same format) **and commit the Haiku rescores as a fixture** (e.g.
-> `tests/fixtures/wikipedia_physics_boundary_haiku.tsv`, `name<TAB>μ`) — it's small, expensive, and the
-> reusable boundary training data for Prompt B. **Spends LLM budget, bounded to the decision band —
-> report the band size and confirm with me before scoring.** Branch off `main`, open a PR.
+This is the **recommended next step** now that A is realized with e5. Even the chosen e5 prior measures
+*relatedness*, not *membership*, so it still rates a few loosely-connected apexes just above the gate
+(e.g. `Music` ≈ 0.52, `Politics` ≈ 0.50 — not physics sub-topics), re-polluting the gated cones exactly
+where gating decides. The *highest-value* rescore set is **not** the whole uncertainty band — it's the
+categories whose μ sits close enough to the **cutoff** that a rescore could **flip the in/out decision**
+(the active-learning / uncertainty-sampling principle: a label's value ≈ its probability of changing a
+decision; a label far from the cutoff can't change anything). On the e5 calibrated map the decision band
+(μ ∈ `[0.2, 0.45]`) is **≈653 cats** — a few hundred Haiku calls, ~tens of KB (measure the exact tight
+straddle `[0.25,0.35]` from the emitted `dense_mu_e5.tsv`). Use the model-cascade pattern already in the
+merged core (`wikipedia_model_cascade_haiku_then_sonnet`, `wikipedia_fuzzy_gated_hybrid_membership`,
+geometric-mean = log-opinion-pool fusion). The Haiku re-scores are *also* the highest-value (boundary)
+training labels for Prompt B — so **C feeds B** — and small/expensive, so **commit them as a fixture**
+(see the commit-vs-regenerate rule under Persistent storage).
+> In the UnifyWeaver repo, refine the chosen e5 dense μ map (`prototypes/mu_cosine/dense_mu_direct.py
+> --model e5 --out dense_mu_e5.tsv`) with a model cascade. e5 rates *relatedness*, not domain
+> *membership*, so it mis-scores a few categories near the gating cutoff (e.g. `Music` ≈ 0.52,
+> `Politics` ≈ 0.50, only loosely physics-related, not physics sub-topics). Rescore only the categories
+> that could **change a cutoff decision** — those within a margin of the `0.3` gate, e.g. μ ∈
+> `[0.2, 0.45]` (≈650; or the tight straddle `[0.25,0.35]`), weighted toward the just-above-cutoff
+> false-positive side. (Don't spend budget far from the cutoff — those can't flip.) Re-score with a
+> Haiku subagent asking specifically about **membership** ("Is `<category>` a sub-topic/subfield *of
+> physics*? 0..1, 1 = core physics, 0 = unrelated" — not "related to"), batched, same discipline as the
+> `wikipedia_physics_*` fixtures. Fuse with the geometric mean `√(prior·haiku)` (the log-opinion-pool
+> used in the merged cascade tests — it hard-vetoes a loose connection: `Music` → `√(0.52·0) = 0`). Keep
+> categories far from the cutoff on the e5 prior untouched. Emit the refined μ (same format) **and commit
+> the Haiku rescores as a fixture** (e.g. `tests/fixtures/wikipedia_physics_boundary_haiku.tsv`,
+> `name<TAB>μ`) — it's small, expensive, and the reusable boundary training data for Prompt B. **Spends
+> LLM budget, bounded to the decision band — report the band size and confirm with me before scoring.**
+> Branch off `main`, open a PR.
 
 ### What to commit vs. host externally
 
@@ -275,9 +365,10 @@ The deciding question is **cheap-and-regenerable vs. expensive-and-irreproducibl
 - **Commit (in git, as fixtures):** the **LLM-labelled** data — the Haiku boundary rescores (Prompt C),
   the existing `tests/fixtures/wikipedia_physics_*`. These are expensive (LLM budget), *not*
   reproducible, the highest-value asset, and small (the decision band is ~tens of KB). Never re-buy them.
-- **Regenerate or host externally (rclone, below):** **model-derived** artifacts — MiniLM embeddings,
-  the full dense-μ map (`dense_mu_physics.tsv` is ~150 KB and regenerable from the model in minutes),
-  checkpoints, the 1.5 GB full-graph embeddings. Cheap to remake, so don't bloat git; host the big ones.
+- **Regenerate or host externally (rclone, below):** **model-derived** artifacts — embeddings, the full
+  dense-μ map (`dense_mu_e5.tsv` is ~150 KB and regenerable from the model in minutes — git-ignored, with
+  only `dense_mu_e5.sample.tsv` committed as an illustrative sample), checkpoints, the 1.5 GB full-graph
+  embeddings. Cheap to remake, so don't bloat git; host the big ones.
 
 ### Persistent storage (rclone + Dropbox)
 
