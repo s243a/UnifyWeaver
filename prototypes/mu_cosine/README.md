@@ -21,7 +21,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | MiniLM init | ✅ **done** — `mu_encoder_torch.py` `build_minilm_init` + `embed()` (ML env w/ HF egress) |
 | training the full encoder | ✅ **done** — `train_cosine_mu_torch.py` (torch port; objective + held-out generalisation) |
 | **scoring the pairs (μ labels)** | ✅ **sampler labels done** — `mu_pairs_scored.tsv` (200 Haiku-scored positives + 1000 free μ=0 negatives); cutoff-band rescore (Prompt C) still pending |
-| training on the scored pairs | ⬜ **not done** — `train_cosine_mu_torch.py --mode pairs --minilm` (needs an HF-egress env for MiniLM init) |
+| training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 
 ### Progress — ML-environment port (folded in from #3283)
@@ -118,6 +118,44 @@ note says is missing** (single-anchor μ(X|Physics) training collapses pairwise 
 then re-run `validate_lin_agreement.py` (expect pairwise agreement to improve over the single-anchor
 encoder). The **cutoff-band rescore (Prompt C)** is the complementary label set — it needs the e5 dense
 map (also HF-egress), so it runs in the same env.
+
+### Progress — trained on the scored pairs (this PR)
+
+Ran the "Next" above. `train_cosine_mu_torch.py --mode pairs --pairs mu_pairs_scored.tsv --minilm`
+(`n_layers=1`, `n_experts=1`, AdamW, **no** `--dist-bias` — the explicit negatives already encode
+distance). Two trainer changes made the run honest:
+- **Positive-stratified holdout** (`--holdout` now holds out a fraction of *positives* only; the 1000
+  μ=0 negatives all stay in training and are excluded from the held-out metric — a held-out corr over
+  μ=0 rows is meaningless and would dilute the signal).
+- **`--weight-decay`** (AdamW) regularises the 1.2M-param shared encoder toward the identity residual
+  (≈ raw MiniLM). Without it the encoder memorises the 160 training positives (train corr → 1.00) and
+  held-out corr *drops below* the untrained MiniLM baseline (+0.65 → +0.46). `wd=1.0` fixes this.
+
+**Results (no Haiku budget — training is local compute):**
+
+| metric | untrained MiniLM | single-anchor encoder | **pairs-trained (wd=1.0)** |
+|---|---|---|---|
+| held-out *pairwise* μ corr (40 held-out positives) | +0.650 | — | **+0.726** (MSE 0.065) |
+| lin-agreement: graph-Lin vs semantic-cosine, Pearson (1275 pairs) | — | **−0.13** | **+0.098** |
+| lin-agreement Spearman | — | −0.10 | **+0.113** |
+| dense-μ gate leak (non-physics passing 0.3, of 5 probes) | — | — | **0/5** (Music 0.19, Cooking 0.22, Religious 0.00) |
+
+The **lin-agreement delta is +0.23 Pearson** (−0.13 → +0.10): the varied-anchor pairwise labels broke
+the single-anchor encoder's collapse-onto-the-`Physics`-direction (which had made pairwise cosine
+saturate and anti-correlate with graph-Lin). It is now *weakly positive* — the explicit negatives also
+give the dense map clean in/out separation (0/5 leak vs 3–4/5 for the single-anchor / e5-direct maps).
+`emit_dense_mu.py` → `check_feeds_rust.py`: 100% coverage, IC general→specific
+(Physics 3.49 < Electromagnetism 5.69 < Thermodynamics 6.99 < Optics 9.21), `lin ∈ [0,1]`, guards OK.
+Pairwise `lin_from_ic` still **saturates** toward 1.0 for many pairs (graph property, all maps) — the
+ceiling on how far this correlation can climb; membership μ remains the clean separator.
+
+```bash
+python3 train_cosine_mu_torch.py --mode pairs --pairs mu_pairs_scored.tsv --minilm \
+    --holdout 0.2 --weight-decay 1.0 --epochs 2000 --lr 0.01 --save-encoder enc_pairs.pt
+python3 validate_lin_agreement.py --encoder enc_pairs.pt        # lin-agreement delta
+python3 emit_dense_mu.py --encoder enc_pairs.pt --out dense_mu_pairs.tsv
+python3 check_feeds_rust.py --mu-file dense_mu_pairs.tsv
+```
 
 **Reproduce what exists (no deps):**
 ```bash
