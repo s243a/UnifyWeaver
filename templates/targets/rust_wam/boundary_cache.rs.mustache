@@ -1804,6 +1804,61 @@ pub fn descendant_mu_mass_gated(
     out
 }
 
+/// **Node-gated (downward-closed) descendant μ-mass** — the *direct-children-union* companion to
+/// `descendant_mu_mass_gated`, for the **IC fed to `lin_from_ic`/`resnik_from_ic`/`faith_from_ic`**.
+///
+/// `descendant_mu_mass_gated` PATH-gates: it stops descending at any child with `μ < threshold`, so the
+/// gated cone is **not monotone** up the DAG — an ancestor reachable only through a low-μ connector loses
+/// that whole subtree, so its gated cone can be *smaller* than its own descendant's ⇒ a *higher* IC. That
+/// breaks the Resnik/Lin/FaITH precondition `IC(MICA) ≤ min(IC(u),IC(v))`, so `2·IC(MICA)/(IC(u)+IC(v))`
+/// overshoots 1 and the measures saturate (≈97% of in-domain pairs pin at `Lin=1.0`).
+///
+/// This variant descends into **every** child (full downward closure) and only *adds* a node's μ when
+/// `μ ≥ threshold`: `cone(t) = { d ∈ reflexive_desc(t) : μ(d) ≥ threshold }`. Because reflexive-descendant
+/// *sets* are nested along ancestry and the node filter is identical everywhere, the mass is **monotone**
+/// ⇒ IC is monotone ⇒ the three similarity measures are well-defined and graded again. Keep
+/// `descendant_mu_mass_gated` for *membership* (the frontier-stopping cone); use this for *similarity IC*.
+/// Second tuple element is the **in-domain** cone size (count of nodes that passed the filter).
+pub fn descendant_mu_mass_node_gated(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+) -> std::collections::HashMap<u32, (f64, u32)> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    debug_assert!(mu.values().all(|&w| w >= 0.0), "weights must be ≥ 0");
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nodes: HashSet<u32> = HashSet::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); children.entry(p).or_default().push(c); }
+    }
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let mut out: HashMap<u32, (f64, u32)> = HashMap::new();
+    for &t in &nodes {
+        let mut seen: HashSet<u32> = HashSet::new();
+        seen.insert(t);
+        let mut q: VecDeque<u32> = VecDeque::new();
+        q.push_back(t);
+        // The node filter applies to t itself too (a node contributes its own μ only if in-domain).
+        let mut mass = if muv(t) >= threshold { muv(t) } else { 0.0 };
+        let mut in_domain: u32 = if muv(t) >= threshold { 1 } else { 0 };
+        while let Some(x) = q.pop_front() {
+            if let Some(cs) = children.get(&x) {
+                // Descend into EVERY child (downward closure); count mass only for in-domain nodes.
+                for &c in cs {
+                    if seen.insert(c) {
+                        let mu_c = muv(c);
+                        if mu_c >= threshold { mass += mu_c; in_domain += 1; }
+                        q.push_back(c);
+                    }
+                }
+            }
+        }
+        out.insert(t, (mass, in_domain));
+    }
+    out
+}
+
 /// **μ-weighted descendant KMV sketch** — the scalable companion to `descendant_mu_mass`. Where
 /// `descendant_mu_mass` does an exact per-node BFS (`O(V·(V+E))`), this builds *every* node's sketch
 /// in **one reverse-topological pass** (`O((V+E)·k)`), the same shape as `descendant_minhash`. Each
@@ -2393,6 +2448,23 @@ pub fn gated_ic(
     total_mu: f64,
 ) -> std::collections::HashMap<u32, f64> {
     descendant_mu_mass_gated(parents, mu, threshold)
+        .into_iter()
+        .map(|(n, (mass, _))| (n, information_content_weighted(mass, total_mu)))
+        .collect()
+}
+
+/// **Node-gated IC map** — `information_content_weighted` over `descendant_mu_mass_node_gated` (the
+/// monotone, downward-closed cone). Pair **this** with `lin_from_ic`/`resnik_from_ic`/`faith_from_ic`
+/// for well-defined gated *similarity*: it restores `IC(MICA) ≤ min(IC(u),IC(v))`, so the measures stay
+/// graded in `[0,1]` instead of saturating. (Use `gated_ic` — path-gated — for the *membership* cone;
+/// feeding it to the similarity measures saturates them, see `descendant_mu_mass_node_gated`.)
+pub fn gated_ic_node_filtered(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+    total_mu: f64,
+) -> std::collections::HashMap<u32, f64> {
+    descendant_mu_mass_node_gated(parents, mu, threshold)
         .into_iter()
         .map(|(n, (mass, _))| (n, information_content_weighted(mass, total_mu)))
         .collect()
@@ -6008,6 +6080,43 @@ mod tests {
         let ic2 = gated_ic(&g, &mu2, 0.3, mu2.values().sum());
         assert!(ic2[&5].is_infinite(), "out-of-domain leaf ⇒ +∞ IC");
         assert_eq!(lin_from_ic(3, 5, &g, &ic2).unwrap(), 0.0, "similarity to an out-of-domain node is 0");
+    }
+
+    // Direct-children-union (node-gated) IC restores monotonicity / de-saturates Lin where the
+    // PATH-gated cone breaks it. M(0) reaches u(3) and v(4) only through OUT-OF-DOMAIN connectors
+    // L1(1)/L2(2) (μ<θ); u,v keep their own in-domain subtrees (u_c=5, v_c=6). Path-gating prunes the
+    // connectors ⇒ M's cone is just {M} ⇒ IC(M) overshoots its descendants ⇒ Lin saturates at 1.
+    #[test]
+    fn node_gated_ic_restores_lin_monotonicity() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]);   // connectors L1,L2 under M
+        g.insert(3, vec![1]); g.insert(4, vec![2]);   // u under L1, v under L2
+        g.insert(5, vec![3]); g.insert(6, vec![4]);   // u_c under u, v_c under v
+        let mu: HashMap<u32, f64> = [
+            (0u32, 0.3f64), (1, 0.1), (2, 0.1), (3, 0.9), (4, 0.9), (5, 0.9), (6, 0.9),
+        ].into_iter().collect();
+        let total: f64 = mu.values().sum();
+        let th = 0.3;
+
+        let ic_path = gated_ic(&g, &mu, th, total);
+        let ic_node = gated_ic_node_filtered(&g, &mu, th, total);
+
+        // PATH-gated is non-monotone: the MICA (node 0) out-ICs its own descendants.
+        assert!(ic_path[&0] > ic_path[&3] + 1e-9, "path-gated IC is non-monotone");
+        // NODE-gated is monotone (ancestor IC ≤ descendant IC), restoring the Resnik/Lin precondition.
+        assert!(ic_node[&0] <= ic_node[&3] + 1e-9 && ic_node[&0] <= ic_node[&4] + 1e-9,
+            "node-gated IC must be monotone up the DAG");
+
+        // Same MICA node — but Lin saturates at 1 under path-gating, graded under node-gating.
+        assert!((lin_from_ic(3, 4, &g, &ic_path).unwrap() - 1.0).abs() < 1e-9,
+            "path-gated Lin saturates at 1.0");
+        let lin_node = lin_from_ic(3, 4, &g, &ic_node).unwrap();
+        assert!(lin_node < 0.5, "node-gated Lin is graded (distant pair shares only M): {lin_node}");
+
+        // IC(MICA) ≤ min(IC(u),IC(v)) holds again ⇒ FaITH is finite (positive denominator).
+        let mica = resnik_from_ic(3, 4, &g, &ic_node).unwrap();
+        assert!(mica <= ic_node[&3] + 1e-9 && mica <= ic_node[&4] + 1e-9, "IC(MICA) ≤ min restored");
+        assert!(faith_from_ic(3, 4, &g, &ic_node).is_some(), "FaITH well-defined under node-gating");
     }
 
     // IC-based semantic similarity (Resnik/Lin) via the descendant sketch -- the calibrated,
