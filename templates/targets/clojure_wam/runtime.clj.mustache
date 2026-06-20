@@ -736,7 +736,7 @@
     :else nil))
 
 (defn functor-arity-term [state arity]
-  (normalize-literal-term (:intern-context state) (str arity)))
+  arity)
 
 (defn compound-name-text [state value]
   (when (atom-term? value)
@@ -1517,7 +1517,7 @@
 
 (defn code-list-term [state text]
   [state (list->term (:intern-context state)
-                     (map #(normalize-literal-term (:intern-context state) (str (int %))) text))])
+                     (map int text))])
 
 (defn char-list-term [state text]
   (let [[next-state chars] (intern-char-terms state text)]
@@ -1771,7 +1771,7 @@
   (and (integer? value) (not (neg? value)) (<= value 65535)))
 
 (defn char-code-count-term [state code]
-  (normalize-literal-term (:intern-context state) (str code)))
+  code)
 
 (defn apply-char-code-solution [state]
   (let [char-value (deref-value (:bindings state)
@@ -1936,7 +1936,7 @@
       (some? text)
       (let [len (count text)
             [ok next-state] (if (logic-var? out)
-                              (unify-values state out (normalize-literal-term (:intern-context state) (str len)))
+                              (unify-values state out len)
                               [(= out-count len) state])]
         (if ok
           (advance next-state)
@@ -1961,7 +1961,7 @@
     :else nil))
 
 (defn sub-atom-count-term [state n]
-  (normalize-literal-term (:intern-context state) (str n)))
+  n)
 
 (defn sub-atom-solution-results [state text before length after sub]
   (let [n (count text)

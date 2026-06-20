@@ -510,8 +510,20 @@ wam_atom_token_text(Token, AtomText) :-
     clj_unquote_wam_atom_token(Token, AtomText).
 
 wam_atom_token_literal(Token, Literal) :-
+    wam_unquoted_number_token(Token, Num),
+    !,
+    format(atom(Literal), '~w', [Num]).
+wam_atom_token_literal(Token, Literal) :-
     wam_atom_token_text(Token, AtomText),
     clj_string_literal(AtomText, Literal).
+
+wam_unquoted_number_token(Token, Num) :-
+    (   number(Token)
+    ->  Num = Token
+    ;   (   string(Token) -> S = Token ; atom_string(Token, S) ),
+        \+ sub_string(S, 0, 1, _, "'"),
+        catch(number_string(Num, S), _, fail)
+    ).
 
 wam_op_intern_seeds("get_constant", [Const, _], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
 wam_op_intern_seeds("put_constant", [Const, _], [AtomText], []) :- wam_atom_token_text(Const, AtomText).
