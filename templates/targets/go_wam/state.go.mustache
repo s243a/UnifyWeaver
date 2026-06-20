@@ -1159,6 +1159,42 @@ func peekStreamRune(value Value) (rune, bool, bool) {
 	return r, false, true
 }
 
+func readLineStreamValue(value Value) (Value, bool) {
+	handle, ok := streamHandle(value)
+	if !ok || handle.Reader == nil {
+		return nil, false
+	}
+	var b strings.Builder
+	for {
+		r, _, err := handle.Reader.ReadRune()
+		if err == io.EOF {
+			if b.Len() == 0 {
+				return internAtom("end_of_file"), true
+			}
+			return internAtom(b.String()), true
+		}
+		if err != nil {
+			return nil, false
+		}
+		if r == '\n' {
+			return internAtom(b.String()), true
+		}
+		if r == '\r' {
+			next, _, nextErr := handle.Reader.ReadRune()
+			if nextErr != nil && nextErr != io.EOF {
+				return nil, false
+			}
+			if nextErr == nil && next != '\n' {
+				if err := handle.Reader.UnreadRune(); err != nil {
+					return nil, false
+				}
+			}
+			return internAtom(b.String()), true
+		}
+		b.WriteRune(r)
+	}
+}
+
 func writeStreamText(value Value, text string) bool {
 	handle, ok := streamHandle(value)
 	if !ok || handle.Mode == "read" {
@@ -1843,6 +1879,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		handle.Closed = true
 		return true
+	case "read_line_to_string/2":
+		line, ok := readLineStreamValue(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, line)
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
 		return true
