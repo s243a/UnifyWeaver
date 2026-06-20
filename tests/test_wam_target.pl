@@ -7,7 +7,7 @@
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
 :- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2,
-           test_alias/2, test_len/2.
+           test_alias/2, test_len/2, test_list_check/1, test_list_wrap/1.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
@@ -30,6 +30,10 @@ test_ancestor(X, Y) :- test_parent(X, Z), test_ancestor(Z, Y).
 :- dynamic test_check/1.
 test_check(pair(_, _)).
 test_wrap(X) :- test_check(pair(X, done)).
+
+%% Rule with list body argument — exercises put_list + nested [|]/2 emit.
+test_list_check([_, _]).
+test_list_wrap(X) :- test_list_check([X, done]).
 
 %% Compound head — exercises get_structure + unify_constant
 :- dynamic test_color/2.
@@ -409,15 +413,90 @@ test_wam_items_native_simple_builtin :-
     ;   fail_test(Test, 'Native simple-builtin items do not match canonical WAM text shape')
     ).
 
-test_wam_items_api_compound_arg_fallback :-
-    Test = 'WAM: items API compound body arg fallback',
+test_wam_items_native_compound_body_arg :-
+    Test = 'WAM: native items API for compound body arg',
+    ExpectedItems = [
+        label("test_wrap/1"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_structure("pair/2", "A1"),
+        set_value("X1"),
+        set_constant("done"),
+        deallocate,
+        execute("test_check/1")
+    ],
     (   wam_target:compile_predicate_to_wam_text(user:test_wrap/1, [], TextCode),
         wam_text_to_items(TextCode, BridgeItems),
         wam_target:compile_predicate_to_wam_items(user:test_wrap/1, [], Items),
+        Items == ExpectedItems,
         Items == BridgeItems,
         member(put_structure("pair/2", "A1"), Items)
     ->  pass(Test)
-    ;   fail_test(Test, 'Compound body arg fallback does not match canonical WAM text shape')
+    ;   fail_test(Test, 'Native compound-body-arg items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_nested_compound_body_arg :-
+    Test = 'WAM: native items API for nested compound body arg',
+    ExpectedItems = [
+        label("test_nested_wrap/1"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_structure("box/1", "A1"),
+        set_variable("X3"),
+        put_structure("inner/2", "X3"),
+        set_value("X1"),
+        set_constant("done"),
+        deallocate,
+        execute("test_nested_check/1")
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_nested_wrap/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_nested_wrap/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(put_structure("box/1", "A1"), Items),
+        member(put_structure("inner/2", "X3"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native nested-compound-body-arg items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_list_body_arg :-
+    Test = 'WAM: native items API for list body arg',
+    ExpectedItems = [
+        label("test_list_wrap/1"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_list("A1"),
+        set_value("X1"),
+        set_variable("X3"),
+        put_structure("[|]/2", "X3"),
+        set_constant("done"),
+        set_constant("[]"),
+        deallocate,
+        execute("test_list_check/1")
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_list_wrap/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_list_wrap/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(put_list("A1"), Items),
+        member(put_structure("[|]/2", "X3"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native list-body-arg items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_compound_arg_legacy_order_fallback :-
+    Test = 'WAM: items API compound arg legacy-order fallback',
+    Options = [args_first_emission(false)],
+    (   wam_target:compile_predicate_to_wam_text(user:test_nested_wrap/1, Options, TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_nested_wrap/1, Options, Items),
+        Items == BridgeItems,
+        member(put_structure("box/1", "A1"), Items),
+        member(put_structure("inner/2", "X3"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Compound body arg legacy-order fallback does not match canonical WAM text shape')
     ).
 
 %% Run all tests
@@ -437,7 +516,10 @@ run_tests :-
     test_wam_items_native_simple_tail_call,
     test_wam_items_native_multi_goal_rule,
     test_wam_items_native_simple_builtin,
-    test_wam_items_api_compound_arg_fallback,
+    test_wam_items_native_compound_body_arg,
+    test_wam_items_native_nested_compound_body_arg,
+    test_wam_items_native_list_body_arg,
+    test_wam_items_compound_arg_legacy_order_fallback,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,

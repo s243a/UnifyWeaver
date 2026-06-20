@@ -205,9 +205,10 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %% compile_clauses_to_wam_items_native(+Pred, +Arity, +Clauses, +Options, -Items)
 %  Direct items path for simple single-clause predicates. This incremental
 %  native producer slice covers facts, simple user calls, generic builtin calls,
-%  and conjunctions of those shapes. Aggregates, indexing, lowered builtins,
-%  control flow, compound body arguments, and peephole-sensitive shapes
-%  intentionally fall back to the legacy text bridge.
+%  compound body arguments using the default args-first set_* ordering, and
+%  conjunctions of those shapes. Aggregates, indexing, lowered builtins,
+%  control flow, legacy interleaved compound-arg emission, and other
+%  peephole-sensitive shapes intentionally fall back to the text bridge.
 compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
     normalize_goals(Body, []),
     !,
@@ -217,10 +218,10 @@ compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :
     format(string(Label), "~w/~w", [Pred, Arity]),
     append(HeadItems, [proceed], InstrItems),
     Items = [label(Label)|InstrItems].
-compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
+compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], Options, Items) :-
     normalize_goals(Body, Goals),
     Goals = [_|_],
-    native_simple_goal_sequence(Goals),
+    native_simple_goal_sequence(Goals, Options),
     !,
     Head =.. [_|Args],
     empty_varmap(V0),
@@ -244,19 +245,19 @@ native_simple_goals_need_env(Goals, ExpandedGoals) :-
     ),
     !.
 
-native_simple_goal_sequence(Goals) :-
-    forall(member(Goal, Goals), native_simple_goal(Goal)).
+native_simple_goal_sequence(Goals, Options) :-
+    forall(member(Goal, Goals), native_simple_goal(Goal, Options)).
 
-native_simple_goal(M:InnerGoal) :-
+native_simple_goal(M:InnerGoal, Options) :-
     (atom(M) ; string(M)),
     !,
-    native_simple_goal(InnerGoal).
-native_simple_goal(Goal) :-
+    native_simple_goal(InnerGoal, Options).
+native_simple_goal(Goal, Options) :-
     callable(Goal),
     \+ native_special_goal(Goal),
     Goal =.. [_GoalPred|Args],
     \+ goal_has_visited_set_arg(Goal),
-    forall(member(Arg, Args), native_simple_goal_arg(Arg)).
+    forall(member(Arg, Args), native_simple_goal_arg(Arg, Options)).
 
 native_special_goal('!') :- !.
 native_special_goal(Goal) :-
@@ -274,10 +275,13 @@ native_special_goal(Goal) :-
     ;   is_term_construction_goal(Goal)
     ).
 
-native_simple_goal_arg(Arg) :-
+native_simple_goal_arg(Arg, _Options) :-
     var(Arg), !.
-native_simple_goal_arg(Arg) :-
-    atomic(Arg).
+native_simple_goal_arg(Arg, _Options) :-
+    atomic(Arg), !.
+native_simple_goal_arg(Arg, Options) :-
+    compound(Arg),
+    \+ option(args_first_emission(false), Options).
 
 compile_goals_items_simple([], V, _, V, []).
 compile_goals_items_simple([Goal], V0, HasEnv, Vf, Items) :-
@@ -352,10 +356,79 @@ compile_put_argument_items_simple(Arg, I, V0, V1, Items) :-
             Items = [put_variable(XRegTok, Ai)]
         )
     ;   atomic(Arg)
-    ->  quote_wam_constant(Arg, ArgTok),
+    ->  wam_constant_token(Arg, ArgTok),
         Items = [put_constant(ArgTok, Ai)],
         V1 = V0
+    ;   is_list_term(Arg),
+        proper_list(Arg, _)
+    ->  Arg = [H|T],
+        next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V2),
+        compile_set_arguments_items_split([H, T], V2, V1, SetItems),
+        Items = [put_list(Ai)|SetItems]
+    ;   compound(Arg)
+    ->  Arg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V2),
+        wam_functor_token(F, SArity, FunctorTok),
+        compile_set_arguments_items_split(SubArgs, V2, V1, SetItems),
+        Items = [put_structure(FunctorTok, Ai)|SetItems]
+    ;   next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V1),
+        wam_operand_string(XReg, XRegTok),
+        Items = [put_variable(XRegTok, Ai)]
     ).
+
+compile_set_arguments_items_split(Args, V0, Vf, Items) :-
+    compile_set_arguments_items_split_(Args, V0, Vf, ImmItems, DeferredItems),
+    append(ImmItems, DeferredItems, Items).
+
+compile_set_arguments_items_split_([], V, V, [], []).
+compile_set_arguments_items_split_([Arg|Rest], V0, Vf, Items, Deferred) :-
+    arg_items_split(Arg, V0, V1, ImmArg, DefArg),
+    compile_set_arguments_items_split_(Rest, V1, Vf, ImmRest, DefRest),
+    append(ImmArg, ImmRest, Items),
+    append(DefArg, DefRest, Deferred).
+
+arg_items_split(Arg, V0, V1, Items, []) :-
+    var(Arg),
+    !,
+    (   get_var_reg(Arg, V0, Reg)
+    ->  wam_operand_string(Reg, RegTok),
+        Items = [set_value(RegTok)],
+        V1 = V0
+    ;   get_yi_alloc(Arg, V0, YReg, V1)
+    ->  wam_operand_string(YReg, YRegTok),
+        Items = [set_variable(YRegTok)]
+    ;   next_x_reg(V0, XReg, VTemp),
+        bind_var(Arg, XReg, VTemp, V1),
+        wam_operand_string(XReg, XRegTok),
+        Items = [set_variable(XRegTok)]
+    ).
+arg_items_split(Arg, V0, V0, Items, []) :-
+    atomic(Arg),
+    !,
+    wam_constant_token(Arg, ArgTok),
+    Items = [set_constant(ArgTok)].
+arg_items_split(Arg, V0, V1, Items, Deferred) :-
+    compound(Arg),
+    !,
+    Arg =.. [F|NestedArgs],
+    length(NestedArgs, NArity),
+    next_x_reg(V0, XReg, VTemp),
+    bind_var(Arg, XReg, VTemp, V1a),
+    wam_operand_string(XReg, XRegTok),
+    wam_functor_token(F, NArity, FunctorTok),
+    compile_set_arguments_items_split_(NestedArgs, V1a, V1,
+                                       NestedImm, NestedDef),
+    Items = [set_variable(XRegTok)],
+    append([put_structure(FunctorTok, XRegTok)|NestedImm], NestedDef, Deferred).
+arg_items_split(Arg, V0, V1, Items, []) :-
+    next_x_reg(V0, XReg, VTemp),
+    bind_var(Arg, XReg, VTemp, V1),
+    wam_operand_string(XReg, XRegTok),
+    Items = [set_variable(XRegTok)].
 
 compile_head_arguments_items([], _, V, V, []).
 compile_head_arguments_items([Arg|Rest], I, V0, Vf, Items) :-
@@ -380,7 +453,7 @@ compile_head_argument_items(Arg, I, V0, V1, Items) :-
             Items = [get_variable(XRegTok, Ai)]
         )
     ;   atomic(Arg)
-    ->  quote_wam_constant(Arg, ArgTok),
+    ->  wam_constant_token(Arg, ArgTok),
         Items = [get_constant(ArgTok, Ai)],
         V1 = V0
     ;   is_list_term(Arg)
@@ -411,7 +484,7 @@ compile_unify_arguments_items([Arg|Rest], V0, Vf, Items) :-
             ArgItems = [unify_variable(XRegTok)]
         )
     ;   atomic(Arg)
-    ->  quote_wam_constant(Arg, ArgTok),
+    ->  wam_constant_token(Arg, ArgTok),
         ArgItems = [unify_constant(ArgTok)],
         V1 = V0
     ;   compound(Arg)
@@ -439,6 +512,10 @@ wam_functor_token(F, Arity, Token) :-
 
 wam_arity_token(Arity, Token) :-
     number_string(Arity, Token).
+
+wam_constant_token(Value, Token) :-
+    quote_wam_constant(Value, RawToken),
+    wam_operand_string(RawToken, Token).
 
 wam_operand_string(Value, String) :-
     (   string(Value)
