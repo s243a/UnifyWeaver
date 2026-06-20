@@ -83,6 +83,26 @@ negligible once the model has learned to ignore noise slots.
 | `WIKI` | parent→child membership (order) | `data/benchmark/10k/category_parent.tsv` edges (margin loss) | **FREE, dense** |
 | `LLM_<tmpl>` | directional membership under a prompt template ("is X a subtopic of Y", "is X used-in Y", …) | Haiku / Sonnet, boundary-focused | budget-capped |
 
+## Sampling & noise — starting defaults (all ablation knobs)
+
+**Ancestor sampling.** Always include the **direct parents** (gen-1). For gen-2+, a **hub-down-weighted**
+walk up — reuse `gen_mu_pairs.py`'s `1/deg^β` (β ≈ 1) — with per-step **stop ≈ 0.33**, capped at depth
+~5 and ≤ ~8 ancestor tokens, deduped and tagged by **min-hop** (it's a DAG). The hub down-weighting is
+essential: a plain uniform walk-up quickly hits the generic apex categories (`Main_topic_classifications`,
+`Categories`, …) — the low-fan-in leak conduits found in the real-data measurement — which carry no
+membership signal. Sample **stochastically per epoch** (free augmentation — the model sees different
+ancestor subsets); use a **fixed seeded set at inference** for a reproducible dense map. Start at **k = 1**
+(parents only, no walk) and widen only if gate-leak / held-out corr reward it.
+
+**Noise-as-dropout rate.** During training, replace each *present* ancestor token with noise ≈ **0.2** of
+the time, and noise out the **whole** lineage ≈ **0.1** of the time (cold-start guarantee — μ must still
+work from `anchor + node` alone for nodes with sparse/missing ancestry). **No dropout at inference.**
+
+**Noise magnitude.** L2-normalize the e5 embeddings, then fill a noise slot with a **random unit vector**
+(Gaussian → normalize): same norm as a real token (≈ 1), random direction ⇒ off-manifold in high-D. Do
+**not** scale it up (would dominate attention by magnitude) or down (a low-norm vector can be mistaken for
+a real low-confidence embedding) — the "absent" signal must come from *direction*, not size.
+
 ## Judge axis — keep it ORTHOGONAL to the operator (recommended)
 
 Do **not** fold "which model judged it" into the operator codebook. `relation ⊗ judge` is a *product*
