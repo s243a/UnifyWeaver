@@ -15,7 +15,7 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 | training objective (cosine ≈ μ) | ✅ **proven** on real data — `train_cosine_mu.py`, corr 1.00 |
 | distance-biased sampler | ✅ implemented (in the trainer) |
 | pairwise label *generator* | ✅ **done** — `gen_mu_pairs.py` (emits candidate pairs; no LLM cost) |
-| transformer architecture | ✅ **forward pass** only — `mu_transformer.py`, runs at 384-dim |
+| encoder architecture (MLP/MoE, not a transformer) | ✅ **forward pass** only — `mu_encoder.py`, runs at 384-dim |
 | MiniLM init | ⬜ **not done** — random fallback (HuggingFace egress blocked in this env) |
 | training the full encoder | ⬜ **not done** — needs numpy/torch (neither installed here) |
 | **scoring the pairs (μ labels)** | ⬜ **not done** — the budget-spending step; `score_stub` in `gen_mu_pairs.py` |
@@ -25,7 +25,7 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 ```bash
 cd prototypes/mu_cosine
 python3 train_cosine_mu.py        # learns cos≈μ on the 90-node fixture; prints corr → 1.00
-python3 mu_transformer.py         # forward pass of the encoder at d_model=384
+python3 mu_encoder.py             # forward pass of the MLP/MoE encoder at d_model=384
 python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 neg, 5:1) to mu_pairs.tsv
 ```
 (`mu_pairs.sample.tsv` is a committed 30-line example of the generator's output.)
@@ -39,8 +39,10 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
    shows the prompt/format; same discipline as `tests/fixtures/wikipedia_physics_*`). **Spends LLM
    budget — confirm with the user first.** Tune `--neg-ratio`, `--stop-prob`, `--restart-alpha`,
    `--seeds` and inspect the resulting μ histogram for boundary-band (0.3–0.7) coverage.
-3. Port `mu_transformer.py`'s forward to torch (it is a faithful spec) and add the training loop — the
-   objective and gradient shape are validated by `train_cosine_mu.py`.
+3. Port `mu_encoder.py`'s forward to torch (it is a faithful spec) and add the training loop — the
+   objective and gradient shape are validated by `train_cosine_mu.py`. Start with `n_layers=1`,
+   `n_experts=1` (plain MLP / projection head); add MoE experts or neighbour context only if it
+   underfits.
 4. Validate: held-out `μ` regression, and that the dense μ it predicts *agrees with the graph-side*
    `lin_from_ic` (the two should converge — `μ(X|root) == Lin(X, root)`, the unification below).
 5. Emit a dense `μ` map (`category → μ`) for the whole graph and feed it to the Rust core.
@@ -61,13 +63,16 @@ python3 gen_mu_pairs.py           # emits 1200 candidate pairs (200 pos / 1000 n
   1.5 GB (+~3 GB dense Adam). Use **sparse embedding gradients** (only the rows a batch touches) — the
   lever is the table, not the pair-batch (still 1k–4k).
 
-**Open decisions a follow-up should know:**
-- `n_heads = 16` (not the discussed ~20): 384 is not divisible by 20; its divisors near there are 16
-  (24 dims/head) and 24 (16 dims/head). 16 is closest to the target head count — revisit if 24 (more
-  literal "≈19 components/head") is preferred. Configurable in `Config`.
-- Input is a **single per-category vector** (so attention degenerates to a linear map). If you want
-  non-trivial attention, feed a *sequence* (the category's name tokens, or category + graph
-  neighbours); the head structure is already in place for that.
+**Resolved design decisions (and the reasoning, so they aren't re-litigated):**
+- **MLP/MoE encoder, not multi-head attention.** A single category vector ⇒ attention softmax ≡ 1 ⇒
+  Q/K dead, V/O collapse to one Linear; the region-dependent computation is the MLP nonlinearity
+  (and an optional gated MoE for explicit region routing). So no attention in the base model.
+- **Attention is the future upgrade, gated on a *sequence* input** — feed the category + a few
+  neighbour tokens and *learn* the pooling weights (vs the cheap fixed mean-pool already in
+  `encode(..., neighbors=...)`). Only worth it if the fixed-weight context underfits.
+- **Start at `n_layers=1`, `n_experts=1`** (plain MLP / projection head): few params generalise from a
+  small label set; a *shared* encoder on (mostly-frozen) MiniLM embeddings is what produces dense μ for
+  *unlabelled* categories — big/per-category capacity overfits the labels and leaves the rest at init.
 
 ## The idea
 
@@ -85,22 +90,28 @@ category, the *same* node embeddings serve any domain — swap the root vector, 
 also unifies `μ` with the graph-similarity work: `μ(X | root)` is exactly `Lin(X, root)` measured in
 semantic (vector) space instead of the category graph.
 
-## Architecture (`mu_transformer.py`)
+## Architecture (`mu_encoder.py`) — an MLP, not a transformer
 
-A small transformer encoder, with the design sizing from the discussion:
+We worked out (see the design discussion) that **multi-head attention is the wrong tool here**: each
+category is a single MiniLM-pooled vector, and self-attention over one token has softmax ≡ 1 — its
+query/key projections become dead weight and value/output collapse to one linear layer (a redundant
+`Linear` in an attention costume). The region-dependent behaviour we want — different units firing in
+different parts of semantic space — is the **MLP nonlinearity**, optionally made explicit and
+interpretable by a **gated MoE** (route to a region expert). So the encoder is an MLP/MoE, not a
+transformer.
 
 | knob | value | rationale |
 |---|---|---|
-| `d_model` | 384 | MiniLM / nanoGPT scale |
-| `n_heads` | 16 | target ≈ 20 (`d_model / log₂(|categories|)` ≈ 384/19), but 384's divisors near 20 are 16 and 24; 16 is closest |
-| `n_layers` | 1 (configurable) | "a lot with one layer" — the input is a single per-category vector, so attention is light |
-| init | MiniLM per-category embedding, looked up by Wikipedia id | warm start; random fallback here |
+| `d_model` | 384 | MiniLM scale |
+| `n_layers` | 1 (configurable) | start small — few params generalise from few labels |
+| `n_experts` | 1 (→ plain MLP; >1 → gated MoE) | explicit, inspectable region routing |
+| init | MiniLM per-category embedding by Wikipedia id | warm start; random fallback here |
 
-`encode(id) = blocks(init_embedding[id])`; `μ = cosine(encode(a), encode(b))`. With a single-token
-input the self-attention softmax is over one position (≡ 1), so MHA reduces to a linear map — the head
-structure is kept anyway so the same code accepts a multi-token input later (name tokens, or the
-category + its graph neighbours), where attention becomes non-trivial. `python3 mu_transformer.py`
-runs the forward pass at full design scale.
+`encode(id) = blocks(init_embedding[id])`; `μ(a|root) = cosine(encode(a), encode(root))`. Each block
+is `x + FFN(LN(x))` (FFN = MLP, or a soft gated mixture of experts). **Neighbour context** is folded in
+cheaply by mean-pooling the category with a few neighbour vectors (a fixed-weight "sum of vectors");
+*learning* those pooling weights is exactly attention-over-neighbours — the documented future upgrade,
+the only place attention earns its keep. `python3 mu_encoder.py` runs the forward (MLP and MoE).
 
 ## Training objective — proven runnable (`train_cosine_mu.py`)
 
