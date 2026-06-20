@@ -24,24 +24,42 @@ single-token degeneracy (softmax ≡ 1, Q/K dead) that ruled attention out for t
 longer applies.
 
 ```
-tokens = [ member(X), anchor(root), operator(op) ]      (+ optional judge(j); + neighbour tokens later)
+tokens = { operator(op), anchor(root), node(X)@gen0, {parents(X)}@gen1, {grandparents}@gen2, …, ⌀@gen≥k }
+          (+ optional judge(j))
 
-member(X)    = e5(X)    + role_emb[MEMBER]
-anchor(root) = e5(root) + role_emb[ANCHOR]
-operator(op) = op_emb[op]            # learned codebook row, no e5 content (a learned "instruction")
-judge(j)     = judge_emb[j]          # OPTIONAL, orthogonal axis — see below
+node(X)@gen0       = e5(X)      + gen_emb[0]          # the member candidate
+ancestor@gen_d     = e5(anc)    + gen_emb[d]          # X's lineage, tagged by min-hop distance d
+⌀@gen≥k            = absent_emb + gen_emb[d]          # learned "lineage ended / beyond depth" token
+anchor(root)       = e5(root)   + role_emb[ANCHOR]    # the domain root — REQUIRED (see "Why keep the anchor")
+operator(op)       = op_emb[op]                       # learned codebook row, no e5 content (an "instruction")
+judge(j)           = judge_emb[j]                     # OPTIONAL, orthogonal axis — see below
 
 μ(X | root; op) = sigmoid( W · pool( Attention(tokens) ) )   ∈ [0,1]
 ```
 
+These are a **set of learned tags, not an ordered sequence** — with learned role/generation embeddings
+the attention block is permutation-invariant, so "position" means *which learned tag a token carries*,
+not its index. `gen_emb[d]` is a learned per-generation (per-hop) embedding; the graph is a **DAG**, so a
+node can have several `gen1` parents — feed ancestors as a *set tagged by min-hop distance*, not a linear
+chain. Depth `k` is an ablation knob (start at node + parent, i.e. `k=1`, then widen and measure).
+
 - **e5 embeddings are frozen** (the `query:` / `passage:` asymmetry-friendly model — finally motivated
-  here, where direction matters). Learned parameters are only: `role_emb` (3–4 rows), `op_emb` (a small
-  codebook), the attention block (1–2 layers, a few heads), and the sigmoid readout.
-- **"Learn the positions/operators, not the nodes."** Every node is `frozen e5 + shared learned tags`,
-  so **all 8,247 categories are covered (cold-start safe)**. A learned per-node *table* would only have
-  rows for the ~324 nodes seen in training and would break the dense map — do not use one.
-- **Asymmetry is structural**: `role_emb[MEMBER] ≠ role_emb[ANCHOR]`, so swapping X and root changes the
-  input and `μ(X|root) ≠ μ(root|X)`.
+  here, where direction matters). Learned parameters are only: `role_emb` / `gen_emb` / `absent_emb` (a
+  handful of rows), `op_emb` (a small codebook), the attention block (1–2 layers, a few heads), and the
+  sigmoid readout.
+- **"Learn the tags (operator / role / generation), not the nodes."** Every node is `frozen e5 + shared
+  learned tags`, so **all 8,247 categories are covered (cold-start safe)**. A learned per-node *table*
+  would only have rows for the ~324 nodes seen in training and would break the dense map — do not use one.
+- **Why keep the `anchor(root)` token (don't go lineage-only).** μ computed purely from X's ancestry can
+  only judge roots that *appear* in X's lineage — but the cases we most care about are exactly where the
+  root is **not** an ancestor (`Music` vs `Physics`, the gate-leak at 0.52). A lineage-only model can't
+  form that comparison. So the root is an explicit token, and the lineage is *context* for it.
+- **The lineage is a soft cone.** Membership ≈ "root is an ancestor of X" ≈ the **downward closure** that
+  `descendant_mu_mass` / `gated_ic` compute in the Rust core. Feeding X's ancestry lets the attention
+  block learn that closure directly — "root sits near X's ancestor chain in e5 space ⇒ high μ" — while
+  generalising past the graph's gaps/noise. This is the soft, embedding-smoothed version of the cone.
+- **Asymmetry is structural**: the `anchor`/`node` tags differ, so swapping X and root changes the input
+  and `μ(X|root) ≠ μ(root|X)`.
 - **Sigmoid readout** gives `μ ∈ [0,1]` natively (cleaner than clamping a cosine; satisfies the Rust
   core's `μ ≥ 0`).
 
@@ -101,9 +119,13 @@ bounded `LLM_*` boundary labels (the cutoff band, ~tens of k Haiku tokens, bough
 > specified in `prototypes/mu_cosine/DESIGN_directional_attention.md`. Branch from `main`, open your OWN
 > PR, don't touch the WAM-Rust core. GATING CHECK first (report + stop if it fails): `pip install -r
 > prototypes/mu_cosine/requirements.txt` and confirm HuggingFace reaches `intfloat/e5-small-v2`.
-> Then: (1) Add a `MuAttention` model — frozen e5 inputs + learned `role_emb` (MEMBER/ANCHOR), a learned
-> `op_emb` codebook, a 1–2 layer / few-head attention block, and a sigmoid μ-readout. Keep e5 FROZEN;
-> learn only the tags + attention + head (cold-start: every node = frozen e5 + shared tags). (2) Train
+> Then: (1) Add a `MuAttention` model — frozen e5 inputs + learned tags: `op_emb` codebook, `anchor`
+> role, per-generation `gen_emb[0..k]` for the node + its ancestor **set** (min-hop distance on the
+> `category_parent.tsv` DAG; start `k=1` = node+parent), and a learned `absent_emb` for masked/shallow
+> generations — read by a 1–2 layer / few-head attention block (permutation-invariant; the tags carry
+> position), with a sigmoid μ-readout. Keep e5 FROZEN; learn only the tags + attention + head (cold-start:
+> every node = frozen e5 + shared tags). Keep the explicit `anchor(root)` token — lineage-only can't score
+> out-of-domain roots. (2) Train
 > multi-task over operators: `WIKI` from `category_parent.tsv` edges (free margin loss
 > `μ(child|parent) − μ(parent|child) ≥ m`, in-batch uniform negatives) and `SYM` from
 > `mu_pairs_scored.tsv` (order-invariant). Balance per-operator loss (WIKI down-weighted to parity).
