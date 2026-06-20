@@ -1195,6 +1195,28 @@ func readLineStreamValue(value Value) (Value, bool) {
 	}
 }
 
+func readStringStreamText(value Value, length int64) (string, bool) {
+	if length < 0 {
+		return "", false
+	}
+	handle, ok := streamHandle(value)
+	if !ok || handle.Reader == nil {
+		return "", false
+	}
+	var b strings.Builder
+	for i := int64(0); i < length; i++ {
+		r, _, err := handle.Reader.ReadRune()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", false
+		}
+		b.WriteRune(r)
+	}
+	return b.String(), true
+}
+
 func writeStreamText(value Value, text string) bool {
 	handle, ok := streamHandle(value)
 	if !ok || handle.Mode == "read" {
@@ -1885,6 +1907,19 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg2, line)
+	case "read_string/5":
+		length, ok := vm.deref(arg2).(*Integer)
+		if !ok {
+			return false
+		}
+		text, ok := readStringStreamText(vm.deref(arg1), length.Val)
+		if !ok {
+			return false
+		}
+		if !vm.Unify(arg3, &Integer{Val: int64(len([]rune(text)))}) {
+			return false
+		}
+		return vm.Unify(arg5, internAtom(text))
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
 		return true
