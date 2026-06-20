@@ -14,11 +14,12 @@ The first implementation step is intentionally conservative:
 - `compile_predicate_to_wam_items/3` is available as the structured API. It now
   emits single-clause facts, simple user-predicate calls, generic builtin calls,
   compound body arguments with default args-first `set_*` ordering, and
-  conjunctions of those simple shapes directly as items. It falls back to the
-  existing text generator plus `wam_text_to_items/2` for multi-clause predicates,
-  aggregates, indexing, lowered builtins, control flow, legacy interleaved
-  compound-argument emission via `args_first_emission(false)`, and other complex
-  shapes.
+  conjunctions of those simple shapes directly as items. The same native path
+  also emits non-indexed linear multi-clause predicates when every clause has one
+  of those supported simple shapes. It falls back to the existing text generator
+  plus `wam_text_to_items/2` for indexed multi-clause predicates, aggregates,
+  lowered builtins, control flow, legacy interleaved compound-argument emission
+  via `args_first_emission(false)`, and other complex shapes.
 - `compile_predicate_to_wam/3` still returns text by default for compatibility
   with the existing targets. The default-output flip described below remains a
   later migration step after more callers consume items directly.

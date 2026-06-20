@@ -54,11 +54,13 @@ interpreter-mode predicate emission. Today that target path consumes the common
 structured WAM items directly and is output-equivalent to `wam_items_bridge`;
 the shared `compile_predicate_to_wam_items/3` producer now skips WAM text for
 single-clause facts, simple user-predicate calls, generic builtin calls, and
-compound body arguments with default args-first `set_*` ordering, then falls
-back to the text-to-items bridge for more complex predicate shapes and the
-legacy `args_first_emission(false)` compound-argument order. As the native
-producer expands, the same explicit Python mode will skip WAM text for more
-predicates without changing the Python emitter.
+compound body arguments with default args-first `set_*` ordering. It also skips
+WAM text for non-indexed linear multi-clause predicates made from the same
+simple clause shapes, while indexed multi-clause predicates and more complex
+predicate shapes still use the text-to-items bridge. The legacy
+`args_first_emission(false)` compound-argument order also remains on the bridge.
+As the native producer expands, the same explicit Python mode will skip WAM text
+for more predicates without changing the Python emitter.
 
 Lua, R, and Elixir follow the same partial migration shape as Python:
 interpreter-mode generated predicates consume common WAM items through the

@@ -89,13 +89,13 @@ compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code).
 
 %% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
-%  Compile a predicate to structured WAM items. Facts and simple one-goal user
-%  tail calls use direct item emission. More complex predicates fall back to the
-%  text generator plus shared parser until the full WAM emitter is items-first.
+%  Compile a predicate to structured WAM items. Simple native shapes use direct
+%  item emission. More complex predicates fall back to the text generator plus
+%  shared parser until the full WAM emitter is items-first.
 compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
     wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses),
-    (   compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items)
-    ->  true
+    (   compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, NativeItems)
+    ->  peephole_optimize_items(NativeItems, Items)
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code),
         wam_text_to_items(Code, Items)
     ).
@@ -203,41 +203,114 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ).
 
 %% compile_clauses_to_wam_items_native(+Pred, +Arity, +Clauses, +Options, -Items)
-%  Direct items path for simple single-clause predicates. This incremental
-%  native producer slice covers facts, simple user calls, generic builtin calls,
-%  compound body arguments using the default args-first set_* ordering, and
-%  conjunctions of those shapes. Aggregates, indexing, lowered builtins,
-%  control flow, legacy interleaved compound-arg emission, and other
-%  peephole-sensitive shapes intentionally fall back to the text bridge.
-compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
-    normalize_goals(Body, []),
+%  Direct items path for simple predicates. This incremental native producer
+%  slice covers facts, simple user calls, generic builtin calls, compound body
+%  arguments using the default args-first set_* ordering, conjunctions of those
+%  shapes, and non-indexed linear multi-clause predicates composed of the same
+%  clause shapes. Aggregates, indexing, lowered builtins, control flow, legacy
+%  interleaved compound-arg emission, and other peephole-sensitive shapes
+%  intentionally fall back to the text bridge.
+compile_clauses_to_wam_items_native(Pred, Arity, [Clause], Options, Items) :-
+    compile_clause_body_items_native(Clause, Options, InstrItems),
     !,
-    Head =.. [_|Args],
-    empty_varmap(V0),
-    compile_head_arguments_items(Args, 1, V0, _V1, HeadItems),
     format(string(Label), "~w/~w", [Pred, Arity]),
-    append(HeadItems, [proceed], InstrItems),
     Items = [label(Label)|InstrItems].
-compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], Options, Items) :-
-    normalize_goals(Body, Goals),
-    Goals = [_|_],
-    native_simple_goal_sequence(Goals, Options),
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    \+ native_clauses_would_index(Pred, Arity, Clauses),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
     !,
-    Head =.. [_|Args],
-    empty_varmap(V0),
-    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     format(string(Label), "~w/~w", [Pred, Arity]),
-    (   native_simple_goals_need_env(Goals, ExpandedGoals)
-    ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
-        compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
-        compile_goals_items_simple(Goals, V1, yes, _Vf, GoalItems),
-        PrefixItems = [label(Label), allocate]
-    ;   compile_head_arguments_items(Args, 1, V0, V1, HeadItems),
-        compile_goals_items_simple(Goals, V1, no, _Vf, GoalItems),
-        PrefixItems = [label(Label)]
+    Items = [label(Label)|ClauseItems].
+
+compile_clause_body_items_native(Head-Body, Options, Items) :-
+    set_clause_binding_context(Head, Body),
+    set_clause_visited_context(Head),
+    Head =.. [_|Args],
+    normalize_goals(Body, Goals),
+    empty_varmap(V0),
+    (   Goals == []
+    ->  compile_head_arguments_items(Args, 1, V0, _V1, HeadItems),
+        append(HeadItems, [proceed], Items)
+    ;   Goals = [_|_],
+        native_simple_goal_sequence(Goals, Options),
+        expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
+        (   native_simple_goals_need_env(Goals, ExpandedGoals)
+        ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
+            compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
+            compile_goals_items_simple(Goals, V1, yes, _Vf, GoalItems),
+            append([allocate|HeadItems], GoalItems, Items)
+        ;   compile_head_arguments_items(Args, 1, V0, V1, HeadItems),
+            compile_goals_items_simple(Goals, V1, no, _Vf, GoalItems),
+            append(HeadItems, GoalItems, Items)
+        )
+    ).
+
+native_clauses_would_index(Pred, Arity, Clauses) :-
+    (   build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains)
+    ;   Arity >= 2,
+        build_second_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains)
     ),
-    append(HeadItems, GoalItems, InstrItems),
-    append(PrefixItems, InstrItems, Items).
+    !.
+
+compile_multi_clause_items_linear([], _, _, _, _, _, []).
+compile_multi_clause_items_linear([Clause|Rest], I, N, Pred, Arity, Options, Items) :-
+    linear_clause_choice_items(I, N, Pred, Arity, ChoiceItems),
+    compile_clause_body_items_native(Clause, Options, BodyItems),
+    append(ChoiceItems, BodyItems, ThisItems),
+    NextI is I + 1,
+    compile_multi_clause_items_linear(Rest, NextI, N, Pred, Arity, Options, RestItems),
+    append(ThisItems, RestItems, Items).
+
+linear_clause_choice_items(1, _N, Pred, Arity, [try_me_else(NextLabel)]) :-
+    !,
+    format(string(NextLabel), "L_~w_~w_2", [Pred, Arity]).
+linear_clause_choice_items(I, I, Pred, Arity,
+                           [label(Label), trust_me, label(BodyLabel)]) :-
+    !,
+    format(string(Label), "L_~w_~w_~w", [Pred, Arity, I]),
+    format(string(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]).
+linear_clause_choice_items(I, _N, Pred, Arity,
+                           [label(Label), retry_me_else(NextLabel), label(BodyLabel)]) :-
+    NextI is I + 1,
+    format(string(Label), "L_~w_~w_~w", [Pred, Arity, I]),
+    format(string(NextLabel), "L_~w_~w_~w", [Pred, Arity, NextI]),
+    format(string(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]).
+
+peephole_optimize_items(Items, Optimized) :-
+    peephole_item_list(Items, Optimized).
+
+peephole_item_list([], []).
+peephole_item_list([put_value(Reg, Ai), get_variable(Reg, Ai)|Rest], Result) :-
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([Item, Item|Rest], [Item|Result]) :-
+    put_instruction_item(Item),
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([get_variable(Reg, Ai), put_value(Reg, Ai)|Rest], Result) :-
+    \+ item_reg_used_in_rest(Reg, Rest),
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([put_variable(Reg, Ai), put_value(Reg, Ai)|Rest],
+                   [put_variable(Reg, Ai)|Result]) :-
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([Item|Rest], [Item|Result]) :-
+    peephole_item_list(Rest, Result).
+
+put_instruction_item(Item) :-
+    compound(Item),
+    functor(Item, Name, _),
+    atom(Name),
+    sub_atom(Name, 0, 4, _, 'put_').
+
+item_reg_used_in_rest(Reg, Items) :-
+    member(Item, Items),
+    term_string(Item, ItemString),
+    sub_string(ItemString, _, _, _, Reg),
+    !.
 
 native_simple_goals_need_env(Goals, ExpandedGoals) :-
     (   length(ExpandedGoals, N), N > 1
