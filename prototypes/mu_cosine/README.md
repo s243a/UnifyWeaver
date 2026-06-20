@@ -378,6 +378,70 @@ training labels for Prompt B — so **C feeds B** — and small/expensive, so **
 > LLM budget, bounded to the decision band — report the band size and confirm with me before scoring.**
 > Branch off `main`, open a PR.
 
+## Current streams (T and V) + Haiku budget discipline
+
+Prompts A–C above are the original handoff (A realized, B/C refined below). The two **active** streams,
+to run as parallel HF-egress sessions, are **T (training)** and **V (theory validation)**. T consumes
+labels and trains the encoder; V goes slow, identifies the decision band, and produces boundary labels
+that feed back into T (V → T). T can start immediately on the merged `mu_pairs_scored.tsv`; V's boundary
+fixture is a second training input T folds in on a later pass. Each opens its own PR; coordinate by
+cross-referencing them.
+
+**Haiku budget — the metering math (so the cap isn't guessed).** The $100/Max-5× plan's 5-hour window
+is unpublished; community data puts it at **~220k tokens** measured in *Sonnet-equivalent* units. Haiku
+is **3.75× cheaper** than Sonnet (input $3.00→$0.80 / Mtok, output $15→$4, same ratio), so the **Haiku**
+window is ~220k × 3.75 ≈ **825k Haiku tokens**, and a 10%-for-labeling budget is **≈82k Haiku tokens per
+window** (conservative — if the window is actually Opus-equivalent, Haiku headroom is ~5× larger again).
+A full decision-band pass (~653 cats) is ~30k tokens done efficiently, so it fits one window with room.
+
+**Spend the budget well (the real cost is the spawn, not the items):**
+- **Minimize subagent spawns.** A Haiku-subagent's fixed overhead (system prompt + any tool round-trips)
+  dominates — empirically ~95% of the cost. Use **one** Haiku subagent for the whole batch (two at most),
+  pass the item list **inline in the prompt**, return `name<TAB>μ` lines **inline in the reply**, and do
+  **no Read/Write inside the subagent** (file I/O round-trips are what inflate it). The parent parses the
+  reply and writes the fixture. (A multi-spawn + file-I/O run cost ~73k for 200 pairs; one inline spawn
+  does the same for ~15k.)
+- **Batch ≥40 items/call**, score **only** the decision band; far-from-cutoff nodes stay on the prior,
+  negatives are μ=0 (free). **Hard stop at ~82k Haiku tokens/window** — checkpoint, commit, continue next
+  window if needed.
+- **Labels are bought once and committed** as a fixture — never re-score. Even at the conservative
+  220k-Sonnet-equiv estimate, a one-time band pass is a small one-window slice you never pay again.
+
+**T — train the dense-μ encoder on the scored labels** (HF-egress session):
+> Pick up the μ-cosine ML sub-project in the UnifyWeaver repo. Read `prototypes/mu_cosine/README.md`.
+> Branch from `main`, open your OWN PR, don't touch the WAM-Rust core. GATING CHECK first (report+stop
+> if it fails): `pip install -r prototypes/mu_cosine/requirements.txt` and confirm HuggingFace is
+> reachable (all-MiniLM-L6-v2 downloads + encodes). Then: (1) train `train_cosine_mu_torch.py --mode
+> pairs --minilm` on the merged `mu_pairs_scored.tsv` (200 scored positives + 1000 free μ=0 negatives);
+> start `n_layers=1, n_experts=1`, Adam, and do NOT re-apply `--dist-bias` (the pairs already encode
+> distance via the explicit negatives). (2) Hold out a fraction of positives; report held-out pairwise-μ
+> corr + MSE. (3) Re-run `validate_lin_agreement.py`: the single-anchor encoder gave pairwise graph-Lin
+> vs semantic-cosine Pearson ≈ −0.13; the varied-anchor labels should move it positive — report the
+> delta. (Do NOT validate against node-vs-root Lin — degenerate, saturates at 1.0.) (4) Emit dense μ
+> (`emit_dense_mu.py`) and feed `check_feeds_rust.py` (100% coverage, IC general→specific, lin ∈ [0,1]).
+> Spend NO Haiku budget here — training is local compute; if you need more/boundary labels, request a
+> batch from stream V. Guards: clamp cosine to [0,1]; emit names verbatim. Report held-out corr + the
+> lin-agreement delta in the PR.
+
+**V — validate the theory + produce the cutoff-band boundary labels** (HF-egress session, go slow):
+> In the UnifyWeaver repo, validate the μ/gating theory on real data and produce the cutoff-band labels.
+> Read `prototypes/mu_cosine/README.md` (Prompt C + the budget discipline). Branch from `main`, open your
+> OWN PR, don't touch the WAM-Rust core. GATING CHECK first (deps + HuggingFace reachable). Then:
+> (1) emit the e5 prior: `dense_mu_direct.py --model e5 --out dense_mu_e5.tsv` (git-ignored); re-confirm
+> `check_feeds_rust.py`. (2) Identify the DECISION BAND — μ ∈ [0.2, 0.45] around the 0.3 gate (~653);
+> prioritise the just-above-cutoff side (0.30, 0.45] — the loose-relatedness leaks (Music ≈ 0.52,
+> Politics ≈ 0.50). Only nodes whose rescore could FLIP the in/out decision are worth labelling. Surface
+> the decision-band PAIRS too (band category × Physics-subdomain) where membership is ambiguous.
+> (3) Score for MEMBERSHIP, directional — NOT relatedness: "Is `<category>` a sub-topic/subfield OF
+> physics? 0..1 (1 = core physics, 0 = unrelated)." Follow the budget discipline above: ONE inline Haiku
+> subagent, items in the prompt, scores in the reply, no file I/O, hard stop ~82k Haiku tokens.
+> (4) Fuse with the geometric mean √(prior·haiku) (log-opinion-pool — hard-vetoes loose links: Music →
+> √(0.52·0) = 0). (5) VALIDATE + document: the decision-flip rate (how many band cats the rescore moved
+> across the gate — validates the active-learning premise), confirm node-vs-root Lin is degenerate, and
+> confirm the cosine→μ calibration vs the 90-node fixture still holds. (6) COMMIT the rescores as
+> `tests/fixtures/wikipedia_physics_boundary_haiku.tsv` (`name<TAB>μ`) — small, expensive, reusable; it
+> FEEDS stream T. Report the band size, decision-flip count, and token spend in the PR.
+
 ### What to commit vs. host externally
 
 The deciding question is **cheap-and-regenerable vs. expensive-and-irreproducible**, *not* raw size:
