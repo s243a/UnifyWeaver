@@ -224,6 +224,28 @@ Two ready-to-paste kickoff prompts:
 > `[0,1]` and emit names matching `category_parent.tsv` exactly. Keep changes on your own branch;
 > do not touch the merged WAM-Rust core.
 
+**C — cascade-refine the dense μ at the boundary (correctness fix for A's output).**
+MiniLM measures *relatedness*, not *membership*: it rates loosely-connected categories (e.g. `Music`
+≈ 0.34 via acoustics/sound, but music is not a physics sub-topic) above the gating threshold, which
+re-pollutes the gated cones exactly where gating decides. Escalate only the borderline band to an LLM
+that can reason about membership — the model-cascade pattern already in the merged core
+(`wikipedia_model_cascade_haiku_then_sonnet`, `wikipedia_fuzzy_gated_hybrid_membership`, with the
+geometric-mean = log-opinion-pool fusion). The Haiku re-scores of the band are *also* the highest-value
+(boundary) training labels for Prompt B — so C feeds B.
+> In the UnifyWeaver repo, refine the dense μ map from PR #3281 with a model cascade. MiniLM rates
+> *relatedness*, not domain *membership*, so it mis-scores borderline categories near the gating
+> threshold (e.g. `Music` ≈ 0.34, but music is only loosely physics-related, not a physics sub-topic).
+> Take the dense μ TSV; for categories in the uncertain band around the threshold (μ ∈ ~[0.2, 0.6]),
+> re-score with a Haiku subagent asking specifically about **membership** ("Is `<category>` a
+> sub-topic/subfield *of physics*? 0..1, 1 = core physics, 0 = unrelated" — not "related to"), batched,
+> same discipline as the `wikipedia_physics_*` fixtures. Fuse with the geometric mean `√(prior·haiku)`
+> (the log-opinion-pool used in the merged `wikipedia_model_cascade_haiku_then_sonnet` /
+> `wikipedia_fuzzy_gated_hybrid_membership` tests — it hard-vetoes a loose connection: `Music` →
+> `√(0.34·0) = 0`). Keep the confident extremes (μ > 0.8, μ < 0.1) on the MiniLM prior untouched. Emit
+> the refined μ (same format) **and** save the Haiku band labels as boundary training data for the
+> encoder (Prompt B). **Spends LLM budget, bounded to the band — report the band size and confirm with
+> me before scoring.** Branch off `main`, open a PR.
+
 ### Persistent storage (rclone + Dropbox)
 
 The cloud container is **ephemeral** and the ~30 GB disk doesn't survive between sessions, so large
