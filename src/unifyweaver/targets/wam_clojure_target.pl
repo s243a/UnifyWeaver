@@ -658,6 +658,15 @@ wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     number_string(Arity, ArityStr),
     format(atom(Literal), '{:op :builtin-call :pred ~w :arity ~w}', [PredLit, Arity]).
+wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg], _, Literal) :-
+    clj_string_literal(Kind, KindLit),
+    clj_string_literal(TemplateReg, TemplateLit),
+    clj_string_literal(BagReg, BagLit),
+    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w}',
+           [KindLit, TemplateLit, BagLit]).
+wam_op_to_clojure_literal("end_aggregate", [TemplateReg], _, Literal) :-
+    clj_string_literal(TemplateReg, TemplateLit),
+    format(atom(Literal), '{:op :end-aggregate :template ~w}', [TemplateLit]).
 wam_op_to_clojure_literal("cut_ite", [], _, '{:op :cut-ite}').
 wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
     clj_string_literal(Line, LineLit),

@@ -184,6 +184,14 @@ test(numeric_wam_constants_preserve_number_vs_atom_tokens) :-
         assertion(AtomLiteral == '{:op :put-constant :constant "2" :reg "A1"}')
     )).
 
+test(aggregate_instructions_emit_runtime_ops) :-
+    once((
+        wam_clojure_target:wam_op_to_clojure_literal("begin_aggregate", ["collect", "Y1", "X2"], _, BeginLiteral),
+        wam_clojure_target:wam_op_to_clojure_literal("end_aggregate", ["Y1"], _, EndLiteral),
+        assertion(BeginLiteral == '{:op :begin-aggregate :kind "collect" :template "Y1" :bag "X2"}'),
+        assertion(EndLiteral == '{:op :end-aggregate :template "Y1"}')
+    )).
+
 test(foreign_predicates_emit_call_foreign_stub) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_foreign', TmpDir),
