@@ -55,6 +55,21 @@ Parameters `φ_min` (min fan-out), `τ_div` (diversity / `n_eff`), `τ_pure` (pu
 - `LeakConduit` — `n_eff(P)` high **and** `purity(P) < τ_pure` — distinct but *unrelated* regions → prune /
   down-weight.
 
+**`τ_pure` is self-calibrating, not a fixed constant.** The in-domain-fraction purity has no universal
+scale: on a clean graph genuine hubs sit near `1`, but on an associative graph (the physics-exploded 10k
+slice) *every* cone leaks, so even real hubs read `~0.01–0.04` and leak conduits `~0.002`. A hard-coded
+`τ_pure` therefore mislabels on a graph of a different scale. Instead `rank_bridges` **derives `τ_pure`
+per graph** from the candidate purity distribution: the purities are log-bimodal — a low **leak cluster**
+and a higher **hub cluster** — so it takes the **largest log-gap whose low side is a minority** (leaks are
+the minority low tail; the minority constraint rejects a high-outlier gap above the hub cluster that would
+otherwise label most candidates as leaks) and sets `τ_pure` to the **geometric mean** of the two
+bracketing purities. A bimodality test (the split gap must clearly exceed the typical gap) falls back to a
+low **percentile** for the rare unimodal (no-leak-cluster) case. The classifier thus ports across graphs
+of any absolute purity scale with no constant baked in. `BridgeParams.tau_pure` is `Option<f64>`: `None`
+(default) self-calibrates; `Some(x)` pins an explicit cut (deterministic — for tests or a hand-tuned
+override). Single-node `bridge_classify` cannot self-calibrate (it sees no distribution) and uses `0.5`
+when `None`; use `rank_bridges` for the calibrated split.
+
 ## Candidate generation (the MICA / upward step)
 
 Two options, cheap-first:
@@ -72,6 +87,9 @@ pub enum BridgeClass { Bridge, LeakConduit, RedundantHub, NotCandidate }
 pub struct BridgeScore { pub n_eff: f64, pub diversity: f64, pub purity: f64,
                          pub fan_out: u32, pub class: BridgeClass }
 
+/// φ_min, τ_div, and τ_pure: Option<f64> — None = self-calibrate (default), Some(x) = explicit cut.
+pub struct BridgeParams { pub phi_min: u32, pub tau_div: f64, pub tau_pure: Option<f64> }
+
 /// (diversity, n_eff) for P over its in-domain children; None if < 2 in-domain children or U_P empty.
 pub fn fanout_diversity(p: u32, parents: &.., mu: &.., threshold: f64 /*, sketches or exact*/)
     -> Option<(f64, f64)>;
@@ -79,7 +97,12 @@ pub fn fanout_diversity(p: u32, parents: &.., mu: &.., threshold: f64 /*, sketch
 pub fn bridge_classify(p: u32, parents: &.., mu: &.., threshold: f64, params: &BridgeParams)
     -> BridgeScore;
 
-/// All candidates, sorted (e.g. by n_eff·purity, or n_eff within the Bridge class).
+/// Derive τ_pure from a candidate purity distribution (largest minority-low log-gap; geometric-mean
+/// boundary; low-percentile fallback when unimodal). The self-calibration `rank_bridges` uses.
+pub fn calibrate_tau_pure(purities: &[f64]) -> f64;
+
+/// All candidates, sorted (e.g. by n_eff·purity, or n_eff within the Bridge class). With
+/// `params.tau_pure = None` it self-calibrates τ_pure from the diverse candidates' purities.
 pub fn rank_bridges(parents: &.., mu: &.., threshold: f64, params: &BridgeParams)
     -> Vec<(u32, BridgeScore)>;
 ```
