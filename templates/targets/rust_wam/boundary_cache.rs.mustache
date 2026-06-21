@@ -7178,4 +7178,96 @@ mod tests {
             "saturated sketch n_eff {} within KMV tol of exact {}", sketched.1, exact.1);
         assert!(sketched.0 <= 1.0 + 1e-9, "diversity clamped ≤ 1: {}", sketched.0);
     }
+
+    // ── Fan-out bridge detector — increment 5: real-data validation (gated) ──
+
+    // Run the bridge detector on the REAL (raw, cyclic) Wikipedia physics graph with the LLM μ
+    // fixture and confirm the qualitative predictions of the measurement-doc addendum: the documented
+    // leak conduits (Matter, Time, Astronomical_objects — high n_eff, LOW raw-cone purity) are NOT
+    // bridges, the clean in-domain hubs (Thermodynamics, Mechanics, Subfields_of_physics) score
+    // higher purity, and X_by_nationality-style fan-outs are redundant hubs. The exact path is
+    // cycle-safe (BFS `seen` dedup), so no SCC condensation is needed. Gated on UW_CATEGORY_TSV +
+    // UW_FUZZY_NODES (skips in CI). NOTE: raw-cone purity is uniformly low on the associative graph
+    // (every cone leaks), so τ_pure is tuned to the real-data scale (0.05) — see the addendum; the
+    // gated-cone purity is the sharper discriminator and is flagged there as a refinement.
+    #[test]
+    fn wikipedia_bridge_detector_classifies_apexes() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mu: HashMap<u32, f64> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| { let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(m)) => ids.get(n.trim()).map(|&id| (id, m)),
+                    _ => None,
+                }
+            }).collect();
+        eprintln!("bridge: {} nodes, {} scored", names.len(), mu.len());
+
+        let th = 0.3;
+        // τ_pure tuned to the real-data scale: clean hubs ~0.1 raw purity, leak conduits ~0.005.
+        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.05 };
+        let id = |s: &str| ids.get(s).copied();
+        let report = |label: &str, n: u32| -> BridgeScore {
+            let s = bridge_classify(n, &parents, &mu, th, &params);
+            eprintln!("  {:<26} n_eff={:>6.2} purity={:>8.5} fan_out={:>3} {:?}",
+                label, s.n_eff, s.purity, s.fan_out, s.class);
+            s
+        };
+        eprintln!("bridge: documented leak conduits —");
+        let leaks: Vec<BridgeScore> = ["Matter", "Time", "Astronomical_objects"]
+            .iter().filter_map(|&nm| id(nm).map(|n| report(nm, n))).collect();
+        eprintln!("bridge: clean in-domain hubs —");
+        let hubs: Vec<BridgeScore> = ["Thermodynamics", "Mechanics", "Subfields_of_physics", "Energy"]
+            .iter().filter_map(|&nm| id(nm).map(|n| report(nm, n))).collect();
+
+        // PREDICTION 1 (robust from the addendum's exact-mass table): a documented leak conduit has
+        // strictly lower raw-cone purity than a clean in-domain hub. Compare Matter vs Thermodynamics
+        // when both are present.
+        if let (Some(m), Some(t)) = (id("Matter"), id("Thermodynamics")) {
+            let (pm, pt) = (bridge_classify(m, &parents, &mu, th, &params).purity,
+                            bridge_classify(t, &parents, &mu, th, &params).purity);
+            assert!(pm < pt, "leak conduit Matter purity {pm} < clean hub Thermodynamics purity {pt}");
+        }
+        // PREDICTION 2: a documented leak conduit that IS a candidate is classified LeakConduit
+        // (high n_eff, low purity), never Bridge.
+        for s in &leaks {
+            if s.class != BridgeClass::NotCandidate {
+                assert_ne!(s.class, BridgeClass::Bridge, "a leak conduit must not be a Bridge: {s:?}");
+            }
+        }
+        // PREDICTION 3: the clean hubs out-purity the leak conduits on average (the leak/clean split).
+        let mean = |v: &[BridgeScore]| if v.is_empty() { f64::NAN }
+            else { v.iter().map(|s| s.purity).sum::<f64>() / v.len() as f64 };
+        let (ml, mh) = (mean(&leaks), mean(&hubs));
+        if ml.is_finite() && mh.is_finite() {
+            eprintln!("bridge: mean purity  leak-conduits={:.5}  clean-hubs={:.5}", ml, mh);
+            assert!(mh > ml, "clean hubs out-purify leak conduits ({mh} > {ml})");
+        }
+
+        // The full ranking exists and is finite; report the top bridges by n_eff·purity.
+        let ranked = rank_bridges(&parents, &mu, th, &params);
+        eprintln!("bridge: {} candidates; top 8 by n_eff·purity —", ranked.len());
+        for (n, s) in ranked.iter().take(8) {
+            eprintln!("  {:<26} n_eff={:>6.2} purity={:>8.5} {:?}", names[*n as usize], s.n_eff, s.purity, s.class);
+        }
+        assert!(ranked.iter().all(|(_, s)| s.n_eff.is_finite() && s.purity.is_finite()),
+            "all scores finite");
+    }
 }
