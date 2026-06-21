@@ -30,6 +30,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | **SYM more-data + ablation** | ✅ **done** — `gen_more_sym_pairs.py` + `mu_pairs_scored_large.tsv` (+600 Haiku pairs, ~38.5k tokens) → `REPORT_sym_more_data.md`. More data raised SYM held-out corr **+0.342 → +0.479** (WIKI stays ~98%); single-task SYM **collapses** ⇒ the gap was **data starvation, not multi-task dilution** (multi-task is load-bearing). |
 | **multi-domain (Physics + Chemistry)** | ✅ **done** — child-only sampler + μ-coherent pools (`gen_multidomain_pairs.py`, +650 Haiku pairs) → `REPORT_multidomain.md`. SYM `pos`-stratum corr **+0.479 → +0.695** (control +0.726; gap ~0.03), overall +0.822; **Physics-vs-Chemistry discrimination 10/10**; WIKI 99.7%; lin-agreement +0.183 (> control). |
 | **four roots (Phys/Chem/Math/CS)** | ✅ **done** — depth-bounded closures ∩ μ-coherence + #3309 bidir batch (`gen_multidomain_pairs.py`, +885 Haiku pairs) → `REPORT_4roots.md`. **4-domain discrimination 18/20 (90%)** — Physics/Chemistry/CS clean 5/5, **Math 3/5** (Calculus & Diff-eq leak to Physics — thin 9-node pool). WIKI 98.6%; lin-agreement +0.237. `pos` stratum regressed +0.695→+0.570 (breadth traded vs physics fidelity). |
+| **more Math DATA + Engineering** | ✅ **done** — deepened *inclusive* Math pool (9→13, keeps math-of-physics) + new Engineering domain (`gen_math_eng_pairs.py`, +404 Haiku pairs ~24.8k tok) → `REPORT_matheng.md`. **Physics SYM corr recovered +0.570→+0.838** (more DATA, not breadth — Part-A hypothesis confirmed); `pos_math` +0.818, `cross_MP` +0.780 (math-of-physics learned **high-to-both**); `Calculus` now argmax-Math; Engineering clean 4–5/5; WIKI 99.2%. 5-way argmax **seed-sensitive 56–84%** — Physics is the brittle one (1–2/5) because it's the spine's connective domain (high-μ to several roots → argmax ill-posed even as ranking stays strongest). |
 
 ### Progress — directional, multi-relational μ (`MuAttention`, DESIGN_directional_attention.md realized)
 
@@ -53,6 +54,16 @@ spend). All 8,247 nodes covered (frozen e5 + shared tags). Results (`REPORT_dire
 pinned at 50%); matches on the gate-leak probe; **behind on pure symmetric corr** (multi-task trade-off —
 SYM shares the backbone with WIKI+LLM). Every operator's dense map feeds `gated_ic`/`lin_from_ic`. The
 SECONDARY node-gated-IC (#3296) lin check confirms the saturation fix (0.1% vs 96.7% path-gated).
+
+**Provenance token** (`REPORT_provenance.md`) — the deferred judge axis, realized. One **maskable**
+token with a **factored** embedding `corpus_emb[corpus] + judge_emb[judge] + prov_tag` records each
+label's source (corpus `simplewiki`/`enwiki`; judge `haiku` for bought SYM/LLM labels, `graph` for WIKI
+edges + free μ=0 negatives). **Masked by default** (off-manifold noise → provenance-agnostic μ,
+marginalizing over sources — the default inference path). Single-corpus so validated **structurally**:
+the slot is read (revealing `judge=graph` collapses μ by 0.66 — it learned graph-judged SYM = the μ=0
+non-edges; `judge=haiku` near-constant 0.027), and a `--prov-mask 1.0` ablation confirms it does **not
+regress** Part A (`pos_phys` +0.831 vs +0.838). Ready to carry real signal once `enwiki`/a 2nd judge
+arrives — no architecture change.
 
 ### Progress — ML-environment port (folded in from #3283)
 
@@ -346,6 +357,28 @@ This environment has **no numpy / torch / network**, so:
 Once the encoder produces dense `μ` for *all* categories (not just the scored 90), it removes the
 density caveat on `descendant_mu_mass_gated` (gating no longer prunes through unscored connectors) and
 feeds `gated_ic` / `lin_from_ic` directly — the same `μ` map, just dense and domain-swappable.
+
+### Realized (no training): `gen_dense_mu.py` + `sanity_check_rust.py`
+
+Kickoff prompt **A** below is now implemented as the *fastest path to unblock the graph work*:
+
+- `gen_dense_mu.py` MiniLM-encodes every category name (`all-MiniLM-L6-v2`), cosines it to the
+  `Physics` anchor, clamps via `to_membership`, and emits `dense_mu_physics.tsv` (`name<TAB>μ`, the
+  fixture format, names verbatim). It is a **raw pretrained-embedding prior** — coarse semantic
+  proximity, NOT the trained cosine-μ encoder and NOT authoritative (e.g. untrained MiniLM scores
+  `Music ≈ 0.34`, where the curated fixture has it at `0`). Its job is *density*.
+- `sanity_check_rust.py` renders this very template into a throwaway crate and runs the **real**
+  `condense_scc → lift_mu_to_components → gated_ic → lin_from_ic` on the dense map (the loader is
+  copied verbatim from `wikipedia_gated_similarity_tracks_physics_relatedness`). It checks the
+  integration *contract* (coverage, finite/`+∞` IC, `lin ∈ [0,1]`), not the training-dependent physics
+  ordering. Last run: **8247/8247 names resolve (100% coverage)**, `gated_ic` (threshold `0.3`) →
+  7429 finite IC + 775 out-of-domain, `lin_from_ic(Electromagnetism, Optics) = 0.85`.
+
+```
+pip install -r requirements.txt          # torch, sentence-transformers (+ HF egress)
+python3 gen_dense_mu.py --anchor Physics --out dense_mu_physics.tsv
+python3 sanity_check_rust.py --fuzzy dense_mu_physics.tsv   # needs cargo
+```
 
 **Two things that will silently corrupt the integration if missed (review-flagged):**
 1. **Clamp the cosine to `[0,1]` before emitting** (`to_membership` in `mu_encoder.py`). Cosine is in
