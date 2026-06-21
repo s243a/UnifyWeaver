@@ -3,6 +3,7 @@ mu_pairs.tsv
 # Haiku-scored sets (mu_pairs_scored*.tsv) are committed — bought once.
 mu_pairs_more.tsv
 mu_pairs_multidomain.tsv
+mu_pairs_4roots.tsv
 # generated dense μ maps (regenerate with emit_dense_mu.py / dense_mu_direct.py); the committed
 # dense_mu_e5.sample.tsv is the illustrative sample. *.sample.tsv is kept (negated below).
 dense_mu*.tsv
