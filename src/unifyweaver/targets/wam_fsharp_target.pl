@@ -288,14 +288,18 @@ predicate_base_pc_fs(P, Map, PC) :-
 % lower_all: run the lowered emitter over LoweredList
 % ============================================================================
 
-lower_all_fs([], _, _, []).
-lower_all_fs([P|Rest], BasePCMap, DetectedKernels, [Entry|RestEntries]) :-
+lower_all_fs(Preds, BasePCMap, DetectedKernels, Entries) :-
+    lower_all_fs(Preds, BasePCMap, DetectedKernels, [], Entries).
+lower_all_fs([], _, _, _, []).
+lower_all_fs([P|Rest], BasePCMap, DetectedKernels, Options, [Entry|RestEntries]) :-
     wam_fsharp_predicate_wamcode(P, WamCode),
     predicate_base_pc_fs(P, BasePCMap, BasePC),
     pairs_keys(DetectedKernels, ForeignKeys),
+    % Thread the user Options (t9_min_rows / t9_max_rows / fact_table_inline)
+    % so lower_predicate_to_fsharp can apply the T9 fact-table inline.
     lower_predicate_to_fsharp(P, WamCode,
-        [base_pc(BasePC), foreign_preds(ForeignKeys)], Entry),
-    lower_all_fs(Rest, BasePCMap, DetectedKernels, RestEntries).
+        [base_pc(BasePC), foreign_preds(ForeignKeys)|Options], Entry),
+    lower_all_fs(Rest, BasePCMap, DetectedKernels, Options, RestEntries).
 
 
 % ============================================================================
@@ -583,6 +587,50 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                                  WsB0Stack = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
                                  WsCPs     = newCPs
                                  WsCPsLen  = List.length newCPs }
+        tryNext candidates
+    | FactTableRetry (_, [], _) ->
+        backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+    | FactTableRetry (args, candidates, retPC) ->
+        // Restore from snapshot, then walk remaining candidate rows; unify all
+        // columns of the next matching row against the query args (the snapshot
+        // makes each row attempt independent).  Mirrors MemberRetry but with a
+        // multi-column unify per row.
+        let diff = s.WsTrailLen - cp.CpTrailLen
+        let restoredS = { s with
+                             WsRegs     = Array.copy cp.CpRegs
+                             WsStack    = cp.CpStack
+                             WsCP       = cp.CpCP
+                             WsTrail    = List.skip diff s.WsTrail
+                             WsTrailLen = cp.CpTrailLen
+                             WsHeap     = List.take cp.CpHeapLen s.WsHeap
+                             WsHeapLen  = cp.CpHeapLen
+                             WsBindings = cp.CpBindings
+                             WsCutBar   = cp.CpCutBar
+                             WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
+                             WsPC       = retPC }
+        let arity = List.length args
+        let rec tryNext cs =
+            match cs with
+            | [] -> backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
+            | row :: more ->
+                match row with
+                | VList cols when List.length cols = arity ->
+                    match unifyColumns (List.zip args cols) restoredS with
+                    | Some s2 ->
+                        let newCPs =
+                            match more with
+                            | [] -> rest
+                            | _  -> { cp with CpBuiltin = Some (FactTableRetry (args, more, retPC)) } :: rest
+                        Some { s2 with
+                                 WsPC      = retPC
+                                 WsStack   = cp.CpStack
+                                 WsCP      = cp.CpCP
+                                 WsCutBar  = cp.CpCutBar
+                                 WsB0Stack = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
+                                 WsCPs     = newCPs
+                                 WsCPsLen  = List.length newCPs }
+                    | None -> tryNext more
+                | _ -> tryNext more
         tryNext candidates
     | FFIStreamRetry (_, _, [], _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
@@ -2913,7 +2961,52 @@ and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
     // step handler) doesn''t need to.
     match unifyTerms a b s with
     | None    -> None
-    | Some sN -> Some { sN with WsPC = sN.WsPC + 1 }'.
+    | Some sN -> Some { sN with WsPC = sN.WsPC + 1 }
+
+/// Unify a list of (arg, column) pairs left-to-right, threading state. Used by
+/// the T9 fact-table enumerator to unify every column of a candidate row.
+and unifyColumns (pairs: (Value * Value) list) (st: WamState) : WamState option =
+    match pairs with
+    | [] -> Some st
+    | (a, c) :: ps ->
+        match unifyTerms a c st with
+        | None     -> None
+        | Some st2 -> unifyColumns ps st2
+
+/// T9 fact-table enumerator: try each candidate row (a VList of column values)
+/// against the query args, leaving a FactTableRetry choice point for the rest so
+/// backtracking yields the next matching row. On success sets WsPC = retPC (the
+/// call-site continuation: pc+1 for `call`, the saved cp for tail-call
+/// `execute`). Mirrors select/3''s choice-point construction.
+and factTableAttempt (args: Value list) (cands: Value list) (retPC: int) (s: WamState) : WamState option =
+    let arity = List.length args
+    let rec tryNext cs =
+        match cs with
+        | [] -> None
+        | row :: more ->
+            match row with
+            | VList cols when List.length cols = arity ->
+                match unifyColumns (List.zip args cols) s with
+                | Some s2 ->
+                    let newCPs, newCPsLen =
+                        if List.isEmpty more then s.WsCPs, s.WsCPsLen
+                        else
+                            let cp = { CpNextPC   = retPC
+                                       CpRegs     = Array.copy s.WsRegs
+                                       CpStack    = s.WsStack
+                                       CpCP       = s.WsCP
+                                       CpTrailLen = s.WsTrailLen
+                                       CpHeapLen  = s.WsHeapLen
+                                       CpBindings = s.WsBindings
+                                       CpCutBar   = s.WsCutBar
+                                       CpB0StackLen = List.length s.WsB0Stack
+                                       CpAggFrame = None
+                                       CpBuiltin  = Some (FactTableRetry (args, more, retPC)) }
+                            cp :: s.WsCPs, s.WsCPsLen + 1
+                    Some { s2 with WsPC = retPC; WsCPs = newCPs; WsCPsLen = newCPsLen }
+                | None -> tryNext more
+            | _ -> tryNext more
+    tryNext cands'.
 
 % ============================================================================
 % PHASE 4: Run Loop
@@ -4905,7 +4998,7 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
     write_fs_file(PredsPath, PredsCode),
 
     % Generate Lowered.fs
-    lower_all_fs(LoweredList, BasePCMap, DetectedKernels, LoweredEntries),
+    lower_all_fs(LoweredList, BasePCMap, DetectedKernels, Options, LoweredEntries),
     generate_lowered_fs(LoweredEntries, LoweredCode),
     directory_file_path(ProjectDir, 'Lowered.fs', LoweredPath),
     write_fs_file(LoweredPath, LoweredCode),

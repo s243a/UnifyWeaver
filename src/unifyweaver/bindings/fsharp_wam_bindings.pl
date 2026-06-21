@@ -152,7 +152,13 @@ fsharp_wam_builtin_state_type :-
     /// for the next unifiable element.  Needed because the parser uses
     /// `member(op(Name, P, T), OpTable), is_op_type(T), !` and depends on
     /// backtracking into member when the type guard fails.
-    | MemberRetry    of elemReg: int * remaining: Value list * retPC: int").
+    | MemberRetry    of elemReg: int * remaining: Value list * retPC: int
+    /// T9 fact-table enumeration choice point.  `args` are the query argument
+    /// values (deref''d at call time); `remaining` are the candidate rows still
+    /// to try, each a `VList` of column values.  On backtrack the runtime
+    /// restores the CP snapshot and unifies every column of the next matching
+    /// row against `args`, leaving a fresh FactTableRetry CP if more remain.
+    | FactTableRetry of args: Value list * remaining: Value list * retPC: int").
 
 % ============================================================================
 % EnvFrame — mirrors Haskell `EnvFrame`
@@ -457,6 +463,17 @@ fsharp_wam_helpers :-
 "// ============================================================================
 // Helper functions
 // ============================================================================
+
+/// T9 first-argument index key: a canonical string for an atomic value, or
+/// None for compound / list / unbound values (which can only match via a full
+/// scan).  Keys both the stored rows and the query arg, so a bound atomic first
+/// argument selects exactly the matching index bucket.
+let factIndexKey (v: Value) : string option =
+    match v with
+    | Atom s    -> Some s
+    | Integer n -> Some (\"i\" + string n)
+    | Float f   -> Some (\"f\" + string f)
+    | _         -> None
 
 /// Resolve a fact lookup function for kernel dispatch.  Returns
 /// int -> int list, which kernels call directly instead of

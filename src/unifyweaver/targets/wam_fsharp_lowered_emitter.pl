@@ -25,7 +25,9 @@
 
 :- module(wam_fsharp_lowered_emitter, [
     wam_fsharp_lowerable/3,
-    lower_predicate_to_fsharp/4
+    lower_predicate_to_fsharp/4,
+    fsharp_fact_table_classify/3,     % +PI, +Opts, -fact_info(Arity,Rows)
+    emit_fact_table_fsharp/4          % +FuncName, +Arity, +Rows, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -204,6 +206,23 @@ supported_fs(T) :-
 % ============================================================================
 
 %% lower_predicate_to_fsharp(+PI, +WamCode, +Opts, -lowered(PredName, FuncName, Code))
+%  T9 fact-table inline: an all-ground-facts predicate whose row count is in the
+%  inline window [t9_min_rows, t9_max_rows] (defaults 64..256) lowers to a static
+%  row table + first-arg index + a backtracking enumerator (factTableAttempt),
+%  registered as a lowered predicate so call/execute reach it for free. Default
+%  in-range; opt out with fact_table_inline(false). Checked first so it wins.
+lower_predicate_to_fsharp(PI, _WamCode, Opts, lowered(PredName, FuncName, Code)) :-
+    \+ member(fact_table_inline(false), Opts),
+    fsharp_fact_table_classify(PI, Opts, fact_info(Arity, Rows)),
+    !,
+    ( PI = _M:Pred/_ -> true ; PI = Pred/_ ),
+    format(atom(PredName), '~w/~w', [Pred, Arity]),
+    atom_string(Pred, PredStr0),
+    split_string(PredStr0, "$", "", PParts),
+    atomic_list_concat(PParts, '_', SanPred),
+    format(atom(FuncName), 'lowered_~w_~w', [SanPred, Arity]),
+    emit_fact_table_fsharp(FuncName, Arity, Rows, Code).
+
 lower_predicate_to_fsharp(PI, WamCode, Opts, lowered(PredName, FuncName, Code)) :-
     (   PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
@@ -222,6 +241,82 @@ lower_predicate_to_fsharp(PI, WamCode, Opts, lowered(PredName, FuncName, Code)) 
     offset_labels_fs(LabelMap, Offset, GlobalLabelMap),
     with_output_to(string(Code),
         emit_func_fs(FuncName, GlobalPCInstrs, GlobalLabelMap, ForeignPreds, Opts)).
+
+% --- T9 fact-table inline: classification + emission ------------------------
+
+%% fsharp_fact_table_classify(+PI, +Opts, -fact_info(Arity, Rows))
+%  An all-ground-facts predicate (every clause a ground unit clause) whose row
+%  count is in [t9_min_rows, t9_max_rows]. Rows are arg tuples in source order.
+fsharp_fact_table_classify(PI, Opts, fact_info(Arity, Rows)) :-
+    ( PI = Module:Pred/Arity -> true ; PI = Pred/Arity, Module = user ),
+    Arity >= 1,
+    functor(Head, Pred, Arity),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
+    Clauses = [_|_],
+    forall(member(_-B, Clauses), B == true),
+    forall(member(H-_, Clauses), ( H =.. [_|As], forall(member(A, As), ground(A)) )),
+    findall(As, ( member(H-true, Clauses), H =.. [_|As] ), Rows),
+    fsharp_t9_min_rows(Opts, Min),
+    fsharp_t9_max_rows(Opts, Max),
+    length(Rows, NR),
+    NR >= Min,
+    NR =< Max.
+
+fsharp_t9_min_rows(Opts, N) :- ( member(t9_min_rows(N), Opts) -> true ; N = 64 ).
+fsharp_t9_max_rows(Opts, N) :- ( member(t9_max_rows(N), Opts) -> true ; N = 256 ).
+
+%% emit_fact_table_fsharp(+FuncName, +Arity, +Rows, -Code)
+%  Emit a static row table + first-arg index (built once at module init) and a
+%  lowered predicate that derefs its args, selects candidates (index bucket for a
+%  bound atomic first arg, else full scan) and drives factTableAttempt.
+emit_fact_table_fsharp(FuncName, Arity, Rows, Code) :-
+    maplist(fsharp_fact_row_literal, Rows, RowLits),
+    atomic_list_concat(RowLits, '\n          ', RowsBody),
+    format(string(Code),
+'let private ~w_rows : Value list =
+        [ ~w ]
+let private ~w_index : Map<string, Value list> =
+    ~w_rows
+    |> List.choose (fun r -> match r with | VList (c0 :: _) -> (match factIndexKey c0 with Some k -> Some (k, r) | None -> None) | _ -> None)
+    |> List.groupBy fst
+    |> List.map (fun (k, ps) -> (k, ps |> List.map snd))
+    |> Map.ofList
+let ~w (_ctx: WamContext) (s: WamState) : WamState option =
+    let args = [ for i in 1 .. ~w -> (match getReg i s with Some v -> derefVar s.WsBindings v | None -> Unbound -1) ]
+    let cands =
+        match args with
+        | a1 :: _ -> (match factIndexKey a1 with Some k -> (match Map.tryFind k ~w_index with Some rs -> rs | None -> []) | None -> ~w_rows)
+        | [] -> ~w_rows
+    factTableAttempt args cands s.WsCP s',
+        [FuncName, RowsBody, FuncName, FuncName, FuncName, Arity, FuncName, FuncName, FuncName]).
+
+% One row -> `VList [<col>; <col>; ...]`.
+fsharp_fact_row_literal(Row, Lit) :-
+    maplist(fsharp_term_to_value_literal, Row, ColLits),
+    atomic_list_concat(ColLits, '; ', Inner),
+    format(string(Lit), 'VList [~w]', [Inner]).
+
+% Ground Prolog term -> F# Value literal (matches the F# Value DU). Integers and
+% floats are parenthesised so a leading minus is not read as subtraction.
+fsharp_term_to_value_literal(T, L) :- integer(T), !, format(string(L), 'Integer (~w)', [T]).
+fsharp_term_to_value_literal(T, L) :- float(T), !, format(string(L), 'Float (~w)', [T]).
+fsharp_term_to_value_literal(T, L) :- is_list(T), !,
+    maplist(fsharp_term_to_value_literal, T, Es), atomic_list_concat(Es, '; ', I),
+    format(string(L), 'VList [~w]', [I]).
+fsharp_term_to_value_literal(T, L) :- atom(T), !,
+    fsharp_escape_string(T, E), format(string(L), 'Atom "~w"', [E]).
+fsharp_term_to_value_literal(T, L) :- string(T), !,
+    fsharp_escape_string(T, E), format(string(L), 'Atom "~w"', [E]).
+fsharp_term_to_value_literal(T, L) :- compound(T), !,
+    T =.. [F|As], fsharp_escape_string(F, EF),
+    maplist(fsharp_term_to_value_literal, As, Es), atomic_list_concat(Es, '; ', I),
+    format(string(L), 'Str ("~w", [~w])', [EF, I]).
+
+% Escape backslash and double-quote for an F# string literal.
+fsharp_escape_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", P1), atomic_list_concat(P1, '\\\\', S1),
+    split_string(S1, "\"", "", P2), atomic_list_concat(P2, '\\"', Out).
 
 offset_pcs_fs([], _, []).
 offset_pcs_fs([pc(PC, I)|Rest], Off, [pc(GPC, I)|Rest2]) :-
