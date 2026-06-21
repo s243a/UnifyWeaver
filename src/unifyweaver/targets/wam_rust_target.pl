@@ -2415,6 +2415,83 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     &pred_key, vec![out_reg],
                     vec![Value::Str("__tuple__".to_string(), vec![result])])
             }
+            "category_bridge_score" => {
+                // category_bridge_score(Node, Class): Node atom in (A1), Class atom out (A2). Builds
+                // the bridge scores on first use from edge_pred + mu_pred + threshold (self-calibrating
+                // tau_pure), then packs bridge_class_atom(class) as a Prolog atom. The mu map is a
+                // Prolog fact predicate (mu_pred config, e.g. category_mu/2) loaded via register_ffi_mu.
+                // See WAM_RUST_BRIDGE_CLUSTERING.md increment 1.
+                let node = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(node)) => node,
+                    _ => return false,
+                };
+                let class_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mu_pred = match self.foreign_string_config(&pred_key, "mu_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let threshold = self.foreign_f64_config(&pred_key, "threshold").unwrap_or(0.3);
+                if !self.ensure_bridge_scores(&edge_pred, &mu_pred, threshold) {
+                    return false;
+                }
+                let node_id = self.intern_atom(&node);
+                let (class, _n_eff) = match self.category_bridge_class(node_id) {
+                    Some(pair) => pair,
+                    None => return false,
+                };
+                self.finish_foreign_results(&pred_key, vec![class_reg], vec![
+                    Value::Str("__tuple__".to_string(), vec![Value::Atom(class.to_string())])
+                ])
+            }
+            "bridge" => {
+                // bridge(Node, Class, Neff): enumerate all bridge candidates (ranking). Node atom (A1),
+                // Class atom (A2), Neff float (A3) — streamed one solution per candidate, sorted by
+                // n_eff descending. Same build-on-first-use as category_bridge_score.
+                let node_reg = match self.get_reg_raw("A1") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let class_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let neff_reg = match self.get_reg_raw("A3") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mu_pred = match self.foreign_string_config(&pred_key, "mu_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let threshold = self.foreign_f64_config(&pred_key, "threshold").unwrap_or(0.3);
+                if !self.ensure_bridge_scores(&edge_pred, &mu_pred, threshold) {
+                    return false;
+                }
+                let candidates = self.bridge_candidates();
+                if candidates.is_empty() {
+                    return false;
+                }
+                let results: Vec<Value> = candidates.into_iter().map(|(id, class, neff)| {
+                    let name = self.atom_name(id).unwrap_or("").to_string();
+                    Value::Str("__tuple__".to_string(), vec![
+                        Value::Atom(name),
+                        Value::Atom(class.to_string()),
+                        Value::Float(neff),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![node_reg, class_reg, neff_reg], results)
+            }
             _ => false,
         }
     }'.
@@ -5289,6 +5366,16 @@ rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, Value), 
 rust_foreign_setup_line(register_foreign_usize_config(Pred/Arity, Key, Value), Line) :-
     format(string(Line),
         '    vm.register_foreign_usize_config("~w/~w", "~w", ~w);', [Pred, Arity, Key, Value]).
+rust_foreign_setup_line(register_foreign_f64_config(Pred/Arity, Key, Value), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_f64_config("~w/~w", "~w", ~w);', [Pred, Arity, Key, Value]).
+rust_foreign_setup_line(register_ffi_mu(_Pred/_Arity, MuPred, Pairs), Line) :-
+    % Load a node->score (μ membership) fact table for the bridge detector, the score-fact analogue
+    % of register_indexed_atom_fact2. MuPred names the μ predicate (e.g. category_mu); Pairs is a list
+    % of Name-Score terms harvested from the μ facts.
+    rust_mu_pairs_literal(Pairs, PairsLiteral),
+    format(string(Line),
+        '    vm.register_ffi_mu("~w", &~w);', [MuPred, PairsLiteral]).
 rust_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
     rust_fact_pairs_literal(Pairs, PairsLiteral),
     format(string(Line),
@@ -5309,6 +5396,15 @@ rust_fact_pair_literal(Left-Right, Literal) :-
     escape_rust_string(Left, ELeft),
     escape_rust_string(Right, ERight),
     format(string(Literal), '("~w", "~w")', [ELeft, ERight]).
+
+rust_mu_pairs_literal(Pairs, Literal) :-
+    maplist(rust_mu_pair_literal, Pairs, PairLiterals),
+    atomic_list_concat(PairLiterals, ', ', Joined),
+    format(string(Literal), '[~w]', [Joined]).
+
+rust_mu_pair_literal(Name-Score, Literal) :-
+    escape_rust_string(Name, EName),
+    format(string(Literal), '("~w", ~w)', [EName, Score]).
 
 rust_fact_triples_literal(Triples, Literal) :-
     maplist(rust_fact_triple_literal, Triples, TripleLiterals),
