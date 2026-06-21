@@ -2389,10 +2389,24 @@ compile_step_wam_to_c(_Options, CCode) :-
                    +(+(A,B),C)), bind that cell to the new structure as well —
                    otherwise the enclosing structure keeps pointing at the
                    still-unbound placeholder and eval/unify never see this
-                   subterm. */
-                WamValue *placeholder = wam_deref_ptr(state, cell);
-                if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
-                    *placeholder = s;
+                   subterm.
+
+                   A-REGISTER EXCEPTION (M139/M140 bind-through class): A
+                   registers (is_y_reg == 0; X == 2, Y == 1) are argument
+                   STAGING — their old occupant is an unrelated variable
+                   (often a clause-head argument), and writing the new
+                   structure into its heap cell creates a cyclic term
+                   (X = f(X)) — and did so UNTRAILED, a backtracking
+                   corruption hazard on top of the wrong-fail. set_variable
+                   placeholders only ever live in X/Y registers, so the
+                   bind-through is conditioned on the register class — the
+                   same fix the Rust, Go, Scala, Kotlin, Haskell and LLVM
+                   targets carry. */
+                if (instr->as.functor.is_y_reg != 0) {
+                    WamValue *placeholder = wam_deref_ptr(state, cell);
+                    if (placeholder != cell && placeholder->tag == VAL_UNBOUND) {
+                        *placeholder = s;
+                    }
                 }
                 *cell = s;
 
@@ -4219,6 +4233,15 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "=/2") == 0 && arity == 2) {
         return wam_unify(state, &state->A[0], &state->A[1]);
+    }
+
+    /* Strict (in)equality: previously missing from the table entirely,
+       so the shared compiler emitted builtin_call ==/2 and it failed
+       closed (even X = a, X == a was false) -- the class-7 gap found
+       by the bind-through probe sweep. */
+    if ((strcmp(op, "==/2") == 0 || strcmp(op, "\\\\==/2") == 0) && arity == 2) {
+        bool eq = wam_term_strict_equal(state, &state->A[0], &state->A[1]);
+        return (strcmp(op, "==/2") == 0) ? eq : !eq;
     }
 
     if (arity == 1) {

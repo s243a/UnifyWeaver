@@ -11,6 +11,8 @@
 :- dynamic user:wam_execute_caller/1.
 :- dynamic user:wam_call_caller/1.
 :- dynamic user:wam_choice_fact/1.
+:- dynamic user:wam_t4_color/1.
+:- dynamic user:wam_t4_pair/2.
 :- dynamic user:wam_choice_caller/1.
 :- dynamic user:wam_choice_or_z/1.
 :- dynamic user:wam_bind_then_fact/1.
@@ -122,6 +124,7 @@
 :- dynamic user:wam_between_guard/3.
 :- dynamic user:wam_between_high_before_low/0.
 :- dynamic user:wam_between_generate_first/0.
+:- dynamic user:wam_between_backtrack/1.
 :- dynamic user:wam_between_singleton/0.
 :- dynamic user:wam_between_unbound_low/1.
 :- dynamic user:wam_between_unbound_high/1.
@@ -397,6 +400,12 @@ user:wam_call_caller(X) :- user:wam_fact(X), user:wam_fact(X).
 user:wam_choice_fact(a).
 user:wam_choice_fact(b).
 user:wam_choice_fact(c).
+user:wam_t4_color(red).
+user:wam_t4_color(green).
+user:wam_t4_color(blue).
+user:wam_t4_pair(a, x).
+user:wam_t4_pair(a, y).
+user:wam_t4_pair(b, z).
 user:wam_choice_caller(X) :- user:wam_choice_fact(X).
 user:wam_choice_or_z(X) :- user:wam_choice_fact(X).
 user:wam_choice_or_z(z).
@@ -509,6 +518,7 @@ user:wam_select_unbound_list(Rest) :- select(a, L, Rest), is_list(L).
 user:wam_between_guard(Low, High, Value) :- between(Low, High, Value).
 user:wam_between_high_before_low :- between(5, 3, _).
 user:wam_between_generate_first :- between(2, 5, X), X =:= 2.
+user:wam_between_backtrack(Value) :- between(1, 3, X), X =:= Value.
 user:wam_between_singleton :- between(7, 7, X), X =:= 7.
 user:wam_between_unbound_low(_) :- user:wam_unbound_arg(Low), between(Low, 3, _).
 user:wam_between_unbound_high(_) :- user:wam_unbound_arg(High), between(1, High, _).
@@ -790,6 +800,8 @@ run_smoke :-
           user:wam_foreign_stream_pair_query/1,
           user:wam_foreign_stream_pair/2,
           user:wam_choice_fact/1,
+          user:wam_t4_color/1,
+          user:wam_t4_pair/2,
           user:wam_choice_caller/1,
           user:wam_choice_or_z/1,
           user:wam_bind_then_fact/1,
@@ -901,6 +913,7 @@ run_smoke :-
           user:wam_between_guard/3,
           user:wam_between_high_before_low/0,
           user:wam_between_generate_first/0,
+          user:wam_between_backtrack/1,
           user:wam_between_singleton/0,
           user:wam_between_unbound_low/1,
           user:wam_between_unbound_high/1,
@@ -1225,7 +1238,7 @@ run_smoke :-
     assert_lowered_univ_builtin_emitted(TmpDir),
     assert_lowered_ground_builtin_emitted(TmpDir),
     assert_lowered_arithmetic_comparison_builtin_emitted(TmpDir),
-    assert_multiclause_wrappers_runtime_mediated(TmpDir),
+    assert_multiclause_lowering_contracts(TmpDir),
     smoke_cases(Cases),
     verify_outputs(TmpDir, Cases),
     delete_directory_and_contents(TmpDir),
@@ -1245,6 +1258,15 @@ smoke_cases([
     case('wam_choice_caller/1', 'b', "true"),
     case('wam_choice_caller/1', 'c', "true"),
     case('wam_choice_caller/1', 'd', "false"),
+    case('wam_t4_color/1', red, "true"),
+    case('wam_t4_color/1', green, "true"),
+    case('wam_t4_color/1', blue, "true"),
+    case('wam_t4_color/1', yellow, "false"),
+    case('wam_t4_pair/2', args(a, x), "true"),
+    case('wam_t4_pair/2', args(a, y), "true"),
+    case('wam_t4_pair/2', args(b, z), "true"),
+    case('wam_t4_pair/2', args(a, z), "false"),
+    case('wam_t4_pair/2', args(c, x), "false"),
     case('wam_choice_or_z/1', 'z', "true"),
     case('wam_bind_then_fact/1', 'a', "true"),
     case('wam_bind_then_fact/1', 'b', "false"),
@@ -1441,6 +1463,8 @@ smoke_cases([
     case('wam_between_guard/3', args(1, 3, 0), "false"),
     case('wam_between_high_before_low/0', no_args, "false"),
     case('wam_between_generate_first/0', no_args, "true"),
+    case('wam_between_backtrack/1', 2, "true"),
+    case('wam_between_backtrack/1', 4, "false"),
     case('wam_between_singleton/0', no_args, "true"),
     case('wam_between_unbound_low/1', a, "false"),
     case('wam_between_unbound_high/1', a, "false"),
@@ -2024,8 +2048,10 @@ assert_lowered_between_builtin_emitted(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
     has(CoreCode, "defn lowered-wam-between-guard-3"),
+    has(CoreCode, "defn lowered-wam-between-backtrack-1"),
     has(CoreCode, "defn lowered-wam-between-unbound-low-1"),
     has(CoreCode, "defn lowered-wam-between-unbound-high-1"),
+    has(CoreCode, "runtime/lowered-step-advanced?"),
     has(CoreCode, "runtime/apply-between-solution").
 
 assert_lowered_numlist_builtin_emitted(ProjectDir) :-
@@ -2266,12 +2292,25 @@ assert_lowered_arithmetic_comparison_builtin_emitted(ProjectDir) :-
     has(CoreCode, "runtime/arithmetic-less-or-equal?"),
     has(CoreCode, "runtime/arithmetic-greater-or-equal?").
 
-assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
+assert_multiclause_lowering_contracts(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
     read_file_to_string(CorePath, CoreCode, []),
-    assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-fact-1"),
+    assert_t4_multiclause_wrapper(CoreCode, "lowered-wam-choice-fact-1"),
+    assert_t4_multiclause_wrapper(CoreCode, "lowered-wam-t4-color-1"),
+    assert_t4_multiclause_wrapper(CoreCode, "lowered-wam-t4-pair-2"),
+    has(CoreCode, "get-constant red, A1"),
+    has(CoreCode, "get-constant y, A2"),
     assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-or-z-1"),
     assert_empty_lowered_wrapper(CoreCode, "lowered-wam-trail-choice-1").
+
+assert_t4_multiclause_wrapper(CoreCode, FuncName) :-
+    format(string(Header), "(defn ~w [state]", [FuncName]),
+    has(CoreCode, Header),
+    has(CoreCode, "T4 all-clauses inline"),
+    has(CoreCode, ":succeeded (:status"),
+    !.
+assert_t4_multiclause_wrapper(_CoreCode, FuncName) :-
+    throw(error(multiclause_wrapper_not_t4_lowered(FuncName), _)).
 
 assert_empty_lowered_wrapper(CoreCode, FuncName) :-
     (   lowered_wrapper_absent_or_empty(CoreCode, FuncName)
@@ -2440,7 +2479,12 @@ prolog_term_string_to_edn(b, "\"b\"") :- !.
 prolog_term_string_to_edn(c, "\"c\"") :- !.
 prolog_term_string_to_edn(d, "\"d\"") :- !.
 prolog_term_string_to_edn(x, "\"x\"") :- !.
+prolog_term_string_to_edn(y, "\"y\"") :- !.
 prolog_term_string_to_edn(z, "\"z\"") :- !.
+prolog_term_string_to_edn(red, "\"red\"") :- !.
+prolog_term_string_to_edn(green, "\"green\"") :- !.
+prolog_term_string_to_edn(blue, "\"blue\"") :- !.
+prolog_term_string_to_edn(yellow, "\"yellow\"") :- !.
 prolog_term_string_to_edn('<', "\"<\"") :- !.
 prolog_term_string_to_edn('=', "\"=\"") :- !.
 prolog_term_string_to_edn('>', "\">\"") :- !.

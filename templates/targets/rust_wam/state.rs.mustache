@@ -38,7 +38,9 @@ impl std::hash::Hasher for FxHasher {
 pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
 pub type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
 pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -63,6 +65,75 @@ pub trait LookupSource: Send + Sync {
     fn atom_for_key(&self, key: i32) -> Option<String>;
 }
 
+/// Cached-side runtime attribution for the graph-search hot path.
+///
+/// Rust-side analog of the Python boundary-cache attribution added in
+/// `scripts/lmdb_parent_boundary_cache_benchmark.py` (PR #3120). That
+/// benchmark found cached search dominated by "residual cached
+/// traversal/interpreter overhead"; the compiled Rust kernel removes the
+/// interpreter, so what remains on the cached path is cache-tier
+/// distribution plus the inner LMDB cursor-seek ("parent lookup" +
+/// "decode" buckets). This sink measures exactly those: which tier served
+/// each `lookup_parents`, and how long the inner source took on a miss.
+///
+/// Opt-in via `UW_WAM_CACHE_ATTRIBUTION=1`. When disabled the hot path
+/// takes no extra timer calls — every record site is behind an
+/// `Option<Arc<CacheAttribution>>` branch — so the default cached mode
+/// stays a clean benchmark baseline (the PR #3120 instrumentation caveat).
+#[derive(Default)]
+pub struct CacheAttribution {
+    /// Served from the per-thread L1 cache (lock-free).
+    pub l1_hits: AtomicU64,
+    /// Served from the shared sharded L2 cache.
+    pub l2_hits: AtomicU64,
+    /// Fell through both tiers to the inner source.
+    pub misses: AtomicU64,
+    /// Wall-clock nanoseconds spent inside `inner.lookup_parents` on misses.
+    pub inner_lookup_nanos: AtomicU64,
+}
+
+impl CacheAttribution {
+    /// Render `key=value` diagnostic lines in the same stderr style the
+    /// benchmark `main` already emits (`load_ms=...`, `query_ms=...`).
+    pub fn report_lines(&self) -> Vec<String> {
+        let l1 = self.l1_hits.load(Ordering::Relaxed);
+        let l2 = self.l2_hits.load(Ordering::Relaxed);
+        let miss = self.misses.load(Ordering::Relaxed);
+        let total = l1 + l2 + miss;
+        let inner_ns = self.inner_lookup_nanos.load(Ordering::Relaxed);
+        let hit_rate = if total > 0 {
+            (l1 + l2) as f64 / total as f64
+        } else {
+            0.0
+        };
+        vec![
+            format!("cache_attr_lookups={}", total),
+            format!("cache_attr_l1_hits={}", l1),
+            format!("cache_attr_l2_hits={}", l2),
+            format!("cache_attr_misses={}", miss),
+            format!("cache_attr_hit_rate={:.4}", hit_rate),
+            format!("cache_attr_inner_lookup_ms={:.3}", inner_ns as f64 / 1.0e6),
+        ]
+    }
+}
+
+/// Process-global attribution sink, initialized once from
+/// `UW_WAM_CACHE_ATTRIBUTION`. `CachedLookup::new` pulls its sink from
+/// here and the benchmark `main` reads the same `Arc` back to print the
+/// report, so construction and surfacing stay decoupled (the cache may be
+/// built deep inside materialisation setup). Returns `None` when disabled.
+static CACHE_ATTRIBUTION: OnceLock<Option<Arc<CacheAttribution>>> = OnceLock::new();
+
+/// Shared attribution sink for this process, or `None` when disabled.
+pub fn cache_attribution() -> Option<Arc<CacheAttribution>> {
+    CACHE_ATTRIBUTION
+        .get_or_init(|| match std::env::var("UW_WAM_CACHE_ATTRIBUTION") {
+            Ok(v) if !v.is_empty() && v != "0" => Some(Arc::new(CacheAttribution::default())),
+            _ => None,
+        })
+        .clone()
+}
+
 /// R8: Decorator over any `LookupSource` that adds a bounded
 /// per-key result cache. Implements `LookupSource` itself so the
 /// kernel can't tell whether it's hitting a cache or the underlying
@@ -82,6 +153,8 @@ pub struct CachedLookup<S: LookupSource> {
     inner: S,
     shards: Vec<Mutex<CacheShard>>,
     cap_per_shard: usize,
+    /// Opt-in runtime attribution sink; `None` keeps the hot path clean.
+    attribution: Option<Arc<CacheAttribution>>,
 }
 
 struct CacheShard {
@@ -107,13 +180,26 @@ impl<S: LookupSource> CachedLookup<S> {
                 order: VecDeque::with_capacity(cap_per_shard),
             }))
             .collect();
-        CachedLookup { inner, shards, cap_per_shard }
+        CachedLookup { inner, shards, cap_per_shard, attribution: cache_attribution() }
     }
 
     #[inline]
     fn shard_for(&self, key: i32) -> &Mutex<CacheShard> {
         let idx = (key as u32 as usize) % self.shards.len();
         &self.shards[idx]
+    }
+
+    /// Attach an explicit attribution sink (used by tests and by callers
+    /// that enable attribution programmatically rather than via the env
+    /// var). Overrides whatever `new` resolved from the global.
+    pub fn with_attribution(mut self, sink: Arc<CacheAttribution>) -> Self {
+        self.attribution = Some(sink);
+        self
+    }
+
+    /// The attribution sink in effect for this cache, if any.
+    pub fn attribution_sink(&self) -> Option<Arc<CacheAttribution>> {
+        self.attribution.clone()
     }
 }
 
@@ -144,6 +230,9 @@ impl<S: LookupSource> LookupSource for CachedLookup<S> {
             Some((k, v)) if *k == key => Some(v.clone()),
             _ => None,
         }) {
+            if let Some(a) = &self.attribution {
+                a.l1_hits.fetch_add(1, Ordering::Relaxed);
+            }
             return hit;
         }
         // L2 fast path: shared sharded cache hit. Clone the cached Vec
@@ -154,11 +243,26 @@ impl<S: LookupSource> LookupSource for CachedLookup<S> {
                 shard.map.get(&key).cloned()
             };
             match cached {
-                Some(vs) => vs,
+                Some(vs) => {
+                    if let Some(a) = &self.attribution {
+                        a.l2_hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    vs
+                }
                 None => {
                     // Miss: fetch from inner without holding the shard
                     // lock, then re-acquire and insert (FIFO eviction).
-                    let vs = self.inner.lookup_parents(key);
+                    let vs = match &self.attribution {
+                        Some(a) => {
+                            a.misses.fetch_add(1, Ordering::Relaxed);
+                            let t = Instant::now();
+                            let r = self.inner.lookup_parents(key);
+                            a.inner_lookup_nanos
+                                .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                            r
+                        }
+                        None => self.inner.lookup_parents(key),
+                    };
                     let mut shard = self.shard_for(key).lock().unwrap();
                     if !shard.map.contains_key(&key) {
                         if shard.map.len() >= self.cap_per_shard {
@@ -318,6 +422,14 @@ pub enum StackEntry {
 /// WAM virtual machine state.
 /// Mirrors wam_state(PC, Regs, Stack, Heap, Trail, CP, ChoicePoints, Code, Labels)
 /// from wam_runtime.pl.
+///
+/// `Clone` (every field is Clone: Arc/Vec/HashMap/FxMap/Option/scalars) enables
+/// the T7 parallel-aggregate substrate to fork an independent machine per worker
+/// — a WAM machine is mutable shared state, so each branch must run on its own
+/// clone (see rust_runtime/par_aggregate.rs). The static assertion below pins
+/// both `Clone` and `Send` (the `stack: Arc<…>` field, not `Rc`, is what keeps
+/// the machine `Send`).
+#[derive(Clone)]
 pub struct WamState {
     /// Program counter (1-indexed, 0 = halt).
     pub pc: usize,
@@ -359,6 +471,9 @@ pub struct WamState {
     pub foreign_string_configs: HashMap<String, String>,
     /// Foreign predicate usize configs keyed by "name/arity#config".
     pub foreign_usize_configs: HashMap<String, usize>,
+    /// Foreign predicate f64 configs keyed by "name/arity#config"
+    /// (e.g. the bidirectional kernel step costs and budget).
+    pub foreign_f64_configs: HashMap<String, f64>,
     /// Foreign predicate result layouts keyed by "name/arity".
     /// Layouts are encoded as "tuple:N".
     pub foreign_result_layouts: HashMap<String, String>,
@@ -388,6 +503,47 @@ pub struct WamState {
     /// whole branch is skipped (and a node absent from the table can't reach
     /// root at all). Empty = prune disabled (default). Never changes results.
     pub min_dist: FxMap<i32, i32>,
+    /// Boundary distribution cache (P2): node -> path-length histogram of
+    /// node->root paths (counts indexed by length). When non-empty, the
+    /// boundary kernel splices the cached suffix at these nodes instead of
+    /// re-enumerating node->root — turning exponential path enumeration into a
+    /// histogram splice. Empty = boundary mode off (default).
+    pub boundary_suffix: FxMap<u32, Vec<u64>>,
+    /// Functional-payload side-table (graph-functional-semiring increment 1c): node ->
+    /// the `node->root` moment jet `(mass, m1, m2)` and support interval `(min, max)`,
+    /// propagated WITHOUT the histogram. Budget-free (exact on the acyclic ancestor
+    /// space). A query splices these (`δ_depth ⊗ jet_B`) to read out mean/variance and
+    /// the `d_eff` bracket, or reconstruct a Normal — never forming the histogram.
+    pub boundary_jet: FxMap<u32, (crate::boundary_cache::MomentJet, crate::boundary_cache::Interval)>,
+    /// Distance boundary cache (increment 2c): boundary node -> its shortest hop-distance
+    /// to root (`dist(B->root)`, the min-plus closure). A shortest-path query walks
+    /// `seed->boundary`, stops at a cached `B`, and adds this cached suffix — the ALT
+    /// landmark splice. Cycle-correct (built from `min_distance_closure`, not the DFS
+    /// recurrence). Empty = distance boundary mode off.
+    pub boundary_dist: FxMap<u32, u32>,
+    /// Pre-weighted boundary basis (P4): node -> the `weighted_power(N)` basis
+    /// vector `g_B[a] = sum_b H_node->root[b] * (a+b)^(-N)` for prefix length
+    /// `a = 0..=max_depth`. A query reaching this node at prefix depth `a` adds
+    /// `g_B[a]` to WeightSum directly — a fixed-length dot-product splice that
+    /// skips the histogram convolution and the final powf loop, for a fixed
+    /// functional. Smaller (one f64 vector of length <= max_depth+1 vs a
+    /// variable-support histogram) and faster. Empty = basis mode off.
+    pub boundary_basis_wp: FxMap<u32, Vec<f64>>,
+    /// Descendant-sketch cache (IC semantic similarity): node -> its KMV descendant sketch
+    /// (`descendant_minhash`), the dedup-by-construction handle on `|desc(node)|`. Built once
+    /// by `build_descendant_sketches`; the `category_resnik`/`category_lin`/`category_faith`
+    /// read-outs use it for the information content of the most informative common ancestor.
+    /// `desc_sketch_n` is the node count `N` (for `IC = -log2(|desc|/N)`), `desc_sketch_k` the
+    /// sketch width. Empty = IC similarity off (default). Eager-edge only (needs `ffi_facts`).
+    pub desc_sketch: std::collections::HashMap<u32, Vec<u64>>,
+    pub desc_sketch_n: usize,
+    pub desc_sketch_k: usize,
+    /// Designated-bridge landmark fields (roadmap 3f): bridge `B` -> `d(·→B)`, the up-distance
+    /// from every descendant of `B` to `B`. Built once by `build_caret_landmarks`; the
+    /// `category_caret_through_bridge` / `category_caret_min_over_landmarks` read-outs then
+    /// answer the designated-bridge caret in O(1) per pair instead of a per-query BFS. Empty =
+    /// landmark caret off (default). Eager-edge only.
+    pub caret_landmarks: std::collections::HashMap<u32, std::collections::HashMap<u32, u32>>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -418,7 +574,31 @@ pub struct WamState {
     pub aggregate_acc: Vec<Value>,
     /// Return PC stored by end_aggregate for aggregate-frame finalization.
     pub aggregate_return_pc: usize,
+    /// ISO exception ball: set by throw/1, propagated by the run loop
+    /// (a failing step with a ball pending aborts instead of
+    /// backtracking), consumed by the nearest catch/3 whose catcher
+    /// unifies. None = no exception in flight.
+    pub thrown_ball: Option<Value>,
 }
+
+/// T7 prerequisite: the WAM machine must be `Clone` (fork a machine per parallel
+/// worker) and `Send + Sync` (move clones to, and share the base across, worker
+/// threads). `Value` must likewise be `Send + Sync` (solutions cross threads).
+/// Compile-time assertion — if a future field breaks any of these, the generated
+/// project fails to compile here with a clear pointer rather than deep inside the
+/// parallel substrate.
+const _: () = {
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+    fn _assert_clone<T: Clone>() {}
+    fn _wam_state_is_forkable() {
+        _assert_send::<WamState>();
+        _assert_sync::<WamState>();
+        _assert_clone::<WamState>();
+        _assert_send::<crate::value::Value>();
+        _assert_sync::<crate::value::Value>();
+    }
+};
 
 /// Resolved edge accessor. The category-edge predicate is a CONSTANT for a
 /// whole query, so it is resolved ONCE (`resolve_edge_accessor`) and the
@@ -433,6 +613,35 @@ pub enum EdgeAccessor<'a> {
     Lazy(&'a Arc<dyn LookupSource>),
     /// Predicate not registered in either path.
     Empty,
+}
+
+/// Result of a top-down boundary precompute sweep (build_boundary_suffix_sweep).
+/// `computed` = node histograms evaluated; `retained` = band entries installed in
+/// the side-table; `evicted` = dead interior entries dropped under budget pressure;
+/// `peak_resident` = max simultaneous memo entries (the working-set high-water mark);
+/// `stopped_early` = the live budget forced stop-at-depth before the whole cone was
+/// swept; `spilled` = live entries written to a `SpillSink` under pressure (the
+/// non-default spill fallback, instead of stop-at-depth).
+/// See WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8a/§8b.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BoundarySweepStats {
+    pub computed: usize,
+    pub retained: usize,
+    pub evicted: usize,
+    pub peak_resident: usize,
+    pub stopped_early: bool,
+    pub spilled: usize,
+}
+
+/// Sink for **spilling** a live boundary histogram out of memory during the
+/// precompute sweep, then reloading it on demand — the non-default storage fallback
+/// for when the live (non-evictable) frontier exceeds its budget (spec §8b:
+/// spill-and-continue instead of stop-at-depth). Implementations: an in-memory map
+/// (testing / RAM overflow) or the LMDB `boundary_spill` sub-db
+/// (`LmdbFactSource`). Spill is OFF unless a sink is supplied.
+pub trait SpillSink {
+    fn spill_put(&mut self, node: u32, hist: &[u64]);
+    fn spill_get(&mut self, node: u32) -> Option<Vec<u64>>;
 }
 
 impl WamState {
@@ -457,6 +666,7 @@ impl WamState {
             foreign_native_kinds: HashMap::new(),
             foreign_string_configs: HashMap::new(),
             foreign_usize_configs: HashMap::new(),
+            foreign_f64_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
             lazy_lookups: HashMap::new(),
@@ -465,6 +675,14 @@ impl WamState {
             int_native_edges: false,
             demand_set: FxSet::default(),
             min_dist: FxMap::default(),
+            boundary_suffix: FxMap::default(),
+            boundary_jet: FxMap::default(),
+            boundary_dist: FxMap::default(),
+            boundary_basis_wp: FxMap::default(),
+            desc_sketch: std::collections::HashMap::new(),
+            desc_sketch_n: 0,
+            desc_sketch_k: 0,
+            caret_landmarks: std::collections::HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -474,6 +692,7 @@ impl WamState {
             backtrack_count: 0,
             aggregate_acc: Vec::new(),
             aggregate_return_pc: 0,
+            thrown_ball: None,
         }
     }
 
@@ -609,6 +828,18 @@ impl WamState {
             .copied()
     }
 
+    /// Register an f64 configuration entry for a foreign predicate.
+    pub fn register_foreign_f64_config(&mut self, pred: &str, key: &str, value: f64) {
+        self.foreign_f64_configs.insert(format!("{}#{}", pred, key), value);
+    }
+
+    /// Fetch an f64 configuration entry for a foreign predicate.
+    pub fn foreign_f64_config(&self, pred: &str, key: &str) -> Option<f64> {
+        self.foreign_f64_configs
+            .get(&format!("{}#{}", pred, key))
+            .copied()
+    }
+
     /// Register a tuple layout for a foreign predicate.
     pub fn register_foreign_result_layout(&mut self, pred: &str, layout: &str) {
         self.foreign_result_layouts.insert(pred.to_string(), layout.to_string());
@@ -664,6 +895,987 @@ impl WamState {
     /// used by the kernel's admissible prune. Empty = prune disabled.
     pub fn set_min_dist(&mut self, dist: &HashMap<i32, i32>) {
         self.min_dist = dist.iter().map(|(&k, &v)| (k, v)).collect();
+    }
+
+    /// P2: load a precomputed boundary suffix table (node -> node->root
+    /// path-length histogram). When set, the boundary kernel splices these
+    /// instead of recursing. See WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md.
+    pub fn set_boundary_suffix(&mut self, table: &HashMap<u32, Vec<u64>>) {
+        self.boundary_suffix = table.iter().map(|(&k, v)| (k, v.clone())).collect();
+    }
+
+    /// Enumerate every simple cat_id->root path length (within budget) into a
+    /// histogram (counts indexed by length). Identical walk to
+    /// `collect_native_category_ancestor_hops` — same min_dist prune, same
+    /// `depth+1` emit at root, same `visited.len() >= max_depth` budget — but
+    /// emitting into a histogram and WITHOUT the boundary short-circuit. Used to
+    /// precompute boundary suffix histograms and as the full-enumeration oracle.
+    pub fn enum_ancestor_hist(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, hist: &mut Vec<u64>,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as usize;
+            if hist.len() <= l { hist.resize(l + 1, 0); }
+            hist[l] += 1;
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.enum_ancestor_hist(*parent_id, root_id, visited, max_depth, acc, depth + 1, hist);
+            visited.pop();
+        }
+    }
+
+    /// Boundary-spliced variant of the ancestor walk. Identical to
+    /// `enum_ancestor_hist` except: at a node carrying a cached suffix
+    /// histogram, splice it (shifted by the current `depth`, truncated at
+    /// `max_depth`) and stop instead of recursing — replacing the exponential
+    /// node->root enumeration with an O(budget) histogram add. On a DAG with a
+    /// proper boundary cut this yields exactly the same path-length histogram as
+    /// `enum_ancestor_hist`, so any aggregate (a linear functional of the
+    /// histogram) matches full enumeration. The `d + b <= max_depth` truncation
+    /// mirrors the production `visited.len() >= max_depth` budget at the cut.
+    pub fn collect_native_category_ancestor_boundary_hist(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, hist: &mut Vec<u64>,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        if let Some(suffix) = self.boundary_suffix.get(&cat_id) {
+            let d = depth as usize;
+            for (b, &c) in suffix.iter().enumerate() {
+                let l = d + b;
+                if l <= max_depth && c > 0 {
+                    if hist.len() <= l { hist.resize(l + 1, 0); }
+                    hist[l] += c;
+                }
+            }
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as usize;
+            if hist.len() <= l { hist.resize(l + 1, 0); }
+            hist[l] += 1;
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_boundary_hist(*parent_id, root_id, visited, max_depth, acc, depth + 1, hist);
+            visited.pop();
+        }
+    }
+
+    /// Precompute boundary suffix histograms for `boundary` nodes (each node's
+    /// node->root path-length histogram) via full enumeration, and install them.
+    pub fn build_boundary_suffix(&mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str) {
+        let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+        {
+            let acc = self.resolve_edge_accessor(edge_pred);
+            for &b in boundary {
+                let mut hist: Vec<u64> = vec![];
+                let mut visited: Vec<u32> = vec![b];
+                self.enum_ancestor_hist(b, root_id, &mut visited, max_depth, &acc, 0, &mut hist);
+                table.insert(b, hist);
+            }
+        }
+        self.boundary_suffix = table.into_iter().collect();
+    }
+
+    /// Select the root-near boundary band from the distance-to-root table
+    /// (`min_dist`): every node `n` with `1 <= min_dist(n) <= d_pre`. This is the
+    /// band the boundary-distribution optimization wants (philosophy/spec §3):
+    /// value concentrates near the root, where the cone is largest and reuse
+    /// highest. Requires `min_dist` to be populated (loaded at setup like `s2i`);
+    /// returns an empty band otherwise, which makes the kernel degrade to full
+    /// enumeration (still correct). Excludes the root itself (`min_dist == 0`).
+    ///
+    /// Correctness note: any band is exact for the splice (each node's cached
+    /// suffix is its true node->root histogram and the kernel splices at the FIRST
+    /// band node it reaches, then stops), so the root-near choice is a
+    /// coverage/performance decision, not a correctness one. See
+    /// WAM_RUST_BOUNDARY_DISTRIBUTION_SPECIFICATION.md §8.
+    pub fn boundary_band_root_near(&self, d_pre: usize) -> Vec<u32> {
+        let cap = d_pre as i32;
+        self.min_dist.iter()
+            .filter(|(_, &d)| d >= 1 && d <= cap)
+            .map(|(&n, _)| n as u32)
+            .collect()
+    }
+
+    /// The thin **entry frontier** of the root-near region: nodes with
+    /// `1 <= min_dist <= d_pre` that have at least one child *outside* the region
+    /// (`min_dist > d_pre`, or no `min_dist` at all). These are exactly the nodes a
+    /// path from the periphery *first* reaches when it crosses into the region — and
+    /// since the boundary kernel splices at the first cached node and stops, they
+    /// are the only band nodes a periphery seed ever uses. Caching just this cut
+    /// (instead of the whole `boundary_band_root_near` region) keeps the band from
+    /// growing with the cumulative root-near node count — it scales with the
+    /// region's *surface*, not its *volume* — while serving the same seeds. Interior
+    /// region nodes (never an entry point) are dropped; seeds that start inside the
+    /// region simply enumerate their short cone to the root (cheap). Requires the
+    /// eager edge table to enumerate children; returns the whole region as a
+    /// fallback if the table is absent.
+    pub fn boundary_band_entry_frontier(&self, d_pre: usize, edge_pred: &str) -> Vec<u32> {
+        let cap = d_pre as i32;
+        let parents = match self.ffi_facts.get(edge_pred) {
+            Some(p) => p,
+            None => return self.boundary_band_root_near(d_pre),
+        };
+        let in_region = |id: u32| -> bool {
+            matches!(self.min_dist.get(&(id as i32)), Some(&d) if d >= 1 && d <= cap)
+        };
+        let outside = |id: u32| -> bool {
+            match self.min_dist.get(&(id as i32)) {
+                Some(&d) => d > cap,
+                None => true,
+            }
+        };
+        let mut entry: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for (&child, ps) in parents.iter() {
+            if outside(child) {
+                for &p in ps {
+                    if in_region(p) {
+                        entry.insert(p);
+                    }
+                }
+            }
+        }
+        entry.into_iter().collect()
+    }
+
+    /// Convenience: select the root-near band (`<= d_pre` hops from root, via
+    /// `min_dist`) and precompute + install its suffix histograms. A harness calls
+    /// this once at setup, after the graph (edges) and `min_dist` are loaded and
+    /// before queries, to populate the boundary cache the lowered
+    /// category_ancestor_boundary kernel splices against. With an empty `min_dist`
+    /// (no band) it is a no-op and the kernel runs by full enumeration.
+    pub fn build_boundary_suffix_root_near(
+        &mut self, root_id: u32, d_pre: usize, max_depth: usize, edge_pred: &str,
+    ) {
+        let band = self.boundary_band_root_near(d_pre);
+        // Prefer the polynomial shared-memo precompute (eager edges); fall back to
+        // per-node enumeration for the lazy/LMDB path.
+        if !self.build_boundary_suffix_shared(&band, root_id, max_depth, edge_pred) {
+            self.build_boundary_suffix(&band, root_id, max_depth, edge_pred);
+        }
+    }
+
+    /// Collect the band-ENTRY nodes a single seed reaches: walking `seed -> root`,
+    /// the first node on each path with `1 <= min_dist <= d_pre` (where a periphery
+    /// seed crosses into the root-near region). Stops at each entry (the boundary
+    /// kernel would splice there). Read-only; the cheap `seed -> boundary` prefix
+    /// walk, not the expensive `boundary -> root` suffix. Empty `min_dist` -> no
+    /// entries.
+    pub fn boundary_entries_reached(
+        &self, seed: u32, root_id: u32, max_depth: usize, edge_pred: &str, d_pre: usize,
+    ) -> Vec<u32> {
+        let acc = self.resolve_edge_accessor(edge_pred);
+        let mut out: FxMap<u32, ()> = FxMap::default();
+        let mut visited: Vec<u32> = vec![seed];
+        self.collect_boundary_entries(seed, root_id, &mut visited, max_depth, &acc, 0, d_pre, &mut out);
+        out.into_iter().map(|(k, _)| k).collect()
+    }
+
+    fn collect_boundary_entries(
+        &self, node: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, d_pre: usize, out: &mut FxMap<u32, ()>,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(node as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        if let Some(&d) = self.min_dist.get(&(node as i32)) {
+            if d >= 1 && (d as usize) <= d_pre {
+                out.insert(node, ()); // first band node on this path -> an entry; stop.
+                return;
+            }
+        }
+        if visited.len() >= max_depth { return; }
+        let parents = self.edge_parents_via(node, acc);
+        for parent_id in &parents {
+            if *parent_id == root_id { continue; } // reached root without crossing the band
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_boundary_entries(*parent_id, root_id, visited, max_depth, acc, depth + 1, d_pre, out);
+            visited.pop();
+        }
+    }
+
+    /// LAZY (demand-driven) boundary cache: process `seeds`, computing each
+    /// `weighted_power(N)`, but populating `boundary_suffix` **on first demand**
+    /// instead of precomputing the whole band up front. For each seed it finds the
+    /// band-entry nodes it reaches and, for any not yet cached, computes that node's
+    /// `node->root` histogram (`enum_ancestor_hist`) once and memoizes it; then it
+    /// splices through the (growing) cache. So only band nodes the workload actually
+    /// touches are ever computed — the per-query / top-down evaluation strategy
+    /// (RECURRENCE_EVALUATION_STRATEGY: lazy = demand-driven) versus the eager
+    /// `build_boundary_suffix_*` precompute. Results are identical to eager (any
+    /// band is exact for the splice); the win is skipping cold band nodes when the
+    /// workload is sparse. Works on the lazy/LMDB edge path too (enumeration via the
+    /// accessor). Returns one `weighted_power` per seed.
+    pub fn lazy_boundary_weightsum(
+        &mut self, seeds: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        d_pre: usize, n: f64,
+    ) -> Vec<f64> {
+        let mut out = Vec::with_capacity(seeds.len());
+        for &seed in seeds {
+            for b in self.boundary_entries_reached(seed, root_id, max_depth, edge_pred, d_pre) {
+                if !self.boundary_suffix.contains_key(&b) {
+                    let h = {
+                        let acc = self.resolve_edge_accessor(edge_pred);
+                        let mut hist: Vec<u64> = Vec::new();
+                        let mut vis: Vec<u32> = vec![b];
+                        self.enum_ancestor_hist(b, root_id, &mut vis, max_depth, &acc, 0, &mut hist);
+                        hist
+                    };
+                    self.boundary_suffix.insert(b, h);
+                }
+            }
+            let wp = {
+                let acc = self.resolve_edge_accessor(edge_pred);
+                let mut hist: Vec<u64> = Vec::new();
+                let mut vis: Vec<u32> = vec![seed];
+                self.collect_native_category_ancestor_boundary_hist(
+                    seed, root_id, &mut vis, max_depth, &acc, 0, &mut hist);
+                crate::boundary_cache::f_weighted_power(&hist, n)
+            };
+            out.push(wp);
+        }
+        out
+    }
+
+    /// Polynomial precompute: compute each band node's `node->root` suffix histogram
+    /// via the SHARED memoised recurrence `H_v[L] = sum_{p in parents(v)} H_p[L-1]`
+    /// (the proven `boundary_cache::suffix_histogram`), reusing ONE memo across all
+    /// band nodes instead of re-enumerating the upper cone per node. This is the
+    /// "polynomial precompute plus O(budget) splice" the optimization promises
+    /// (philosophy §3): independent `enum_ancestor_hist` per band node recomputes
+    /// the shared upper cone once per node; the shared memo computes each node's `H`
+    /// exactly once. Produces the identical histograms — the min_dist prune in the
+    /// enumeration path only drops paths that cannot reach the root within budget,
+    /// which contribute nothing — so it is interchangeable with `build_boundary_
+    /// suffix` (validated in tests). The shared memo is the substrate the liveness
+    /// eviction of spec §8a/§8b operates on.
+    ///
+    /// Eager-edge only: needs the in-memory parents table (`ffi_facts[edge_pred]`).
+    /// Returns `false` (a no-op) when only a lazy/LMDB source is registered, so the
+    /// caller can fall back to the enumeration precompute.
+    pub fn build_boundary_suffix_shared(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+    ) -> bool {
+        let table: HashMap<u32, Vec<u64>> = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            let mut memo: HashMap<u32, crate::boundary_cache::Hist> = HashMap::new();
+            let mut on_stack: Vec<u32> = Vec::new();
+            let mut t: HashMap<u32, Vec<u64>> = HashMap::new();
+            for &b in boundary {
+                let h = crate::boundary_cache::suffix_histogram(
+                    b, root_id, parents, max_depth, &mut memo, &mut on_stack);
+                t.insert(b, h);
+            }
+            t
+        };
+        self.boundary_suffix = table.into_iter().collect();
+        true
+    }
+
+    /// Functional-payload precompute (increment 1c): per boundary node, the `node->root`
+    /// moment jet `(mass, m1, m2)` and support interval `(min, max)`, propagated by the
+    /// `boundary_cache` recurrences — **never forming the histogram**. Budget-free: exact
+    /// on the acyclic ancestor space (the convergent ancestor direction; the moment law
+    /// needs untruncated convolution). Eager-edge only (needs `ffi_facts[edge_pred]`);
+    /// returns `false` as a no-op when only a lazy source is registered.
+    pub fn build_boundary_jets(
+        &mut self, boundary: &[u32], root_id: u32, edge_pred: &str,
+    ) -> bool {
+        let table: HashMap<u32, (crate::boundary_cache::MomentJet, crate::boundary_cache::Interval)> = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            let mut jmemo = HashMap::new();
+            let mut jstack: Vec<u32> = Vec::new();
+            let mut imemo = HashMap::new();
+            let mut istack: Vec<u32> = Vec::new();
+            let mut t = HashMap::new();
+            for &b in boundary {
+                let j = crate::boundary_cache::suffix_moment_jet(
+                    b, root_id, parents, &mut jmemo, &mut jstack);
+                if let Some(iv) = crate::boundary_cache::suffix_interval(
+                    b, root_id, parents, &mut imemo, &mut istack) {
+                    t.insert(b, (j, iv));
+                }
+            }
+            t
+        };
+        self.boundary_jet = table.into_iter().collect();
+        true
+    }
+
+    /// Query-time splice over the cached moment-jet side-table (`boundary_jet`): walk
+    /// `seed->root`, and at a cached boundary `B` reached by a length-`depth` prefix
+    /// contribute `δ_depth ⊗ jet_B` (union); at a direct root hit contribute `δ_{depth+1}`.
+    /// Accumulates the `seed->root` moment jet and support interval — the functionals,
+    /// never the histogram. Budget-free (the moment law needs untruncated convolution;
+    /// exact on the acyclic ancestor space). The `visited` guard keeps it terminating.
+    pub fn collect_native_category_ancestor_boundary_jet(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>,
+        acc: &EdgeAccessor, depth: i64,
+        jet: &mut crate::boundary_cache::MomentJet,
+        iv: &mut Option<crate::boundary_cache::Interval>,
+    ) {
+        use crate::boundary_cache::{Interval, MomentJet};
+        let push_iv = |iv: &mut Option<Interval>, x: Interval| {
+            *iv = Some(match *iv { Some(a) => a.union(x), None => x });
+        };
+        if let Some(&(b_jet, b_iv)) = self.boundary_jet.get(&cat_id) {
+            let d = depth as u32;
+            *jet = jet.union(MomentJet::delta(d).convolve(b_jet));
+            push_iv(iv, Interval { min: b_iv.min + d, max: b_iv.max + d });
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as u32;
+            *jet = jet.union(MomentJet::delta(l));
+            push_iv(iv, Interval::point(l));
+        }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_boundary_jet(
+                *parent_id, root_id, visited, acc, depth + 1, jet, iv);
+            visited.pop();
+        }
+    }
+
+    /// Distance boundary precompute (increment 2c): cache `dist(B->root)` — the shortest
+    /// hop-distance — for each boundary node `B`, via the **min-plus closure**
+    /// (`min_distance_closure`), so it is correct even if the graph has cycles (unlike the
+    /// DFS recurrences). Eager-edge only; returns `false` as a no-op when only a lazy
+    /// source is registered.
+    pub fn build_boundary_distances(
+        &mut self, boundary: &[u32], root_id: u32, edge_pred: &str,
+    ) -> bool {
+        let dist = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::min_distance_closure(root_id, parents)
+        };
+        self.boundary_dist = boundary.iter()
+            .filter_map(|&b| dist.get(&b).map(|&d| (b, d)))
+            .collect();
+        true
+    }
+
+    /// Shortest `seed->root` hop-distance via the distance boundary cache: a breadth-first
+    /// search from `seed` over `parents` that **stops at a cached boundary** `B` and adds
+    /// the cached suffix `dist(B->root)` (the ALT landmark splice), and also takes any
+    /// path that reaches the root directly. BFS visit order gives the shortest `seed->B`
+    /// for unit edges, so the minimum candidate is the true shortest distance — and the
+    /// cache prunes the whole `B->root` cone from the search. Returns `None` if the root
+    /// is unreachable. With an empty `boundary_dist` it degrades to a plain BFS (still
+    /// correct), so it is safe by default.
+    pub fn category_ancestor_boundary_distance(
+        &self, seed: u32, root: u32, acc: &EdgeAccessor,
+    ) -> Option<u32> {
+        use std::collections::{HashSet, VecDeque};
+        let mut best: Option<u32> = None;
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut q: VecDeque<(u32, u32)> = VecDeque::new();
+        seen.insert(seed);
+        q.push_back((seed, 0));
+        while let Some((node, d)) = q.pop_front() {
+            if node == root {
+                best = Some(best.map_or(d, |b| b.min(d)));
+                continue;
+            }
+            if let Some(&suffix) = self.boundary_dist.get(&node) {
+                let cand = d + suffix;
+                best = Some(best.map_or(cand, |b| b.min(cand)));
+                continue; // splice the cached suffix; do not expand the B->root cone
+            }
+            for p in self.edge_parents_via(node, acc) {
+                if seen.insert(p) {
+                    q.push_back((p, d + 1));
+                }
+            }
+        }
+        best
+    }
+
+    /// Between-nodes **composite caret** distance (increment 3b): the exact `∧`-distance
+    /// `u ↑ B ↓ v` through the lowest common ancestor, `min_B (dist(u→B) + dist(v→B))`, by
+    /// a joint upward BFS from `u` and `v` over the live edge accessor. The undirected
+    /// "how related are these two nodes" answer — exact on a tree (the cophenetic
+    /// distance), a certified upper bound on a DAG. `None` if `u` and `v` share no
+    /// ancestor. (Cache-free; the boundary `min_dist` table only gives the looser
+    /// root-bridge bound `dist(u→root) + dist(v→root)`.)
+    ///
+    /// The joint search is **boundary-restricted**: rather than build both ancestor cones up
+    /// to the root and intersect, it expands the two BFSs in lockstep by radius `r` and stops
+    /// at the **mixing boundary** (the lowest common ancestors) once the best matched sum
+    /// `≤ r+1` — any unmatched common ancestor has far-side depth `≥ r+1`, so it cannot beat
+    /// the best. On a tall narrow cone with a low fork this touches a handful of nodes where
+    /// the full-cone search would walk the whole stem to root; it equals the full caret
+    /// everywhere (the library `caret_distance_lca` is the oracle). See
+    /// `caret_distance_lca_boundary` in `boundary_cache` for the proof and the static-graph
+    /// version. (Worst-case node-visits is still `O(V+E)` for wide upward frontiers.)
+    pub fn category_caret_distance(&self, u: u32, v: u32, acc: &EdgeAccessor) -> Option<u32> {
+        self.category_caret_distance_counted(u, v, acc).0
+    }
+
+    /// As `category_caret_distance`, also returning the **number of nodes visited** — the
+    /// measure that shows the boundary search never climbs above the common-ancestor space.
+    pub fn category_caret_distance_counted(
+        &self, u: u32, v: u32, acc: &EdgeAccessor,
+    ) -> (Option<u32>, usize) {
+        use std::collections::{HashMap, HashSet};
+        let mut du: HashMap<u32, u32> = HashMap::new();
+        let mut dv: HashMap<u32, u32> = HashMap::new();
+        du.insert(u, 0);
+        dv.insert(v, 0);
+        let mut fu: Vec<u32> = vec![u]; // u-side frontier at depth r
+        let mut fv: Vec<u32> = vec![v];
+        let mut best: Option<u32> = None;
+        let relax = |best: &mut Option<u32>, s: u32| {
+            *best = Some(best.map_or(s, |x| x.min(s)));
+        };
+        // r = 0: only u == v matches here (sum 0); strict-ancestor pairs match later as the
+        // far side climbs.
+        if let Some(&b) = dv.get(&u) { relax(&mut best, b); }
+        if let Some(&a) = du.get(&v) { relax(&mut best, a); }
+        let mut r = 0u32;
+        loop {
+            if let Some(bst) = best {
+                if bst <= r + 1 { break; } // no unmatched ancestor can have sum < r+1
+            }
+            if fu.is_empty() && fv.is_empty() { break; }
+            let mut nu: Vec<u32> = Vec::new();
+            for &x in &fu {
+                for p in self.edge_parents_via(x, acc) {
+                    if !du.contains_key(&p) {
+                        du.insert(p, r + 1);
+                        nu.push(p);
+                        if let Some(&b) = dv.get(&p) { relax(&mut best, (r + 1) + b); }
+                    }
+                }
+            }
+            let mut nv: Vec<u32> = Vec::new();
+            for &x in &fv {
+                for p in self.edge_parents_via(x, acc) {
+                    if !dv.contains_key(&p) {
+                        dv.insert(p, r + 1);
+                        nv.push(p);
+                        if let Some(&a) = du.get(&p) { relax(&mut best, a + (r + 1)); }
+                    }
+                }
+            }
+            fu = nu;
+            fv = nv;
+            r += 1;
+        }
+        let mut visited: HashSet<u32> = du.keys().copied().collect();
+        for k in dv.keys() { visited.insert(*k); }
+        (best, visited.len())
+    }
+
+    /// Precompute the **descendant sketches** for IC semantic similarity (Resnik/Lin/FaITH):
+    /// run `descendant_minhash` over the eager `edge_pred` graph and cache a fixed-`k` KMV
+    /// sketch of every node's descendant cone, plus the node count `N`. A harness calls this
+    /// once at setup; the `category_resnik`/`category_lin`/`category_faith` read-outs then reuse
+    /// it. Returns `false` (no-op) if `edge_pred` has no eager facts or the graph has a cycle
+    /// (no reverse-topo order). Eager-edge only.
+    pub fn build_descendant_sketches(&mut self, edge_pred: &str, k: usize) -> bool {
+        let sketch = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            match crate::boundary_cache::descendant_minhash(parents, k) {
+                Some(s) => s,
+                None => return false, // cyclic graph
+            }
+        };
+        self.desc_sketch_n = sketch.len(); // descendant_minhash sketches every node => N
+        self.desc_sketch = sketch;
+        self.desc_sketch_k = k;
+        true
+    }
+
+    /// **Resnik** semantic similarity `IC(MICA(u,v))` over the eager `edge_pred` graph, using
+    /// the cached descendant sketches (`build_descendant_sketches`). `None` if the sketches are
+    /// not built, `edge_pred` is unknown, or `u`,`v` share no ancestor. See
+    /// `boundary_cache::resnik_similarity` (this is its live, cache-backed entry point; the
+    /// MICA search is a per-query `O(V+E)` ancestor BFS).
+    pub fn category_resnik(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::resnik_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// **Lin** semantic similarity `2·IC(MICA)/(IC(u)+IC(v)) ∈ [0,1]` over the eager `edge_pred`
+    /// graph, using the cached descendant sketches. `None` if unbuilt, `edge_pred` unknown,
+    /// `u`,`v` share no ancestor, or both are the root. See `boundary_cache::lin_similarity`.
+    pub fn category_lin(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::lin_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// **FaITH** semantic similarity `IC(MICA)/(IC(u)+IC(v)−IC(MICA)) ∈ [0,1]` (the
+    /// Jiang–Conrath-faithful sibling of Lin) over the eager `edge_pred` graph, using the
+    /// cached descendant sketches. Same `None` conditions as `category_lin`. See
+    /// `boundary_cache::faith_similarity`.
+    pub fn category_faith(&self, u: u32, v: u32, edge_pred: &str) -> Option<f64> {
+        if self.desc_sketch.is_empty() { return None; }
+        let parents = self.ffi_facts.get(edge_pred)?;
+        crate::boundary_cache::faith_similarity(
+            u, v, parents, &self.desc_sketch, self.desc_sketch_n, self.desc_sketch_k)
+    }
+
+    /// Precompute the **designated-bridge landmark fields** (roadmap 3f): one downward
+    /// distance field `d(·→B)` per bridge in `bridges`, over the eager `edge_pred` graph
+    /// (`bridge_distance_fields`). A harness calls this once at setup after picking the
+    /// designated bridges (e.g. the convergence hubs of §5c); `category_caret_through_bridge`
+    /// and `category_caret_min_over_landmarks` then answer in O(1) / O(#bridges) per pair.
+    /// Returns `false` (no-op) if `edge_pred` has no eager facts. Eager-edge only.
+    pub fn build_caret_landmarks(&mut self, bridges: &[u32], edge_pred: &str) -> bool {
+        let fields = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::bridge_distance_fields(bridges, parents)
+        };
+        self.caret_landmarks = fields;
+        true
+    }
+
+    /// O(1) designated-bridge caret `d(u→B) + d(v→B)` via the cached landmark field for `B`
+    /// (`build_caret_landmarks`). `None` if `B` is not a cached landmark, or either node is not
+    /// a descendant of `B`. Equals `category_caret_distance` *through that fixed bridge* — the
+    /// cache-backed entry point for `boundary_cache::caret_through_bridge`.
+    pub fn category_caret_through_bridge(&self, u: u32, v: u32, bridge: u32) -> Option<u32> {
+        let field = self.caret_landmarks.get(&bridge)?;
+        crate::boundary_cache::caret_through_bridge_cached(u, v, field)
+    }
+
+    /// The **quantized-LCA caret over the cached landmarks**: the minimum cached
+    /// designated-bridge caret over all landmarks (`build_caret_landmarks`). With the landmarks
+    /// chosen as the convergence hubs, this is `caret_min_over_hubs` realized at O(#landmarks)
+    /// table lookups per pair (no per-query BFS). `None` if no landmark bridges both nodes.
+    pub fn category_caret_min_over_landmarks(&self, u: u32, v: u32) -> Option<u32> {
+        crate::boundary_cache::caret_min_over_cached_bridges(u, v, &self.caret_landmarks)
+    }
+
+    /// Directed shortest `u → target` hop-distance (following parent edges, so `target`
+    /// must be an ancestor of `u`), via **A\* with the ALT landmark heuristic**
+    /// `h(n) = max(0, min_dist[n] − min_dist[target])` from the loaded distance-to-root
+    /// table (`set_min_dist`) — admissible (and consistent) because `n→target→root` bounds
+    /// `dist(n→root)`. With an empty `min_dist` the heuristic is 0, so it degrades to a
+    /// plain uniform-cost search (Dijkstra/BFS) — still correct. `None` if `target` is not
+    /// reachable upward from `u`. The boundary distance cache (increment 2) is the
+    /// landmark; this is its A* consumer.
+    pub fn category_ancestor_astar(&self, u: u32, target: u32, acc: &EdgeAccessor) -> Option<u32> {
+        self.category_ancestor_astar_counted(u, target, acc).0
+    }
+
+    /// As `category_ancestor_astar`, also returning the **number of nodes expanded** — the
+    /// canonical A\* effectiveness measure. With `min_dist` loaded the heuristic prunes
+    /// suboptimal branches; with an empty `min_dist` (`h = 0`) it is plain Dijkstra, the
+    /// baseline. The heuristic is **exact where `target` dominates the path to root** (then
+    /// it prunes hard) and a loose lower bound across branches that bypass `target` (where
+    /// it cannot prune — a single root landmark is behind an ancestor target). A closed set
+    /// gives each node one expansion (valid: the heuristic is consistent).
+    pub fn category_ancestor_astar_counted(
+        &self, u: u32, target: u32, acc: &EdgeAccessor,
+    ) -> (Option<u32>, usize) {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap, HashSet};
+        let heuristic = |n: u32| -> u32 {
+            if self.min_dist.is_empty() { return 0; }
+            match (self.min_dist.get(&(n as i32)), self.min_dist.get(&(target as i32))) {
+                (Some(&dn), Some(&dt)) => (dn - dt).max(0) as u32,
+                _ => 0,
+            }
+        };
+        let mut g: HashMap<u32, u32> = HashMap::new();
+        let mut closed: HashSet<u32> = HashSet::new();
+        let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // (f = g+h, node)
+        let mut expansions = 0usize;
+        g.insert(u, 0);
+        heap.push(Reverse((heuristic(u), u)));
+        while let Some(Reverse((_f, node))) = heap.pop() {
+            if !closed.insert(node) { continue; } // stale heap entry — already expanded
+            expansions += 1;
+            let gn = g[&node];
+            if node == target { return (Some(gn), expansions); } // consistent h: optimal
+            for p in self.edge_parents_via(node, acc) {
+                let gp = gn + 1;
+                if gp < *g.get(&p).unwrap_or(&u32::MAX) {
+                    g.insert(p, gp);
+                    heap.push(Reverse((gp + heuristic(p), p)));
+                }
+            }
+        }
+        (None, expansions)
+    }
+
+    /// Top-down boundary precompute with the liveness-prioritised eviction of spec
+    /// §8a/§8b. Processes the band's ancestor cone in topological order from the
+    /// root (`H_root = delta_0`, `H_v[L] = sum_{p in parents(v)} H_p[L-1]`), tracking
+    /// a per-node consumer count `refs(p)` so a node becomes **dead** once all its
+    /// in-cone children are computed. Two budgets bound the working set:
+    ///
+    /// - `evict_budget` (0 = unlimited): max resident memo entries. When exceeded,
+    ///   evict **dead interior** nodes (`refs == 0`, not in the band) **deepest-first**
+    ///   — root-near distributions are the most-reused hubs, kept longest. A dead
+    ///   node has no future reader in this sweep, so eviction never changes a result.
+    /// - `live_budget` (0 = unlimited): max **live** frontier (`refs > 0`) entries.
+    ///   When exceeded there is nothing droppable, so the sweep **stops deepening**
+    ///   (`stopped_early`), freezing `D_pre` at the current frontier; band nodes not
+    ///   yet computed are simply left uncached and fall back to enumeration at query
+    ///   time (still correct).
+    ///
+    /// Band node histograms are installed in `boundary_suffix`. Eager-edge only;
+    /// returns `None` (no-op) when only a lazy/LMDB source is registered.
+    pub fn build_boundary_suffix_sweep(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize,
+    ) -> Option<BoundarySweepStats> {
+        self.boundary_sweep_impl(boundary, root_id, max_depth, edge_pred, evict_budget, live_budget, None)
+    }
+
+    /// Like `build_boundary_suffix_sweep`, but the NON-DEFAULT spill fallback: when
+    /// the **live** frontier exceeds `live_budget`, instead of stop-at-depth the
+    /// sweep SPILLS live entries to `spill` (deepest-first) and CONTINUES, reloading
+    /// each on demand when a child consumes it (spec §8b: spill-and-continue). So the
+    /// whole cone is swept even when the frontier does not fit in memory — at the
+    /// cost of `spill` round-trips. `spilled` counts the writes; `stopped_early` stays
+    /// false. Results are identical to the unbudgeted sweep (spill is exact paging).
+    pub fn build_boundary_suffix_sweep_with_spill(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize, spill: &mut dyn SpillSink,
+    ) -> Option<BoundarySweepStats> {
+        self.boundary_sweep_impl(boundary, root_id, max_depth, edge_pred, evict_budget, live_budget, Some(spill))
+    }
+
+    fn boundary_sweep_impl(
+        &mut self, boundary: &[u32], root_id: u32, max_depth: usize, edge_pred: &str,
+        evict_budget: usize, live_budget: usize, mut spill: Option<&mut dyn SpillSink>,
+    ) -> Option<BoundarySweepStats> {
+        use std::collections::VecDeque;
+        let (table, stats) = {
+            let parents = self.ffi_facts.get(edge_pred)?;
+            let band: std::collections::HashSet<u32> = boundary.iter().copied().collect();
+
+            // 1. cone = band U all ancestors U root (upward closure via parents).
+            //    Full closure — NOT min_dist-bounded — because a band node's complete
+            //    node->root histogram can include long-detour routes through parents
+            //    whose own shortest distance exceeds the band depth.
+            let mut cone: std::collections::HashSet<u32> = band.iter().copied().collect();
+            cone.insert(root_id);
+            let mut stack: Vec<u32> = boundary.to_vec();
+            while let Some(n) = stack.pop() {
+                if let Some(ps) = parents.get(&n) {
+                    for &p in ps {
+                        if cone.insert(p) { stack.push(p); }
+                    }
+                }
+            }
+
+            // 2. in-cone children, in-degree, consumer counts (refs).
+            let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+            let mut indeg: HashMap<u32, usize> = HashMap::new();
+            for &v in &cone { indeg.entry(v).or_insert(0); }
+            for &v in &cone {
+                if let Some(ps) = parents.get(&v) {
+                    for &p in ps {
+                        if cone.contains(&p) {
+                            children.entry(p).or_default().push(v);
+                            *indeg.get_mut(&v).unwrap() += 1;
+                        }
+                    }
+                }
+            }
+            let mut refs: HashMap<u32, usize> =
+                cone.iter().map(|&p| (p, children.get(&p).map_or(0, |c| c.len()))).collect();
+
+            // 3. Kahn topological sweep from the root.
+            let mut memo: HashMap<u32, Vec<u64>> = HashMap::new();
+            let mut spilled: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            let mut depth: HashMap<u32, usize> = HashMap::new();
+            let mut dead: Vec<u32> = Vec::new();
+            let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+            let mut stats = BoundarySweepStats::default();
+            let mut rem_indeg = indeg.clone();
+            let mut ready: VecDeque<u32> = VecDeque::new();
+            for (&v, &d) in &indeg { if d == 0 { ready.push_back(v); } }
+            depth.insert(root_id, 0);
+
+            while let Some(v) = ready.pop_front() {
+                // compute H_v from its in-cone parents (all resident by topo order).
+                let h: Vec<u64> = if v == root_id {
+                    vec![1]
+                } else {
+                    let mut out: Vec<u64> = Vec::new();
+                    let mut dmin = usize::MAX;
+                    if let Some(ps) = parents.get(&v) {
+                        for &p in ps {
+                            if !cone.contains(&p) { continue; }
+                            if let Some(&pd) = depth.get(&p) { dmin = dmin.min(pd + 1); }
+                            if let Some(ph) = memo.get(&p) {
+                                for (l, &c) in ph.iter().enumerate() {
+                                    let l2 = l + 1;
+                                    if l2 <= max_depth {
+                                        if out.len() <= l2 { out.resize(l2 + 1, 0); }
+                                        out[l2] += c;
+                                    }
+                                }
+                            } else if spilled.contains(&p) {
+                                // a spilled live parent: reload from the sink for this child.
+                                if let Some(ph) = spill.as_deref_mut().and_then(|s| s.spill_get(p)) {
+                                    for (l, &c) in ph.iter().enumerate() {
+                                        let l2 = l + 1;
+                                        if l2 <= max_depth {
+                                            if out.len() <= l2 { out.resize(l2 + 1, 0); }
+                                            out[l2] += c;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if dmin != usize::MAX { depth.insert(v, dmin); }
+                    out
+                };
+                stats.computed += 1;
+                memo.insert(v, h.clone());
+                stats.peak_resident = stats.peak_resident.max(memo.len());
+                if band.contains(&v) {
+                    table.insert(v, h);
+                    stats.retained += 1;
+                }
+
+                // v has now consumed its parents -> decrement their refs.
+                if let Some(ps) = parents.get(&v) {
+                    for &p in ps {
+                        if !cone.contains(&p) { continue; }
+                        if let Some(r) = refs.get_mut(&p) {
+                            if *r > 0 { *r -= 1; }
+                            if *r == 0 && !band.contains(&p) && memo.contains_key(&p) {
+                                dead.push(p);
+                            }
+                        }
+                    }
+                }
+
+                // enqueue children that become ready.
+                if let Some(cs) = children.get(&v) {
+                    let cs = cs.clone();
+                    for c in cs {
+                        if let Some(r) = rem_indeg.get_mut(&c) {
+                            if *r > 0 { *r -= 1; }
+                            if *r == 0 { ready.push_back(c); }
+                        }
+                    }
+                }
+
+                // eviction: drop dead interiors deepest-first while over budget.
+                if evict_budget > 0 {
+                    while memo.len() > evict_budget {
+                        while let Some(&d) = dead.last() {
+                            if !memo.contains_key(&d) { dead.pop(); } else { break; }
+                        }
+                        if dead.is_empty() { break; }
+                        let mut best_i = 0usize;
+                        let mut best_depth = 0usize;
+                        for (i, &dn) in dead.iter().enumerate() {
+                            let dd = depth.get(&dn).copied().unwrap_or(0);
+                            if dd >= best_depth { best_depth = dd; best_i = i; }
+                        }
+                        let victim = dead.swap_remove(best_i);
+                        if memo.remove(&victim).is_some() { stats.evicted += 1; }
+                    }
+                }
+
+                // live-budget recourse: the live (refs>0) frontier cannot be evicted.
+                // With a spill sink, SPILL live entries (deepest-first) and continue;
+                // otherwise stop-at-depth.
+                if live_budget > 0 {
+                    let live_count = |memo: &HashMap<u32, Vec<u64>>| {
+                        refs.iter().filter(|(k, &r)| r > 0 && memo.contains_key(k)).count()
+                    };
+                    if live_count(&memo) > live_budget {
+                        if spill.is_some() {
+                            let mut victims: Vec<u32> = refs.iter()
+                                .filter(|(k, &r)| r > 0 && memo.contains_key(k))
+                                .map(|(&k, _)| k).collect();
+                            victims.sort_by_key(|nd| std::cmp::Reverse(depth.get(nd).copied().unwrap_or(0)));
+                            let mut i = 0;
+                            while live_count(&memo) > live_budget && i < victims.len() {
+                                let victim = victims[i];
+                                i += 1;
+                                if let Some(h) = memo.remove(&victim) {
+                                    if let Some(s) = spill.as_deref_mut() { s.spill_put(victim, &h); }
+                                    spilled.insert(victim);
+                                    stats.spilled += 1;
+                                }
+                            }
+                        } else {
+                            stats.stopped_early = true;
+                            ready.clear();
+                        }
+                    }
+                }
+            }
+            (table, stats)
+        };
+        self.boundary_suffix = table.into_iter().collect();
+        Some(stats)
+    }
+
+    /// Build the pre-weighted `weighted_power(N)` basis (P4) from the current
+    /// `boundary_suffix` histograms: for each cached node B, collapse its
+    /// `node->root` histogram `H_B` into the basis vector
+    /// `g_B[a] = sum_b H_B[b] * (a+b)^(-N)`, for prefix length `a = 0..=max_depth`
+    /// (the L>0 weighted-power filter is automatic — B != root so every suffix
+    /// length `b >= 1`, hence `a+b >= 1`). A query that reaches B at prefix depth
+    /// `a` then adds `g_B[a]` to WeightSum directly. Requires `build_boundary_
+    /// suffix*` to have populated `boundary_suffix` first.
+    ///
+    /// **Budget precondition (the §4a "budget-specialised" mode).** `g_B` bakes the
+    /// path-length budget `max_depth` AND the functional `(N)` into a single scalar
+    /// per prefix length — it sums over suffix lengths `b` with `a+b <= max_depth`.
+    /// So it is valid ONLY for queries with the *same* fixed budget and the *same*
+    /// `N`. It CANNOT serve a query with a different/smaller max path length (those
+    /// suffixes were already summed in) or a different functional — for variable
+    /// budgets or multiple functionals, keep the histogram (`boundary_suffix`),
+    /// which preserves the length breakdown and can be re-truncated per query.
+    /// `g_B` is the fixed-budget, fixed-functional specialisation; the histogram is
+    /// the general form.
+    pub fn build_boundary_basis_weighted_power(&mut self, max_depth: usize, n: f64) {
+        let mut basis: HashMap<u32, Vec<f64>> = HashMap::new();
+        for (&node, hist) in self.boundary_suffix.iter() {
+            let mut g = vec![0.0f64; max_depth + 1];
+            for (b, &c) in hist.iter().enumerate() {
+                if c == 0 { continue; }
+                let cf = c as f64;
+                for a in 0..=max_depth {
+                    let l = a + b;
+                    if l == 0 || l > max_depth { continue; }
+                    g[a] += cf * (l as f64).powf(-n);
+                }
+            }
+            basis.insert(node, g);
+        }
+        self.boundary_basis_wp = basis.into_iter().collect();
+    }
+
+    /// OPT-IN storage-gated compression of the cached `boundary_suffix` histograms
+    /// (P4, the exact->approximate ladder). Applies `boundary_cache::compress_
+    /// histogram` to each entry: the support count `> min_points` is the WORK
+    /// TRIGGER, and acceptance is the `epsilon_k` Kolmogorov certificate (so a kept
+    /// histogram is exact and a compressed one differs by at most `epsilon_k` tail
+    /// mass — making the splice APPROXIMATE within that bound for the affected
+    /// nodes). The cache stays exact unless this is called. Returns
+    /// `(entries_compressed, buckets_removed)`. For typical small-budget boundary
+    /// histograms (support <= budget+1) nothing triggers; this is for large-budget
+    /// / deep-path graphs. Defaults: `DEFAULT_COMPRESS_MIN_POINTS` (50),
+    /// `DEFAULT_COMPRESS_EPSILON_K` (0.001).
+    pub fn compress_boundary_suffix(&mut self, min_points: usize, epsilon_k: f64) -> (usize, usize) {
+        let mut compressed = 0usize;
+        let mut removed = 0usize;
+        let nodes: Vec<u32> = self.boundary_suffix.keys().copied().collect();
+        for node in nodes {
+            let h = self.boundary_suffix.get(&node).cloned().unwrap_or_default();
+            let c = crate::boundary_cache::compress_histogram(&h, min_points, epsilon_k);
+            if c.len() < h.len() {
+                compressed += 1;
+                removed += h.len() - c.len();
+                self.boundary_suffix.insert(node, c);
+            }
+        }
+        (compressed, removed)
+    }
+
+    /// Choose a storage representation (`boundary_cache::choose_representation`) for
+    /// each cached `boundary_suffix` histogram — exact, tail-pruned, binomial, or
+    /// mixture, the cheapest within the `epsilon_k` CDF certificate. The result is
+    /// the persistable form for the `boundary_basis_repr` LMDB sub-db
+    /// (`LmdbFactSource::save_boundary_reprs`); a later run `load_boundary_reprs`
+    /// expands them back to histograms. Does not mutate the in-memory cache.
+    pub fn boundary_suffix_reprs(
+        &self, min_points: usize, epsilon_k: f64,
+    ) -> HashMap<u32, crate::boundary_cache::HistRepr> {
+        self.boundary_suffix.iter()
+            .map(|(&k, h)| (k, crate::boundary_cache::choose_representation(h, min_points, epsilon_k)))
+            .collect()
+    }
+
+    /// Direct `weighted_power(N)` WeightSum via the pre-weighted basis (P4).
+    /// Walks `cat_id -> root` exactly like `collect_native_category_ancestor_
+    /// boundary_hist`, but instead of building a histogram it accumulates the
+    /// scalar WeightSum: at a node carrying a `g_B` basis vector, add `g_B[depth]`
+    /// (the dot-product splice) and stop; at the root, add `(depth+1)^(-N)`. With
+    /// an empty basis it degrades to full enumeration of the weighted sum (still
+    /// exact). Returns the same value as
+    /// `f_weighted_power(collect_native_category_ancestor_boundary_hist(..), n)`.
+    pub fn collect_native_category_ancestor_weightsum(
+        &self, cat_id: u32, root_id: u32, visited: &mut Vec<u32>, max_depth: usize,
+        acc: &EdgeAccessor, depth: i64, n: f64, out: &mut f64,
+    ) {
+        if !self.min_dist.is_empty() {
+            match self.min_dist.get(&(cat_id as i32)) {
+                Some(&d) => { if depth + (d as i64) > max_depth as i64 { return; } }
+                None => return,
+            }
+        }
+        if let Some(g) = self.boundary_basis_wp.get(&cat_id) {
+            let a = depth as usize;
+            if a < g.len() {
+                *out += g[a];
+            }
+            return;
+        }
+        let parents = self.edge_parents_via(cat_id, acc);
+        if !visited.contains(&root_id) && parents.contains(&root_id) {
+            let l = (depth + 1) as f64;
+            *out += l.powf(-n);
+        }
+        if visited.len() >= max_depth { return; }
+        for parent_id in &parents {
+            if visited.contains(parent_id) { continue; }
+            visited.push(*parent_id);
+            self.collect_native_category_ancestor_weightsum(
+                *parent_id, root_id, visited, max_depth, acc, depth + 1, n, out);
+            visited.pop();
+        }
     }
 
     /// Enable int-native edge mode: the lazy edge path treats the kernel's
@@ -748,6 +1960,44 @@ impl WamState {
         self.edge_parents_via(cat_id, &acc)
     }
 
+    /// Register interned binary facts directly into `ffi_facts` from
+    /// string pairs. This is the eager fact path the category/bidirectional
+    /// ancestor kernels read via `resolve_edge_accessor`; harnesses and
+    /// tests use it to load small graphs without an LMDB fixture.
+    pub fn register_ffi_fact_pairs(&mut self, pred: &str, pairs: &[(&str, &str)]) {
+        let mut table: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (left, right) in pairs {
+            let lid = self.intern_atom(left);
+            let rid = self.intern_atom(right);
+            table.entry(lid).or_insert_with(Vec::new).push(rid);
+        }
+        self.ffi_facts.insert(pred.to_string(), table);
+    }
+
+    /// Ensure a child-direction (reverse) eager index exists for
+    /// `edge_pred` under the `child_pred` key. No-op when a lazy lookup
+    /// or eager table is already registered for `child_pred`; otherwise
+    /// reverses the eager `edge_pred` table once. Used by the
+    /// bidirectional ancestor kernel so projects with only parent edges
+    /// registered still get a downward direction.
+    pub fn ensure_reverse_edge_index(&mut self, edge_pred: &str, child_pred: &str) {
+        let lazy_key = format!("{}/2", child_pred);
+        if self.lazy_lookups.contains_key(&lazy_key)
+            || self.ffi_facts.contains_key(child_pred)
+        {
+            return;
+        }
+        let mut rev: HashMap<u32, Vec<u32>> = HashMap::new();
+        if let Some(fwd) = self.ffi_facts.get(edge_pred) {
+            for (&child, parents) in fwd {
+                for &p in parents {
+                    rev.entry(p).or_insert_with(Vec::new).push(child);
+                }
+            }
+        }
+        self.ffi_facts.insert(child_pred.to_string(), rev);
+    }
+
     /// True if a structure functor string is one of the interchangeable
     /// cons-cell spellings WAM lists use. Accepts the bare name, an arity
     /// suffix, and the "str(...)" wrapper the heap sometimes carries — i.e.
@@ -776,6 +2026,85 @@ impl WamState {
                 }
             }
             _ => val.clone(),
+        }
+    }
+
+    /// Borrow a register's raw value (no Y-register routing for A/X regs; the
+    /// topmost env frame for Y regs). Returns `None` for an uninitialised or
+    /// missing slot. Unlike `get_reg`/`get_reg_raw` this does NOT clone, so the
+    /// hot head-match path can compare in place.
+    #[inline]
+    pub fn get_reg_ref(&self, name: &str) -> Option<&Value> {
+        if name.starts_with('Y') && name.len() > 1
+            && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit())
+        {
+            for entry in self.stack.iter().rev() {
+                if let StackEntry::Env(_, y_regs) = entry {
+                    return match y_regs.get(name) {
+                        Some(Value::Uninit) | None => None,
+                        Some(v) => Some(v),
+                    };
+                }
+            }
+            None
+        } else {
+            let idx = Self::reg_index(name);
+            match self.regs.get(idx) {
+                Some(Value::Uninit) | None => None,
+                Some(v) => Some(v),
+            }
+        }
+    }
+
+    /// Allocation-free `get_constant`-style head match: deref the register (by
+    /// reference, following the binding chain like `deref_var`) and compare its
+    /// atom against `atom` without building a `Value::Atom(String)` on either
+    /// side. Returns `Some(true)` (bound & equal), `Some(false)` (bound but not
+    /// an equal atom — the caller fails the clause), or `None` (unbound — the
+    /// caller binds). Mirrors the old `get_reg() != Value::Atom("...")` path,
+    /// minus its two per-comparison heap allocations.
+    #[inline]
+    pub fn match_reg_atom(&self, name: &str, atom: &str) -> Option<bool> {
+        match self.get_reg_ref(name) {
+            None => Some(false),
+            Some(v) => self.deref_match_atom(v, atom),
+        }
+    }
+
+    fn deref_match_atom(&self, val: &Value, atom: &str) -> Option<bool> {
+        match val {
+            Value::Unbound(name) => match self.bindings.get(name) {
+                Some(bound) => self.deref_match_atom(bound, atom),
+                None => None,
+            },
+            Value::Atom(s) => Some(s == atom),
+            _ => Some(false),
+        }
+    }
+
+    /// Allocation-free first-argument indexing (T6) read: deref the register
+    /// (by reference, following the binding chain) and, if it resolves to a
+    /// bound atom, borrow its `&str`. Returns `None` for an unbound register or
+    /// a bound non-atom value. The caller `match`es the returned `&str` against
+    /// the clause discriminators (a native string `switch`), so neither this
+    /// read nor the dispatch allocates. The borrow is confined to producing a
+    /// `Copy` selector, so the matched clause body can take `&mut self` freely.
+    #[inline]
+    pub fn match_reg_atom_str<'a>(&'a self, name: &str) -> Option<&'a str> {
+        match self.get_reg_ref(name) {
+            None => None,
+            Some(v) => self.deref_atom_str(v),
+        }
+    }
+
+    fn deref_atom_str<'a>(&'a self, val: &'a Value) -> Option<&'a str> {
+        match val {
+            Value::Unbound(name) => match self.bindings.get(name) {
+                Some(bound) => self.deref_atom_str(bound),
+                None => None,
+            },
+            Value::Atom(s) => Some(s.as_str()),
+            _ => None,
         }
     }
 
@@ -833,6 +2162,7 @@ impl WamState {
         self.backtrack_count = 0;
         self.aggregate_acc.clear();
         self.aggregate_return_pc = 0;
+        self.thrown_ball = None;
     }
 
     /// Get a register value. Yi registers are read from the environment frame.
@@ -875,48 +2205,54 @@ impl WamState {
     /// and pops the WriteCtx.
     pub fn set_heap_or_list(&mut self, val: Value) {
         if let Some(StackEntry::WriteCtx(marker)) = self.stack.last().cloned() {
-            // Find the next unfilled slot after the header at heap[marker]
-            let header = self.heap[marker].clone();
-            match &header {
-                Value::Atom(s) if s == "__list_head__" => {
-                    // PutList mode: heap[marker]=head, heap[marker+1]=tail
+            // PutList mode is identified by the TAIL SENTINEL at
+            // marker+1 — not by the head cell type. Keying list mode on
+            // "head is a non-placeholder atom" meant a list whose head
+            // was an integer/float/compound never completed: the second
+            // value fell through to the plain heap push and the register
+            // kept the put_list scratch marker (maplist over [1,2,3] saw
+            // Integer(0) where the list should be).
+            let list_tail_pending = matches!(
+                self.heap.get(marker + 1),
+                Some(Value::Atom(t)) if t == "__list_tail__"
+            );
+            if list_tail_pending {
+                if matches!(&self.heap[marker], Value::Atom(h) if h == "__list_head__") {
+                    // First value: fill the head slot.
                     self.heap[marker] = val;
                     return;
                 }
-                Value::Atom(s) if s != "__list_head__" && s != "__list_tail__" && s != "__struct_arg__" => {
-                    // Head already filled (not a placeholder) -- fill tail
-                    if let Value::Atom(ref ts) = self.heap[marker + 1] {
-                        if ts == "__list_tail__" {
-                            self.heap[marker + 1] = val;
-                            let head = self.heap[marker].clone();
-                            let tail = self.heap[marker + 1].clone();
-                            let list = match tail {
-                                Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                                Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
-                                // Partial list: the tail is still an unbound
-                                // variable (or a ref/cons) that a later
-                                // put_structure will fill — e.g. building
-                                // [a|X2] then X2=[b|X3]. Materialising this as
-                                // Value::List([head, tail]) would treat the
-                                // tail var as a SECOND ELEMENT (so [a|X] looked
-                                // like the 2-list [a,X]); get_list then peeled
-                                // a wrong tail and member(z,...) bound the var
-                                // and wrongly succeeded. Keep it as a cons cell
-                                // so the tail var derefs to the rest of the
-                                // list. get_list/unify already alias [|]/2.
-                                _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
-                            };
-                            // Update the register holding Ref(marker) or Integer(marker)
-                            let ref_val = Value::Ref(marker);
-                            let int_val = Value::Integer(marker as i64);
-                            if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
-                                self.regs[idx] = list;
-                            }
-                            self.smut().pop();
-                            return;
-                        }
-                    }
+                // Second value: fill the tail and build the list.
+                self.heap[marker + 1] = val;
+                let head = self.heap[marker].clone();
+                let tail = self.heap[marker + 1].clone();
+                let list = match tail {
+                    Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                    Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
+                    // Partial list: the tail is still an unbound
+                    // variable (or a ref/cons) that a later
+                    // put_structure will fill — e.g. building
+                    // [a|X2] then X2=[b|X3]. Materialising this as
+                    // Value::List([head, tail]) would treat the
+                    // tail var as a SECOND ELEMENT (so [a|X] looked
+                    // like the 2-list [a,X]); get_list then peeled
+                    // a wrong tail and member(z,...) bound the var
+                    // and wrongly succeeded. Keep it as a cons cell
+                    // so the tail var derefs to the rest of the
+                    // list. get_list/unify already alias [|]/2.
+                    _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
+                };
+                // Update the register holding Ref(marker) or Integer(marker)
+                let ref_val = Value::Ref(marker);
+                let int_val = Value::Integer(marker as i64);
+                if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
+                    self.regs[idx] = list;
                 }
+                self.smut().pop();
+                return;
+            }
+            let header = self.heap[marker].clone();
+            match &header {
                 Value::Str(functor, _) => {
                     // PutStructure mode: fill next __struct_arg__ slot
                     let arity: usize = functor.split('/').last()
@@ -1369,6 +2705,11 @@ impl WamState {
                 Some(Instruction::BeginAggregate(args[0].clone(), args[1].clone(), args[2].clone())),
             "end_aggregate" if args.len() == 1 =>
                 Some(Instruction::EndAggregate(args[0].clone())),
+            // T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
+            "par_aggregate" if args.len() >= 4 =>
+                Some(Instruction::ParAggregate(
+                    args[0].clone(), args[1].clone(), args[2].clone(), args[3].clone(),
+                    args[4..].iter().cloned().collect())),
 
             // Choice points
             "try_me_else" if args.len() == 1 =>
@@ -1476,5 +2817,771 @@ pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
                 Some(result)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod cache_attribution_tests {
+    use super::*;
+
+    /// Inner source that records how many times the (expensive) parent
+    /// lookup was actually executed, so tests can prove the cache tiers
+    /// served hits without touching it.
+    struct CountingSource {
+        calls: AtomicU64,
+    }
+    impl LookupSource for CountingSource {
+        fn lookup_key_for_atom(&self, _atom: &str) -> Option<i32> {
+            None
+        }
+        fn lookup_parents(&self, key: i32) -> Vec<i32> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            vec![key + 1]
+        }
+        fn atom_for_key(&self, _key: i32) -> Option<String> {
+            None
+        }
+    }
+
+    fn cache_with_sink() -> (CachedLookup<CountingSource>, Arc<CacheAttribution>) {
+        let sink = Arc::new(CacheAttribution::default());
+        let cache = CachedLookup::new(CountingSource { calls: AtomicU64::new(0) }, 64, 4)
+            .with_attribution(sink.clone());
+        (cache, sink)
+    }
+
+    #[test]
+    fn miss_then_l1_hit_is_attributed() {
+        let (cache, sink) = cache_with_sink();
+        // Distinct per-test key: the L1 cache is a thread_local shared
+        // across CachedLookup instances, so unique keys avoid cross-test
+        // false hits on a reused test thread.
+        let key = 1_000_001;
+
+        let first = cache.lookup_parents(key);
+        assert_eq!(first, vec![key + 1]);
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1, "first lookup is a miss");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner hit once");
+
+        // Same key, same thread -> L1 serves it; inner is not touched again.
+        let second = cache.lookup_parents(key);
+        assert_eq!(second, vec![key + 1]);
+        assert_eq!(sink.l1_hits.load(Ordering::Relaxed), 1, "second lookup is an L1 hit");
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1, "still one miss");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner not called again");
+    }
+
+    #[test]
+    fn l2_hit_from_fresh_thread_is_attributed() {
+        let (cache, sink) = cache_with_sink();
+        let key = 2_000_002;
+
+        // Warm both tiers on this thread (a miss).
+        let _ = cache.lookup_parents(key);
+        assert_eq!(sink.misses.load(Ordering::Relaxed), 1);
+
+        // A fresh thread has an empty L1, so the warm shared L2 serves it.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let got = cache.lookup_parents(key);
+                assert_eq!(got, vec![key + 1]);
+            });
+        });
+        assert_eq!(sink.l2_hits.load(Ordering::Relaxed), 1, "fresh-thread lookup is an L2 hit");
+        assert_eq!(cache.inner.calls.load(Ordering::Relaxed), 1, "inner still called only once");
+    }
+
+    #[test]
+    fn report_lines_render_expected_keys() {
+        let empty = CacheAttribution::default();
+        let lines = empty.report_lines();
+        assert!(lines.iter().any(|l| l == "cache_attr_lookups=0"));
+        assert!(lines.iter().any(|l| l == "cache_attr_hit_rate=0.0000"));
+        assert!(lines.iter().any(|l| l.starts_with("cache_attr_inner_lookup_ms=")));
+    }
+}
+
+#[cfg(test)]
+mod boundary_kernel_tests {
+    // P2: the boundary-spliced ancestor kernel produces the same path-length
+    // histogram (hence the same aggregate) as full enumeration, exercised
+    // through the real edge-access path (register_ffi_fact_pairs / edge_parents_via).
+    use super::*;
+    use std::collections::HashMap;
+
+    // child -> parents DAG, root = "0":
+    //   5->{4,2}  4->{3,1}  3->{1,2}  1->{0}  2->{0}
+    // Diamonds give multiple paths of multiple lengths.
+    fn dag() -> WamState {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("5", "4"), ("5", "2"), ("4", "3"), ("4", "1"),
+            ("3", "1"), ("3", "2"), ("1", "0"), ("2", "0"),
+        ]);
+        vm
+    }
+
+    fn norm(mut h: Vec<u64>) -> Vec<u64> { while h.last() == Some(&0) { h.pop(); } h }
+
+    fn full_hist(vm: &WamState, seed: u32, root: u32, budget: usize) -> Vec<u64> {
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let mut h = vec![];
+        let mut vis = vec![seed];
+        vm.enum_ancestor_hist(seed, root, &mut vis, budget, &acc, 0, &mut h);
+        h
+    }
+
+    fn boundary_hist(vm: &WamState, seed: u32, root: u32, budget: usize) -> Vec<u64> {
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let mut h = vec![];
+        let mut vis = vec![seed];
+        vm.collect_native_category_ancestor_boundary_hist(seed, root, &mut vis, budget, &acc, 0, &mut h);
+        h
+    }
+
+    #[test]
+    fn boundary_splice_equals_full_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "boundary {:?}: histogram mismatch", bnames);
+            let wf = crate::boundary_cache::f_weighted_power(&full, 2.0);
+            let ws = crate::boundary_cache::f_weighted_power(&spl, 2.0);
+            assert!((wf - ws).abs() < 1e-12, "weighted_power mismatch for {:?}", bnames);
+        }
+    }
+
+    // Increment 1c: the jet precompute + query splice produce the seed->root functionals
+    // (mass, m1, m2, min, max) WITHOUT ever forming a histogram, matching the read-outs of
+    // the (untruncated) full-enumeration histogram — for every boundary band.
+    #[test]
+    fn boundary_jet_splice_matches_histogram() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let big = 1000usize;
+        let full = norm(full_hist(&vm, seed, root, big)); // untruncated oracle
+        let want_jet = crate::boundary_cache::hist_moment_jet(&full);
+        let want_iv = crate::boundary_cache::hist_interval(&full);
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            assert!(vm.build_boundary_jets(&bnodes, root, "category_parent"));
+            let mut jet = crate::boundary_cache::MomentJet::zero();
+            let mut iv = None;
+            {
+                let acc = vm.resolve_edge_accessor("category_parent");
+                let mut vis = vec![seed];
+                vm.collect_native_category_ancestor_boundary_jet(
+                    seed, root, &mut vis, &acc, 0, &mut jet, &mut iv);
+            }
+            assert!((jet.mass - want_jet.mass).abs() < 1e-9, "{:?} mass", bnames);
+            assert!((jet.m1 - want_jet.m1).abs() < 1e-9, "{:?} m1", bnames);
+            assert!((jet.m2 - want_jet.m2).abs() < 1e-9, "{:?} m2", bnames);
+            assert!((jet.m3 - want_jet.m3).abs() < 1e-6, "{:?} m3", bnames);
+            assert!((jet.m4 - want_jet.m4).abs() < 1e-3, "{:?} m4", bnames);
+            assert_eq!(iv, want_iv, "{:?} interval", bnames);
+            // the read-out reconstruction (a Normal) is constructible from the splice jet.
+            let recon = jet.to_normal_repr(want_iv.unwrap().max as usize + 1);
+            assert!(matches!(recon, crate::boundary_cache::HistRepr::MomentNormal { .. }));
+        }
+    }
+
+    // Increment 2c: the distance boundary cache. The seed->root shortest-distance splice
+    // (BFS stopping at cached boundaries + cached suffix) equals the full min-plus closure,
+    // for every band — and degrades to a correct plain BFS with an empty cache.
+    #[test]
+    fn boundary_distance_splice_matches_closure() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        // oracle: full closure dist(seed -> root) = 2 (5->2->0).
+        let want = {
+            let parents = vm.ffi_facts.get("category_parent").unwrap();
+            crate::boundary_cache::min_distance_closure(root, parents)[&seed]
+        };
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            assert!(vm.build_boundary_distances(&bnodes, root, "category_parent"));
+            let got = {
+                let acc = vm.resolve_edge_accessor("category_parent");
+                vm.category_ancestor_boundary_distance(seed, root, &acc)
+            };
+            assert_eq!(got, Some(want), "boundary {:?}: distance splice", bnames);
+        }
+        // empty distance cache -> plain BFS, still the correct shortest distance.
+        let mut vm2 = dag();
+        let r2 = vm2.intern_atom("0");
+        let s2 = vm2.intern_atom("5");
+        let acc = vm2.resolve_edge_accessor("category_parent");
+        assert_eq!(vm2.category_ancestor_boundary_distance(s2, r2, &acc), Some(want));
+    }
+
+    // Increment 3b — the between-nodes caret distance in the live path equals the
+    // boundary_cache LCA caret (joint up-BFS over the real accessor).
+    #[test]
+    fn live_caret_distance_matches_lca() {
+        let mut vm = dag();
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // intern all node names BEFORE resolving the accessor (intern is &mut).
+        let pairs: Vec<(u32, u32, &str, &str)> =
+            [("3", "4"), ("5", "3"), ("4", "2"), ("1", "2"), ("5", "0")].iter()
+                .map(|&(un, vn)| (vm.intern_atom(un), vm.intern_atom(vn), un, vn)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for (u, v, un, vn) in pairs {
+            let got = vm.category_caret_distance(u, v, &acc);
+            let want = crate::boundary_cache::caret_distance_lca(u, v, &parents);
+            assert_eq!(got, want, "caret({}, {})", un, vn);
+        }
+    }
+
+    // Increment 3b — the live caret search is boundary-restricted: on a tall stem with a low
+    // fork it stops at the merge point and never climbs the stem to root.
+    #[test]
+    fn live_caret_boundary_skips_the_stem() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // Tall stem 0<-1<-...<-20 (child -> parent), with a low fork: 21,22 both -> 20.
+        let strs: Vec<(String, String)> = {
+            let mut p: Vec<(String, String)> =
+                (1u32..=20).map(|c| (c.to_string(), (c - 1).to_string())).collect();
+            p.push(("21".into(), "20".into()));
+            p.push(("22".into(), "20".into()));
+            p
+        };
+        let pair_refs: Vec<(&str, &str)> =
+            strs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        vm.register_ffi_fact_pairs("category_parent", &pair_refs);
+        let u = vm.intern_atom("21");
+        let v = vm.intern_atom("22");
+        let acc = vm.resolve_edge_accessor("category_parent");
+        let (caret, visited) = vm.category_caret_distance_counted(u, v, &acc);
+        assert_eq!(caret, Some(2), "low fork: LCA is node 20, caret = 2");
+        // Touches only {20, 21, 22}; the 20-node stem 0..19 above the LCA is never entered.
+        assert_eq!(visited, 3, "boundary search must not climb the stem; visited={}", visited);
+    }
+
+    // The live IC similarity read-outs equal the boundary_cache library functions, after
+    // build_descendant_sketches caches the sketches in WamState.
+    #[test]
+    fn live_ic_similarity_matches_library() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // balanced tree: 0 root; 1,2->0; 3,4->1; 5,6->2.
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "0"), ("3", "1"), ("4", "1"), ("5", "2"), ("6", "2"),
+        ]);
+        // unbuilt -> None (safe default).
+        let z = vm.intern_atom("3");
+        let w = vm.intern_atom("4");
+        assert_eq!(vm.category_resnik(z, w, "category_parent"), None);
+
+        let k = 16usize;
+        assert!(vm.build_descendant_sketches("category_parent", k));
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        let dsigs = crate::boundary_cache::descendant_minhash(&parents, k).unwrap();
+        let n = dsigs.len();
+        // intern all node names BEFORE further borrows.
+        let pairs: Vec<(u32, u32, &str, &str)> =
+            [("3", "4"), ("3", "5"), ("1", "3"), ("3", "3")].iter()
+                .map(|&(a, b)| (vm.intern_atom(a), vm.intern_atom(b), a, b)).collect();
+        for (u, v, an, bn) in pairs {
+            assert_eq!(vm.category_resnik(u, v, "category_parent"),
+                crate::boundary_cache::resnik_similarity(u, v, &parents, &dsigs, n, k),
+                "resnik({},{})", an, bn);
+            assert_eq!(vm.category_lin(u, v, "category_parent"),
+                crate::boundary_cache::lin_similarity(u, v, &parents, &dsigs, n, k),
+                "lin({},{})", an, bn);
+            assert_eq!(vm.category_faith(u, v, "category_parent"),
+                crate::boundary_cache::faith_similarity(u, v, &parents, &dsigs, n, k),
+                "faith({},{})", an, bn);
+        }
+        // Unknown edge predicate -> None.
+        assert_eq!(vm.category_resnik(z, w, "no_such_pred"), None);
+    }
+
+    // Roadmap 3f: the live landmark-cached designated-bridge caret equals the per-query
+    // boundary_cache caret_through_bridge / caret_min_over_hubs, at O(1) per pair after build.
+    #[test]
+    fn live_bridge_landmarks_match_library() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // tree with a cross-listing: 1->0; 2,3->1; 4,5->2; 6->3; 7->[2,3].
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "1"), ("3", "1"), ("4", "2"), ("5", "2"),
+            ("6", "3"), ("7", "2"), ("7", "3"),
+        ]);
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // intern node names + bridges before resolving anything else.
+        let id = |vm: &mut WamState, s: &str| vm.intern_atom(s);
+        let bridges: Vec<u32> = ["0", "1", "2", "3"].iter().map(|s| id(&mut vm, s)).collect();
+        // unbuilt -> None.
+        let (a, b) = (id(&mut vm, "4"), id(&mut vm, "5"));
+        assert_eq!(vm.category_caret_through_bridge(a, b, bridges[2]), None);
+        // unknown edge predicate -> false no-op.
+        assert!(!vm.build_caret_landmarks(&bridges, "no_such_pred"));
+
+        assert!(vm.build_caret_landmarks(&bridges, "category_parent"));
+        let names = ["0", "1", "2", "3", "4", "5", "6", "7"];
+        let ids: Vec<u32> = names.iter().map(|s| id(&mut vm, s)).collect();
+        for &u in &ids {
+            for &v in &ids {
+                for &br in &bridges {
+                    assert_eq!(vm.category_caret_through_bridge(u, v, br),
+                        crate::boundary_cache::caret_through_bridge(u, v, br, &parents),
+                        "cached through {} for ({},{})", br, u, v);
+                }
+                assert_eq!(vm.category_caret_min_over_landmarks(u, v),
+                    crate::boundary_cache::caret_min_over_hubs(u, v, &bridges, &parents),
+                    "min over landmarks ({},{})", u, v);
+            }
+        }
+    }
+
+    // Increment 3b — the A* ancestor search returns the directed shortest u->ancestor
+    // distance, equal to the min-plus closure rooted at the target. The ALT heuristic
+    // (from min_dist) gives the same answer as the h=0 (Dijkstra) fallback.
+    #[test]
+    fn astar_ancestor_distance_matches_closure() {
+        let mut vm = dag();
+        let parents = vm.ffi_facts.get("category_parent").unwrap().clone();
+        // load distance-to-root so the ALT heuristic is active.
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0", 0), ("1", 1), ("2", 1), ("3", 2), ("4", 2), ("5", 2)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // intern all (u, target) names before borrowing the accessor.
+        let cases: Vec<(u32, u32, &str, &str)> =
+            [("5", "0"), ("5", "2"), ("4", "1"), ("3", "0"), ("4", "0")].iter()
+                .map(|&(un, tn)| (vm.intern_atom(un), vm.intern_atom(tn), un, tn)).collect();
+        let zero = vm.intern_atom("0");
+        let five = vm.intern_atom("5");
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for (u, t, un, tn) in cases {
+            let want = crate::boundary_cache::min_distance_closure(t, &parents).get(&u).copied();
+            assert_eq!(vm.category_ancestor_astar(u, t, &acc), want, "A* {}->{}", un, tn);
+        }
+        // unreachable upward (0 has no ancestors) -> None.
+        assert_eq!(vm.category_ancestor_astar(zero, five, &acc), None, "0 cannot reach 5 upward");
+        drop(acc);
+        // an empty min_dist (h=0) is the Dijkstra fallback — same answer.
+        let mut vm2 = dag();
+        let u = vm2.intern_atom("5");
+        let t = vm2.intern_atom("0");
+        let acc2 = vm2.resolve_edge_accessor("category_parent");
+        assert_eq!(vm2.category_ancestor_astar(u, t, &acc2), Some(2));
+    }
+
+    // MEASUREMENT — the ALT heuristic's pruning, where it works. `u`=3 reaches the target
+    // `t`=1 two ways, both through the DOMINATOR 1:
+    //     short  3 → 2 → 1        (len 2)
+    //     decoy  3 → 4 → 5 → 1    (len 3)
+    // Because 1 dominates every path to root, the root-landmark heuristic is EXACT, so A*
+    // prunes the decoy (node 4 is never expanded), while plain Dijkstra (h=0) expands it.
+    // This is the regime where the increment-2 distance landmark pays off as an A* prune.
+    #[test]
+    fn astar_alt_prunes_a_dominator_decoy() {
+        let edges = &[("1", "0"), ("2", "1"), ("5", "1"), ("4", "5"), ("3", "2"), ("3", "4")];
+        // ALT: load distance-to-root so the heuristic is active.
+        let mut vm = WamState::new(vec![], HashMap::new());
+        vm.register_ffi_fact_pairs("category_parent", edges);
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0", 0), ("1", 1), ("2", 2), ("5", 2), ("4", 3), ("3", 3)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        let (u, t) = (vm.intern_atom("3"), vm.intern_atom("1"));
+        vm.set_min_dist(&md);
+        let (alt_dist, alt_exp) = {
+            let acc = vm.resolve_edge_accessor("category_parent");
+            vm.category_ancestor_astar_counted(u, t, &acc)
+        };
+        // Dijkstra baseline: same query, empty min_dist -> h = 0.
+        let mut vm2 = WamState::new(vec![], HashMap::new());
+        vm2.register_ffi_fact_pairs("category_parent", edges);
+        let (u2, t2) = (vm2.intern_atom("3"), vm2.intern_atom("1"));
+        let (dij_dist, dij_exp) = {
+            let acc2 = vm2.resolve_edge_accessor("category_parent");
+            vm2.category_ancestor_astar_counted(u2, t2, &acc2)
+        };
+        assert_eq!(alt_dist, Some(2));
+        assert_eq!(dij_dist, Some(2), "same optimal answer");
+        assert!(alt_exp < dij_exp,
+            "ALT expansions {} should be < Dijkstra {} (the decoy is pruned)", alt_exp, dij_exp);
+    }
+
+    #[test]
+    fn budget_truncation_matches() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let bnodes: Vec<u32> = ["3", "1", "2"].iter().map(|s| vm.intern_atom(s)).collect();
+        for budget in [2usize, 3, 4, 5] {
+            let full = norm(full_hist(&vm, seed, root, budget));
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "budget {}", budget);
+        }
+    }
+
+    // P2c-wiring/precompute: the root-near band is *selected* from the
+    // distance-to-root table (min_dist), and precomputing over that band yields a
+    // populated side-table whose splice matches full enumeration.
+    #[test]
+    fn root_near_band_selection_and_precompute() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        // distance-to-root for the DAG (5->2->0 makes min_dist(5)=2):
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0", 0), ("1", 1), ("2", 1), ("3", 2), ("4", 2), ("5", 2)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // d_pre = 1 selects exactly the root-near band {1, 2}.
+        let n1 = vm.intern_atom("1");
+        let n2 = vm.intern_atom("2");
+        let mut band = vm.boundary_band_root_near(1);
+        band.sort();
+        let mut expect = vec![n1, n2];
+        expect.sort();
+        assert_eq!(band, expect, "root-near band (d_pre=1) should be {{1,2}}");
+        // d_pre = 2 widens to the whole upper cone {1,2,3,4,5}.
+        assert_eq!(vm.boundary_band_root_near(2).len(), 5, "d_pre=2 selects 5 nodes");
+        // precompute over the selected band; the splice must match full enumeration.
+        let full = norm(full_hist(&vm, seed, root, budget));
+        vm.build_boundary_suffix_root_near(root, 1, budget, "category_parent");
+        assert!(!vm.boundary_suffix.is_empty(), "side-table should be populated");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "root-near splice must match full enumeration");
+    }
+
+    // The shared-memo polynomial precompute produces the IDENTICAL boundary-suffix
+    // table as per-node enumeration, and the spliced histogram still matches full
+    // enumeration.
+    #[test]
+    fn shared_memo_precompute_equals_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"], vec!["3", "4", "1", "2"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            // enumeration precompute -> snapshot table
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let mut enum_tbl: Vec<(u32, Vec<u64>)> =
+                vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+            enum_tbl.sort_by_key(|(k, _)| *k);
+            // shared-memo precompute -> snapshot table
+            assert!(vm.build_boundary_suffix_shared(&bnodes, root, budget, "category_parent"),
+                    "shared precompute should run for eager edges");
+            let mut shared_tbl: Vec<(u32, Vec<u64>)> =
+                vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+            shared_tbl.sort_by_key(|(k, _)| *k);
+            assert_eq!(enum_tbl, shared_tbl, "shared != enumeration table for {:?}", bnames);
+            // and the spliced result still matches full enumeration
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "shared splice != full enumeration for {:?}", bnames);
+        }
+    }
+
+    // snapshot the installed boundary-suffix table, normalised + sorted by key.
+    fn snapshot_table(vm: &WamState) -> Vec<(u32, Vec<u64>)> {
+        let mut t: Vec<(u32, Vec<u64>)> =
+            vm.boundary_suffix.iter().map(|(&k, v)| (k, norm(v.clone()))).collect();
+        t.sort_by_key(|(k, _)| *k);
+        t
+    }
+
+    // The top-down sweep, unbudgeted, produces the SAME band table as enumeration
+    // and the same splice as full enumeration.
+    #[test]
+    fn sweep_unbudgeted_equals_enumeration() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"], vec!["3", "4", "1", "2"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            let enum_tbl = snapshot_table(&vm);
+            let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0)
+                .expect("sweep runs for eager edges");
+            assert_eq!(snapshot_table(&vm), enum_tbl, "sweep != enumeration for {:?}", bnames);
+            assert_eq!(stats.retained, bnodes.len(), "all band nodes retained for {:?}", bnames);
+            assert_eq!(stats.evicted, 0, "no eviction when unbudgeted for {:?}", bnames);
+            assert!(!stats.stopped_early, "no early stop when unbudgeted for {:?}", bnames);
+            let spl = norm(boundary_hist(&vm, seed, root, budget));
+            assert_eq!(full, spl, "sweep splice != full for {:?}", bnames);
+        }
+    }
+
+    // A tight eviction budget drops dead interior nodes but leaves the retained
+    // band results identical, and the splice still matches full enumeration.
+    #[test]
+    fn sweep_eviction_preserves_results() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        let bnodes: Vec<u32> = ["1", "2"].iter().map(|s| vm.intern_atom(s)).collect();
+        // reference (unbudgeted) band table
+        vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0).unwrap();
+        let ref_tbl = snapshot_table(&vm);
+        // tight evict budget forces the interior root node (refs->0) to be evicted
+        let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 1, 0).unwrap();
+        assert!(stats.evicted >= 1, "tight budget should evict a dead interior");
+        assert_eq!(snapshot_table(&vm), ref_tbl, "eviction must not change band results");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "splice correct under eviction");
+    }
+
+    // A tiny live budget forces stop-at-depth; partial caching is still correct
+    // (uncached band nodes fall back to enumeration).
+    #[test]
+    fn sweep_live_budget_stops_early() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        let full = norm(full_hist(&vm, seed, root, budget));
+        let bnodes: Vec<u32> = ["1", "2", "3", "4", "5"].iter().map(|s| vm.intern_atom(s)).collect();
+        let stats = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 1).unwrap();
+        assert!(stats.stopped_early, "live_budget=1 should force stop-at-depth");
+        assert!(stats.retained < bnodes.len(), "stop-at-depth leaves some band nodes uncached");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "partial-cache splice still matches full enumeration");
+    }
+
+    // Sweep is eager-only: with no eager table it is a no-op (None).
+    #[test]
+    fn sweep_eager_only() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        let root = vm.intern_atom("0");
+        let b = vm.intern_atom("1");
+        assert!(vm.build_boundary_suffix_sweep(&[b], root, 8, "no_such_pred", 0, 0).is_none(),
+                "no eager table -> sweep is a no-op");
+    }
+
+    // In-memory spill sink for testing the spill mechanism without LMDB.
+    struct MemSpill { map: HashMap<u32, Vec<u64>>, puts: usize, gets: usize }
+    impl SpillSink for MemSpill {
+        fn spill_put(&mut self, node: u32, hist: &[u64]) { self.map.insert(node, hist.to_vec()); self.puts += 1; }
+        fn spill_get(&mut self, node: u32) -> Option<Vec<u64>> { self.gets += 1; self.map.get(&node).cloned() }
+    }
+
+    // Spill fallback: a tiny live budget WITHOUT a sink stops early; WITH a sink the
+    // sweep spills live entries and COMPLETES with identical band results.
+    #[test]
+    fn sweep_spill_completes_and_matches() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let bnodes: Vec<u32> = ["1", "2", "3", "4"].iter().map(|s| vm.intern_atom(s)).collect();
+        // reference: unbudgeted sweep
+        vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 0).unwrap();
+        let ref_tbl = snapshot_table(&vm);
+        // tiny live budget, NO spill -> stop-at-depth (frontier can't fit)
+        let no_spill = vm.build_boundary_suffix_sweep(&bnodes, root, budget, "category_parent", 0, 1).unwrap();
+        assert!(no_spill.stopped_early, "live_budget=1 without spill should stop early");
+        // tiny live budget, WITH spill -> completes, spills, identical results
+        let mut spill = MemSpill { map: HashMap::new(), puts: 0, gets: 0 };
+        let s = vm.build_boundary_suffix_sweep_with_spill(&bnodes, root, budget, "category_parent", 0, 1, &mut spill).unwrap();
+        assert!(!s.stopped_early, "spill must not stop early");
+        assert!(s.spilled > 0, "spill should have written live entries");
+        assert!(spill.puts > 0 && spill.gets > 0, "sink should see puts and reload gets");
+        assert_eq!(snapshot_table(&vm), ref_tbl, "spill must produce identical band results");
+    }
+
+    // The entry-frontier band is a thin cut (region surface, not volume) yet the
+    // splice through it still matches full enumeration for periphery seeds. Graph
+    // has a genuine periphery (nodes outside the root-near region).
+    #[test]
+    fn entry_frontier_band_is_thin_and_exact() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // core near root 0, plus a periphery (10,11,12) hanging off the core.
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "0"), ("3", "1"), ("4", "2"),
+            ("10", "3"), ("10", "4"), ("11", "3"), ("12", "10"),
+        ]);
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0",0),("1",1),("2",1),("3",2),("4",2),("10",3),("11",3),("12",4)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        // d_pre=2: whole region is {1,2,3,4}; entry frontier is just {3,4}
+        // (the region nodes the periphery attaches to).
+        let region = vm.boundary_band_root_near(2);
+        let frontier = vm.boundary_band_entry_frontier(2, "category_parent");
+        assert!(frontier.len() < region.len(),
+            "entry frontier {} should be thinner than region {}", frontier.len(), region.len());
+        let mut fsorted = frontier.clone(); fsorted.sort();
+        let mut expect = vec![vm.intern_atom("3"), vm.intern_atom("4")]; expect.sort();
+        assert_eq!(fsorted, expect, "entry frontier should be exactly {{3,4}}");
+        // splice through the thin frontier == full enumeration for periphery seeds.
+        vm.build_boundary_suffix(&frontier, root, budget, "category_parent");
+        let pseeds: Vec<u32> = ["10", "11", "12"].iter().map(|s| vm.intern_atom(s)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for &s in &pseeds {
+            let mut fh = vec![]; let mut v = vec![s];
+            vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+            let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+            let mut bh = vec![]; let mut v2 = vec![s];
+            vm.collect_native_category_ancestor_boundary_hist(s, root, &mut v2, budget, &acc, 0, &mut bh);
+            let wsp = crate::boundary_cache::f_weighted_power(&bh, n);
+            assert!((wref - wsp).abs() < 1e-12, "frontier seed {}: {} != {}", s, wref, wsp);
+            assert!(wref > 0.0, "seed {} should reach root", s);
+        }
+    }
+
+    // Lazy (demand-driven) boundary cache: identical results to eager, but only the
+    // band-entry nodes a query actually touches are ever computed/cached.
+    #[test]
+    fn lazy_boundary_caches_on_demand_and_matches_eager() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("1", "0"), ("2", "0"), ("3", "1"), ("4", "2"),
+            ("10", "3"), ("10", "4"), ("11", "3"), ("12", "10"),
+        ]);
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let mut md: HashMap<i32, i32> = HashMap::new();
+        for (name, d) in [("0",0),("1",1),("2",1),("3",2),("4",2),("10",3),("11",3),("12",4)] {
+            md.insert(vm.intern_atom(name) as i32, d);
+        }
+        vm.set_min_dist(&md);
+        let pseeds: Vec<u32> = ["10", "11", "12"].iter().map(|s| vm.intern_atom(s)).collect();
+        let n3 = vm.intern_atom("3");
+        // production reference per seed
+        let prod: Vec<f64> = {
+            let acc = vm.resolve_edge_accessor("category_parent");
+            pseeds.iter().map(|&s| {
+                let mut fh = vec![]; let mut v = vec![s];
+                vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+                crate::boundary_cache::f_weighted_power(&fh, n)
+            }).collect()
+        };
+        // lazy over JUST seed 11 -> caches only its entry (node 3), not node 4.
+        assert!(vm.boundary_suffix.is_empty());
+        let s11 = vm.intern_atom("11");
+        let r11 = vm.lazy_boundary_weightsum(&[s11], root, budget, "category_parent", 2, n);
+        assert!((r11[0] - prod[1]).abs() < 1e-12, "lazy result must match production");
+        assert_eq!(vm.boundary_suffix.len(), 1, "lazy cached only the touched entry");
+        assert!(vm.boundary_suffix.contains_key(&n3), "the touched entry is node 3");
+        // lazy over all seeds -> cache grows to both entries {3,4}, results exact.
+        let rall = vm.lazy_boundary_weightsum(&pseeds, root, budget, "category_parent", 2, n);
+        for (i, _) in pseeds.iter().enumerate() {
+            assert!((rall[i] - prod[i]).abs() < 1e-12, "seed#{} lazy != production", i);
+        }
+        assert_eq!(vm.boundary_suffix.len(), 2, "now both entries {{3,4}} are cached");
+    }
+
+    // P4: opt-in storage-gated compression of the boundary table — work-triggered
+    // by support count, certified by epsilon_K, and a no-op on short histograms.
+    #[test]
+    fn compress_boundary_suffix_is_opt_in_and_certified() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // one long low-tail histogram (compressible), one short one (untouched).
+        let mut long = vec![0u64; 60];
+        long[0] = 1_000_000;
+        for i in 50..60 { long[i] = 1; }
+        let short = vec![900u64, 1, 1];
+        let mut table: HashMap<u32, Vec<u64>> = HashMap::new();
+        table.insert(1, long.clone());
+        table.insert(2, short.clone());
+        vm.set_boundary_suffix(&table);
+        let (compressed, removed) = vm.compress_boundary_suffix(50, 0.001);
+        assert_eq!(compressed, 1, "only the long low-tail histogram compresses");
+        assert!(removed > 0);
+        let got_long = vm.boundary_suffix.get(&1).unwrap();
+        assert!(got_long.len() < long.len(), "long histogram shortened");
+        assert!(crate::boundary_cache::cdf_max_error(&long, got_long) <= 0.001 + 1e-9,
+            "compression stays within epsilon_K");
+        assert_eq!(vm.boundary_suffix.get(&2).unwrap(), &short, "short histogram untouched");
+    }
+
+    // P4: the pre-weighted weighted_power basis (g_B dot-product splice) yields the
+    // SAME WeightSum as the histogram-based weighted_power == full enumeration.
+    #[test]
+    fn weighted_power_basis_equals_histogram() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let seeds: Vec<u32> = ["5", "4", "3"].iter().map(|s| vm.intern_atom(s)).collect();
+        for bnames in &[vec!["1", "2"], vec!["3", "1", "2"], vec!["4"]] {
+            let bnodes: Vec<u32> = bnames.iter().map(|s| vm.intern_atom(s)).collect();
+            vm.build_boundary_suffix(&bnodes, root, budget, "category_parent");
+            vm.build_boundary_basis_weighted_power(budget, n);
+            let acc = vm.resolve_edge_accessor("category_parent");
+            for &s in &seeds {
+                let mut fh = vec![];
+                let mut v = vec![s];
+                vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+                let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+                let mut ws = 0.0f64;
+                let mut v2 = vec![s];
+                vm.collect_native_category_ancestor_weightsum(s, root, &mut v2, budget, &acc, 0, n, &mut ws);
+                assert!((wref - ws).abs() < 1e-12,
+                    "basis {:?} seed {}: hist {} != basis {}", bnames, s, wref, ws);
+            }
+        }
+    }
+
+    // Empty basis -> the WeightSum kernel degrades to full enumeration (exact).
+    #[test]
+    fn weighted_power_basis_empty_is_full_enum() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let budget = 8usize;
+        let n = 2.0f64;
+        let seeds: Vec<u32> = ["5", "4", "3"].iter().map(|s| vm.intern_atom(s)).collect();
+        let acc = vm.resolve_edge_accessor("category_parent");
+        for &s in &seeds {
+            let mut fh = vec![];
+            let mut v = vec![s];
+            vm.enum_ancestor_hist(s, root, &mut v, budget, &acc, 0, &mut fh);
+            let wref = crate::boundary_cache::f_weighted_power(&fh, n);
+            let mut ws = 0.0f64;
+            let mut v2 = vec![s];
+            vm.collect_native_category_ancestor_weightsum(s, root, &mut v2, budget, &acc, 0, n, &mut ws);
+            assert!((wref - ws).abs() < 1e-12, "empty-basis seed {}: {} != {}", s, wref, ws);
+        }
+    }
+
+    // Shared precompute is eager-only: with no eager table it is a no-op (false).
+    #[test]
+    fn shared_memo_precompute_eager_only() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        let root = vm.intern_atom("0");
+        let b = vm.intern_atom("1");
+        assert!(!vm.build_boundary_suffix_shared(&[b], root, 8, "no_such_pred"),
+                "no eager table -> shared precompute is a no-op");
+    }
+
+    // Empty min_dist -> empty band -> no-op precompute -> kernel degrades to full
+    // enumeration (still correct).
+    #[test]
+    fn empty_min_dist_band_is_noop() {
+        let mut vm = dag();
+        let root = vm.intern_atom("0");
+        let seed = vm.intern_atom("5");
+        let budget = 8usize;
+        assert!(vm.boundary_band_root_near(3).is_empty(), "no min_dist -> empty band");
+        let full = norm(full_hist(&vm, seed, root, budget));
+        vm.build_boundary_suffix_root_near(root, 3, budget, "category_parent");
+        assert!(vm.boundary_suffix.is_empty(), "empty band -> empty side-table");
+        let spl = norm(boundary_hist(&vm, seed, root, budget));
+        assert_eq!(full, spl, "no-op precompute still correct (full enumeration)");
     }
 }

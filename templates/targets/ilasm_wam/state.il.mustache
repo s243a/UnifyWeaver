@@ -137,7 +137,10 @@ L_oob:
 
 // TrailBinding: record current register value on trail
 .method public instance void TrailBinding(int32 regIdx) cil managed {
-    .maxstack 4
+    .maxstack 5
+    // List receiver must be pushed BEFORE the entry being added
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class TrailEntry> WamState::Trail
     newobj instance void TrailEntry::.ctor()
     dup
     ldarg.1
@@ -147,9 +150,53 @@ L_oob:
     ldarg.1
     callvirt instance class Value WamState::GetReg(int32)
     stfld class Value TrailEntry::OldValue
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::Add(!0)
+    ret
+}
+
+// Deref: follow UnboundValue forwarding chains to the representative
+// cell (an UnboundValue with null Ref) or the bound value.
+.method public instance class Value Deref(class Value v) cil managed {
+    .maxstack 2
+L_deref_loop:
+    ldarg.1
+    isinst UnboundValue
+    brfalse L_deref_done
+    ldarg.1
+    castclass UnboundValue
+    ldfld class Value UnboundValue::Ref
+    dup
+    brfalse L_deref_null
+    starg.s 1
+    br L_deref_loop
+L_deref_null:
+    pop
+L_deref_done:
+    ldarg.1
+    ret
+}
+
+// BindVar: bind an unbound cell (must be a dereferenced UnboundValue)
+// to a value by setting its forwarding pointer. Aliasing-preserving:
+// every register/heap slot holding this cell sees the binding. The
+// mutation is trailed (RegIndex = -1 + BoundVar) so unwind_trail can
+// dissolve it on backtracking.
+.method public instance void BindVar(class Value var, class Value val) cil managed {
+    .maxstack 5
     ldarg.0
     ldfld class [mscorlib]System.Collections.Generic.List`1<class TrailEntry> WamState::Trail
-    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::Add(class TrailEntry)
+    newobj instance void TrailEntry::.ctor()
+    dup
+    ldc.i4.m1
+    stfld int32 TrailEntry::RegIndex
+    dup
+    ldarg.1
+    stfld class Value TrailEntry::BoundVar
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::Add(!0)
+    ldarg.1
+    castclass UnboundValue
+    ldarg.2
+    stfld class Value UnboundValue::Ref
     ret
 }
 
@@ -199,7 +246,9 @@ L_not_found:
 
 // PushUnifyCtx: push UnifyCtx (type=1) with args array
 .method public instance void PushUnifyCtx(class Value[] args) cil managed {
-    .maxstack 4
+    .maxstack 5
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     newobj instance void StackEntry::.ctor()
     dup
     ldc.i4.1
@@ -212,15 +261,15 @@ L_not_found:
     dup
     ldarg.1
     stfld class Value[] StackEntry::Data
-    ldarg.0
-    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
-    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(class StackEntry)
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(!0)
     ret
 }
 
 // PushWriteCtx: push WriteCtx (type=2) with write count
 .method public instance void PushWriteCtx(int32 count) cil managed {
-    .maxstack 4
+    .maxstack 5
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
     newobj instance void StackEntry::.ctor()
     dup
     ldc.i4.2
@@ -228,9 +277,7 @@ L_not_found:
     dup
     ldarg.1
     stfld int32 StackEntry::Aux       // write count
-    ldarg.0
-    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
-    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(class StackEntry)
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(!0)
     ret
 }
 
@@ -248,7 +295,7 @@ L_not_found:
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
     ldfld int32 StackEntry::Type
     ret
 L_pst_empty:
@@ -295,7 +342,7 @@ L_ps_empty:
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
     stloc.0
     // remaining = Aux
     ldloc.0
@@ -355,7 +402,7 @@ L_ucn_null:
     callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
     ldc.i4.1
     sub
-    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    callvirt instance !0 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
     stloc.0
     // Decrement
     ldloc.0

@@ -192,13 +192,41 @@ test(compile_lowered_mode_direct_predicate) :-
 	assertion(sub_string(S, _, _, _, "def register_pred_foo_1(raw_program)")),
 	assertion(sub_string(S, _, _, _, '("call_lowered", pred_foo_1, 1)')).
 
-test(compile_lowered_mode_falls_back_for_nondet) :-
+test(compile_lowered_mode_multi_clause_t4) :-
+	% T4: when EVERY clause is a clean deterministic body, each clause body is
+	% lowered to its own pred_*_cK function and the try/retry/trust dispatch
+	% scaffold is retained (so the runtime's choice-point machinery drives
+	% clause dispatch and backtracking). Every clause body becomes a call_lowered.
 	WamCode = 'choice/1:\n  try_me_else choice_2\n  get_constant a, 1\n  proceed\nchoice_2:\n  trust_me\n  get_constant b, 1\n  proceed',
 	wam_python_target:compile_one_predicate([emit_mode(lowered)], choice/1-WamCode, PythonCode),
 	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def pred_choice_1_c1(state)")),
+	assertion(sub_string(S, _, _, _, "def pred_choice_1_c2(state)")),
 	assertion(sub_string(S, _, _, _, "def register_pred_choice_1(raw_program)")),
 	assertion(sub_string(S, _, _, _, '("try_me_else", "choice_2")')),
-	assertion(\+ sub_string(S, _, _, _, "def pred_choice_1(state)")).
+	assertion(sub_string(S, _, _, _, '("trust_me",)')),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_choice_1_c1, 1)')),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_choice_1_c2, 1)')),
+	% both clause bodies collapsed: neither get_constant survives in the bytecode
+	assertion(\+ sub_string(S, _, _, _, '("get_constant", Atom("a"), 1)')),
+	assertion(\+ sub_string(S, _, _, _, '("get_constant", Atom("b"), 1)')).
+
+test(compile_lowered_mode_multi_clause_t3_fallback) :-
+	% T3 fallback: when a non-first clause cannot be lowered (here clause 2 ends
+	% in a tail call `execute`, not proceed), T4 declines and the predicate
+	% routes through T3 — a single clause-1 fast-path function, with clause 2
+	% kept verbatim in the bytecode.
+	WamCode = 'mix/1:\n  try_me_else mix_2\n  get_constant a, 1\n  proceed\nmix_2:\n  trust_me\n  get_variable X1, 1\n  execute other/1',
+	wam_python_target:compile_one_predicate([emit_mode(lowered)], mix/1-WamCode, PythonCode),
+	atom_string(PythonCode, S),
+	assertion(sub_string(S, _, _, _, "def pred_mix_1(state)")),
+	assertion(\+ sub_string(S, _, _, _, "def pred_mix_1_c1(state)")),
+	assertion(sub_string(S, _, _, _, '("call_lowered", pred_mix_1, 1)')),
+	assertion(sub_string(S, _, _, _, '("try_me_else", "mix_2")')),
+	% clause 2 kept as bytecode (the tail call into other/1)
+	assertion(sub_string(S, _, _, _, "other/1")),
+	% clause-1 body collapsed
+	assertion(\+ sub_string(S, _, _, _, '("get_constant", Atom("a"), 1)')).
 
 test(compile_all_lowered_mode_build_program_uses_registrars, [nondet]) :-
 	WamCode = 'foo/1:\n  get_constant a, 1\n  proceed',

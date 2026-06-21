@@ -800,6 +800,33 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
         
         if (d1 == d2) continue;
         
+        if (d1->tag == VAL_UNBOUND && d2->tag == VAL_UNBOUND) {
+            /* M143: var-var unification must ALIAS the two cells, not
+               copy one unbound marker over the other (which left them
+               independent: X = Y, X = 1, Y = 2 succeeded). Install a
+               VAL_REF from one cell to the other's heap slot so a later
+               binding through either is seen by both. Prefer pointing
+               the ref at a heap-resident cell; if only one cell lives
+               in H_array, redirect the non-heap one at it. Two non-heap
+               unbound cells (no heap slot to reference) keep the legacy
+               copy as a last resort. */
+            long i1 = d1 - state->H_array;
+            long i2 = d2 - state->H_array;
+            bool in1 = (i1 >= 0 && i1 < (long)state->H);
+            bool in2 = (i2 >= 0 && i2 < (long)state->H);
+            if (in2) {
+                trail_binding(state, d1);
+                d1->tag = VAL_REF;
+                d1->data.ref_addr = (int)i2;
+            } else if (in1) {
+                trail_binding(state, d2);
+                d2->tag = VAL_REF;
+                d2->data.ref_addr = (int)i1;
+            } else {
+                wam_bind(state, d1, d2);
+            }
+            continue;
+        }
         if (d1->tag == VAL_UNBOUND || d2->tag == VAL_UNBOUND) {
             WamValue *unbound = (d1->tag == VAL_UNBOUND) ? d1 : d2;
             WamValue *other = (d1->tag == VAL_UNBOUND) ? d2 : d1;
@@ -842,13 +869,73 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             WamValue *f2 = &state->H_array[d2->data.ref_addr];
             if (f1->tag != VAL_ATOM || f2->tag != VAL_ATOM) return false;
             if (strcmp(f1->data.atom, f2->data.atom) != 0) return false;
-            
+
             const char *slash = strchr(f1->data.atom, '/');
             assert(slash != NULL && "Functor missing arity suffix");
             int arity = strtol(slash + 1, NULL, 10);
-            
+
             if (pdl_top + arity * 2 > 256) return false; // PDL overflow
             // Push right-to-left so arguments are popped and unified left-to-right
+            for (int i = arity - 1; i >= 0; i--) {
+                pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1 + i];
+                pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1 + i];
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Strict structural equality (==/2): the wam_unify traversal made
+   READ-ONLY — it never binds, and any unbound cell makes the terms
+   unequal unless both sides deref to the very same cell. Cons-cell
+   spelling aliasing (VAL_LIST vs "[|]/2" VAL_STR) matches unify. */
+static inline bool wam_term_strict_equal(WamState *state, WamValue *v1, WamValue *v2) {
+    WamValue *pdl[256];
+    int pdl_top = 0;
+
+    pdl[pdl_top++] = v2;
+    pdl[pdl_top++] = v1;
+
+    while (pdl_top > 0) {
+        WamValue *d1 = wam_deref_ptr(state, pdl[--pdl_top]);
+        WamValue *d2 = wam_deref_ptr(state, pdl[--pdl_top]);
+
+        if (d1 == d2) continue;
+        if (d1->tag == VAL_UNBOUND || d2->tag == VAL_UNBOUND) return false;
+
+        {
+            int c1 = wam_cons_head_addr(state, d1);
+            int c2 = wam_cons_head_addr(state, d2);
+            if (c1 >= 0 && c2 >= 0) {
+                if (pdl_top + 4 > 256) return false;
+                pdl[pdl_top++] = &state->H_array[c2 + 1];
+                pdl[pdl_top++] = &state->H_array[c1 + 1];
+                pdl[pdl_top++] = &state->H_array[c2];
+                pdl[pdl_top++] = &state->H_array[c1];
+                continue;
+            }
+            if (c1 >= 0 || c2 >= 0) return false;
+        }
+
+        if (d1->tag != d2->tag) return false;
+
+        if (d1->tag == VAL_INT) {
+            if (d1->data.integer != d2->data.integer) return false;
+        } else if (d1->tag == VAL_FLOAT) {
+            if (d1->data.floating != d2->data.floating) return false;
+        } else if (d1->tag == VAL_ATOM) {
+            if (strcmp(d1->data.atom, d2->data.atom) != 0) return false;
+        } else if (d1->tag == VAL_STR) {
+            WamValue *f1 = &state->H_array[d1->data.ref_addr];
+            WamValue *f2 = &state->H_array[d2->data.ref_addr];
+            if (f1->tag != VAL_ATOM || f2->tag != VAL_ATOM) return false;
+            if (strcmp(f1->data.atom, f2->data.atom) != 0) return false;
+            const char *slash = strchr(f1->data.atom, '/');
+            if (slash == NULL) return false;
+            int arity = strtol(slash + 1, NULL, 10);
+            if (pdl_top + arity * 2 > 256) return false;
             for (int i = arity - 1; i >= 0; i--) {
                 pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1 + i];
                 pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1 + i];

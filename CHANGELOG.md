@@ -8,6 +8,486 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Cross-target sweep: PutStructure A-register bind-through
+  (M139/M140 class) fixed in Go, Scala, Kotlin, Haskell, C, and WAT.**
+  After the Rust P4 fix, behavioral probes through every other
+  target's real project writer and toolchain found the same ancestral
+  defect in six runtimes: put_structure (and sometimes put_list)
+  bound the target register's old occupant to the freshly built term,
+  so any clause shaped `p(X, ...) :- q(f(X), ...), use(X)` created a
+  cyclic term `X = f(X)` and wrong-failed (in C the bind was also
+  UNTRAILED — a backtracking corruption hazard). The fix everywhere:
+  condition the bind-through on the register class (A registers are
+  argument staging and never bind; X/Y keep the top-down
+  structure-chaining placeholder bind). Kotlin additionally had a
+  put-as-get defect (put_structure/put_list routed through the
+  get-style `beginStructure`, wrong-failing on any stale constant
+  occupant — fixed with a write-mode `beginStructurePut`) and gained
+  `==/2`/`\==/2` builtin arms. C++, LLVM (M140 regression-verified),
+  F# (cycle-check-guarded), and Rust are clean; class 2 (non-atom
+  list heads, the Rust P5 put_list bug) is clean on all probed
+  targets; ILasm is blocked by a newly pinned structural defect
+  (cross-predicate calls resolve against the local label table and
+  self-loop); Python/Lua/R/Clojure/Elixir probes are pending (agent
+  quota). Full verdicts, per-target evidence, verification
+  methodology, and side findings (missing `==/2` in C/Haskell, the
+  Kotlin env-restore defect, an F# theoretical aliasing divergence)
+  in `docs/reports/wam_bindthrough_cross_target_sweep.md`. New
+  regression test `tests/test_wam_go_bindthrough.pl`; gated by the
+  cross-target conformance suite (go/scala/haskell/c/wat) plus
+  per-target suites. SWEEP COMPLETION: the five pending script
+  targets are now probed — Python, R, Clojure clean (guards already
+  present; R uses the F#-style cycle check), **Lua BUGGY and fixed**
+  (the worst variant: no register-class guard AND no deref, so the
+  bind-through clobbered already-bound variables too; fixed in
+  `push_built_term` with guard + deref, gated by the Lua generator
+  suite 37/37 + lowered ite/t4/t5), Elixir interpreter mode BLOCKED
+  (structurally cannot cross-call — module-local label maps; lowered
+  mode clean on both classes). Also fixed from the side findings:
+  **missing `==/2`/`\==/2` in the C and Haskell runtimes**
+  (fail-closed class-7 gap; C gains a read-only
+  `wam_term_strict_equal` traversal, Haskell `derefDeep`-based
+  BuiltinCall arms — both verified against the previously confounded
+  probe batteries and the conformance gate). Newly filed: Lua
+  Y-registers not frame-local, Elixir interpreter cross-call defect,
+  Clojure lowered numeric-literals-as-atoms defect, Elixir lowered
+  `==/2` gap.
+
+### Added
+- **WAM Rust target: maplist family, atomic_list_concat, char_type
+  (parity P5 — closes the builtin ledger).** Built on the P4
+  meta-call machinery (`call_goal_value` + per-element first-solution
+  commit): `maplist/2..5` (unbound list arguments unified with
+  fresh-variable lists), `include/3`, `exclude/3` (trial calls,
+  bindings unwound per element), `partition/4`, `foldl/4`, `foldl/5`
+  (accumulator threaded through fresh variables). Plus
+  `atomic_list_concat/2`, `atomic_list_concat/3` (join + split modes;
+  empty-separator split rejected), and `char_type/2` (+Char mode:
+  alpha/alnum/csym/csymf/space/white/punct/graph/ascii/upper/lower/
+  end_of_line/newline, parameterized digit(W)/to_lower/to_upper/
+  upper(L)/lower(U)). 7 new cargo-built tests (28 total), incl.
+  compiled-predicate paths calling user-defined goals per element
+  through label sub-runs.
+
+### Fixed
+- **WAM Rust target: put_list never completed lists with non-atom
+  heads (latent).** `set_heap_or_list` keyed list-completion on the
+  head cell being a non-placeholder *atom*, so a literal list whose
+  first element was an integer/float/compound (e.g.
+  `maplist(double, [1,2,3], L)`) never materialised — the second
+  value fell through to a plain heap push and the register kept the
+  put_list scratch marker (`Integer(0)`). All earlier list tests
+  happened to use atom heads. List mode is now identified by the
+  tail sentinel at marker+1, independent of the head value. Exposed
+  by the P5 maplist tests; all existing suites pass unchanged.
+- **WAM Rust target: ISO catch/3, throw/1 and succ/2 (parity P4).**
+  Completes the F#-parity control-flow milestone. Mechanism (mutable
+  WamState in place of F#'s exception + immutable-snapshot design): a
+  `thrown_ball: Option<Value>` field set by `throw/1`; the run loop
+  treats a failing step with a ball in flight as an abort (no
+  backtracking — alternatives are discarded until a catch consumes the
+  ball); `catch/3` snapshots regs/trail/heap/stack/choice-point depth,
+  meta-calls the goal (builtin dispatch first, then labelled-predicate
+  sub-run — the negation architecture), and on a ball restores the
+  snapshot, unifies the catcher (rethrowing on mismatch for an outer
+  catch), and runs the recovery goal. First-solution semantics, like
+  the F# port. Since the shared WAM compiler emits these as
+  Call/Execute (no `is_builtin_pred` entry), the Call and Execute arms
+  gained an ISO meta-builtin fallback (`is_iso_meta_builtin`,
+  mirroring F#'s `isIsoMetaBuiltin` routing) — which also delivers the
+  previously deferred bidirectional `succ/2`. 8 new cargo-built tests:
+  matching/non-matching catchers, propagation through nested predicate
+  calls, nested catch rethrow, transparency without a throw,
+  plain-goal-failure, and succ both modes + edge cases.
+
+### Fixed
+- **WAM Rust target: PutStructure bound A-register old occupants
+  through to the new cell (M139/M140 bind-through class, latent).**
+  Building a goal structure into an A register whose old occupant was
+  a still-live variable (e.g. `p(X) :- catch(member(X, L), ...)` —
+  X in A1, then the goal structure built into A1 with X as an
+  argument) bound X to the structure's own heap cell, creating a
+  cyclic term (`X = member(X, L)`) on which `deref_heap` recursed to
+  stack overflow. Same defect class the LLVM target fixed in M140;
+  same fix: the bind-through (needed for top-down structure chaining
+  placeholders, which only live in X/Y registers) is now conditioned
+  on the register class — A registers are argument staging and never
+  bind. Exposed by the catch/3 tests; all existing suites pass
+  unchanged.
+- **WAM Rust target: builtin parity sweep (F# parity campaign P3).**
+  New `execute_ext_builtin` dispatch tier closes the largest
+  builtin-coverage gap vs the F# target — every op below was already
+  emitted as `builtin_call` by the shared WAM compiler and previously
+  failed closed at runtime:
+  - **Term ordering**: standard order of terms (`term_compare`:
+    Var < Number < Atom < Compound; numbers by value, lists cons-wise,
+    compounds by arity/name/args) shared by `@</2 @=</2 @>/2 @>=/2`,
+    `compare/3`, `sort/2` (dedup), `msort/2`, `keysort/2` (stable).
+  - **Unification tests**: `\=/2` (trial-unify + unwind), `\==/2`.
+  - **List utilities**: `memberchk/2`, `last/2`, `nth0/3`/`nth1/3`
+    (bound-index deterministic + unbound-index enumeration),
+    `numlist/3`, `delete/3`, `select/3` (full enumeration),
+    `sum_list/2`/`sumlist/2`, `max_list/2`, `min_list/2`.
+  - **Integer relations**: `between/3` (bound check + enumeration),
+    `plus/3` (all three modes).
+  - **Atom/string text ops**: `atom_length/2`, `string_length/2`,
+    `atom_concat/3`/`string_concat/3` (concat + split-mode
+    enumeration over a bound third argument), `char_code/2`,
+    `atom_chars/2` (both directions), `atom_string/2`,
+    `string_to_atom/2`, `upcase_atom/2`, `downcase_atom/2`,
+    `atom_number/2` (both directions), `ground/1`.
+  The nondeterministic builtins use the established
+  ChoicePoint/BuiltinState resume protocol (shared attempt methods
+  called from both first dispatch and `resume_builtin`). New
+  `tests/test_wam_rust_builtin_parity.pl`: 13 cargo-built tests —
+  four compiled-predicate paths (between/select/nth enumeration and
+  atom_concat split through real WAM emission + backtracking) plus
+  direct dispatch coverage for the deterministic families. Deferred,
+  noted for the campaign ledger: `succ/2` (not emitted as a builtin
+  by the shared compiler; needs a shared-table entry or a Call-arm
+  builtin fallback), `catch/3`/`throw/1` (own milestone — needs
+  catcher-frame machinery like F#), `char_type/2`,
+  `atomic_list_concat`, `maplist` family.
+- **WAM Rust target: reverse-CSR child index reader (parity campaign
+  P2).** New `csr_child_index(true)` project option emits
+  `src/csr_fact_source.rs`: a `CsrLookupSource` over the binary
+  reverse-CSR artifact built by `build_reverse_csr_artifact.py`
+  (format `unifyweaver.reverse_csr.v1`: key-sorted 16-byte index
+  records binary-searched in memory + positioned reads on the values
+  file — the F# `csr_reader.fs.mustache` shape). It implements the
+  existing `LookupSource` trait, so registering it under
+  `"category_child/2"` makes the bidirectional kernel's child
+  accessor use it automatically (`resolve_edge_accessor` prefers a
+  lazy source over the eager reverse-derived table), with intern↔raw
+  id translation via the same `build_lazy_int_maps` machinery as the
+  LMDB lazy path. No new crate dependencies (minimal manifest field
+  extraction; the manifest is machine-written). `sorted_array` index
+  backend only — `lmdb_offset` is rejected explicitly (port from the
+  C target's `wam_reverse_csr_load_lmdb_offset*` if needed). E2E test
+  writes a struct-packed artifact containing an asymmetric child edge
+  absent from the parent table and asserts a path that exists only
+  via that edge — decisive proof the kernel consults the CSR source
+  rather than the derived reverse index.
+- **WAM Rust target: bidirectional ancestor kernel (F# parity port,
+  P1 of the Rust-F# parity campaign).** `kernel_mode(bidirectional)`
+  upgrades a detected `category_ancestor` kernel to the 5-ary
+  `bidirectional_ancestor` interface
+  (`Pred(Cat, Root, TotalHops, ParentHops, ChildHops)`), streaming one
+  solution per budget-feasible path. Faithful port of the F# kernel
+  template (`kernel_bidirectional_ancestor.fs.mustache`): graph
+  calibration (dimensionality `D = E[d_child]`, branch ratio
+  `b = (E[d²_child]/E[d²_parent]) · routing_correction`, BFS
+  `min_dist` from root via child edges) and direction-cost path
+  exploration with A*-style lower-bound elimination
+  (`cost + min_dist[n]·parent_cost > budget` prunes the branch).
+  Costs/budget are f64 configs (`parent_step_cost`/`child_step_cost`/
+  `cost_budget`, defaults 1.0/3.0/10.0 matching F# and C); the
+  child-direction index is read from a registered `child_pred` source
+  (default `category_child`, e.g. the LMDB DUPSORT sub-db) or derived
+  once by reversing the eager parent table
+  (`ensure_reverse_edge_index`). Runtime additions:
+  `register_foreign_f64_config`/`foreign_f64_config`,
+  `register_ffi_fact_pairs`. Mirrors the Haskell/F# opt-in upgrade
+  shape (`maybe_upgrade_bidirectional`); default emission is
+  unchanged (regression-guarded). New
+  `tests/test_wam_rust_bidirectional_e2e.pl`: codegen assertions,
+  default-mode guard, and a cargo-built execution test with
+  hand-checked path enumerations (two pure-parent paths; a mixed
+  child+parent route that exists only because the A* bound prunes the
+  upward detour; unreachable-root failure). The benchmark harness
+  (`main.rs.mustache`) gained a `{{#bidirectional_kernel}}` branch:
+  calibration hoisted out of the seed loop, per-seed direction-weighted
+  power mean (F# `effectiveDistanceWeighted`); first numbers in
+  `docs/reports/wam_rust_bidirectional_kernel_synthetic_bench.md`
+  (tuple_count parity with the upward-only kernel at 1k/10k; ~6.5×
+  query cost at 10k — the price of enumerating both directions).
+
+### Fixed
+- **WAM R target (M152): lowered fast path shadowed runtime-asserted
+  clauses.** Review finding from the Tn-lowering-vs-fact-sources
+  audit: `dispatch_call`/`Call`/`Execute` consulted
+  `program$lowered_dispatch` before the dynamic-clause tier, and a
+  lowered fn returns TRUE/FALSE definitively — so a predicate lowered
+  at codegen that later gained `assertz/1` clauses would have them
+  silently invisible. New `WamRuntime$lowered_path_ok` guard skips
+  the fast path whenever dynamic clauses exist for the key (the
+  interpreter path unions compiled + dynamic correctly). External
+  fact sources (LMDB/CSV) were audited SAFE by construction across
+  Scala/R/Rust: they compile to CallForeign stubs that fail lowering
+  gates (Scala), or the lowered path delegates foreign calls to step
+  (R), and runtime-built fact indexes are shared by both paths.
+- **WAM Rust target (M151): all-native/kernel projects generated
+  uncompilable crates.** The long-standing `test_wam_rust_runtime`
+  e2e failure (last item of the campaign ledger's small fixes) was
+  not a wrong answer — the generated crate never compiled. Three
+  interacting generator defects: (1) `shared_wam_program()` was not
+  emitted when no predicate used the shared-WAM strategy, but the
+  main template imports/calls it unconditionally (now emits an empty
+  stub); (2) FFI-kernel predicates emitted only a `// dispatched via
+  CallForeign` comment with no public symbol for library consumers
+  (now also emit a self-registering wrapper); (3) the runtime-parser
+  era arity-suffix rename (`tc_descendant` → `tc_descendant_2`)
+  leaked into foreign-lowered entry points, breaking the documented
+  import contract (kernel wrappers now use the bare name; generic
+  WAM wrappers keep the suffix).
+- **WAM Scala target (M150): any format string containing a space
+  wrong-failed its predicate.** `tokenize_wam_line`'s quote-aware
+  tokenizer left a residual empty token when a quoted operand was
+  followed by the operand comma (`put_constant '~a is ~w!', A1`), so
+  the parts list never matched the 3-arg `put_constant` clause and
+  the instruction fell to the failing fallback. Empty tokens are now
+  filtered. Fixes the pre-existing `builtin_format` failure in the
+  runtime smoke (`wam_format_combo/2`).
+- **WAM Haskell target (M150): silent lowering failure on an
+  uninitialized intern table.** `intern_atom/2` failed silently
+  (failed `retract`) when called before `init_atom_intern_table` —
+  standalone callers of the exported `lower_predicate_to_haskell`
+  API (e.g. the phase-4 suite's `put_structure` test) failed without
+  a message for months. Now self-initializing. Also fixed the
+  phase-4 `escape_dq` test, whose atom-vs-string `==` comparison
+  could never have succeeded. `test_wam_haskell_lowered_phase4` now
+  exits 0 with all tests passing (the last ledger "exits false
+  despite all-PASS output" mystery).
+- **WAM ILasm target (M149): full repair campaign — the target now
+  assembles, runs, and executes correctly end-to-end.** All 13
+  structural defects documented by the sweep are fixed in the
+  generators: `tail.` directive, valid + lazily-invoked per-predicate
+  initializers, real IL `Instruction` construction (was C# pseudo-code
+  spliced into bodies), indexed label-table stores, top-level type
+  emission (Value/WamState were nested inside Program while referenced
+  top-level), default ctors for StackEntry/TrailEntry/ChoicePoint,
+  receiver-before-argument IL operand order across the step cases,
+  `!0` generic memberrefs, real `call`/`deallocate` bodies, run_loop
+  merge-point stack balance, List.Add receiver order, `cut_ite`/`jump`
+  lowerings (ITE-commit class), and the `var/nonvar/atom/=` builtins —
+  with `=/2` doing full unification whose var-var case ALIASES cells
+  via a forwarding pointer (the M143 lesson), trailed and dissolved on
+  backtrack. Integer constants now pack `(tag<<16)|reg` so
+  `put_constant 1` stops decoding as the atom "1". Builtin ids
+  harmonized with LLVM's numbering. New gated exec smoke test
+  (`tests/test_wam_ilasm_exec_smoke.pl`): all 14 probe legs pass under
+  ilasm + mono. Suites: structural 45/45, integration e2e 12/12,
+  cross-target consistency 22/22, pipeline script 7/7 (its test 6 was
+  failing before this work). Project writers now open output streams
+  with `encoding(utf8)` (POSIX-locale safety).
+- **WAM Kotlin target (M148): builtin table and ITE commit.** The
+  final sweep target (kotlinc 2.1.0). The runtime's `builtin_call`
+  case implemented ONLY `=/2` — `var/1`, `nonvar/1`, `atom/1`,
+  `is/2`, `=:=/2`, even `true/0` all failed closed, and `cut_ite`
+  was registered but had no `step()` case, so a successful ITE
+  condition backtracked into the else branch (the M144 bug class,
+  fifth target found with it). Added: six type-check builtins,
+  `true/0`, `is/2` + the arith comparison family backed by a new
+  `evalArith` (numeric leaves + standard binary/unary operators),
+  and `cut_ite`/`jump`/`get_level`/`cut` step cases. Var-var
+  aliasing was probed CLEAN (no M143 bug). All 15 probe query legs
+  now pass; `test_wam_kotlin_target` 9/9.
+- **WAM Elixir target (M147): interpreter mode entirely broken; type
+  checks missing in all modes.** Round 2 of the cross-target sweep
+  (Lua, R, Clojure, WAT: clean) found four layered defects:
+  (1) interpreter-mode predicate modules were emitted with raw
+  lowercase names (`defmodule WamPred.probe1`) — an Elixir
+  `CompileError`, so such projects never loaded (now camelized);
+  (2) the WAM compiler emits bare `allocate`, but the converter only
+  knew `allocate N`, so it fell to the `{:raw, ...}` fallback and the
+  runtime step catch-all turned it into `:fail` — every predicate
+  with an environment frame wrong-failed (now `{:allocate, 0}`);
+  (3) `cut_ite` and `jump` had no converter clauses or step arms, so
+  if-then-else could never commit and a failing then-branch
+  backtracked into the else (the M144 bug class; both now
+  implemented); (4) the type-check builtins (`var/1`, `nonvar/1`,
+  `atom/1`, `integer/1`, `number/1`, `atomic/1`) were absent from
+  `execute_builtin` and crashed with `{:unknown_builtin, ...}` in
+  every emit mode (all six added). All 12 probe queries now pass in
+  both interpreter and lowered modes.
+- **WAM Haskell target (M145): ST-mode crash on every if-then-else
+  predicate.** The sweep-found known issue: `stepST`'s
+  `GetLevel`/`Cut` handlers used raw `writeArray`/`readArray` on the
+  register STArray sized `(1, maxRegId=199)`, but their operands are
+  Y registers (ids 201+), which live in env frames on the ST path —
+  any ITE predicate crashed `runMutableRegs` with an index error
+  (the runner the generated default `Main.hs` actually uses). Both
+  handlers now route through the env-frame-aware
+  `putRegST`/`getRegST`. All 5 sweep probes now pass on both the
+  pure and ST runners.
+- **WAM Scala target (M146): lowered mode uncompilable with
+  `put_variable`.** The sweep-found known issue: the lowered emitter
+  emitted a bare `{ val v = ... }` block after a call statement,
+  which scalac parses as an argument list to the preceding
+  expression (`Unit does not take parameters`) — every
+  `emit_mode(functions)` project containing `put_variable Yn, A1`
+  failed to compile. Now emitted as `locally { ... }`, forcing
+  statement position. Lowered projects compile and the sweep probes
+  pass with R=1/R=0 discriminators.
+- **WAM ILasm target: builtin opcode table never matched.**
+  Sweep round 2 finding: `atom_string/2` arguments were reversed in
+  `wam_line_to_cil_literal` for `builtin_call`, so the lookup key
+  stayed a string and never matched the atom-keyed
+  `builtin_op_to_cil_id/2` table — every builtin compiled to the
+  unknown-op fallback and unconditionally failed. Fixed (with an
+  explicit op-99 fallback instead of falling through to the `// TODO`
+  comment, which produced null instruction slots). NOTE: this is one
+  of 14 defects the sweep documented in this target — see Known
+  issues; the target does not yet assemble end-to-end.
+
+### Known issues (sweep round 2, 2026-06-11)
+- **WAM JVM target: structurally non-executable.** The generated
+  assembly is rejected by a real Krakatau v2 assembler: runtime
+  emitted as method-less code fragments at class level, predicate
+  files lack class headers, instruction operands are lost into `;`
+  comments, and the harmful `ldc` catch-all (flagged in
+  `docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`) is confirmed. No engine
+  exists to host correctness probes — needs a ground-up
+  implementation campaign, not fixes.
+- **WAM Rust target (M144): if-then-else never committed.** The
+  sweep-found known issue: `cut_ite` was translated to
+  `Instruction::NoOp`, so a then-branch failure backtracked into the
+  else branch (`( 1 =:= 1 -> R is 1 ; R is 0 )` queried with R=0
+  succeeded). The Rust compile path now defaults
+  `ite_use_y_level(true)` and the runtime implements
+  `GetLevel`/`CutTo` (snapshot/truncate the choice-point stack, with
+  the Y-register read going through the env-frame-aware `get_reg`),
+  cutting the guard plus any inner condition choice points exactly.
+  Legacy `cut_ite` maps to a real single-CP `CutIte` rather than
+  NoOp. The lowered emitter accepts the new `get_level`/`cut Yn`
+  bytecode (commit consumed by the shared structurer). Pre-existing
+  unrelated failure noted: `test_wam_rust_runtime` e2e fails
+  identically on unmodified main.
+- **WAM C + C++ targets (M143): var-var unification created no
+  alias.** Found by a behavioral sweep of 8 targets with the
+  M139/M140 probe shapes (Rust, Python, Go, Haskell, F#, Scala
+  interpreters: clean). Both runtimes copied one unbound marker over
+  the other when unifying two unbound cells, leaving the variables
+  independent: `X = Y, X = 1, Y = 2` **succeeded** and
+  `X = Y, X = 42, Y =:= 42` failed — in the C++ case in both
+  interpreter and lowered modes, since the bug sat in the shared
+  runtime (`unify_cells`).
+  - **C** (`wam_c_runtime/wam_runtime.h`): the unbound-unbound case
+    now installs a `VAL_REF` from one cell to the other's heap slot
+    (preferring a heap-resident referent; two non-heap cells keep
+    the legacy copy as a last resort).
+  - **C++** (`wam_cpp_target.pl` runtime): the cell model has no Ref
+    tag and 100+ direct payload-read sites, so instead of a
+    forwarding tag the fix records var-var **alias pairs**;
+    `bind_cell` propagates a later real value across the alias graph
+    (each write individually trailed), and `alias_pop` trail entries
+    dissolve pairs on backtrack. All 13 inline trail-unwind loops
+    were routed through the alias-aware `unwind_trail_to` (the
+    first cut left them raw and segfaulted on backtrack over an
+    alias entry).
+  - New gated exec regression tests: `tests/test_wam_c_var_alias.pl`
+    and `tests/test_wam_cpp_var_alias.pl` (chain, conflict-must-fail,
+    3-deep chain, alias-dissolves-on-backtrack).
+- **WAM LLVM test harness (M142): integer tag-check in exec-driver
+  result reads.** Both integer drivers returned the raw payload of
+  the result register — a non-integer result leaked its atom id or
+  heap address as a mystery exit code (a test ending in `X = x`
+  exited 90, the atom id of `x`), producing two red-herring diagnoses
+  during the M138–M141 work. The drivers now deref the result and
+  require an Integer tag: wrong tag exits 254 with an explanatory
+  message, and predicate failure (255) gets one too.
+
+- **WAM LLVM target (M141): `is_list/1` never succeeded.** The
+  follow-up flagged in M140: `builtin_is_list_check` accepted only
+  the legacy tag-4 List value, but the engine builds lists as
+  `[|]/2` compounds and `[]` as an atom — so `is_list/1` failed on
+  every list the engine actually produces, including `is_list([])`.
+  Replaced with a proper ISO cons-chain walk: true at the `[]` atom
+  (or a legacy tag-4 List), steps through `[|]/2` tails with full
+  deref, false for atoms, partial lists (`[a|_]`), and unbound
+  variables. Six tests in the new
+  `--- M141 is_list/1 cons-chain walk ---` section.
+- **WAM LLVM target (M141): duplicate predicate compilation with
+  unqualified root specs.** `expand_wam_llvm_project_predicates`
+  discovers call targets in qualified form (`user:node/1`), but the
+  seen-set dedup compared them against the raw root list — an
+  unqualified root (`node/1`) never matched, so the predicate was
+  compiled into the merged module twice and `llc` rejected the
+  duplicate `@<pred>_switch_N` globals (`redefinition of global`).
+  Roots are now normalized to `Module:Pred/Arity` before seeding the
+  expansion. Surfaced by `test_sum_float` failing in isolation;
+  previously masked by in-suite test ordering.
+- **WAM LLVM target (M140): remaining put-instruction bind-throughs**
+  — completes the M139 audit. `put_constant`, `put_structure`, and
+  `put_list` called `@wam_bind_through_if_unbound_ref(old, val)`
+  unconditionally, binding any live unbound variable whose Ref
+  remained in the target register when staging an argument:
+  `var(X), atom(foo)` bound X to `foo`, `var(X), compound(f(a))`
+  bound X to the compound, and the list variant corrupted X the same
+  way. The bind-through is **conditional on register class** now:
+  A-register writes (index < 16) are pure staging for the next goal
+  and never bind the old occupant; X/Y-register writes keep the
+  bind-through because top-down structure chaining depends on it —
+  `set_variable Xn` leaves a Ref to the parent compound's arg slot
+  in `Xn`, and the following `put_structure [|]/2, Xn` binding
+  through that Ref is what links the nested cell into its parent
+  (e.g. building `[33, 11, 22]` in `test_msort_head`; full removal
+  broke it, caught by the suite). `get_list` keeps its bind-through —
+  the legitimate write-mode head binding, guarded by a regression
+  test. Removing the staging bind-throughs unmasked a deeper bug they
+  had been compensating for: **bindings did not follow Ref chains to
+  the end**. `X = Y` aliases `cell1 -> Ref{cell2}`, but a later
+  `X = 42` wrote 42 into `cell1` — the alias link — leaving `cell2`
+  (the cell Y reads) unbound, so `X = Y, X = 42, Y =:= 42` failed.
+  Fixed in both binders: `@wam_bind_reg` now follows the Ref chain
+  via a new `@wam_last_ref` helper and writes at the chain end
+  (one-hop Refs behave exactly as before), and `@wam_unify_value`'s
+  bind-through-Ref paths bind at the chain end, alias to the
+  partner's chain-end Ref (keeping chains depth-bounded), and
+  succeed without writing when both chains already end at the same
+  cell (already-aliased vars; writing would self-reference). Six
+  tests in the new
+  `--- M140 remaining put-instruction bind-throughs ---` section.
+  Found but out of scope: `is_list([a])` fails standalone (the
+  pre-existing put_list heap-marker-representation limitation).
+- **WAM LLVM target (M139): permanent-variable corruption via the
+  put-instruction bind-through.** The pre-existing bug noted in the
+  M138 test comments: top-level fresh-variable goals mis-executed —
+  `var(X), X = done` failed, and `var(X)` followed by `nonvar(X)`
+  BOTH succeeded on the same unbound variable. Root cause:
+  `put_variable Yn, Ai` places the same `Ref{addr}` into both
+  registers, and the later `put_value`/`put_variable` over `Ai`
+  called `@wam_bind_through_if_unbound_ref(old_Ai, val)`, which
+  either (a) wrote the Ref back into its own cell — a
+  self-referential cell that derefs to itself, so `var/1` saw the
+  variable as bound and every later unification corrupted — or
+  (b) bound the live unbound variable previously occupying `Ai` to
+  the incoming value, silently aliasing two unrelated variables
+  (e.g. in `var(X), R0 is 1, X = x` the `put_variable` staging `R0`
+  bound `X` to `R0`, so `X = x` then failed against `1`). Fixed
+  three ways: a self-reference guard in
+  `@wam_bind_through_if_unbound_ref` (never store a Ref into its own
+  cell), `put_value` is now a pure register copy per standard WAM,
+  and `put_variable` no longer binds `Ai`'s previous occupant. The
+  remaining bind-through callers (`put_constant`, `put_structure`,
+  `put_list`, `get_list`) are unchanged but now protected by the
+  self-reference guard. Five regression tests in the new
+  `--- M139 put_value Y-reg aliasing ---` section.
+- **WAM LLVM target (M138): `@value_equals` call-site audit** — the
+  follow-up flagged in the M137 (#2929) review. Three bound-bound
+  compare sites used shallow equality where WAM semantics require
+  unification, and one equality site inherited the M137 nested-Ref bug:
+  - `get_value` now routes its bound-bound case through
+    `@wam_unify_value` — `p(X, X)` heads called with unifiable
+    compounds like `p(f(A), f(B))` previously failed instead of
+    binding `A = B`.
+  - `unify_value` (read mode) both-bound case likewise unifies; it
+    also never dereffed either side, so Ref-wrapped values compared
+    by heap address.
+  - `arg/3` with bound A3 now unifies with the extracted argument
+    (ISO behavior); the argument slot may hold a Ref the old compare
+    saw as an address. `arg(1, h(f(a)), f(a))` previously failed.
+  - `sort/2` dedup now uses `@wam_strict_eq` (dedup is `==/2`
+    equality — it must not bind, so unification would be wrong):
+    duplicate compounds with Ref-stored args survived dedup
+    (`sort([f(g(a)), f(g(a))], L)` kept both).
+  - `@wam_strict_eq` now derefs via a new `@wam_deref_keep_var`
+    helper that stops at the last Ref when the target cell is
+    unbound, so variable identity is the cell address: `X == X` is
+    true, `X == Y` (distinct fresh vars) is false, and sort/2 keeps
+    `f(X)` / `f(Y)` distinct without binding them. Previously every
+    unbound var collapsed to the shared `{tag 6, payload 0}`
+    sentinel and compared equal.
 - **WAM LLVM target: undefined `@wam_dispatch_meta_call` when every
   predicate is fully lowered.** With `emit_mode(functions)` and all
   predicates natively lowered, no bytecode records exist, so the merged

@@ -68,6 +68,9 @@
 	parse_wam_text_py/2,
 	python_func_name/2,
 	py_structured_clause1/2,
+	py_multi_clause_1/2,
+	py_multi_clause_n/2,
+	emit_multi_clause_n_python/4,
 	emit_structured_python/4
 ]).
 :- use_module('../targets/wam_text_parser',
@@ -1621,14 +1624,32 @@ format_python_wam_registrar(Pred/Arity, Options, InstrLiterals, PythonCode) :-
 %  a name collision with the pred_* lowered function itself.
 compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode) :-
 	% Soft-cut if-then-else / negation / once lowers via the shared
-	% structurer; everything else takes the straight-line deterministic
-	% path (unchanged).
+	% structurer; single deterministic predicates take the straight-line path.
+	% Multi-clause predicates prefer T4 (every clause body lowered, the
+	% try/retry/trust dispatch scaffold retained so the runtime's choice-point
+	% machinery drives backtracking) and fall back to T3 (clause-1 fast path,
+	% clauses 2+ left as full bytecode) when some later clause is unsupported.
 	(   py_structured_clause1(WamCode, Structured)
-	->  emit_structured_python(Pred/Arity, Structured, Options, LoweredFn)
+	->  emit_structured_python(Pred/Arity, Structured, Options, LoweredFn),
+	    stub_lowered_registrar(Pred/Arity, Registrar)
 	;   parse_wam_text_py(WamCode, Instrs),
-	    is_deterministic_pred_py(Instrs),
-	    emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn)
+	    is_deterministic_pred_py(Instrs)
+	->  emit_lowered_python(Pred/Arity, Instrs, Options, LoweredFn),
+	    stub_lowered_registrar(Pred/Arity, Registrar)
+	;   py_multi_clause_n(WamCode, Clauses)
+	->  emit_multi_clause_n_python(Pred/Arity, Clauses, Options, LoweredFn),
+	    multi_clause_n_registrar(Pred/Arity, WamCode, Options, Registrar)
+	;   py_multi_clause_1(WamCode, Clause1Instrs)
+	->  emit_lowered_python(Pred/Arity, Clause1Instrs, Options, LoweredFn),
+	    multi_clause_1_registrar(Pred/Arity, WamCode, Registrar)
 	),
+	atomic_list_concat([LoweredFn, '\n\n', Registrar], PythonCode).
+
+%% stub_lowered_registrar(+Pred/Arity, -Registrar)
+%  Whole-predicate replacement: the lowered function captures the COMPLETE
+%  predicate semantics (T1 single clause, or T2 structured if-then-else), so
+%  the registered program is just a call_lowered stub.
+stub_lowered_registrar(Pred/Arity, Registrar) :-
 	atom_string(Pred, PredStr),
 	python_func_name(Pred/Arity, FuncName),
 	atom_concat(register_, FuncName, RegistrarName),
@@ -1640,8 +1661,186 @@ compile_lowered_wam_predicate_to_python(Pred/Arity, WamCode, Options, PythonCode
         ("call_lowered", ~w, ~w),
         ("proceed",),
     )
-', [RegistrarName, PredStr, Arity, LabelKey, FuncName, Arity]),
-	atomic_list_concat([LoweredFn, '\n\n', Registrar], PythonCode).
+', [RegistrarName, PredStr, Arity, LabelKey, FuncName, Arity]).
+
+%% multi_clause_1_registrar(+Pred/Arity, +WamCode, -Registrar)
+%  T3 registrar: keep the FULL predicate bytecode but replace clause 1's body
+%  with a call_lowered to the lowered clause-1 function. The leading
+%  try_me_else (pushing the choice point onto clause 2) and the clause-2+
+%  bytecode are retained verbatim, so on clause-1 SUCCESS the call_lowered
+%  falls through to proceed (the clause-2 choice point is correctly left for
+%  backtracking), and on clause-1 FAILURE the runtime's call_lowered handler
+%  calls fail(), which pops that choice point — restoring trail and registers —
+%  and resumes the interpreter at clause 2. Labels are emitted as inline
+%  ("__label__", Name) markers, so load_program recomputes PCs and no manual
+%  PC arithmetic is needed after the clause-1 collapse.
+multi_clause_1_registrar(Pred/Arity, WamCode, Registrar) :-
+	wam_code_to_python_instructions(WamCode, Pred/Arity, FullInstrLiterals, _Labels),
+	split_string(FullInstrLiterals, "\n", "", Lines0),
+	python_func_name(Pred/Arity, FuncName),
+	rewrite_clause1_to_call_lowered(Lines0, FuncName, Arity, Lines),
+	atomic_list_concat(Lines, '\n', Body),
+	atom_string(Pred, PredStr),
+	atom_concat(register_, FuncName, RegistrarName),
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	format(string(Registrar),
+'def ~w(raw_program):
+    """Register T3 clause-1 fast path for ~w/~w (clauses 2+ stay in bytecode)."""
+    raw_program["~w"] = (
+~w
+    )
+', [RegistrarName, PredStr, Arity, LabelKey, Body]).
+
+%% multi_clause_n_registrar(+Pred/Arity, +WamCode, -Registrar)
+%  T4 registrar (hybrid): keep the FULL predicate bytecode but replace EVERY
+%  clause's body with a call_lowered to that clause's native function
+%  (pred_*_cK). The try_me_else / retry_me_else / trust_me dispatch scaffold and
+%  all labels are retained verbatim, so the runtime's choice-point machinery
+%  still drives clause dispatch and backtracking exactly as for the bytecode
+%  interpreter — but each clause body now runs as native Python. On a clause's
+%  call_lowered SUCCESS the scaffold falls through to that clause's proceed
+%  (later-clause choice points left for backtracking); on FAILURE the runtime
+%  calls fail(), popping to the next clause's retry_me_else / trust_me. Labels
+%  stay inline ("__label__", Name), so load_program recomputes PCs after the
+%  per-clause body collapse.
+multi_clause_n_registrar(Pred/Arity, WamCode, Options, Registrar) :-
+	wam_code_to_python_instructions(WamCode, Pred/Arity, FullInstrLiterals, _Labels),
+	split_string(FullInstrLiterals, "\n", "", Lines0),
+	python_func_name(Pred/Arity, FuncBase),
+	rewrite_clauses_to_call_lowered(Lines0, FuncBase, Arity, 0, Lines1),
+	% T6 first-argument indexing: if the predicate carries a switch index (left
+	% by the compiler as a "# SKIP: switch_on_constant ..." comment) and has
+	% enough distinct keys, turn it into a real ("switch_on_constant", {...})
+	% instruction so the runtime jumps O(1) to the matching clause body for a
+	% bound first arg (skipping to the try/retry chain for an unbound one).
+	python_t6_enable_switch(Lines1, FuncBase, Options, Lines),
+	atomic_list_concat(Lines, '\n', Body),
+	atom_string(Pred, PredStr),
+	atom_concat(register_, FuncBase, RegistrarName),
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	format(string(Registrar),
+'def ~w(raw_program):
+    """Register T4 all-clauses lowering for ~w/~w (native bodies, bytecode dispatch)."""
+    raw_program["~w"] = (
+~w
+    )
+', [RegistrarName, PredStr, Arity, LabelKey, Body]).
+
+%% python_t6_enable_switch(+Lines, +FuncBase, +Options, -Out)
+%  T6 first-argument indexing. The compiler emits the index as a comment
+%  ("# SKIP: switch_on_constant s01:default s02:L_..._2_body ..."). When it has
+%  >= t6_min_clauses entries (default 8) and a single "default" slot (clause 1),
+%  rewrite it into a real ("switch_on_constant", {key: label, ...}) instruction
+%  and insert a fresh clause-1 body label (the index's "default" slot) so EVERY
+%  key maps to a real label — required because the runtime's switch_on_constant
+%  fails (not falls through) on a bound key that is absent, and skips to the
+%  following try/retry chain only for an UNBOUND first argument. Below the
+%  threshold (or with no switch index) the predicate keeps the T4
+%  bytecode-dispatch behaviour and Lines is returned unchanged.
+python_t6_enable_switch(Lines, FuncBase, Options, Out) :-
+	( member(t6_min_clauses(Min), Options) -> true ; Min = 8 ),
+	once(( member(SkipLine, Lines),
+	       sub_string(SkipLine, _, _, _, "# SKIP: switch_on_constant") )),
+	python_parse_switch_skip(SkipLine, Entries),
+	length(Entries, NE), NE >= Min,
+	include([_-L]>>(L == "default"), Entries, Defaults),
+	Defaults = [_],          % exactly one default slot (clause 1)
+	!,
+	format(atom(C1Label), 'L_~w_clause1_body', [FuncBase]),
+	maplist(python_switch_entry_resolved(C1Label), Entries, EntryStrs),
+	atomic_list_concat(EntryStrs, ', ', DictBody),
+	format(string(SwitchLit), '        ("switch_on_constant", {~w}),', [DictBody]),
+	maplist(python_replace_line(SkipLine, SwitchLit), Lines, Lines1),
+	python_insert_c1_label(Lines1, C1Label, Out).
+python_t6_enable_switch(Lines, _FuncBase, _Options, Lines).
+
+%% python_parse_switch_skip(+SkipLine, -Entries)  Entries = [KeyStr-LabelStr, ...]
+python_parse_switch_skip(SkipLine, Entries) :-
+	split_string(SkipLine, " \t", " \t", Toks0),
+	exclude(==(""), Toks0, Toks),
+	append(_, ["switch_on_constant"|EntryToks], Toks),
+	!,
+	maplist(python_parse_switch_entry, EntryToks, Entries).
+
+python_parse_switch_entry(Tok, Key-Label) :-
+	sub_string(Tok, Bi, 1, _, ":"), !,
+	sub_string(Tok, 0, Bi, _, Key),
+	Ai is Bi + 1,
+	sub_string(Tok, Ai, _, 0, Label).
+
+%% python_switch_entry_resolved(+C1Label, +Key-Label0, -EntryStr)
+%  Resolve the "default" label to the inserted clause-1 body label; quote atom
+%  keys, leave integer keys bare (matching switch_entry_to_python).
+python_switch_entry_resolved(C1Label, Key-Label0, EntryStr) :-
+	( Label0 == "default" -> Label = C1Label ; Label = Label0 ),
+	( number_string(N, Key)
+	->  format(string(EntryStr), '~w: "~w"', [N, Label])
+	;   format(string(EntryStr), '"~w": "~w"', [Key, Label]) ).
+
+python_replace_line(Target, New, Line, Out) :-
+	( Line == Target -> Out = New ; Out = Line ).
+
+%% python_insert_c1_label(+Lines, +C1Label, -Out)
+%  Insert ("__label__", C1Label) right after the FIRST try_me_else literal, so a
+%  switch hit on the clause-1 key lands on clause 1's body (skipping the
+%  try_me_else, hence no choice point — the bound case is deterministic).
+python_insert_c1_label([L|Ls], C1Label, Out) :-
+	(   sub_string(L, _, _, _, "(\"try_me_else\"")
+	->  format(string(LabelLit), '        ("__label__", "~w"),', [C1Label]),
+	    Out = [L, LabelLit | Ls]
+	;   Out = [L|Rest],
+	    python_insert_c1_label(Ls, C1Label, Rest)
+	).
+python_insert_c1_label([], _C1Label, []).
+
+%% rewrite_clauses_to_call_lowered(+Lines, +FuncBase, +Arity, +K, -Out)
+%  Walk the predicate's instruction literals, replacing each clause body with a
+%  single call_lowered to pred_*_c<K> (K = 1-based clause index, incremented at
+%  each proceed/fail terminator). Labels, the try/retry/trust dispatch markers,
+%  and switch SKIP comments are passed through unchanged; body instruction
+%  literals are dropped (their work moves into the per-clause function).
+rewrite_clauses_to_call_lowered([], _FuncBase, _Arity, _K, []).
+rewrite_clauses_to_call_lowered([L|Ls], FuncBase, Arity, K, Out) :-
+	(   clause_terminal_literal(L)
+	->  K1 is K + 1,
+	    format(atom(FN), '~w_c~w', [FuncBase, K1]),
+	    format(string(CallLowered), '        ("call_lowered", ~w, ~w),', [FN, Arity]),
+	    Out = [CallLowered, L | Rest],
+	    rewrite_clauses_to_call_lowered(Ls, FuncBase, Arity, K1, Rest)
+	;   clause_passthrough_literal(L)
+	->  Out = [L | Rest],
+	    rewrite_clauses_to_call_lowered(Ls, FuncBase, Arity, K, Rest)
+	;   % body instruction literal — drop (folded into the per-clause function)
+	    rewrite_clauses_to_call_lowered(Ls, FuncBase, Arity, K, Out)
+	).
+
+clause_terminal_literal(L) :-
+	( sub_string(L, _, _, _, '("proceed",)')
+	; sub_string(L, _, _, _, '("fail",)') ).
+
+clause_passthrough_literal(L) :-
+	( sub_string(L, _, _, _, '("__label__"')
+	; sub_string(L, _, _, _, '("try_me_else"')
+	; sub_string(L, _, _, _, '("retry_me_else"')
+	; sub_string(L, _, _, _, '("trust_me",)')
+	; sub_string(L, _, _, _, "# SKIP")
+	).
+
+%% rewrite_clause1_to_call_lowered(+Lines, +FuncName, +Arity, -Out)
+%  Replace the clause-1 body literals — those strictly between the predicate's
+%  first try_me_else literal and the next ("__label__", ...) literal (clause 2)
+%  — with a single call_lowered + proceed. Everything before the try_me_else
+%  (the pred label and any switch_on_* indexing prefix) and from clause 2
+%  onward is preserved verbatim.
+rewrite_clause1_to_call_lowered(Lines, FuncName, Arity, Out) :-
+	nth0(I0, Lines, TmeLine), sub_string(TmeLine, _, _, _, "try_me_else"), !,
+	Skip is I0 + 1,
+	length(Head, Skip), append(Head, AfterTme, Lines),
+	nth0(J, AfterTme, LblLine), sub_string(LblLine, _, _, _, "__label__"), !,
+	length(Clause1Body, J), append(Clause1Body, Clauses2Plus, AfterTme),
+	format(string(CallLowered), '        ("call_lowered", ~w, ~w),', [FuncName, Arity]),
+	Proceed = '        ("proceed",),',
+	append(Head, [CallLowered, Proceed|Clauses2Plus], Out).
 
 %% build_python_wam_arg_list(+Arity, -ArgList)
 %  Build the Python function argument list.
@@ -1999,6 +2198,10 @@ compile_all_predicates(Predicates, Options, Code) :-
 	atomic_list_concat([
 		'"""WAM-compiled predicates — generated by UnifyWeaver"""\n',
 		'from wam_runtime import *\n',
+		% Structure read/write-ctx helpers (underscore-prefixed, so not pulled in
+		% by `import *`) used by the lowered emitter to build/match compounds with
+		% the same model as the bytecode interpreter.
+		'from wam_runtime import _begin_write_ctx, _write_ctx_put, _begin_read_ctx, _read_ctx_get, _read_ctx_skip, _is_cons_functor\n',
 		'# WAM register index constants (A1..A128 = 1..128, X1..X128 = 129..256, Y1..Y128 = 301..428)\n',
 		'globals().update({f\"A{i}\": i for i in range(1, 129)})\n',
 		'globals().update({f\"X{i}\": 128 + i for i in range(1, 129)})\n',
@@ -2151,6 +2354,8 @@ lowered_candidate_wam(Wam) :-
 	(   parse_wam_text_py(WamText, Instrs),
 	    is_deterministic_pred_py(Instrs)
 	;   py_structured_clause1(WamText, _)    % soft-cut if-then-else / \+ / once
+	;   py_multi_clause_n(WamText, _)        % T4: multi-clause, all clauses lowered
+	;   py_multi_clause_1(WamText, _)        % T3: multi-clause clause-1 fast path
 	).
 
 fix_lowered_route_set(Current, Plans, Options, Final) :-
@@ -2168,10 +2373,28 @@ lowered_route_supported(Plans, Options, Current, Pred/Arity) :-
 	findall(CalleePred/CalleeArity, direct_wam_call(Instrs, CalleePred/CalleeArity), Calls0),
 	sort(Calls0, Calls),
 	forall(member(CalleePred/CalleeArity, Calls),
-	    ( member(CalleePred/CalleeArity, Current)
+	    ( whole_predicate_lowering(Plans, Current, CalleePred/CalleeArity)
 	    ; is_ffi_predicate(CalleePred, CalleeArity, Options)
 	    ; \+ planned_predicate(Plans, CalleePred/CalleeArity)
 	    )).
+
+%% whole_predicate_lowering(+Plans, +Current, +Pred/Arity) is semidet.
+%  True when Pred/Arity is lowered as a COMPLETE predicate (T1 deterministic
+%  single clause, or T2 structured if-then-else) — its pred_* function captures
+%  the whole predicate, so a lowered caller may invoke it directly. A T3
+%  predicate (py_multi_clause_1, clause-1 fast path only) is deliberately
+%  excluded: its pred_* runs clause 1 alone, with clauses 2+ reachable only via
+%  the interpreter's call_lowered fallback. So a predicate that directly calls a
+%  T3 predicate must NOT be lowered itself — it stays in the bytecode
+%  interpreter and reaches the T3 predicate (and its fallback) through a normal
+%  bytecode call.
+whole_predicate_lowering(Plans, Current, Pred/Arity) :-
+	member(Pred/Arity, Current),
+	member(pred_plan(Pred, Arity, Wam, wam), Plans),
+	wam_plan_text(Wam, WamText),
+	(   parse_wam_text_py(WamText, Instrs), is_deterministic_pred_py(Instrs)
+	;   py_structured_clause1(WamText, _)
+	).
 
 planned_predicate(Plans, Pred/Arity) :-
 	member(pred_plan(Pred, Arity, _WamCode, Kind), Plans),

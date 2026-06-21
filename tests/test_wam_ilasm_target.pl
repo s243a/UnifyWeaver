@@ -55,9 +55,13 @@ test(step_cil_generation) :-
     assertion(sub_atom(StepCode, _, _, _, 'L_try_me_else')),
     assertion(sub_atom(StepCode, _, _, _, 'L_trust_me')).
 
+% Updated with the executable-target repair: constants are now built via
+% make_constant (tag-dispatched), so step's type checks use
+% isinst UnboundValue (alias-aware unbound test) rather than
+% isinst IntegerValue.
 test(step_has_isinst) :-
     compile_step_wam_to_cil([], StepCode),
-    assertion(sub_atom(StepCode, _, _, _, 'isinst IntegerValue')).
+    assertion(sub_atom(StepCode, _, _, _, 'isinst UnboundValue')).
 
 test(step_has_virtual_calls) :-
     compile_step_wam_to_cil([], StepCode),
@@ -110,9 +114,12 @@ test(builtin_is_calls_eval_arith) :-
 % Phase 4: Instruction lowering
 % ============================================================================
 
+% Op2 now packs (tag<<16)|reg_idx (tag 1 = integer) so the runtime's
+% make_constant builds an IntegerValue; the old bare reg index decoded
+% every integer constant as an atom. 65536 = (1<<16)|0 for A1.
 test(cil_get_constant_literal) :-
     wam_instruction_to_cil_literal(get_constant(integer(42), 'A1'), Lit),
-    assertion(sub_atom(Lit, _, _, _, 'new Instruction(0, 42L, 0L)')).
+    assertion(sub_atom(Lit, _, _, _, 'new Instruction(0, 42L, 65536L)')).
 
 test(cil_get_variable_literal) :-
     wam_instruction_to_cil_literal(get_variable('X1', 'A1'), Lit),
@@ -144,8 +151,12 @@ test(parse_cil_line_allocate) :-
 test(parse_cil_label_resolution) :-
     WamCode = "parent/2:\n    try_me_else L_alt\nL_alt:\n    proceed",
     compile_wam_predicate_to_cil(parent/2, WamCode, [], CILCode),
-    % try_me_else should resolve L_alt (label index 1)
-    assertion(sub_atom(CILCode, _, _, _, 'new Instruction(22, 1L, 0L)')).
+    % try_me_else should resolve L_alt (label index 1). The literal is
+    % now lowered to the real IL construction sequence (the C#-style
+    % 'new Instruction(...)' pseudo-code was an ilasm syntax error):
+    % tag 22 (try_me_else), op1 = 1 (label index), op2 = 0.
+    assertion(sub_atom(CILCode, _, _, _,
+        'ldc.i4 22\n    ldc.i8 1\n    ldc.i8 0\n    newobj instance void Instruction::.ctor(int32, int64, int64)')).
 
 % ============================================================================
 % Phase 5: Full runtime + predicate wrapper
@@ -213,10 +224,13 @@ test(types_template_has_value_hierarchy) :-
     assertion(sub_atom(Template, _, _, _, 'WamState')),
     assertion(sub_atom(Template, _, _, _, 'ChoicePoint')).
 
+% The tail-call prefix is the IL opcode `tail.` (prefix before the call),
+% not the `.tail` directive form the template originally used (which
+% ilasm rejects with an irrecoverable syntax error).
 test(runtime_template_has_tail_call) :-
     wam_ilasm_target:read_template_file(
         'templates/targets/ilasm_wam/runtime.il.mustache', Template),
-    assertion(sub_atom(Template, _, _, _, '.tail')),
+    assertion(sub_atom(Template, _, _, _, 'tail.')),
     assertion(sub_atom(Template, _, _, _, 'run_loop')).
 
 test(state_template_has_array_clone) :-

@@ -1,6 +1,6 @@
 # Distributional Fit Policy
 
-This note specifies the policy layer between exact path-statistic distributions and closed-form approximations. It is a companion to `ROOT_ANCHORED_METRICS_SPECIFICATION.md` and `RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md`.
+This note specifies the policy layer between exact path-statistic distributions and closed-form approximations. It is a companion to `ROOT_ANCHORED_METRICS_SPECIFICATION.md`, `RECURRENCE_EVALUATION_STRATEGY_SPECIFICATION.md`, `DISTRIBUTIONAL_COMPRESSION_THEORY.md`, and `DISTRIBUTIONAL_COMPRESSION_IMPLEMENTATION_PLAN.md`.
 
 The problem: root-anchored metrics such as `d_wPow` often start with an exact finite histogram over path statistics. Near the root, or on small graphs, that histogram is cheap and should be kept exactly. Deeper in the graph, especially on enwiki, the support can grow enough that the runtime should switch to a compact representation. That switch must be explicit, diagnosable, and user-overridable.
 
@@ -10,6 +10,12 @@ The runtime should treat a node's path statistic as a representation choice:
 
 ```prolog
 distribution_state(exact_histogram(Bins)).
+
+distribution_state(tail_pruned_histogram(
+    ExactPrefix,
+    DroppedTailRange,
+    DroppedTailMass,
+    FunctionalErrorBounds)).
 
 distribution_state(hybrid_truncated(
     ExactPrefix,
@@ -28,6 +34,27 @@ distribution_state(parametric(
 ```
 
 `Bins` and `ExactPrefix` are finite maps from statistic value to mass. The statistic may be a hop count, weighted length, or a tuple such as `(parent_hops, child_hops)`.
+
+Every stored distribution also has an anchoring key. A node's distribution is
+not just "the distribution for node `V`"; it is the distribution for `V`
+relative to a root, boundary node, direction, statistic, and admissibility
+policy:
+
+```prolog
+distribution_anchor(
+    RootOrBoundary,
+    Direction,
+    PathStatistic,
+    CyclePolicy,
+    Horizon,
+    ScopeKey).
+```
+
+For a global root table, `ScopeKey` can be `global(Root)`. For a per-query
+calculation, `ScopeKey` may identify the ancestor cone of the target node. This
+matters because a deeper query may only need the distribution induced by the
+ancestors of the node of interest, not the distribution obtained by
+materialising the whole graph.
 
 For parent-only paths to a fixed root, the support is finite. Tail fits should therefore be finite-support fits, not infinite asymptotic tails:
 
@@ -51,17 +78,56 @@ else:
 
 `K = 10` is a reasonable first default because it keeps small hand-checkable histograms exact while preventing unbounded per-node vectors. It must be a configuration value, not a constant baked into generated code.
 
-The first tail family should be `truncated_geometric` or equivalently a discrete exponential over finite support. It is simple, has closed-form CDF/survival functions, and matches the intuition that longer parent-only paths often decay after the high-signal prefix. Do not assume a Poisson family by default: parent path distributions are finite, graph-constrained, and driven by branching structure rather than independent arrival counts.
+A light-tail histogram can sometimes be shortened before fitting any parametric
+family. If the suffix mass after a candidate cut is below `epsilon_tail`, and
+the discarded contribution to the requested functional is below its error
+budget, store `tail_pruned_histogram` rather than a fitted tail. This keeps the
+observed prefix exact while recording enough metadata to make the dropped suffix
+visible in diagnostics. For binomial-like or extremely light tails, this can
+remove a large fraction of bins; for skewed or medium/heavy tails, the same rule
+will refuse to prune because the suffix mass or functional contribution remains
+too large.
 
-Candidate families for later extension:
+After cheap exact encodings are considered, the candidate ladder should stay
+bounded and discrete first.  `truncated_geometric` remains useful for a visible
+finite-support exponential tail, but it should not be the universal first
+fallback.  Do not assume a Poisson family by default: parent path distributions
+are finite, graph-constrained, and driven by branching structure rather than
+independent arrival counts.
+
+Candidate representations:
 
 | Family | Use when |
 |--------|----------|
+| `tail_pruned_histogram` | The retained exact prefix plus dropped-tail certificate meets the error budget |
+| `quantized_cdf_table` | Prefix-mass queries dominate and CDF error is the right certificate |
 | `truncated_geometric` | Tail decays approximately exponentially after the exact prefix |
-| `truncated_discrete_normal` | Mass is concentrated around a mean with lower variance |
-| `beta_binomial` | Bounded support with measurable over/under-dispersion |
+| `binomial` | Bounded excess-event support where mean/variance recover compatible `n,p` |
+| `beta_binomial` | Bounded support with measurable over-dispersion beyond binomial variance |
+| `truncated_discrete_normal` | Large-depth CLT regime after CDF/W1 validation |
+| `mixture(binomial)` | Bounded discrete modes fit better than one family |
+| `discretized_gmm` | Narrow residual spikes or bottleneck modes survive cheaper discrete fits |
 | `empirical_sketch` | No simple family fits but quantile/CDF accuracy is enough |
-| `mixture(Families)` | Topical and administrative regimes visibly mix |
+
+The normal family should be treated as a large-depth approximation, not as the
+default for rare excess-parent events.  For real deep nodes, repeated shifted
+sums make binomial or normal approximations increasingly plausible by the
+central limit theorem.  That is a reason to try those families earlier in deep
+ancestor cones, not a reason to accept them without an error certificate.  In
+near-chain SimpleWiki regimes, binomial or empirical discrete priors preserve
+the skewed finite support more directly.  If measured parent degrees become
+scale-free rather than Poisson-like, the policy should favor empirical
+sketches, mixtures, or explicit hub handling instead of a single light-tailed
+count family.
+
+Gaussian mixtures are not deprioritized because they are wrong.  They are
+deprioritized because the primary object is a bounded integer histogram, and
+cheaper discrete encodings usually expose the same planner information with
+fewer parameters.  A mixture of binomials with shared support uses `2K - 1`
+parameters, while a Gaussian mixture needs `3K - 1`.  GMMs should be
+available as an escalation family when the residual error has sub-binomial-width
+spikes, bottleneck modes, or other structure that cheaper discrete candidates
+cannot pass through the CDF/W1 gate.
 
 The family choice should be evidence-driven. Simplewiki is a calibration fixture: compute exact parent-only distributions there, fit candidate tails, and measure error. Enwiki is the stress case where the representation switch is expected to matter.
 
@@ -87,7 +153,62 @@ representation_policy(...)
 metric_functional(...)
 ```
 
-## 4. User override surface
+## 4. Cumulative bases are acceleration layers
+
+A cumulative distribution function is useful, but it is not a replacement for
+the distribution state. It accelerates budgeted queries whose weighting function
+has been chosen in advance.
+
+The basic mass CDF is:
+
+```prolog
+cumulative_basis(mass).
+F0_v[B] = sum_{S <= B} P_v[S]
+```
+
+With that basis, reachability mass and interval mass are cheap:
+
+```prolog
+mass(S <= B) = F0_v[B]
+mass(B1 < S <= B2) = F0_v[B2] - F0_v[B1]
+```
+
+Other expectation forms need their own cumulative basis:
+
+```prolog
+cumulative_basis(moment(1)).
+F1_v[B] = sum_{S <= B} S * P_v[S]
+
+cumulative_basis(weighted_power(N)).
+FN_v[B] = sum_{S <= B} (S + 1)^(-N) * P_v[S]
+
+cumulative_basis(custom(Name)).
+FG_v[B] = sum_{S <= B} g_Name(S) * P_v[S]
+```
+
+This makes common functionals constant-time or interval-difference lookups, but
+each stored basis costs memory or storage. The representation policy should
+therefore decide which bases to materialise:
+
+```prolog
+cached_distribution(
+    raw_state(DistributionState),
+    cumulative_basis([mass, moment(1), weighted_power(N)]),
+    storage_policy(StoragePolicy)).
+```
+
+The default should be conservative: always expose mass when the support is wide
+enough to make repeated scans expensive; store first moments or weighted-power
+bases only when the workload asks for those functionals often enough to justify
+the space. For exact histograms with small support, scanning bins may be cheaper
+than storing cumulative arrays.
+
+For an arbitrary function `g(S)`, a CDF alone is insufficient. The runtime must
+either scan the exact bins, use an analytic integral supplied by the parametric
+family, evaluate a stored `custom(Name)` basis, approximate numerically, or emit
+a diagnostic that the requested functional has no supported cumulative basis.
+
+## 5. User override surface
 
 The long-term design goal is that users can modify the policy without rewriting target code. The compiler should expose a predicate hook that selects or overrides the representation policy.
 
@@ -134,7 +255,7 @@ default_distribution_policy(Node, Summary, Functional, Signals, Choice)
 
 User predicates can call the default and override only selected cases. This keeps the policy extensible without making target adapters depend on project-specific Prolog code.
 
-## 5. Cost and diagnostics
+## 6. Cost and diagnostics
 
 The representation switch should be driven by both cost and value:
 
@@ -150,15 +271,21 @@ and
 Diagnostics should be emitted into the recurrence strategy trace:
 
 - exact support size;
+- tail-pruning threshold, dropped range, dropped mass, and functional error;
 - chosen family;
 - fitted finite support range;
+- materialised cumulative bases;
 - estimated error for the selected functional;
+- inherited parent approximation error before fitting;
+- local fit error after compression;
+- CDF and W1 error certificates when available;
 - fallback reason if no family passed the threshold;
+- fallback reason if a requested functional has no matching cumulative basis;
 - whether a user selection predicate overrode the default.
 
 The important invariant is that approximation is not silent. A query that uses a closed-form tail should leave a trace explaining why the representation changed.
 
-## 6. Cached distributions as search boundary conditions
+## 7. Cached distributions as search boundary conditions
 
 A cached distribution can act as a boundary condition for later path search. During a per-query path aggregate, if the traversal reaches a node `N` with a valid distribution state for the same root and statistic, the search does not need to enumerate below `N`. It can integrate the cached distribution over the remaining path budget and add that contribution to the aggregate.
 
@@ -172,18 +299,85 @@ contribution = integrate_distribution(
     remaining_budget)
 ```
 
-This is expectation-like, but the integration is specific to the functional being computed. For a bounded average it contributes weighted mass and weighted length. For reachability mass it contributes the CDF up to the remaining budget. For `weighted_power_mean(N, Budget)` it contributes the weighted power sum over the admissible support. For entropy it contributes the entropy term of the admissible finite slice.
+This is expectation-like, but the integration is specific to the functional being computed. For reachability mass it can use the mass CDF up to the remaining budget. For a bounded average it needs both mass and first-moment cumulative bases. For `weighted_power_mean(N, Budget)` it needs the matching weighted-power basis. For entropy it needs either a raw distribution scan, an analytic family-specific entropy calculation over the finite slice, or a stored custom basis.
 
 The cache hit is valid only when the cached state was built under compatible semantics:
 
 - same root or an explicitly compatible boundary;
 - same edge direction and path statistic;
 - compatible cycle policy and path admissibility rules;
+- compatible horizon or a horizon at least as wide as the remaining budget;
+- compatible target scope, unless the cached entry is a global table that
+  dominates the query's scoped ancestor cone;
 - compatible representation policy, or a representation with known error bounds for the requested functional.
 
-This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact; it becomes a controlled approximation when the cached distribution is a fitted representation.
+This turns exact or approximated distribution tables into reusable suffix summaries. Search remains exact when the cached distribution is exact and the requested functional can be evaluated exactly from the stored state. It becomes a controlled approximation when the cached distribution is a fitted representation, or when the requested functional is evaluated through an approximate basis.
 
-## 7. Scoped fixed-point generation
+For target-scoped evaluation, the boundary condition is ancestor-relative. If a
+query asks for node `V`, a cached state for ancestor `A` is reusable only for the
+portion of `V`'s parent-path search that reaches `A` under the same constraints.
+The contribution is then the aggregate from `A` to the root, sliced by the
+remaining budget. This is exact for exact states when `A`'s stored distribution
+was computed over the same admissible ancestor cone, or over a broader global
+cone whose extra paths cannot be reached from `V` through `A`.
+
+## 8. Cache admission and eviction
+
+Distribution caches should not use blind overwrite-on-collision. A collided insert
+is a policy decision: keeping a root-near, high-reuse suffix summary may be more
+valuable than admitting a newly computed deep node.
+
+The cache should score both the incumbent and the candidate:
+
+```prolog
+cache_score(Node, Entry, Score) :-
+    Score is expected_reuse(Node)
+          * recompute_cost_saved(Entry)
+          * root_proximity_bonus(Node)
+          * accuracy_value(Entry)
+          / storage_cost(Entry).
+```
+
+Useful score signals:
+
+- parent distance to root, with a bonus for nodes closer to the root;
+- estimated descendant or query-reuse count;
+- observed hit frequency and recency;
+- cost to recompute the distribution or scoped fixed-point cone;
+- representation quality, with exact states usually worth more than fitted ones;
+- cumulative-basis storage cost, since each materialised basis consumes space;
+- semantic compatibility width, meaning how many likely queries can reuse the
+  same root/statistic/cycle-policy/budget-horizon entry.
+
+On collision, admit only if the candidate is meaningfully better:
+
+```prolog
+admit_candidate if candidate_score > incumbent_score * hysteresis
+```
+
+The hysteresis factor prevents churn when two similarly useful entries map to the
+same slot. If the candidate loses, the runtime can still return the just-computed
+value to the current query; it simply does not install it in the shared cache.
+
+Eviction should also be layered. Raw exact distributions are expensive to
+recompute and should generally outlive derived cumulative bases. Cumulative
+bases can be evicted first because they can be rebuilt from raw state. Parametric
+tail parameters are compact and may be worth retaining if their error bounds are
+still valid. A practical eviction order is:
+
+```prolog
+1. cold custom cumulative bases
+2. cold moment / weighted-power bases
+3. cold mass CDFs when raw state is still available
+4. approximate fitted states with weak reuse
+5. exact raw states, especially near-root entries, only under pressure
+```
+
+For Wikipedia-style root-anchored metrics, the default bias should be: retain
+near-root exact distributions, retain high-reuse ancestor nodes, and evict deep
+low-hit cumulative bases before overwriting root-proximal entries.
+
+## 9. Scoped fixed-point generation
 
 Fixed-point distribution generation does not need to materialise the whole graph for a single node query. For a target node `V`, first restrict work to the ancestor cone relevant to `V`: all nodes that can reach the root by parent edges and can also reach `V` by reversing the parent relation. Then compute distributions from the root outward only inside that scoped subgraph, stopping when the target node's distribution has been produced or the configured depth/horizon is exhausted.
 
@@ -208,14 +402,245 @@ Three execution modes fall out:
 
 This scoped mode is the bridge between graph search and global fixed-point evaluation. It preserves the recurrence form, but its worklist is cut down by the query's ancestor cone and by cached boundary distributions encountered during evaluation.
 
-## 8. Open validation work
+At deeper layers, full distribution materialisation is not always the right
+first state. The planner should be allowed to compute scalar support bounds
+before deciding whether to construct an exact histogram, fit a tail, or stop at
+a cached boundary:
+
+```prolog
+support_bounds(
+    min_path_stat(Min),
+    max_path_stat(Max),
+    exact_under_policy(Boolean),
+    horizon(Horizon)).
+```
+
+For min-only or max-only functionals, these scalar recurrences are sufficient:
+
+```prolog
+Min_v = 1 + min(Min_parent)
+Max_v = 1 + max(Max_parent)
+```
+
+with the obvious weighted-step variant for non-unit parent costs and the same
+cycle/admissibility policy as the search oracle. For bounded aggregate
+functionals, the bounds are not a replacement for the distribution, but they are
+valuable pruning signals:
+
+- if `Min_v > remaining_budget`, the whole suffix contributes zero;
+- if `Max_v <= remaining_budget`, the whole suffix is within budget and can use
+  a total-mass or total-functional summary when available;
+- if `[Min_v, Max_v]` is narrow, exact histogram materialisation may be cheap;
+- if the interval is wide, the policy can prefer a fitted representation or a
+  deeper cached boundary.
+
+This gives the planner a cheap intermediate representation for deep nodes. It
+can carry min/max bounds through large parts of the graph, then materialise full
+distributions only where the query workload, error budget, or cache score makes
+the extra state worthwhile.
+
+Ancestor-cone size is a separate admission signal. A node can be fairly deep in
+root distance but still have a small target-scoped ancestor cone. In that case,
+exact histograms may remain cheap because the planner only materialises the
+distributions needed by the node of interest, not a global table. The first
+calibration pass should therefore record both support_width and ancestor_cone_nodes;
+a deep node with a small cone and narrow support is a
+good exact-histogram candidate even when a global depth rule would reject it.
+
+Continuous or sampled approximations should be charged as computation, not just
+as storage. For example, a Gamma-like continuous approximation can be sampled
+onto a finite grid before FFT convolution, but good accuracy may require tens or
+hundreds of sample points. If the exact ancestor-scoped histogram has only a few
+bins, sampling 100 points is unlikely to save compute. Its main value is then a
+compact reusable representation, not avoiding the initial exact or sampled
+construction.
+
+Support width should be paired with a parent-branching signal before choosing
+how deep to carry exact histograms. Let `p_v` be the number of parent choices for
+node `v` under the active graph/filter/root policy. Then:
+
+```text
+mean_parent_degree = E[p]
+size_biased_parent_branching = E[p^2] / E[p]
+```
+
+The ratio is the parent-only analogue of a traversal-effective branch factor: it
+estimates the parent degree seen by a path that has already followed a parent
+edge. It is not a replacement for exact histogram validation, but it is a useful
+early warning signal. When `support_width` stays small and `E[p^2]/E[p]` stays
+near `1`, exact histograms can often be carried deeper because many states are
+one-point or nearly one-point distributions. When the ratio rises, especially in
+deeper root-distance buckets, parent paths are likely to multiply and exact
+histogram materialisation should require stronger evidence of reuse.
+
+A first planner rule should be shaped like:
+
+```text
+materialize_exact(node) when
+    support_width(node) <= exact_support_width_limit
+    or root_distance(node) <= D_pre
+    or expected_reuse(node) * saved_search_cost(node) > storage_cost(node)
+
+defer_full_distribution(node) when
+    support_width(node) is wide
+    and bucket_size_biased_parent_branching is high
+    and expected_reuse(node) is low
+```
+
+The reuse term should be amortized over the expected query workload, not treated
+as a local depth constant.  For a workload with `Q` expected queries:
+
+```text
+expected_hits(v) =
+    Q * probability_that_a_query_reaches_v_before_a_cached_boundary
+
+materialize_or_fit(v) when
+    expected_hits(v) * (uncached_suffix_cost(v) - cached_suffix_eval_cost(v))
+      >
+    build_cost(v) + fit_cost(v) + storage_cost(v) + amortized_decode_cost(v)
+```
+
+`E[p^2] / E[p]` gives the first prior for the hit probability.  If parent path
+mass expands by a factor `b = E[p^2] / E[p]` per layer and the workload is
+broadly distributed across that layer, then the per-node traffic one layer
+farther from the root drops by roughly `1 / b`.  Near-root distributions are
+therefore disproportionately valuable: many query paths cross them, while the
+same aggregate traffic is spread over more nodes deeper in the tree.  This is a
+planning prior, not a correctness rule.  The estimator should replace it with
+observed query frequencies, subtree-specific branch factors, or sampled parent
+reference counts when those measurements are available.
+
+The apparent "50 point model means 50 hits to break even" rule is only a rough
+mnemonic and should not be encoded literally.  A 50-point sampled distribution
+has about 50 stored/evaluated states, but one cached hit can replace hundreds or
+thousands of DFS expansions, several LMDB parent lookups, and repeated cycle
+checks.  In that case the break-even hit count can be far below 50.  Conversely,
+if the suffix is already narrow, the uncached recurrence is cheap, or fitting a
+closed form costs more than packing the exact histogram, the threshold can be
+well above 50.  The planner should compute:
+
+```text
+hits_to_break_even(v) =
+    (build_cost + fit_cost + storage_cost + amortized_decode_cost)
+    / max(epsilon, uncached_suffix_cost - cached_suffix_eval_cost)
+```
+
+and use the point count only as an input to the build/storage/evaluation cost
+model.  Decode cost is also workload-dependent: if a parent payload is decoded
+once and memoised for a batch, it should be charged once per batch or divided
+across expected hits, not charged independently to every query path.
+
+For SimpleWiki, the current measurements suggest the first condition dominates.
+For enwiki, the parent-branching moment should be measured by root-distance
+bucket before deciding how far exact histograms should be propagated.
+
+`docs/reports/lmdb_materialization_regime_comparison_simplewiki_enwiki_materialization_regime_comparison_20260614T161206Z.md`
+is the first concrete comparison report for this split.  In that run,
+SimpleWiki under `Category:Articles` has root-conditioned
+`E[p^2] / E[p] = 1.028750`, mean effective boundary-histogram support
+`1.030`, max support `2`, and mean path mass `1.030`.  The constrained enwiki
+MTC smoke profile has root-conditioned `E[p^2] / E[p] = 2.164035`, mean
+effective support `5.963`, max support `6`, and mean path mass `77.938`.
+The design implication is that SimpleWiki can often carry exact sparse
+histograms well below a nominal 50-point cap, while enwiki can still have
+compact support but enough path mass for recurrence materialization to matter.
+The enwiki profile is capped smoke evidence, not a full-root-cone
+characterization.
+
+`docs/reports/lmdb_exact_sparse_depth_sweep_simplewiki_articles_exact_sparse_depth_sweep_b10_20_20260614T163104Z.md`
+checks the SimpleWiki side more directly by sweeping root-reachable
+`Category:Articles` targets at child depths `1`, `2`, and `3` with parent-path
+budgets `10` and `20`.  All sampled rows were exact sparse rows: recurrence
+matched simple-path DFS, no cycle approximation was needed, and every effective
+support stayed below the 50-point cap.  The deepest sampled layer had mean path
+mass `1.277`, max path mass `3`, mean effective support `1.447`, and max
+effective support `3`.  At this scale Python wall-clock timings are mostly
+overhead, but the state model still estimates break-even near one cache hit.
+This supports carrying exact sparse histograms deeper on SimpleWiki before
+trying binomial, Gamma, or sampled approximations.
+
+`docs/reports/lmdb_exact_sparse_depth_sweep_simplewiki_articles_exact_sparse_parent_distance_sweep_b10_20_20260614T165557Z.md`
+reruns the same question using `L_max` parent-distance buckets instead of
+child-depth buckets.  For the full SimpleWiki `Category:Articles` root cone in
+this LMDB (`14,680` nodes, max child depth `3`), buckets `L_max=4..6` had no
+candidates.  Buckets `1`, `2`, and `3` again had all sampled rows exact sparse
+under budgets `10` and `20`.  The `L_max=3` bucket matched the earlier deepest
+child-depth result: max path mass `3`, mean effective support `1.447`, and max
+effective support `3`.  This makes `Category:Articles` a useful low-branching
+validation cone, but not a stress case for deep parent-distance histograms.
+
+`docs/reports/lmdb_parent_boundary_cache_benchmark_summary_simplewiki_articles_boundary_aggregate_b1_child_depth_bp_decay_smoke_20260614T183325Z.md`
+is the first boundary-aware aggregate smoke.  It materializes exact sparse
+boundary histograms at depth `1` with the recurrence builder, then compares
+full DFS against boundary-stopped evaluation on `12` SimpleWiki
+`Category:Articles` targets under budgets `6` and `8`.  The selected aggregate
+kernel is `bp-decay` with `b=1.029`.  Both budgets have zero histogram error,
+zero path-count error, zero selected-aggregate error, and zero mean-path-length
+delta.  The cached path expands about `58.5%` as many nodes as full DFS, while
+the Python smoke is still wall-clock slower because serialized-payload decode
+and per-row overhead dominate at this shallow scale.  The semantic result is
+the important one: an exact boundary histogram can be used as a suffix
+aggregate boundary condition when the root, budget, and cycle policy match.
+
+`docs/reports/lmdb_exact_sparse_depth_sweep_enwiki_mtc_exact_sparse_parent_distance_lmin_sweep_b10_20_smoke_20260614T175202Z.md`
+is the first comparable enwiki stress smoke.  It uses a constrained
+`Category:Main_topic_classifications` root cone (`4,944` sampled nodes, max
+observed child depth `4`) and buckets by `L_min` because clean `L_max` buckets
+are dominated by truncation/cycle evidence at this sampling horizon.  Buckets
+`L_min=1..4` all failed the exact-sparse row criterion under budgets `10` and
+`20`: DFS hit the `100,000` expansion cap in most rows and recurrence reported
+cycle approximation in most budget-10 rows.  The partial histograms still had
+small observed supports, but those support numbers are not exact once caps
+fire.  The design signal is therefore not "enwiki support is small"; it is that
+plain exact DFS enumeration is already too expensive on the MTC cone, so enwiki
+needs recurrence/materialized boundaries, cycle-aware validation, and fitted or
+cached approximations much earlier than SimpleWiki.
+
+`docs/reports/lmdb_parent_boundary_cache_benchmark_summary_enwiki_mtc_boundary_aggregate_root_cone_b2_t4_bp_decay_smoke_20260614T212819Z.md`
+adds the matching root-cone-filtered aggregate smoke on enwiki MTC.  The
+benchmark now supports `parent_filter=root-cone`, so full DFS, cached DFS, and
+boundary-state construction all reject parent edges outside the bounded
+root-cone scope.  In this small run the root cone contains `8,897` nodes, the
+boundary cache materializes `22` recurrence-built exact sparse states, and
+`4` sampled targets complete under budgets `6` and `8` with zero histogram,
+path-count, selected-aggregate, and mean-path-length error.  The report also
+shows why this filter matters: full search skips a mean `4.5` off-scope parents
+per row and cached search skips a mean `2.5`.  The run is too small to claim a
+performance win (`0.25` mean cache hits per row), but it validates the scoped
+boundary-condition semantics needed before deeper enwiki sweeps.
+
+`PARENT_BRANCHING_DISTRIBUTION_THEORY.md` gives the statistical interpretation:
+small excess parent branching is binomial-like, while larger parent branching is
+better treated as a compound/convolution model before fitting a closed form.
+
+## 10. Open validation work
 
 The next implementation-facing work is a parity harness:
+
+The benchmark plan in `DISTRIBUTION_CACHE_BENCHMARK_PLAN.md` defines the first shallow precompute/search-budget grid for this work.
+
+The first approximation harness is `scripts/distribution_fit_comparison.py`.
+It keeps two concepts separate:
+
+- realized distribution fits compare binomial and shifted-Gamma-style vectors
+  against exact histograms for already selected nodes;
+- depth-conditioned prior distributions use the size-biased excess-parent
+  distribution to estimate whether histograms at future depths are likely to
+  stay narrow enough to materialize cheaply before observing exact node
+  histograms.
+
+The current prior is stationary within the selected calibration set. A later
+variant should allow layer-conditioned priors, where the excess-parent law
+changes with root-distance bucket. That would handle cases where the average
+parent branching signal declines as nodes move farther from the root, but it
+should wait for deeper SimpleWiki and enwiki measurements.
 
 1. exact parent-only histogram on tiny fixtures;
 2. exact parent-only histogram on simplewiki samples;
 3. fitted truncated-tail representation over the same nodes;
 4. functional-level error checks for `min_support`, `bounded_average`, `reachability_mass`, `tail_mass`, `entropy`, and `weighted_power_mean`;
-5. policy-selection tests showing that a user predicate can override the default without changing target code.
+5. cumulative-basis tests showing mass, interval, moment, and weighted-power lookups agree with raw histogram scans;
+6. cache-admission tests showing near-root/high-reuse entries survive collisions against lower-score entries;
+7. policy-selection tests showing that a user predicate can override the default without changing target code.
 
 Only after those checks pass should the policy be used for enwiki-scale materialisation.

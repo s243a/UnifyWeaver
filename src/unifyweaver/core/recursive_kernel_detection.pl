@@ -92,6 +92,7 @@ kernel_detector(transitive_step_parent_distance5, detect_transitive_step_parent_
 
 kernel_native_kind(category_ancestor, category_ancestor).
 kernel_native_kind(bidirectional_ancestor, bidirectional_ancestor).
+kernel_native_kind(category_ancestor_boundary, category_ancestor_boundary).
 kernel_native_kind(transitive_closure2, transitive_closure2).
 kernel_native_kind(transitive_distance3, transitive_distance3).
 kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
@@ -101,6 +102,7 @@ kernel_native_kind(transitive_step_parent_distance5, transitive_step_parent_dist
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(bidirectional_ancestor, tuple(3)).  % (totalHops, parentHops, childHops)
+kernel_result_layout(category_ancestor_boundary, tuple(1)).  % one aggregate/distribution result
 kernel_result_layout(transitive_closure2, tuple(1)).
 kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
@@ -110,6 +112,7 @@ kernel_result_layout(transitive_step_parent_distance5, tuple(4)).  % (target, st
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(bidirectional_ancestor, stream).
+kernel_result_mode(category_ancestor_boundary, deterministic).  % ONE spliced aggregate, no choice point
 kernel_result_mode(transitive_closure2, stream).
 kernel_result_mode(transitive_distance3, stream).
 kernel_result_mode(weighted_shortest_path3, stream).
@@ -119,6 +122,7 @@ kernel_result_mode(transitive_step_parent_distance5, stream).
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(bidirectional_ancestor, 5).
+kernel_expected_arity(category_ancestor_boundary, 3).
 kernel_expected_arity(transitive_closure2, 2).
 kernel_expected_arity(transitive_distance3, 3).
 kernel_expected_arity(weighted_shortest_path3, 3).
@@ -142,6 +146,12 @@ kernel_register_layout(bidirectional_ancestor, [
     output(3, integer),      % totalHops (result, tuple element 1)
     output(4, integer),      % parentHops (result, tuple element 2)
     output(5, integer)       % childHops (result, tuple element 3)
+]).
+
+kernel_register_layout(category_ancestor_boundary, [
+    input(1, atom),          % cat
+    input(2, atom),          % root
+    output(3, float)         % spliced aggregate (result; or a distribution List)
 ]).
 
 kernel_register_layout(category_ancestor, [

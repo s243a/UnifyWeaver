@@ -348,6 +348,25 @@ wam_elixir_case(deallocate,
 
 % --- Choice Point Instructions ---
 
+% M147: if-then-else commit. cut_ite pops the ITE guard choice point
+% pushed by the condition's try_me_else; previously this instruction
+% reached the step/2 catch-all (:fail), so the condition never
+% committed and a failing then-branch backtracked into the else
+% branch (the M144 bug class). jump transfers to the continuation
+% label after the then-branch.
+wam_elixir_case(cut_ite,
+'      :cut_ite ->
+        case state.choice_points do
+          [_guard | rest] -> %{state | choice_points: rest, pc: state.pc + 1}
+          [] -> %{state | pc: state.pc + 1}
+        end').
+
+wam_elixir_case(jump,
+'      {:jump, target} when is_integer(target) ->
+        %{state | pc: target}
+      {:jump, label} when is_binary(label) ->
+        %{state | pc: resolve_label(state, label)}').
+
 wam_elixir_case(try_me_else,
 '      # Fast path: label pre-resolved at codegen to integer PC.
       {:try_me_else, target} when is_integer(target) ->
@@ -1119,6 +1138,30 @@ compile_utility_helpers_to_elixir(Code) :-
             new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
             %{state | pc: new_pc}
         end
+      {"==/2", 2} ->
+        # Strict equality. Previously missing -- the shared compiler
+        # emits builtin_call ==/2 and it failed closed (the class-7 gap
+        # found by the bind-through probe sweep; same fix as C and
+        # Haskell). deep_copy_value resolves both sides to
+        # self-contained terms through the heap and bindings; distinct
+        # unbound variables stay unequal, matching ISO ==/2.
+        v1 = deep_copy_value(state, get_reg(state, 1))
+        v2 = deep_copy_value(state, get_reg(state, 2))
+        if v1 == v2 do
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          %{state | pc: new_pc}
+        else
+          :fail
+        end
+      {"\\\\==/2", 2} ->
+        v1 = deep_copy_value(state, get_reg(state, 1))
+        v2 = deep_copy_value(state, get_reg(state, 2))
+        if v1 == v2 do
+          :fail
+        else
+          new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+          %{state | pc: new_pc}
+        end
       {"fail/0", 0} ->
         # Explicit Prolog fail. The default-arm hardening below throws
         # {:unknown_builtin, ...} for un-handled ops; without an
@@ -1132,6 +1175,37 @@ compile_utility_helpers_to_elixir(Code) :-
         # hardening reasoning as fail/0 above.
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | pc: new_pc}
+      # M147: type-check builtins. These were absent from this table,
+      # so any predicate calling var/1, nonvar/1, atom/1, etc. crashed
+      # with {:unknown_builtin, ...} in every emit mode.
+      {"var/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if match?({:unbound, _}, v), do: %{state | pc: new_pc}, else: :fail
+      {"nonvar/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if match?({:unbound, _}, v), do: :fail, else: %{state | pc: new_pc}
+      {"atom/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if is_binary(v) or v == [], do: %{state | pc: new_pc}, else: :fail
+      {"integer/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if is_integer(v), do: %{state | pc: new_pc}, else: :fail
+      {"number/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if is_number(v), do: %{state | pc: new_pc}, else: :fail
+      {"atomic/1", 1} ->
+        v = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        cond do
+          match?({:unbound, _}, v) -> :fail
+          is_binary(v) or is_number(v) or v == [] -> %{state | pc: new_pc}
+          true -> :fail
+        end
       # PR #5: arith compares — default form + _lax alias share one
       # arm per operator. eval_arith wrapped in try/catch so bad
       # input silently fails per ISO lax semantics (matches the
@@ -4965,6 +5039,10 @@ end', []).
 %% compile_wam_predicate_to_elixir(+Pred/Arity, +WamCode, +Options, -Code)
 compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
     atom_string(Pred, PredStr),
+    % M147: Elixir module names must be capitalized. The raw lowercase
+    % predicate name (WamPred.probe1) is a CompileError, so interpreter-
+    % mode projects never even loaded.
+    camel_case(PredStr, ModStr),
     wam_code_to_elixir_instructions(WamCode, InstrLiterals, LabelLiterals),
     format(string(Code),
 'defmodule WamPred.~w do
@@ -5008,7 +5086,7 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
         :fail
     end
   end
-end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
+end', [ModStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
 
 %% wam_code_to_elixir_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
 %  Two-pass: pass 1 collects labels → PC map; pass 2 emits instructions
@@ -5248,6 +5326,23 @@ wam_line_to_elixir_instr(["execute", P], LabelsList, Instr) :-
 wam_line_to_elixir_instr(["allocate", N], _, Instr) :-
     clean_comma(N, CN),
     format(string(Instr), '{:allocate, ~w}', [CN]).
+% M147: the WAM compiler emits bare `allocate` (no frame-size operand).
+% This previously fell to the {:raw, ...} fallback, and the runtime
+% step/2 catch-all turned EVERY such instruction into :fail - so every
+% interpreter-mode predicate with an environment frame wrong-failed.
+wam_line_to_elixir_instr(["allocate"], _, '{:allocate, 0}').
+% M147: if-then-else control. cut_ite and jump had no converter clauses,
+% so the ITE commit fell to {:raw, ...} -> :fail: the condition could
+% never commit and execution always backtracked into the else branch
+% (wrong SUCCESS for then-branch failures - the M144 bug class).
+wam_line_to_elixir_instr(["cut_ite"], _, ':cut_ite').
+wam_line_to_elixir_instr(["jump", L], LabelsList, Instr) :-
+    clean_comma(L, CL),
+    resolve_label(CL, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:jump, ~w}', [R])
+    ;   format(string(Instr), '{:jump, "~w"}', [R])
+    ).
 wam_line_to_elixir_instr(["deallocate"], _, ':deallocate').
 wam_line_to_elixir_instr(["builtin_call", Op, Ar], _, Instr) :-
     clean_comma(Op, COp), clean_comma(Ar, CAr),

@@ -83,6 +83,12 @@ instr_from_parts(["retry_me_else", L], retry_me_else(L)).
 instr_from_parts(["trust_me"], trust_me).
 instr_from_parts(["jump", L], jump(L)).
 instr_from_parts(["cut_ite"], cut_ite).
+% M144: Y-level soft cut, now the Rust compile path's default ITE form
+% (ite_use_y_level(true)). The shared structurer's is_commit/1 already
+% accepts cut(Yn); get_level is a no-op in the lowered if/else since
+% the structurer consumes the commit.
+instr_from_parts(["get_level", Y], get_level(Y)).
+instr_from_parts(["cut", Y], cut(Y)).
 
 % =====================================================================
 % Label-preserving parse + if-then-else structuring
@@ -276,6 +282,8 @@ rust_supported(call_foreign(_, _)).
 rust_supported(try_me_else(_)).
 rust_supported(trust_me).
 rust_supported(cut_ite).
+rust_supported(cut(_)).       % M144: Y-level soft cut commit
+rust_supported(get_level(_)). % M144: cut-level capture (no-op when lowered)
 rust_supported(jump(_)).
 
 % =====================================================================
@@ -321,9 +329,9 @@ lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     ;   ForeignPreds = []
     ),
     nb_setval(rust_ite_ctr, 0),
-    (   % T5 first-argument-constant dispatch takes precedence.
+    (   % T5/T6 first-argument-constant dispatch takes precedence.
         rust_clause_chain_lowerable(Instrs, Guards)
-    ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, Options, RustLines)
     ;   % T4: a multi-clause predicate whose clauses are all supported
         % deterministic bodies (but not a distinct-first-arg chain) — lower
         % every clause inline, tried in order with a restore between attempts.
@@ -344,30 +352,112 @@ pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
         RustLines = [Header, Body, Footer]
     ).
 
-%% emit_clause_chain_rust(+FuncName, +Pred, +Arity, +Guards, +FK, -RustLines)
-%  Emit T5: deref the first argument once; if it is still unbound, defer to
-%  the entry wrapper's interpreter fallback (the unbound case is genuinely
-%  nondeterministic). Otherwise dispatch with an if-cascade comparing the
-%  bound value against each clause's distinct discriminator and running that
-%  clause's remainder (which self-terminates: its `proceed` emits
-%  `return true`). A bound value matching no clause returns false (the
-%  predicate fails; the wrapper's fresh re-run also fails — sound).
-emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
+%% emit_clause_chain_rust(+FuncName, +Pred, +Arity, +Guards, +FK, +Options, -RustLines)
+%  Multi-clause first-argument dispatch with two back-ends sharing the
+%  `wam_clause_chain` front-end's guard list:
+%
+%   * T5 (default) — an if-cascade comparing the first arg against each
+%     clause's distinct discriminator in place (allocation-free
+%     `match_reg_atom`).
+%   * T6 (gated) — when every discriminator is an atom AND there are at least
+%     `t6_min_clauses` of them, emit a native two-stage `match`: a string
+%     `match` that maps the first arg's atom to a `Copy` selector index (the
+%     immutable borrow ends there, so the clause body can take `&mut vm`),
+%     then an integer `match` (a jump table) dispatching to the remainder.
+%
+%  T6 is gated because for few clauses the compiler flattens the if-cascade to
+%  equivalent code (an earlier array-dispatch experiment lost to the compiler),
+%  so the native switch only pays off once the linear scan is long enough — see
+%  docs/reports/wam_rust_dispatch_alloc_perf.md.
+%
+%  Both back-ends treat an unbound / non-matching first arg as a `false`
+%  return, deferring to the entry wrapper's interpreter fallback (sound: the
+%  wrapper's fresh re-run enumerates clauses, and a genuine no-match also
+%  fails there). Each clause remainder self-terminates (`proceed` -> `return
+%  true`).
+emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, Options, RustLines) :-
+    (   rust_t6_applicable(Guards, Options)
+    ->  emit_clause_chain_match_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ;   emit_clause_chain_cascade_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines)
+    ).
+
+%% rust_t6_applicable(+Guards, +Options) is semidet.
+%  True when first-arg indexing (T6 native match) should be used instead of the
+%  T5 if-cascade: every discriminator is an atom (so a string `match` applies)
+%  and the clause count meets the gate threshold.
+rust_t6_applicable(Guards, Options) :-
+    rust_t6_min_clauses(Options, Min),
+    length(Guards, N),
+    N >= Min,
+    forall(member(guard(V, _), Guards), wam_classify_constant_token(V, atom(_))).
+
+%% rust_t6_min_clauses(+Options, -N)
+%  Clause-count gate for T6. Override with the `t6_min_clauses(N)` option;
+%  defaults to a conservative threshold above which the native `match` beats
+%  the compiler-flattened if-cascade (see the perf report).
+rust_t6_min_clauses(Options, N) :-
+    ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
+
+% --- T5 back-end: if-cascade ---
+emit_clause_chain_cascade_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
     format(string(Header),
 '// ~w — lowered from ~w/~w (T5 first-argument dispatch)
 pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
     with_output_to(string(Body),
-        ( format("    let t5a1 = vm.get_reg(\"A1\").unwrap_or(Value::Uninit);~n"),
-          format("    if t5a1.is_unbound() { return false; }  // unbound first arg: defer to interpreter (enumerates all clauses)~n"),
+        ( % The per-guard dispatch compares the first argument in place (no
+          % `let t5a1 = get_reg(...)` clone, no `Value::Atom("...")` per guard).
+          % An unbound / non-matching first arg matches no guard and returns
+          % false, deferring to the entry wrapper's interpreter fallback exactly
+          % as the old explicit is_unbound() check did.
           emit_rust_guards(Guards, ForeignPreds),
           format("    false~n") )),
     format(string(Footer), '}', []),
     RustLines = [Header, Body, Footer].
 
+% --- T6 back-end: native two-stage match (string switch -> jump table) ---
+emit_clause_chain_match_rust(FuncName, Pred, Arity, Guards, ForeignPreds, RustLines) :-
+    format(string(Header),
+'// ~w — lowered from ~w/~w (T6 first-argument indexing / native match)
+pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
+    with_output_to(string(Body),
+        ( format("    // String switch -> Copy selector (immutable borrow ends here).~n"),
+          format("    let _t6sel: i64 = match vm.match_reg_atom_str(\"A1\") {~n"),
+          emit_rust_t6_selectors(Guards, 0),
+          format("        _ => return false,  // unbound (defer to interpreter) or no clause matches~n"),
+          format("    };~n"),
+          format("    match _t6sel {  // integer jump table~n"),
+          emit_rust_t6_arms(Guards, 0, ForeignPreds),
+          format("        _ => {}~n"),
+          format("    }~n"),
+          format("    false~n") )),
+    format(string(Footer), '}', []),
+    RustLines = [Header, Body, Footer].
+
+emit_rust_t6_selectors([], _).
+emit_rust_t6_selectors([guard(V, _) | Rest], I) :-
+    wam_classify_constant_token(V, atom(Name)),
+    escape_rust_string(Name, Esc),
+    format("        Some(\"~w\") => ~w,~n", [Esc, I]),
+    I1 is I + 1,
+    emit_rust_t6_selectors(Rest, I1).
+
+emit_rust_t6_arms([], _, _).
+emit_rust_t6_arms([guard(_, Rem) | Rest], I, ForeignPreds) :-
+    format("        ~w => {~n", [I]),
+    emit_instrs(Rem, "            ", ForeignPreds),
+    format("        }~n"),
+    I1 is I + 1,
+    emit_rust_t6_arms(Rest, I1, ForeignPreds).
+
 emit_rust_guards([], _).
 emit_rust_guards([guard(V, Rem) | Rest], ForeignPreds) :-
-    rust_val_literal(V, RustVal),
-    format("    if t5a1 == ~w {~n", [RustVal]),
+    wam_classify_constant_token(V, Class),
+    ( Class = atom(Name)
+    ->  escape_rust_string(Name, Esc),
+        format("    if vm.match_reg_atom(\"A1\", \"~w\") == Some(true) {~n", [Esc])
+    ;   rust_val_literal(V, RustVal),
+        format("    if vm.get_reg(\"A1\").map_or(false, |__v| __v == ~w) {~n", [RustVal])
+    ),
     emit_instrs(Rem, "        ", ForeignPreds),
     format("    }~n"),
     emit_rust_guards(Rest, ForeignPreds).
@@ -458,19 +548,39 @@ emit_one(fail, I) :-
 
 % --- Head unification (get_*) ---
 
+% get_constant — the hot head-match. For an ATOM constant we compare the
+% register against the &str in place (vm.match_reg_atom), avoiding the two heap
+% allocations the old `get_reg() != Value::Atom("...".to_string())` form paid
+% per comparison. Integer/other constants keep the (allocation-free, Copy)
+% Value comparison.
 emit_one(get_constant(CStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
-    rust_val_literal(CStr, RustVal),
-    format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
-    format("~w    } else if _a != ~w {~n", [I, RustVal]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    wam_classify_constant_token(CStr, Class),
+    ( Class = atom(Name)
+    ->  escape_rust_string(Name, Esc),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    match vm.match_reg_atom(\"~w\", \"~w\") {~n", [I, Ai, Esc]),
+        format("~w        Some(true) => {}~n", [I]),
+        format("~w        Some(false) => return false,~n", [I]),
+        format("~w        None => {~n", [I]),
+        format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w            vm.put_reg(\"~w\", Value::Atom(\"~w\".to_string()));~n", [I, Ai, Esc]),
+        format("~w        }~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ;   rust_val_literal(CStr, RustVal),
+        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
+        format("~w{~n", [I]),
+        format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
+        format("~w    if _a.is_unbound() {~n", [I]),
+        format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
+        format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
+        format("~w    } else if _a != ~w {~n", [I, RustVal]),
+        format("~w        return false;~n", [I]),
+        format("~w    }~n", [I]),
+        format("~w}~n", [I])
+    ).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
@@ -489,12 +599,13 @@ emit_one(get_nil(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_nil ~w~n", [I, AiStr]),
     format("~w{~n", [I]),
-    format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
-    format("~w    } else if _a != Value::Atom(\"[]\".to_string()) {~n", [I]),
-    format("~w        return false;~n", [I]),
+    format("~w    match vm.match_reg_atom(\"~w\", \"[]\") {~n", [I, Ai]),
+    format("~w        Some(true) => {}~n", [I]),
+    format("~w        Some(false) => return false,~n", [I]),
+    format("~w        None => {~n", [I]),
+    format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
+    format("~w            vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
+    format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
 
@@ -634,6 +745,8 @@ emit_one(call_foreign(PredStr, ArStr), I) :-
 emit_one(try_me_else(_), _) :- !.
 emit_one(trust_me, _) :- !.
 emit_one(cut_ite, _) :- !.
+emit_one(cut(_), _) :- !.        % M144: commit consumed by the structurer
+emit_one(get_level(_), _) :- !.  % M144: level capture: no-op in lowered if/else
 emit_one(jump(_), _) :- !.
 
 % --- Fallback ---

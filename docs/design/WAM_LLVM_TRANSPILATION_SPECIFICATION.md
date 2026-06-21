@@ -197,10 +197,20 @@ define %Value @value_compound(i8* %functor, i32 %arity, %Value* %args) {
 %StackEntry = type { i32, [16 x %Value] }  ; type tag + saved values
 
 %ChoicePoint = type {
-  i32,                 ; saved PC
-  [32 x %Value],       ; saved registers
-  i32,                 ; trail mark (trail size at creation)
-  i32                  ; saved CP
+  i32,                 ; 0: next_pc
+  [64 x %Value],       ; 1: saved registers
+  i32,                 ; 2: trail mark
+  i32,                 ; 3: saved cp
+  i32,                 ; 4: agg_type (-1 normal, -2 foreign iterator)
+  i32,                 ; 5: agg_value_reg
+  i32,                 ; 6: agg_result_reg
+  i32,                 ; 7: agg_return_pc
+  i8*,                 ; 8: foreign_results
+  i32,                 ; 9: foreign_count
+  i32,                 ; 10: foreign_cursor
+  i32,                 ; 11: saved heap_top
+  i32,                 ; 12: saved_b / caller cut barrier
+  i32                  ; 13: saved stack_size
 }
 
 %TrailEntry = type {
@@ -457,7 +467,7 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 `@value_is_unbound`, `@value_equals`), boxing/unboxing bridge
 (`@box_integer`, `@unbox_integer`, etc.).
 
-**`state.ll.mustache`:** `@wam_state_new`, `@wam_set_reg`,
+**`state.ll.mustache`:** `@wam_state_new`, `@wam_prepare_call`, `@wam_set_reg`,
 `@wam_get_reg`, `@wam_inc_pc`, `@wam_push_trail`, `@wam_push_cp`,
 `@wam_heap_alloc`.
 
@@ -468,6 +478,12 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 ## Interop Calling Convention
 
 ### Native calls WAM-compiled predicate:
+
+For repeated calls from a native deterministic loop, reuse the same `%WamState`
+and call `@wam_prepare_call(VM, StartPC)` before setting argument registers and
+entering `@run_loop` again. The helper clears `halted`, resets `CP` to zero,
+and installs the requested compiled predicate start PC.
+
 
 ```llvm
 define i1 @query_ancestor(i8* %a, i8* %b) {

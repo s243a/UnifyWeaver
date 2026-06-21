@@ -135,6 +135,14 @@ test(parse_line_proceed) :-
     wam_line_to_llvm_literal(["proceed"], Lit),
     assertion(Lit == '%Instruction { i32 20, i64 0, i64 0 }').
 
+test(parse_line_switch_on_constant_a2_fallthrough) :-
+    wam_line_to_llvm_literal(["switch_on_constant_a2_fallthrough", "end_of_file:default"], Lit),
+    assertion(Lit == '%Instruction { i32 27, i64 0, i64 0 }').
+
+test(resolve_line_switch_on_constant_a2_fallthrough) :-
+    wam_llvm_target:wam_line_to_llvm_literal_resolved(["switch_on_constant_a2_fallthrough", "end_of_file:default"], [], Lit),
+    assertion(Lit == '%Instruction { i32 27, i64 0, i64 0 }').
+
 test(parse_label_and_instr) :-
     WamCode = "parent/2:\n    get_constant john, A1\n    proceed",
     compile_wam_predicate_to_llvm(parent/2, WamCode, [], LLVMCode),
@@ -185,7 +193,168 @@ test(full_runtime_generation) :-
     % Step function
     assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @step')),
     % Helpers
-    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')).
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @backtrack')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_eq_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_slice_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_count_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_is_field_whitespace')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_length_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_subslice_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamSlice @wam_atom_field_subslice_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_slice_index_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_atom_field_index_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamI64Parse @wam_slice_i64_parse_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamI64Parse @wam_atom_field_i64_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_i64_cmp_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_slice_i64_cmp_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_field_i64_cmp_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define void @wam_print_ascii_lower_slice')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define void @wam_print_ascii_upper_slice')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_atom_prefix_value')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define %WamAssocI64Table* @wam_assoc_i64_new')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i1 @wam_assoc_i64_resize')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_assoc_i64_inc')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define i64 @wam_assoc_i64_get')),
+    assertion(sub_atom(RuntimeCode, _, _, _, 'define void @wam_assoc_i64_free')).
+
+test(atom_prefix_guard_emitter) :-
+    llvm_emit_atom_prefix_guard(prefix_guard_test, '%line', 'ERROR', '%ok', GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.prefix_5Fguard_5Ftest = private constant [6 x i8] c"ERROR\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%prefix_5Fguard_5Ftest_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_prefix_value(%Value %line')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 5')).
+
+test(atom_field_eq_guard_emitter) :-
+    llvm_emit_atom_field_eq_guard(field_eq_guard_test, '%line', 1, 'ERROR', 32, '%ok', GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.field_5Feq_5Fguard_5Ftest = private constant [6 x i8] c"ERROR\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%field_5Feq_5Fguard_5Ftest_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%ok = call i1 @wam_atom_field_eq_value(%Value %line, i64 1')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 5, i8 32')).
+
+test(atom_field_slice_emitter) :-
+    llvm_emit_atom_field_slice('%line', 2, 32, plawk_f2, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_ptr = extractvalue %WamSlice %plawk_f2, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_f2_len = trunc i64 %plawk_f2_len64 to i32')).
+
+test(atom_field_count_emitter) :-
+    llvm_emit_atom_field_count('%line', 58, plawk_nf, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_nf = call i64 @wam_atom_field_count_value(%Value %line, i8 58)')).
+
+test(atom_field_length_emitter) :-
+    llvm_emit_atom_field_length('%line', 2, 58, plawk_len, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_len = call i64 @wam_atom_field_length_value(%Value %line, i64 2, i8 58)')).
+
+test(atom_field_subslice_emitter) :-
+    llvm_emit_atom_field_subslice('%line', 2, 58, 1, 3, plawk_substr, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_substr = call %WamSlice @wam_atom_field_subslice_value(%Value %line, i64 2, i8 58, i64 1, i64 3)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_substr_ptr = extractvalue %WamSlice %plawk_substr, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_substr_len = trunc i64 %plawk_substr_len64 to i32')).
+
+test(atom_field_index_emitter) :-
+    llvm_emit_atom_field_index(plawk_index_needle, '%line', 2, 'disk', 58, plawk_index, GlobalIR-CallIR),
+    assertion(sub_atom(GlobalIR, _, _, _, '@.plawk_5Findex_5Fneedle = private constant [5 x i8] c"disk\\00"')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_5Findex_5Fneedle_ptr = getelementptr')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_index = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58')),
+    assertion(sub_atom(CallIR, _, _, _, 'i64 4')).
+
+test(atom_field_i64_cmp_guard_emitter) :-
+    llvm_emit_atom_field_i64_cmp_guard('%line', 3, 4, 100, 32, '%ok', CallIR),
+    assertion(CallIR == '  %ok = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 32, i64 100, i32 4)').
+
+test(atom_field_i64_emitter) :-
+    llvm_emit_atom_field_i64('%line', 3, 58, plawk_value, CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 58)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_value = extractvalue %WamI64Parse %plawk_value, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_ok = extractvalue %WamI64Parse %plawk_value, 1')).
+
+test(atom_field_i64_or_default_emitter) :-
+    llvm_emit_atom_field_i64_or_default('%line', 3, 58, 0, plawk_value,
+        '%plawk_number', CallIR),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 58)')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_value = extractvalue %WamI64Parse %plawk_value, 0')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_value_ok = extractvalue %WamI64Parse %plawk_value, 1')),
+    assertion(sub_atom(CallIR, _, _, _, '%plawk_number = select i1 %plawk_value_ok, i64 %plawk_value_value, i64 0')).
+
+test(ascii_case_slice_print_emitter) :-
+    llvm_emit_ascii_case_slice_print(lower, '%ptr', '%len', plawk_lower, LowerIR),
+    llvm_emit_ascii_case_slice_print(upper, '%ptr', '%len', plawk_upper, UpperIR),
+    assertion(LowerIR == '  call void @wam_print_ascii_lower_slice(i8* %ptr, i64 %len)'),
+    assertion(UpperIR == '  call void @wam_print_ascii_upper_slice(i8* %ptr, i64 %len)').
+
+test(c_string_global_emitter) :-
+    llvm_emit_c_string_global(example_label, "hello\n", GlobalIR, StringLen, BytesLen),
+    assertion(StringLen == 6),
+    assertion(BytesLen == 7),
+    assertion(GlobalIR == '@.example_label = private constant [7 x i8] c"hello\\0A\\00"').
+
+test(printf_i64_emitter) :-
+    llvm_emit_printf_i64(plawk_surface_print_i64, value_fmt, printed_value, '%n', Parts),
+    assertion(Parts == [
+        '  %value_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        '  %printed_value = call i32 (i8*, ...) @printf(i8* %value_fmt, i64 %n)'
+    ]).
+
+test(printf_slice_emitter) :-
+    llvm_emit_printf_slice(plawk_surface_print_slice, slice_fmt, printed_slice,
+        '%len', '%ptr', Parts),
+    assertion(Parts == [
+        '  %slice_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+        '  %printed_slice = call i32 (i8*, ...) @printf(i8* %slice_fmt, i32 %len, i8* %ptr)'
+    ]).
+
+test(printf_string_emitter) :-
+    llvm_emit_printf_string(plawk_surface_print_string, string_fmt, printed_string,
+        '%ptr', StringParts),
+    llvm_emit_printf_string(plawk_surface_print_line, 4, line_fmt, printed_line,
+        '%line_s', LineParts),
+    assertion(StringParts == [
+        '  %string_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        '  %printed_string = call i32 (i8*, ...) @printf(i8* %string_fmt, i8* %ptr)'
+    ]),
+    assertion(LineParts == [
+        '  %line_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0',
+        '  %printed_line = call i32 (i8*, ...) @printf(i8* %line_fmt, i8* %line_s)'
+    ]).
+
+test(printf0_emitter) :-
+    llvm_emit_printf0(plawk_surface_print_newline, 2, newline_fmt, printed_newline, Parts),
+    assertion(Parts == [
+        '  %newline_fmt = getelementptr [2 x i8], [2 x i8]* @.plawk_surface_print_newline, i32 0, i32 0',
+        '  %printed_newline = call i32 (i8*, ...) @printf(i8* %newline_fmt)'
+    ]).
+
+test(stream_driver_emitter_compact_blocks) :-
+    llvm_emit_stream_driver_ir('input.txt',
+        driver_blocks('@.fmt = private constant [2 x i8] c"\\0A\\00"',
+            '', lowered_test, '  br label %continue_loop', '',
+            success, 'success:\n  ret i32 0'),
+        DriverIR),
+    assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_input_path = private constant [10 x i8]')),
+    assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"')),
+    assertion(sub_atom(DriverIR, _, _, _, '@.fmt = private constant [2 x i8] c"\\0A\\00"')),
+    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_value(%Value %handle)')),
+    assertion(sub_atom(DriverIR, _, _, _, 'br i1 %is_eof, label %close_stream, label %lowered_test')),
+    assertion(sub_atom(DriverIR, _, _, _, 'success:\n  ret i32 0')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'plawk_surface_path')),
+    !.
+
+test(stream_driver_emitter_full_blocks) :-
+    llvm_emit_stream_driver_ir('input.txt',
+        driver_blocks('', '  %setup = add i64 0, 0', '  %slot = phi i64 [0, %check_handle_value], [%slot_next, %continue_loop]',
+            lowered_full, '  %slot_next = add i64 %slot, 1',
+            '  %next_slot = phi i64 [%slot_next, %lowered_full]',
+            'break_close_stream:\n  br label %close_stream\n',
+            end_print, 'end_print:\n  ret i32 0'),
+        DriverIR),
+    assertion(sub_atom(DriverIR, _, _, _, 'entry:\n  %path_ptr')),
+    assertion(sub_atom(DriverIR, _, _, _, '  %setup = add i64 0, 0\n  %handle = call %Value @wam_stream_open_value')),
+    assertion(sub_atom(DriverIR, _, _, _, 'loop:\n  %slot = phi i64 [0, %check_handle_value], [%slot_next, %continue_loop]')),
+    assertion(sub_atom(DriverIR, _, _, _, 'lowered_full:\n  %slot_next = add i64 %slot, 1')),
+    assertion(sub_atom(DriverIR, _, _, _, 'continue_loop:\n  %next_slot = phi i64 [%slot_next, %lowered_full]\n  br label %loop')),
+    assertion(sub_atom(DriverIR, _, _, _, 'break_close_stream:\n  br label %close_stream\n\nclose_stream:')),
+    assertion(sub_atom(DriverIR, _, _, _, 'br i1 %close_ok, label %end_print, label %fail_close')),
+    !.
 
 % ============================================================================
 % Builtin op ID mapping

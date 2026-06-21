@@ -52,9 +52,13 @@ non-WAM target when they want direct target-native code.
 Python also accepts an explicit `wam_ir(wam_items_native)` override for
 interpreter-mode predicate emission. Today that target path consumes the common
 structured WAM items directly and is output-equivalent to `wam_items_bridge`;
-the shared `compile_predicate_to_wam_items/3` producer is still implemented as a
-text-to-items bridge. Once the shared producer becomes native, this explicit
-mode will skip WAM text end-to-end without changing the Python emitter.
+the shared `compile_predicate_to_wam_items/3` producer now skips WAM text for
+single-clause facts, simple user-predicate calls, generic builtin calls, and
+compound body arguments with default args-first `set_*` ordering, then falls
+back to the text-to-items bridge for more complex predicate shapes and the
+legacy `args_first_emission(false)` compound-argument order. As the native
+producer expands, the same explicit Python mode will skip WAM text for more
+predicates without changing the Python emitter.
 
 Lua, R, and Elixir follow the same partial migration shape as Python:
 interpreter-mode generated predicates consume common WAM items through the

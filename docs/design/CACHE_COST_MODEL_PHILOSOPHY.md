@@ -150,6 +150,32 @@ Measurements still play a role — they're how we *validate* the formula's
 predictions and how we *calibrate* the constants. But the day-to-day
 regime decisions come from the closed form.
 
+## Empirical validation of the L1/L2 regime split (2026-06-15)
+
+The decision matrix's L1-vs-L2 split was first-principles until the WAM-Rust
+cached graph-search sweeps measured it on a synthetic enwiki-scale category
+graph (working set 1.6–3.9× the 65 536-slot per-thread L1). See
+`docs/reports/wam_rust_cached_synthetic_scale_2026-06-15.md` and
+`wam_rust_cached_multithread_2026-06-15.md`. The measurement matches the matrix:
+
+- **Single-thread (one intra-thread lookup stream).** The single per-thread L1
+  holds the hot hub ancestors and serves 98–99% of all lookups; the shared L2 is
+  nearly insensitive to capacity (a 1024-entry L2 is within ~0.1 point of a 4 M
+  one). This is the `intra_thread → per_hec (L1)` row — perfect region affinity
+  (one thread), so the L1 wins and L2 is redundant.
+- **Multi-thread (cross-thread).** Each worker starts with a cold per-thread L1
+  that re-caches the same hot hubs, so cross-thread reuse can only hit the shared
+  L2. L2 capacity becomes load-bearing: at 4 threads, shrinking it below the
+  cross-thread working set cost ~1 point of hit rate and **+73% LMDB seeks**, and
+  the shared-L2 hit count grew ~6× across the capacity sweep. This is exactly the
+  `cross_thread → sharded (L2)` row and the "per-HEC L1 caches duplicate hot
+  edges across threads … L1 is dominated by sharded L2" rationale.
+
+Consequence for capacity sizing: `resolve_runtime_cache_capacity` is right to
+target the full demand set (the cross-thread working set), clamping only for
+memory. Sizing the shared L2 down to the per-thread L1 would be correct only for
+the single-thread / intra-thread case.
+
 ## Connection to other resolvers
 
 UnifyWeaver already has two cost-style resolvers in production:

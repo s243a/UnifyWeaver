@@ -135,6 +135,13 @@ init_atom_intern_table :-
 %% intern_atom(+AtomStr, -Id) is det.
 %  Assigns a stable integer ID to the given atom string. Idempotent.
 intern_atom(AtomStr, Id) :-
+    % M150: self-initialize. Standalone callers of the exported
+    % lowering API (e.g. tests calling lower_predicate_to_haskell
+    % without a full project generation) hit an empty intern table;
+    % the retract below then fails SILENTLY and the whole lowering
+    % fails with it -- the phase-4 suite's put_structure test failed
+    % this way for months without a message.
+    (   atom_intern_next(_) -> true ; init_atom_intern_table ),
     atom_string(AtomStr, Str),
     (   atom_intern_id(Str, Id0)
     ->  Id = Id0
@@ -2362,6 +2369,28 @@ step !ctx s (BuiltinCall "=/2" _) =
       unifyVal (derefVar (wsBindings s) a) (derefVar (wsBindings s) b) s
     _ -> Nothing
 
+-- Strict (in)equality. Previously missing from the table entirely, so
+-- the shared compiler emitted BuiltinCall ==/2 and it fell through to
+-- the catch-all Nothing (even X = a, X == a failed) -- the class-7 gap
+-- found by the bind-through probe sweep. derefDeep makes the compare
+-- structural through the binding table; distinct unbound vids stay
+-- unequal, matching ISO ==/2. (Cons-spelling caveat: a VList and an
+-- equivalent Str cons chain do not compare equal -- same limitation as
+-- unifyVal had before its aliasing arms; acceptable for the guard use.)
+step !ctx s (BuiltinCall "==/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b)
+      | derefDeep (wsBindings s) a == derefDeep (wsBindings s) b ->
+          Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+step !ctx s (BuiltinCall "\\\\==/2" _) =
+  case (IM.lookup 1 (wsRegs s), IM.lookup 2 (wsRegs s)) of
+    (Just a, Just b)
+      | derefDeep (wsBindings s) a /= derefDeep (wsBindings s) b ->
+          Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 step !ctx s (BuiltinCall "length/2" _) =
   let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 1 (wsRegs s))
   in case listVal of
@@ -3220,15 +3249,20 @@ stepST _ _ !pw CutIte =
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- M17 soft cut (see the pure `step` GetLevel/Cut for semantics).
+-- M145: route the register access through putRegST/getRegST. GetLevel''s
+-- operand is a Y register (id 201+), which lives in the topmost env
+-- frame on the ST path -- the old raw writeArray/readArray hit the
+-- STArray sized (1, maxRegId=199) and crashed every if-then-else
+-- predicate with an index error.
 stepST _ regs !pw (GetLevel reg) = do
-  writeArray regs reg (Integer (pwCPsLen pw))
-  return $ Just pw { pwPC = pwPC pw + 1 }
+  pw'' <- putRegST regs reg (Integer (pwCPsLen pw)) pw
+  return $ Just pw'' { pwPC = pwPC pw + 1 }
 
 stepST _ regs !pw (Cut reg) = do
-  v <- readArray regs reg
-  case v of
-    Integer n -> return $ Just pw { pwPC = pwPC pw + 1
-                                  , pwCPs = take n (pwCPs pw), pwCPsLen = n }
+  mv <- getRegST regs reg pw
+  case mv of
+    Just (Integer n) -> return $ Just pw { pwPC = pwPC pw + 1
+                                         , pwCPs = take n (pwCPs pw), pwCPsLen = n }
     _ -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- Type-checking builtins
@@ -5215,9 +5249,21 @@ addToBuilder val s = case wsBuilder s of
                 -- must ALSO bind the var ai currently holds, or the outer
                 -- term keeps an unbound tail -- the multi-element list bug
                 -- that made reverse/append wrong on lists of length >= 2.
-                sBound = case IM.lookup ai (wsRegs s) of
-                  Just (Unbound vid) -> bindUnbound vid term s
-                  _ -> s
+                --
+                -- A-REGISTER EXCEPTION (M139/M140 bind-through class):
+                -- A registers (ai < 100; X = 101+, Y = 201+) are argument
+                -- STAGING -- their old occupant is an unrelated variable
+                -- (often a clause-head argument), and binding it to the
+                -- freshly built term creates a cyclic term (X = f(X)),
+                -- wrong-failing a later X = 1. The set_variable
+                -- placeholders only ever live in X/Y registers, so the
+                -- bind-through is conditioned on the register class --
+                -- the same fix the Rust, Go, Scala and Kotlin targets carry.
+                sBound = if ai >= 100
+                  then case IM.lookup ai (wsRegs s) of
+                    Just (Unbound vid) -> bindUnbound vid term s
+                    _ -> s
+                  else s
             in Just (sBound { wsPC = wsPC s + 1
                             , wsRegs = IM.insert ai term (wsRegs sBound)
                             , wsBuilder = NoBuilder
@@ -5241,10 +5287,13 @@ addToBuilder val s = case wsBuilder s of
                   _           -> Str atomDot [hd, tl]
                 -- Same placeholder-var binding as BuildStruct: a list built
                 -- into a register that holds a set_variable placeholder must
-                -- bind that var so an enclosing term sees the list.
-                sBound = case IM.lookup ai (wsRegs s) of
-                  Just (Unbound vid) -> bindUnbound vid list s
-                  _ -> s
+                -- bind that var so an enclosing term sees the list. Same
+                -- A-register exception as BuildStruct (M139/M140 class).
+                sBound = if ai >= 100
+                  then case IM.lookup ai (wsRegs s) of
+                    Just (Unbound vid) -> bindUnbound vid list s
+                    _ -> s
+                  else s
             in Just (sBound { wsPC = wsPC s + 1
                        , wsRegs = IM.insert ai list (wsRegs sBound)
                        , wsBuilder = NoBuilder

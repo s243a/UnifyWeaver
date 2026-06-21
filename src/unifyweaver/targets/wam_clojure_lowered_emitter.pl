@@ -324,6 +324,7 @@ emit_instrs([], Indent) :-
 emit_instrs(Instrs, Indent) :-
     length(Instrs, Len),
     format("~w(let [s0 state~n", [Indent]),
+    format("~w      c0 true~n", [Indent]),
     emit_instr_bindings(Instrs, 0, Indent),
     format("~w      ]~n", [Indent]),
     format("~w  s~w)~n", [Indent, Len]).
@@ -332,11 +333,16 @@ emit_instr_bindings([], _, _).
 emit_instr_bindings([Instr|Rest], Index, Indent) :-
     NextIndex is Index + 1,
     format(atom(InState), 's~w', [Index]),
+    format(atom(InCont), 'c~w', [Index]),
+    format(atom(OutState), 's~w', [NextIndex]),
+    format(atom(OutCont), 'c~w', [NextIndex]),
     emit_lowered_expr(Instr, InState, Expr),
     instr_comment(Instr, Comment),
     format("~w      ;; ~w~n", [Indent, Comment]),
-    format("~w      s~w (if (= :running (:status ~w)) ~w ~w)~n",
-           [Indent, NextIndex, InState, Expr, InState]),
+    format("~w      ~w (if ~w ~w ~w)~n",
+           [Indent, OutState, InCont, Expr, InState]),
+    format("~w      ~w (runtime/lowered-step-advanced? ~w ~w ~w)~n",
+           [Indent, OutCont, InCont, InState, OutState]),
     emit_instr_bindings(Rest, NextIndex, Indent).
 
 % =====================================================================
@@ -1323,9 +1329,28 @@ emit_lowered_expr(_Instr, S, Expr) :-
 clj_lowered_literal(Value, Literal) :-
     (   number(Value)
     ->  format(atom(Literal), '~w', [Value])
+    ;   clj_lowered_unquoted_number(Value, Num)
+    ->  % Bare numeric TOKEN from the WAM text. The compiler quotes
+        % atoms that merely look numeric (and marks them with the
+        % \x01 prefix), so an unquoted numeral is a real number.
+        % Previously this fell to the string branch and
+        % normalize-literal-term interned it as an ATOM, so the
+        % opportunistically-lowered path compared atom-"1" against
+        % integer 1 and wrong-failed (every zero-arity wrapper ending
+        % in `R is 1` — found by the bind-through probe sweep).
+        format(atom(Literal), '~w', [Num])
     ;   clj_lowered_atom_text(Value, Text),
         clj_lowered_string_literal(Text, Literal)
     ).
+
+clj_lowered_unquoted_number(Value, Num) :-
+    (   string(Value) -> S = Value
+    ;   atom(Value) -> atom_string(Value, S)
+    ;   fail
+    ),
+    \+ sub_string(S, 0, 1, _, "'"),
+    \+ string_codes(S, [1|_]),
+    catch(number_string(Num, S), _, fail).
 
 clj_lowered_atom_text(Value, Text) :-
     (   string(Value) -> S0 = Value ; atom_string(Value, S0) ),

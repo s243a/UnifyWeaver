@@ -73,7 +73,11 @@ test(zero_arity_no_arg_setup) :-
 test(multi_clause_labels_resolved) :-
     WamCode = "anc/2:\n    try_me_else L_c2\n    get_constant p, A1\n    proceed\nL_c2:\n    trust_me\n    get_constant gp, A1\n    proceed",
     compile_wam_predicate_to_cil(anc/2, WamCode, [], CILCode),
-    assertion(sub_atom(CILCode, _, _, _, 'new Instruction(22, 1L, 0L)')).
+    % try_me_else resolving L_c2 (label index 1). The literal is now
+    % lowered to real IL (tag 22, op1=1, op2=0) — the old C#-style
+    % 'new Instruction(...)' pseudo-code was an ilasm syntax error.
+    assertion(sub_atom(CILCode, _, _, _,
+        'ldc.i4 22\n    ldc.i8 1\n    ldc.i8 0\n    newobj instance void Instruction::.ctor(int32, int64, int64)')).
 
 % ============================================================================
 % Full runtime assembly
@@ -133,10 +137,12 @@ test(builtin_is_uses_eval_arith) :-
 % .tail call in runtime template
 % ============================================================================
 
+% The tail-call prefix is the IL opcode `tail.` (prefix before call),
+% not the `.tail` directive form (ilasm: irrecoverable syntax error).
 test(runtime_template_uses_tail_call) :-
     wam_ilasm_target:read_template_file(
         'templates/targets/ilasm_wam/runtime.il.mustache', Template),
-    assertion(sub_atom(Template, _, _, _, '.tail')),
+    assertion(sub_atom(Template, _, _, _, 'tail.')),
     assertion(sub_atom(Template, _, _, _, 'call bool')),
     assertion(sub_atom(Template, _, _, _, 'run_loop')).
 

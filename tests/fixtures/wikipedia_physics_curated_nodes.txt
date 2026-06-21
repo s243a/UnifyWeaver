@@ -1,0 +1,56 @@
+# Curated physics category nodes for the WAM-Rust caret test set (roadmap 3e).
+#
+# Provenance: random walks DOWN the Wikipedia category graph from "Physics"
+# (scripts/physics_random_walk_candidates.py --tsv data/benchmark/10k/category_parent.tsv
+#  --walks 400 --depth 6 --seed 1234 --top 200), then classified physics-vs-not by a Haiku
+# subagent. The category graph is associative (not is-a), so the walks leak out of physics; the
+# LLM supplies the semantic signal the graph structure cannot. This set is LLM-curated and not
+# authoritative — a couple of borderline/wrong entries (e.g. Fire, Physical_exercise) survive,
+# which the caret metric itself then flags as outliers (their optimal bridge to other physics
+# nodes is weak / non-physics). One node name per line; '#' lines are comments.
+Temperature
+Fire
+Fires
+Physical_quantity
+Energy
+Subfields_of_physics
+Matter
+Heat
+Cold
+Ice
+States_of_matter
+Gases
+Light
+Atoms
+Chemical_elements
+Physical_objects
+Electromagnetic_radiation
+Thermodynamics
+Classical_mechanics
+Wave_mechanics
+Electromagnetism
+Electricity
+Noble_gases
+Mechanics
+Oxygen
+Waves
+Electricity_distribution
+Electrification
+Optics
+Vision
+Oscillation
+Causality
+Acoustics
+Sound
+Planets
+Earth
+Cosmology
+Electronics
+Metalloids
+Physical_exercise
+Nonmetals
+Chalcogens
+Motion_(physics)
+Nitrogen
+Hydrogen
+Hydrogen_compounds

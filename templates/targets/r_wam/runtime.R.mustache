@@ -423,7 +423,18 @@ WamRuntime$append_build_arg <- function(state, val) {
     new_struct <- StructTerm(top$fid, top$args)
     cur <- WamRuntime$get_reg(state, top$target_reg)
     cur <- WamRuntime$deref(state, cur)
-    if (!is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
+    # A-REGISTER EXCEPTION (M139/M140 bind-through class): the cycle
+    # check below is NOT sufficient on its own. A registers
+    # (idx < 101; X = 101+, Y = 201+) are argument staging -- their old
+    # occupant is an unrelated live variable (often a clause-head
+    # argument), and binding it to a structure that does NOT contain it
+    # silently aliases the variable to that term (the non-cyclic
+    # variant the sweep probe aliasfree/1 exposed:
+    # `p(X) :- q(g(7)), var(X)` wrong-failed). Build placeholders only
+    # ever live in X/Y registers, so the bind is additionally gated on
+    # the register class -- the same fix the other targets carry.
+    if (top$target_reg >= 101L &&
+        !is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
       # Skip the bind if cur appears anywhere inside new_struct -- the
       # bind would create a self-cycle. This happens when the WAM
       # emits sequences like
@@ -1371,8 +1382,7 @@ WamRuntime$step <- function(program, state, instr) {
       # Lowered fast path (kernel / fact-table) wins over the WAM
       # array. The lowered fn pushes any iter CPs it needs and
       # returns TRUE/FALSE, so we just advance PC on success.
-      if (!is.null(program$lowered_dispatch) &&
-          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+      if (WamRuntime$lowered_path_ok(program, key)) {
         fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
         ok <- isTRUE(fn(program, state))
         if (!ok) return(FALSE)
@@ -1405,8 +1415,7 @@ WamRuntime$step <- function(program, state, instr) {
       # Lowered fast path (kernel / fact-table) wins over the WAM
       # array. Tail-call: hand control back to the caller's CP via
       # the same path the dynamic-store branch uses on success.
-      if (!is.null(program$lowered_dispatch) &&
-          exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+      if (WamRuntime$lowered_path_ok(program, key)) {
         fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
         ok <- isTRUE(fn(program, state))
         if (!ok) return(FALSE)
@@ -4078,13 +4087,27 @@ WamRuntime$call_goal <- function(program, state, goal_term) {
   WamRuntime$dispatch_call(program, state, pred, arity)
 }
 
+# M152: a lowered fast path (kernel / fact-table / multi_clause_n)
+# returns TRUE/FALSE definitively and never consults the dynamic
+# clause store -- so a predicate that was lowered at codegen AND
+# later receives assertz/1 clauses at runtime would have those
+# clauses silently shadowed. Skip the fast path the moment dynamic
+# clauses exist for the key; the interpreter path unions compiled
+# and dynamic clauses correctly.
+WamRuntime$lowered_path_ok <- function(program, key) {
+  if (is.null(program$lowered_dispatch)) return(FALSE)
+  if (!exists(key, envir = program$lowered_dispatch, inherits = FALSE)) return(FALSE)
+  if (!is.null(program$dynamic) &&
+      exists(key, envir = program$dynamic, inherits = FALSE)) return(FALSE)
+  TRUE
+}
+
 WamRuntime$dispatch_call <- function(program, state, pred, arity) {
   key <- paste0(pred, "/", arity)
   # Lowered fast path (kernel / fact-table) wins over the WAM
   # array; the lowered fn manages its own iter CPs and returns
   # TRUE/FALSE.
-  if (!is.null(program$lowered_dispatch) &&
-      exists(key, envir = program$lowered_dispatch, inherits = FALSE)) {
+  if (WamRuntime$lowered_path_ok(program, key)) {
     fn <- get(key, envir = program$lowered_dispatch, inherits = FALSE)
     return(isTRUE(fn(program, state)))
   }

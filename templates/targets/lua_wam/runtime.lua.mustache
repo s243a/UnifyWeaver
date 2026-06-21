@@ -220,9 +220,28 @@ local function push_built_term(state, term)
       table.insert(parent.args, built)
       top = parent
     else
-      local target_val = Runtime.get_reg(state, top.target)
-      if type(target_val) == "table" and target_val.tag == "unbound" then
-        bind_var(state, target_val, built)
+      -- Bind-through of the register old occupant supports top-down
+      -- structure chaining (a set_variable placeholder filled by a later
+      -- put_structure into the same register).
+      --
+      -- A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+      -- (index < 101; X = 101+, Y = 201+) are argument STAGING -- their
+      -- old occupant is an unrelated variable (often a clause-head
+      -- argument), and binding it to the freshly built term creates a
+      -- cyclic term (X = f(X)), wrong-failing a later X = 1. Placeholders
+      -- only ever live in X/Y registers, so the bind-through is gated on
+      -- the register class -- the same fix as Rust/Go/Scala/Kotlin/
+      -- Haskell/C/WAT. The deref is also new: the cell carries
+      -- tag == "unbound" even after a binding lands in state.bindings,
+      -- so binding without deref clobbered already-bound variables.
+      if top.target >= 101 then
+        local target_val = Runtime.get_reg(state, top.target)
+        if type(target_val) == "table" and target_val.tag == "unbound" then
+          local d = Runtime.deref(state, target_val)
+          if type(d) == "table" and d.tag == "unbound" then
+            bind_var(state, d, built)
+          end
+        end
       end
       Runtime.put_reg(state, top.target, built)
       state.mode = nil

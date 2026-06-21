@@ -176,6 +176,14 @@ test(compile_time_intern_tables_are_emitted_and_deduplicated) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(numeric_wam_constants_preserve_number_vs_atom_tokens) :-
+    once((
+        wam_clojure_target:wam_op_to_clojure_literal("put_constant", ["2", "A1"], _, NumericLiteral),
+        wam_clojure_target:wam_op_to_clojure_literal("put_constant", ["'2'", "A1"], _, AtomLiteral),
+        assertion(NumericLiteral == '{:op :put-constant :constant 2 :reg "A1"}'),
+        assertion(AtomLiteral == '{:op :put-constant :constant "2" :reg "A1"}')
+    )).
+
 test(foreign_predicates_emit_call_foreign_stub) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_foreign', TmpDir),

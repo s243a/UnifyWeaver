@@ -18,7 +18,6 @@ main :-
         plawk_core:ofs/2,
         plawk_core:append_output/3,
         plawk_core:state_outputs/2,
-        plawk_core:normalize_outputs/2,
         plawk_core:print_item/3,
         plawk_core:print_fields/3,
         plawk_core:item_field/3

@@ -132,24 +132,40 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 - **Core helper probe:** `state_counter/2`, `increment_counter/2`,
   `item_field/3`, `item_field_count/2`, `nr/2`, `nf/2`, `fs/2`, `ofs/2`,
   `append_output/3`, `state_outputs/2`, `print_item/3`, and `print_fields/3`
-  generate LLVM IR through WAM fallback when all private helper callees are
-  listed explicitly. This exposed a current project-compile limitation:
-  private helper dependencies such as `normalize_outputs/2` are not pulled into
-  the WAM/LLVM predicate set automatically. The generated helper probe now
-  verifies with `llvm-as`; the earlier `%Instruction` array mismatch was fixed
+  generate LLVM IR through WAM fallback. WAM/LLVM now computes a conservative
+  same-module helper closure before project classification, so private helper
+  dependencies such as `normalize_outputs/2` no longer need to be listed as
+  probe roots. The generated helper probe now verifies with `llvm-as`; the
+  earlier `%Instruction` array mismatch was fixed
   by lowering `switch_on_constant_fallthrough` to a real no-op instruction
   instead of a `; TODO` comment inside `@module_code`.
 - **Loop probe:** `process_all/4` now emits IR without unresolved-label warnings,
   and the generated loop probe verifies with `llvm-as`. WAM/LLVM recognizes
-  `call/N` bytecode targets and routes atom-goal meta-calls through a generated
-  numeric dispatch table keyed by `(atom_id, effective_arity)` to a label index,
-  preserving the existing numeric label-to-PC jump path. This keeps the hot path
-  numeric rather than doing string lookup at runtime. Compound closure calls
-  still need a follow-up extension to dispatch on compiled functor identity plus
-  base arguments.
-- **Reader probe:** intentionally deferred. The Phase-0 reader uses
-  `read_file_to_string/3` as a SWI-only slurp shortcut; Phase 1 still needs the
-  buffered streaming input builtin described in Finding 3.
+  `call/N` bytecode targets and routes meta-calls through a generated numeric
+  dispatch table, preserving the existing numeric label-to-PC jump path. Atom
+  goals dispatch by `(atom_id, effective_arity)`. Compound closures dispatch by
+  `(compiled_functor_pointer, effective_arity)` and lay out captured closure
+  arguments before the extra `call/N` arguments. This keeps the hot path numeric
+  rather than doing string lookup at runtime.
+- **Meta-call probe:** atom and compound closure meta-calls now emit IR and
+  verify with `llvm-as` in `examples/plawk/generated/plawk_meta_call_probe.ll`.
+- **Reader probe:** the WAM/LLVM target now has general buffered stream builtins
+  `stream_open/2`, `read_line/2`, and `stream_close/1`. Handles are numeric
+  IDs into a target-owned `%WamLineReader` table carrying fd, buffer, length,
+  and position state; `read_line/2` reads through a 4 KB buffer, returns line
+  atoms without the trailing newline, and unifies `end_of_file` at EOF rather
+  than failing. The reader probe emits
+  `examples/plawk/generated/plawk_reader_probe.ll` and verifies with `llvm-as`.
+  `read_line/2` builds each output line in a malloc-owned temporary buffer before
+  interning, growing the buffer as needed, so long streams do not consume WAM
+  arena space per record and individual line atoms are not capped at 64 KiB.
+- **Compiled stream-core smoke:** `tests/test_plawk_compiled_stream_core.pl`
+  builds a native LLVM binary that streams a text file, splits records with
+  `atom_split/3`, runs a PLAWK-style handler over `record(text, Line, Fields)`,
+  counts records via `state/4`, and collects the two `ERROR` lines through the
+  normal `append_output/3` and `state_outputs/2` path. The smoke also exercises
+  the WAM/LLVM choice-point stack restore needed for else-branch control flow
+  after called predicates allocate and fail.
 
 ---
 
@@ -173,6 +189,35 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
+**Current boundary:** the compiled and native stream smokes still read from file
+paths rather than stdin. WAM/LLVM exposes general stream helpers
+(`@wam_stream_open_value`, `@wam_stream_read_line_value`, and
+`@wam_stream_close_value`) that native LLVM code can call directly, alongside
+the existing `stream_open/2`, `read_line/2`, and `stream_close/1` builtins.
+The `tests/test_plawk_native_stream_loop_driver.pl` smoke proves a native LLVM
+loop can open a runtime file path, read lines until `end_of_file`, call a
+compiled PLAWK handler once per record, and thread PLAWK state through WAM.
+The `tests/test_plawk_native_counter_stream_loop_driver.pl` smoke then lowers
+the hot record counter to a native `i64` loop variable while keeping output
+accumulation as ordinary WAM terms via `append_output/3` and `state_outputs/2`.
+The `tests/test_plawk_native_output_stream_loop_driver.pl` smoke moves the next
+piece of hot-loop state into LLVM: native code owns the reader, record counter,
+output counter, and fixed output slots, while WAM only returns the deterministic
+handler decision (`yes`/`no`) for each record. The next boundary is lowering
+more deterministic handler logic itself into native code without making the
+target PLAWK-specific. The first reusable emitter path for that boundary is now
+`llvm_emit_atom_prefix_guard/5`, which emits a prefix global plus a call to the
+general `@wam_atom_prefix_value` runtime helper. That lets native LLVM lower
+deterministic `sub_atom(Line, 0, Len, _, Prefix)` guards without allocating a
+substring or entering `run_loop` for each record. The
+`tests/test_plawk_native_lowered_handler_stream_loop_driver.pl` smoke proves
+that emitter-backed shape in a native stream loop.
+
+**Compiler note:** WAM/LLVM now normalizes quoted atom tokens before interning.
+Atoms such as `'ERROR disk full'` and `'it\'s bad'` compile to raw runtime
+atom names without the outer WAM token quotes.
+`tests/test_wam_llvm_quoted_atom_literals.pl` covers that regression.
+
 ---
 
 ## Phase 2: AWK syntactic sugar
@@ -192,6 +237,123 @@ lines — identical behaviour to Phase 0, running as compiled LLVM.
 
 Parser/codegen land in `examples/plawk/{parser,codegen}/`.
 
+**Current slice:** `examples/plawk/parser/plawk_parser.pl` parses the first
+surface forms, `/^PREFIX/ { print $0 }` and
+`$N == "VALUE" { print $0 }`, plus selected-field actions such as
+`$N == "VALUE" { print $M, $K }`, and the first scalar state form,
+`$N == "VALUE" { count++ } END { print count }`, to explicit pattern/action
+ASTs. Rule bodies now carry semicolon-separated action lists, and scalar
+variables lower through indexed native slots.
+`examples/plawk/codegen/plawk_native_codegen.pl` lowers that AST to a native
+streaming WAM/LLVM driver using `llvm_emit_atom_prefix_guard/5` or
+`llvm_emit_atom_field_eq_guard/7`, and
+`tests/test_plawk_surface_prefix_print.pl` proves that the generated binary
+prints matching records from a text file without calling `run_loop` in the hot
+record loop. The reusable file open/read/eof/close skeleton now lives in the
+WAM/LLVM target as `llvm_emit_stream_driver_ir/3`, so PLAWK supplies only the
+surface-specific globals, per-record lowering, continuation phis, and close
+block. Literal contains-pattern rules such as `/disk/ { print $0 }` lower to
+whole-record native index checks; the only regex metacharacter currently
+special-cased is the existing leading `^` prefix shortcut. The field-equality
+path scans fields in native code without allocating substrings; selected-field
+printing projects byte slices directly.
+Rule prints can include native `NR`, implemented as a record-number `i64` phi in
+the print-only streaming loop, and native `NF`, implemented with the shared
+`@wam_atom_field_count_value` helper over the active single-byte `FS`. Rule
+prints can also call native `length($N)` through the shared
+`@wam_atom_field_length_value` helper, native `substr($N, Start, Len)` through
+the allocation-free `@wam_atom_field_subslice_value` helper, and native
+`index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
+Explicit print-side numeric coercions such as `int($N)` lower through the shared
+`@wam_atom_field_i64_value` parse helper and print zero when the field is
+missing or not a strict signed decimal. The first composed arithmetic forms add
+or subtract a non-negative integer constant from native `i64` primaries such as
+`NR`, `NF`, `length($N)`, `int($N)`, and `index($N, "literal")`; each lowers
+through the shared primary emitter followed by a shared binary `i64` operation.
+Print-only `tolower($N)` and `toupper($N)` lower through shared
+`@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
+case mapping streams bytes without allocating a transformed atom.
+Basic rule-local `printf` actions now lower to native vararg `@printf` calls.
+The supported format subset is `%%`, `%s`, `%d`, `%i`, and `%ld`; field-slice
+`%s` arguments are rewritten to `%.*s` and passed as allocation-free length and
+pointer pairs.
+Numeric field guards such as `$3 > 100` lower through the shared
+`@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
+as a strict signed decimal `i64` and compares with numeric op codes.
+The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
+plus success flag, so the same machinery also feeds scalar expressions such as
+`bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
+those scalar arithmetic contexts. That coercion is emitted through the
+target-side `llvm_emit_atom_field_i64_or_default/7` helper so future native
+numeric consumers can share the parse-plus-default lowering instead of
+rebuilding it in PLAWK-specific code.
+The scalar counter
+path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
+become parallel `i64` phi slots in the native streaming loop.
+Scalar counters lower through an explicit codegen state plan that keeps
+source-level state recognition separate from LLVM slot numbering. The same
+native slots now support `+=` with integer constants and field lengths, so
+programs such as `$1 == "ERROR" { bytes += length($0); hits += 2 } END { print bytes, hits }`
+stay in the compiled stream loop. Plain scalar assignment to integer literals,
+`NR`, `NF`, field lengths, or field-index positions uses the same native slot
+path and is folded in source order with later `++`/`+=` updates, so a `last_len`
+assignment followed by `hits++` also stays native. The first
+native `if/else` action slice lowers field-equality conditions once at rule-body
+scope, threads the whole scalar slot vector through then/else action sequences,
+emits per-slot phis at the branch join, and can run field-key associative
+increments or selected-field/string-literal `print` as branch-local side effects. Scalar,
+mixed, and assoc-only branch bodies now share the same rule-body action walker;
+branch phis use each branch's actual exit block, including assoc side-effect
+`_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
+prints do not collide; branch-local `NR` printing uses the same native record
+counter threaded through the stream loop as top-level `print NR`. Print
+expression lowering now shares one context-aware path for top-level and
+branch-local prints; the context supplies prefixed names while `$N`, `NF`,
+`length`, `substr`, `index`, and case transforms use the same expression
+lowering clauses. Numeric expression lowering is also factored through a shared
+`plawk_i64_expr_ir` layer, so scalar updates and print expressions both consume
+the same native `i64` emitters for constants, `NR`, `NF`, `length($N)`, numeric
+field coercion, `index($N, "...")`, and native `NR`/`NF`/`length`/`int`/`index`
+primary `+/- K` forms where those forms apply.
+Terminal
+branch-local `next` branches directly to the stream-loop continuation and adds
+the selected branch's scalar values to the loop phi inputs. Terminal
+branch-local `break` branches to the same dedicated stream-close block as
+rule-level `break` and feeds the selected branch's scalar values through
+final-state phis. Native rule chains also support terminal `next` by branching
+directly to the stream-loop continuation; scalar and mixed chains add the
+early-exit rule's scalar values to the loop phi inputs, while assoc-only chains
+update tables before the continuation branch. Terminal `break` uses the sibling
+path: matching rules branch to a dedicated stream-close block and scalar/mixed
+programs feed `END` through final-state phis. This native slice deliberately
+trims unreachable tail actions after `next`/`break` in the same rule body or
+branch before lowering, so parser-accepted non-final control statements still
+reuse the terminal native continuation/close paths. The current
+associative-count surface allocates one reusable WAM/LLVM
+interned-atom-keyed growable `i64` table primitive (`wam_assoc_i64_*`) per source
+array, increments those tables in the native streaming loop, and performs `END`
+lookups through the matching source-array table. Multiple associative increments
+in one rule lower as sequential native action blocks, so no WAM dispatch is
+needed per record for those count updates.
+Guarded associative-count rules now reuse the same native guard emitters and
+rule-chain structure as scalar counters, so the loop can run field/prefix checks
+and table increments without per-record WAM dispatch for the supported surface.
+Mixed scalar/associative programs use a combined native state plan: scalar
+counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
+`END` printing can interleave scalar variables with associative lookups.
+`END` printing also supports string literal fields for report labels; codegen
+emits indexed string globals and prints them with the same separator rules.
+The first `BEGIN` slices emit literal `print` headers before stream setup, using
+separate indexed string globals so they do not collide with `END` literals, and
+thread `FS` assignments through native field-equality, selected-field print, and
+associative-key extraction helpers. The default space `FS` follows AWK-style
+whitespace splitting by ignoring leading/trailing whitespace and treating runs of
+space, tab, CR, or LF as one separator; explicit non-space `FS` values still use
+the single-byte literal path. Single-byte `OFS` assignments now configure the
+separator used by comma-separated `print` fields in `BEGIN`, rule, and `END`
+actions. Native separator emission uses direct byte output rather than
+passing the separator through `printf` as a format string.
+
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
 
@@ -206,6 +368,13 @@ produces correct output on standard awk test cases.
 3. Compile the DCG through UnifyWeaver to LLVM.
 4. Extend `item_field/3` and `select_writer/2` for `record(binary, Type, Payload)`.
 5. Map `State` stream handles to OS file descriptors.
+
+**Associative-array note:** typed/native associative arrays are a high-value
+later feature. AWK associative arrays are string keyed; PLAWK can eventually
+lower common table shapes to binary hash tables keyed by typed values or
+interned IDs. That should preserve awk-like ergonomics while creating a
+plausible performance win over string-centric AWK loops once the basic compiled
+reader/handler/output path is stable.
 
 > **Perf caveat:** DCGs over difference-lists of bytes are correct but can be
 > slow in WAM without first-argument indexing on the byte / partial evaluation.

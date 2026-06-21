@@ -93,8 +93,11 @@ Reader = text_file_reader(Path, FieldSeparator)
 ```
 
 The reader converts each line into a `record(text, Line, Fields)` item. Phase 0
-uses a whole-file SWI reader for convenience; the implementation plan tracks the
-target-side streaming reader needed for compiled unbounded input.
+uses a whole-file SWI reader for convenience. The compiled smoke in
+`tests/test_plawk_compiled_stream_core.pl` now exercises the target-side
+streaming reader: it opens a file with `stream_open/2`, reads lines with
+`read_line/2`, splits fields with `atom_split/3`, and runs a PLAWK-style
+handler in a native LLVM binary.
 
 ### Handler
 
@@ -114,6 +117,341 @@ state(InputStreams, OutputStreams, Counter, UserFields)
 
 The Phase 0 examples use the counter as `NR`, collect printed lines in
 `OutputStreams`, and store `FS`/`OFS` in `UserFields` as `plawk_options(FS, OFS)`.
+
+## Current surface example: count matching records
+
+The native Phase 2 surface can compile rule prints with `NR`, `NF`, selected
+fields, native field lengths such as `length($2)`, native byte substrings such as
+`substr($2, 1, 3)`, and `OFS`, matching the first awk-style example above. It can
+also compile literal contains-pattern rules such as `/disk/ { print $0 }`, where
+the current `/.../` subset treats the body as a literal byte substring unless it
+uses the existing `^` prefix fast path. It can also print explicit numeric field
+coercions with `int($N)`, where missing or non-numeric fields become `0`, and
+the first arithmetic composition forms add or subtract a non-negative integer
+constant from native `i64` primaries such as `NR`, `NF`, `length($N)`, and
+`int($N)`. It can also compile a scalar counter and an `END` action:
+
+```awk
+$1 == "ERROR" { count++ } END { print count }
+```
+
+It can also compile basic rule-local `printf` actions:
+
+```awk
+$1 == "ERROR" { printf "%s=%s\n", $2, $3 }
+```
+
+It can also compile multiple scalar increments in one action list:
+
+```awk
+$1 == "ERROR" { errors++; matches++ } END { print errors, matches }
+```
+
+Separate guarded rules can update shared scalar state too:
+
+```awk
+$1 == "ERROR" { errors++ }
+$1 == "WARN"  { warnings++ }
+END { print errors, warnings }
+```
+
+For the sample input above, that prints:
+
+```text
+2 1
+```
+
+The single-counter forms count two matching records:
+
+```text
+2
+```
+
+The first associative-count surface uses familiar AWK syntax:
+
+```awk
+{ counts[$1]++ }
+END { print counts["ERROR"], counts["WARN"] }
+```
+
+PLAWK interns the `$1` slice for each record and updates a native WAM/LLVM
+growable `i64` table keyed by that atom id. The `END` action looks up the printed
+keys:
+
+```text
+2 1
+```
+
+Multiple associative arrays in one always-rule get separate runtime tables:
+
+```awk
+{ counts[$1]++; by_component[$2]++ }
+END { print counts["ERROR"], by_component["disk"], by_component["cpu"] }
+```
+
+For the sample input above, that prints:
+
+```text
+2 1 1
+```
+
+Associative counts can also be guarded:
+
+```awk
+$1 == "ERROR" { by_component[$2]++ }
+$1 == "WARN"  { warnings[$2]++ }
+END { print by_component["disk"], warnings["cpu"] }
+```
+
+The generated native loop checks each rule's guard before entering its table
+increment block. For the sample input, that prints:
+
+```text
+1 1
+```
+
+Scalar counters and associative counts can be used together:
+
+```awk
+{ total++; counts[$1]++ }
+$1 == "ERROR" { errors++; by_component[$2]++ }
+END { print total, errors, counts["WARN"], by_component["disk"] }
+```
+
+The generated native loop carries scalar counters as `i64` phi slots and keeps
+associative arrays in runtime tables. For the sample input, that prints:
+
+```text
+4 2 1 1
+```
+
+`END` print fields can include literal labels:
+
+```awk
+{ total++; counts[$1]++ }
+END { print "total", total, "errors", counts["ERROR"] }
+```
+
+That prints:
+
+```text
+total 4 errors 2
+```
+
+Scalar variables can accumulate native integer deltas and field lengths:
+
+```awk
+$1 == "ERROR" { bytes += length($0); hits += 2 }
+END { print bytes, hits }
+```
+
+They can also accumulate numeric fields. The field parser is strict, but scalar
+arithmetic uses zero when a field is missing or non-numeric:
+
+```awk
+$1 == "ERROR" { bytes += $3; last = $3 }
+END { print bytes, last }
+```
+
+They can also be assigned in the native loop. Assignment preserves source order
+with later updates:
+
+```awk
+$1 == "ERROR" { last_len = length($0); hits++ }
+END { print hits, last_len }
+```
+
+The current assignment expression subset is integer literals, `NR`, `NF`,
+`length($N)`, `index($N, "literal")`, numeric `$N`, explicit `int($N)`, and
+native scalar `i64` primary `+/- K` forms such as `NF + K`, `length($N) - K`,
+`int($N) + K`, and `index($N, "literal") + K`.
+
+Numeric field guards are also native:
+
+```awk
+$3 >= 100 { big++ }
+END { print big }
+```
+
+The selected field is parsed as a signed decimal `i64`; missing or non-numeric
+fields simply do not match the guard.
+
+The first `if/else` surface lowers scalar updates behind field-equality and
+numeric field guards:
+
+```awk
+{
+  total++
+  if ($1 == "ERROR") { errors++; last_len = length($0) }
+  else { non_errors++ }
+}
+END { print total, errors, non_errors, last_len }
+```
+
+For now, branch bodies support scalar updates, field-key associative increments,
+selected-field and string-literal `print` including `NR`, terminal `next`/`break`, and
+combinations of those actions. The generated native code evaluates the `if`
+condition once, runs the selected branch, rejoins normal scalar slots through
+LLVM phi nodes, routes selected branch-local `next` paths to the next input
+record, and routes selected branch-local `break` paths to the stream close path
+before `END`.
+
+Associative increments can live inside the selected branch:
+
+```awk
+{
+  if ($1 == "ERROR") { by_component[$2]++ }
+  else { by_kind[$1]++ }
+}
+END { print by_component["disk"], by_kind["WARN"] }
+```
+
+Branches can also print selected fields and string literals:
+
+```awk
+{
+  if ($1 == "ERROR") { print "error", NR, $2, $3 }
+  else { counts[$1]++ }
+}
+END { print counts["WARN"] }
+```
+
+Branches can use terminal `next` to skip later actions and later rules for the
+current record:
+
+```awk
+{
+  if ($1 == "DEBUG") { skipped++; next }
+  else { seen++ }
+  total++
+}
+END { print total, seen, skipped }
+```
+
+Branches can also use terminal `break` to stop the input stream before `END`:
+
+```awk
+{
+  if ($1 == "ERROR") { hits++; break }
+  else { total++ }
+}
+END { print hits, total }
+```
+
+A terminal `next` skips the remaining rules for the current record:
+
+```awk
+$1 == "DEBUG" { skipped++; next }
+{ total++ }
+END { print total, skipped }
+```
+
+The same terminal `next` behavior works for associative arrays and mixed scalar/array rules.
+Terminal `break` stops the input stream before running `END`:
+
+```awk
+$1 == "ERROR" { hits++; break }
+{ total++ }
+END { print hits, total }
+```
+
+If `next` or `break` appears before the end of a rule body or branch, later
+actions in that same action list are unreachable and skipped by native codegen.
+
+`BEGIN` can emit literal report headers before the first input record is read:
+
+```awk
+BEGIN { print "kind", "count" }
+{ total++ }
+END { print "total", total }
+```
+
+For the sample input, that prints:
+
+```text
+kind count
+total 4
+```
+
+By default, `FS=" "` uses AWK-style whitespace splitting: leading and trailing
+whitespace is ignored, and whitespace runs do not create empty fields.
+
+The first `substr` surface uses AWK-style 1-based starts and byte counts.
+
+`index` returns an AWK-style 1-based byte position, or `0` if the literal is not
+present:
+
+```awk
+$1 == "ERROR" { print index($2, "sk"), index($0, "disk") }
+```
+
+`int($N)` prints the strict signed-decimal numeric value of a field, or `0` for
+missing and non-numeric fields:
+
+```awk
+$1 == "ERROR" { print $3, int($3) }
+```
+
+The current arithmetic print subset can add or subtract a non-negative integer
+constant from native `i64` primaries:
+
+```awk
+$1 == "ERROR" { print NR - 1, NF + 1, length($0) - 3, index($2, "sk") + 1 }
+$1 == "ERROR" { print int($3) + 1 }
+$1 == "ERROR" { print int($3) - 1 }
+```
+
+`tolower` and `toupper` can print ASCII case-mapped field bytes without
+allocating transformed field strings:
+
+```awk
+$1 == "ERROR" { print tolower($2), toupper($0) }
+```
+
+`BEGIN` can also set an explicit single-byte field separator for the native field helpers:
+
+```awk
+BEGIN { FS = ":" }
+$1 == "ERROR" { counts[$2]++ }
+END { print "disk", counts["disk"], "net", counts["net"] }
+```
+
+For this input:
+
+```text
+ERROR:disk:full
+WARN:cpu:hot
+ERROR:net:down
+ERROR:disk:again
+```
+
+that prints:
+
+```text
+disk 2 net 1
+```
+
+`BEGIN` can set the output field separator too:
+
+```awk
+BEGIN { FS = ":"; OFS = "," }
+$1 == "ERROR" { print $2, $3 }
+```
+
+For the same colon-separated input, that prints:
+
+```text
+disk,full
+net,down
+```
+
+The native output path writes the single-byte separator directly, so separators
+such as `%` are treated as data rather than `printf` format strings.
+Use `printf` when the rule action should control formatting directly; supported
+native specifiers are `%%`, `%s`, `%d`, `%i`, and `%ld`, with field-slice `%s`
+lowered as `%.*s`.
+This path keeps the streaming loop native while the WAM runtime supplies the
+reader, atom helpers, and reusable associative table primitive.
 
 ## Another example: count and print matching lines
 

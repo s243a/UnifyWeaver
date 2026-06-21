@@ -233,7 +233,9 @@ Query semantics against a materialised table:
   aggregate reaches a node with a compatible cached path-statistic distribution,
   the traversal can integrate that distribution over the remaining budget instead
   of enumerating the suffix. See `DISTRIBUTIONAL_FIT_POLICY.md` for the
-  compatibility and error-bound rules.
+  compatibility and error-bound rules, and
+  `ROOT_PATH_SAMPLE_ESTIMATOR_THEORY.md` for the sampling and boundary-splice
+  estimator used by the coverage probes.
 
 A materialised table is only valid for the root it was built against; a different
 root needs either its own table or the `kernel` mode.
@@ -268,4 +270,4 @@ convenience in the plan.
 
 `ROOT_ANCHORED_METRICS_PHILOSOPHY.md`, `ROOT_ANCHORED_METRICS_IMPLEMENTATION_PLAN.md`,
 `ALGORITHM_MANIFEST_SPECIFICATION.md`, `KERNEL_SHAPE_RECOGNITION.md`,
-`WAM_DEMAND_FILTER_SPECIFICATION.md`.
+`ROOT_PATH_SAMPLE_ESTIMATOR_THEORY.md`, `WAM_DEMAND_FILTER_SPECIFICATION.md`.

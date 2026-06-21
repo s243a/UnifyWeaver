@@ -1,0 +1,100 @@
+# Fuzzy (graded) physics-membership scores for the WAM-Rust caret test set.
+# discrimination: disciplinary-leaning physics-relevance (is this studied AS physics), NOT foundational (does it rest on physics). The discrimination context is a user choice; record it here so mu is interpretable.
+#
+# Format: `node<TAB>mu`, mu in [0,1] = graded physics-relevance. '#' lines are comments.
+# Provenance: random walks DOWN the Wikipedia category graph from "Physics"
+# (scripts/physics_random_walk_candidates.py --tsv data/benchmark/10k/category_parent.tsv
+#  --walks 400 --depth 6 --seed 1234 --top 90), then scored 0..1 by a Haiku subagent (graded,
+# not binary). LLM-curated and not authoritative. The point of the grade is a THRESHOLD KNOB:
+# a strict cut (mu >= 0.8) keeps the core, a loose cut (mu >= 0.4) pulls in Fire / the chemistry
+# boundary. Fuse with the structural mean-caret-to-core signal (each catches the other's errors).
+Temperature	1.0
+Fire	0.5
+Fires	0.5
+Physical_quantity	1.0
+Energy	1.0
+Subfields_of_physics	1.0
+Physicists	0.0
+Physicists_by_nationality	0.0
+Hungarian_physicists	0.0
+Matter	1.0
+Heat	1.0
+Cold	1.0
+Ice	0.5
+Ice_sports	0.0
+Time	1.0
+Electric_vehicles	0.3
+States_of_matter	1.0
+Gases	0.9
+Fires_by_decade	0.0
+Electric_rail_transport	0.0
+Fires_by_continent	0.0
+Light	1.0
+Ice_hockey	0.0
+Building_and_structure_fires	0.0
+Atoms	0.9
+Chemical_elements	0.5
+Physical_objects	0.5
+Electromagnetic_radiation	1.0
+Alternative_propulsion	0.2
+Green_vehicles	0.0
+Figure_skating	0.0
+Thermodynamics	1.0
+Classical_mechanics	1.0
+Wave_mechanics	1.0
+Electromagnetism	1.0
+Electricity	1.0
+Noble_gases	0.5
+Noble_gas_compounds	0.4
+Energy_in_transport	0.2
+Arsenic	0.4
+Oxygen	0.5
+Alternative_energy	0.3
+Mechanics	1.0
+Breathing_gases	0.3
+Oxygen_compounds	0.4
+Electric_railways	0.0
+Arsenic_compounds	0.4
+Time_travel	0.1
+Time_travel_television_series	0.0
+2010s_time_travel_television_series	0.0
+History	0.0
+Waves	1.0
+Electricity_distribution	0.7
+Electrification	0.6
+Optics	1.0
+Vision	0.4
+Groups_(periodic_table)	0.5
+Oscillation	1.0
+Causality	0.7
+Chronology	0.0
+Propulsion	0.4
+21st-century_time_travel_television_series	0.0
+Acoustics	1.0
+Sound	1.0
+Music	0.0
+Future	0.0
+Astronomical_objects	0.7
+Planets	0.6
+Earth	0.5
+Birth	0.0
+Births_by_time	0.0
+Religious_objects	0.0
+Religious_buildings	0.0
+Shrines	0.0
+Shinto_shrines	0.0
+Pnictogens	0.5
+Cosmology	0.8
+Creation_myths	0.0
+Creator_deities	0.0
+Creator_gods_and_goddesses	0.0
+God	0.0
+Blind_sportspeople	0.0
+Electronics	0.7
+Past	0.0
+2000s_fires	0.0
+Calendars	0.0
+Metalloids	0.5
+Fires_in_North_America	0.0
+Building_and_structure_fires_in_Europe	0.0
+Prevention	0.0

@@ -1,0 +1,36 @@
+{
+  "admit_l_max": 12,
+  "admit_l_min": 6,
+  "cache_actions": {
+    "insert": 138,
+    "keep_existing": 911,
+    "overwrite_lower_priority": 51,
+    "overwrite_outside_cone": 47,
+    "refresh": 2399
+  },
+  "cache_slots": 256,
+  "capped_queries": 1,
+  "final_cache_entries": 138,
+  "generated_at": "2026-06-12T01:51:13.295034+00:00",
+  "graph": "enwiki_mtc_ancestor_cache_policy_smoke",
+  "mean_admission_candidates": 147.75,
+  "mean_ancestor_nodes": 3626.9166666666665,
+  "mean_cache_hits_before": 102.08333333333333,
+  "p95_admission_candidates": 185.0,
+  "p95_ancestor_nodes": 6918.0,
+  "p95_cache_hits_before": 130.0,
+  "record_type": "ancestor_cache_policy_summary",
+  "root": 7345184,
+  "target_depths": [
+    3,
+    4
+  ],
+  "target_selection_counts": {
+    "0": 1,
+    "1": 35,
+    "2": 800,
+    "3": 800,
+    "4": 800
+  },
+  "targets": 24
+}

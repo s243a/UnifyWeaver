@@ -1,0 +1,18 @@
+# ML environment for the μ-cosine prototype.
+# NOTE: the pure-stdlib pieces (train_cosine_mu.py proof, mu_encoder.py forward scaffold,
+# gen_mu_pairs.py generator) need NONE of these — they run on stdlib alone. These are only for the
+# separate project: training the real encoder with MiniLM-initialised embeddings.
+torch>=2.0
+numpy>=1.24
+sentence-transformers>=2.2    # provides the embedders below (needs HF egress)
+einops>=0.7                   # only for the nomic-ai/nomic-embed-text-v1.5 preset in dense_mu_direct.py
+# Embedder choice (see prior project eval: skill_embedding_models.md, reports/answer_level_*.json):
+#   intfloat/e5-small-v2          384-d, lightweight, query:/passage: prefixes  (best cosine-to-target)
+#   nomic-ai/nomic-embed-text-v1.5  768-d, search_query:/_document: prefixes    (best discrimination;
+#                                   the project default for density/semantic tasks; needs trust_remote_code=True)
+# Prefer an ASYMMETRIC model (prefixes) over symmetric all-MiniLM-L6-v2 for the directional μ(X|root).
+# Do NOT use BERT / ModernBERT here: they are masked-LM *encoders* (the project uses them for
+# entropy/logits, not similarity), not purpose-built sentence embedders — raw embeddings without
+# similarity fine-tuning are typically *worse* than e5/nomic, and ModernBERT is slower (~150M params,
+# 768-d) with no raw-embedding benefit absent training. (Its 8192-token context is also irrelevant for
+# short category names.) Candidates for the zero-training dense-μ are e5-small and nomic only.

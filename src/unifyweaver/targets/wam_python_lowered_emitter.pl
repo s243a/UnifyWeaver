@@ -30,6 +30,10 @@
 	is_ite_block_py/2,               % +Instrs, -Blocks
 	emit_ite_block_py/5,             % +FuncName, +Blocks, +Indent, +Opts, -Lines
 	py_structured_clause1/2,         % +WamCode, -StructuredInstrs (soft-cut ITE)
+	py_multi_clause_1/2,             % +WamCode, -Clause1Instrs (T3 clause-1 slice)
+	py_multi_clause_n/2,             % +WamCode, -Clauses (T4 per-clause slices)
+	py_clause_func_name/3,           % +Functor/Arity, +K, -Name (T4 clause fn name)
+	emit_multi_clause_n_python/4,    % +Functor/Arity, +Clauses, +Opts, -Lines (T4)
 	emit_structured_python/4         % +FunctorArity, +Structured, +Opts, -Lines
 ]).
 
@@ -207,6 +211,32 @@ py_structured_clause1(WamCode, Structured) :-
 	\+ member(trust_me, Structured),
 	forall(member(I, Structured), py_supported_structured(I)).
 
+%% py_multi_clause_1(+WamCode, -Clause1Instrs) is semidet.
+%  T3 — multi-clause clause-1 fast path. True when the predicate is genuinely
+%  multi-clause (parse_wam_text_py has dropped any switch_on_* indexing prefix,
+%  so the parsed stream opens with the predicate-level try_me_else, and clauses
+%  2+ begin with retry_me_else / trust_me) AND clause 1 is a clean
+%  deterministic, fully-supported body. Clause1Instrs is the clause-1 slice
+%  (try_me_else stripped, up to and including its proceed/fail), ready for
+%  emit_lowered_python. Clauses 2+ are left to the bytecode interpreter,
+%  reached by backtracking when the lowered clause 1 fails — see the registrar
+%  in wam_python_target.pl, which keeps the leading try_me_else (it pushes the
+%  choice point onto clause 2) and the clause-2+ bytecode, replacing only
+%  clause 1's body with a call_lowered to this function.
+%
+%  Single-clause soft-cut ITE predicates also open with try_me_else, but they
+%  are claimed by py_structured_clause1 first; the cut_ite/jump guards here
+%  decline them defensively.
+py_multi_clause_1(WamCode, Clause1Instrs) :-
+	( is_list(WamCode) -> Instrs0 = WamCode ; parse_wam_text_py(WamCode, Instrs0) ),
+	once(append(_Prefix, [try_me_else(_)|Rest], Instrs0)),
+	( member(retry_me_else(_), Rest) ; member(trust_me, Rest) ),
+	take_to_proceed_py(Rest, Clause1Instrs),
+	\+ has_choice_point_instr(Clause1Instrs),   % clause 1 itself is deterministic
+	\+ member(cut_ite, Clause1Instrs),           % not an ITE clause-1 (py_structured handles those)
+	\+ member(jump(_), Clause1Instrs),
+	forall(member(I, Clause1Instrs), py_supported_structured(I)).
+
 %% take_to_proceed_py(+Instrs, -Clause1) — up to and including the first
 %  proceed / fail terminator (label/1 markers pass through to the
 %  structurer, which drops them).
@@ -214,6 +244,91 @@ take_to_proceed_py([], []).
 take_to_proceed_py([proceed|_], [proceed]) :- !.
 take_to_proceed_py([fail|_], [fail]) :- !.
 take_to_proceed_py([I|Rest], [I|Out]) :- take_to_proceed_py(Rest, Out).
+
+%% py_multi_clause_n(+WamCode, -Clauses) is semidet.
+%  T4 — multi-clause, ALL clauses lowered. True when the predicate is genuinely
+%  multi-clause (parsed stream opens with the predicate-level try_me_else after
+%  any dropped switch_on_* prefix) and EVERY clause is a clean deterministic,
+%  fully-supported body ending in proceed/fail. Clauses is the ordered list of
+%  per-clause instruction slices (each choice-point marker stripped, up to and
+%  including its terminator), one lowered pred_*_cK function per clause.
+%
+%  Python's runtime is a genuine backtracking WAM (choice points + fail()), so
+%  unlike the imperative first-solution T4 targets (lua/rust/…) we must NOT
+%  collapse the clauses into a commit-to-first-match function — that would lose
+%  intra-query backtracking into later clauses and diverge from the bytecode
+%  interpreter. The registrar in wam_python_target.pl therefore keeps the
+%  try_me_else / retry_me_else / trust_me dispatch scaffold (which drives the
+%  runtime's proven choice-point machinery) and replaces only each clause BODY
+%  with a call_lowered to that clause's native function. So every clause body is
+%  native, the per-predicate clause dispatch stays in the (tiny) bytecode
+%  scaffold, and backtracking is preserved by construction — a hybrid of native
+%  bodies over the interpreter's CP dispatch. (A future full-native dispatch
+%  path could be slotted in front of this hybrid for shapes that admit it.)
+py_multi_clause_n(WamCode, Clauses) :-
+	( is_list(WamCode) -> Instrs0 = WamCode ; parse_wam_text_py(WamCode, Instrs0) ),
+	once(append(_Prefix, [try_me_else(M)|Rest], Instrs0)),
+	py_split_clauses_n([try_me_else(M)|Rest], Clauses),
+	Clauses = [_, _ | _],                       % at least two clauses
+	forall(member(Cl, Clauses),
+	       ( \+ has_choice_point_instr(Cl),     % each clause body is deterministic
+	         \+ member(cut_ite, Cl),            % not an ITE clause (defensive)
+	         \+ member(jump(_), Cl),
+	         last(Cl, Last), ( Last == proceed ; Last == fail ),
+	         forall(member(I, Cl), py_supported_structured(I)) )).
+
+%% py_split_clauses_n(+Instrs, -Clauses)
+%  Split a predicate-level try/retry/trust chain into per-clause bodies: drop
+%  each leading choice-point marker, take the following instructions up to and
+%  including the terminator (proceed/fail) as one clause, and recurse. A leading
+%  non-marker prefix (e.g. a switch the parser did not drop) is skipped.
+py_split_clauses_n([], []).
+py_split_clauses_n([M|Rest], [Clause|More]) :-
+	clause_start_marker_py(M), !,
+	py_take_clause(Rest, Clause, After),
+	py_split_clauses_n(After, More).
+py_split_clauses_n([_|Rest], Clauses) :-
+	py_split_clauses_n(Rest, Clauses).
+
+clause_start_marker_py(try_me_else(_)).
+clause_start_marker_py(retry_me_else(_)).
+clause_start_marker_py(trust_me).
+
+%% py_take_clause(+Instrs, -Clause, -After) — take up to and including the first
+%  proceed/fail; After is what follows (the next clause's marker onward).
+py_take_clause([proceed|Rest], [proceed], Rest) :- !.
+py_take_clause([fail|Rest], [fail], Rest) :- !.
+py_take_clause([I|Rest], [I|Cs], After) :- py_take_clause(Rest, Cs, After).
+
+%% py_clause_func_name(+Functor/Arity, +K, -Name)
+%  Per-clause lowered function name: pred_<sanitised>_<arity>_c<K>.
+py_clause_func_name(FunctorArity, K, Name) :-
+	python_func_name(FunctorArity, Base),
+	format(atom(Name), '~w_c~w', [Base, K]).
+
+%% emit_multi_clause_n_python(+Functor/Arity, +Clauses, +Options, -Lines)
+%  Emit one lowered `def pred_*_cK(state)` per clause, concatenated. Each clause
+%  body is rendered exactly like a deterministic single-clause lowering
+%  (proceed -> return True, a failed head match -> return False), so the
+%  call_lowered scaffold can try it and fall through / backtrack accordingly.
+emit_multi_clause_n_python(FunctorArity, Clauses, _Options, Lines) :-
+	FunctorArity = Functor/Arity,
+	atom_string(Functor, FStr),
+	emit_clause_defs_py(Clauses, FunctorArity, FStr, Arity, 1, DefList),
+	atomic_list_concat(DefList, '\n\n', Lines).
+
+emit_clause_defs_py([], _, _, _, _, []).
+emit_clause_defs_py([Cl|Rest], FunctorArity, FStr, Arity, K, [Def|More]) :-
+	py_clause_func_name(FunctorArity, K, FuncName),
+	maplist(emit_instr_py, Cl, InstrLines),
+	atomic_list_concat(InstrLines, '\n', Body),
+	format(string(Def),
+'def ~w(state):
+    """Lowered clause ~w of ~w/~w (T4)"""
+~w', [FuncName, K, FStr, Arity, Body]),
+	K1 is K + 1,
+	emit_clause_defs_py(Rest, FunctorArity, FStr, Arity, K1, More).
+
 
 %% py_supported_structured(+StructuredInstr) — recurse through ite/3; each
 %  leaf must be an instruction emit_instr_py/2 can render.
@@ -323,6 +438,15 @@ instr_from_parts_py(["unify_value", Xn], unify_value(Xn)).
 instr_from_parts_py(["unify_constant", C], unify_constant(C)).
 instr_from_parts_py(["unify_nil"], unify_nil).
 instr_from_parts_py(["unify_void", N], unify_void(N)).
+% set_* — write-mode structure args after put_structure/put_list. Previously
+% dropped (no parse clause), which silently lost arithmetic/structure operands.
+instr_from_parts_py(["set_variable", Xn], set_variable(Xn)).
+instr_from_parts_py(["set_value", Xn], set_value(Xn)).
+instr_from_parts_py(["set_local_value", Xn], set_local_value(Xn)).
+instr_from_parts_py(["set_constant", C], set_constant(C)).
+instr_from_parts_py(["set_integer", N], set_integer(N)).
+instr_from_parts_py(["set_nil"], set_nil).
+instr_from_parts_py(["set_void", N], set_void(N)).
 instr_from_parts_py(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
 instr_from_parts_py(["put_value", Xn, Ai], put_value(Xn, Ai)).
 instr_from_parts_py(["put_unsafe_value", Yn, Ai], put_unsafe_value(Yn, Ai)).
@@ -504,7 +628,7 @@ single_match_condition_py(get_nil(AiStr), Cond) :-
 		[Ai, Ai, Ai]).
 single_match_condition_py(get_structure(FStr, AiStr), Cond) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, FuncName, Arity),
 	format(string(Cond),
 		'isinstance(_a~w, Var) or (isinstance(_a~w, Compound) and _a~w.functor == "~w" and len(_a~w.args) == ~w)',
 		[Ai, Ai, Ai, FuncName, Ai, Arity]).
@@ -565,7 +689,7 @@ single_match_binding_py(get_nil(AiStr), Indent, Lines) :-
 	Lines = [DerefLine, BindLine].
 single_match_binding_py(get_structure(FStr, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, FuncName, Arity),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
 	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
@@ -738,40 +862,48 @@ emit_instr_py(get_float(FStr, AiStr), Code) :-
 
 emit_instr_py(get_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, RTName, Arity),
 	format(string(Code),
 '    _a~w = deref(state.regs[~w], state)
     if isinstance(_a~w, Var):
-        _addr = heap_put(state, Compound("~w", [None]*~w))
+        _c = Compound("~w", [None]*~w)
+        _addr = heap_put(state, _c)
         bind(_a~w, Ref(_addr), state)
-        state.mode = "write"; state.s = _addr
+        state.s = _addr
+        _begin_write_ctx(state, _c)
     elif isinstance(_a~w, Ref):
         _h = state.heap[_a~w.addr]
         if isinstance(_h, Compound) and _h.functor == "~w" and len(_h.args) == ~w:
-            state.mode = "read"; state.s = _a~w.addr
+            state.s = _a~w.addr
+            _begin_read_ctx(state, _h)
         else: return False
     elif isinstance(_a~w, Compound) and _a~w.functor == "~w" and len(_a~w.args) == ~w:
-        state.mode = "read"
+        _begin_read_ctx(state, _a~w)
     else: return False',
-		[Ai, Ai, Ai, FuncName, Arity, Ai,
-		 Ai, Ai, FuncName, Arity, Ai,
-		 Ai, Ai, FuncName, Ai, Arity]).
+		[Ai, Ai, Ai, RTName, Arity, Ai,
+		 Ai, Ai, RTName, Arity, Ai,
+		 Ai, Ai, RTName, Ai, Arity, Ai]).
 
 emit_instr_py(get_list(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
 '    _a~w = deref(state.regs[~w], state)
     if isinstance(_a~w, Var):
-        _addr = heap_put(state, Compound(".", [None, None]))
+        _c = Compound(".", [None, None])
+        _addr = heap_put(state, _c)
         bind(_a~w, Ref(_addr), state)
-        state.mode = "write"; state.s = _addr
+        state.s = _addr
+        _begin_write_ctx(state, _c)
     elif isinstance(_a~w, Ref):
         _h = state.heap[_a~w.addr]
-        if isinstance(_h, Compound) and _h.functor == "." and len(_h.args) == 2:
-            state.mode = "read"; state.s = _a~w.addr
+        if isinstance(_h, Compound) and _is_cons_functor(_h.functor) and len(_h.args) == 2:
+            state.s = _a~w.addr
+            _begin_read_ctx(state, _h)
         else: return False
+    elif isinstance(_a~w, Compound) and _is_cons_functor(_a~w.functor) and len(_a~w.args) == 2:
+        _begin_read_ctx(state, _a~w)
     else: return False',
-		[Ai, Ai, Ai, Ai, Ai, Ai, Ai]).
+		[Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai, Ai]).
 
 % --- Body construction (put_*) ---
 
@@ -822,18 +954,24 @@ emit_instr_py(put_float(FStr, AiStr), Code) :-
 
 emit_instr_py(put_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
-	parse_functor_arity_py(FStr, FuncName, Arity),
+	runtime_functor_py(FStr, RTName, Arity),
+	put_struct_bind_py(Ai, BindLine),
 	format(string(Code),
-'    _addr = heap_put(state, Compound("~w", [None]*~w))
-    state.regs[~w] = Ref(_addr)
-    state.mode = "write"; state.s = _addr', [FuncName, Arity, Ai]).
+'    _c = Compound("~w", [None]*~w)
+    _addr = heap_put(state, _c)
+~w    state.regs[~w] = Ref(_addr)
+    state.s = _addr
+    _begin_write_ctx(state, _c)', [RTName, Arity, BindLine, Ai]).
 
 emit_instr_py(put_list(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
+	put_struct_bind_py(Ai, BindLine),
 	format(string(Code),
-'    _addr = heap_put(state, Compound(".", [None, None]))
-    state.regs[~w] = Ref(_addr)
-    state.mode = "write"; state.s = _addr', [Ai]).
+'    _c = Compound(".", [None, None])
+    _addr = heap_put(state, _c)
+~w    state.regs[~w] = Ref(_addr)
+    state.s = _addr
+    _begin_write_ctx(state, _c)', [BindLine, Ai]).
 
 % --- Unify instructions ---
 
@@ -841,50 +979,84 @@ emit_instr_py(unify_variable(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = state.heap[state.s]
-        if isinstance(_h, Compound):
-            state.regs[~w] = _h.args[0]; state.s += 1
-        else:
-            state.regs[~w] = _h
+        state.regs[~w] = _read_ctx_get(state)
     else:
         _v = state.fresh_var()
         heap_put(state, _v)
-        state.regs[~w] = _v', [Xn, Xn, Xn]).
+        state.regs[~w] = _v
+        _write_ctx_put(state, _v)', [Xn, Xn]).
 
 emit_instr_py(unify_value(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = state.heap[state.s]
-        if not unify(state.regs[~w], _h, state): return False
+        _h = _read_ctx_get(state)
+        if not unify(state.regs[~w], deref(_h, state), state): return False
     else:
-        heap_put(state, state.regs[~w])', [Xn, Xn]).
+        _write_ctx_put(state, state.regs[~w])', [Xn, Xn]).
 
 emit_instr_py(unify_constant(C), Code) :-
 	constant_term_py(C, Term),
 	constant_match_condition_py(C, "_h", Cond),
 	format(string(Code),
 '    if state.mode == "read":
-        _h = deref(state.heap[state.s], state)
+        _h = deref(_read_ctx_get(state), state)
         if isinstance(_h, Var): bind(_h, ~w, state)
         elif not (~w): return False
     else:
-        heap_put(state, ~w)', [Term, Cond, Term]).
+        _write_ctx_put(state, ~w)', [Term, Cond, Term]).
 
 emit_instr_py(unify_nil, Code) :-
 	Code = '    if state.mode == "read":
-        _h = deref(state.heap[state.s], state)
+        _h = deref(_read_ctx_get(state), state)
         if isinstance(_h, Var): bind(_h, Atom("[]"), state)
         elif not (isinstance(_h, Atom) and _h.name == "[]"): return False
     else:
-        heap_put(state, Atom("[]"))'.
+        _write_ctx_put(state, Atom("[]"))'.
 
 emit_instr_py(unify_void(NStr), Code) :-
 	format(string(Code),
-'    if state.mode == "write":
+'    if state.mode == "read":
+        _read_ctx_skip(state, ~w)
+    else:
         for _ in range(~w):
-            _v = state.fresh_var()
-            heap_put(state, _v)', [NStr]).
+            _write_ctx_put(state, state.fresh_var())', [NStr, NStr]).
+
+% --- set_* : always WRITE mode, fill the current structure context ---
+
+emit_instr_py(set_variable(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _v = state.fresh_var()
+    _write_ctx_put(state, _v)
+    state.regs[~w] = _v', [Xn]).
+
+emit_instr_py(set_value(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _write_ctx_put(state, state.regs[~w])', [Xn]).
+
+emit_instr_py(set_local_value(XnStr), Code) :-
+	reg_int_py(XnStr, Xn),
+	format(string(Code),
+'    _write_ctx_put(state, deref(state.regs[~w], state))', [Xn]).
+
+emit_instr_py(set_constant(C), Code) :-
+	constant_term_py(C, Term),
+	format(string(Code),
+'    _write_ctx_put(state, ~w)', [Term]).
+
+emit_instr_py(set_integer(NStr), Code) :-
+	format(string(Code),
+'    _write_ctx_put(state, Int(~w))', [NStr]).
+
+emit_instr_py(set_nil, Code) :-
+	Code = '    _write_ctx_put(state, Atom("[]"))'.
+
+emit_instr_py(set_void(NStr), Code) :-
+	format(string(Code),
+'    for _ in range(~w):
+        _write_ctx_put(state, state.fresh_var())', [NStr]).
 
 % --- Control instructions ---
 
@@ -1076,6 +1248,37 @@ parse_functor_arity_py(FStr, FuncName, Arity) :-
 		sub_atom(FA, B1, _, 0, AS),
 		atom_number(AS, Arity)
 	;   FuncName = FA, Arity = 0
+	).
+
+%% runtime_functor_py(+FStr, -RTName, -Arity)
+%  Compound functor name as the runtime stores it (see _runtime_functor_name in
+%  WamRuntime.py): cons cells normalise to ".", every other functor keeps its
+%  full "name/arity" form (e.g. "+/2"). The lowered emitter must build and match
+%  compounds with this exact string so they unify with interpreter-built terms
+%  and eval_arith (which strips the arity) sees the right operator.
+runtime_functor_py(FStr, RTName, Arity) :-
+	(   cons_functor_py(FStr)
+	->  RTName = ".", Arity = 2
+	;   parse_functor_arity_py(FStr, _F, Arity), RTName = FStr
+	).
+
+cons_functor_py(FStr) :- FStr == ".".
+cons_functor_py(FStr) :- FStr == "./2".
+cons_functor_py(FStr) :- FStr == "[|]/2".
+
+%% put_struct_bind_py(+Ai, -BindLine)
+%  put_structure into an X (temporary) register (index > 128, the A1..A128 cap)
+%  targets a nested sub-term SLOT placed there by an earlier set_variable /
+%  unify_variable, so the freshly built structure must be bound into that slot
+%  var to link it to its parent. Into an A (argument) register it is a call
+%  output: overwrite without binding (the prior var may alias a live argument —
+%  the `X is E` case). Mirrors put_structure in WamRuntime.py.
+put_struct_bind_py(Ai, BindLine) :-
+	(   Ai > 128
+	->  format(string(BindLine),
+		"    _old = deref(state.regs[~w], state)\n    if isinstance(_old, Var): bind(_old, Ref(_addr), state)\n",
+		[Ai])
+	;   BindLine = ""
 	).
 
 %% pred_to_func_name_py(+PredStr, -FuncName)

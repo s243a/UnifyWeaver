@@ -558,6 +558,45 @@ wam_go_direct_builtin("print/1", 1, 'print/1').
 wam_go_direct_builtin(write_canonical/1, 1, 'write_canonical/1').
 wam_go_direct_builtin('write_canonical/1', 1, 'write_canonical/1').
 wam_go_direct_builtin("write_canonical/1", 1, 'write_canonical/1').
+wam_go_direct_builtin(put_char/1, 1, 'put_char/1').
+wam_go_direct_builtin('put_char/1', 1, 'put_char/1').
+wam_go_direct_builtin("put_char/1", 1, 'put_char/1').
+wam_go_direct_builtin(put_code/1, 1, 'put_code/1').
+wam_go_direct_builtin('put_code/1', 1, 'put_code/1').
+wam_go_direct_builtin("put_code/1", 1, 'put_code/1').
+wam_go_direct_builtin(put_char/2, 2, 'put_char/2').
+wam_go_direct_builtin('put_char/2', 2, 'put_char/2').
+wam_go_direct_builtin("put_char/2", 2, 'put_char/2').
+wam_go_direct_builtin(put_code/2, 2, 'put_code/2').
+wam_go_direct_builtin('put_code/2', 2, 'put_code/2').
+wam_go_direct_builtin("put_code/2", 2, 'put_code/2').
+wam_go_direct_builtin(get_char/1, 1, 'get_char/1').
+wam_go_direct_builtin('get_char/1', 1, 'get_char/1').
+wam_go_direct_builtin("get_char/1", 1, 'get_char/1').
+wam_go_direct_builtin(get_char/2, 2, 'get_char/2').
+wam_go_direct_builtin('get_char/2', 2, 'get_char/2').
+wam_go_direct_builtin("get_char/2", 2, 'get_char/2').
+wam_go_direct_builtin(peek_char/1, 1, 'peek_char/1').
+wam_go_direct_builtin('peek_char/1', 1, 'peek_char/1').
+wam_go_direct_builtin("peek_char/1", 1, 'peek_char/1').
+wam_go_direct_builtin(peek_char/2, 2, 'peek_char/2').
+wam_go_direct_builtin('peek_char/2', 2, 'peek_char/2').
+wam_go_direct_builtin("peek_char/2", 2, 'peek_char/2').
+wam_go_direct_builtin(get_code/1, 1, 'get_code/1').
+wam_go_direct_builtin('get_code/1', 1, 'get_code/1').
+wam_go_direct_builtin("get_code/1", 1, 'get_code/1').
+wam_go_direct_builtin(get_code/2, 2, 'get_code/2').
+wam_go_direct_builtin('get_code/2', 2, 'get_code/2').
+wam_go_direct_builtin("get_code/2", 2, 'get_code/2').
+wam_go_direct_builtin(open/3, 3, 'open/3').
+wam_go_direct_builtin('open/3', 3, 'open/3').
+wam_go_direct_builtin("open/3", 3, 'open/3').
+wam_go_direct_builtin(close/1, 1, 'close/1').
+wam_go_direct_builtin('close/1', 1, 'close/1').
+wam_go_direct_builtin("close/1", 1, 'close/1').
+wam_go_direct_builtin(read_line_to_string/2, 2, 'read_line_to_string/2').
+wam_go_direct_builtin('read_line_to_string/2', 2, 'read_line_to_string/2').
+wam_go_direct_builtin("read_line_to_string/2", 2, 'read_line_to_string/2').
 wam_go_direct_builtin(format/1, 1, 'format/1').
 wam_go_direct_builtin('format/1', 1, 'format/1').
 wam_go_direct_builtin("format/1", 1, 'format/1').
@@ -1879,9 +1918,20 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         // list tail cell [|]/2 — leaving a placeholder in the arg slot that
         // a later put_structure into the same register must fill. Trailing
         // via bindUnbound keeps it backtrack-safe.
-        if cur := vm.Regs[i.Ai]; cur != nil {
-            if u, ok := vm.deref(cur).(*Unbound); ok {
-                vm.bindUnbound(u, ref)
+        //
+        // A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+        // (index < 100) are argument STAGING — their old occupant is an
+        // unrelated variable (often a clause-head argument), and binding it
+        // to the new cell creates a cyclic term (X = f(X)), making a later
+        // X = 1 wrong-fail. Top-down chaining placeholders only ever live
+        // in X/Y registers (set_variable Xn), so the bind-through is
+        // conditioned on the register class — the same fix the Rust and
+        // LLVM targets carry.
+        if i.Ai >= 100 {
+            if cur := vm.Regs[i.Ai]; cur != nil {
+                if u, ok := vm.deref(cur).(*Unbound); ok {
+                    vm.bindUnbound(u, ref)
+                }
             }
         }
         vm.Regs[i.Ai] = ref

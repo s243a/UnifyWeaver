@@ -6,9 +6,21 @@
 ; Tag: 0=Atom, 1=Integer, 2=Float, 3=Compound, 4=List, 5=Ref, 6=Unbound, 7=Bool
 %Value = type { i32, i64 }
 
+; === Byte slice ===
+%WamSlice = type { i8*, i64 }             ; pointer, length
+%WamI64Parse = type { i64, i1 }           ; parsed value, success flag
+
 ; === Compound and List (heap-allocated) ===
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args
 %List = type { i32, %Value* }             ; length, elements
+
+; === Buffered line reader handle ===
+%WamLineReader = type { i32, i8*, i64, i64, i64 } ; fd, buffer, cap, len, pos
+
+; === Native associative i64 counter table ===
+; Used by streaming/native lowerings for interned-atom keyed counters.
+%WamAssocI64Entry = type { i64, i64, i1 } ; key atom id, count, occupied
+%WamAssocI64Table = type { i64, i64, %WamAssocI64Entry* } ; count, cap, entries
 
 ; === Instruction Tagged Union ===
 ; Tag: 0-7 head unification, 8-15 body construction, 16-21 control, 22-24 choice, 25-27 indexing
@@ -63,7 +75,8 @@
     i32,                                   ; 9: foreign_count (total results)
     i32,                                   ; 10: foreign_cursor (next to yield)
     i32,                                   ; 11: saved heap_top — rewound on backtrack
-    i32                                    ; 12: saved_b (backtrack level of caller)
+    i32,                                   ; 12: saved_b (backtrack level of caller)
+    i32                                    ; 13: saved_stack_size — restored on backtrack
 }
 
 ; === WAM State ===

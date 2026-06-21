@@ -95,36 +95,85 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 
 | Target  | T1 det | T2 ITE | T3 mc-1 | T4 mc-n | T5 mc→`->` | T6 idx | T7 par | T8 kernels | T9 facts | T10 mode | T11 LCO |
 |---------|:------:|:------:|:-------:|:-------:|:----------:|:------:|:------:|:----------:|:--------:|:--------:|:-------:|
-| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| rust    | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| cpp     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| go      | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| haskell | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ |
-| fsharp  | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ✗ |
-| clojure | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
-| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✗ | ✗ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
-| lua     | ✓ | ✓ T2a | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| python  | ✓ | ✓ T2a | ✗ | ✗ | **✓** | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
+| rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | ✓ capped | ✗ | ✗ |
+| cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
+| go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
+| haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
+| fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✗ | ✗ | ✗ |
+| clojure | ✓ | ✓ T2a | ✓ | ✓ | ✗ | ✗ | ~ | ~ | ✗ | ✗ | ✗ |
+| llvm    | ✓ | ✓ T2a | ✓ (c1) | ✓ | ✓ | ✗ | ✗ | ~ | ✗ | ✗ | ~ |
+| lua     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✓ | ✗ | ✗ |
+| python  | ✓ | ✓ T2a | ✓ | `~` hybrid | ✓ | `~` gated | ~ | ~ | ✗ | ✗ | ✗ |
 | r       | ✓ | ✓ T2a | ✓ | **✓** | ✗ | ✗ | ✗ | ~ | ✓ | **✓** | ✗ |
 | elixir  | ✓ | ✓ T2b | ✓ | ✓ | ✗ | ✗ | **✓** | ✓ | ✓ | ✗ | ✗ |
-| wat     | ✓ | **✗** | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| wat     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 Verification notes:
 - **T3** confirmed ✓ for haskell and fsharp (both lower clause 1 and fall
   back to the interpreter for clauses 2+ — documented in their lowerability
-  gates). **python T3 = ✗**: `is_deterministic_pred_py` rejects *any*
-  `try_me_else`, so a try-chain predicate stays in the interpreter; python's
-  only multi-clause lowering is T5 (its `is_ite_block_py` detection of the
-  switch-indexed, no-`try_me_else` shape → `if/elif/else`).
-- **T5** is python-only and is the form wanted for Scala (the "`->` form").
+  gates). **python T3 = ✓** (now): `py_multi_clause_1` extracts clause 1 of a
+  multi-clause predicate to a lowered `pred_*` function; the registrar keeps
+  the FULL bytecode but replaces clause 1's body with a `call_lowered`,
+  retaining the leading `try_me_else` and clauses 2+ verbatim. On clause-1
+  success the `call_lowered` falls through to `proceed` (the clause-2 choice
+  point is left for backtracking); on failure the runtime's `call_lowered`
+  handler calls `fail()`, popping that choice point (restoring trail + regs)
+  and resuming the interpreter at clause 2 — an emitter-only change, no runtime
+  modification. Because a T3 `pred_*` is clause-1-only (not the whole
+  predicate), a predicate that *directly* calls a T3 predicate is kept in the
+  interpreter (`whole_predicate_lowering/3` gate), so the T3 fallback is always
+  reached through a bytecode call. Python keeps T5 too (its `is_ite_block_py`
+  `if/elif/else` for the switch-indexed, no-`try_me_else` shape).
+- **T5** (clause_chain) is now implemented across the hybrid targets via the
+  shared `wam_clause_chain` front-end: scala, rust, cpp, go, haskell, fsharp,
+  llvm, lua, r (plus python's original `is_ite_block_py` `if/elif/else` form).
+  clojure declines T5 (no distinct-first-arg dispatch; it has T4 instead);
+  elixir = ✗. **wat T5 = ✓** (now): the WAT lowered emitter strips the
+  switch_on_* indexing prefix, runs the same `wam_clause_chain` front-end, and
+  emits one WAT function with an unbound-A1 guard followed by a `do_get_constant`
+  test per discriminator (a pure test when A1 is bound) wrapping each clause
+  body inline — first-solution, matching WAT's lowered model (the exported entry
+  replays the interpreter on failure; an unbound A1 is deferred there too). Each
+  has a gated `*_lowered_t5` exec test; WAT's `test_wam_wat_lowered_t5` injects
+  test-only exports that bind argument registers via `do_put_constant` and call
+  the lowered function directly (WAT exports take no parameters), exercising
+  real per-discriminator dispatch including non-first clauses through wat2wasm +
+  node.
 - **T7**: elixir is the only real implementation (`Task.async_stream` +
   `par_wrap_segment`); clojure/python have `_branch` scaffolds (counted `~`).
   go's clause-parallel goroutines live in the *non-WAM* `go_target.pl` direct
-  compiler, not the WAM lowered emitter → go T7 = ✗ here.
-- **T9**: rust and scala's lowered *emitters* emit no fact tables; scala's
-  ✓ is the target-level fact-source backend (auto-inline ≤128 rows, then
-  CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's emitter-level
-  inline tables, but it is fact-table inlining, so ✓. rust = ✗.
+  compiler, not the WAM lowered emitter → go T7 = ✗ here. **rust T7 = `~` (built,
+  gated, whole-body aggregates)**: a forkable aggregate that is a predicate's
+  whole body compiles — behind `parallel_aggregates(true)` and a compile-time
+  cost gate — to a generator/body split (`parallel_aggregate_transform`) plus a
+  native `par_collect` wrapper that runs the body on a cloned WAM machine per
+  input across threads, reducing by type (collect/count/sum/max/min/bag/set). The
+  gate is mandatory: fan-out is 2–3.4× on 4 cores for expensive/recursive
+  per-branch work (**3.39× measured end-to-end**) but a 5–200× *regression* on
+  cheap branches (each branch clones its own machine — the cost backtracking
+  avoids), so only expensive/recursive tiers fan out. `~` not ✓ because
+  aggregates *embedded in a larger clause body* still compile sequentially (the
+  `par_aggregate` WAM-instruction route, not yet built). Design/benchmark/handoff:
+  `docs/reports/wam_rust_t7_parallel_perf.md`,
+  `docs/reports/wam_rust_t7_speedup_benchmark.md`,
+  `docs/reports/wam_rust_t7_RESUME.md`. (Like the LLVM T6 decline, the benchmark
+  is what gated the decision — here it said "yes, but only behind the probe.")
+- **T9**: scala's ✓ is the target-level fact-source backend (auto-inline ≤128
+  rows, then CSV/TSV/LMDB) — a different mechanism than lua/r/haskell's
+  emitter-level inline tables, but it is fact-table inlining, so ✓. **rust = ✓
+  (default, capped):** an all-ground-facts predicate whose row count is in the
+  inline window `[t9_min_rows, t9_max_rows]` (defaults 64..256) lowers by default
+  to a static `OnceLock` row table + first-arg hash index + choice-point
+  enumerator (`fact_table_attempt`), callable via WAM `call`/`execute`. Below the
+  min, the negligible-cost T4 inline is used; above the cap, inlining is declined
+  with a warning recommending an external fact source (LMDB/TSV), since inlining
+  large fact sets bloats compile time / the binary. Opt out with
+  `fact_table_inline(false)`. Tests: `tests/test_wam_rust_fact_table_exec.pl`,
+  `tests/test_wam_rust_fact_table_emit.pl`,
+  `tests/test_wam_rust_fact_table_callsite_exec.pl`,
+  `tests/test_wam_rust_fact_table_throughput.pl`; benchmark
+  `docs/reports/wam_rust_t9_fact_table_benchmark.md`.
 - **T8** (native kernels) is a curated library feature dispatched via shared
   `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
   the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /
@@ -135,32 +184,152 @@ Verification notes:
   no target does general recursion→loop.
 - elixir's T3/T4 use the choice-point model (genuine CPs + cut barrier), not
   R's closure-per-clause shape — counted ✓ but architecturally distinct.
-- **scala T4** (added later): every clause is emitted inline as a sibling
-  `Boolean` closure, tried in order with a trail/register restore between
-  attempts (`WamRuntime.loRestoreClause`); the entry has no `runPredicate`
-  fallback, so the interpreter is never entered for the predicate. Scala's
-  lowered runtime only ever takes a predicate's first solution (`loCall` /
-  `loExecute` — deterministic-prefix), so unlike R/elixir it needs no
-  retry/iter choice point for clauses 2+; gated below T5 (clause_chain) and
-  above multi_clause_1, so only multi-clause predicates that don't
-  discriminate on a distinct first-arg constant take this path.
+- **T4** (multi_clause_n) is now implemented across the hybrid targets:
+  scala, rust, cpp, go, haskell, fsharp, clojure, llvm, lua, wat (plus r and
+  elixir's prior CP-model versions; python's `~` hybrid). Every clause is
+  lowered inline and tried in order; the interpreter is never entered for the
+  predicate's own clause dispatch. Two families:
+  - **imperative** (scala/rust/cpp/go/lua/llvm/wat): snapshot the registers +
+    trail at entry, restore between clause attempts (e.g. `loRestoreClause`,
+    `ClauseSnapshot`, a `[64 x %Value]` memcpy in LLVM IR; wat snapshots each
+    argument-register cell + the trail top into locals and `val_store`s them
+    back between per-clause blocks). These runtimes take a predicate's first
+    solution (deterministic-prefix), so — unlike R/elixir — no retry/iter
+    choice point is needed. (wat was unblocked here by the unify
+    scalar-propagation fix, which a clause body threading a head variable into a
+    goal would otherwise hit.)
+  - **functional** (haskell/fsharp): immutability gives a free per-clause
+    restore — each clause runs against the unchanged input state, chained
+    with `mplus` / `Option.orElseWith`; no runtime change.
+  clojure (immutable state-maps) gained its first multi-clause lowering here
+  (previously a no-op stub → interpreter). Each has a gated `*_lowered_t4`
+  exec test using a non-distinct-first-arg predicate that exercises the
+  non-first clauses natively. T4 is gated below T5 (clause_chain) and above
+  multi_clause_1/c1.
+- **python T4 = `~` (hybrid).** Python's runtime is a genuine backtracking WAM
+  (choice points + `fail()`), and `run_wam` backtracks *intra-query*, so the
+  imperative first-solution shape above would diverge from the interpreter on a
+  conjunction like `p(X), q(X)` (it would commit to clause 1) — failing the
+  lowered-vs-interpreter parity standard. Python therefore lowers every clause
+  *body* to a native `pred_*_cK` function but RETAINS the try/retry/trust
+  dispatch scaffold in the bytecode (`py_multi_clause_n` + `multi_clause_n_registrar`),
+  replacing only each clause body with a `call_lowered`. The runtime's proven
+  choice-point machinery drives clause dispatch and backtracking unchanged, so
+  every clause body is native while parity is preserved by construction. It is
+  marked `~` rather than ✓ because the T4 headline ("interpreter never entered
+  for clause dispatch") is not met — the O(n) dispatch stays in the (tiny)
+  bytecode scaffold. T4 is tried before T3 and falls back to it when a later
+  clause cannot be lowered (e.g. ends in a tail-call `execute`). A future
+  full-native dispatch (R's genuine-CP closure model over the runtime's
+  callable choice points) could slot in *front* of this hybrid for shapes that
+  admit it. Gated exec test `test_wam_python_lowered_t4` covers clause hits,
+  the backtracking-critical conjunctions (`color(X), want_green(X)` must redo
+  into a non-first clause), and a lowered-vs-interpreter parity battery.
 
 ---
 
 ## 3. What the matrix shows (gaps)
 
-Reading down the columns:
+Reading down the columns (after the T5 and T4 sweeps landed):
 
-- **T5 (multi-clause → `->` chain)** is implemented only by Python. This is
-  the form flagged for Scala. It is a genuinely different lowering from
-  T3/T4 and is portable to every structurer-style target.
-- **T4 (multi-clause all-clauses)** exists only in R. Everyone else stops at
-  T3 (clause-1 + interpreter fallback), so clauses 2..n always pay the
-  interpreter hop.
-- **T6 (first-arg indexing)** — nobody lowers it; all targets drop the
-  `switch_on_*` prefix and try clauses in order.
-- **T2 (ITE)** — complete everywhere **except WAT** (the one remaining ITE
-  gap; WAT has native `if/then/else` + `block`, so it's tractable).
+- **T5 (multi-clause → first-arg dispatch)** and **T4 (multi-clause all
+  clauses)** are now ✓ across the hybrid targets (see the verification notes
+  above). Remaining T4/T5 holes are intentional: clojure has no distinct
+  first-arg dispatch (T4 only); python now has T3, T4 (`~` hybrid: native
+  clause bodies over a retained bytecode dispatch scaffold, to preserve its
+  backtracking-runtime parity) and T5 `if/elif/else`; wat now has T5
+  (first-arg clause-chain dispatch) AND T4 (all clauses inline with
+  argument-register + trail snapshot/restore between attempts, first-solution).
+  So **every multi-clause column (T3/T4/T5) is now closed** across the targets
+  that support each shape — no plain ✗ remains in T3/T4/T5.
+- **T6 (first-arg indexing)** — **Rust, C++, Go, F#, Haskell, Scala, Lua,
+  Python and WAT** now have a *gated* T6 (`~`); **LLVM declines on benchmark
+  evidence**. All reuse the T5 `wam_clause_chain` / first-arg-index front-end,
+  but when there are ≥ `t6_min_clauses` clauses (default 8) the back-end
+  replaces the if-cascade with a native indexed dispatch. Three families:
+  - **Atom-keyed** (atoms compared as *strings* at dispatch, so a string switch
+    is a real win the host compiler does not already perform): Rust a two-stage
+    `match` (string switch → integer jump table); C++ a static
+    `std::unordered_map<std::string,int>` (no native string switch) → `switch`;
+    **Go a native `switch t6atom.Name`**; **F# a native many-branch `match` on
+    the atom's string** (`Atom of string`, lowered by the F# compiler to a
+    hash/jump dispatch). Measured on generated code (tie at 4 clauses; growing
+    with N): Rust 1.55×/5.7×/12.7×, C++ 2.1×/11.6×/40.8×
+    (`docs/reports/wam_rust_dispatch_alloc_perf.md`); **Go 4.8×/31.7×/58.8×**
+    (`docs/reports/wam_go_dispatch_t6_perf.md`) — Go's `valueEquals` cascade is
+    an interface-call chain the compiler does not rewrite, so the switch wins
+    big. (NOTE: Go was previously mislabelled int-interned — its atoms are
+    `&Atom{Name string}` interned by name, i.e. string-keyed; F# likewise keeps
+    atoms as strings, which is why both took the atom-keyed back-end cleanly.)
+  - **Int-interned** (atoms become integers at codegen, so the discriminator is
+    an integer-equality chain the host compiler *might* already switch-convert —
+    the "lost to the compiler" question): haskell/scala/lua/llvm, each
+    benchmarked (`docs/reports/wam_int_interned_t6_perf.md`). Verdict: **haskell,
+    scala and lua now have a gated T6 too** — a `case` on the interned id (GHC →
+    jump table), a `match` on it (scalac → JVM `tableswitch`), and a hash table
+    of per-clause closures built once (interpreted Lua). Measured wins: Lua
+    1.7×/8.2×/29.7×, Haskell 1.4×/2.5×/4.5×, Scala 1.3×/3.1×/≫ at N=8/64/256.
+    **LLVM declines on benchmark evidence**: at `-O2`, SimplifyCFG already turns
+    an int-equality if-chain into a `switch` (the if-chain and an explicit switch
+    compile to identical assembly), so an explicit T6 there is redundant — the
+    one genuine "lost to the compiler" case.
+  - **VM-dispatched** (the lowered path keeps a bytecode/data-table dispatch a
+    runtime instruction services, rather than a host `switch`): **Python** turns
+    the compiler's dropped first-arg index back into a real
+    `("switch_on_constant", {key: label})` instruction (the runtime already
+    jumps O(1) on it for a bound first arg, skips to the try/retry chain for an
+    unbound one, fails for a no-match) — emitter-only, with a fresh clause-1 body
+    label so every key resolves; benchmarked 1.8×/9.3×/35.6× (interpreted dict
+    vs linear `isinstance`+`name==`). **WAT** atoms are sparse i64 hashes (no
+    dense `br_table`), so its lowered function does a **binary search** on the
+    sorted clause hashes (each leaf still runs `do_get_constant` for
+    collision/tag safety); benchmarked in V8 1.16×/1.79×/6.72× — V8 does not
+    flatten the linear i64 chain. Both gated, both in
+    `docs/reports/wam_python_wat_t6_perf.md`.
+
+  This is the natural next advancement after T5 (same clause-head analysis,
+  switch back-end): shared front-end, per-target back-end. The compiler flattens
+  the cascade for few clauses, hence the gate. **The T6 column is now closed
+  out: every T5 target has a gated T6, except LLVM which declines on a measured
+  "the optimiser already does it" basis.** (Testing Python T6 surfaced a
+  deeper, T6-independent arithmetic bug, since **fixed for the interpreter**:
+  `put_structure`/`put_list` unconditionally bound the var the target register
+  previously held, so for `X is Expr` — where the compiler leaves the result var
+  aliased into A1 while A2 is overwritten with the expression structure — the
+  result target was clobbered and **every `X is Expr` with an unbound X failed**
+  in the bytecode interpreter. Fix: bind only X-register sub-term slots
+  (`reg > _A_MAX`, created by `set_variable`/`unify_variable` for nested terms
+  like `error(type_error(..),..)`); A-register call-output slots are overwritten
+  without binding. The *lowered* Python emit was then reconciled with the same
+  model: `parse_wam_text_py` now parses `set_*` (previously dropped), the
+  structure read/write emit uses the runtime's read/write-ctx helpers instead of
+  the old heap-consecutive `state.s` model, and compounds are built/matched with
+  the runtime functor naming (`"+/2"`, not `"+"`), so inline native clause bodies
+  build and unify terms identically to the interpreter. `emit_mode(lowered)`
+  arithmetic-rule clauses (e.g. an `is`-accumulator) and term construction
+  (`X = f(g(1),h(2,3))`) now run correctly; covered by
+  `tests/test_wam_python_is_binding.pl` in both modes.)
+- **T2 (ITE)** — now **complete across every target**, including WAT: the
+  lowered emitter folds the soft-cut block with the shared `wam_ite_structurer`
+  and emits native WAT (`(block $ite_condK (result i32) …)` for the condition
+  with a `br` on first failure, a saved trail mark, and `$unwind_trail` before
+  the else). `test_wam_wat_lowered_t2` exec-tests branch selection / negation /
+  once / sequential+nested ITE via wat2wasm+node, and asserts the lowered fast
+  path matches the bytecode interpreter on every case. (A previously documented
+  WAT-runtime limitation — a condition's variable binding not propagating into
+  the then-branch — is now **FIXED**: `unify_addrs` bound a variable to a Ref
+  into a transient argument-register cell, so the variable silently changed when
+  a later goal reused that register, breaking *every* arithmetic comparison in
+  the `X = V, X <cmp> K` guard pattern, on both paths — some forms even spun a
+  Ref cycle and hung. The fix copies scalars by value into the variable's heap
+  cell (only compounds/cons/unbound cells, which live on the heap, are bound as
+  a Ref). `test_wam_wat_unify_propagation` guards it, and the `cond_bind` cases
+  in `test_wam_wat_lowered_t2` are now absolute-correctness assertions.)
+- **python T3** — **DONE.** Python now lowers a multi-clause predicate's
+  clause 1 (fast path) with interpreter fallback for clauses 2+ (see the T3
+  verification note above), so the T3 column is ✓ for every target that has a
+  clause-1 fast path. `test_wam_python_lowered_t3` exec-tests clause-1 hit,
+  clause-2/3 fallback, and a lowered-vs-interpreter parity battery.
 - **T10 (mode-driven specialisation)** and **T11 (LCO)** are essentially
   one-target experiments (R, and LLVM's `musttail`) that could generalise.
 - **T7 (parallel)** is real only in Elixir; Clojure/Python have `_branch`
@@ -201,14 +370,33 @@ Score each candidate gap on four axes, then sequence:
    (`is_ite_block_py`) to cross-check the shared front-end against. Lands
    behind the existing `emit_mode(functions)` gate with interpreter
    fallback → low risk.
-2. **WAT T2 (ITE).** Closes the last ITE cell; small, gated, exec-testable
-   (`wat2wasm` + `node`). Finishes the T2 column.
+2. **WAT T2 (ITE). — DONE.** Closed the last ITE cell; gated, exec-tested
+   (`wat2wasm` + `node`) with a lowered-vs-interpreter parity check. The T2
+   column is now fully ✓.
 3. **T4 (multi-clause all-clauses)** for the structurer targets, reusing R's
    iter-CP shape as the reference. Removes the interpreter hop for fully
    supported predicates that aren't first-arg-discriminable (so don't get
-   T5).
+   T5). **python DONE** (`~` hybrid — native clause bodies over a retained
+   bytecode dispatch scaffold, since python's backtracking runtime makes the
+   first-solution imperative shape unsound; a full-native R-style dispatch
+   could layer in front later). **wat DONE** too: its lowered emitter splits the
+   try/retry/trust chain into per-clause WAT slices via
+   `wat_multi_clause_n_lowerable`, emits each as an inline block that snapshots
+   and restores the argument registers + trail between attempts (first-solution,
+   the public entry replays the interpreter on a 0 return). The **T4 column is
+   now complete across every target.** Verified through real `wat2wasm`+`node`
+   exec (`test_wam_wat_lowered_t4`), including arithmetic `is/2` *assignment*
+   bodies — WAT's `put_structure` does not have the aliased-result-register bug
+   that affected the Python interpreter, so an `is`-assignment that binds a local
+   or the head's own arg evaluates correctly in lowered code.
 4. **T6 (first-arg indexing)** — same clause-head front-end as T5 with a
-   `switch` back-end instead of an `->` cascade.
+   `switch` back-end instead of an `->` cascade. **DONE / closed out for every
+   T5 target:** the atom-keyed set (rust/cpp/fsharp/go, string switch), the
+   int-interned set that wins (haskell/scala/lua), and the VM-dispatched set
+   (python's runtime `switch_on_constant`; wat's binary search on sparse atom
+   hashes). **llvm declines** on benchmark evidence (its `-O2` already converts
+   the int if-chain to a switch). See `docs/reports/wam_int_interned_t6_perf.md`
+   and `docs/reports/wam_python_wat_t6_perf.md`.
 5. Treat **T7/T10/T11** as research spikes (one target each) before any
    sweep.
 

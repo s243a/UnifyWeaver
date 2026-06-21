@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, bounded format output, tab output, and bounded environment access |
+| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `put_char/1`, `put_char/2`, `put_code/1`, `put_code/2`, `get_char/1`, `get_char/2`, `peek_char/1`, `peek_char/2`, `get_code/1`, `get_code/2`, `open/3`, `close/1`, `read_line_to_string/2`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; Python/C++/LLVM also cover `put_char/1` and `put_code/1`; Python also covers default-stream `get_char/1`, `peek_char/1`, and `get_code/1` plus file-backed stream char IO and line reads; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, single-character output, default and file-backed stream character IO, bounded line reads, bounded format output, tab output, and bounded environment access |
 
 ## Immediate Findings
 
@@ -68,6 +68,25 @@ current cross-target builtin/runtime baseline.
   the generated builtin E2E test for quoted atoms, proper lists, and compound
   terms, matching the Python/C++ canonical-output surface without adding
   stream capture.
+- Single-character output builtins `put_char/1` and `put_code/1` are now direct
+  Go WAM builtins and are covered by the generated builtin E2E test for stdout
+  emission plus invalid argument failure, matching the bounded Python/C++/LLVM
+  single-character output surface without adding stream-aware variants.
+- Default character input builtins `get_char/1`, `peek_char/1`, and
+  `get_code/1` are now direct Go WAM builtins and are covered by the generated
+  builtin E2E test for consume/peek behavior plus EOF conversion to
+  `end_of_file` and `-1`, matching the bounded Python default-input surface
+  without adding stream-aware variants.
+- File-backed stream character IO builtins `open/3`, `close/1`, `get_char/2`,
+  `peek_char/2`, `get_code/2`, `put_char/2`, and `put_code/2` are now direct
+  Go WAM builtins and are covered by the generated builtin E2E test for
+  read/peek/code EOF behavior and output file emission, matching the bounded
+  Python stream-char IO surface without adding line/string readers or stream
+  output capture.
+- File-backed `read_line_to_string/2` is now a direct Go WAM builtin and is
+  covered by the generated builtin E2E test for normal lines, blank lines,
+  final lines without a trailing newline, and EOF as `end_of_file`, matching
+  the bounded Python line-reader surface without adding bounded chunk reads.
 - Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
   covered by the generated builtin E2E test for literal `~~`, newline `~n`,
   `~w`, `~a`, `~d`, `~p`, `~q`, and `~s` argument substitution, and

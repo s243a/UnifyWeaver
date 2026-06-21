@@ -75,6 +75,7 @@ user:wam_lua_fa_basic :-
     findall(X, user:wam_lua_fa_fact(X), L),
     L = [a, b].
 user:wam_lua_greet(X, hello) :- X = world.
+user:wam_lua_greet(X, goodbye) :- X = moon.
 
 % Cut / negation / forall coverage (M17 get_level/cut path). Mirrors the
 % C++ and Go cut suites: a cut inside a called predicate under \+, a cut
@@ -99,7 +100,6 @@ user:lcut_partial :- \+ lcut_plen([a,b|_], _).          % partial list rejected 
 user:lcut_inline :- \+ (lcut_gen(_), !, fail).          % inline cut in negation -> true
 user:lcut_forall_neg :- \+ forall(lcut_gen(X), X =:= 1). % not all satisfy -> \+ true
 user:lcut_forall_pass :- forall(lcut_gen(X), X >= 1).    % all satisfy -> true
-user:wam_lua_greet(X, goodbye) :- X = moon.
 user:wam_lua_fa_greet :-
     findall(X, user:wam_lua_greet(X, hello), L),
     L = [world].

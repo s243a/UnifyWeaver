@@ -762,6 +762,19 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
+                // KNOWN OPEN BUG (bind-through sweep, side finding 4):
+                // the cycle check alone is NOT sufficient — a goal
+                // structure that does NOT contain the A-register
+                // occupant still aliases it (probe:
+                // `p(X) :- q(g(7)), var(X)` wrong-fails; see
+                // docs/reports/wam_bindthrough_cross_target_sweep.md).
+                // The register-class guard the other 8 targets carry
+                // CANNOT be applied here: unlike their compilers, the
+                // F# pipeline stages legitimate build placeholders in
+                // A registers too (gating on reg >= 100 regressed the
+                // compiled parser smoke from 42/42 to 1/42). Fixing
+                // this needs F#-specific occupant provenance — left
+                // open for the F# stream with the probe attached.
                 | Unbound vid when vid >= 0 && not (containsVid str) ->
                     { s0 with
                          WsBindings= Map.add vid str s.WsBindings
@@ -816,6 +829,9 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
                 | _ -> false
             let s0' =
                 match derefVar s.WsBindings regVal with
+                // Same KNOWN OPEN BUG as BuildStruct above (sweep
+                // side finding 4): cycle check only; the register
+                // guard is not applicable to the F# pipeline.
                 | Unbound vid when vid >= 0 && not (containsVid listVal) ->
                     { s0 with
                          WsBindings= Map.add vid listVal s.WsBindings

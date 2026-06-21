@@ -3640,7 +3640,204 @@ test_seq_atom_eq_still_works(_, R) :-
 test_seq_int_eq_still_works(_, R) :-
     ( 42 == 42 -> R is 1 ; R is 0 ).   % 1
 
-% M138: atom_starts_with/2 + atom_ends_with/2 + atom_contains/2.
+% M138: audit of the remaining @value_equals call sites after M137.
+% get_value / unify_value(read) / arg-3 are unify instructions and now
+% route bound-bound compares through @wam_unify_value; sort/2 dedup is
+% ==/2 equality over possibly-Ref-arg compounds and now uses
+% @wam_strict_eq.
+
+:- dynamic test_m138_gv_ground/2.
+:- dynamic m138_dup/2.
+m138_dup(X, X).
+test_m138_gv_ground(_, R) :-
+    % get_value bound-bound with structurally-equal ground compounds.
+    ( m138_dup(f(a), f(a)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_gv_unifies/2.
+test_m138_gv_unifies(_, R) :-
+    % get_value must UNIFY, not test equality: f(X) ~ f(Y) binds X = Y.
+    % Failed under the old @value_equals comparison.
+    ( m138_dup(f(X), f(Y)), X == Y -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_gv_mismatch_rejects/2.
+test_m138_gv_mismatch_rejects(_, R) :-
+    % Non-unifiable compounds must still fail.
+    ( m138_dup(f(a), f(b)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m138_arg_bound_compound/2.
+test_m138_arg_bound_compound(_, R) :-
+    % arg/3 with bound compound A3: the extracted arg slot may hold a
+    % Ref that the old @value_equals compared by heap address.
+    ( arg(1, h(f(a)), f(a)) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_arg_bound_rejects/2.
+test_m138_arg_bound_rejects(_, R) :-
+    ( arg(1, h(f(a)), f(b)) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m138_sort_dedup_nested/2.
+test_m138_sort_dedup_nested(_, R) :-
+    % Duplicate compounds with Ref-stored args survived dedup under
+    % the old shallow @value_equals.
+    sort([f(g(a)), f(g(a))], L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_m138_sort_dedup_lists/2.
+test_m138_sort_dedup_lists(_, R) :-
+    % Multi-cons-cell list duplicates (the original M137 shape).
+    sort([[a, b], [a, b]], L),
+    length(L, N), R is N.   % 1
+
+:- dynamic test_m138_sort_keeps_distinct/2.
+test_m138_sort_keeps_distinct(_, R) :-
+    % sort/2 must NOT merge f(X) with f(Y) (== distinct) nor bind them:
+    % dedup is equality, not unification.
+    sort([f(X), f(Y)], L),
+    length(L, N),
+    ( var(X), var(Y), X \== Y -> R is N ; R is 0 ).   % 2
+
+:- dynamic test_m138_var_eq_self/2.
+test_m138_var_eq_self(_, R) :-
+    % Variable identity under ==/2: X == X via the same cell.
+    ( X == X -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m138_var_neq_distinct/2.
+test_m138_var_neq_distinct(_, R) :-
+    % Distinct fresh vars are NOT ==-equal. Before the M138
+    % @wam_deref_keep_var fix, both X and Y collapsed to the shared
+    % Unbound sentinel { tag 6, payload 0 } and compared equal.
+    % Compared through compounds because bare top-level fresh-var
+    % goals (put_variable Yn + builtin_call) mis-execute even for
+    % var/1 on unmodified main -- a separate pre-existing bug.
+    % (Fixed in M139 -- see the M139 section -- but this test keeps
+    % the compound shape since it targets ==/2 identity, not the
+    % put_value aliasing bug.)
+    ( f(X) \== f(Y) -> R is 1 ; R is 0 ).   % 1
+
+% M139: permanent-variable (Y-reg) corruption via put_value's
+% bind-through. put_variable Yn, Ai places the SAME Ref into both
+% registers; a later put_value over Ai called
+% @wam_bind_through_if_unbound_ref(old_Ai, val) which either (a) wrote
+% the Ref back into its own cell (self-reference: var/1 then saw the
+% variable as bound, unification corrupted), or (b) bound the live
+% unbound variable that previously occupied Ai to the incoming value
+% (aliasing two unrelated variables). Fixed by a self-reference guard
+% in the helper plus making put_value a pure register copy.
+
+:- dynamic test_m139_var_then_bind/2.
+test_m139_var_then_bind(_, R) :-
+    % The original failing shape: var(X) on a permanent, bound later.
+    var(X), X = done, R is 1.   % 1 (failed: exit 255)
+
+:- dynamic test_m139_var_twice/2.
+test_m139_var_twice(_, R) :-
+    % No binding at all -- the second var/1 saw the self-referential
+    % cell as bound.
+    var(X), var(X), R is 1.   % 1 (failed: exit 255)
+
+:- dynamic test_m139_var_nonvar_consistent/2.
+test_m139_var_nonvar_consistent(_, R) :-
+    % The smoking gun: var(X) and nonvar(X) both succeeded on the
+    % same unbound variable.
+    ( var(X), nonvar(X) -> R is 0 ; R is 1 ).   % 1 (got 0)
+
+:- dynamic test_m139_no_alias_on_put_value/2.
+test_m139_no_alias_on_put_value(_, R) :-
+    % put_value staging R0 for is/2 found X's Ref still in A1 and
+    % bound X to R0 -- so X = x then failed against 1.
+    var(X), R0 is 1, X = x, R is R0.   % 1
+
+:- dynamic test_m139_ite_var_bind/2.
+test_m139_ite_var_bind(_, R) :-
+    % Same shape inside an if-then-else condition.
+    ( var(X), X = done -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+% M140: the remaining put-instruction bind-throughs (follow-up to
+% M139). put_constant / put_structure / put_list also bound any live
+% unbound variable whose Ref happened to remain in the target register
+% when staging an argument for the NEXT goal. The bind-through is now
+% conditional on register class: A-register writes (staging) never
+% bind the old occupant; X/Y-register writes keep it because top-down
+% structure chaining (set_variable Xn placeholder, then
+% put_structure/put_list into Xn) depends on the bind-through to link
+% nested cells into their parent -- see test_msort_head's input list
+% build. get_list keeps its bind-through unconditionally: that one is
+% the legitimate write-mode head binding (the register's variable is
+% unbound by definition of entering write mode, and binding it to the
+% fresh cons cell IS the instruction's job).
+
+:- dynamic test_m140_put_constant/2.
+test_m140_put_constant(_, R) :-
+    % put_constant staging foo for atom/1 found X's Ref in A1 and
+    % bound X to foo.
+    var(X), atom(foo), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_constant_int/2.
+test_m140_put_constant_int(_, R) :-
+    var(X), integer(7), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_structure/2.
+test_m140_put_structure(_, R) :-
+    % put_structure building f(a) bound X to the compound.
+    var(X), compound(f(a)), ( var(X) -> R is 1 ; R is 0 ).   % 1 (got 0)
+
+:- dynamic test_m140_put_list/2.
+test_m140_put_list(_, R) :-
+    % put_list building [a] corrupted X. (compound/1 rather than
+    % is_list/1 because is_list([a]) fails standalone on this engine
+    % -- separate pre-existing put_list-representation bug.)
+    var(X), compound([a]), ( var(X) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m140_get_list_write/2.
+:- dynamic m140_mklist/1.
+m140_mklist([a]).
+test_m140_get_list_write(_, R) :-
+    % Guard: get_list write mode must STILL bind an unbound call arg
+    % to the constructed list (the one bind-through kept).
+    m140_mklist(L), ( L == [a] -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_m140_deep_chain_propagates/2.
+test_m140_deep_chain_propagates(_, R) :-
+    % Removing the staging bind-throughs unmasked this: bindings
+    % wrote at the FIRST Ref of an alias chain, not its end, so
+    % after X = Y the binding X = 42 landed in the alias-link cell
+    % and Y stayed unbound. Three-deep chain to exercise
+    % @wam_last_ref beyond one hop.
+    X = Y, Y = Z, X = 42,
+    ( Z =:= 42 -> R is 1 ; R is 0 ).   % 1
+
+% M141: is_list/1 never succeeded. The check accepted only the legacy
+% tag-4 List value, but the engine builds lists as [|]/2 compounds and
+% [] as an atom -- so even is_list([]) failed. Now a proper ISO
+% cons-chain walk.
+
+:- dynamic test_m141_is_list_nonempty/2.
+test_m141_is_list_nonempty(_, R) :-
+    is_list([a, b, c]), R is 1.   % 1 (failed before: exit 255)
+
+:- dynamic test_m141_is_list_singleton/2.
+test_m141_is_list_singleton(_, R) :-
+    is_list([a]), R is 1.   % 1
+
+:- dynamic test_m141_is_list_nil/2.
+test_m141_is_list_nil(_, R) :-
+    is_list([]), R is 1.   % 1 (even [] failed before)
+
+:- dynamic test_m141_is_list_atom_rejects/2.
+test_m141_is_list_atom_rejects(_, R) :-
+    ( is_list(foo) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m141_is_list_partial_rejects/2.
+test_m141_is_list_partial_rejects(_, R) :-
+    % Partial list (unbound tail) is NOT a list per ISO.
+    ( is_list([a|_]) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_m141_is_list_var_rejects/2.
+test_m141_is_list_var_rejects(_, R) :-
+    ( is_list(_) -> R is 0 ; R is 1 ).   % 1
+
+% M142: atom_starts_with/2 + atom_ends_with/2 + atom_contains/2.
+% Renumbered from M138 -- main grew M138..M141 (==/2 audit + put_value
+% correctness fixes) while this PR was in flight.
 
 :- dynamic test_asw_basic/2.
 test_asw_basic(_, R) :-
@@ -5598,9 +5795,21 @@ entry:
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %r = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  ; M142: deref the result register and require an Integer. The old
+  ; raw-payload read returned atom ids / heap addresses for non-int
+  ; results, producing confusing "got 90"-style failures (exit code =
+  ; whatever the payload truncated to). Non-Integer results now exit
+  ; 254, matching the float driver''s wrong_tag convention.
+  %rv = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %rtag = extractvalue %Value %rv, 0
+  %is_int = icmp eq i32 %rtag, 1
+  br i1 %is_int, label %int_ok, label %wrong_tag
+int_ok:
+  %r = extractvalue %Value %rv, 1
   %r32 = trunc i64 %r to i32
   ret i32 %r32
+wrong_tag:
+  ret i32 254
 miss:
   ret i32 255
 }
@@ -5627,6 +5836,10 @@ miss:
     ),
     ( ExitCode =:= Expected
     -> format('PASS (~w)~n', [ExitCode])
+    ; ExitCode =:= 254
+    -> format('FAIL (result had wrong tag -- ensure the final goal binds R numerically, e.g. via is/2)~n')
+    ; ExitCode =:= 255
+    -> format('FAIL (predicate failed at runtime; expected ~w)~n', [Expected])
     ;  format('FAIL (got ~w, expected ~w)~n', [ExitCode, Expected])
     ),
     catch(delete_file(LLPath), _, true),
@@ -5694,11 +5907,22 @@ hit:
   ; can bind through it; once is/2 binds, reg 0 is a Ref whose
   ; payload is the heap address, NOT the result value. Deref-then-
   ; payload gets the actual integer the test expects.
+  ; M142: require an Integer tag. The raw payload of a non-int
+  ; result (atom id, heap address) used to leak out as a mystery
+  ; exit code -- e.g. a test ending in ``X = x'' exited 90 (the
+  ; atom id of x). Non-Integer results now exit 254; tests must
+  ; stage their result into A1 via a final numeric goal (R is ...).
   %r_raw = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %r_d = call %Value @wam_deref_value(%WamState* %vm, %Value %r_raw)
+  %r_tag = extractvalue %Value %r_d, 0
+  %r_is_int = icmp eq i32 %r_tag, 1
+  br i1 %r_is_int, label %int_ok, label %wrong_tag
+int_ok:
   %r_pay = extractvalue %Value %r_d, 1
   %r32 = trunc i64 %r_pay to i32
   ret i32 %r32
+wrong_tag:
+  ret i32 254
 miss:
   ret i32 255
 }
@@ -5725,6 +5949,10 @@ miss:
     ),
     ( ExitCode =:= Expected
     -> format('PASS (~w)~n', [ExitCode])
+    ; ExitCode =:= 254
+    -> format('FAIL (result had wrong tag -- ensure the final goal binds R numerically, e.g. via is/2)~n')
+    ; ExitCode =:= 255
+    -> format('FAIL (predicate failed at runtime; expected ~w)~n', [Expected])
     ;  format('FAIL (got ~w, expected ~w)~n', [ExitCode, Expected])
     ),
     catch(delete_file(LLPath), _, true),
@@ -6925,7 +7153,65 @@ test_all :-
                    test_seq_atom_eq_still_works, 0, 1),
        run_test_r0('42 == 42 still works -> 1',
                    test_seq_int_eq_still_works, 0, 1),
-       format('--- M138 atom_starts_with/ends_with/contains ---~n'),
+       format('--- M138 value_equals call-site audit ---~n'),
+       run_test_r0('get_value f(a)=f(a) -> 1',
+                   test_m138_gv_ground + [m138_dup/2], 0, 1),
+       run_test_r0('get_value f(X)~f(Y) unifies -> 1',
+                   test_m138_gv_unifies + [m138_dup/2], 0, 1),
+       run_test_r0('get_value f(a)~f(b) rejects -> 1',
+                   test_m138_gv_mismatch_rejects + [m138_dup/2], 0, 1),
+       run_test_r0('arg(1,h(f(a)),f(a)) -> 1',
+                   test_m138_arg_bound_compound, 0, 1),
+       run_test_r0('arg(1,h(f(a)),f(b)) rejects -> 1',
+                   test_m138_arg_bound_rejects, 0, 1),
+       run_test_r0('sort dedup nested compounds -> 1',
+                   test_m138_sort_dedup_nested, 0, 1),
+       run_test_r0('sort dedup list elements -> 1',
+                   test_m138_sort_dedup_lists, 0, 1),
+       run_test_r0('sort keeps f(X),f(Y) distinct unbound -> 2',
+                   test_m138_sort_keeps_distinct, 0, 2),
+       run_test_r0('X == X -> 1',
+                   test_m138_var_eq_self, 0, 1),
+       run_test_r0('X \\== Y distinct fresh vars -> 1',
+                   test_m138_var_neq_distinct, 0, 1),
+       format('--- M139 put_value Y-reg aliasing ---~n'),
+       run_test_r0('var(X), X=done -> 1',
+                   test_m139_var_then_bind, 0, 1),
+       run_test_r0('var(X), var(X) -> 1',
+                   test_m139_var_twice, 0, 1),
+       run_test_r0('var/nonvar consistent on same var -> 1',
+                   test_m139_var_nonvar_consistent, 0, 1),
+       run_test_r0('put_value must not alias old occupant -> 1',
+                   test_m139_no_alias_on_put_value, 0, 1),
+       run_test_r0('ITE: var(X), X=done -> 1',
+                   test_m139_ite_var_bind, 0, 1),
+       format('--- M140 remaining put-instruction bind-throughs ---~n'),
+       run_test_r0('put_constant must not bind old occupant -> 1',
+                   test_m140_put_constant, 0, 1),
+       run_test_r0('put_constant int variant -> 1',
+                   test_m140_put_constant_int, 0, 1),
+       run_test_r0('put_structure must not bind old occupant -> 1',
+                   test_m140_put_structure, 0, 1),
+       run_test_r0('put_list must not bind old occupant -> 1',
+                   test_m140_put_list, 0, 1),
+       run_test_r0('get_list write mode still binds -> 1',
+                   test_m140_get_list_write + [m140_mklist/1], 0, 1),
+       run_test_r0('X=Y, Y=Z, X=42, Z=:=42 (deep chain) -> 1',
+                   test_m140_deep_chain_propagates, 0, 1),
+       format('--- M141 is_list/1 cons-chain walk ---~n'),
+       run_test_r0('is_list([a,b,c]) -> 1',
+                   test_m141_is_list_nonempty, 0, 1),
+       run_test_r0('is_list([a]) -> 1',
+                   test_m141_is_list_singleton, 0, 1),
+       run_test_r0('is_list([]) -> 1',
+                   test_m141_is_list_nil, 0, 1),
+       run_test_r0('is_list(foo) rejects -> 1',
+                   test_m141_is_list_atom_rejects, 0, 1),
+       run_test_r0('is_list([a|_]) partial rejects -> 1',
+                   test_m141_is_list_partial_rejects, 0, 1),
+       run_test_r0('is_list(_) var rejects -> 1',
+                   test_m141_is_list_var_rejects, 0, 1),
+       format('--- M142 atom_starts_with/ends_with/contains ---~n'),
        run_test_r0('starts_with /usr/bin/swipl + /usr -> 1',
                    test_asw_basic, 0, 1),
        run_test_r0('starts_with full match -> 1',

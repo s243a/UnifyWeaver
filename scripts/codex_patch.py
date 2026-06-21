@@ -34,7 +34,7 @@ def resolve_patch(path_text: str) -> Path:
 
 
 def run_git_apply(patch: Path, check_only: bool) -> int:
-    cmd = ["git", "apply", "--check" if check_only else "--index", str(patch)]
+    cmd = ["git", "apply", "--recount", "--check" if check_only else "--index", str(patch)]
     result = subprocess.run(cmd, cwd=REPO_ROOT, text=True, capture_output=True)
     if result.stdout:
         sys.stdout.write(result.stdout)

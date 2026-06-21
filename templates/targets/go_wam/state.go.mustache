@@ -1,7 +1,9 @@
 package {{package_name}}
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"runtime"
@@ -47,6 +49,21 @@ type WeightedEdgeTriple struct {
 type SelectSolution struct {
 	Elem Value
 	Rest Value
+}
+
+type StreamHandle struct {
+	ID     int
+	File   *os.File
+	Reader *bufio.Reader
+	Mode   string
+	Closed bool
+}
+
+func (v *StreamHandle) valueTag() {}
+func (v *StreamHandle) String() string { return fmt.Sprintf("stream(%d)", v.ID) }
+func (v *StreamHandle) Equals(other Value) bool {
+	o, ok := other.(*StreamHandle)
+	return ok && v == o
 }
 
 type ChoicePoint struct {
@@ -230,6 +247,10 @@ type WamState struct {
 	// stack down past it. peekEnvFrame is now O(1) via this index
 	// instead of an O(stack) reverse scan.
 	E int
+	// Input is the default input stream used by get_char/1, peek_char/1,
+	// and get_code/1. File-backed stream handles carry their own readers.
+	Input *bufio.Reader
+	NextStreamID int
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -265,11 +286,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -602,6 +623,8 @@ func (vm *WamState) Clone() *WamState {
 		// every solution.
 		NextVarId:    vm.NextVarId,
 		E:            vm.E,
+		Input:        vm.Input,
+		NextStreamID: vm.NextStreamID,
 		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
 		// same Y-reg high-water mark as the parent (sub.Regs is a
 		// value-copy of parent.Regs and therefore *contains* those
@@ -1031,6 +1054,203 @@ func (vm *WamState) formatStringDirective(value Value) (string, bool) {
 	return b.String(), true
 }
 
+func outputAtomCharText(value Value) (string, bool) {
+	atom, ok := value.(*Atom)
+	if !ok {
+		return "", false
+	}
+	if len([]rune(atom.Name)) != 1 {
+		return "", false
+	}
+	return atom.Name, true
+}
+
+func outputCodeText(value Value) (string, bool) {
+	integer, ok := value.(*Integer)
+	if !ok || integer.Val < 0 || integer.Val > int64(unicode.MaxRune) {
+		return "", false
+	}
+	return string(rune(integer.Val)), true
+}
+
+func streamPathText(value Value) (string, bool) {
+	atom, ok := value.(*Atom)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimPrefix(atom.Name, quotedNumericAtomPrefix), true
+}
+
+func streamOpenMode(value Value) (string, bool) {
+	atom, ok := value.(*Atom)
+	if !ok {
+		return "", false
+	}
+	switch atom.Name {
+	case "read", "write", "append":
+		return atom.Name, true
+	default:
+		return "", false
+	}
+}
+
+func (vm *WamState) openStreamHandle(path string, mode string) (*StreamHandle, bool) {
+	var file *os.File
+	var err error
+	switch mode {
+	case "read":
+		file, err = os.Open(path)
+	case "write":
+		file, err = os.Create(path)
+	case "append":
+		file, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	default:
+		return nil, false
+	}
+	if err != nil {
+		return nil, false
+	}
+	handle := &StreamHandle{ID: vm.NextStreamID, File: file, Mode: mode}
+	vm.NextStreamID++
+	if mode == "read" {
+		handle.Reader = bufio.NewReader(file)
+	}
+	return handle, true
+}
+
+func streamHandle(value Value) (*StreamHandle, bool) {
+	handle, ok := value.(*StreamHandle)
+	if !ok || handle == nil || handle.Closed || handle.File == nil {
+		return nil, false
+	}
+	return handle, true
+}
+
+func readStreamRune(value Value) (rune, bool, bool) {
+	handle, ok := streamHandle(value)
+	if !ok || handle.Reader == nil {
+		return 0, false, false
+	}
+	r, _, err := handle.Reader.ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func peekStreamRune(value Value) (rune, bool, bool) {
+	handle, ok := streamHandle(value)
+	if !ok || handle.Reader == nil {
+		return 0, false, false
+	}
+	r, _, err := handle.Reader.ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	if err := handle.Reader.UnreadRune(); err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func readLineStreamValue(value Value) (Value, bool) {
+	handle, ok := streamHandle(value)
+	if !ok || handle.Reader == nil {
+		return nil, false
+	}
+	var b strings.Builder
+	for {
+		r, _, err := handle.Reader.ReadRune()
+		if err == io.EOF {
+			if b.Len() == 0 {
+				return internAtom("end_of_file"), true
+			}
+			return internAtom(b.String()), true
+		}
+		if err != nil {
+			return nil, false
+		}
+		if r == '\n' {
+			return internAtom(b.String()), true
+		}
+		if r == '\r' {
+			next, _, nextErr := handle.Reader.ReadRune()
+			if nextErr != nil && nextErr != io.EOF {
+				return nil, false
+			}
+			if nextErr == nil && next != '\n' {
+				if err := handle.Reader.UnreadRune(); err != nil {
+					return nil, false
+				}
+			}
+			return internAtom(b.String()), true
+		}
+		b.WriteRune(r)
+	}
+}
+
+func writeStreamText(value Value, text string) bool {
+	handle, ok := streamHandle(value)
+	if !ok || handle.Mode == "read" {
+		return false
+	}
+	_, err := handle.File.WriteString(text)
+	return err == nil
+}
+
+func (vm *WamState) inputReader() *bufio.Reader {
+	if vm.Input == nil {
+		vm.Input = bufio.NewReader(os.Stdin)
+	}
+	return vm.Input
+}
+
+func (vm *WamState) readDefaultInputRune() (rune, bool, bool) {
+	r, _, err := vm.inputReader().ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func (vm *WamState) peekDefaultInputRune() (rune, bool, bool) {
+	reader := vm.inputReader()
+	r, _, err := reader.ReadRune()
+	if err == io.EOF {
+		return 0, true, true
+	}
+	if err != nil {
+		return 0, false, false
+	}
+	if err := reader.UnreadRune(); err != nil {
+		return 0, false, false
+	}
+	return r, false, true
+}
+
+func inputCharValue(r rune, eof bool) Value {
+	if eof {
+		return internAtom("end_of_file")
+	}
+	return internAtom(string(r))
+}
+
+func inputCodeValue(r rune, eof bool) Value {
+	if eof {
+		return &Integer{Val: -1}
+	}
+	return &Integer{Val: int64(r)}
+}
+
 func (vm *WamState) canonicalTermString(value Value) string {
 	value = vm.deref(value)
 	if isEmptyListValue(value) {
@@ -1264,6 +1484,8 @@ func (vm *WamState) groundTerm(v Value, seen map[Value]bool) bool {
 		}
 		return false
 	case *Atom, *Integer, *Float:
+		return true
+	case *StreamHandle:
 		return true
 	case *Compound:
 		if seen[t] {
@@ -1569,6 +1791,100 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "write_canonical/1":
 		fmt.Print(vm.canonicalTermString(arg1))
 		return true
+	case "put_char/1":
+		text, ok := outputAtomCharText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		fmt.Print(text)
+		return true
+	case "put_code/1":
+		text, ok := outputCodeText(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		fmt.Print(text)
+		return true
+	case "put_char/2":
+		text, ok := outputAtomCharText(vm.deref(arg2))
+		if !ok {
+			return false
+		}
+		return writeStreamText(vm.deref(arg1), text)
+	case "put_code/2":
+		text, ok := outputCodeText(vm.deref(arg2))
+		if !ok {
+			return false
+		}
+		return writeStreamText(vm.deref(arg1), text)
+	case "get_char/1":
+		r, eof, ok := vm.readDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCharValue(r, eof))
+	case "get_char/2":
+		r, eof, ok := readStreamRune(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, inputCharValue(r, eof))
+	case "peek_char/1":
+		r, eof, ok := vm.peekDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCharValue(r, eof))
+	case "peek_char/2":
+		r, eof, ok := peekStreamRune(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, inputCharValue(r, eof))
+	case "get_code/1":
+		r, eof, ok := vm.readDefaultInputRune()
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg1, inputCodeValue(r, eof))
+	case "get_code/2":
+		r, eof, ok := readStreamRune(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, inputCodeValue(r, eof))
+	case "open/3":
+		path, okPath := streamPathText(vm.deref(arg1))
+		mode, okMode := streamOpenMode(vm.deref(arg2))
+		if !okPath || !okMode {
+			return false
+		}
+		handle, ok := vm.openStreamHandle(path, mode)
+		if !ok {
+			return false
+		}
+		if !vm.Unify(arg3, handle) {
+			_ = handle.File.Close()
+			handle.Closed = true
+			return false
+		}
+		return true
+	case "close/1":
+		handle, ok := streamHandle(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		if err := handle.File.Close(); err != nil {
+			return false
+		}
+		handle.Closed = true
+		return true
+	case "read_line_to_string/2":
+		line, ok := readLineStreamValue(vm.deref(arg1))
+		if !ok {
+			return false
+		}
+		return vm.Unify(arg2, line)
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
 		return true

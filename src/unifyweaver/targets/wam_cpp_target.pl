@@ -3310,8 +3310,12 @@ public:
 };
 
 struct TrailEntry {
-    CellPtr cell;
+    CellPtr cell;     // null for alias_pop entries
     Value prev;
+    // M143: when true, undo = pop the last alias_pairs entry instead of
+    // restoring a cell value. Recorded by the var-var case of
+    // unify_cells so backtracking dissolves the alias.
+    bool alias_pop = false;
 };
 
 // Environment frame for permanent variables (Y-regs) and continuation
@@ -3362,7 +3366,7 @@ struct ChoicePoint {
     std::size_t saved_cp;
     std::size_t trail_mark;
     std::size_t cut_barrier;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<BodyFrame> saved_body_frames;
@@ -3390,7 +3394,7 @@ struct AggregateFrame {
     std::size_t trail_mark = 0;
     std::size_t saved_cp = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<Value> acc;
@@ -3427,7 +3431,7 @@ struct CatcherFrame {
     std::size_t base_cp_count = 0;
     std::size_t base_agg_count = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
 };
@@ -3444,7 +3448,7 @@ struct NegationFrame {
     std::size_t base_agg_count = 0;
     std::size_t base_catcher_count = 0;
     std::size_t saved_cut_barrier = 0;
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
 };
@@ -3519,7 +3523,7 @@ struct AggregateGroupIterator {
 // restore; var_counter is monotonic (unique unbound names) and intentionally
 // not restored.
 struct ClauseSnapshot {
-    std::unordered_map<std::string, CellPtr> saved_regs;
+    std::vector<CellPtr> saved_regs;
     std::size_t trail_mark = 0;
     std::size_t cut_barrier = 0;
     std::vector<EnvFrame> saved_env_stack;
@@ -3527,10 +3531,21 @@ struct ClauseSnapshot {
 };
 
 struct WamState {
-    std::unordered_map<std::string, CellPtr> regs;
+    // A/X register file as a flat array indexed by reg_index() (A1..A100 ->
+    // 0..99, X1..X220 -> 100..319). Y registers live in env_stack frames. This
+    // replaces an unordered_map<string,CellPtr>, removing a string hash lookup
+    // from every register access (the lowered fast path is dominated by it).
+    // Slots are lazily-filled CellPtrs (null until first written).
+    static constexpr int REG_MAX = 320;
+    static int reg_index(const std::string& name);
+    std::vector<CellPtr> regs = std::vector<CellPtr>(REG_MAX);
     std::unordered_map<std::string, std::size_t> labels;
     std::vector<Instruction> instrs;
     std::vector<TrailEntry> trail;
+    // M143: var-var alias pairs recorded by unify_cells; bind_cell
+    // propagates real values across them. Popped on backtrack via
+    // alias_pop trail entries.
+    std::vector<std::pair<CellPtr, CellPtr>> alias_pairs;
     std::vector<ChoicePoint> choice_points;
     std::vector<AggregateFrame> aggregate_frames;
     std::vector<CatcherFrame> catcher_frames;
@@ -3636,7 +3651,7 @@ struct WamState {
         std::size_t base_catcher_count = 0;
         std::size_t trail_mark = 0;
         std::size_t saved_cut_barrier = 0;
-        std::unordered_map<std::string, CellPtr> saved_regs;
+        std::vector<CellPtr> saved_regs;
         std::vector<ModeFrame> saved_mode_stack;
         std::vector<EnvFrame> saved_env_stack;
     };
@@ -3740,6 +3755,17 @@ struct WamState {
     // so existing lowered code keeps compiling; get_cell exposes the cell
     // for instructions that need sharing semantics.
     Value   get_reg(const std::string& name) const;
+    // Allocation-free get_constant head match: 1 = bound atom equal to the
+    // argument, 0 = bound but not an equal atom (clause fails), -1 = unbound
+    // (caller binds). Reads the register cell in place: no Value copy, and no
+    // temporary Value::Atom on the right-hand side.
+    int     match_reg_atom(const std::string& name, const char* atom) const;
+    // T6 first-argument indexing: deref the register in place and, if it
+    // resolves to a bound atom, return a pointer to its std::string (no copy,
+    // no allocation); return nullptr for unbound / non-atom. The pointee lives
+    // in the register cell, stable for the duration of the lowered call, so the
+    // caller can look it up in a static dispatch map and switch on the result.
+    const std::string* match_reg_atom_str(const std::string& name) const;
     void    put_reg(const std::string& name, Value v);
     CellPtr get_cell(const std::string& name);
     void    set_cell(const std::string& name, CellPtr c);
@@ -3765,6 +3791,7 @@ struct WamState {
     // Used by lowered if-then-else when the condition fails, before the
     // else branch runs.
     void    unwind_trail_to(std::size_t mark);
+    void    propagate_alias(const CellPtr& c, const Value& v);
 
     // T4 (multi_clause_n): capture / restore the clause-entry state a lowered
     // function tries each clause against — see ClauseSnapshot.
@@ -4119,9 +4146,25 @@ static CellPtr make_cell(Value v = Value{}) {
     return std::make_shared<Cell>(std::move(v));
 }
 
-// Y-regs are scoped to the top env frame; A/X-regs use the flat map.
+// Y-regs are scoped to the top env frame; A/X-regs use the flat regs array.
 static bool is_y_reg(const std::string& name) {
     return !name.empty() && name[0] == \'Y\';
+}
+
+// Map an A/X register name to its flat-array index: A1->0 .. A100->99,
+// X1->100 .. X220->319. Returns -1 for non-A/X names (Y is handled by
+// is_y_reg before this is ever called for the array path).
+int WamState::reg_index(const std::string& name) {
+    if (name.size() < 2) return -1;
+    int n = 0;
+    for (std::size_t k = 1; k < name.size(); ++k) {
+        char ch = name[k];
+        if (ch < \'0\' || ch > \'9\') return -1;
+        n = n * 10 + (ch - \'0\');
+    }
+    if (name[0] == \'A\') return n - 1;
+    if (name[0] == \'X\') return 100 + (n - 1);
+    return -1;
 }
 
 CellPtr WamState::get_cell(const std::string& name) {
@@ -4134,11 +4177,11 @@ CellPtr WamState::get_cell(const std::string& name) {
         y[name] = c;
         return c;
     }
-    auto it = regs.find(name);
-    if (it != regs.end()) return it->second;
-    CellPtr c = make_cell(Value::Unbound("_U_" + name));
-    regs[name] = c;
-    return c;
+    int i = reg_index(name);
+    if (i < 0) return make_cell(Value::Unbound("_U_" + name));
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(Value::Unbound("_U_" + name));
+    return regs[i];
 }
 
 void WamState::set_cell(const std::string& name, CellPtr c) {
@@ -4147,7 +4190,10 @@ void WamState::set_cell(const std::string& name, CellPtr c) {
         env_stack.back().y_regs[name] = std::move(c);
         return;
     }
-    regs[name] = std::move(c);
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    regs[i] = std::move(c);
 }
 
 void WamState::put_variable_reg(const std::string& a, const std::string& b) {
@@ -4168,9 +4214,50 @@ Value WamState::get_reg(const std::string& name) const {
         if (it == y.end()) return Value{};
         return *it->second;
     }
-    auto it = regs.find(name);
-    if (it == regs.end()) return Value{};
-    return *it->second;
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return Value{};
+    return *regs[i];
+}
+
+int WamState::match_reg_atom(const std::string& name, const char* atom) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return -1;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return -1;
+        v = it->second.get();
+    } else {
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return -1;
+        v = regs[i].get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already the dereferenced value.
+    switch (v->tag) {
+        case Value::Tag::Atom:    return v->s == atom ? 1 : 0;
+        case Value::Tag::Unbound:
+        case Value::Tag::Uninit:  return -1;
+        default:                  return 0;
+    }
+}
+
+const std::string* WamState::match_reg_atom_str(const std::string& name) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return nullptr;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return nullptr;
+        v = it->second.get();
+    } else {
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return nullptr;
+        v = regs[i].get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already dereferenced.
+    return v->tag == Value::Tag::Atom ? &v->s : nullptr;
 }
 
 void WamState::put_reg(const std::string& name, Value v) {
@@ -4182,17 +4269,19 @@ void WamState::put_reg(const std::string& name, Value v) {
         else               *it->second = std::move(v);
         return;
     }
-    auto it = regs.find(name);
-    if (it == regs.end()) regs[name] = make_cell(std::move(v));
-    else                  *it->second = std::move(v);
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(std::move(v));
+    else          *regs[i] = std::move(v);
 }
 
 void WamState::trail_binding(const std::string& name) {
-    auto it = regs.find(name);
-    if (it == regs.end()) return;
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return;
     TrailEntry e;
-    e.cell = it->second;
-    e.prev = *it->second;
+    e.cell = regs[i];
+    e.prev = *regs[i];
     trail.push_back(std::move(e));
 }
 
@@ -4200,7 +4289,49 @@ void WamState::unwind_trail_to(std::size_t mark) {
     while (trail.size() > mark) {
         TrailEntry t = std::move(trail.back());
         trail.pop_back();
-        *t.cell = std::move(t.prev);
+        if (t.alias_pop) {
+            if (!alias_pairs.empty()) alias_pairs.pop_back();
+        } else {
+            *t.cell = std::move(t.prev);
+        }
+    }
+}
+
+// M143: write v into every cell alias-connected to c that is still
+// unbound. Var-var unification records (a, b) pairs instead of copying
+// one unbound marker over the other (which left the two variables
+// independent: X = Y, X = 1, Y = 2 succeeded). Reads need no changes -
+// aliased cells stay genuinely Unbound until a real value arrives, at
+// which point this propagation makes every member of the alias group
+// see it (each write individually trailed for backtracking).
+void WamState::propagate_alias(const CellPtr& c, const Value& v) {
+    std::vector<const Value*> visited;
+    visited.push_back(c.get());
+    std::vector<CellPtr> frontier;
+    frontier.push_back(c);
+    while (!frontier.empty()) {
+        CellPtr cur = frontier.back();
+        frontier.pop_back();
+        for (const auto& pr : alias_pairs) {
+            CellPtr other;
+            if (pr.first.get() == cur.get()) other = pr.second;
+            else if (pr.second.get() == cur.get()) other = pr.first;
+            else continue;
+            bool seen = false;
+            for (const Value* p : visited) {
+                if (p == other.get()) { seen = true; break; }
+            }
+            if (seen) continue;
+            visited.push_back(other.get());
+            if (other->is_unbound()) {
+                TrailEntry e;
+                e.cell = other;
+                e.prev = *other;
+                trail.push_back(std::move(e));
+                *other = v;
+            }
+            frontier.push_back(other);
+        }
     }
 }
 
@@ -4227,7 +4358,12 @@ void WamState::bind_cell(CellPtr cell, Value v) {
     e.cell = cell;
     e.prev = *cell;
     trail.push_back(std::move(e));
-    *cell = std::move(v);
+    *cell = v;
+    // M143: a real value arriving at an alias-connected cell must reach
+    // every other member of the group. No-op when no aliases exist.
+    if (v.tag != Value::Tag::Unbound && !alias_pairs.empty()) {
+        propagate_alias(cell, v);
+    }
 }
 
 Value WamState::deref(const Value& v) const {
@@ -4243,6 +4379,18 @@ bool WamState::unify_cells(CellPtr a, CellPtr b) {
     if (a.get() == b.get()) return true;
     Value& va = *a;
     Value& vb = *b;
+    if (va.is_unbound() && vb.is_unbound()) {
+        // M143: var-var unification ALIASES the two cells. The old
+        // bind_cell(a, vb) copied the b-side unbound marker into a,
+        // leaving the variables independent. Record the pair (undone
+        // via an alias_pop trail entry on backtrack); bind_cell
+        // propagates a later real value across the pair.
+        alias_pairs.emplace_back(a, b);
+        TrailEntry e;
+        e.alias_pop = true;
+        trail.push_back(std::move(e));
+        return true;
+    }
     if (va.is_unbound()) { bind_cell(a, vb); return true; }
     if (vb.is_unbound()) { bind_cell(b, va); return true; }
     if (va.tag != vb.tag) return false;
@@ -4675,11 +4823,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             if (negation_frames.size() > my_depth) {
                 NegationFrame nf = std::move(negation_frames.back());
                 negation_frames.pop_back();
-                while (trail.size() > nf.trail_mark) {
-                    TrailEntry t = std::move(trail.back());
-                    trail.pop_back();
-                    *t.cell = std::move(t.prev);
-                }
+                unwind_trail_to(nf.trail_mark);
                 while (aggregate_frames.size() > nf.base_agg_count)
                     aggregate_frames.pop_back();
                 while (catcher_frames.size() > nf.base_catcher_count)
@@ -4782,11 +4926,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         std::size_t mark = trail.size();
         bool ok = unify_cells(get_cell("A1"), get_cell("A2"));
         // Roll back any bindings we just made.
-        while (trail.size() > mark) {
-            TrailEntry t = std::move(trail.back());
-            trail.pop_back();
-            *t.cell = std::move(t.prev);
-        }
+        unwind_trail_to(mark);
         if (ok) return false;
         pc += 1; return true;
     }
@@ -5796,11 +5936,7 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
                     CellPtr fresh = deep_copy_term(clause);
                     bool ok = unify_cells(pattern, fresh);
                     // Undo bindings either way.
-                    while (trail.size() > mark) {
-                        TrailEntry te = std::move(trail.back());
-                        trail.pop_back();
-                        *te.cell = std::move(te.prev);
-                    }
+                    unwind_trail_to(mark);
                     return ok;
                 }), vec.end());
         }
@@ -7929,11 +8065,7 @@ bool WamState::step(const Instruction& instr) {
             if (negation_frames.empty()) return false;
             NegationFrame f = std::move(negation_frames.back());
             negation_frames.pop_back();
-            while (trail.size() > f.trail_mark) {
-                TrailEntry t = std::move(trail.back());
-                trail.pop_back();
-                *t.cell = std::move(t.prev);
-            }
+            unwind_trail_to(f.trail_mark);
             while (choice_points.size() > f.base_cp_count)
                 choice_points.pop_back();
             while (aggregate_frames.size() > f.base_agg_count)
@@ -9075,11 +9207,7 @@ bool WamState::current_pred_try_next() {
             cp = 0;
             return true;
         }
-        while (trail.size() > mark) {
-            TrailEntry te = std::move(trail.back());
-            trail.pop_back();
-            *te.cell = std::move(te.prev);
-        }
+        unwind_trail_to(mark);
         ++it.next_idx;
     }
     current_pred_iters.pop_back();
@@ -9167,11 +9295,7 @@ bool WamState::retract_try_next() {
             return true;
         }
         // No match at i — undo any partial bindings and try i+1.
-        while (trail.size() > mark) {
-            TrailEntry te = std::move(trail.back());
-            trail.pop_back();
-            *te.cell = std::move(te.prev);
-        }
+        unwind_trail_to(mark);
         ++i;
     }
     // Exhausted — drop the iterator and fail.
@@ -9719,7 +9843,7 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // builtins all read them.
         for (std::size_t i = 0; i < arity; ++i) {
             std::string an = "A" + std::to_string(i + 1);
-            regs[an] = g.args[i];
+            set_cell(an, g.args[i]);
         }
         // Meta-builtins handled directly by step() arms — go through
         // the same code path so nested catch / re-throw works.
@@ -10143,11 +10267,7 @@ bool WamState::execute_throw() {
         CatcherFrame f = std::move(catcher_frames.back());
         catcher_frames.pop_back();
         // Restore VM state to the frame''s snapshot.
-        while (trail.size() > f.trail_mark) {
-            TrailEntry t = std::move(trail.back());
-            trail.pop_back();
-            *t.cell = std::move(t.prev);
-        }
+        unwind_trail_to(f.trail_mark);
         while (choice_points.size() > f.base_cp_count) choice_points.pop_back();
         while (aggregate_frames.size() > f.base_agg_count) aggregate_frames.pop_back();
         regs = f.saved_regs;
@@ -10163,11 +10283,7 @@ bool WamState::execute_throw() {
         }
         // No match: undo the failed unify attempt and try the next
         // outer frame.
-        while (trail.size() > mark) {
-            TrailEntry t = std::move(trail.back());
-            trail.pop_back();
-            *t.cell = std::move(t.prev);
-        }
+        unwind_trail_to(mark);
     }
     // Uncaught exception. Print it and signal a hard failure.
     std::fprintf(stderr, "uncaught exception: %s\\n",
@@ -10191,7 +10307,7 @@ bool WamState::throw_iso_error(Value err_term) {
     Value wrapper = Value::Compound("error/2", std::move(args));
     // Set A1 = the wrapped error term, then dispatch through the
     // existing throw machinery so catch/3 frames see a normal throw.
-    regs["A1"] = std::make_shared<Cell>(std::move(wrapper));
+    set_cell("A1", std::make_shared<Cell>(std::move(wrapper)));
     return execute_throw();
 }
 
@@ -10323,11 +10439,7 @@ bool WamState::backtrack() {
         {
             NegationFrame f = std::move(negation_frames.back());
             negation_frames.pop_back();
-            while (trail.size() > f.trail_mark) {
-                TrailEntry t = std::move(trail.back());
-                trail.pop_back();
-                *t.cell = std::move(t.prev);
-            }
+            unwind_trail_to(f.trail_mark);
             while (aggregate_frames.size() > f.base_agg_count)
                 aggregate_frames.pop_back();
             while (catcher_frames.size() > f.base_catcher_count)
@@ -10358,11 +10470,7 @@ bool WamState::backtrack() {
             catcher_frames.pop_back();
             // Unwind trail to the catcher''s mark — failure of the
             // protected goal undoes all bindings it made.
-            while (trail.size() > f.trail_mark) {
-                TrailEntry t = std::move(trail.back());
-                trail.pop_back();
-                *t.cell = std::move(t.prev);
-            }
+            unwind_trail_to(f.trail_mark);
             // Restore regs/env/mode/cp/cut so the world looks exactly
             // as it did at catch entry, then continue backtracking
             // outside the catch.
@@ -10387,11 +10495,7 @@ bool WamState::backtrack() {
         {
             OutputCaptureFrame f = std::move(output_capture_frames.back());
             output_capture_frames.pop_back();
-            while (trail.size() > f.trail_mark) {
-                TrailEntry t = std::move(trail.back());
-                trail.pop_back();
-                *t.cell = std::move(t.prev);
-            }
+            unwind_trail_to(f.trail_mark);
             regs        = std::move(f.saved_regs);
             mode_stack  = std::move(f.saved_mode_stack);
             env_stack   = std::move(f.saved_env_stack);
@@ -10406,11 +10510,7 @@ bool WamState::backtrack() {
             AggregateFrame f = std::move(aggregate_frames.back());
             aggregate_frames.pop_back();
             // Unwind any trail entries added inside the aggregate scope.
-            while (trail.size() > f.trail_mark) {
-                TrailEntry t = std::move(trail.back());
-                trail.pop_back();
-                *t.cell = std::move(t.prev);
-            }
+            unwind_trail_to(f.trail_mark);
             regs        = std::move(f.saved_regs);
             mode_stack  = std::move(f.saved_mode_stack);
             env_stack   = std::move(f.saved_env_stack);
@@ -10511,11 +10611,7 @@ bool WamState::backtrack() {
         // We restore state via COPY so the snapshot remains intact for
         // any subsequent backtracks into this same CP.
         const ChoicePoint& cp_ = choice_points.back();
-        while (trail.size() > cp_.trail_mark) {
-            TrailEntry t = std::move(trail.back());
-            trail.pop_back();
-            *t.cell = std::move(t.prev);
-        }
+        unwind_trail_to(cp_.trail_mark);
         regs        = cp_.saved_regs;
         mode_stack  = cp_.saved_mode_stack;
         env_stack   = cp_.saved_env_stack;
@@ -10541,9 +10637,9 @@ bool WamState::run() {
 bool WamState::query(const std::string& pred_key, const std::vector<Value>& args) {
     auto it = labels.find(pred_key);
     if (it == labels.end()) return false;
-    regs.clear();
+    for (auto& _c : regs) _c.reset();
     for (std::size_t k = 0; k < args.size(); ++k) {
-        regs["A" + std::to_string(k + 1)] = make_cell(args[k]);
+        set_cell("A" + std::to_string(k + 1), make_cell(args[k]));
     }
     trail.clear();
     choice_points.clear();

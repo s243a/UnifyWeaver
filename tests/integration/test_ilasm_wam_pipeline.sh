@@ -154,19 +154,15 @@ test_ilasm_verify() {
 
     cd "$PROJECT_ROOT"
 
-    # Generate a complete assembly from Prolog — types + state + runtime + wrapper
+    # Generate a complete assembly from Prolog — types + state + runtime.
+    # Uses the real project writer (empty predicate list) so the module
+    # includes the top-level type definitions the runtime references;
+    # the old hand-rolled skeleton omitted WamState/Value and never
+    # assembled.
     swipl -g "
         use_module('src/unifyweaver/targets/wam_ilasm_target'),
-        compile_step_wam_to_cil([], StepCode),
-        compile_wam_helpers_to_cil([], HelpersCode),
-        open('$OUTPUT_DIR/full_module.il', write, S),
-        format(S, '.assembly extern mscorlib {}~n', []),
-        format(S, '.assembly WamTest {}~n~n', []),
-        format(S, '.class public auto ansi WamTest.Program extends [mscorlib]System.Object {~n~n', []),
-        format(S, '~w~n~n', [StepCode]),
-        format(S, '~w~n~n', [HelpersCode]),
-        format(S, '} // end class~n', []),
-        close(S),
+        write_wam_ilasm_project([], [module_name('WamTest')],
+                                '$OUTPUT_DIR/full_module.il'),
         halt
     " 2>/dev/null
 
