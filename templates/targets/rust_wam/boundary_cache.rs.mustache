@@ -2446,7 +2446,7 @@ fn raw_cone_set(
 }
 
 /// The 2-D bridge classification (philosophy "the 2-D map"): diversity (`n_eff`) × domain coherence
-/// (`cone_purity`) sort every high-fan-out node into one of four quadrants.
+/// (in-domain-frame purity `|gated_desc|/|desc|`) sort every high-fan-out node into one of four quadrants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BridgeClass {
     /// High `n_eff` **and** high purity — organizes distinct *in-domain* subfields. The good bridge.
@@ -2476,7 +2476,9 @@ pub struct BridgeParams {
 
 impl Default for BridgeParams {
     /// `φ_min = 2` (any real branch point), `τ_div = 1.5` (clearly more than one effective branch),
-    /// `τ_pure = 0.5` (majority-in-domain cone). All three are domain knobs — tune on real data.
+    /// `τ_pure = 0.5` (in-domain *fraction* ≥ ½ — a majority-in-domain cone). All three are domain
+    /// knobs — tune on real data (on the associative Wikipedia graph the in-domain fraction is small
+    /// even for genuine hubs, so `τ_pure ≈ 0.01`; see the bridge-detector measurement addendum).
     fn default() -> Self { BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.5 } }
 }
 
@@ -2488,7 +2490,10 @@ pub struct BridgeScore {
     pub n_eff: f64,
     /// `μ(⋃E_i)/Σμ(E_i) ∈ [1/n, 1]` (`fanout_diversity`); `0` for a non-candidate.
     pub diversity: f64,
-    /// `cone_purity(P) = m_μ(desc(P)) / |desc(P)|` — in-domain mass per node of the *raw* cone.
+    /// **In-domain-frame purity** `|gated_desc(P)| / |desc(P)| ∈ [0, 1]` — the fraction of `P`'s
+    /// reachable cone that stays in-domain (domain coherence). High for a coherent hub, low for a leak
+    /// conduit. The classifier input since #3307 — the raw-cone `cone_purity` mislabeled big in-domain
+    /// hubs (it conflates leaky with big), so it is *not* used here.
     pub purity: f64,
     /// In-domain child count `φ(P)` (the fan-out).
     pub fan_out: u32,
@@ -2496,18 +2501,24 @@ pub struct BridgeScore {
     pub class: BridgeClass,
 }
 
-/// **Classify a candidate node on the 2-D bridge map** (increment 2) — combine the `n_eff` core
-/// (`fanout_diversity`) with the leak-detector `cone_purity` into a `BridgeScore`. Purity is read over
-/// the **raw** descendant cone (`m_μ(desc(P)) / |desc(P)|`, the existing leak-detector read), `n_eff`
-/// over the path-gated universe; the two are orthogonal (§ "the 2-D map") and together place `P`:
+/// **Classify a candidate node on the 2-D bridge map** (increment 2; purity refined #3307) — combine
+/// the `n_eff` core (`fanout_diversity`) with an **in-domain-frame** purity into a `BridgeScore`.
+/// Purity is `|gated_desc(P)| / |desc(P)|` — the fraction of `P`'s reachable cone that stays in-domain,
+/// read in the **same frame as `n_eff`** (the path-gated cone), **not** the raw-cone average-μ
+/// `cone_purity`: #3306's real-data run showed the raw read mislabels genuine in-domain hubs
+/// (`Subfields_of_physics`, `Energy`) as `LeakConduit`, because a large raw cone accumulates
+/// out-of-domain nodes that dilute the average regardless of coherence. The in-domain fraction reads
+/// **low** for a leak conduit (cone reaches the whole graph, in-domain frontier tiny) and **high** for
+/// a coherent hub. `n_eff` and purity are orthogonal (§ "the 2-D map") and together place `P`:
 ///
 /// - `< φ_min` (or `< 2`) in-domain children, or `P` out-of-domain ⇒ `NotCandidate`.
 /// - `n_eff < τ_div` ⇒ `RedundantHub` (children reconverge — collapse).
 /// - `n_eff ≥ τ_div` **and** `purity ≥ τ_pure` ⇒ `Bridge` (distinct in-domain subfields).
 /// - `n_eff ≥ τ_div` **and** `purity < τ_pure` ⇒ `LeakConduit` (distinct but unrelated — prune).
 ///
-/// Additive: reuses `fanout_diversity` and `cone_purity` verbatim, adds no math. `mu` is an input map.
-/// Exact (the correctness path); increment 4 swaps the cone walks for the sketch reads at scale.
+/// Additive: reuses `fanout_diversity`, `path_gated_cone`, `raw_cone_set`; the raw-cone `cone_purity`
+/// stays available to callers but is no longer the classifier input. `mu` is an input map. Exact (the
+/// correctness path).
 pub fn bridge_classify(
     p: u32,
     parents: &std::collections::HashMap<u32, Vec<u32>>,
@@ -2526,11 +2537,13 @@ pub fn bridge_classify(
         let mut seen: HashSet<u32> = HashSet::new();
         cs.iter().filter(|&&c| muv(c) >= threshold && seen.insert(c)).count() as u32
     });
-    // Purity over the RAW (ungated) descendant cone — the leak-detector read.
-    let cone = raw_cone_set(p, &children);
-    let raw_size = cone.len() as f64;
-    let raw_mass: f64 = cone.iter().map(|&x| muv(x)).sum();
-    let purity = cone_purity(raw_mass, raw_size);
+    // Purity — the IN-DOMAIN-FRAME read (spec): the fraction of P's reachable cone that stays
+    // in-domain, |gated_desc(P)| / |desc(P)|. The gated cone is the same frame as n_eff (path-gated),
+    // so a leak conduit reads low and a coherent hub high — unlike the raw-cone average-μ
+    // (`cone_purity`), which is diluted by cone *size* (#3306's mislabel of Subfields/Energy).
+    let raw_size = raw_cone_set(p, &children).len() as f64;                       // |desc(P)|
+    let gated_size = path_gated_cone(p, &children, mu, threshold).len() as f64;   // |gated_desc(P)|
+    let purity = if raw_size > 0.0 { gated_size / raw_size } else { 0.0 };
 
     let (diversity, n_eff) = fanout_diversity(p, parents, mu, threshold).unwrap_or((0.0, 0.0));
     let phi_min = params.phi_min.max(2); // a branch point needs ≥ 2 children by definition
@@ -7006,7 +7019,7 @@ mod tests {
         let th = 0.3;
 
         // BRIDGE: 3 in-domain children, each with its own in-domain private subtree (distinct +
-        // in-domain). high n_eff (=3), high purity (=1).
+        // in-domain). high n_eff (=3), in-domain fraction = 1 (whole cone in-domain ⇒ purity=1).
         let mut bridge: HashMap<u32, Vec<u32>> = HashMap::new();
         bridge.insert(1, vec![0]); bridge.insert(2, vec![0]); bridge.insert(3, vec![0]);
         bridge.insert(11, vec![1]); bridge.insert(12, vec![1]);
@@ -7020,8 +7033,8 @@ mod tests {
         assert!(sb.n_eff > 2.9 && sb.purity > 0.95, "{sb:?}");
 
         // LEAK CONDUIT: 3 in-domain children, each over a big OUT-of-domain (μ=0) subtree. The gated
-        // universe stops at the children (E_i = singletons ⇒ n_eff = 3), but the raw cone is mostly
-        // out-of-domain ⇒ low purity.
+        // universe stops at the children (E_i = singletons ⇒ n_eff = 3); the gated cone is {0,1,2,3}
+        // while the raw cone reaches the 60 out-of-domain nodes ⇒ in-domain fraction 4/64 ≈ 0.06, low.
         let mut leak: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut mu_l: HashMap<u32, f64> = HashMap::new();
         mu_l.insert(0, 1.0);
@@ -7034,7 +7047,7 @@ mod tests {
         assert_eq!(sl.class, BridgeClass::LeakConduit, "distinct out-of-domain branches ⇒ LeakConduit: {sl:?}");
         assert_eq!(sl.fan_out, 3);
         assert!(sl.n_eff > 2.9, "children are distinct in U_P ⇒ high n_eff: {sl:?}");
-        assert!(sl.purity < 0.5, "raw cone mostly out-of-domain ⇒ low purity: {sl:?}");
+        assert!(sl.purity < 0.5, "in-domain fraction low (cone reaches out-of-domain junk): {sl:?}");
 
         // REDUNDANT HUB: 3 in-domain children all pointing at one shared in-domain subtree. The
         // branches reconverge ⇒ low n_eff ⇒ RedundantHub (purity stays high, but n_eff decides first).
@@ -7047,7 +7060,7 @@ mod tests {
         let sh = bridge_classify(0, &hub, &mu_h, th, &params);
         assert_eq!(sh.class, BridgeClass::RedundantHub, "overlapping branches ⇒ RedundantHub: {sh:?}");
         assert!(sh.n_eff < 1.8, "reconverging branches ⇒ low n_eff: {sh:?}");
-        assert!(sh.purity > 0.95, "shared subtree is in-domain ⇒ high purity (but n_eff decides): {sh:?}");
+        assert!(sh.purity > 0.95, "whole cone in-domain ⇒ in-domain fraction ≈ 1 (but n_eff decides): {sh:?}");
 
         // NOT A CANDIDATE: a single-child node fails φ_min.
         let mut one: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -7179,17 +7192,22 @@ mod tests {
         assert!(sketched.0 <= 1.0 + 1e-9, "diversity clamped ≤ 1: {}", sketched.0);
     }
 
-    // ── Fan-out bridge detector — increment 5: real-data validation (gated) ──
+    // ── Fan-out bridge detector — increment 5 + purity refinement (#3307): real-data validation (gated) ──
 
-    // Run the bridge detector on the REAL (raw, cyclic) Wikipedia physics graph with the LLM μ
-    // fixture and confirm the qualitative predictions of the measurement-doc addendum: the documented
-    // leak conduits (Matter, Time, Astronomical_objects — high n_eff, LOW raw-cone purity) are NOT
-    // bridges, the clean in-domain hubs (Thermodynamics, Mechanics, Subfields_of_physics) score
-    // higher purity, and X_by_nationality-style fan-outs are redundant hubs. The exact path is
-    // cycle-safe (BFS `seen` dedup), so no SCC condensation is needed. Gated on UW_CATEGORY_TSV +
-    // UW_FUZZY_NODES (skips in CI). NOTE: raw-cone purity is uniformly low on the associative graph
-    // (every cone leaks), so τ_pure is tuned to the real-data scale (0.05) — see the addendum; the
-    // gated-cone purity is the sharper discriminator and is flagged there as a refinement.
+    // Run the detector on the REAL (raw, cyclic) Wikipedia physics graph with the LLM μ fixture and
+    // ASSERT the CORRECTED labels the in-domain-frame purity (`|gated_desc|/|desc|`) now produces.
+    // #3306 classified on raw-cone purity, which mislabeled the genuine in-domain hubs
+    // Subfields_of_physics and Energy as LeakConduit (a big raw cone dilutes the average regardless of
+    // coherence). The in-domain fraction fixes it: the giant-cone leak conduit Matter reads low, the
+    // hubs read an order of magnitude higher. The exact path is cycle-safe (BFS `seen` dedup), so no
+    // SCC condensation is needed. Gated on UW_CATEGORY_TSV + UW_FUZZY_NODES (skips in CI).
+    //
+    // Measured in-domain fractions (10k graph, θ=0.3): Subfields_of_physics 0.0184, Energy 0.0172,
+    // Electromagnetism 0.0103 vs leak conduits Matter 0.0023, Physical_objects 0.0015 — so τ_pure is
+    // tuned to that scale (0.01). (The fraction is small even for hubs because the associative graph's
+    // raw cones reach the whole encyclopedia; the *ratio* of in-domain frontier to raw cone is what
+    // separates a hub from a leak. Variant comparison — fraction vs gated average-μ — is in the
+    // measurement-doc addendum; the fraction is the cleaner separator.)
     #[test]
     fn wikipedia_bridge_detector_classifies_apexes() {
         let tsv = match std::env::var("UW_CATEGORY_TSV") {
@@ -7221,45 +7239,51 @@ mod tests {
         eprintln!("bridge: {} nodes, {} scored", names.len(), mu.len());
 
         let th = 0.3;
-        // τ_pure tuned to the real-data scale: clean hubs ~0.1 raw purity, leak conduits ~0.005.
-        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.05 };
+        // τ_pure on the in-domain *fraction*, tuned to the associative-graph scale (hubs ~0.018, leak
+        // conduits ~0.002): 0.01 sits cleanly between them.
+        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.01 };
         let id = |s: &str| ids.get(s).copied();
-        let report = |label: &str, n: u32| -> BridgeScore {
-            let s = bridge_classify(n, &parents, &mu, th, &params);
-            eprintln!("  {:<26} n_eff={:>6.2} purity={:>8.5} fan_out={:>3} {:?}",
-                label, s.n_eff, s.purity, s.fan_out, s.class);
-            s
-        };
+        let cls = |s: &str| -> Option<BridgeScore> { id(s).map(|n| bridge_classify(n, &parents, &mu, th, &params)) };
+        let report = |label: &str| { if let Some(s) = cls(label) {
+            eprintln!("  {:<24} n_eff={:>5.2} purity(in-dom frac)={:>7.4} fan={:>2} {:?}",
+                label, s.n_eff, s.purity, s.fan_out, s.class); } };
         eprintln!("bridge: documented leak conduits —");
-        let leaks: Vec<BridgeScore> = ["Matter", "Time", "Astronomical_objects"]
-            .iter().filter_map(|&nm| id(nm).map(|n| report(nm, n))).collect();
-        eprintln!("bridge: clean in-domain hubs —");
-        let hubs: Vec<BridgeScore> = ["Thermodynamics", "Mechanics", "Subfields_of_physics", "Energy"]
-            .iter().filter_map(|&nm| id(nm).map(|n| report(nm, n))).collect();
+        for nm in ["Matter", "Physical_objects", "Time", "Astronomical_objects"] { report(nm); }
+        eprintln!("bridge: genuine in-domain hubs —");
+        for nm in ["Subfields_of_physics", "Energy", "Electromagnetism", "Mechanics"] { report(nm); }
 
-        // PREDICTION 1 (robust from the addendum's exact-mass table): a documented leak conduit has
-        // strictly lower raw-cone purity than a clean in-domain hub. Compare Matter vs Thermodynamics
-        // when both are present.
-        if let (Some(m), Some(t)) = (id("Matter"), id("Thermodynamics")) {
-            let (pm, pt) = (bridge_classify(m, &parents, &mu, th, &params).purity,
-                            bridge_classify(t, &parents, &mu, th, &params).purity);
-            assert!(pm < pt, "leak conduit Matter purity {pm} < clean hub Thermodynamics purity {pt}");
+        // CORRECTED LABELS (the point of #3307). Raw-cone purity put Subfields_of_physics (0.019) and
+        // Energy (0.014) in LeakConduit; the in-domain frame lifts them to their true Bridge quadrant,
+        // while the giant-cone leak conduit Matter stays a LeakConduit.
+        if let Some(s) = cls("Subfields_of_physics") {
+            assert_eq!(s.class, BridgeClass::Bridge, "Subfields_of_physics ⇒ Bridge (was mislabeled LeakConduit): {s:?}");
         }
-        // PREDICTION 2: a documented leak conduit that IS a candidate is classified LeakConduit
-        // (high n_eff, low purity), never Bridge.
-        for s in &leaks {
-            if s.class != BridgeClass::NotCandidate {
-                assert_ne!(s.class, BridgeClass::Bridge, "a leak conduit must not be a Bridge: {s:?}");
-            }
+        if let Some(s) = cls("Energy") {
+            assert_eq!(s.class, BridgeClass::Bridge, "Energy ⇒ Bridge (was mislabeled LeakConduit): {s:?}");
         }
-        // PREDICTION 3: the clean hubs out-purity the leak conduits on average (the leak/clean split).
-        let mean = |v: &[BridgeScore]| if v.is_empty() { f64::NAN }
-            else { v.iter().map(|s| s.purity).sum::<f64>() / v.len() as f64 };
-        let (ml, mh) = (mean(&leaks), mean(&hubs));
-        if ml.is_finite() && mh.is_finite() {
-            eprintln!("bridge: mean purity  leak-conduits={:.5}  clean-hubs={:.5}", ml, mh);
-            assert!(mh > ml, "clean hubs out-purify leak conduits ({mh} > {ml})");
+        if let Some(s) = cls("Matter") {
+            assert_eq!(s.class, BridgeClass::LeakConduit, "Matter ⇒ LeakConduit (giant cone, tiny in-domain frontier): {s:?}");
         }
+        // The in-domain fraction now ORDERS a hub above the leak conduit (the raw read did not — it put
+        // Subfields 0.019 below Thermodynamics but mislabeled it all the same).
+        if let (Some(m), Some(e)) = (cls("Matter"), cls("Energy")) {
+            assert!(m.purity < e.purity, "leak conduit Matter purity {} < hub Energy purity {}", m.purity, e.purity);
+        }
+
+        // REDUNDANT HUB — asserted on a grounded synthetic reconverging fan-out, because the physics
+        // fixture contains no in-domain redundant hub: the X_by_country apexes (Physicists_by_nationality
+        // etc.) are out-of-domain (μ=0 ⇒ NotCandidate), and — correcting #3306's framing — a by-country
+        // fan-out is *diverse* (disjoint per-country cones ⇒ high n_eff), not redundant. A true
+        // RedundantHub needs *overlapping* child cones: 3 in-domain children all funnelling into one
+        // shared in-domain subtree ⇒ low n_eff.
+        let mut hub: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu_h: HashMap<u32, f64> = HashMap::new();
+        mu_h.insert(0, 1.0);
+        for c in 1u32..=3 { hub.insert(c, vec![0]); mu_h.insert(c, 1.0); }
+        hub.insert(100, vec![1, 2, 3]); mu_h.insert(100, 1.0); // shared under all three children
+        for d in 101u32..=200 { hub.insert(d, vec![100]); mu_h.insert(d, 1.0); }
+        let sh = bridge_classify(0, &hub, &mu_h, th, &params);
+        assert_eq!(sh.class, BridgeClass::RedundantHub, "reconverging fan-out ⇒ RedundantHub: {sh:?}");
 
         // The full ranking exists and is finite; report the top bridges by n_eff·purity.
         let ranked = rank_bridges(&parents, &mu, th, &params);
