@@ -25,6 +25,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 | control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
+| gated similarity correctness | ✅ **node-gated IC** (#3296) — `gated_ic_node_filtered` de-saturates Lin/Resnik/FaITH (path-gated 96.7% → **0.1%**); theory in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §5f, proof `node_gated_ic.py`. Directional model's Lin-agreement is validated on this (#3297). |
 
 ### Progress — ML-environment port (folded in from #3283)
 
