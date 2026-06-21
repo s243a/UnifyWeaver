@@ -1077,7 +1077,54 @@ on the cones, `I(E_u ∩ E_v) / I(E_u ∪ E_v)`, for which the carry-weight KMV 
 (`sketch_mu_overlap` / `sketch_mu_overlap_lift`). It measures shared *descendants* (instances) rather than
 a shared *ancestor* (generality) — the right tool for comparing broad internal categories by content,
 degenerate for leaves with empty cones. We land path-1 now (a small additive change; the measures are
-already generic over IC) and leave path-2 for the first consumer that wants content-overlap.
+already generic over IC) and leave path-2 for the first consumer that wants content-overlap — its gate
+choice is worked out in §5g.
+
+### 5g. Parent-relative overlap — the fan-out / bridge diagnostic (deferred, path-2)
+
+Path-2's first intended consumer is the **fan-out bridge detector**: given a candidate bridge node `P`,
+do its child branches carve out *distinct* sub-regions (a genuine fan-out across sub-domains) or
+*overlapping* ones (redundant branches)? That question fixes how to gate — and, crucially, it is **not**
+§5f's monotonicity repair.
+
+**Gate relative to the parent, not the children.** Jaccard/Dice compare two sets, and the comparison is
+only well-posed inside a **common universe**. For the bridge question that universe is `P`'s own evidence
+— what `P` is responsible for organizing — so gate by `P`, not by each child's private gate:
+
+```
+U_P      = gated_cone(P)                          # P's PATH-gated cone — the local admissible universe
+E_u^P    = desc(u) ∩ U_P                           # child u's contribution within P's frame (low-μ child ⇒ ∅)
+J_P(u,v) = μ(E_u^P ∩ E_v^P) / μ(E_u^P ∪ E_v^P)     # or Dice: 2·μ(∩) / (μ(E_u^P)+μ(E_v^P))
+```
+
+The superscript `P` is the whole point: the overlap is measured *inside the parent's frame of reference*.
+Contrast §5f, where the gate logic ran the other way — child gates forcing closure *upward* to keep
+`IC(MICA) ≤ IC(child)`. Here there is no MICA and no IC ratio, so monotonicity is irrelevant; the only
+requirement is a shared universe, which `U_P` supplies. (Use `P`'s path-gated cone for `U_P` — the
+membership frontier is the natural reading of "the evidence `P` organizes.")
+
+**Reading it.** `J_P(u,v) ≈ 0` ⇒ inside `P`, the branches of `u` and `v` are distinct (`P` fans out into
+different regions); `J_P(u,v) ≈ 1` ⇒ they reconverge (`P`'s children are redundant). Aggregate the
+pairwise `J_P` over `P`'s children (e.g. mean) for a single **fan-out score** per candidate `P` — low mean
+= clean fan-out / strong bridge.
+
+**Reuses the existing sketches.** `μ(E_u^P ∩ E_v^P)` is exactly the carry-weight KMV overlap
+(`sketch_mu_overlap`) restricted to `U_P`. For *ranking* bridges across different parents — whose universes
+differ in size — don't compare raw Jaccards; use the configuration-model **lift**
+(`sketch_mu_overlap_lift`, shared mass against the `m_u·m_v/|U_P|` null), the same normalization the
+fan-in hub work already uses. Plain Jaccard for `P`-local branch diversity; lift for a global ranking.
+
+**Two cautions.**
+- *Tree-triviality.* In a pure tree, siblings have disjoint subtrees, so `J_P ≡ 0` and *every* node looks
+  like a perfect fan-out. The measure only discriminates on a **DAG**, where it detects branch
+  *reconvergence* (shared descendants) — exactly the regime Wikipedia categories live in.
+- *Fan-out ≠ meaningful bridge.* Low overlap says `P` fans into structurally-distinct regions, but a
+  generic apex (`Main_topic_classifications`) also fans into distinct — *unrelated* — regions. Telling a
+  real conceptual bridge from a leak conduit needs the membership signal: a bridge fans into **in-domain**
+  (high-μ) branches, a leak conduit into low-μ junk (the leak-conduit structure of the real-data doc's
+  cone-purity addendum). Pair the fan-out score with μ; don't read it alone.
+
+Deferred until the bridge detector is built; documented here so its gate choice is settled.
 
 ## 6. Aside: the kernel-trick analogy
 
