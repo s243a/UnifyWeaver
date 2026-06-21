@@ -299,9 +299,13 @@ BORDER_PROBE = ["Atoms", "Electronics", "Measurement", "Materials", "Energy"]
 
 
 def discrimination_probe(model, tok, idx):
-    """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) should be the ARGMAX
-    over all DOMAIN_ROOTS {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator).
-    Reports the per-domain accuracy and the full confusion (true domain × argmax root)."""
+    """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) over all DOMAIN_ROOTS
+    {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator). Reports BOTH metrics:
+      * hard ARGMAX accuracy + confusion (is the true root strictly the top-1?) — brittle for a node that
+        is genuinely high-μ to several roots (multi-membership), and
+      * a RANKING/MARGIN view (#3314 finding): the true root's RANK among the 5, the signed margin
+        μ(true) − max-other (>0 ⇔ argmax-correct), and top-1 / top-2 rates. If ranking is strong even
+        where argmax flips, the "brittleness" is largely a metric artifact (correct multi-membership)."""
     roots = [r for r in DOMAIN_ROOTS if r in idx]
     if len(roots) < 2:
         print("[DISCRIM] <2 domain roots in graph — skipped")
@@ -309,6 +313,7 @@ def discrimination_probe(model, tok, idx):
     ab = {r: r[:4] for r in roots}
     print(f"\n[DISCRIM] {len(roots)}-domain (argmax μ over {', '.join(roots)}):")
     confusion = {d: {r: 0 for r in roots} for d in roots}
+    rankrows = {d: [] for d in roots}            # per-domain list of (rank, signed_margin)
     correct = total = 0
     for dom in roots:
         nodes = [n for n in DOMAIN_PROBE[dom] if n in idx]
@@ -320,8 +325,12 @@ def discrimination_probe(model, tok, idx):
             ok = pred == dom
             correct += ok
             total += 1
+            rank = 1 + sum(1 for r in roots if r != dom and vals[r] > vals[dom])
+            best_other = max(vals[r] for r in roots if r != dom)
+            rankrows[dom].append((rank, vals[dom] - best_other))
             scores = "  ".join(f"{ab[r]}={vals[r]:.2f}" for r in roots)
-            print(f"    [{ab[dom]}] {n:22} {scores}  →{ab[pred]} {'✓' if ok else '✗'}")
+            print(f"    [{ab[dom]}] {n:22} {scores}  →{ab[pred]} {'✓' if ok else '✗'}  "
+                  f"rank{rank} m{vals[dom]-best_other:+.2f}")
     # borderline (no ground truth — just show the argmax)
     bnodes = [n for n in BORDER_PROBE if n in idx]
     if bnodes:
@@ -334,8 +343,23 @@ def discrimination_probe(model, tok, idx):
     print("            " + "".join(f"{ab[r]:>7}" for r in roots))
     for d in roots:
         print(f"    {ab[d]:>7} " + "".join(f"{confusion[d][r]:>7}" for r in roots))
-    print(f"  multi-domain discrimination accuracy: {correct}/{total} "
+    print(f"  multi-domain discrimination accuracy (hard argmax): {correct}/{total} "
           f"({100*correct/max(total,1):.0f}%)")
+    # --- ranking / margin view (the #3314 honest re-measure) ---
+    print("  ranking/margin (true-root rank among the 5; signed margin μ(true)−max-other; top-1/top-2):")
+    print(f"    {'domain':>7}  {'meanRank':>8}  {'meanMargin':>10}  {'top1':>5}  {'top2':>5}")
+    allr = []
+    for d in roots:
+        rs = rankrows[d]
+        allr += rs
+        mr = sum(x[0] for x in rs) / max(len(rs), 1)
+        mm = sum(x[1] for x in rs) / max(len(rs), 1)
+        t1 = sum(1 for x in rs if x[0] == 1) / max(len(rs), 1)
+        t2 = sum(1 for x in rs if x[0] <= 2) / max(len(rs), 1)
+        print(f"    {ab[d]:>7}  {mr:>8.2f}  {mm:>+10.2f}  {100*t1:>4.0f}%  {100*t2:>4.0f}%")
+    mr = sum(x[0] for x in allr) / max(len(allr), 1)
+    t2 = sum(1 for x in allr if x[0] <= 2) / max(len(allr), 1)
+    print(f"    {'ALL':>7}  {mr:>8.2f}  {'':>10}  {100*correct/max(total,1):>4.0f}%  {100*t2:>4.0f}%")
 
 
 def provenance_probe(model, tok, idx):
