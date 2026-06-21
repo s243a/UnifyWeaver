@@ -1,22 +1,20 @@
-# SAMPLE of the more-data MuAttention SYM dense map μ(X|Physics) (regenerate full with
-# train_mu_attention.py --pairs mu_pairs_scored_large.tsv). name<TAB>μ. Physics ~0.5-0.9, non-physics ~0.
-Energy	0.8712
-Classical_mechanics	0.8465
-Physical_phenomena	0.8195
-Atoms	0.8169
-Electromagnetic_radiation	0.8142
-Motion_(physics)	0.8091
-Differential_equations	0.8075
-Matter	0.7936
-Solar_System	0.7864
-Physicists	0.7851
-Optics	0.7649
-Thermodynamics	0.7667
-Acoustics	0.3183
-Mechanics	0.7523
-Light	0.4955
-Music	0.0208
-Cooking	0.0029
-Sociology	0.0033
-Football	0.0006
-Fashion	0.0565
+# SAMPLE of the multi-domain MuAttention SYM dense map μ(X|Physics) (regenerate with
+# train_mu_attention.py --pairs mu_pairs_scored_multidomain.tsv). name<TAB>μ.
+Subfields_of_physics	0.9479
+Physics	0.9285
+Electromagnetism	0.9235
+Energy	0.9139
+Electromagnetic_radiation	0.9126
+Thermodynamics	0.9116
+Classical_mechanics	0.9077
+Motion_(physics)	0.9068
+Engineering_disciplines	0.8949
+Engineering	0.8929
+Optics	0.8753
+Periodic_table	0.8842
+Acids	0.5730
+Chemistry	0.8685
+Music	0.1891
+Cooking	0.0632
+Sociology	0.3390
+Football	0.0579
