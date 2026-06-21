@@ -2459,6 +2459,19 @@ pub enum BridgeClass {
     NotCandidate,
 }
 
+/// **The canonical `BridgeClass` → Prolog-atom name.** The foreign predicate `category_bridge_score/2`
+/// (and `bridge/3`) exposes the class to Prolog as one of these lowercase atoms; the dispatch arm in
+/// `execute_foreign_predicate` packs `Value::Atom(bridge_class_atom(score.class))`. Kept here (next to
+/// the enum) so the wire name is defined once and the Rust side and the transpiler agree.
+pub fn bridge_class_atom(class: BridgeClass) -> &'static str {
+    match class {
+        BridgeClass::Bridge => "bridge",
+        BridgeClass::LeakConduit => "leak_conduit",
+        BridgeClass::RedundantHub => "redundant_hub",
+        BridgeClass::NotCandidate => "not_candidate",
+    }
+}
+
 /// Classification thresholds for `bridge_classify` / `rank_bridges`. The continuous `(n_eff, purity)`
 /// is the real read for ranking; these cut it into the convenience labels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2683,6 +2696,115 @@ pub fn rank_bridges(
         kb.partial_cmp(&ka).unwrap_or(Ordering::Equal).then(a.0.cmp(&b.0))
     });
     out
+}
+
+/// Cluster id (dense, 0-based) assigned by `cluster_by_bridges`.
+pub type ClusterId = u32;
+
+/// **Bridge-informed clustering** (WAM_RUST_BRIDGE_CLUSTERING.md increment 2). The bridge classifier's
+/// three classes ARE partition decisions:
+/// - **LeakConduit** = inter-cluster *glue* (connects genuinely unrelated regions) → **cut** the node
+///   and its edges; the graph falls into its real clusters.
+/// - **RedundantHub** = intra-cluster (children reconverge) → kept whole (no cut, no split).
+/// - **Bridge** = intra-cluster *organizer* (distinct in-domain sub-branches) → a **sub-cluster
+///   boundary**: split per child-branch.
+///
+/// Two stages, exact (cycle-safe — all BFS dedup on a `seen`/`claimed` set):
+/// 1. **Top-level clusters** = weakly-connected components of the graph with every `LeakConduit` node
+///    (and its incident edges) removed — a BFS over the undirected non-leak adjacency. Each leak node
+///    becomes its own singleton cluster (the cut point still gets an id), so every node is covered.
+/// 2. **Bridge split (one level, v1)** = within those components, each `Bridge` node's child-branches
+///    become distinct sub-clusters: bridges are processed by `n_eff` **descending** (the strongest
+///    organizer wins ties), and each in-graph child of the bridge seeds a downward BFS (over child
+///    edges, staying in the bridge's component, skipping leak nodes and nodes a higher-`n_eff` bridge
+///    already claimed) whose reach is one fresh sub-cluster. The bridge node itself stays in its
+///    component (it is the boundary). A bridge with `< 2` splittable children is left whole. Recursing
+///    to full depth is future work; v1 is the flat top level plus one bridge-split level — the
+///    structural twin of a high-`n_eff` (high-`H`) split in the `J = D/(1+H)` hierarchy objective.
+///
+/// Returns every node's `ClusterId`. `bridge_scores` is the merged detector output (`rank_bridges`);
+/// additive — reuses it and adds no new detector math. `parents` is `child → [parents]`.
+pub fn cluster_by_bridges(
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    bridge_scores: &std::collections::HashMap<u32, BridgeScore>,
+) -> std::collections::HashMap<u32, ClusterId> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let is_leak = |n: u32| matches!(
+        bridge_scores.get(&n).map(|s| s.class), Some(BridgeClass::LeakConduit));
+    // Node set + children map (parents inverted).
+    let mut nodes: HashSet<u32> = HashSet::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        nodes.insert(c);
+        for &p in ps { nodes.insert(p); children.entry(p).or_default().push(c); }
+    }
+    // Undirected adjacency over non-leak edges (leak nodes + their incident edges removed).
+    let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        if is_leak(c) { continue; }
+        for &p in ps {
+            if is_leak(p) { continue; }
+            adj.entry(c).or_default().push(p);
+            adj.entry(p).or_default().push(c);
+        }
+    }
+    // Stage 1: weakly-connected components (deterministic node order ⇒ stable ids).
+    let mut cluster: HashMap<u32, ClusterId> = HashMap::new();
+    let mut next_id: ClusterId = 0;
+    let mut sorted: Vec<u32> = nodes.iter().copied().collect();
+    sorted.sort_unstable();
+    for &start in &sorted {
+        if cluster.contains_key(&start) { continue; }
+        let cid = next_id; next_id += 1;
+        cluster.insert(start, cid);
+        if is_leak(start) { continue; } // leak conduit = its own singleton cut point
+        let mut q: VecDeque<u32> = VecDeque::new();
+        q.push_back(start);
+        while let Some(x) = q.pop_front() {
+            if let Some(ns) = adj.get(&x) {
+                for &y in ns {
+                    if !cluster.contains_key(&y) { cluster.insert(y, cid); q.push_back(y); }
+                }
+            }
+        }
+    }
+    // Stage 2: bridge split (one level) — strongest bridge first.
+    let mut bridges: Vec<(u32, f64)> = bridge_scores.iter()
+        .filter(|(_, s)| matches!(s.class, BridgeClass::Bridge))
+        .map(|(&n, s)| (n, s.n_eff))
+        .collect();
+    bridges.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    let mut claimed: HashSet<u32> = HashSet::new(); // nodes a higher-n_eff bridge already split off
+    for (b, _neff) in bridges {
+        let base = match cluster.get(&b) { Some(&c) => c, None => continue };
+        let cs = match children.get(&b) { Some(cs) => cs, None => continue };
+        // distinct, non-leak children — the branches to split into sub-clusters.
+        let mut seen_c: HashSet<u32> = HashSet::new();
+        let mut child_list: Vec<u32> = cs.iter().copied()
+            .filter(|&c| !is_leak(c) && seen_c.insert(c)).collect();
+        if child_list.len() < 2 { continue; } // not a splittable fan-out
+        child_list.sort_unstable(); // deterministic sub-cluster numbering
+        for c in child_list {
+            if claimed.contains(&c) || cluster.get(&c) != Some(&base) { continue; }
+            let cid = next_id; next_id += 1;
+            let mut assigned = 0usize;
+            let mut q: VecDeque<u32> = VecDeque::new();
+            q.push_back(c);
+            while let Some(x) = q.pop_front() {
+                // stay inside b's component; never reassign b, a leak, or an already-claimed node.
+                if x == b || is_leak(x) || cluster.get(&x) != Some(&base) || !claimed.insert(x) {
+                    continue;
+                }
+                cluster.insert(x, cid);
+                assigned += 1;
+                if let Some(gch) = children.get(&x) {
+                    for &g in gch { if !claimed.contains(&g) { q.push_back(g); } }
+                }
+            }
+            if assigned == 0 { next_id -= 1; } // child already claimed ⇒ no fresh id used
+        }
+    }
+    cluster
 }
 
 /// **μ-mass of a cone sketch restricted to a node subset** (the subset read behind the *sketched*
@@ -7464,5 +7586,231 @@ mod tests {
         assert_eq!(sh.class, BridgeClass::RedundantHub, "reconverging fan-out ⇒ RedundantHub: {sh:?}");
 
         assert!(ranked.iter().all(|(_, s)| s.n_eff.is_finite() && s.purity.is_finite()), "all scores finite");
+    }
+
+    // ── Bridge detector as a FOREIGN PREDICATE: the class→atom wire the Prolog side reads (#3317) ──
+
+    // The foreign predicate `category_bridge_score(Node, Class)` returns `bridge_class_atom(class)` as a
+    // Prolog atom. This is the cargo-testable proxy for the gated Prolog program in
+    // tests/test_wam_rust_bridge_foreign_dispatch.pl (which needs swipl+cargo to run the full
+    // transpile): it drives the SAME path the dispatch arm uses — rank_bridges (auto-τ_pure) → look up a
+    // node's BridgeScore → bridge_class_atom — directly on the 10k fixture and asserts the atom strings a
+    // Prolog author sees. Subfields_of_physics ⇒ 'bridge', Matter ⇒ 'leak_conduit'. Gated on
+    // UW_CATEGORY_TSV + UW_FUZZY_NODES (skips in CI).
+    #[test]
+    fn wikipedia_bridge_foreign_predicate_atoms() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge-atom: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge-atom: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mu: HashMap<u32, f64> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| { let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(m)) => ids.get(n.trim()).map(|&id| (id, m)),
+                    _ => None,
+                }
+            }).collect();
+
+        // Same call the WamState foreign-predicate path makes: rank_bridges (auto τ_pure) → per-node
+        // BridgeScore map → class atom. (The live path caches this as `bridge_scores`.)
+        let params = BridgeParams::default(); // φ_min=2, τ_div=1.5, τ_pure=None (self-calibrating)
+        let scores: HashMap<u32, BridgeScore> =
+            rank_bridges(&parents, &mu, 0.3, &params).into_iter().collect();
+        let class_atom = |nm: &str| ids.get(nm)
+            .and_then(|n| scores.get(n))
+            .map(|s| bridge_class_atom(s.class));
+
+        assert_eq!(class_atom("Subfields_of_physics"), Some("bridge"),
+            "category_bridge_score(Subfields_of_physics, Class) ⇒ Class = bridge");
+        assert_eq!(class_atom("Matter"), Some("leak_conduit"),
+            "category_bridge_score(Matter, Class) ⇒ Class = leak_conduit");
+        eprintln!("bridge-atom: Subfields_of_physics ⇒ {:?}, Matter ⇒ {:?}",
+            class_atom("Subfields_of_physics"), class_atom("Matter"));
+    }
+
+    // The class→atom wire names are stable and total (every BridgeClass maps to a distinct lowercase
+    // atom the Prolog side matches on).
+    #[test]
+    fn bridge_class_atom_wire_names() {
+        assert_eq!(bridge_class_atom(BridgeClass::Bridge), "bridge");
+        assert_eq!(bridge_class_atom(BridgeClass::LeakConduit), "leak_conduit");
+        assert_eq!(bridge_class_atom(BridgeClass::RedundantHub), "redundant_hub");
+        assert_eq!(bridge_class_atom(BridgeClass::NotCandidate), "not_candidate");
+    }
+
+    // ── Bridge-informed clustering (increment 2): cluster_by_bridges ──
+
+    // Hand-craft a BridgeScore with a given class (the other fields don't affect clustering except
+    // n_eff for split ordering).
+    fn bscore(class: BridgeClass, n_eff: f64) -> BridgeScore {
+        BridgeScore { n_eff, diversity: 1.0, purity: 1.0, fan_out: 2, class }
+    }
+
+    // LEAK REMOVAL separates clusters: two domains D1={1,2,3} and D2={4,5,6} joined ONLY through a
+    // leak conduit L=0 (1->0, 4->0). Cutting L splits the graph into the two domains; L is its own
+    // singleton.
+    #[test]
+    fn cluster_by_bridges_leak_removal_separates_domains() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![1]); g.insert(3, vec![1]); // D1 under root 1, 1->L
+        g.insert(4, vec![0]); g.insert(5, vec![4]); g.insert(6, vec![4]); // D2 under root 4, 4->L
+        let mut bs: HashMap<u32, BridgeScore> = HashMap::new();
+        bs.insert(0, bscore(BridgeClass::LeakConduit, 2.0)); // L = the glue
+        let cl = cluster_by_bridges(&g, &bs);
+        // D1 nodes share a cluster, D2 nodes share a different one.
+        assert_eq!(cl[&1], cl[&2]); assert_eq!(cl[&1], cl[&3]);
+        assert_eq!(cl[&4], cl[&5]); assert_eq!(cl[&4], cl[&6]);
+        assert_ne!(cl[&1], cl[&4], "removing the leak conduit disconnects D1 from D2");
+        // The leak conduit is its own singleton cut point.
+        assert_ne!(cl[&0], cl[&1]); assert_ne!(cl[&0], cl[&4]);
+        let n_clusters = cl.values().copied().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(n_clusters, 3, "D1, D2, and the leak singleton = 3 clusters; got {n_clusters}");
+    }
+
+    // BRIDGE SPLIT: one in-domain component organized by a Bridge B=10 whose two child branches
+    // (11->111, 12->122) become distinct sub-clusters; B and its ancestor stay in the base cluster.
+    #[test]
+    fn cluster_by_bridges_bridge_splits_into_subclusters() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(10, vec![1]);                  // bridge B=10 under top=1
+        g.insert(11, vec![10]); g.insert(12, vec![10]); // two child branches
+        g.insert(111, vec![11]); g.insert(122, vec![12]);
+        let mut bs: HashMap<u32, BridgeScore> = HashMap::new();
+        bs.insert(10, bscore(BridgeClass::Bridge, 2.0));
+        let cl = cluster_by_bridges(&g, &bs);
+        // each child branch is one sub-cluster
+        assert_eq!(cl[&11], cl[&111], "branch 1 = {{11,111}}");
+        assert_eq!(cl[&12], cl[&122], "branch 2 = {{12,122}}");
+        assert_ne!(cl[&11], cl[&12], "the bridge splits its two child branches apart");
+        // the bridge node and its ancestor are the boundary — they stay in the base cluster.
+        assert_eq!(cl[&10], cl[&1], "bridge + ancestor stay in the base cluster");
+        assert_ne!(cl[&11], cl[&10], "a child branch is split OFF the bridge's base cluster");
+    }
+
+    // No leaks, no bridges ⇒ one whole cluster (a redundant hub region is kept intact). Also checks
+    // every node is covered.
+    #[test]
+    fn cluster_by_bridges_keeps_unmarked_graph_whole() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![1]); g.insert(4, vec![2]);
+        let mut bs: HashMap<u32, BridgeScore> = HashMap::new();
+        bs.insert(0, bscore(BridgeClass::RedundantHub, 1.0)); // hub kept whole
+        let cl = cluster_by_bridges(&g, &bs);
+        let ids: std::collections::HashSet<u32> = cl.values().copied().collect();
+        assert_eq!(ids.len(), 1, "no leak, no bridge ⇒ one cluster");
+        for n in [0u32, 1, 2, 3, 4] { assert!(cl.contains_key(&n), "node {n} covered"); }
+    }
+
+    // Real-data clustering on the 10k physics slice (gated on UW_CATEGORY_TSV + UW_FUZZY_NODES). HONEST
+    // about what the physics-exploded slice allows: desc(Physics) ≈ the whole graph and it is densely
+    // cross-linked, so removing just the few identified leak conduits (Matter, Physical_objects) does
+    // NOT disconnect it — the top level stays one giant component. The bridge-SPLIT hierarchy is what
+    // provides structure. This test asserts both facts and reports the cluster sizes.
+    #[test]
+    fn wikipedia_bridge_clustering_10k() {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("cluster-10k: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("cluster-10k: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mu: HashMap<u32, f64> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| { let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(m)) => ids.get(n.trim()).map(|&id| (id, m)),
+                    _ => None,
+                }
+            }).collect();
+
+        let scores: HashMap<u32, BridgeScore> =
+            rank_bridges(&parents, &mu, 0.3, &BridgeParams::default()).into_iter().collect();
+        let is_leak = |n: u32| scores.get(&n)
+            .map(|s| matches!(s.class, BridgeClass::LeakConduit)).unwrap_or(false);
+        let leaks: Vec<&str> = scores.iter()
+            .filter(|(_, s)| matches!(s.class, BridgeClass::LeakConduit))
+            .map(|(&n, _)| names[n as usize].as_str()).collect();
+        eprintln!("cluster-10k: {} candidates, leak conduits = {:?}", scores.len(), leaks);
+        // The documented leak conduits are the cut points.
+        for nm in ["Matter", "Physical_objects"] {
+            if let Some(&n) = ids.get(nm) {
+                assert!(is_leak(n), "{nm} is a leak conduit (the cut point)");
+            }
+        }
+
+        // All nodes.
+        let mut nodes: HashSet<u32> = HashSet::new();
+        for (&c, ps) in &parents { nodes.insert(c); for &p in ps { nodes.insert(p); } }
+        let total = nodes.len();
+
+        // STAGE 1 (honesty check): connected components after leak removal. On this dense slice it does
+        // NOT fall apart — the largest component is essentially the whole graph.
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (&c, ps) in &parents {
+            if is_leak(c) { continue; }
+            for &p in ps { if !is_leak(p) { adj.entry(c).or_default().push(p); adj.entry(p).or_default().push(c); } }
+        }
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut comp_sizes: Vec<usize> = Vec::new();
+        for &s in &nodes {
+            if is_leak(s) || seen.contains(&s) { continue; }
+            let mut sz = 0usize; let mut q = VecDeque::new(); q.push_back(s); seen.insert(s);
+            while let Some(x) = q.pop_front() {
+                sz += 1;
+                if let Some(ns) = adj.get(&x) { for &y in ns { if seen.insert(y) { q.push_back(y); } } }
+            }
+            comp_sizes.push(sz);
+        }
+        comp_sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let largest = comp_sizes.first().copied().unwrap_or(0);
+        eprintln!("cluster-10k: after leak removal — {} non-leak components, largest = {}/{} nodes",
+            comp_sizes.len(), largest, total);
+        // HONEST assertion: the slice stays one giant component (density limits top-level separation).
+        assert!(largest as f64 > 0.9 * total as f64,
+            "dense slice: removing the {} leak conduit(s) leaves one giant component ({largest}/{total})",
+            leaks.len());
+
+        // STAGE 2: the bridge-split is what provides structure — multiple sub-clusters carved by the
+        // strongest bridges, even though the top level is one blob.
+        let cl = cluster_by_bridges(&parents, &scores);
+        assert_eq!(cl.len(), total, "every node is assigned a cluster");
+        let mut sizes: HashMap<ClusterId, usize> = HashMap::new();
+        for (_, &c) in &cl { *sizes.entry(c).or_default() += 1; }
+        let mut sv: Vec<usize> = sizes.values().copied().collect();
+        sv.sort_unstable_by(|a, b| b.cmp(a));
+        eprintln!("cluster-10k: bridge-split ⇒ {} clusters; largest sizes = {:?}",
+            sv.len(), &sv[..sv.len().min(10)]);
+        // The bridge-split genuinely carves the giant component into sub-clusters.
+        assert!(sv.len() >= 3, "the bridge-split yields multiple clusters (got {})", sv.len());
+        assert!(sv.get(1).copied().unwrap_or(0) >= 50,
+            "a strong bridge splits off a non-trivial sub-cluster (2nd-largest = {:?})", sv.get(1));
     }
 }

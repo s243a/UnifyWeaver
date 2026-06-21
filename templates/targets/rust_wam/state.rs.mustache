@@ -551,6 +551,21 @@ pub struct WamState {
     /// `category_bridge_score` read-out then answers per-node in O(1). Empty = bridge detector off
     /// (default). Eager-edge only. See `boundary_cache::{rank_bridges, bridge_classify}`.
     pub bridge_scores: std::collections::HashMap<u32, crate::boundary_cache::BridgeScore>,
+    /// **μ membership maps** for the bridge detector, keyed by the μ fact-predicate name
+    /// (e.g. `"category_mu"`) — the analogue of `ffi_facts` for node→score facts. The bridge detector
+    /// consumes a `name→μ` map as an INPUT (the directional model, the symmetric map, or any dense
+    /// score); this is how a Prolog fact predicate `category_mu(Node, Score)` is materialised into the
+    /// `HashMap<u32, f64>` `build_bridge_scores` needs. Populated by `register_ffi_mu`; read by
+    /// `build_bridge_scores_named` / the `category_bridge_score` foreign-predicate dispatch arm.
+    pub mu_facts: std::collections::HashMap<String, std::collections::HashMap<u32, f64>>,
+    /// **Bridge-informed clustering** (WAM_RUST_BRIDGE_CLUSTERING.md increment 2): node → cluster id,
+    /// built once by `build_clusters_named` from the bridge scores via `boundary_cache::cluster_by_bridges`
+    /// (leak-removal components, then a bridge-split level). `category_cluster` reads it in O(1). Empty =
+    /// clustering off (default). Eager-edge only.
+    pub clusters: std::collections::HashMap<u32, crate::boundary_cache::ClusterId>,
+    /// Inverse of `clusters`: cluster id → its member node ids (sorted). Built alongside `clusters`;
+    /// read by `cluster_members`.
+    pub cluster_index: std::collections::HashMap<crate::boundary_cache::ClusterId, Vec<u32>>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -691,6 +706,9 @@ impl WamState {
             desc_sketch_k: 0,
             caret_landmarks: std::collections::HashMap::new(),
             bridge_scores: std::collections::HashMap::new(),
+            mu_facts: std::collections::HashMap::new(),
+            clusters: std::collections::HashMap::new(),
+            cluster_index: std::collections::HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -794,6 +812,12 @@ impl WamState {
         self.atom_intern.insert(s.to_string(), id);
         self.atom_deintern.push(s.to_string());
         id
+    }
+
+    /// Reverse of `intern_atom`: the atom name for an interned id (`None` if never interned). Used by
+    /// foreign predicates that stream node ids back to Prolog as atoms (e.g. `bridge/3`).
+    pub fn atom_name(&self, id: u32) -> Option<&str> {
+        self.atom_deintern.get(id as usize).map(|s| s.as_str())
     }
 
     /// Register a foreign predicate implementation by "name/arity".
@@ -1463,6 +1487,138 @@ impl WamState {
     /// built. The live, cache-backed entry point for `boundary_cache::bridge_classify`.
     pub fn category_bridge_score(&self, p: u32) -> Option<crate::boundary_cache::BridgeScore> {
         self.bridge_scores.get(&p).copied()
+    }
+
+    /// Register a **μ membership map** for the bridge detector from `(node_atom, score)` pairs — the
+    /// score-fact analogue of `register_ffi_fact_pairs`. Interns each node atom to its u32 id and stores
+    /// the `HashMap<u32, f64>` under `mu_pred` (the μ fact-predicate name). This is how a Prolog fact
+    /// predicate `category_mu(Node, Score)` is materialised for `build_bridge_scores_named`. A node may
+    /// appear once (last write wins); nodes absent from the map default to `μ = 0` in the detector.
+    pub fn register_ffi_mu(&mut self, mu_pred: &str, pairs: &[(&str, f64)]) {
+        let mut table: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        for (node, score) in pairs {
+            let id = self.intern_atom(node);
+            table.insert(id, *score);
+        }
+        self.mu_facts.insert(mu_pred.to_string(), table);
+    }
+
+    /// Precompute the **bridge scores from named fact predicates** — the foreign-predicate entry point.
+    /// Looks up the eager edge graph (`ffi_facts[edge_pred]`) and the μ map (`mu_facts[mu_pred]`,
+    /// registered via `register_ffi_mu`), then runs `boundary_cache::rank_bridges` and caches the
+    /// per-node `BridgeScore`. `params` carries `φ_min` / `τ_div` / `τ_pure` (`None` ⇒ self-calibrating).
+    /// Returns `false` (no-op) if either fact predicate is unregistered. The named companion to
+    /// `build_bridge_scores` (which takes the μ map by reference); kept additive so neither changes.
+    pub fn build_bridge_scores_named(
+        &mut self,
+        edge_pred: &str,
+        mu_pred: &str,
+        threshold: f64,
+        params: &crate::boundary_cache::BridgeParams,
+    ) -> bool {
+        let ranked = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            let mu = match self.mu_facts.get(mu_pred) {
+                Some(m) => m,
+                None => return false,
+            };
+            crate::boundary_cache::rank_bridges(parents, mu, threshold, params)
+        };
+        self.bridge_scores = ranked.into_iter().collect();
+        true
+    }
+
+    /// **Build-on-first-use** for the bridge scores: build from `edge_pred` / `mu_pred` / `threshold`
+    /// (self-calibrating `τ_pure`) only if the cache is empty, then report whether scores are available.
+    /// The `category_bridge_score` / `bridge` foreign-predicate dispatch arms call this so an author need
+    /// not order an explicit build step. Idempotent after the first successful build.
+    pub fn ensure_bridge_scores(&mut self, edge_pred: &str, mu_pred: &str, threshold: f64) -> bool {
+        if self.bridge_scores.is_empty() {
+            let params = crate::boundary_cache::BridgeParams::default();
+            self.build_bridge_scores_named(edge_pred, mu_pred, threshold, &params);
+        }
+        !self.bridge_scores.is_empty()
+    }
+
+    /// The cached bridge **class atom + `n_eff`** for node `p` — the read the `category_bridge_score/2`
+    /// and `bridge/3` foreign predicates pack into Prolog: `(bridge_class_atom(class), n_eff)`. `None`
+    /// if `p` is not a candidate (or the cache is unbuilt). The dispatch arm wraps the `&str` in a
+    /// `Value::Atom` and the `f64` in a `Value::Float`.
+    pub fn category_bridge_class(&self, p: u32) -> Option<(&'static str, f64)> {
+        self.bridge_scores.get(&p)
+            .map(|s| (crate::boundary_cache::bridge_class_atom(s.class), s.n_eff))
+    }
+
+    /// All cached bridge candidates as `(node, class atom, n_eff)`, sorted by `n_eff` descending (then
+    /// node id) — the enumeration the `bridge/3` foreign predicate streams. Empty until built.
+    pub fn bridge_candidates(&self) -> Vec<(u32, &'static str, f64)> {
+        let mut out: Vec<(u32, &'static str, f64)> = self.bridge_scores.iter()
+            .map(|(&n, s)| (n, crate::boundary_cache::bridge_class_atom(s.class), s.n_eff))
+            .collect();
+        out.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+        out
+    }
+
+    /// Precompute the **bridge-informed clusters** (WAM_RUST_BRIDGE_CLUSTERING.md increment 2) from named
+    /// fact predicates — the foreign-predicate entry point. Ensures the bridge scores are built (same
+    /// `edge_pred` / `mu_pred` / `threshold`), then partitions the graph via
+    /// `boundary_cache::cluster_by_bridges` (leak-removal components + a bridge-split level) and caches
+    /// both `node → cluster` and the inverse `cluster → members`. Returns `false` (no-op) if the bridge
+    /// scores cannot be built or `edge_pred` is unregistered. The clustering twin of
+    /// `build_bridge_scores_named`.
+    pub fn build_clusters_named(
+        &mut self,
+        edge_pred: &str,
+        mu_pred: &str,
+        threshold: f64,
+        params: &crate::boundary_cache::BridgeParams,
+    ) -> bool {
+        if self.bridge_scores.is_empty()
+            && !self.build_bridge_scores_named(edge_pred, mu_pred, threshold, params) {
+            return false;
+        }
+        let clusters = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::cluster_by_bridges(parents, &self.bridge_scores)
+        };
+        let mut index: std::collections::HashMap<crate::boundary_cache::ClusterId, Vec<u32>> =
+            std::collections::HashMap::new();
+        for (&n, &c) in &clusters { index.entry(c).or_default().push(n); }
+        for v in index.values_mut() { v.sort_unstable(); }
+        self.clusters = clusters;
+        self.cluster_index = index;
+        true
+    }
+
+    /// **Build-on-first-use** for the clusters: build from `edge_pred` / `mu_pred` / `threshold`
+    /// (self-calibrating `τ_pure`) only if the cache is empty, then report whether clusters are
+    /// available. The `category_cluster` / `cluster_members` dispatch arms call this so an author need
+    /// not order an explicit build step. Idempotent after the first successful build.
+    pub fn ensure_clusters(&mut self, edge_pred: &str, mu_pred: &str, threshold: f64) -> bool {
+        if self.clusters.is_empty() {
+            let params = crate::boundary_cache::BridgeParams::default();
+            self.build_clusters_named(edge_pred, mu_pred, threshold, &params);
+        }
+        !self.clusters.is_empty()
+    }
+
+    /// The cached **cluster id** for node `p` (`build_clusters_named`). `None` if `p` has no cluster (or
+    /// the cache is unbuilt). The read the `category_cluster/2` foreign predicate packs into Prolog as a
+    /// `Value::Integer`.
+    pub fn category_cluster(&self, p: u32) -> Option<crate::boundary_cache::ClusterId> {
+        self.clusters.get(&p).copied()
+    }
+
+    /// The cached **member node ids** of `cluster` (sorted), the enumeration the `cluster_members/2`
+    /// foreign predicate streams (each id resolved to its atom via `atom_name`). Empty if unknown.
+    pub fn cluster_members(&self, cluster: crate::boundary_cache::ClusterId) -> Vec<u32> {
+        self.cluster_index.get(&cluster).cloned().unwrap_or_default()
     }
 
     /// **Resnik** semantic similarity `IC(MICA(u,v))` over the eager `edge_pred` graph, using
@@ -3623,5 +3779,78 @@ mod boundary_kernel_tests {
         assert!(vm.boundary_suffix.is_empty(), "empty band -> empty side-table");
         let spl = norm(boundary_hist(&vm, seed, root, budget));
         assert_eq!(full, spl, "no-op precompute still correct (full enumeration)");
+    }
+
+    // Bridge detector foreign-predicate glue (WAM_RUST_BRIDGE_CLUSTERING.md increment 1): the μ map is
+    // loaded from a named fact predicate (register_ffi_mu), bridge scores build on first use, and
+    // category_bridge_class returns the class atom the dispatch arm packs into Prolog. A node with two
+    // disjoint in-domain child branches is a Bridge.
+    #[test]
+    fn bridge_foreign_glue_classifies_via_named_facts() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // org fans out into two disjoint in-domain branches (a -> a1, b -> b1) => n_eff 2, fraction 1.0.
+        vm.register_ffi_fact_pairs("category_parent", &[
+            ("a", "org"), ("b", "org"), ("a1", "a"), ("b1", "b"),
+        ]);
+        vm.register_ffi_mu("category_mu", &[
+            ("org", 1.0), ("a", 1.0), ("b", 1.0), ("a1", 1.0), ("b1", 1.0),
+        ]);
+        // build-on-first-use, then classify.
+        assert!(vm.ensure_bridge_scores("category_parent", "category_mu", 0.3),
+            "bridge scores build from named edge + mu facts");
+        let org = vm.intern_atom("org");
+        let (class, n_eff) = vm.category_bridge_class(org).expect("org is a candidate");
+        assert_eq!(class, "bridge", "two disjoint in-domain branches => bridge (got {class})");
+        assert!((n_eff - 2.0).abs() < 1e-9, "n_eff = 2 for two disjoint branches, got {n_eff}");
+        // a leaf is not a candidate.
+        let a1 = vm.intern_atom("a1");
+        assert!(vm.category_bridge_class(a1).is_none(), "a leaf is not a bridge candidate");
+        // unregistered fact predicates => no-op build.
+        let mut vm2 = WamState::new(vec![], HashMap::new());
+        assert!(!vm2.build_bridge_scores_named("nope", "nope", 0.3,
+            &crate::boundary_cache::BridgeParams::default()), "missing facts => false");
+    }
+
+    // Bridge-informed clustering glue (increment 2): build_clusters_named ensures bridge scores, then
+    // partitions; category_cluster / cluster_members read the cache. Two domains joined only through a
+    // leak conduit separate after the cut. Uses an explicit τ_pure (Some(0.3)) for a deterministic
+    // classification (auto-calibration needs a multi-candidate distribution to find a split).
+    #[test]
+    fn cluster_foreign_glue_partitions_via_named_facts() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        // D1 = {d1, x1} under d1; D2 = {d2, y1} under d2; both domain roots hang under the apex L,
+        // which also fans into a big OUT-of-domain subtree, so its in-domain fraction is low
+        // (gated cone {L,d1,x1,d2,y1}=5, raw cone 20 => purity 0.25 < 0.3) and the detector marks it a
+        // LeakConduit (distinct in-domain children d1/d2 => n_eff 2).
+        let mut edges: Vec<(&str, &str)> = vec![
+            ("d1", "L"), ("x1", "d1"), ("d2", "L"), ("y1", "d2"),
+        ];
+        let oods = ["o1","o2","o3","o4","o5","o6","o7","o8","o9","o10","o11","o12","o13","o14","o15"];
+        for o in oods.iter() { edges.push((o, "L")); }
+        vm.register_ffi_fact_pairs("category_parent", &edges);
+        let mut mu: Vec<(&str, f64)> = vec![
+            ("L", 1.0), ("d1", 1.0), ("x1", 1.0), ("d2", 1.0), ("y1", 1.0),
+        ];
+        for o in oods.iter() { mu.push((o, 0.0)); }
+        vm.register_ffi_mu("category_mu", &mu);
+        // explicit τ_pure for a deterministic leak/bridge cut.
+        let params = crate::boundary_cache::BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: Some(0.3) };
+        assert!(vm.build_clusters_named("category_parent", "category_mu", 0.3, &params),
+            "clusters build from named edge + mu facts");
+        // intern the ids we need upfront (intern_atom is &mut self), then do the immutable reads.
+        let (l, d1, x1, d2, y1) = (vm.intern_atom("L"), vm.intern_atom("d1"), vm.intern_atom("x1"),
+                                   vm.intern_atom("d2"), vm.intern_atom("y1"));
+        // L is a leak conduit (distinct in-domain children d1/d2, cone mostly out-of-domain) => the cut.
+        assert_eq!(vm.category_bridge_class(l).map(|(c, _)| c), Some("leak_conduit"),
+            "L classifies as the leak conduit");
+        let (cd1, cx1) = (vm.category_cluster(d1), vm.category_cluster(x1));
+        let (cd2, cy1) = (vm.category_cluster(d2), vm.category_cluster(y1));
+        assert!(cd1.is_some() && cd1 == cx1, "D1 nodes share a cluster");
+        assert!(cd2.is_some() && cd2 == cy1, "D2 nodes share a cluster");
+        assert_ne!(cd1, cd2, "cutting the leak conduit separates D1 from D2");
+        // cluster_members round-trips: d1's cluster lists d1 and x1.
+        let members = vm.cluster_members(cd1.unwrap());
+        assert!(members.contains(&d1) && members.contains(&x1),
+            "cluster_members lists the domain members");
     }
 }

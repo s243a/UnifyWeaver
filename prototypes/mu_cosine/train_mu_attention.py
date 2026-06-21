@@ -329,9 +329,9 @@ def discrimination_probe(model, tok, idx):
     {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator). Reports BOTH metrics:
       * hard ARGMAX accuracy + confusion (is the true root strictly the top-1?) — brittle for a node that
         is genuinely high-μ to several roots (multi-membership), and
-      * a RANKING/MARGIN view: the true root's RANK among the 5, the signed margin μ(true) − max-other
-        (>0 ⇔ argmax-correct), and top-1 / top-2 rates. If ranking is strong even where argmax flips, the
-        "brittleness" is largely a metric artifact (correct multi-membership of a connective domain)."""
+      * a RANKING/MARGIN view (#3314 finding): the true root's RANK among the 5, the signed margin
+        μ(true) − max-other (>0 ⇔ argmax-correct), and top-1 / top-2 rates. If ranking is strong even
+        where argmax flips, the "brittleness" is largely a metric artifact (correct multi-membership)."""
     roots = [r for r in DOMAIN_ROOTS if r in idx]
     if len(roots) < 2:
         print("[DISCRIM] <2 domain roots in graph — skipped")
@@ -371,7 +371,7 @@ def discrimination_probe(model, tok, idx):
         print(f"    {ab[d]:>7} " + "".join(f"{confusion[d][r]:>7}" for r in roots))
     print(f"  multi-domain discrimination accuracy (hard argmax): {correct}/{total} "
           f"({100*correct/max(total,1):.0f}%)")
-    # --- ranking / margin view (robust to multi-membership) ---
+    # --- ranking / margin view (the #3314 honest re-measure) ---
     print("  ranking/margin (true-root rank among the 5; signed margin μ(true)−max-other; top-1/top-2):")
     print(f"    {'domain':>7}  {'meanRank':>8}  {'meanMargin':>10}  {'top1':>5}  {'top2':>5}")
     allr = []
