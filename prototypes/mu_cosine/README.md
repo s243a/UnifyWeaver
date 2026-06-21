@@ -27,6 +27,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
 | gated similarity correctness | ✅ **node-gated IC** (#3296) — `gated_ic_node_filtered` de-saturates Lin/Resnik/FaITH (path-gated 96.7% → **0.1%**); theory in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §5f, proof `node_gated_ic.py`. Directional model's Lin-agreement is validated on this (#3297). |
 | **directional multi-relational μ** | ✅ **done** — `mu_attention.py` + `train_mu_attention.py` → `REPORT_directional.md`. Frozen e5 + learned tags + 2-layer attention, multi-task over operators. **WIKI directional edge order-accuracy 99.1%** (control structurally 50%), gate-leak 0/5 all operators, every map feeds `check_feeds_rust`. SYM held-out corr +0.335 (< control +0.726 — the multi-task trade-off). No new LLM budget. |
+| **SYM more-data + ablation** | ✅ **done** — `gen_more_sym_pairs.py` + `mu_pairs_scored_large.tsv` (+600 Haiku pairs, ~38.5k tokens) → `REPORT_sym_more_data.md`. More data raised SYM held-out corr **+0.342 → +0.479** (WIKI stays ~98%); single-task SYM **collapses** ⇒ the gap was **data starvation, not multi-task dilution** (multi-task is load-bearing). |
 
 ### Progress — directional, multi-relational μ (`MuAttention`, DESIGN_directional_attention.md realized)
 
