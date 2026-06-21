@@ -16,6 +16,9 @@
     compile_wam_runtime_to_rust/2,       % +Options, -RustCode
     compile_wam_predicate_to_rust/4,     % +Pred/Arity, +WamCode, +Options, -RustCode
     write_wam_rust_project/3,            % +Predicates, +Options, +ProjectDir
+    graph_analysis/4,                    % +EdgePred, +Inputs, +Stages, +Queries (directive)
+    graph_analysis_options/2,            % -Options, -QueryPreds (expand asserted decls)
+    graph_analysis_expand/5,             % +EdgePred,+Inputs,+Stages,+Queries,-Options (pure)
     cargo_check_project/2,               % +ProjectDir, -Result
     detect_kernels/2,                    % +Predicates, -DetectedKernels
     generate_setup_foreign_predicates_rust/2, % +DetectedKernels, -RustCode
@@ -5424,6 +5427,93 @@ rust_foreign_setup_code([], "").
 rust_foreign_setup_code(Ops, Setup) :-
     maplist(rust_foreign_setup_line, Ops, Lines),
     atomic_list_concat(Lines, '\n', Setup).
+
+% ============================================================================
+% graph_analysis/4 — the pipeline DECLARATION (WAM_RUST_BRIDGE_CLUSTERING.md
+% increment 3). Collapses the verbose per-predicate foreign_lowering blocks of
+% increments 1+2 into one statement: the author declares the shared inputs
+% (edge predicate, mu predicate, threshold, sketch k) and the list of query
+% predicates ONCE, and this expands to exactly the
+% foreign_lowering(foreign_predicate(Pred/Arity, SetupOps, [])) terms that were
+% hand-written, threading the shared configs + the right native_kind /
+% result-mode / layout / register_ffi_mu into each from the table below. The
+% build-dependency (clusters -> bridges -> sketches) is already handled by the
+% build-on-first-use ensure_* chain in state.rs, so this is declaration
+% BUNDLING — not a new build mechanism.
+% ============================================================================
+
+:- dynamic graph_analysis_decl/4.
+
+%% bridge_query_kind(+Pred/Arity, -NativeKind, -ResultMode, -ResultLayout)
+%  The table mapping each known graph-analysis query predicate to its dispatch
+%  native_kind and result shape (mirrors the merged dispatch arms / kernel
+%  metadata). `wants_k` (below) says whether a predicate also takes the sketch k.
+bridge_query_kind(category_bridge_score/2, category_bridge_score, deterministic, tuple(1)).
+bridge_query_kind(bridge/3,                bridge,                stream,        tuple(3)).
+bridge_query_kind(category_cluster/2,      category_cluster,      deterministic, tuple(1)).
+bridge_query_kind(cluster_members/2,       cluster_members,       stream,        tuple(1)).
+
+%% graph_analysis(+EdgePred, +Inputs, +Stages, +Queries) is det.
+%  Directive form: record the declaration for later expansion by
+%  graph_analysis_options/2. Inputs: [mu(MuPred), threshold(T)]; Stages:
+%  [sketches(k=K), bridges, clusters]; Queries: a list of Pred/Arity.
+graph_analysis(EdgePred, Inputs, Stages, Queries) :-
+    assertz(graph_analysis_decl(EdgePred, Inputs, Stages, Queries)).
+
+%% graph_analysis_options(-Options, -QueryPreds) is det.
+%  Expand ALL asserted graph_analysis/4 declarations into the list of
+%  foreign_lowering(...) options (Options) and the flat list of exposed query
+%  predicate indicators (QueryPreds), ready to splice into write_wam_rust_project/3.
+graph_analysis_options(Options, QueryPreds) :-
+    findall(Os-Qs,
+            ( graph_analysis_decl(E, I, S, Qs),
+              graph_analysis_expand(E, I, S, Qs, Os) ),
+            Pairs),
+    pairs_keys_values(Pairs, OptsLists, QueryLists),
+    append(OptsLists, Options),     % concat per-decl option lists
+    append(QueryLists, QueryPreds). % concat per-decl query lists
+
+%% graph_analysis_expand(+EdgePred, +Inputs, +Stages, +Queries, -Options) is det.
+%  Pure expansion of ONE declaration into the per-query foreign_lowering terms.
+%  Threads the shared edge_pred / mu_pred / threshold / k and harvests the mu
+%  facts (MuPred/2) into each register_ffi_mu, exactly as the hand-written
+%  increment-1/2 blocks did.
+graph_analysis_expand(EdgePred, Inputs, Stages, Queries, Options) :-
+    ( member(mu(MuPred), Inputs)        -> true ; MuPred = category_mu ),
+    ( member(threshold(T), Inputs)      -> true ; T = 0.3 ),
+    ( member(sketches(KSpec), Stages), ga_ksize(KSpec, K) -> true ; K = none ),
+    ga_harvest_mu(MuPred, MuData),
+    maplist(graph_analysis_query_lowering(EdgePred, MuPred, T, K, MuData),
+            Queries, Options).
+
+ga_ksize(k=K, K) :- !.
+ga_ksize(K, K) :- integer(K).
+
+%% ga_harvest_mu(+MuPred, -MuData)
+%  Read the user's MuPred(Node, Score) facts into a Name-Score pair list (the
+%  same data register_ffi_mu embeds). Empty if the predicate is undefined.
+ga_harvest_mu(MuPred, MuData) :-
+    ( catch(findall(N-Sc,
+                ( G =.. [MuPred, N, Sc], catch(call(user:G), _, fail) ),
+                MuData0), _, MuData0 = [])
+    -> MuData = MuData0
+    ;  MuData = [] ).
+
+%% graph_analysis_query_lowering(+EdgePred,+MuPred,+T,+K,+MuData,+Pred/Arity,-Lowering)
+%  Build the foreign_lowering(foreign_predicate(...)) term for one query
+%  predicate from the shared inputs + the per-predicate table entry.
+graph_analysis_query_lowering(EdgePred, MuPred, T, K, MuData, Pred/Arity,
+        foreign_lowering(foreign_predicate(Pred/Arity, Ops, []))) :-
+    bridge_query_kind(Pred/Arity, NativeKind, Mode, Layout),
+    Base = [ register_foreign_native_kind(Pred/Arity, NativeKind),
+             register_foreign_result_mode(Pred/Arity, Mode),
+             register_foreign_result_layout(Pred/Arity, Layout),
+             register_foreign_string_config(Pred/Arity, edge_pred, EdgePred),
+             register_foreign_string_config(Pred/Arity, mu_pred, MuPred),
+             register_foreign_f64_config(Pred/Arity, threshold, T) ],
+    ( integer(K) -> KOps = [register_foreign_usize_config(Pred/Arity, k, K)] ; KOps = [] ),
+    append(Base, KOps, Ops0),
+    append(Ops0, [register_ffi_mu(Pred/Arity, MuPred, MuData)], Ops).
 
 rust_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
     format(string(Line),

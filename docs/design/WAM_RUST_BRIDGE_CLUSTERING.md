@@ -231,3 +231,65 @@ signal, not the *top-level separation* (leak-cut) — a concrete argument for a 
 `state.rs`: `cluster_foreign_glue_partitions_via_named_facts`.
 `tests/test_wam_rust_cluster_foreign_dispatch.pl` exercises the full transpile→dispatch path (swipl +
 cargo): `category_cluster(d1)=category_cluster(x1) ≠ category_cluster(d2)` once the leak conduit is cut.
+
+## Increment 3 — implemented: the `graph_analysis/4` pipeline declaration
+
+Increments 1+2 worked, but the author had to repeat a full `foreign_lowering(foreign_predicate(P/A,
+[...], []))` block — native_kind + result mode/layout + the *same* `edge_pred` / `mu_pred` / `threshold`
+configs + `register_ffi_mu(MuPred, Mu)` — once **per** query predicate. `graph_analysis/4` collapses that
+into one statement: declare the shared inputs and the query list **once**, and the transpiler expands to
+**exactly** the per-predicate `foreign_lowering` terms (term-identical, byte-identical generated Rust
+setup), threading the shared `edge_pred` / `mu_pred` / `threshold` / sketch `k` and the right native_kind
+/ layout / `register_ffi_mu` into each from a small query→kind table. The build-dependency
+(`clusters → bridges → sketches`) needs no ordering here — it is already handled by the build-on-first-use
+`ensure_*` chain in `state.rs` — so this is pure **declaration bundling**.
+
+**BEFORE** (increments 1+2 — one verbose block *per predicate*; ~4 blocks, the shared
+`edge_pred`/`mu_pred`/`threshold`/`Mu` repeated in every one):
+
+```prolog
+:- write_wam_rust_project([user:my_query/2],
+     [ module_name(physics),
+       foreign_lowering(foreign_predicate(category_bridge_score/2,
+         [ register_foreign_native_kind(category_bridge_score/2, category_bridge_score),
+           register_foreign_result_mode(category_bridge_score/2, deterministic),
+           register_foreign_result_layout(category_bridge_score/2, tuple(1)),
+           register_foreign_string_config(category_bridge_score/2, edge_pred, category_parent),
+           register_foreign_string_config(category_bridge_score/2, mu_pred, category_mu),
+           register_foreign_f64_config(category_bridge_score/2, threshold, 0.3),
+           register_ffi_mu(category_bridge_score/2, category_mu, Mu) ], [])),
+       foreign_lowering(foreign_predicate(bridge/3,            [ /* …the same 7 lines, native_kind=bridge, layout tuple(3), stream… */ ], [])),
+       foreign_lowering(foreign_predicate(category_cluster/2,  [ /* …the same 7 lines, native_kind=category_cluster… */ ], [])),
+       foreign_lowering(foreign_predicate(cluster_members/2,   [ /* …the same 7 lines, native_kind=cluster_members, stream… */ ], [])) ],
+     'output/physics').
+```
+
+**AFTER** (increment 3 — the shared inputs + query list declared once):
+
+```prolog
+:- graph_analysis(category_parent,                   % edge predicate
+     [ mu(category_mu), threshold(0.3) ],            % shared inputs (declared ONCE)
+     [ sketches(k=32), bridges, clusters ],          % build stages present
+     [ category_bridge_score/2, bridge/3,            % exposed query predicates
+       category_cluster/2, cluster_members/2 ]).
+
+main :- graph_analysis_options(Opts, QueryPreds),    % expand to the 4 foreign_lowering specs
+        write_wam_rust_project(QueryPreds, [module_name(physics) | Opts], 'output/physics').
+```
+
+`graph_analysis_expand/5` is the pure expander (used by the directive and directly testable);
+`graph_analysis_options/2` collects all asserted `graph_analysis/4` declarations into the
+`foreign_lowering(...)` list + the flat query-predicate list. The query→kind table
+(`bridge_query_kind/4`) maps each known predicate to its `native_kind` / result mode / layout; the mu
+facts are harvested from `MuPred/2` into `register_ffi_mu`. Adding a new exposed predicate is one table
+row, not another block at every call site.
+
+**Validation.** `tests/test_graph_analysis_declaration.pl` (swipl): the expansion is **term-identical** to
+the hand-written increment-1/2 blocks (`expansion_is_term_identical_to_handwritten`) and generates
+**byte-identical** Rust setup per predicate (`generated_rust_setup_is_identical`, via
+`rust_foreign_setup_code`); the directive bundles all four queries into one options list
+(`directive_bundles_all_queries`). Because `graph_analysis/4` adds Prolog only (no template change), the
+generated crate is unchanged — the **134** generated-crate lib tests, both
+`test_wam_rust_{bridge,cluster}_foreign_dispatch.pl` e2e suites, and the `boundary_cache` render
+(`cargo test`, edition 2021) all still pass, with the same `"category_bridge_score"` / `"category_cluster"`
+dispatch arms and the same dispatch results as increments 1+2.
