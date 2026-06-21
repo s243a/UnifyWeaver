@@ -52,6 +52,38 @@ weight on the (few) parent edges, not the down/up probability ratio** — with i
 This is the Lyons–Pemantle–Peres λ-biased walk at criticality (up-weight = branching number ⟹ zero speed);
 `c/p` and `E[c²]/E[p²]` are its local-exact and global-average forms.
 
+## The `γ` family — one dial from depth-neutral to branching-following
+
+"No drift" (coin-flip) is only *one* target. A different, equally valid goal is **coverage**: at a node
+with a big subtree below, spend more steps going *down* (there's more to sample there). That is the
+opposite of cancelling `c` — and the two live on one axis, a single knob `γ ∈ [0,1]`:
+
+```
+down/up odds = (c/p)^γ        ⟺      P(down) = 1 / (1 + (p/c)^γ)
+```
+
+- **γ = 0** → odds `1` → `P(down) = ½` → **coin-flip** (depth-neutral; ignores local branching).
+- **γ = 1** → odds `c/p` → `P(down) = c/(c+p)` → the **natural undirected walk** (branching-following; drifts
+  deep — the current default).
+- **γ ∈ (0,1)** → high-child nodes go down *more*, tunably (at `c = p`, `P(down) = ½` for any γ — no spurious
+  bias). This is the "many children ⇒ don't coin-flip" regime.
+
+`γ` is the **depth-neutral ↔ coverage** dial: small γ keeps endpoints at a representative depth; large γ
+pours the walk into the big subtrees (more coverage of where the structure is, deeper drift). No single γ
+is "correct" — it's an empirical choice of what the training pairs should emphasize.
+
+**Truer measure — subtree mass, not child count.** Raw `c` is a crude proxy for "how much is below" (3
+children heading huge subtrees > 10 leaf children). We already have the descendant **sketches**, so the
+faithful version weights down-steps by **mass below** rather than count:
+
+```
+down/up odds ∝ (mass_below / mass_above)^γ        # mass_below from |desc(child)| / μ-mass (sketches)
+```
+
+(the up-side normalization needs care — "above" is the rest of the graph; bound it to the parent's subtree
+to keep it local). Same `γ`, better branching measure. `E[c²]/E[p²]` and `c/p` are the count-based special
+cases; this is the mass-based generalization.
+
 ## Mix unidirectional + bidirectional (diversity)
 
 The two walk modes sample **different relations**, so mixing them enriches the training distribution:
@@ -76,12 +108,14 @@ domain-drift fix later.)
 
 ## Implementation & validation
 
-- Add to `gen_mu_pairs.py`: a `--bidir` mode with `--bidir-mode {coinflip,global}` (per-node `c/p` coin-flip
-  vs the single `E[c²]/E[p²]` weight), and a `--bidir-frac` to mix bidirectional with `--child-only` walks.
-  Keep hub-down-weighting within direction.
-- **Validate depth-neutrality on the real 10k graph:** from a set of interior seeds, run each mode and plot
-  `depth(endpoint) − depth(seed)`. Expect: current undirected → skewed deep; `child-only` → strictly ≥ 0;
-  `coinflip` → ≈ symmetric about 0 (tightest); `global` → ≈ symmetric (the cheaper single-weight approx).
-  Report the mean/spread per mode. **No LLM budget** — this is sampler engineering + measurement.
+- Add to `gen_mu_pairs.py`: a `--bidir` mode with the **`γ` dial** (`--gamma`, the down/up odds exponent
+  `(c/p)^γ`): `γ=0` = coin-flip, `γ=1` = natural undirected, `γ∈(0,1)` = branching-aware. Keep
+  `--bidir-mode {count,mass}` to choose `c/p` vs the sketch-based `mass_below/mass_above`, and a
+  `--bidir-frac` to mix bidirectional with `--child-only` walks. Keep hub-down-weighting within direction.
+- **Validate the depth↔coverage trade on the real 10k graph:** from interior seeds, sweep `γ ∈ {0, 0.25,
+  0.5, 1}` and report, per γ: the `depth(endpoint) − depth(seed)` distribution (mean/spread — expect ≈0 and
+  tightest at γ=0, skewing deeper as γ→1) **and** a coverage measure (distinct endpoints / how much of the
+  big subtrees get hit). The point is to *see the trade*, not to crown one γ. Also report `--child-only`
+  (≥0 by construction) as a reference. **No LLM budget** — sampler engineering + measurement.
 - **Domain-reach sanity:** confirm bidirectional from `Physics` actually reaches sibling domains
   (`Chemistry`, `Computer_science`) without the endpoint distribution drifting into generic apexes.
