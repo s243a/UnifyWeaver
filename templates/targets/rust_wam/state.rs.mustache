@@ -544,6 +544,13 @@ pub struct WamState {
     /// answer the designated-bridge caret in O(1) per pair instead of a per-query BFS. Empty =
     /// landmark caret off (default). Eager-edge only.
     pub caret_landmarks: std::collections::HashMap<u32, std::collections::HashMap<u32, u32>>,
+    /// Fan-out bridge scores (bridge detector, increment 4): candidate node `P` ->
+    /// `BridgeScore { n_eff, diversity, purity, fan_out, class }`. Built once by
+    /// `build_bridge_scores` from the eager `edge_pred` graph and a caller-supplied μ map (the μ map
+    /// is an INPUT — the directional model, the symmetric map, or any dense `name→μ`); the
+    /// `category_bridge_score` read-out then answers per-node in O(1). Empty = bridge detector off
+    /// (default). Eager-edge only. See `boundary_cache::{rank_bridges, bridge_classify}`.
+    pub bridge_scores: std::collections::HashMap<u32, crate::boundary_cache::BridgeScore>,
     /// Int-native edge mode: when true, the lazy edge path treats the kernel's
     /// u32 node id AS the raw LMDB int key directly (identity), bypassing
     /// `wam_to_lmdb`/`lmdb_to_wam`. Used for int-native fixtures whose seeds,
@@ -683,6 +690,7 @@ impl WamState {
             desc_sketch_n: 0,
             desc_sketch_k: 0,
             caret_landmarks: std::collections::HashMap::new(),
+            bridge_scores: std::collections::HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -1423,6 +1431,38 @@ impl WamState {
         self.desc_sketch = sketch;
         self.desc_sketch_k = k;
         true
+    }
+
+    /// Precompute the **fan-out bridge scores** (bridge detector, increment 4): run
+    /// `boundary_cache::rank_bridges` over the eager `edge_pred` graph and a caller-supplied μ map,
+    /// caching each candidate node's `BridgeScore`. A harness calls this once at setup after building
+    /// the μ map (the μ map is an **input** — the directional `μ(·|root)` from the attention model,
+    /// the symmetric map, or any dense `name→μ`); `category_bridge_score` then answers per-node in
+    /// O(1). Mirrors `build_descendant_sketches`: returns `false` (no-op) if `edge_pred` has no eager
+    /// facts. `threshold` is the gate θ; `params` the classification cuts. Eager-edge only.
+    pub fn build_bridge_scores(
+        &mut self,
+        edge_pred: &str,
+        mu: &std::collections::HashMap<u32, f64>,
+        threshold: f64,
+        params: &crate::boundary_cache::BridgeParams,
+    ) -> bool {
+        let ranked = {
+            let parents = match self.ffi_facts.get(edge_pred) {
+                Some(p) => p,
+                None => return false,
+            };
+            crate::boundary_cache::rank_bridges(parents, mu, threshold, params)
+        };
+        self.bridge_scores = ranked.into_iter().collect();
+        true
+    }
+
+    /// The cached **bridge score** for node `p` (`build_bridge_scores`): `Some(BridgeScore)` if `p`
+    /// is a candidate (in-domain fan-out `≥ φ_min`), `None` otherwise — and `None` until the cache is
+    /// built. The live, cache-backed entry point for `boundary_cache::bridge_classify`.
+    pub fn category_bridge_score(&self, p: u32) -> Option<crate::boundary_cache::BridgeScore> {
+        self.bridge_scores.get(&p).copied()
     }
 
     /// **Resnik** semantic similarity `IC(MICA(u,v))` over the eager `edge_pred` graph, using
