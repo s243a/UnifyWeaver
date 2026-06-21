@@ -2425,6 +2425,127 @@ pub fn fanout_diversity(
     Some((diversity, n as f64 * diversity))
 }
 
+/// **Reflexive raw descendant cone of `p`** over the full child map — every reachable descendant, no
+/// μ-gating (contrast `path_gated_cone`). The denominator universe for `cone_purity`: `|desc(P)|` is
+/// this set's size, `m_μ(desc(P))` the in-domain mass summed over it. Exact (the correctness path).
+fn raw_cone_set(
+    p: u32,
+    children: &std::collections::HashMap<u32, Vec<u32>>,
+) -> std::collections::HashSet<u32> {
+    use std::collections::{HashSet, VecDeque};
+    let mut seen: HashSet<u32> = HashSet::new();
+    seen.insert(p);
+    let mut q: VecDeque<u32> = VecDeque::new();
+    q.push_back(p);
+    while let Some(x) = q.pop_front() {
+        if let Some(cs) = children.get(&x) {
+            for &c in cs { if seen.insert(c) { q.push_back(c); } }
+        }
+    }
+    seen
+}
+
+/// The 2-D bridge classification (philosophy "the 2-D map"): diversity (`n_eff`) × domain coherence
+/// (`cone_purity`) sort every high-fan-out node into one of four quadrants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeClass {
+    /// High `n_eff` **and** high purity — organizes distinct *in-domain* subfields. The good bridge.
+    Bridge,
+    /// High `n_eff` but low purity — distinct *unrelated* (out-of-domain) regions → prune / down-weight.
+    LeakConduit,
+    /// Low `n_eff` — children overlap / reconverge; a pile of near-duplicates → candidate to collapse.
+    RedundantHub,
+    /// Not a branch point — `< φ_min` (or `< 2`) in-domain children, or `P` itself out-of-domain.
+    NotCandidate,
+}
+
+/// Classification thresholds for `bridge_classify` / `rank_bridges`. The continuous `(n_eff, purity)`
+/// is the real read for ranking; these cut it into the convenience labels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BridgeParams {
+    /// Minimum in-domain fan-out `φ(P)` to be a candidate at all (`< φ_min` ⇒ `NotCandidate`). `≥ 2`.
+    pub phi_min: u32,
+    /// `n_eff` cut between *diverse* (`≥ τ_div` ⇒ Bridge/LeakConduit) and *redundant* (`< τ_div` ⇒
+    /// RedundantHub). In effective-branch units (`n_eff ∈ [1, n]`); `> 1` means "more than one
+    /// effectively-distinct branch."
+    pub tau_div: f64,
+    /// Purity cut between *in-domain* (`≥ τ_pure` ⇒ Bridge) and *out-of-domain* (`< τ_pure` ⇒
+    /// LeakConduit), applied only once `n_eff ≥ τ_div`.
+    pub tau_pure: f64,
+}
+
+impl Default for BridgeParams {
+    /// `φ_min = 2` (any real branch point), `τ_div = 1.5` (clearly more than one effective branch),
+    /// `τ_pure = 0.5` (majority-in-domain cone). All three are domain knobs — tune on real data.
+    fn default() -> Self { BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.5 } }
+}
+
+/// The per-node bridge read-out: the continuous signals plus the quadrant label. Rank on
+/// `(n_eff, purity)` (e.g. `n_eff·purity`); the `class` is the convenience cut by `BridgeParams`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BridgeScore {
+    /// Effective number of distinct in-domain branches (`fanout_diversity`); `0` for a non-candidate.
+    pub n_eff: f64,
+    /// `μ(⋃E_i)/Σμ(E_i) ∈ [1/n, 1]` (`fanout_diversity`); `0` for a non-candidate.
+    pub diversity: f64,
+    /// `cone_purity(P) = m_μ(desc(P)) / |desc(P)|` — in-domain mass per node of the *raw* cone.
+    pub purity: f64,
+    /// In-domain child count `φ(P)` (the fan-out).
+    pub fan_out: u32,
+    /// The 2-D quadrant.
+    pub class: BridgeClass,
+}
+
+/// **Classify a candidate node on the 2-D bridge map** (increment 2) — combine the `n_eff` core
+/// (`fanout_diversity`) with the leak-detector `cone_purity` into a `BridgeScore`. Purity is read over
+/// the **raw** descendant cone (`m_μ(desc(P)) / |desc(P)|`, the existing leak-detector read), `n_eff`
+/// over the path-gated universe; the two are orthogonal (§ "the 2-D map") and together place `P`:
+///
+/// - `< φ_min` (or `< 2`) in-domain children, or `P` out-of-domain ⇒ `NotCandidate`.
+/// - `n_eff < τ_div` ⇒ `RedundantHub` (children reconverge — collapse).
+/// - `n_eff ≥ τ_div` **and** `purity ≥ τ_pure` ⇒ `Bridge` (distinct in-domain subfields).
+/// - `n_eff ≥ τ_div` **and** `purity < τ_pure` ⇒ `LeakConduit` (distinct but unrelated — prune).
+///
+/// Additive: reuses `fanout_diversity` and `cone_purity` verbatim, adds no math. `mu` is an input map.
+/// Exact (the correctness path); increment 4 swaps the cone walks for the sketch reads at scale.
+pub fn bridge_classify(
+    p: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+    params: &BridgeParams,
+) -> BridgeScore {
+    use std::collections::{HashMap, HashSet};
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &pp in ps { children.entry(pp).or_default().push(c); }
+    }
+    // In-domain fan-out φ(P) = deduped count of children with μ ≥ threshold.
+    let fan_out = children.get(&p).map_or(0u32, |cs| {
+        let mut seen: HashSet<u32> = HashSet::new();
+        cs.iter().filter(|&&c| muv(c) >= threshold && seen.insert(c)).count() as u32
+    });
+    // Purity over the RAW (ungated) descendant cone — the leak-detector read.
+    let cone = raw_cone_set(p, &children);
+    let raw_size = cone.len() as f64;
+    let raw_mass: f64 = cone.iter().map(|&x| muv(x)).sum();
+    let purity = cone_purity(raw_mass, raw_size);
+
+    let (diversity, n_eff) = fanout_diversity(p, parents, mu, threshold).unwrap_or((0.0, 0.0));
+    let phi_min = params.phi_min.max(2); // a branch point needs ≥ 2 children by definition
+    let class = if fan_out < phi_min || muv(p) < threshold || n_eff <= 0.0 {
+        BridgeClass::NotCandidate
+    } else if n_eff < params.tau_div {
+        BridgeClass::RedundantHub
+    } else if purity >= params.tau_pure {
+        BridgeClass::Bridge
+    } else {
+        BridgeClass::LeakConduit
+    };
+    BridgeScore { n_eff, diversity, purity, fan_out, class }
+}
+
 /// **Fuzzy admission curve**: an S-shaped (logistic) transfer from the raw membership `μ` to an
 /// admission weight in `[0,1]`, `w(μ) = 1/(1 + e^{−k(μ−c)})`. Shapes *how* `μ` translates to
 /// admission — nearly-full weight well above the boundary, nearly-zero well below, a smooth knee
@@ -6753,5 +6874,66 @@ mod tests {
         // P itself out-of-domain (μ(P) < θ) ⇒ None even with two in-domain children.
         let mu3: HashMap<u32, f64> = [(0u32, 0.0), (1, 1.0), (2, 1.0)].into_iter().collect();
         assert!(fanout_diversity(0, &g2, &mu3, 0.3).is_none(), "P out-of-domain ⇒ None");
+    }
+
+    // ── Fan-out bridge detector — increment 2: bridge_classify quadrants ──
+
+    // The three synthetic nodes of the 2-D map land in their quadrants. P=0 in every graph; θ=0.3.
+    // Params: φ_min=2, τ_div=1.8 (between the redundant n_eff≈1 and the diverse n_eff≈3), τ_pure=0.5.
+    #[test]
+    fn bridge_classify_lands_each_node_in_its_quadrant() {
+        let params = BridgeParams { phi_min: 2, tau_div: 1.8, tau_pure: 0.5 };
+        let th = 0.3;
+
+        // BRIDGE: 3 in-domain children, each with its own in-domain private subtree (distinct +
+        // in-domain). high n_eff (=3), high purity (=1).
+        let mut bridge: HashMap<u32, Vec<u32>> = HashMap::new();
+        bridge.insert(1, vec![0]); bridge.insert(2, vec![0]); bridge.insert(3, vec![0]);
+        bridge.insert(11, vec![1]); bridge.insert(12, vec![1]);
+        bridge.insert(21, vec![2]); bridge.insert(22, vec![2]);
+        bridge.insert(31, vec![3]); bridge.insert(32, vec![3]);
+        let mu_b: HashMap<u32, f64> =
+            [0u32, 1, 2, 3, 11, 12, 21, 22, 31, 32].into_iter().map(|i| (i, 1.0)).collect();
+        let sb = bridge_classify(0, &bridge, &mu_b, th, &params);
+        assert_eq!(sb.class, BridgeClass::Bridge, "distinct in-domain branches ⇒ Bridge: {sb:?}");
+        assert_eq!(sb.fan_out, 3);
+        assert!(sb.n_eff > 2.9 && sb.purity > 0.95, "{sb:?}");
+
+        // LEAK CONDUIT: 3 in-domain children, each over a big OUT-of-domain (μ=0) subtree. The gated
+        // universe stops at the children (E_i = singletons ⇒ n_eff = 3), but the raw cone is mostly
+        // out-of-domain ⇒ low purity.
+        let mut leak: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu_l: HashMap<u32, f64> = HashMap::new();
+        mu_l.insert(0, 1.0);
+        let mut next = 100u32;
+        for c in 1u32..=3 {
+            leak.insert(c, vec![0]); mu_l.insert(c, 1.0);
+            for _ in 0..20 { leak.insert(next, vec![c]); mu_l.insert(next, 0.0); next += 1; }
+        }
+        let sl = bridge_classify(0, &leak, &mu_l, th, &params);
+        assert_eq!(sl.class, BridgeClass::LeakConduit, "distinct out-of-domain branches ⇒ LeakConduit: {sl:?}");
+        assert_eq!(sl.fan_out, 3);
+        assert!(sl.n_eff > 2.9, "children are distinct in U_P ⇒ high n_eff: {sl:?}");
+        assert!(sl.purity < 0.5, "raw cone mostly out-of-domain ⇒ low purity: {sl:?}");
+
+        // REDUNDANT HUB: 3 in-domain children all pointing at one shared in-domain subtree. The
+        // branches reconverge ⇒ low n_eff ⇒ RedundantHub (purity stays high, but n_eff decides first).
+        let mut hub: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu_h: HashMap<u32, f64> = HashMap::new();
+        mu_h.insert(0, 1.0);
+        for c in 1u32..=3 { hub.insert(c, vec![0]); mu_h.insert(c, 1.0); }
+        hub.insert(100, vec![1, 2, 3]); mu_h.insert(100, 1.0); // shared under all three children
+        for d in 101u32..=200 { hub.insert(d, vec![100]); mu_h.insert(d, 1.0); } // heavy shared tail
+        let sh = bridge_classify(0, &hub, &mu_h, th, &params);
+        assert_eq!(sh.class, BridgeClass::RedundantHub, "overlapping branches ⇒ RedundantHub: {sh:?}");
+        assert!(sh.n_eff < 1.8, "reconverging branches ⇒ low n_eff: {sh:?}");
+        assert!(sh.purity > 0.95, "shared subtree is in-domain ⇒ high purity (but n_eff decides): {sh:?}");
+
+        // NOT A CANDIDATE: a single-child node fails φ_min.
+        let mut one: HashMap<u32, Vec<u32>> = HashMap::new();
+        one.insert(1, vec![0]);
+        let mu_o: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0)].into_iter().collect();
+        let so = bridge_classify(0, &one, &mu_o, th, &params);
+        assert_eq!(so.class, BridgeClass::NotCandidate, "single child ⇒ NotCandidate: {so:?}");
     }
 }
