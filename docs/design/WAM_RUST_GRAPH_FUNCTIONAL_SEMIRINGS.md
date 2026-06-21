@@ -1011,6 +1011,74 @@ nodes are is a read-out; this increment is the read-out.
 `category_faith` answer per-pair queries against them — eager-edge only (the sketch needs the
 in-memory parent map), `None` until the sketches are built.
 
+### 5f. Gating breaks IC similarity — and the node-gated fix
+
+§5e's whole edifice rests on one structural fact, stated there in passing: *cones only grow as you go
+up, so IC only falls as you go up*. That monotonicity is what makes the `MICA` a **lowest** common
+ancestor and, with it, guarantees `IC(MICA) ≤ min(IC(u), IC(v))` — shared information cannot exceed
+either node's own information. That bound is exactly what keeps Lin and FaITH in `[0,1]`. **μ-gating
+quietly violates it**, and that breaks all three measures. This subsection is the cautionary sequel.
+
+**Two ways to gate a cone, and they are not the same.** Once nodes carry a fuzzy membership `μ ∈ [0,1]`
+(the graded-membership work, real-data doc §"Fuzzy / graded membership") we want IC to be *domain-aware*
+— count only in-domain mass. There are two constructions:
+
+- **Path-gated** (`descendant_mu_mass_gated`): BFS down from `t`, but **stop descending** at any child
+  with `μ < θ`. The cone is "what you can reach from `t` *without leaving the domain*" — the
+  frontier-stopping, curved-space cone used for **membership**.
+- **Node-gated** (`descendant_mu_mass_node_gated`): descend into **every** child (the full subtree) but
+  only **count** a node's μ when `μ ≥ θ`. The cone is `{ d ∈ desc(t) : μ(d) ≥ θ }` — every in-domain
+  descendant, *regardless of the path* taken to reach it.
+
+**Path-gating is non-monotone — that is the bug.** A common ancestor reachable only *through* a low-μ
+connector loses that whole subtree under path-gating, so its gated cone can be **smaller** than its own
+descendant's — and a smaller cone means a *higher* IC. The "IC only falls going up" guarantee is gone. A
+connector `M` whose only links down to `u` and `v` pass through out-of-domain nodes ends up with a tiny
+path-gated cone `{M}` and a *high* IC — higher than `IC(u)` or `IC(v)`. Then `IC(MICA) > min(IC(u),IC(v))`
+and:
+
+- **Resnik** reports more shared information than either node contains — incoherent.
+- **Lin** `2·IC(MICA)/(IC(u)+IC(v))` exceeds `1` (the implementation clamps to `1`).
+- **FaITH**'s denominator `IC(u)+IC(v)−IC(MICA)` shrinks; once `IC(MICA) ≥ IC(u)+IC(v)` it goes `≤ 0`
+  and the measure is undefined (`None`). (Lin and FaITH overshoot at the *same* threshold,
+  `IC(MICA) > (IC(u)+IC(v))/2`; FaITH merely fails harder past it.)
+
+This is not a corner case. On the 90-node Haiku physics fixture, **1233 of 1275 in-domain pairs (96.7%)
+saturate at `Lin = 1.0`** under path-gated IC — gated Lin is, in practice, a constant (median *un-clamped*
+Lin 1.39). Measured in `prototypes/mu_cosine/REPORT_control_baseline.md`.
+
+**The fix: node-gated IC is monotone by construction.** Feed the *similarity* IC from the node-gated
+cone. Raw descendant **sets** are nested along ancestry (`desc(ancestor) ⊇ desc(descendant)`), and the
+membership filter `μ ≥ θ` is the *same node property* applied everywhere, so the filtered sets stay
+nested: `cone(ancestor) ⊇ cone(descendant)`. Mass is therefore monotone, IC is monotone, `IC(MICA) ≤ min`
+is restored, and Lin/FaITH are graded in `[0,1]` again. The MICA *node* is unchanged — still the deepest
+common ancestor — only its IC *value* becomes domain-aware. On the same fixture, node-gating drops
+saturation `96.7% → 0.1%` (431 distinct Lin values; `Temperature/Fire`'s MICA IC falls `6.24 → 3.07`, back
+under the `min` bound, Lin `1.0 → 0.74`). Implementation: `gated_ic_node_filtered`, fed to the unchanged
+`lin_from_ic` / `resnik_from_ic` / `faith_from_ic` (they are generic over the IC source). Proof:
+`prototypes/mu_cosine/node_gated_ic.py`; Rust test: `node_gated_ic_restores_lin_monotonicity`.
+
+**Keep both cones — they answer different questions.** Node-gating does *not* retire path-gating; the two
+mean different things and both are wanted:
+
+- *Membership* — "can I reach `d` from `t` **without leaving the domain**?" — wants **path-gating** (the
+  frontier cone).
+- *Similarity IC* — "is `d` an in-domain thing **under** `t`?" — wants **node-gating** (the
+  downward-closed, monotone cone).
+
+The one semantic wrinkle: node-gating counts in-domain descendants reachable only *through* an
+out-of-domain connector (a domain that dips out and comes back). For shared-generality similarity that is
+the more sensible count; for membership it over-includes — which is exactly why the two stay separate.
+
+**The deeper fork (deferred).** Path-1 above keeps the MICA machinery by fixing the IC. A second path
+abandons the MICA entirely: under gating the "shared part" of `u` and `v` need not be a single ancestor
+node — it is the **overlap of their gated cones** `E_u ∩ E_v`. That leads to a Jaccard/Dice read directly
+on the cones, `I(E_u ∩ E_v) / I(E_u ∪ E_v)`, for which the carry-weight KMV sketches already exist
+(`sketch_mu_overlap` / `sketch_mu_overlap_lift`). It measures shared *descendants* (instances) rather than
+a shared *ancestor* (generality) — the right tool for comparing broad internal categories by content,
+degenerate for leaves with empty cones. We land path-1 now (a small additive change; the measures are
+already generic over IC) and leave path-2 for the first consumer that wants content-overlap.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
@@ -1293,13 +1361,18 @@ buy diminishing returns and is not carried).
 - `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` — phase status of shipped work.
 - This note — the algebraic generalization (product semirings, ancestor-space domain,
   the implicit-functional / kernel-trick framing) that the next increments build on.
+- `prototypes/mu_cosine/` — the ML side that *produces* the dense `μ` the gated read-outs
+  consume: `REPORT_control_baseline.md` (where the §5f path-gated Lin saturation was first
+  measured, 96.7%), `node_gated_ic.py` (the §5f fix, proven on real data), and
+  `DESIGN_directional_attention.md` (the learned directional-μ successor, which feeds these
+  same `gated_ic` / similarity functions and is validated against the node-gated Lin of §5f).
 
 ## 10. References
 
 Collected for understanding the theory and as a citation base for possible future write-up.
 Each is referenced inline at the section that uses it.
 
-**Information-content semantic similarity (§5d, §5e).**
+**Information-content semantic similarity (§5d, §5e, §5f).**
 - Resnik, P. (1995). *Using Information Content to Evaluate Semantic Similarity in a Taxonomy.*
   IJCAI-95. — `resnik_similarity = IC(MICA)`.
 - Lin, D. (1998). *An Information-Theoretic Definition of Similarity.* ICML 1998. —
