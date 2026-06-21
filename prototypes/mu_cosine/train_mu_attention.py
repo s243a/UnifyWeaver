@@ -272,42 +272,56 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
     node_gated_lin_agreement(model, tok, idx)
 
 
-PHYS_PROBE = ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)"]
-CHEM_PROBE = ["Periodic_table", "Acids", "Chemical_compounds", "Oxygen", "Chemical_reactions"]
-BORDER_PROBE = ["Atoms", "States_of_matter", "Materials", "Energy", "Chemical_elements"]
+DOMAIN_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science"]
+DOMAIN_PROBE = {
+    "Physics": ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)"],
+    "Chemistry": ["Periodic_table", "Acids", "Chemical_compounds", "Oxygen", "Chemical_reactions"],
+    "Mathematics": ["Calculus", "Differential_equations", "Mathematical_analysis", "Logic",
+                    "Fields_of_mathematics"],
+    "Computer_science": ["Software", "Computer_hardware", "Operating_systems", "Computer_networking",
+                         "Computer_architecture"],
+}
+BORDER_PROBE = ["Atoms", "Electronics", "Measurement", "Materials", "Energy"]
 
 
 def discrimination_probe(model, tok, idx):
-    """For clear-physics / clear-chemistry / borderline nodes, emit μ(node|Physics) and μ(node|Chemistry)
-    (SYM operator, symmetric relatedness) and check the ordering: a physics node should score higher to
-    Physics, a chemistry node higher to Chemistry, a borderline node moderate on both."""
-    if "Chemistry" not in idx or "Physics" not in idx:
-        print("[DISCRIM] Physics/Chemistry not in graph — skipped")
+    """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) should be the ARGMAX
+    over all four roots {Physics, Chemistry, Mathematics, Computer_science} (SYM operator). Reports the
+    per-domain accuracy and the full confusion (true domain × argmax root)."""
+    roots = [r for r in DOMAIN_ROOTS if r in idx]
+    if len(roots) < 2:
+        print("[DISCRIM] <2 domain roots in graph — skipped")
         return
-    print("\n[DISCRIM] Physics-vs-Chemistry (μ via SYM operator):")
-    correct = 0
-    total = 0
-    for label, nodes, expect in [("physics", PHYS_PROBE, "P>C"), ("chemistry", CHEM_PROBE, "C>P"),
-                                 ("borderline", BORDER_PROBE, "~")]:
-        nodes = [n for n in nodes if n in idx]
-        muP = mu_batch(model, tok, [(n, "Physics", OPS["SYM"]) for n in nodes])
-        muC = mu_batch(model, tok, [(n, "Chemistry", OPS["SYM"]) for n in nodes])
+    ab = {r: r[:4] for r in roots}
+    print(f"\n[DISCRIM] {len(roots)}-domain (argmax μ over {', '.join(roots)}):")
+    confusion = {d: {r: 0 for r in roots} for d in roots}
+    correct = total = 0
+    for dom in roots:
+        nodes = [n for n in DOMAIN_PROBE[dom] if n in idx]
+        mus = {r: mu_batch(model, tok, [(n, r, OPS["SYM"]) for n in nodes]) for r in roots}
         for i, n in enumerate(nodes):
-            p, c = float(muP[i]), float(muC[i])
-            mark = ""
-            if expect == "P>C":
-                ok = p > c
-                correct += ok
-                total += 1
-                mark = "✓" if ok else "✗"
-            elif expect == "C>P":
-                ok = c > p
-                correct += ok
-                total += 1
-                mark = "✓" if ok else "✗"
-            print(f"    [{label:10}] {n:22} μ|Physics={p:.2f}  μ|Chemistry={c:.2f}  {mark}")
-    print(f"  directional ordering correct: {correct}/{total} "
-          f"(physics→P>C, chemistry→C>P; borderline not scored)")
+            vals = {r: float(mus[r][i]) for r in roots}
+            pred = max(roots, key=lambda r: vals[r])
+            confusion[dom][pred] += 1
+            ok = pred == dom
+            correct += ok
+            total += 1
+            scores = "  ".join(f"{ab[r]}={vals[r]:.2f}" for r in roots)
+            print(f"    [{ab[dom]}] {n:22} {scores}  →{ab[pred]} {'✓' if ok else '✗'}")
+    # borderline (no ground truth — just show the argmax)
+    bnodes = [n for n in BORDER_PROBE if n in idx]
+    if bnodes:
+        for n in bnodes:
+            vals = {r: float(mu_batch(model, tok, [(n, r, OPS["SYM"])])[0]) for r in roots}
+            pred = max(roots, key=lambda r: vals[r])
+            print(f"    [border] {n:22} " + "  ".join(f"{ab[r]}={vals[r]:.2f}" for r in roots)
+                  + f"  →{ab[pred]}")
+    print("  confusion (true → argmax):")
+    print("            " + "".join(f"{ab[r]:>7}" for r in roots))
+    for d in roots:
+        print(f"    {ab[d]:>7} " + "".join(f"{confusion[d][r]:>7}" for r in roots))
+    print(f"  multi-domain discrimination accuracy: {correct}/{total} "
+          f"({100*correct/max(total,1):.0f}%)")
 
 
 def node_gated_lin_agreement(model, tok, idx):

@@ -56,13 +56,24 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"),
     tgt = [m for _, _, m, _ in hold]
     strat = [s for _, _, _, s in hold]
     print(f"held-out positives: {len(hold)}  overall corr {pearson(pred, tgt):+.3f}")
-    for s in ["pos", "pos_phys", "pos_chem", "cross"]:
+    # cross_* strata pooled together too (each alone is small); then every stratum present
+    cross_idx = [i for i, st in enumerate(strat) if st.startswith("cross")]
+    if len(cross_idx) > 2:
+        print(f"  {'cross_ALL':12} n={len(cross_idx):3}  corr "
+              f"{pearson([pred[i] for i in cross_idx], [tgt[i] for i in cross_idx]):+.3f}  "
+              f"(μ̄ target {sum(tgt[i] for i in cross_idx)/len(cross_idx):.2f})")
+    for s in sorted(set(strat)):
         idxs = [i for i, st in enumerate(strat) if st == s]
         if len(idxs) > 2:
             c = pearson([pred[i] for i in idxs], [tgt[i] for i in idxs])
-            print(f"  {s:9} n={len(idxs):3}  corr {c:+.3f}  "
+            print(f"  {s:12} n={len(idxs):3}  corr {c:+.3f}  "
                   f"(μ̄ target {sum(tgt[i] for i in idxs)/len(idxs):.2f})")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pairs", default=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"))
+    ap.add_argument("--model", default=os.path.join(ROOT, "model_multidomain.pt"))
+    a = ap.parse_args()
+    main(pairs=a.pairs, model_path=a.model)
