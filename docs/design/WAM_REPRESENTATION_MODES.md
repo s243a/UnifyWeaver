@@ -56,11 +56,12 @@ the shared `compile_predicate_to_wam_items/3` producer now skips WAM text for
 single-clause facts, simple user-predicate calls, generic builtin calls, and
 compound body arguments with default args-first `set_*` ordering. It also skips
 WAM text for non-indexed linear multi-clause predicates made from the same
-simple clause shapes, while indexed multi-clause predicates and more complex
-predicate shapes still use the text-to-items bridge. The legacy
-`args_first_emission(false)` compound-argument order also remains on the bridge.
-As the native producer expands, the same explicit Python mode will skip WAM text
-for more predicates without changing the Python emitter.
+simple clause shapes, and for the simplest A1 `switch_on_constant` indexed
+variant when no extra dispatch chains are needed. A2 indexing, fallthrough
+indexes, dispatch-chain indexes, more complex predicate shapes, and the legacy
+`args_first_emission(false)` compound-argument order still use the text-to-items
+bridge. As the native producer expands, the same explicit Python mode will skip
+WAM text for more predicates without changing the Python emitter.
 
 Lua, R, and Elixir follow the same partial migration shape as Python:
 interpreter-mode generated predicates consume common WAM items through the

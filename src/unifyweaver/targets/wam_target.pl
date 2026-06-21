@@ -206,8 +206,9 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %  Direct items path for simple predicates. This incremental native producer
 %  slice covers facts, simple user calls, generic builtin calls, compound body
 %  arguments using the default args-first set_* ordering, conjunctions of those
-%  shapes, and non-indexed linear multi-clause predicates composed of the same
-%  clause shapes. Aggregates, indexing, lowered builtins, control flow, legacy
+%  shapes, non-indexed linear multi-clause predicates composed of the same
+%  clause shapes, and the simplest A1 switch_on_constant indexed variant.
+%  Aggregates, dispatch-chain indexing, lowered builtins, control flow, legacy
 %  interleaved compound-arg emission, and other peephole-sensitive shapes
 %  intentionally fall back to the text bridge.
 compile_clauses_to_wam_items_native(Pred, Arity, [Clause], Options, Items) :-
@@ -215,6 +216,14 @@ compile_clauses_to_wam_items_native(Pred, Arity, [Clause], Options, Items) :-
     !,
     format(string(Label), "~w/~w", [Pred, Arity]),
     Items = [label(Label)|InstrItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_first_arg_constant_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
 compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
     Clauses = [_,_|_],
     \+ native_clauses_would_index(Pred, Arity, Clauses),
@@ -253,6 +262,22 @@ native_clauses_would_index(Pred, Arity, Clauses) :-
         build_second_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains)
     ),
     !.
+
+native_first_arg_constant_index_item(Pred, Arity, Clauses, switch_on_constant(ItemEntries)) :-
+    classify_first_args(Clauses, Types),
+    Types = [_|_],
+    forall(member(Type, Types), Type = constant),
+    collect_const_groups(Clauses, 1, ConstGroups),
+    groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                 Entries, ""),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+index_entries_to_item_entries([], []).
+index_entries_to_item_entries([Key-Label|Rest], [Entry|RestEntries]) :-
+    quote_wam_constant(Key, KeyString),
+    format(string(Entry), "~w:~w", [KeyString, Label]),
+    index_entries_to_item_entries(Rest, RestEntries).
 
 compile_multi_clause_items_linear([], _, _, _, _, _, []).
 compile_multi_clause_items_linear([Clause|Rest], I, N, Pred, Arity, Options, Items) :-
